@@ -72,12 +72,7 @@ import { FilePreviewModal, type FilePreviewSource } from "../../components/FileP
 import { isPdfFile } from "../../lib/filePreview";
 import { PresentationSource } from "../../components/NativePresentation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Animated, {
-  FadeIn,
-  FadeInUp,
-  LinearTransition,
-  type SharedValue,
-} from "react-native-reanimated";
+import Animated, { FadeIn, FadeInUp, type SharedValue } from "react-native-reanimated";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { IOS_NAV_BAR_HEIGHT } from "../../lib/layoutMetrics";
 import { useFontFamily } from "../../lib/useFontFamily";
@@ -134,9 +129,11 @@ import {
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { useAppearanceCodeSurface } from "../settings/appearance/useAppearanceCodeSurface";
 import { markdownFileIconSource } from "@t3tools/mobile-markdown-text/file-icons";
+import { markdownLinkIconSource } from "@t3tools/mobile-markdown-text/link-icons";
 import {
   normalizeNativeMarkdownUrl,
   resolveMarkdownInlineCodePresentation,
+  resolveMarkdownLinkIcon,
   resolveMarkdownLinkPresentation,
 } from "@t3tools/mobile-markdown-text/links";
 import {
@@ -152,13 +149,10 @@ import {
   type ThreadWorkGroupScrollPosition,
 } from "./thread-feed-live-follow";
 import {
-  collapsedWorkLogHeight,
   ThreadDisclosureChevron,
   ThreadWorkGroupToggle,
   ThreadThinkingRow,
   ThreadWorkLog,
-  THREAD_DISCLOSURE_TRANSITION_MS,
-  WORK_GROUP_TOGGLE_HEIGHT,
 } from "./thread-work-log";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import {
@@ -177,11 +171,16 @@ import {
   resolveWorkspaceRelativeFilePath,
 } from "../files/filePath";
 import { fileChipMenu, resolveFileChipTarget, type FileChipAction } from "./fileChipMenu";
+import { useFileChipShare } from "./useFileChipShare";
 import {
   ThreadMarkdownImage,
   ThreadMarkdownImageUnavailable,
   ThreadMarkdownImageView,
 } from "./ThreadMarkdownImage";
+import {
+  deriveAssistantMetadataInvalidationKey,
+  deriveTerminalAssistantMessageIds,
+} from "./threadFeedPresentation";
 
 const WIDE_MARKDOWN_BLOCK_OPTIONS = {
   // Native iOS blockquotes and adjacent selectable text are separate layout
@@ -206,11 +205,7 @@ function formatMessageTime(input: string): string {
 // Fixed heights mirror renderFeedEntry's classNames and are only used while
 // text fits at the current font settings. Larger accessibility text is measured.
 const TURN_FOLD_HEIGHT = 42; // min-h-11 (38.5) + mb-1 (3.5), with the mobile 14px rem
-const THREAD_FEED_LAYOUT_TRANSITION = LinearTransition.duration(THREAD_DISCLOSURE_TRANSITION_MS);
-// Let neighboring rows move out of the new rows' space before showing their text.
-const THREAD_FEED_DISCLOSURE_ENTER_TRANSITION = FadeIn.delay(
-  THREAD_DISCLOSURE_TRANSITION_MS,
-).duration(140);
+const THREAD_FEED_DISCLOSURE_ENTER_TRANSITION = FadeIn.duration(140);
 
 // Entering animations must only play for rows born just now — LegendList
 // remounts rows when they scroll back into view, and replaying an entrance for
@@ -599,7 +594,8 @@ const MarkdownExternalLink = memo(function MarkdownExternalLink(props: {
   readonly onPress: (href: string) => void;
 }) {
   const [failedHost, setFailedHost] = useState<string | null>(null);
-  const faviconUrl = faviconUrlForOrigin(`https://${props.host}`);
+  const linkIcon = resolveMarkdownLinkIcon(props.host);
+  const faviconUrl = linkIcon ? null : faviconUrlForOrigin(`https://${props.host}`);
 
   return (
     <NativeText
@@ -610,9 +606,15 @@ const MarkdownExternalLink = memo(function MarkdownExternalLink(props: {
         textDecorationLine: "none",
       }}
     >
-      {faviconUrl !== null &&
-      failedHost !== props.host &&
-      !failedMarkdownFaviconHosts.has(props.host) ? (
+      {linkIcon ? (
+        <Image
+          source={markdownLinkIconSource(linkIcon)}
+          style={markdownLinkStyles.inlineIcon}
+          tintColor={props.color}
+        />
+      ) : faviconUrl !== null &&
+        failedHost !== props.host &&
+        !failedMarkdownFaviconHosts.has(props.host) ? (
         <Image
           source={{
             uri: faviconUrl,
@@ -1317,7 +1319,12 @@ function renderFeedEntry(
     readonly terminalAssistantMessageIds: ReadonlySet<string>;
     readonly unsettledTurnId: TurnId | null;
     readonly onCopyWorkRow: (rowId: string, value: string) => void;
-    readonly onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
+    readonly onToggleWorkGroup: (
+      groupId: string,
+      anchorKey: string,
+      expanded: boolean,
+      live: boolean,
+    ) => void;
     readonly onToggleWorkRow: (rowId: string, anchorKey: string) => void;
     readonly onToggleTurnFold: (turnId: TurnId) => void;
     readonly onPressPreview: (source: FilePreviewSource) => void;
@@ -1352,7 +1359,7 @@ function renderFeedEntry(
       >
         <Text
           key={props.workRowSizing.textSizeKey}
-          className="font-t3-medium text-sm tabular-nums text-foreground-muted"
+          className="min-w-0 shrink text-xs tabular-nums text-foreground-muted"
         >
           {entry.label}
         </Text>
@@ -1377,6 +1384,7 @@ function renderFeedEntry(
         rowSizing={props.workRowSizing}
         expanded={entry.expanded}
         hiddenCount={entry.hiddenCount}
+        activeCount={entry.activeCount}
         iconSubtleColor={iconSubtleColor}
         summary={entry.summary}
         summaryKind={entry.summaryKind}
@@ -1386,7 +1394,9 @@ function renderFeedEntry(
         summaryToolIcon={entry.summaryToolIcon}
         hasFailure={entry.hasFailure}
         shimmer={entry.shimmer}
-        onToggle={() => props.onToggleWorkGroup(entry.groupId, entry.id)}
+        onToggle={() =>
+          props.onToggleWorkGroup(entry.groupId, entry.id, entry.expanded, entry.live)
+        }
       />
     );
   }
@@ -1928,17 +1938,31 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const [interactionState, setInteractionState] = useState<{
     readonly copiedRowId: string | null;
     readonly expandedWorkGroups: Record<string, boolean>;
+    readonly collapsedLiveWorkGroupIds: ReadonlySet<string>;
     readonly expandedWorkRows: Record<string, boolean>;
     readonly expandedTurnIds: ReadonlySet<TurnId>;
   }>({
     copiedRowId: null,
     expandedWorkGroups: {},
+    collapsedLiveWorkGroupIds: new Set(),
     expandedWorkRows: {},
     expandedTurnIds: new Set(),
   });
-  const { copiedRowId, expandedWorkGroups, expandedWorkRows, expandedTurnIds } = interactionState;
+  const {
+    copiedRowId,
+    expandedWorkGroups,
+    collapsedLiveWorkGroupIds,
+    expandedWorkRows,
+    expandedTurnIds,
+  } = interactionState;
   const [expandedFile, setExpandedFile] = useState<FilePreviewSource | null>(null);
   const [expandedVideo, setExpandedVideo] = useState<VideoPreviewSource | null>(null);
+  const fileShareSourceIdentifier = useId();
+  const shareFileChip = useFileChipShare(
+    props.environmentId,
+    props.threadId,
+    fileShareSourceIdentifier,
+  );
   useEffect(() => {
     setExpandedVideo(null);
     setExpandedFile(null);
@@ -2090,10 +2114,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           case "open-file":
             onMarkdownLinkPress(href);
             return;
+          case "save":
+            shareFileChip(target);
+            return;
         }
       },
     }),
-    [onMarkdownLinkPress, props.workspaceRoot],
+    [onMarkdownLinkPress, props.workspaceRoot, shareFileChip],
   );
   const renderMarkdownImage = useCallback<MarkdownImageRenderer>(
     (image) => {
@@ -2178,6 +2205,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   );
   const markdownStyles = useMarkdownStyles(onMarkdownLinkPress, renderMarkdownImage);
   const reviewCommentColors = useReviewCommentColors();
+  const assistantMetadataInvalidationKey = deriveAssistantMetadataInvalidationKey(props.latestTurn);
   // LegendList does not invalidate visible rows when only the renderItem closure changes.
   // Keep row-local interaction props in extraData so disclosures and copy feedback repaint.
   const listAppearanceData = useMemo(
@@ -2191,6 +2219,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       themeAppearance,
       userBubbleColor,
       viewportWidth,
+      assistantMetadataInvalidationKey,
     }),
     [
       copiedRowId,
@@ -2202,6 +2231,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       themeAppearance,
       userBubbleColor,
       viewportWidth,
+      assistantMetadataInvalidationKey,
     ],
   );
   const reportHeaderMaterialVisibility = useCallback(
@@ -2343,10 +2373,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         expandedTurnIds,
         expandedWorkGroupIds,
         props.activeWorkStartedAt,
+        collapsedLiveWorkGroupIds,
       ),
     [
       expandedTurnIds,
       expandedWorkGroupIds,
+      collapsedLiveWorkGroupIds,
       props.activeWorkStartedAt,
       props.feed,
       props.latestTurn,
@@ -2374,15 +2406,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       ),
     [presentedFeed, props.anchorMessageId, anchorTopInset],
   );
-  const terminalAssistantMessageIds = useMemo(() => {
-    const terminalIdsByTurn = new Map<TurnId, string>();
-    for (const entry of props.feed) {
-      if (entry.type === "message" && entry.message.role === "assistant" && entry.message.turnId) {
-        terminalIdsByTurn.set(entry.message.turnId, entry.message.id);
-      }
-    }
-    return new Set(terminalIdsByTurn.values());
-  }, [props.feed]);
+  const terminalAssistantMessageIds = useMemo(
+    () => deriveTerminalAssistantMessageIds(props.feed),
+    [props.feed],
+  );
   const unsettledTurnId =
     props.latestTurn &&
     (props.latestTurn.completedAt === null || props.latestTurn.state === "running")
@@ -2468,7 +2495,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     if (disclosureAnchorKeyRef.current !== null) {
       settleDisclosureAfterLayout();
     }
-  }, [expandedTurnIds, expandedWorkGroups, expandedWorkRows, settleDisclosureAfterLayout]);
+  }, [
+    expandedTurnIds,
+    expandedWorkGroups,
+    collapsedLiveWorkGroupIds,
+    expandedWorkRows,
+    settleDisclosureAfterLayout,
+  ]);
 
   const handleItemSizeChanged = useCallback(() => {
     if (disclosureAnchorKeyRef.current !== null) {
@@ -2508,15 +2541,20 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   }, []);
 
   const onToggleWorkGroup = useCallback(
-    (groupId: string, anchorKey: string) => {
+    (groupId: string, anchorKey: string, expanded: boolean, live: boolean) => {
       suspendEndScrollMaintenanceForDisclosure(anchorKey);
-      setInteractionState((current) => ({
-        ...current,
-        expandedWorkGroups: {
-          ...current.expandedWorkGroups,
-          [groupId]: !(current.expandedWorkGroups[groupId] ?? false),
-        },
-      }));
+      setInteractionState((current) => {
+        if (live) {
+          const collapsed = new Set(current.collapsedLiveWorkGroupIds);
+          if (expanded) collapsed.add(groupId);
+          else collapsed.delete(groupId);
+          return { ...current, collapsedLiveWorkGroupIds: collapsed };
+        }
+        return {
+          ...current,
+          expandedWorkGroups: { ...current.expandedWorkGroups, [groupId]: !expanded },
+        };
+      });
     },
     [suspendEndScrollMaintenanceForDisclosure],
   );
@@ -2578,28 +2616,22 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       }
       switch (entry.type) {
         case "turn-fold":
-          return TURN_FOLD_HEIGHT;
+          return undefined;
         case "work-toggle":
+          return undefined;
         case "thinking":
-          return WORK_GROUP_TOGGLE_HEIGHT;
+          return workRowSizing.fixedRowHeight;
         case "activity-group":
-          if (isContextCompactionActivityGroup(entry)) {
-            return undefined;
-          }
-          // Expanded rows append a variable detail block — fall back to
-          // measurement for those groups.
-          return entry.activities.some((activity) => expandedWorkRows[activity.id])
-            ? undefined
-            : collapsedWorkLogHeight(entry.activities);
+          return undefined;
         default:
           return undefined;
       }
     },
-    [expandedWorkRows, workRowSizing.fixedRowHeight],
+    [workRowSizing.fixedRowHeight],
   );
 
   // Disclosures can mount existing offscreen rows as well as new work rows.
-  // Fade those in after movement; never retain removed rows over replacements.
+  // Fade those in without animating their geometry or retaining removed rows.
   const renderItem = useCallback(
     (info: { item: ThreadFeedEntry; index: number }) => (
       <Animated.View
@@ -2682,7 +2714,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   }
 
   return (
-    <>
+    <PresentationSource identifier={fileShareSourceIdentifier} style={{ flex: 1 }}>
       <View className="flex-1" onLayout={handleViewportLayout}>
         <View className="flex-1">
           <KeyboardAwareLegendList
@@ -2770,7 +2802,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
               entry.type === "message" ? `message:${entry.message.role}` : entry.type
             }
             getFixedItemSize={getFixedItemSize}
-            itemLayoutAnimation={THREAD_FEED_LAYOUT_TRANSITION}
+            // Keep virtual cell positions synchronous. Interrupted native layout
+            // transitions can finish at stale offsets after measurement/MVCP
+            // corrections, leaving gaps or overlaps despite correct list sizes.
             onItemSizeChanged={handleItemSizeChanged}
             // Measure rows well before they scroll into view so estimate→actual
             // corrections land offscreen instead of under the user's finger.
@@ -2845,6 +2879,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
 
       <VideoPreviewModal source={expandedVideo} onRequestClose={() => setExpandedVideo(null)} />
       <FilePreviewModal source={expandedFile} onRequestClose={() => setExpandedFile(null)} />
-    </>
+    </PresentationSource>
   );
 });

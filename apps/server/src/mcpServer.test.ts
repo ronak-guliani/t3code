@@ -266,7 +266,57 @@ describe("associate_pull_request MCP tool", () => {
 });
 
 describe("send_to_thread MCP tool", () => {
-  it("sends through the authenticated source thread", async () => {
+  it("reports only from the authenticated child and validates the report before invoking the CLI", async () => {
+    const options = {
+      cwd: process.cwd(),
+      toolsets: new Set(["report_to_parent"]),
+      threadId: "child-1",
+      cliCommand: process.execPath,
+      cliArgsPrefix: ["-e", "console.log(JSON.stringify(process.argv.slice(1)))"],
+      cliBaseDir: "/tmp/isolated-report",
+    };
+    const output = JSON.parse(
+      await __testing.reportToParentTool(options, {
+        reportId: "decision-1",
+        kind: "decision-needed",
+        summary: "Choose the migration approach.",
+        thread: "untrusted-target",
+      }),
+    );
+    expect(output).toEqual([
+      "chat",
+      "report",
+      "child-1",
+      "Choose the migration approach.",
+      "--kind",
+      "decision-needed",
+      "--report-id",
+      "decision-1",
+      "--cross-thread-capability",
+      expect.any(String),
+      "--base-dir",
+      "/tmp/isolated-report",
+    ]);
+    await expect(
+      __testing.reportToParentTool(options, {
+        reportId: "bad",
+        kind: "completion",
+        summary: "Done",
+      }),
+    ).rejects.toThrow("valid kind");
+    await expect(
+      __testing.reportToParentTool(
+        { ...options, threadId: undefined },
+        {
+          reportId: "no-source",
+          kind: "progress",
+          summary: "Working",
+        },
+      ),
+    ).rejects.toThrow("requires a T3 provider session");
+  });
+
+  it("queues through the authenticated source thread", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-send-thread-"));
     const cliPath = path.join(root, "t3-test");
     const argsPath = path.join(root, "cli-args.txt");
@@ -297,7 +347,8 @@ describe("send_to_thread MCP tool", () => {
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
         "server.mjs",
         "chat",
-        "send",
+        "queue",
+        "add",
         "target-1",
         "Investigate this.",
         "--cross-thread-source",
@@ -416,6 +467,8 @@ describe("create_nested_thread MCP tool", () => {
         "project-1",
         "--parent",
         "parent-1",
+        "--follow-up",
+        "automatic",
         "--cross-thread-source",
         "parent-1",
         "--cross-thread-capability",
@@ -545,6 +598,8 @@ Report the outcome, material findings or changes, validation results, commit SHA
         "project-1",
         "--parent",
         "parent-1",
+        "--follow-up",
+        "automatic",
         "--cross-thread-source",
         "parent-1",
         "--cross-thread-capability",
@@ -625,6 +680,8 @@ Report the outcome, material findings or changes, validation results, commit SHA
         "project-1",
         "--parent",
         "parent-1",
+        "--follow-up",
+        "automatic",
         "--cross-thread-source",
         "parent-1",
         "--cross-thread-capability",

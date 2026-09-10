@@ -530,6 +530,7 @@ async function main() {
               Layer.mergeAll(
                 Layer.succeed(ManagedRelay.ManagedRelayClient, relay),
                 Layer.succeed(ClientCapabilities.CloudSession, {
+                  identity: Effect.succeed(Option.none()),
                   clerkToken: Effect.succeed("release-smoke-clerk-token"),
                 }),
                 Layer.succeed(Connectivity.Connectivity, {

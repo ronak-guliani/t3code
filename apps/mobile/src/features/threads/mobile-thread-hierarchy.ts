@@ -1,27 +1,79 @@
 import {
   buildThreadTree,
   hierarchyThreadKey,
+  normalizeParentThreadKeys,
   selectVisibleThreads,
   type ThreadTreeNode,
   type ThreadTreeRow,
 } from "@t3tools/client-runtime/state/thread-hierarchy";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { resolveThreadSemanticStatus } from "@t3tools/client-runtime/state/thread-status";
 import { ThreadId, type OrchestrationBackgroundAgentRunShell } from "@t3tools/contracts";
 
-export type NestedThreadStatus = "approval" | "input" | "working" | "failed" | "ready";
+export type NestedThreadStatus =
+  | "approval"
+  | "input"
+  | "working"
+  | "connecting"
+  | "failed"
+  | "ready";
 export interface MobileThreadShell extends EnvironmentThreadShell {
   readonly virtualAgentRun?: OrchestrationBackgroundAgentRunShell & {
     readonly parentThreadId: ThreadId;
   };
 }
+export function isRootThread(
+  thread: Pick<MobileThreadShell, "parentThreadId" | "virtualAgentRun">,
+) {
+  return thread.parentThreadId == null && thread.virtualAgentRun === undefined;
+}
+export type NestedThreadReadMarkers = Readonly<Record<string, string>>;
 export type MobileThreadTreeNode = ThreadTreeNode<MobileThreadShell, NestedThreadStatus> & {
   latestRelatedNotificationAt?: string | null;
   relatedStatus?: NestedThreadStatus;
+  hasUnreadDescendant?: boolean;
+  relatedChildCount?: number;
 };
 export type MobileThreadTreeRow = ThreadTreeRow<MobileThreadShell, NestedThreadStatus> & {
   readonly latestRelatedNotificationAt?: string | null;
   readonly relatedStatus?: NestedThreadStatus;
+  readonly hasUnreadDescendant?: boolean;
+  readonly relatedChildCount?: number;
 };
+
+export function nestedThreadKey(thread: MobileThreadShell): string {
+  return thread.virtualAgentRun
+    ? `${thread.environmentId}:agent-run:${thread.virtualAgentRun.parentThreadId}:${thread.virtualAgentRun.taskId}`
+    : `${thread.environmentId}:${thread.id}`;
+}
+
+export function nestedThreadCompletionMarker(thread: MobileThreadShell): string | null {
+  if (thread.virtualAgentRun) {
+    if (thread.virtualAgentRun.status === "running") return null;
+    return thread.virtualAgentRun.completedAt ?? thread.updatedAt;
+  }
+  if (thread.parentThreadId == null) return null;
+  if (thread.latestTurn) {
+    if (thread.latestTurn.state !== "running" && thread.latestTurn.completedAt !== null) {
+      return thread.latestTurn.completedAt;
+    }
+    if (thread.latestTurn.state === "running") return null;
+  }
+  return thread.session?.status === "error" ? thread.session.updatedAt : null;
+}
+
+export function isNestedThreadRead(
+  thread: MobileThreadShell,
+  readMarkers: NestedThreadReadMarkers,
+): boolean {
+  const marker = nestedThreadCompletionMarker(thread);
+  if (marker === null) return false;
+  const readMarker = readMarkers[nestedThreadKey(thread)];
+  if (!readMarker) return false;
+  const markerMs = Date.parse(marker);
+  const readMarkerMs = Date.parse(readMarker);
+  return Number.isFinite(markerMs) && Number.isFinite(readMarkerMs) && markerMs <= readMarkerMs;
+}
 
 export function nestedThreadParentError(
   parentThreadId: ThreadId | undefined,
@@ -41,29 +93,22 @@ export function resolveNestedThreadStatus(
   thread: Pick<EnvironmentThreadShell, "hasPendingApprovals" | "hasPendingUserInput" | "session"> &
     Partial<Pick<MobileThreadShell, "hasPendingQueuedTurn" | "latestTurn" | "virtualAgentRun">>,
 ): NestedThreadStatus {
-  if (thread.hasPendingApprovals) return "approval";
-  if (thread.hasPendingUserInput) return "input";
-  if (
-    thread.virtualAgentRun?.status === "running" ||
-    thread.hasPendingQueuedTurn ||
-    thread.latestTurn?.state === "running" ||
-    thread.session?.status === "starting" ||
-    thread.session?.status === "running"
-  )
-    return "working";
-  if (
-    thread.virtualAgentRun?.status === "failed" ||
-    thread.session?.status === "error" ||
-    thread.latestTurn?.state === "error"
-  )
-    return "failed";
-  return "ready";
+  const status = resolveThreadSemanticStatus({
+    hasPendingApprovals: thread.hasPendingApprovals,
+    hasPendingUserInput: thread.hasPendingUserInput,
+    hasPendingQueuedTurn: thread.hasPendingQueuedTurn,
+    latestTurn: thread.latestTurn,
+    session: thread.session,
+    virtualAgentRun: thread.virtualAgentRun,
+  });
+  return status === "plan-ready" || status === "completed" ? "ready" : status;
 }
 
 const STATUS_PRIORITY: readonly NestedThreadStatus[] = [
   "approval",
   "input",
   "working",
+  "connecting",
   "failed",
   "ready",
 ];
@@ -93,6 +138,11 @@ export function buildMobileThreadTree(
   threads: readonly EnvironmentThreadShell[],
   compare = compareNestedThreads,
   dismissedAgentRunKeys: readonly string[] = [],
+  options: {
+    readonly readMarkers?: NestedThreadReadMarkers;
+    readonly includeReadCompletedChildren?: boolean;
+    readonly selectedThreadKey?: string | null;
+  } = {},
 ): MobileThreadTreeNode[] {
   const dismissed = new Set(dismissedAgentRunKeys);
   const expanded: MobileThreadShell[] = selectVisibleThreads(threads).flatMap((thread) => [
@@ -122,13 +172,77 @@ export function buildMobileThreadTree(
         }),
       ),
   ]);
+  const readMarkers = options.readMarkers ?? {};
+  // Read filtering affects rendered descendants, not whether the parent has
+  // related chats that remain reachable from its row.
+  const parentByKey = normalizeParentThreadKeys(expanded);
+  const remainingChildrenByKey = new Map<string, number>();
+  for (const parentKey of parentByKey.values()) {
+    remainingChildrenByKey.set(parentKey, (remainingChildrenByKey.get(parentKey) ?? 0) + 1);
+  }
+  const relatedChildCountByKey = new Map<string, number>();
+  const pendingCountKeys = expanded
+    .map(hierarchyThreadKey)
+    .filter((threadKey) => !remainingChildrenByKey.has(threadKey));
+  while (pendingCountKeys.length > 0) {
+    const threadKey = pendingCountKeys.pop()!;
+    const parentKey = parentByKey.get(threadKey);
+    if (parentKey === undefined) continue;
+    relatedChildCountByKey.set(
+      parentKey,
+      (relatedChildCountByKey.get(parentKey) ?? 0) +
+        1 +
+        (relatedChildCountByKey.get(threadKey) ?? 0),
+    );
+    const remainingChildren = (remainingChildrenByKey.get(parentKey) ?? 0) - 1;
+    remainingChildrenByKey.set(parentKey, remainingChildren);
+    if (remainingChildren === 0) {
+      pendingCountKeys.push(parentKey);
+    }
+  }
+  const visibleKeys = new Set(
+    expanded
+      .filter((thread) => {
+        if (
+          options.includeReadCompletedChildren === true ||
+          !parentByKey.has(hierarchyThreadKey(thread))
+        ) {
+          return true;
+        }
+        if (hierarchyThreadKey(thread) === options.selectedThreadKey) return true;
+        const status = resolveNestedThreadStatus(thread);
+        if (
+          status === "approval" ||
+          status === "input" ||
+          status === "working" ||
+          status === "connecting"
+        )
+          return true;
+        const completionMarker = nestedThreadCompletionMarker(thread);
+        return completionMarker === null || !isNestedThreadRead(thread, readMarkers);
+      })
+      .map((thread) => hierarchyThreadKey(thread)),
+  );
+  for (const threadKey of visibleKeys) {
+    let parentKey = parentByKey.get(threadKey);
+    while (parentKey !== undefined && !visibleKeys.has(parentKey)) {
+      visibleKeys.add(parentKey);
+      parentKey = parentByKey.get(parentKey);
+    }
+  }
   const tree: MobileThreadTreeNode[] = buildThreadTree({
-    threads: expanded,
+    threads: expanded.filter((thread) => visibleKeys.has(hierarchyThreadKey(thread))),
     compare,
     resolveStatus: resolveNestedThreadStatus,
     rollUpStatus: rollUpNestedThreadStatus,
     isArchiveBlocked: isThreadArchiveBlocked,
   });
+  const visibleTreePending = [...tree];
+  while (visibleTreePending.length > 0) {
+    const node = visibleTreePending.pop()!;
+    node.relatedChildCount = relatedChildCountByKey.get(node.threadKey) ?? node.descendantCount;
+    visibleTreePending.push(...node.children);
+  }
   // A collapsed group must retain notifications from deeper branches, including during search.
   const traversal: MobileThreadTreeNode[] = [];
   const pending: MobileThreadTreeNode[] = [...tree];
@@ -138,6 +252,7 @@ export function buildMobileThreadTree(
     for (const child of node.children) pending.push(child);
   }
   const latestByKey = new Map<string, string>();
+  const unreadDescendantByKey = new Map<string, boolean>();
   for (let index = traversal.length - 1; index >= 0; index--) {
     const node = traversal[index]!;
     let latest = node.thread.latestChildNotificationAt ?? null;
@@ -150,9 +265,71 @@ export function buildMobileThreadTree(
     node.relatedStatus = rollUpNestedThreadStatus(
       node.children.map((child) => child.rolledUpStatus),
     );
+    node.hasUnreadDescendant = node.children.some(
+      (child) =>
+        unreadDescendantByKey.get(child.threadKey) === true ||
+        (nestedThreadCompletionMarker(child.thread) !== null &&
+          !isNestedThreadRead(child.thread, readMarkers)),
+    );
+    unreadDescendantByKey.set(node.threadKey, node.hasUnreadDescendant);
     if (latest) latestByKey.set(node.threadKey, latest);
   }
   return tree;
+}
+
+export function nestedThreadRevealKeys(
+  nodes: readonly MobileThreadTreeNode[],
+  readMarkers: NestedThreadReadMarkers,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  const pending = [...nodes];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (
+      node.thread.parentThreadId != null &&
+      (node.status !== "ready" ||
+        (nestedThreadCompletionMarker(node.thread) !== null &&
+          !isNestedThreadRead(node.thread, readMarkers)))
+    ) {
+      keys.add(node.threadKey);
+    }
+    pending.push(...node.children);
+  }
+  return keys;
+}
+
+export function nestedVirtualAgentKeys(
+  nodes: readonly MobileThreadTreeNode[],
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  const pending = [...nodes];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (node.thread.virtualAgentRun) keys.add(node.threadKey);
+    pending.push(...node.children);
+  }
+  return keys;
+}
+
+export function nestedVirtualAgentSearchKeys(
+  nodes: readonly MobileThreadTreeNode[],
+  query: string,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (normalizedQuery.length === 0) return keys;
+  const pending = [...nodes];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (
+      node.thread.virtualAgentRun &&
+      node.thread.title.toLocaleLowerCase().includes(normalizedQuery)
+    ) {
+      keys.add(node.threadKey);
+    }
+    pending.push(...node.children);
+  }
+  return keys;
 }
 
 export function mobileThreadTreeRows(
@@ -169,8 +346,8 @@ export function mobileThreadTreeRows(
   }
   while (pending.length > 0) {
     const { node, depth } = pending.pop()!;
-    // Search and the selected iPad conversation stay directly reachable.
-    // Activity alone never expands the inbox into a tree.
+    // Keep quiet descendants behind the group control; callers explicitly reveal
+    // active, unread, or matching chats alongside the selected iPad conversation.
     if (
       depth === 0 ||
       node.threadKey === options.selectedThreadKey ||
@@ -187,6 +364,8 @@ export function mobileThreadTreeRows(
         archiveBlocked: node.archiveBlocked,
         latestRelatedNotificationAt: node.latestRelatedNotificationAt ?? null,
         relatedStatus: node.relatedStatus ?? "ready",
+        hasUnreadDescendant: node.hasUnreadDescendant === true,
+        relatedChildCount: node.relatedChildCount ?? node.descendantCount,
       });
     }
     for (let index = node.children.length - 1; index >= 0; index--) {
@@ -237,7 +416,18 @@ export function selectMatchingThreadTree(
       const match = retained.get(child.threadKey);
       return match ? [match] : [];
     });
-    if (matches.has(hierarchyThreadKey(node.thread)) || children.length > 0) {
+    const nodeMatches = matches.has(hierarchyThreadKey(node.thread));
+    if (nodeMatches) {
+      for (const child of node.children) {
+        if (
+          child.thread.virtualAgentRun &&
+          !children.some((item) => item.threadKey === child.threadKey)
+        ) {
+          children.push(child);
+        }
+      }
+    }
+    if (nodeMatches || children.length > 0) {
       // Keep full-subtree status and archive guards even when siblings are hidden.
       retained.set(node.threadKey, { ...node, children });
     }

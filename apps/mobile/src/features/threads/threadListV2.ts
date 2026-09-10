@@ -9,6 +9,10 @@ import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled"
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import {
+  hasUnseenThreadCompletion,
+  resolveThreadSemanticStatus,
+} from "@t3tools/client-runtime/state/thread-status";
+import {
   activeThreadAnchorTimestampMs,
   resolveSettledThreadTimestamp,
   sortPinnedThreadsByOrderKey,
@@ -19,13 +23,19 @@ import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
   buildMobileThreadTree,
   compareNestedThreads,
+  isRootThread,
   mobileThreadTreeRows,
   resolveNestedThreadStatus,
   selectMatchingThreadTree,
+  nestedThreadRevealKeys,
+  nestedVirtualAgentKeys,
+  nestedVirtualAgentSearchKeys,
+  type NestedThreadReadMarkers,
   type MobileThreadTreeRow,
   type MobileThreadShell,
   type NestedThreadStatus,
 } from "./mobile-thread-hierarchy";
+import { resolveThreadListRowStatus, type ThreadListRowStatus } from "./thread-list-row-status";
 
 export { snoozeWakeLabel };
 
@@ -36,7 +46,7 @@ export { snoozeWakeLabel };
  * Approval, input, work and failure roll up from descendants. Ready is the
  * unlabeled resting state.
  */
-export type ThreadListV2Status = "approval" | "input" | "working" | "failed" | "ready";
+export type ThreadListV2Status = NestedThreadStatus | "completed";
 export type ThreadListV2SwipeAction = "archive" | "settle" | "unsettle" | "snooze" | "unsnooze";
 
 export function resolveThreadListV2SnoozeMenuSelection(input: {
@@ -136,8 +146,23 @@ export function resolveThreadListV2Enabled(input: {
 
 export function resolveThreadListV2Status(
   thread: Parameters<typeof resolveNestedThreadStatus>[0],
+  lastVisitedAt?: string | null,
 ): ThreadListV2Status {
-  return resolveNestedThreadStatus(thread);
+  const status = resolveThreadSemanticStatus({
+    hasPendingApprovals: thread.hasPendingApprovals,
+    hasPendingUserInput: thread.hasPendingUserInput,
+    hasPendingQueuedTurn: thread.hasPendingQueuedTurn,
+    latestTurn: thread.latestTurn,
+    session: thread.session,
+    virtualAgentRun: thread.virtualAgentRun,
+    hasUnseenCompletion:
+      isRootThread(thread) &&
+      hasUnseenThreadCompletion({
+        latestTurn: thread.latestTurn,
+        lastVisitedAt,
+      }),
+  });
+  return status === "plan-ready" ? "ready" : status;
 }
 
 /** NaN-safe Date.parse for sort comparators: a malformed timestamp must not
@@ -174,6 +199,7 @@ export function sortThreadsForListV2<
 export interface ThreadListV2Item {
   readonly thread: MobileThreadShell;
   readonly hierarchy?: MobileThreadTreeRow;
+  readonly status: Exclude<ThreadListRowStatus, "queued" | "draft">;
   readonly variant: "card" | "slim";
   /** Snoozed-shelf row: shows the wake countdown and offers Wake. */
   readonly snoozed: boolean;
@@ -185,11 +211,17 @@ export interface ThreadListV2Item {
 export function resolveThreadListV2RootState(input: {
   readonly thread: MobileThreadShell;
   readonly relatedStatus: NestedThreadStatus;
+  readonly hasUnreadDescendant?: boolean;
   readonly settlementSupported: boolean;
   readonly snoozeSupported: boolean;
   readonly now: string;
 }): Pick<ThreadListV2Item, "variant" | "snoozed" | "pinned"> {
   const { thread } = input;
+  // Unread terminal child activity promotes the root without changing the
+  // parent's own execution status or rolling it up as Working.
+  if (input.hasUnreadDescendant === true) {
+    return { variant: "card", snoozed: false, pinned: thread.pinnedAt != null };
+  }
   if (input.relatedStatus === "ready") {
     if (input.snoozeSupported && effectiveSnoozed(thread, { now: input.now })) {
       return { variant: "slim", snoozed: true, pinned: false };
@@ -290,7 +322,7 @@ export function buildThreadListV2ListItems(input: {
   const pendingItems = input.pendingTasks.map(
     (pendingTask, index): ThreadListV2ListItem => ({
       type: "v2-pending",
-      key: `v2-pending:${pendingTask.message.messageId}`,
+      key: `v2-${pendingTask.key}`,
       pendingTask,
       showPendingDivider: index === 0,
     }),
@@ -355,6 +387,8 @@ export function buildThreadListV2Items(input: {
       a split-view detail can never lose its navigation row. */
   readonly selectedThreadKey?: string | null;
   readonly dismissedAgentRunKeys?: readonly string[];
+  readonly threadChildReadAt?: NestedThreadReadMarkers;
+  readonly threadCompletionReadAt?: Readonly<Record<string, string>>;
 }): ThreadListV2Layout {
   const now = input.now;
   const query = input.searchQuery.trim().toLocaleLowerCase();
@@ -386,15 +420,27 @@ export function buildThreadListV2Items(input: {
     scopedThreads,
     compareNestedThreads,
     input.dismissedAgentRunKeys,
+    {
+      readMarkers: input.threadChildReadAt,
+      includeReadCompletedChildren: query.length > 0,
+      selectedThreadKey: input.selectedThreadKey,
+    },
   );
-  const roots = query.length > 0 ? selectMatchingThreadTree(tree, matchingKeys) : tree;
+  const searchKeys =
+    query.length > 0
+      ? new Set([...matchingKeys, ...nestedVirtualAgentSearchKeys(tree, query)])
+      : matchingKeys;
+  const roots = query.length > 0 ? selectMatchingThreadTree(tree, searchKeys) : tree;
   const nodesByKey = new Map(tree.map((node) => [node.threadKey, node]));
   const rowsByRootKey = new Map(
     roots.map((node) => [
       node.threadKey,
       mobileThreadTreeRows([node], {
         selectedThreadKey: input.selectedThreadKey,
-        ...(query.length > 0 ? { revealThreadKeys: matchingKeys } : {}),
+        revealThreadKeys:
+          query.length > 0
+            ? new Set([...searchKeys, ...nestedVirtualAgentKeys([node]).values()])
+            : nestedThreadRevealKeys([node], input.threadChildReadAt ?? {}),
       }),
     ]),
   );
@@ -413,6 +459,7 @@ export function buildThreadListV2Items(input: {
     const state = resolveThreadListV2RootState({
       thread,
       relatedStatus: node.relatedStatus ?? "ready",
+      hasUnreadDescendant: node.hasUnreadDescendant === true,
       settlementSupported: input.settlementEnvironmentIds?.has(thread.environmentId) ?? true,
       snoozeSupported: input.snoozeEnvironmentIds?.has(thread.environmentId) ?? true,
       now,
@@ -471,6 +518,7 @@ export function buildThreadListV2Items(input: {
   for (const thread of sortPinnedThreadsByOrderKey(pinned)) {
     items.push({
       thread,
+      status: resolveThreadListRowStatus(thread, input.threadCompletionReadAt),
       variant: "card",
       snoozed: false,
       pinned: true,
@@ -480,6 +528,7 @@ export function buildThreadListV2Items(input: {
   for (const thread of orderedActive) {
     items.push({
       thread,
+      status: resolveThreadListRowStatus(thread, input.threadCompletionReadAt),
       variant: "card",
       snoozed: false,
       pinned: false,
@@ -490,6 +539,7 @@ export function buildThreadListV2Items(input: {
   for (const thread of visibleSnoozed) {
     items.push({
       thread,
+      status: resolveThreadListRowStatus(thread, input.threadCompletionReadAt),
       variant: "slim",
       snoozed: true,
       pinned: false,
@@ -500,6 +550,7 @@ export function buildThreadListV2Items(input: {
   for (const thread of visibleSettled) {
     items.push({
       thread,
+      status: resolveThreadListRowStatus(thread, input.threadCompletionReadAt),
       variant: "slim",
       snoozed: false,
       pinned: false,
@@ -511,6 +562,7 @@ export function buildThreadListV2Items(input: {
       ...item,
       thread: row.thread,
       hierarchy: row,
+      status: resolveThreadListRowStatus(row.thread, input.threadCompletionReadAt),
       pinned: item.pinned && row.depth === 0,
     })),
   );

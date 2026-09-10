@@ -50,6 +50,8 @@ import {
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
+import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
+import { WorkLogPanel } from "./WorkLogPanel";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
@@ -58,17 +60,14 @@ import { MessageCopyButton } from "./MessageCopyButton";
 import {
   collectReviewOutputMessageIds,
   computeStableMessagesTimelineRows,
-  MAX_VISIBLE_WORK_LOG_ENTRIES,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveExternalActionUrl,
-  resolveWorkGroupExpanded,
   shouldHandleInternalActionClick,
   stabilizeReadonlyStringSet,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
-  type WorkGroupExpansionOverride,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -90,6 +89,17 @@ import {
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import { useNavigate } from "@tanstack/react-router";
 import { formatTimestamp } from "../../timestampFormat";
+import {
+  compactWorkEntryLabel,
+  groupRepeatedWorkEntries,
+  hasWorkLogToolData,
+  deriveWorkGroupActivity,
+  extractCommandOutputText,
+  workGroupReceiptLabel,
+  toolGroupAction,
+  workEntryNeedsAttention,
+  workGroupAccessibleLabel,
+} from "@t3tools/client-runtime/work-log/presentation";
 
 import {
   buildInlineTerminalContextText,
@@ -129,6 +139,7 @@ interface TimelineRowSharedState {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string, scope?: TurnDiffScope) => void;
   reviewOutputMessageIds: ReadonlySet<string>;
   responseMetaByTurnId: ReadonlyMap<TurnId, AssistantResponseMeta>;
+  workGroupExpansion: Map<string, boolean>;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -253,6 +264,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onLoadOlder,
 }: MessagesTimelineProps) {
   const handleForkAssistantMessage = onForkAssistantMessage ?? NOOP_FORK_ASSISTANT_MESSAGE;
+  const workGroupExpansion = useMemo(() => new Map<string, boolean>(), [routeThreadKey]);
   const rawRows = useMemo(
     () =>
       providedRows ??
@@ -360,6 +372,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       reviewOutputMessageIds,
       responseMetaByTurnId,
+      workGroupExpansion,
     }),
     [
       activeTurnInProgress,
@@ -384,6 +397,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       reviewOutputMessageIds,
       responseMetaByTurnId,
+      workGroupExpansion,
     ],
   );
 
@@ -475,7 +489,7 @@ function TimelineRowContent(props: { row: TimelineRow }) {
   return (
     <div
       className={cn(
-        "pb-4",
+        row.kind === "work" || row.kind === "working" ? "pb-2" : "pb-4",
         row.kind === "message" && row.message.role === "assistant" ? "group/assistant" : null,
       )}
       data-timeline-row-id={row.id}
@@ -514,15 +528,25 @@ function TimelineRowContent(props: { row: TimelineRow }) {
         row.message.role === "user" &&
         (() => {
           const userImages = row.message.attachments ?? [];
-          const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
+          const childNudge = row.message.origin?.kind === "child-nudge" ? row.message.origin : null;
+          const displayedUserMessage = childNudge
+            ? {
+                contexts: [],
+                visibleText: childNudge.updates
+                  .map((update) => `${update.childTitle}: ${update.summary}`)
+                  .join("\n\n"),
+              }
+            : deriveDisplayedUserMessageState(row.message.text);
           const terminalContexts = displayedUserMessage.contexts;
           const previewAnnotations: ParsedPreviewAnnotation[] = [];
           let visibleText = displayedUserMessage.visibleText;
-          while (true) {
-            const extracted = extractTrailingPreviewAnnotation(visibleText);
-            if (!extracted.annotation) break;
-            previewAnnotations.unshift(extracted.annotation);
-            visibleText = extracted.promptText;
+          if (!childNudge) {
+            while (true) {
+              const extracted = extractTrailingPreviewAnnotation(visibleText);
+              if (!extracted.annotation) break;
+              previewAnnotations.unshift(extracted.annotation);
+              visibleText = extracted.promptText;
+            }
           }
           const previewImages = userImages.filter((image) =>
             image.name.startsWith("preview-annotation-"),
@@ -535,6 +559,24 @@ function TimelineRowContent(props: { row: TimelineRow }) {
             <div className="flex flex-col items-end">
               {row.message.origin?.kind === "cross-thread" ? (
                 <CrossThreadProvenance origin={row.message.origin} />
+              ) : row.message.origin?.kind === "child-nudge" ? (
+                <div
+                  className="mb-1 flex flex-wrap justify-end gap-1"
+                  aria-label="Child assignment updates"
+                >
+                  <span className="text-xs text-muted-foreground">Child updates</span>
+                  {row.message.origin.updates.map((update) => (
+                    <CrossThreadProvenance
+                      key={update.id}
+                      origin={{
+                        kind: "cross-thread",
+                        sourceThreadId: update.childThreadId,
+                        sourceThreadTitle: update.childTitle,
+                        sourceMessageId: update.sourceMessageId ?? update.assignmentId,
+                      }}
+                    />
+                  ))}
+                </div>
               ) : row.message.origin?.kind === "pull-request-monitor" ? (
                 <PullRequestMonitorProvenance origin={row.message.origin} />
               ) : null}
@@ -780,12 +822,13 @@ function TimelineRowContent(props: { row: TimelineRow }) {
         })()}
 
       {row.kind === "working" && (
-        <div className="py-0.5 pl-1.5">
-          <div className="flex items-center gap-2 pt-1 text-[7.5px] text-muted-foreground/50">
-            <span className="inline-flex items-center gap-[3px]">
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:200ms]" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:400ms]" />
+        <div className="py-0.5">
+          <div className="chat-work-text flex items-center gap-1.5 text-muted-foreground">
+            <span
+              className="inline-flex w-[1em] shrink-0 items-center justify-center"
+              aria-hidden="true"
+            >
+              <span className="h-1 w-1 rounded-full bg-muted-foreground animate-status-pulse motion-reduce:animate-none" />
             </span>
             <span>
               {row.createdAt ? (
@@ -1015,95 +1058,270 @@ const WorkGroupSection = memo(function WorkGroupSection({
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
   shouldAutoCollapse: boolean;
 }) {
-  const { workspaceRoot } = use(TimelineRowCtx);
+  const { workspaceRoot, activeTurnInProgress, activeTurnId, workGroupExpansion } =
+    use(TimelineRowCtx);
   const onlyToolEntries =
     groupedEntries.length > 0 && groupedEntries.every((entry) => entry.tone === "tool");
-  const [expansionOverride, setExpansionOverride] = useState<WorkGroupExpansionOverride>(null);
-  const isExpanded = resolveWorkGroupExpanded({
-    shouldAutoCollapse,
-    expansionOverride,
-  });
-  const hasOverflow = groupedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
-  const visibleEntries =
-    shouldAutoCollapse && !isExpanded
-      ? []
-      : hasOverflow && !isExpanded
-        ? groupedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES)
-        : groupedEntries;
-  const showHeader = shouldAutoCollapse || hasOverflow || !onlyToolEntries;
+  const groupKey = groupedEntries[0]?.stableId ?? groupedEntries[0]?.id ?? "";
+  const working =
+    !shouldAutoCollapse &&
+    activeTurnInProgress &&
+    groupedEntries.some((entry) => !entry.turnId || entry.turnId === activeTurnId);
+  const disclosureKey = `${groupKey}:${working ? "working" : "settled"}`;
+  const [disclosure, setDisclosure] = useState<{ key: string; expanded: boolean } | null>(null);
+  const isExpanded =
+    disclosure?.key === disclosureKey
+      ? disclosure.expanded
+      : (workGroupExpansion.get(disclosureKey) ?? working);
+  const activity = useMemo(
+    () =>
+      deriveWorkGroupActivity(
+        groupedEntries,
+        activeTurnInProgress &&
+          groupedEntries.some((entry) =>
+            entry.turnId ? entry.turnId === activeTurnId : !shouldAutoCollapse,
+          ),
+      ),
+    [groupedEntries, activeTurnInProgress, activeTurnId, shouldAutoCollapse],
+  );
   const groupLabel = onlyToolEntries ? "Tool Calls" : "Work log";
-  const showCollapseToggle = shouldAutoCollapse || hasOverflow;
-  const CollapseIcon = isExpanded ? ChevronDownIcon : ChevronRightIcon;
   const toggleLabel = isExpanded ? "Collapse" : "Expand";
+  const attention = activity.state === "failed" || activity.state === "approval";
 
   return (
-    <div className="work-group-section rounded-xl border border-border/45 bg-card/25 px-2 py-1.5">
-      {showHeader &&
-        (showCollapseToggle ? (
-          <button
-            type="button"
-            className="mb-1.5 flex w-full items-center justify-between gap-2 px-0.5 text-left text-[0.75em] tracking-[0.12em] text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
-            onClick={() => setExpansionOverride(isExpanded ? "collapsed" : "expanded")}
-            aria-expanded={isExpanded}
-            aria-label={`${toggleLabel} ${groupLabel} (${groupedEntries.length})`}
+    <Collapsible
+      className="work-group-section"
+      open={isExpanded}
+      onOpenChange={(expanded) => {
+        workGroupExpansion.set(disclosureKey, expanded);
+        setDisclosure({ key: disclosureKey, expanded });
+      }}
+    >
+      <CollapsibleTrigger
+        className="chat-work-trigger text-muted-foreground"
+        aria-label={workGroupAccessibleLabel(
+          `${toggleLabel} ${groupLabel} (${groupedEntries.length})`,
+          activity.activeCount,
+        )}
+      >
+        <span
+          data-work-icon
+          className={cn(
+            "flex items-center justify-center",
+            attention && "text-amber-700 dark:text-amber-400",
+          )}
+          aria-hidden="true"
+        >
+          {attention ? (
+            <CircleAlertIcon className="size-full" />
+          ) : activity.lead ? (
+            createElement(workEntryIcon(activity.lead), { className: "size-full" })
+          ) : activity.state === "stopped" ? (
+            <Minimize2Icon className="size-full" />
+          ) : (
+            <CheckIcon className="size-full" />
+          )}
+        </span>
+        <span
+          className={cn("chat-work-label", activity.shimmer && "work-activity-shimmer")}
+          title={activity.label}
+        >
+          {activity.label}
+        </span>
+        {activity.activeCount > 1 ? (
+          <span
+            className="shrink-0 text-muted-foreground"
+            title={`${activity.activeCount - 1} more active`}
           >
-            <span>
-              {groupLabel} ({groupedEntries.length})
-            </span>
-            <CollapseIcon className="size-3 shrink-0" />
-          </button>
-        ) : (
-          <div className="mb-1.5 flex items-center px-0.5">
-            <p className="text-[0.75em] tracking-[0.12em] text-muted-foreground/55">
-              {groupLabel} ({groupedEntries.length})
-            </p>
-          </div>
-        ))}
-      <div className="space-y-0.5">
-        {visibleEntries.map((workEntry) => (
-          <SimpleWorkEntryRow
-            key={`work-row:${workEntry.id}`}
-            canExpandCommand={onlyToolEntries}
-            workEntry={workEntry}
-            workspaceRoot={workspaceRoot}
-          />
-        ))}
-      </div>
-    </div>
+            +{activity.activeCount - 1}
+          </span>
+        ) : null}
+        <ChevronRightIcon
+          aria-hidden="true"
+          className={cn("size-3 shrink-0 chat-work-chevron", isExpanded && "rotate-90")}
+        />
+      </CollapsibleTrigger>
+      <WorkLogPanel open={isExpanded}>
+        <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
+          <p className="sr-only">
+            {groupedEntries.length} {groupedEntries.length === 1 ? "action" : "actions"}
+            {activity.activeCount > 1 ? ` · ${activity.activeCount} active` : ""}
+          </p>
+          <WorkGroupHistory entries={groupedEntries} workspaceRoot={workspaceRoot} />
+        </div>
+      </WorkLogPanel>
+    </Collapsible>
   );
 });
+
+function WorkGroupHistory({
+  entries,
+  workspaceRoot,
+}: {
+  entries: TimelineWorkEntry[];
+  workspaceRoot: string | undefined;
+}) {
+  const [visibleCount, setVisibleCount] = useState(50);
+  return (
+    <>
+      {groupRepeatedWorkEntries(entries.slice(-visibleCount), repeatableWorkEntry).map((group) => (
+        <RepeatedWorkRow
+          key={group.entries[0]!.stableId ?? group.entries[0]!.id}
+          entries={group.entries}
+          label={group.label}
+          workspaceRoot={workspaceRoot}
+        />
+      ))}
+      {entries.length > visibleCount ? (
+        <button
+          type="button"
+          className="chat-work-trigger mt-1 text-muted-foreground"
+          onClick={() => setVisibleCount((count) => count + 50)}
+        >
+          Show {Math.min(50, entries.length - visibleCount)} earlier actions
+          {entries.length - visibleCount > 50
+            ? ` (${entries.length - visibleCount} remaining)`
+            : ""}
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+function repeatableWorkEntry(entry: TimelineWorkEntry) {
+  return entry.agentRun || entry.action ? null : entry;
+}
+
+function RepeatedWorkRow({
+  entries,
+  label,
+  workspaceRoot,
+}: {
+  entries: TimelineWorkEntry[];
+  label: string;
+  workspaceRoot: string | undefined;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const first = entries[0]!;
+  if (entries.length === 1) {
+    return (
+      <SimpleWorkEntryRow
+        compact
+        canExpandCommand
+        workEntry={first}
+        workspaceRoot={workspaceRoot}
+      />
+    );
+  }
+  return (
+    <Collapsible open={expanded} onOpenChange={setExpanded}>
+      <CollapsibleTrigger
+        className="chat-work-trigger text-muted-foreground"
+        aria-label={`${expanded ? "Collapse" : "Expand"} ${entries.length} calls: ${label}`}
+      >
+        {createElement(workEntryIcon(first), { className: "size-3", "aria-hidden": true })}
+        <span className="chat-work-label">{label}</span>
+        <span className="shrink-0">×{entries.length}</span>
+        <ChevronRightIcon
+          className={cn("size-3 shrink-0 chat-work-chevron", expanded && "rotate-90")}
+          aria-hidden="true"
+        />
+      </CollapsibleTrigger>
+      <WorkLogPanel open={expanded}>
+        <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
+          {entries.map((entry) => (
+            <SimpleWorkEntryRow
+              key={entry.stableId ?? entry.id}
+              compact
+              canExpandCommand
+              workEntry={entry}
+              workspaceRoot={workspaceRoot}
+            />
+          ))}
+        </div>
+      </WorkLogPanel>
+    </Collapsible>
+  );
+}
 
 const ReasoningSection = memo(function ReasoningSection({
   row,
 }: {
   row: Extract<MessagesTimelineRow, { kind: "reasoning" }>;
 }) {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const CollapseIcon = isExpanded ? ChevronDownIcon : ChevronRightIcon;
+  const { workGroupExpansion, workspaceRoot } = use(TimelineRowCtx);
+  const [isExpanded, setIsExpanded] = useState(() => workGroupExpansion.get(row.id) ?? false);
+  const [visibleCount, setVisibleCount] = useState(50);
+  const { history, summary } = useMemo(() => {
+    type HistoryItem =
+      | (typeof row.rows)[number]
+      | { kind: "work-entry"; id: string; entry: TimelineWorkEntry };
+    const history: HistoryItem[] = [];
+    const work: TimelineWorkEntry[] = [];
+    for (const nestedRow of row.rows) {
+      if (nestedRow.kind === "work") {
+        for (const entry of nestedRow.groupedEntries) {
+          history.push({ kind: "work-entry", id: entry.stableId ?? entry.id, entry });
+          work.push(entry);
+        }
+      } else {
+        history.push(nestedRow);
+      }
+    }
+    return { history, summary: work.length ? workGroupReceiptLabel(work) : null };
+  }, [row.rows]);
   const label = row.workedFor ? `Worked for ${row.workedFor}` : "Worked";
 
   return (
-    <div className="my-2 px-1">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          className="inline-flex shrink-0 items-center gap-1 text-[9px] text-muted-foreground/50 transition-colors hover:text-foreground/70"
-          onClick={() => setIsExpanded((value) => !value)}
-          aria-expanded={isExpanded}
-        >
-          <span>{label}</span>
-          <CollapseIcon className="size-3" />
-        </button>
-        <span className="h-px flex-1 bg-border" />
-      </div>
-      {isExpanded && (
-        <div className="mt-3">
-          {row.rows.map((nestedRow) => (
-            <TimelineRowContent key={`reasoning-row:${nestedRow.id}`} row={nestedRow} />
-          ))}
+    <Collapsible
+      className="work-group-section"
+      open={isExpanded}
+      onOpenChange={(expanded) => {
+        workGroupExpansion.set(row.id, expanded);
+        setIsExpanded(expanded);
+      }}
+    >
+      <CollapsibleTrigger className="chat-work-trigger text-muted-foreground">
+        <span className="chat-work-label">
+          {label}
+          {summary ? ` · ${summary}` : ""}
+        </span>
+        <ChevronRightIcon className={cn("chat-work-chevron", isExpanded && "rotate-90")} />
+      </CollapsibleTrigger>
+      <WorkLogPanel open={isExpanded}>
+        <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
+          {groupRepeatedWorkEntries(history.slice(-visibleCount), (item) =>
+            item.kind === "work-entry" ? repeatableWorkEntry(item.entry) : null,
+          ).map((group) => {
+            const first = group.entries[0]!;
+            return first.kind === "work-entry" ? (
+              <RepeatedWorkRow
+                key={first.id}
+                entries={group.entries.flatMap((item) =>
+                  item.kind === "work-entry" ? [item.entry] : [],
+                )}
+                label={group.label}
+                workspaceRoot={workspaceRoot}
+              />
+            ) : (
+              <TimelineRowContent key={first.id} row={first} />
+            );
+          })}
+          {history.length > visibleCount && (
+            <button
+              type="button"
+              className="chat-work-trigger"
+              onClick={() => setVisibleCount((count) => count + 50)}
+            >
+              Show {Math.min(50, history.length - visibleCount)} earlier entries
+              {history.length - visibleCount > 50
+                ? ` (${history.length - visibleCount} remaining)`
+                : ""}
+            </button>
+          )}
         </div>
-      )}
-    </div>
+      </WorkLogPanel>
+    </Collapsible>
   );
 });
 
@@ -1562,6 +1780,8 @@ function workEntryFullCommand(
 }
 
 function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
+  if (workEntryNeedsAttention(workEntry)) return CircleAlertIcon;
+  if (toolGroupAction(workEntry) === "read") return EyeIcon;
   if (workEntry.requestKind === "command") return TerminalIcon;
   if (workEntry.requestKind === "file-read") return EyeIcon;
   if (workEntry.requestKind === "file-change") return SquarePenIcon;
@@ -1601,7 +1821,40 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
   return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
 }
 
+const WorkEntryDetails = memo(function WorkEntryDetails({
+  workEntry,
+}: {
+  workEntry: TimelineWorkEntry;
+}) {
+  const output = extractCommandOutputText(workEntry.toolData);
+  const command = workEntryFullCommand(workEntry);
+  const fallback =
+    !output && hasWorkLogToolData(workEntry.toolData)
+      ? JSON.stringify(workEntry.toolData, null, 2)
+      : undefined;
+  const detail = [
+    command,
+    output ?? workEntry.detail,
+    ...(output ? [] : (workEntry.changedFiles ?? [])),
+    fallback === "{}" || fallback === "[]" ? undefined : fallback,
+  ]
+    .filter((value, index, values) => value && values.indexOf(value) === index)
+    .join("\n\n");
+  if (!detail) return null;
+  return (
+    <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
+      <pre
+        data-tool-command-details
+        className="max-h-64 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[length:inherit] text-muted-foreground"
+      >
+        {detail}
+      </pre>
+    </div>
+  );
+});
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
+  compact?: boolean;
   canExpandCommand?: boolean;
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
@@ -1638,6 +1891,44 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       : workEntry.action?.kind === "external"
         ? resolveExternalActionUrl(workEntry.action.url)
         : null;
+
+  if (props.compact && !workEntry.action) {
+    const hasDetail =
+      Boolean(fullCommand || workEntry.detail || hasChangedFiles) ||
+      hasWorkLogToolData(workEntry.toolData);
+    const label = compactWorkEntryLabel(workEntry);
+    const failed = workEntryNeedsAttention(workEntry);
+    return (
+      <Collapsible open={isCommandExpanded} onOpenChange={setIsCommandExpanded}>
+        <CollapsibleTrigger
+          disabled={!hasDetail}
+          aria-expanded={hasDetail ? isCommandExpanded : undefined}
+          aria-label={
+            hasDetail ? `${isCommandExpanded ? "Collapse" : "Expand"} details: ${label}` : label
+          }
+          className="chat-work-trigger text-muted-foreground disabled:cursor-default"
+        >
+          {failed ? (
+            <CircleAlertIcon className="text-amber-700 dark:text-amber-400" aria-hidden="true" />
+          ) : (
+            entryIcon
+          )}
+          <span className="chat-work-label" title={label}>
+            {label}
+          </span>
+          {hasDetail ? (
+            <ChevronRightIcon
+              className={cn("size-3 shrink-0 chat-work-chevron", isCommandExpanded && "rotate-90")}
+              aria-hidden="true"
+            />
+          ) : null}
+        </CollapsibleTrigger>
+        <WorkLogPanel open={isCommandExpanded}>
+          <WorkEntryDetails workEntry={workEntry} />
+        </WorkLogPanel>
+      </Collapsible>
+    );
+  }
 
   return (
     <div className="rounded-lg px-1 py-1">
@@ -1768,6 +2059,7 @@ const AgentRunRow = memo(function AgentRunRow({
   agentRun: AgentRun;
   workspaceRoot: string | undefined;
 }) {
+  const { activeThreadEnvironmentId, activeThreadId } = use(TimelineRowCtx);
   const [isExpanded, setIsExpanded] = useState(agentRun.status === "running");
   const ToggleIcon = isExpanded ? ChevronDownIcon : ChevronRightIcon;
   const status =
@@ -1792,7 +2084,15 @@ const AgentRunRow = memo(function AgentRunRow({
         <span className="text-[0.8em] text-muted-foreground/65">{status}</span>
       </button>
       {isExpanded && (
-        <AgentRunTranscript agentRun={agentRun} workspaceRoot={workspaceRoot} compact />
+        <AgentRunTranscript
+          agentRun={agentRun}
+          workspaceRoot={workspaceRoot}
+          threadRef={{
+            environmentId: activeThreadEnvironmentId,
+            threadId: activeThreadId,
+          }}
+          compact
+        />
       )}
     </div>
   );
@@ -1801,10 +2101,12 @@ const AgentRunRow = memo(function AgentRunRow({
 const AgentRunTranscript = memo(function AgentRunTranscript({
   agentRun,
   workspaceRoot,
+  threadRef,
   compact = false,
 }: {
   agentRun: AgentRun;
   workspaceRoot: string | undefined;
+  threadRef: { environmentId: EnvironmentId; threadId: ThreadId };
   compact?: boolean;
 }) {
   return (
@@ -1831,10 +2133,22 @@ const AgentRunTranscript = memo(function AgentRunTranscript({
       ))}
       {agentRun.summary ? (
         compact ? (
-          <div className="whitespace-pre-wrap text-muted-foreground/80">{agentRun.summary}</div>
+          <div className="min-w-0 px-1 py-0.5 text-muted-foreground/80">
+            <ChatMarkdown
+              text={agentRun.summary}
+              cwd={workspaceRoot}
+              isStreaming={false}
+              threadRef={threadRef}
+            />
+          </div>
         ) : (
           <div className="min-w-0 px-1 py-0.5">
-            <ChatMarkdown text={agentRun.summary} cwd={workspaceRoot} isStreaming={false} />
+            <ChatMarkdown
+              text={agentRun.summary}
+              cwd={workspaceRoot}
+              isStreaming={false}
+              threadRef={threadRef}
+            />
           </div>
         )
       ) : null}

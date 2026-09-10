@@ -1368,6 +1368,7 @@ describe("thread outbox", () => {
       },
       creation: {
         projectId: ProjectId.make("project-1"),
+        parentThreadId: ThreadId.make("parent-thread"),
         workspaceMode: "worktree",
         branch: "main",
         worktreePath: null,

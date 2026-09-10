@@ -1,10 +1,10 @@
 import { existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { realpath, rm } from "node:fs/promises";
 import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Latch, Layer, PlatformError, Scope } from "effect";
+import { Effect, Exit, FileSystem, Latch, Layer, PlatformError, Scope } from "effect";
 import { describe, expect, vi } from "vitest";
 
 import { GitCoreLive, makeGitCore, applyWindowsGitLongPathArgs } from "./GitCore.ts";
@@ -1955,6 +1955,53 @@ it.layer(TestLayer)("git integration", (it) => {
         yield* writeTextFile(path.join(tmp, "README.md"), "updated\n");
         const dirty = yield* core.statusDetails(tmp);
         expect(dirty.hasWorkingTreeChanges).toBe(true);
+      }),
+    );
+
+    it.effect("checks cleanup cleanliness with all untracked files visible", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const core = yield* GitCore;
+
+        expect(yield* core.isWorktreeCleanForRemoval(tmp)).toBe(true);
+
+        yield* git(tmp, ["config", "status.showUntrackedFiles", "no"]);
+        yield* makeDirectory(path.join(tmp, "nested"));
+        yield* writeTextFile(path.join(tmp, "nested", "untracked.txt"), "untracked\n");
+
+        expect(yield* core.isWorktreeCleanForRemoval(tmp)).toBe(false);
+      }),
+    );
+
+    it.effect("reports cleanup inspection failures instead of treating them as dirtiness", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const core = yield* GitCore;
+        const result = yield* core.isWorktreeCleanForRemoval(tmp).pipe(Effect.exit);
+
+        expect(Exit.isFailure(result)).toBe(true);
+      }),
+    );
+
+    it.effect("lists registered branch and detached worktrees without pagination", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const detachedPath = path.join(tmp, "detached");
+        const { initialBranch } = yield* initRepoWithCommit(tmp);
+        yield* git(tmp, ["worktree", "add", "--detach", detachedPath, "HEAD"]);
+        const canonicalTmp = yield* Effect.promise(() => realpath(tmp));
+        const canonicalDetachedPath = yield* Effect.promise(() => realpath(detachedPath));
+
+        const result = yield* (yield* GitCore).listRegisteredWorktrees(tmp);
+
+        expect(result.isRepo).toBe(true);
+        expect(result.worktrees).toEqual(
+          expect.arrayContaining([
+            { path: canonicalTmp, branch: initialBranch },
+            { path: canonicalDetachedPath, branch: null },
+          ]),
+        );
       }),
     );
 

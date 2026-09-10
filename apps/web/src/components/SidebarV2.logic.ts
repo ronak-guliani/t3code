@@ -8,10 +8,13 @@ import {
   effectiveSettled,
   effectiveSnoozed,
 } from "@t3tools/client-runtime/state/thread-settled";
+import {
+  resolveThreadSemanticStatus,
+  type ThreadSemanticStatus,
+} from "@t3tools/client-runtime/state/thread-status";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime";
 
 import { isMacPlatform } from "../lib/utils";
-import { isThreadActivelyWorking } from "../session-logic";
 import { selectVisibleSidebarThreads, sidebarThreadKey } from "../sidebarThreadTree";
 import {
   buildThreadTree,
@@ -137,7 +140,14 @@ export function isSidebarV2ArchiveBlockedThread(
 
 // Highest urgency first. A collapsed parent adopts the most urgent status in
 // its subtree so hiding children never hides work.
-const SIDEBAR_V2_STATUS_PRIORITY = ["approval", "input", "working", "failed", "ready"] as const;
+const SIDEBAR_V2_STATUS_PRIORITY = [
+  "approval",
+  "input",
+  "working",
+  "connecting",
+  "failed",
+  "ready",
+] as const;
 
 export function rollUpSidebarV2Status(statuses: readonly SidebarV2Status[]): SidebarV2Status {
   let resolved: SidebarV2Status = "ready";
@@ -306,7 +316,7 @@ export function resolveSidebarV2ThreadRouteTarget(
 // for "act now" (approval), "answer me" (input), "in motion" (working) and
 // "broken" (failed); ready is the resting state a card labels as Done once
 // its completion has not been seen yet.
-export type SidebarV2Status = "approval" | "input" | "working" | "failed" | "ready";
+export type SidebarV2Status = Exclude<ThreadSemanticStatus, "plan-ready" | "completed">;
 
 type SidebarV2StatusInput = Pick<
   SidebarThreadSummary,
@@ -321,28 +331,22 @@ type SidebarV2StatusInput = Pick<
 };
 
 export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2Status {
-  if (thread.hasPendingApprovals) return "approval";
-  if (thread.hasPendingUserInput) return "input";
-  // Upstream reads a provider-session phase this fork does not carry, so
-  // "working" reuses the same predicate v1's status pill does — including the
-  // pre-adoption `connecting` phase, which is work the user is waiting on.
-  // `hasPendingQueuedTurn` covers the handoff gap after turn A completes and
-  // before the continuation turn is adopted (shell-projected, not detail-only).
-  if (
-    thread.hasPendingTurn ||
-    thread.hasPendingQueuedTurn ||
-    thread.virtualAgentRun?.status === "running" ||
-    isThreadActivelyWorking(thread.latestTurn, thread.session) ||
-    thread.session?.status === "connecting"
-  ) {
-    return "working";
-  }
-  if (thread.session?.status === "error") return "failed";
-  return "ready";
+  const semanticStatus = resolveThreadSemanticStatus({
+    hasPendingApprovals: thread.hasPendingApprovals,
+    hasPendingUserInput: thread.hasPendingUserInput,
+    hasPendingQueuedTurn: thread.hasPendingQueuedTurn,
+    hasPendingTurn: thread.hasPendingTurn,
+    latestTurn: thread.latestTurn,
+    session: thread.session,
+    virtualAgentRun: thread.virtualAgentRun,
+  });
+  return semanticStatus === "plan-ready" || semanticStatus === "completed"
+    ? "ready"
+    : semanticStatus;
 }
 
 export interface SidebarV2StatusLabel {
-  readonly label: "Working" | "Approval" | "Input" | "Failed" | "Done";
+  readonly label: "Working" | "Connecting" | "Approval" | "Input" | "Failed" | "Done";
   readonly className: string;
   readonly showElapsed: boolean;
 }
@@ -362,6 +366,12 @@ export function resolveSidebarV2StatusLabel(input: {
         label: "Working",
         className: "text-sky-600 dark:text-sky-400",
         showElapsed: true,
+      };
+    case "connecting":
+      return {
+        label: "Connecting",
+        className: "text-sky-600 dark:text-sky-400",
+        showElapsed: false,
       };
     case "approval":
       return {

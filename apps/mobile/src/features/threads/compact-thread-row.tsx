@@ -6,26 +6,37 @@ import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
 import { ControlPillMenu } from "../../components/ControlPill";
 import { cn } from "../../lib/cn";
+import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAppNavigation } from "../../lib/use-app-navigation";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
-import type {
-  MobileThreadShell,
-  MobileThreadTreeRow,
-  NestedThreadStatus,
-} from "./mobile-thread-hierarchy";
+import type { MobileThreadShell, MobileThreadTreeRow } from "./mobile-thread-hierarchy";
+import type { ThreadListRowStatus } from "./thread-list-row-status";
+import type { ThreadPrPresentation } from "../../state/thread-pr-presentation";
 import { useUnreadChildNotification } from "./thread-hierarchy-controls";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 
-export type CompactThreadStatus = NestedThreadStatus | "queued" | "plan-ready";
+export type CompactThreadStatus = ThreadListRowStatus;
+
+const NESTED_INDENT = 12;
+const MAX_NESTED_INDENT_DEPTH = 3;
 
 const STATUS: Record<CompactThreadStatus, { label: string; color: string; action?: string }> = {
   ready: { label: "", color: "bg-transparent" },
   working: { label: "Working", color: "bg-adaptive-sky-600-400" },
+  connecting: { label: "Connecting", color: "bg-adaptive-sky-600-400" },
   approval: { label: "Needs approval", color: "bg-adaptive-amber-700-300", action: "Approval" },
   input: { label: "Awaiting input", color: "bg-adaptive-indigo-600-300", action: "Input" },
   failed: { label: "Failed", color: "bg-adaptive-red-700-300", action: "Failed" },
+  completed: { label: "Done", color: "bg-adaptive-emerald-600-400", action: "Done" },
   queued: { label: "Queued", color: "bg-foreground-tertiary" },
+  draft: { label: "Draft", color: "bg-adaptive-amber-700-300" },
   "plan-ready": { label: "Plan ready", color: "bg-adaptive-violet-700-300", action: "Plan" },
+};
+
+const PULL_REQUEST_ICON_TINT: Record<ThreadPrPresentation["state"], string> = {
+  open: "accent-adaptive-emerald-600-400",
+  merged: "accent-adaptive-violet-600-400",
+  closed: "accent-adaptive-zinc-500-400",
 };
 
 function RelatedThreadsButton(props: {
@@ -38,7 +49,7 @@ function RelatedThreadsButton(props: {
     props.thread,
     props.hierarchy?.latestRelatedNotificationAt,
   );
-  const count = props.hierarchy?.childCount ?? 0;
+  const count = props.hierarchy?.relatedChildCount ?? props.hierarchy?.childCount ?? 0;
   if (count === 0 && !unread) return null;
   const groupStatus = props.hierarchy?.relatedStatus ?? "ready";
   const status = STATUS[groupStatus];
@@ -103,11 +114,13 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
   readonly muted?: boolean;
   readonly pinned?: boolean;
   readonly sidebar?: boolean;
+  readonly depth?: number | undefined;
   readonly showDivider?: boolean;
   readonly related?: {
     readonly thread: MobileThreadShell;
     readonly hierarchy?: MobileThreadTreeRow | undefined;
   };
+  readonly pullRequest?: ThreadPrPresentation | null;
   readonly searchMatch?: EnvironmentThreadSearchMatch | undefined;
   readonly searchQuery?: string | undefined;
 }) {
@@ -123,6 +136,7 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
     ? `, ${props.searchMatch.source === "user" ? "You" : "Agent"}: ${props.searchMatch.snippet}`
     : "";
   const accessibilityLabel = `${props.title}${status.label ? `, ${status.label}` : ""}${props.pinned ? ", pinned" : ""}, ${props.timestamp}${excerptLabel}`;
+  const pullRequest = props.pullRequest;
   const primary = (
     <Pressable
       accessibilityRole="button"
@@ -198,7 +212,10 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
             : props.sidebar
               ? theme["--color-drawer"]
               : theme["--color-screen"],
-          paddingHorizontal: props.sidebar ? 12 : 18,
+          paddingStart:
+            (props.sidebar ? 12 : 18) +
+            Math.min(Math.max(props.depth ?? 0, 0), MAX_NESTED_INDENT_DEPTH) * NESTED_INDENT,
+          paddingEnd: props.sidebar ? 12 : 18,
         },
       ]}
     >
@@ -220,6 +237,36 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
             primary
           )}
         </View>
+        {pullRequest ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={pullRequest.accessibilityLabel}
+            accessibilityHint="Opens the pull request in your browser"
+            onPress={() => void tryOpenExternalUrl(pullRequest.url, "pull-request")}
+            style={styles.pullRequestButton}
+          >
+            <SymbolView
+              name="arrow.triangle.pull"
+              size={13}
+              tintColorClassName={
+                selected
+                  ? "accent-user-bubble-foreground"
+                  : pullRequest.isDraft
+                    ? "accent-adaptive-zinc-500-400"
+                    : PULL_REQUEST_ICON_TINT[pullRequest.state]
+              }
+            />
+            <Text
+              className={cn(
+                "text-xs tabular-nums font-t3-medium",
+                selected ? "text-user-bubble-foreground" : pullRequest.textClassName,
+              )}
+              numberOfLines={1}
+            >
+              {pullRequest.label}
+            </Text>
+          </Pressable>
+        ) : null}
         {props.related ? <RelatedThreadsButton {...props.related} selected={selected} /> : null}
       </View>
       {props.showDivider ? <View className="bg-border-subtle" style={styles.divider} /> : null}
@@ -231,6 +278,14 @@ const styles = StyleSheet.create({
   container: { borderRadius: 10 },
   primarySlot: { flex: 1, minWidth: 0 },
   row: { flexDirection: "row", alignItems: "flex-start", minHeight: 48, gap: 4 },
+  pullRequestButton: {
+    minHeight: 48,
+    maxWidth: 64,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 4,
+  },
   primaryButton: { minWidth: 0, minHeight: 48 },
   primaryLine: {
     minHeight: 48,

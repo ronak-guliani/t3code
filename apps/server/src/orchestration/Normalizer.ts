@@ -10,6 +10,7 @@ import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts
 import { ServerConfig } from "../config.ts";
 import { parseBase64DataUrl } from "../imageMime.ts";
 import { WorkspacePaths } from "../workspace/Services/WorkspacePaths.ts";
+import { consumeCrossThreadDispatchCapability } from "./CrossThreadDispatchCapability.ts";
 
 export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
   Effect.gen(function* () {
@@ -56,6 +57,22 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       } satisfies OrchestrationCommand;
     }
 
+    if (command.type === "thread.child.report") {
+      if (
+        command.crossThreadDispatchCapability === undefined ||
+        !consumeCrossThreadDispatchCapability(
+          command.crossThreadDispatchCapability,
+          command.threadId,
+        )
+      ) {
+        return yield* new OrchestrationDispatchCommandError({
+          message: "Invalid child report capability.",
+        });
+      }
+      const { crossThreadDispatchCapability: _, ...trustedCommand } = command;
+      return trustedCommand satisfies OrchestrationCommand;
+    }
+
     if (command.type === "project.meta.update" && command.workspaceRoot !== undefined) {
       return {
         ...command,
@@ -67,10 +84,27 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       return command as OrchestrationCommand;
     }
 
+    const { crossThreadDispatchCapability, ...trustedCommand } = command;
+    if (
+      command.crossThreadSourceThreadId !== undefined &&
+      (crossThreadDispatchCapability === undefined ||
+        !consumeCrossThreadDispatchCapability(
+          crossThreadDispatchCapability,
+          command.crossThreadSourceThreadId,
+        ))
+    ) {
+      return yield* new OrchestrationDispatchCommandError({
+        message: "Invalid cross-thread dispatch capability.",
+      });
+    }
+
     const normalizedAttachments = yield* Effect.forEach(
       command.message.attachments,
       (attachment) =>
         Effect.gen(function* () {
+          // Already-persisted references carry no payload; only dataUrl
+          // uploads need decoding and storing on disk.
+          if (!("dataUrl" in attachment)) return attachment;
           const parsed = parseBase64DataUrl(attachment.dataUrl);
           if (!parsed || !parsed.mimeType.startsWith("image/")) {
             return yield* new OrchestrationDispatchCommandError({
@@ -132,9 +166,9 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       { concurrency: 1 },
     );
 
-    if (command.type === "thread.turn.start") {
+    if (trustedCommand.type === "thread.turn.start") {
       return {
-        ...command,
+        ...trustedCommand,
         message: {
           ...command.message,
           attachments: normalizedAttachments,
@@ -143,7 +177,7 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
     }
 
     return {
-      ...command,
+      ...trustedCommand,
       message: {
         ...command.message,
         attachments: normalizedAttachments,

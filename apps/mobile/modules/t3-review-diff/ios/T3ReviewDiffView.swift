@@ -26,7 +26,7 @@ private struct ReviewDiffNativeWordDiffRange: Decodable, Sendable {
   let end: Int
 }
 
-private struct ReviewDiffNativeToken: Decodable, Sendable {
+private struct ReviewDiffNativeToken: Decodable, Equatable, Sendable {
   let content: String
   let color: String?
   let fontStyle: Int?
@@ -481,7 +481,7 @@ public final class T3ReviewDiffView: ExpoView, UIScrollViewDelegate {
           guard let self, generation == self.tokensDecodeGeneration else {
             return
           }
-          self.contentView.tokensByRowId = decodedTokens
+          self.contentView.replaceTokensByRowId(decodedTokens)
         }
       } catch {
         let message = error.localizedDescription
@@ -489,7 +489,7 @@ public final class T3ReviewDiffView: ExpoView, UIScrollViewDelegate {
           guard let self, generation == self.tokensDecodeGeneration else {
             return
           }
-          self.contentView.tokensByRowId = [:]
+          self.contentView.replaceTokensByRowId([:])
           self.emitDebug("tokens-decode-failed", ["error": message])
         }
       }
@@ -548,7 +548,7 @@ public final class T3ReviewDiffView: ExpoView, UIScrollViewDelegate {
     }
 
     self.tokensResetKey = tokensResetKey
-    contentView.tokensByRowId = [:]
+    contentView.replaceTokensByRowId([:])
     emitDebug("tokens-reset", [
       "resetKey": tokensResetKey,
     ])
@@ -562,7 +562,7 @@ public final class T3ReviewDiffView: ExpoView, UIScrollViewDelegate {
     self.contentResetKey = contentResetKey
     rowsDecodeGeneration += 1
     tokensDecodeGeneration += 1
-    contentView.tokensByRowId = [:]
+    contentView.replaceTokensByRowId([:])
     rows = []
     contentView.rows = []
     hasAppliedInitialRowIndex = false
@@ -934,17 +934,25 @@ private final class ReviewDiffContentView: UIView, UIGestureRecognizerDelegate {
       setNeedsDisplayForVisibleBounds()
     }
   }
-  var tokensByRowId: [String: [ReviewDiffNativeToken]] = [:] {
-    didSet {
-      tokenAttributedStringsByRowId.removeAll()
-      clampHorizontalOffsets()
-      setNeedsDisplayForVisibleBounds()
-    }
+  private var tokenStore = ReviewDiffRowValueStore<[ReviewDiffNativeToken]>()
+  var tokensByRowId: [String: [ReviewDiffNativeToken]] {
+    tokenStore.valuesByRowId
+  }
+
+  func replaceTokensByRowId(_ tokensByRowId: [String: [ReviewDiffNativeToken]]) {
+    tokenStore.replace(with: tokensByRowId)
+    tokenAttributedStringsByRowId.removeAll()
+    clampHorizontalOffsets()
+    setNeedsDisplayForVisibleBounds()
   }
 
   func mergeTokensByRowId(_ tokensPatch: [String: [ReviewDiffNativeToken]]) {
-    tokensPatch.forEach { rowId, tokens in
-      tokensByRowId[rowId] = tokens
+    let changedRowIds = tokenStore.merge(tokensPatch)
+    guard !changedRowIds.isEmpty else {
+      return
+    }
+
+    changedRowIds.forEach { rowId in
       tokenAttributedStringsByRowId.removeValue(forKey: rowId)
     }
     clampHorizontalOffsets()
@@ -1348,7 +1356,14 @@ private final class ReviewDiffContentView: UIView, UIGestureRecognizerDelegate {
     }
 
     guard let row = row(at: point) else {
-      return nil
+      guard verticalOffset + point.y >= contentHeight,
+            fileHeaderRowIndices.isEmpty,
+            contentWidthsByFileId.count == 1,
+            let fileId = contentWidthsByFileId.keys.first,
+            !collapsedFileIds.contains(fileId) else {
+        return nil
+      }
+      return (fileId, .code)
     }
 
     let fileId = resolvedFileId(for: row)

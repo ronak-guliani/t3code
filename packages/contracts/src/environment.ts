@@ -12,6 +12,7 @@ import {
 export const EnvironmentMachineKind = Schema.Literals([
   "server",
   "cloud",
+  "linux",
   "desktop",
   "laptop",
   "mac-mini",
@@ -60,6 +61,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadPinning: Schema.optionalKey(Schema.Boolean),
   threadPinReorder: Schema.optionalKey(Schema.Boolean),
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),
+  agentWorkflows: Schema.optionalKey(Schema.Boolean),
   serverSelfUpdate: Schema.optionalKey(ServerSelfUpdateCapability),
   serverSelfUpdateProgress: Schema.optionalKey(Schema.Boolean),
   agentActivityPublishing: Schema.optionalKey(Schema.Boolean),

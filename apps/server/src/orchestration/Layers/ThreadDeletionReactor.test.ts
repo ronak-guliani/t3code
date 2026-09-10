@@ -1,12 +1,40 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
+
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
-import { Cause, Effect, Exit, Option } from "effect";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Scope,
+  Stream,
+} from "effect";
+import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { describe, expect, it } from "vitest";
 
+import { ServerConfig } from "../../config.ts";
+import { GitCoreLive } from "../../git/Layers/GitCore.ts";
+import { GitManager } from "../../git/Services/GitManager.ts";
+import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
+import { runProcess } from "../../processRunner.ts";
+import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
+import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { TerminalManager } from "../../terminal/Services/Manager.ts";
+import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
+import { ThreadDeletionReactorLive } from "./ThreadDeletionReactor.ts";
 import { findCanonicalActiveWorktreeOwner } from "../worktreeOwnership.ts";
 import {
   logCleanupCauseUnlessInterrupted,
@@ -97,6 +125,211 @@ describe("logCleanupCauseUnlessInterrupted", () => {
             }),
         ),
       );
+    });
+
+    it("skips stale queued cleanup after unarchive before worker execution", async () => {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const blockerStarted = yield* Deferred.make<void>();
+            const releaseBlocker = yield* Deferred.make<void>();
+            let archived = true;
+            let stopSessionCalls = 0;
+            let terminalCloseCalls = 0;
+            let terminalHistoryDeletes = 0;
+            let worktreeRemovalCalls = 0;
+
+            const worker = yield* makeDrainableWorker<"block" | "cleanup", never, never>(
+              (item): Effect.Effect<void, never, never> =>
+                item === "block"
+                  ? Deferred.succeed(blockerStarted, undefined).pipe(
+                      Effect.andThen(Deferred.await(releaseBlocker)),
+                    )
+                  : processAfterWorktreeReservation(
+                      (effect: Effect.Effect<Option.Option<string>, never, never>) => effect,
+                      Effect.sync(() =>
+                        archived ? Option.some("reserved") : Option.none<string>(),
+                      ),
+                      () =>
+                        runAfterThreadRuntimeTeardown(
+                          Effect.sync(() => {
+                            stopSessionCalls += 1;
+                          }),
+                          Effect.sync(() => {
+                            terminalCloseCalls += 1;
+                            terminalHistoryDeletes += 1;
+                          }),
+                          Effect.sync(() => {
+                            worktreeRemovalCalls += 1;
+                          }),
+                        ),
+                    ),
+            );
+
+            yield* worker.enqueue("block");
+            yield* worker.enqueue("cleanup");
+            yield* Deferred.await(blockerStarted);
+
+            archived = false;
+            yield* Deferred.succeed(releaseBlocker, undefined);
+            yield* worker.drain;
+
+            expect(stopSessionCalls).toBe(0);
+            expect(terminalCloseCalls).toBe(0);
+            expect(terminalHistoryDeletes).toBe(0);
+            expect(worktreeRemovalCalls).toBe(0);
+          }),
+        ),
+      );
+    });
+  });
+
+  describe("ThreadDeletionReactorLive", () => {
+    it("removes a clean archived merged-PR worktree from a disposable Git repository", async () => {
+      const fixtureRoot = await mkdtemp(path.join(tmpdir(), "t3-cleanup-reactor-"));
+      const repositoryRoot = path.join(fixtureRoot, "repo");
+      const worktreePath = path.join(fixtureRoot, "feature");
+      await mkdir(repositoryRoot);
+      const runGit = async (cwd: string, args: ReadonlyArray<string>) => {
+        const result = await runProcess("git", args, {
+          cwd,
+          timeoutMs: 15_000,
+          maxBufferBytes: 128 * 1024,
+          allowNonZeroExit: true,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: "Cleanup Test",
+            GIT_AUTHOR_EMAIL: "cleanup@example.test",
+            GIT_COMMITTER_NAME: "Cleanup Test",
+            GIT_COMMITTER_EMAIL: "cleanup@example.test",
+          },
+        });
+        if (result.code !== 0) {
+          throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+        }
+        return result.stdout;
+      };
+
+      await runGit(repositoryRoot, ["init", "-b", "main"]);
+      await writeFile(path.join(repositoryRoot, "README.md"), "fixture\n");
+      await runGit(repositoryRoot, ["add", "README.md"]);
+      await runGit(repositoryRoot, ["commit", "-m", "fixture"]);
+      await runGit(repositoryRoot, ["worktree", "add", "-b", "feature", worktreePath, "HEAD"]);
+
+      const timestamp = new Date().toISOString();
+      const project = {
+        id: ProjectId.make("project-1"),
+        title: "Cleanup fixture",
+        workspaceRoot: repositoryRoot,
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        deletedAt: null,
+      } satisfies OrchestrationReadModel["projects"][number];
+      const thread = {
+        ...makeThread("thread-cleanup-fixture", worktreePath),
+        projectId: project.id,
+        branch: "feature",
+        archivedAt: timestamp,
+        pullRequest: {
+          number: 1,
+          title: "Fixture",
+          url: "https://github.com/example/repo/pull/1",
+          baseBranch: "main",
+          headBranch: "feature",
+          state: "open" as const,
+        },
+      } satisfies OrchestrationReadModel["threads"][number];
+      const readModel = {
+        ...makeReadModel([thread]),
+        projects: [project],
+      };
+      const resolvedPullRequest = {
+        number: 1,
+        title: "Fixture",
+        url: "https://github.com/example/repo/pull/1",
+        baseBranch: "main",
+        headBranch: "feature",
+        state: "merged" as const,
+      };
+      const engineLayer = Layer.succeed(OrchestrationEngineService, {
+        getReadModel: () => Effect.succeed(readModel),
+        readEvents: () => Stream.empty,
+        dispatch: () => Effect.succeed({ sequence: 1 }),
+        withWorktreeLock: (effect) => effect,
+        streamDomainEvents: Stream.empty,
+        acquireDomainEventSubscription: Effect.die("unused in cleanup fixture"),
+      });
+      const configLayer = ServerConfig.layerTest(process.cwd(), {
+        prefix: "t3-cleanup-reactor-test-",
+      });
+      const runtime = ManagedRuntime.make(
+        ThreadDeletionReactorLive.pipe(
+          Layer.provide(engineLayer),
+          Layer.provide(
+            Layer.mock(ProviderService)({
+              stopSession: () => Effect.void,
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(TerminalManager)({
+              close: () => Effect.void,
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(GitManager)({
+              resolvePullRequest: () => Effect.succeed({ pullRequest: resolvedPullRequest }),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(GitStatusBroadcaster)({
+              refreshStatus: () =>
+                Effect.succeed({
+                  isRepo: true,
+                  hasOriginRemote: false,
+                  isDefaultBranch: false,
+                  branch: null,
+                  hasWorkingTreeChanges: false,
+                  workingTree: {
+                    files: [],
+                    insertions: 0,
+                    deletions: 0,
+                  },
+                  hasUpstream: false,
+                  aheadCount: 0,
+                  behindCount: 0,
+                  pr: null,
+                }),
+            }),
+          ),
+          Layer.provide(GitCoreLive),
+          Layer.provide(SqlitePersistenceMemory),
+          Layer.provide(configLayer),
+          Layer.provide(NodeServices.layer),
+        ),
+      );
+
+      try {
+        const reactor = await runtime.runPromise(Effect.service(ThreadDeletionReactor));
+        const jobs = await runtime.runPromise(Effect.service(WorktreeCleanupJobRepository));
+        const scope = await runtime.runPromise(Scope.make("sequential"));
+        try {
+          await runtime.runPromise(reactor.start().pipe(Scope.provide(scope)));
+          await runtime.runPromise(reactor.drain);
+
+          const cleanup = await runtime.runPromise(jobs.getByThreadId(thread.id));
+          expect(Option.getOrThrow(cleanup).status).toBe("completed");
+          expect(await runGit(repositoryRoot, ["worktree", "list", "--porcelain"])).not.toContain(
+            worktreePath,
+          );
+        } finally {
+          await runtime.runPromise(Scope.close(scope, Exit.succeed(undefined)));
+        }
+      } finally {
+        await runtime.dispose();
+        await rm(fixtureRoot, { recursive: true, force: true });
+      }
     });
   });
 

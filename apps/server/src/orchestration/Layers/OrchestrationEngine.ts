@@ -1,6 +1,7 @@
 import type {
   DispatchResult,
   OrchestrationEvent,
+  OrchestrationReadModel,
   ProjectId,
   ThreadId,
   WorkflowRunId,
@@ -134,6 +135,30 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     }
   };
 
+  const cleanupWorktreePath = (
+    command: OrchestrationCommand,
+    model: OrchestrationReadModel,
+  ): string | null => {
+    const directPath = commandWorktreePath(command);
+    if (directPath !== null) {
+      return directPath;
+    }
+    switch (command.type) {
+      case "thread.unarchive":
+      case "thread.queued-turn.create":
+      case "thread.queued-turn.dispatch":
+        return model.threads.find((thread) => thread.id === command.threadId)?.worktreePath ?? null;
+      case "thread.turn.start":
+        return (
+          model.threads.find((thread) => thread.id === command.threadId)?.worktreePath ??
+          command.bootstrap?.createThread?.worktreePath ??
+          null
+        );
+      default:
+        return null;
+    }
+  };
+
   const canonicalizeCommandWorktree = Effect.fn("canonicalizeCommandWorktree")(function* (
     command: OrchestrationCommand,
   ) {
@@ -155,18 +180,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const isWorktreeCleanupPending = Effect.fn("isWorktreeCleanupPending")(function* (
     worktreePath: string,
   ) {
-    if (yield* worktreeCleanupJobs.existsByPath(worktreePath)) {
-      return true;
-    }
-    const jobs = yield* worktreeCleanupJobs.list();
-    return yield* Effect.forEach(
-      jobs,
-      (job) =>
-        Effect.promise(() => canonicalizeWorktreePath(job.worktreePath)).pipe(
-          Effect.map((pendingPath) => pendingPath === worktreePath),
-        ),
-      { concurrency: 4 },
-    ).pipe(Effect.map((matches) => matches.some(Boolean)));
+    const canonicalPath = yield* Effect.promise(() => canonicalizeWorktreePath(worktreePath));
+    return yield* worktreeCleanupJobs.hasReservationByPath(canonicalPath);
   });
 
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
@@ -219,7 +234,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
-        const worktreePath = commandWorktreePath(command);
+        const worktreePath = cleanupWorktreePath(command, readModel);
         if (worktreePath !== null && (yield* isWorktreeCleanupPending(worktreePath))) {
           return yield* new OrchestrationCommandWorktreeCleanupPendingError({
             commandType: command.type,
@@ -227,19 +242,63 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
+        if (command.type === "thread.queued-turn.dispatch") {
+          const queued = readModel.threads
+            .find((thread) => thread.id === command.threadId)
+            ?.queuedTurns?.find((turn) => turn.id === command.queuedTurnId);
+          if (queued?.origin?.kind === "child-nudge") {
+            const pending = yield* sql<{ readonly pending: number }>`
+              SELECT pending_approval_count + pending_user_input_count AS pending
+              FROM projection_threads WHERE thread_id = ${command.threadId}
+            `;
+            if (pending[0]?.pending) {
+              return yield* new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "Child follow-up is awaiting approval or input.",
+              });
+            }
+          }
+        }
+
         const eventBase = yield* decideOrchestrationCommand({
           command,
           readModel,
         });
         const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
+        // A failed metadata precondition is an accepted no-op. Persist its
+        // receipt so retrying the same command cannot apply it to a later state.
+        if (
+          eventBases.length === 0 &&
+          command.type === "thread.meta.update" &&
+          (command.expectedUpdatedAt !== undefined || command.expectedWorkspaceCwd !== undefined)
+        ) {
+          yield* commandReceiptRepository.upsert({
+            commandId: command.commandId,
+            aggregateKind: aggregateRef.aggregateKind,
+            aggregateId: aggregateRef.aggregateId,
+            acceptedAt: new Date().toISOString(),
+            resultSequence: readModel.snapshotSequence,
+            status: "accepted",
+            error: null,
+          });
+          return dispatchResult(command, readModel.snapshotSequence);
+        }
         const committedCommand = yield* sql
           .withTransaction(
             Effect.gen(function* () {
               const committedEvents: OrchestrationEvent[] = [];
               const projectionReceipts: ProjectionReceipt[] = [];
               let nextReadModel = readModel;
+              const skippedEventIds = new Set<string>();
 
               for (const nextEvent of eventBases) {
+                if (
+                  nextEvent.causationEventId !== null &&
+                  skippedEventIds.has(nextEvent.causationEventId)
+                ) {
+                  skippedEventIds.add(nextEvent.eventId);
+                  continue;
+                }
                 if (nextEvent.type === "thread.child-lifecycle-notified") {
                   const claimed = yield* sql<{ readonly dedupe_key: string }>`
                     INSERT INTO child_lifecycle_notification_dedup (
@@ -256,6 +315,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                     RETURNING dedupe_key
                   `;
                   if (claimed.length === 0) {
+                    skippedEventIds.add(nextEvent.eventId);
                     continue;
                   }
                 }
@@ -395,8 +455,13 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       ),
     );
     const command = envelope.command;
-    const worktreeProcess =
-      commandWorktreePath(command) !== null ? withWorktreeLock(process) : process;
+    const cleanupPath = cleanupWorktreePath(command, readModel);
+    const requiresWorktreeLock =
+      cleanupPath !== null ||
+      command.type === "thread.archive" ||
+      command.type === "thread.unarchive" ||
+      command.type === "thread.delete";
+    const worktreeProcess = requiresWorktreeLock ? withWorktreeLock(process) : process;
     if (command.type !== "thread.turn.start" && command.type !== "thread.queued-turn.dispatch") {
       return worktreeProcess;
     }

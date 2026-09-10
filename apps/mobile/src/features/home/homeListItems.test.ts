@@ -2,7 +2,7 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -10,6 +10,7 @@ import {
   DEFAULT_GROUP_DISPLAY_STATE,
   HOME_INITIAL_VISIBLE_THREADS,
   HOME_SHOW_MORE_STEP,
+  homeListItemsAreEqual,
   nextGroupDisplayState,
   type HomeGroupDisplayState,
   type HomeListItem,
@@ -167,10 +168,74 @@ describe("buildHomeListLayout", () => {
     });
     expect(
       virtual.items.filter((item) => item.type === "thread").map((item) => item.thread.id),
-    ).toEqual([parent.id, group.threads[1]!.id]);
+    ).toEqual([parent.id, `agent-run:${parent.id}:run`, group.threads[1]!.id]);
     expect(virtual.items.find((item) => item.type === "thread")).toMatchObject({
       hierarchy: { childCount: 3, displayStatus: "working", archiveBlocked: true },
     });
+  });
+
+  it("keeps unread terminal nested rows visible and hides them after acknowledgement", () => {
+    const parent = makeThread("parent", ProjectId.make("nested"));
+    const child = {
+      ...makeThread("child", parent.projectId),
+      parentThreadId: parent.id,
+      latestTurn: {
+        turnId: TurnId.make("child-turn"),
+        state: "completed" as const,
+        requestedAt: "2026-06-01T23:00:00.000Z",
+        startedAt: "2026-06-01T23:01:00.000Z",
+        completedAt: "2026-06-02T00:00:00.000Z",
+        assistantMessageId: null,
+      },
+    };
+    const group = makeGroup("nested", 0);
+    const threads = { ...group, threads: [parent, child], recentThreads: [parent, child] };
+    const unread = buildHomeListLayout({ groups: [threads], displayStates: new Map() });
+    expect(
+      unread.items.filter((item) => item.type === "thread").map((item) => item.thread.id),
+    ).toEqual([parent.id, child.id]);
+    const read = buildHomeListLayout({
+      groups: [threads],
+      displayStates: new Map(),
+      threadChildReadAt: { [`${environmentId}:${child.id}`]: child.latestTurn.completedAt },
+    });
+
+    expect(
+      read.items.filter((item) => item.type === "thread").map((item) => item.thread.id),
+    ).toEqual([parent.id]);
+    expect(read.items.find((item) => item.type === "thread")?.hierarchy).toMatchObject({
+      childCount: 0,
+      relatedChildCount: 1,
+    });
+  });
+
+  it("changes the row item when a root completion is acknowledged", () => {
+    const completedAt = "2026-06-02T00:00:00.000Z";
+    const thread = {
+      ...makeThread("completed", ProjectId.make("completion")),
+      latestTurn: {
+        turnId: TurnId.make("completed-turn"),
+        state: "completed" as const,
+        requestedAt: completedAt,
+        startedAt: completedAt,
+        completedAt,
+        assistantMessageId: null,
+      },
+    };
+    const group = makeGroup("completion", 0);
+    const groups = [{ ...group, threads: [thread], recentThreads: [thread] }];
+    const unread = buildHomeListLayout({ groups, displayStates: new Map() });
+    const read = buildHomeListLayout({
+      groups,
+      displayStates: new Map(),
+      threadCompletionReadAt: { [`${environmentId}:${thread.id}`]: completedAt },
+    });
+    const unreadItem = unread.items.find((item) => item.type === "thread");
+    const readItem = read.items.find((item) => item.type === "thread");
+
+    expect(unreadItem).toMatchObject({ status: "completed" });
+    expect(readItem).toMatchObject({ status: "ready" });
+    expect(unreadItem && readItem ? homeListItemsAreEqual(unreadItem, readItem) : true).toBe(false);
   });
 
   it("renders a header plus all threads for a small group without a show-more row", () => {

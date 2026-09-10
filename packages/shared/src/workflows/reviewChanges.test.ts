@@ -6,6 +6,7 @@ import {
 
 import {
   buildReviewChangesPrompt,
+  isReviewChangesWorkflowEnabled,
   parseReviewChangesScope,
   reviewChangesVariantIdForScope,
 } from "./reviewChanges.ts";
@@ -94,5 +95,41 @@ describe("parseReviewChangesScope", () => {
   it("rejects invalid review scopes", () => {
     expect(parseReviewChangesScope("unknown")).toBeNull();
     expect(parseReviewChangesScope(43)).toBeNull();
+  });
+});
+
+describe("isReviewChangesWorkflowEnabled", () => {
+  it.each([
+    { overrideEnabled: true, reviewEnabled: false },
+    { overrideEnabled: false, reviewEnabled: true },
+  ])(
+    "uses the $overrideEnabled built-in override before the $reviewEnabled review setting",
+    ({ overrideEnabled, reviewEnabled }) => {
+      expect(
+        isReviewChangesWorkflowEnabled({
+          reviewChanges: {
+            enabled: reviewEnabled,
+            defaultScope: "uncommitted",
+            promptTemplate: "Review",
+          },
+          builtInOverrides: {
+            "review-changes": { enabled: overrideEnabled },
+          },
+        }),
+      ).toBe(overrideEnabled);
+    },
+  );
+
+  it("falls back to the review setting without an override", () => {
+    expect(
+      isReviewChangesWorkflowEnabled({
+        reviewChanges: {
+          enabled: true,
+          defaultScope: "uncommitted",
+          promptTemplate: "Review",
+        },
+        builtInOverrides: {},
+      }),
+    ).toBe(true);
   });
 });

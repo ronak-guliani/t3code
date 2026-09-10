@@ -1,6 +1,11 @@
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
+import {
+  extractWorkLogToolLifecycleStatus,
+  mergeWorkLogToolData,
+} from "@t3tools/client-runtime/work-log/presentation";
 import { extractNormalizedChangedFilePathsFromToolPayload } from "@t3tools/shared/toolChangedFiles";
+import { extractToolCommandInput } from "@t3tools/shared/toolActivity";
 import {
   ApprovalRequestId,
   type ChildThreadLifecycle,
@@ -15,6 +20,10 @@ import {
   ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
+import {
+  isLatestTurnSettled as resolveLatestTurnSettled,
+  isThreadActivelyWorking as resolveThreadActivelyWorking,
+} from "@t3tools/client-runtime/state/thread-status";
 import {
   isChildLifecycleThreadActivity,
   isTurnLifecycleInsightActivity,
@@ -55,6 +64,10 @@ export const PROVIDER_OPTIONS: Array<{
 ];
 
 export interface WorkLogEntry {
+  toolLifecycleStatus?: import("@t3tools/client-runtime/work-log/presentation").WorkLogToolLifecycleStatus;
+  toolData?: unknown;
+  turnId?: string;
+  requestId?: string;
   id: string;
   sourceActivityKind?: string;
   stableId?: string;
@@ -244,71 +257,37 @@ export function latestValidTimestamp(
 type LatestTurnTiming = Pick<OrchestrationLatestTurn, "turnId" | "startedAt" | "completedAt">;
 type SessionActivityState = Pick<ThreadSession, "orchestrationStatus" | "activeTurnId">;
 
-function isTerminalSessionActivity(session: SessionActivityState | null): boolean {
-  return (
-    session?.orchestrationStatus === "idle" ||
-    session?.orchestrationStatus === "interrupted" ||
-    session?.orchestrationStatus === "stopped" ||
-    session?.orchestrationStatus === "error"
-  );
-}
-
 /**
  * Non-failed queued turns mean the thread still has work to do — including the
  * gap between a workspace-handoff turn completing and its continuation starting.
  * Prefer the shell-projected `hasPendingQueuedTurn` flag for sidebar/notify paths.
  */
 export function hasActionableQueuedTurn(
-  queuedTurns: readonly { readonly failedAt: string | null }[] | null | undefined,
+  queuedTurns:
+    | readonly {
+        readonly failedAt: string | null;
+        readonly origin?: { readonly kind: string } | undefined;
+      }[]
+    | null
+    | undefined,
 ): boolean {
-  return (queuedTurns ?? []).some((queuedTurn) => queuedTurn.failedAt === null);
+  return (queuedTurns ?? []).some(
+    (queuedTurn) => queuedTurn.failedAt === null && queuedTurn.origin?.kind !== "child-nudge",
+  );
 }
 
 export function isThreadActivelyWorking(
   latestTurn: LatestTurnTiming | null,
   session: SessionActivityState | null,
 ): boolean {
-  if (isTerminalSessionActivity(session)) {
-    return false;
-  }
-
-  if (latestTurn?.startedAt && !latestTurn.completedAt) {
-    return true;
-  }
-
-  if (session?.orchestrationStatus !== "running") {
-    return false;
-  }
-
-  if (!session.activeTurnId) {
-    return false;
-  }
-
-  if (!latestTurn) {
-    return true;
-  }
-
-  if (latestTurn.turnId !== session.activeTurnId) {
-    return true;
-  }
-
-  return !latestTurn.completedAt;
+  return resolveThreadActivelyWorking({ latestTurn, session });
 }
 
 export function isLatestTurnSettled(
   latestTurn: LatestTurnTiming | null,
   session: SessionActivityState | null,
 ): boolean {
-  if (!latestTurn) {
-    return !(session?.orchestrationStatus === "running" && session.activeTurnId);
-  }
-  if (isTerminalSessionActivity(session)) return true;
-  if (!latestTurn.startedAt) return false;
-  if (!latestTurn.completedAt) return false;
-  if (!session) return true;
-  if (session.orchestrationStatus !== "running") return true;
-  if (!session.activeTurnId) return true;
-  return session.activeTurnId === latestTurn.turnId;
+  return resolveLatestTurnSettled(latestTurn, session);
 }
 
 export function deriveActiveWorkStartedAt(
@@ -780,6 +759,7 @@ const CHILD_LIFECYCLE_ACTION_LABELS: Record<ChildThreadLifecycle, string> = {
   failed: "Review failure",
   completed: "View result",
   "pr-created": "Open pull request",
+  reported: "Open child thread",
 };
 
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
@@ -818,7 +798,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
-    ...(activity.kind === "context-compaction" ? { sourceActivityKind: activity.kind } : {}),
+    sourceActivityKind: activity.kind,
+    toolData: payload?.data,
+    ...(typeof payload?.requestId === "string" ? { requestId: payload.requestId } : {}),
     createdAt: activity.createdAt,
     label:
       activity.kind === "context-compaction" && activity.summary === "Context compacted"
@@ -834,6 +816,17 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     isComplete: activity.kind !== "tool.updated" && activity.kind !== "task.progress",
     ...(activity.turnId ? { turnId: activity.turnId } : {}),
   };
+  const lifecycleStatus =
+    extractWorkLogToolLifecycleStatus(payload) ??
+    (activity.kind === "tool.completed"
+      ? "completed"
+      : activity.kind === "tool.updated" || activity.kind === "tool.started"
+        ? "inProgress"
+        : undefined);
+  if (lifecycleStatus) {
+    entry.toolLifecycleStatus = lifecycleStatus;
+    entry.isComplete = lifecycleStatus !== "inProgress";
+  }
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
   const childLifecycleActivity = isChildLifecycleThreadActivity(activity) ? activity : null;
@@ -976,6 +969,7 @@ function mergeDerivedWorkLogEntries(
   return {
     ...previous,
     ...next,
+    toolData: mergeWorkLogToolData(previous.toolData, next.toolData),
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),
@@ -1207,34 +1201,11 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
   command: string | null;
   rawCommand: string | null;
 } {
-  const data = asRecord(payload?.data);
-  const item = asRecord(data?.item);
-  const itemResult = asRecord(item?.result);
-  const itemInput = asRecord(item?.input);
-  const itemType = asTrimmedString(payload?.itemType);
-  const detail = asTrimmedString(payload?.detail);
-  const candidates: unknown[] = [
-    item?.command,
-    itemInput?.command,
-    itemResult?.command,
-    data?.command,
-    itemType === "command_execution" && detail ? stripTrailingExitCode(detail).output : null,
-  ];
-
-  for (const candidate of candidates) {
-    const command = normalizeCommandValue(candidate);
-    if (!command) {
-      continue;
-    }
-    return {
-      command,
-      rawCommand: toRawToolCommand(candidate, command),
-    };
-  }
-
+  const candidate = extractToolCommandInput(asRecord(payload?.data) ?? undefined);
+  const command = normalizeCommandValue(candidate);
   return {
-    command: null,
-    rawCommand: null,
+    command,
+    rawCommand: toRawToolCommand(candidate, command),
   };
 }
 

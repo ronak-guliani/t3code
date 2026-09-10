@@ -351,6 +351,7 @@ export function projectEvent(
         const thread: OrchestrationThread = yield* decodeForEvent(
           OrchestrationThread,
           {
+            nudging: payload.nudging,
             id: payload.threadId,
             projectId: payload.projectId,
             ...(payload.parentThreadId !== undefined
@@ -534,6 +535,7 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
+            ...(payload.nudging !== undefined ? { nudging: payload.nudging } : {}),
             ...(payload.title !== undefined ? { title: payload.title } : {}),
             ...(payload.titleRegeneration !== undefined
               ? { titleRegeneration: payload.titleRegeneration }

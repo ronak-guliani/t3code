@@ -266,6 +266,41 @@ export const CrossThreadOrigin = Schema.Struct({
 });
 export type CrossThreadOrigin = typeof CrossThreadOrigin.Type;
 
+export const ChildReportKind = Schema.Literals(["progress", "decision-needed", "important-update"]);
+export const ChildNudgeUpdate = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  childThreadId: ThreadId,
+  childTitle: TrimmedNonEmptyString,
+  assignmentId: MessageId,
+  kind: Schema.Literals([
+    "progress",
+    "decision-needed",
+    "important-update",
+    "result-available",
+    "failed",
+    "blocked",
+  ]),
+  summary: TrimmedNonEmptyString.check(Schema.isMaxLength(4000)),
+  sourceMessageId: Schema.optional(MessageId),
+});
+export type ChildNudgeUpdate = typeof ChildNudgeUpdate.Type;
+
+export const ChildNudgeOrigin = Schema.Struct({
+  kind: Schema.Literal("child-nudge"),
+  updates: Schema.Array(ChildNudgeUpdate).check(Schema.isMinLength(1), Schema.isMaxLength(32)),
+});
+
+export const ThreadDelegation = Schema.Struct({
+  assignmentId: MessageId,
+  followUp: Schema.Literals(["automatic", "notify-only"]),
+  completedAt: Schema.NullOr(IsoDateTime),
+});
+export const ThreadNudging = Schema.Struct({
+  paused: Schema.optional(Schema.Boolean),
+  delegation: Schema.optional(ThreadDelegation),
+});
+export type ThreadNudging = typeof ThreadNudging.Type;
+
 export const PullRequestMonitorOrigin = Schema.Struct({
   kind: Schema.Literal("pull-request-monitor"),
   repository: TrimmedNonEmptyString,
@@ -288,6 +323,7 @@ export const MessageOrigin = Schema.Union([
   WorkspaceHandoffOrigin,
   CrossThreadOrigin,
   PullRequestMonitorOrigin,
+  ChildNudgeOrigin,
 ]);
 export type MessageOrigin = typeof MessageOrigin.Type;
 
@@ -448,6 +484,7 @@ export const ChildThreadLifecycle = Schema.Literals([
   "failed",
   "completed",
   "pr-created",
+  "reported",
 ]);
 export type ChildThreadLifecycle = typeof ChildThreadLifecycle.Type;
 
@@ -457,6 +494,7 @@ const ChildThreadLifecycleNotificationFields = {
   childTitle: TrimmedNonEmptyString,
   dedupeKey: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
+  report: Schema.optional(ChildNudgeUpdate),
 } as const;
 
 export const ChildThreadLifecycleNotification = Schema.Union([
@@ -469,6 +507,7 @@ export const ChildThreadLifecycleNotification = Schema.Union([
       "input-required",
       "failed",
       "completed",
+      "reported",
     ]),
   }),
   Schema.Struct({
@@ -515,7 +554,9 @@ export const ThreadLinkedPullRequest = Schema.Struct({
 export type ThreadLinkedPullRequest = typeof ThreadLinkedPullRequest.Type;
 
 export const OrchestrationThread = Schema.Struct({
+  nudging: Schema.optional(ThreadNudging),
   linkedPullRequest: Schema.optionalKey(Schema.NullOr(ThreadLinkedPullRequest)),
+  branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   unsettledAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   id: ThreadId,
   projectId: ProjectId,
@@ -601,7 +642,9 @@ export const OrchestrationBackgroundAgentRunShell = Schema.Struct({
 export type OrchestrationBackgroundAgentRunShell = typeof OrchestrationBackgroundAgentRunShell.Type;
 
 export const OrchestrationThreadShell = Schema.Struct({
+  nudging: Schema.optional(ThreadNudging),
   linkedPullRequest: Schema.optionalKey(Schema.NullOr(ThreadLinkedPullRequest)),
+  branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   unsettledAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   id: ThreadId,
   projectId: ProjectId,
@@ -714,6 +757,7 @@ const ProjectDeleteCommand = Schema.Struct({
 });
 
 const ThreadCreateCommand = Schema.Struct({
+  delegation: Schema.optional(ThreadDelegation),
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -805,9 +849,12 @@ const ThreadDecoupleCommand = Schema.Struct({
 });
 
 const ThreadMetaUpdateCommand = Schema.Struct({
+  childFollowUpPaused: Schema.optional(Schema.Boolean),
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
   threadId: ThreadId,
+  expectedUpdatedAt: Schema.optional(IsoDateTime),
+  expectedWorkspaceCwd: Schema.optional(TrimmedNonEmptyString),
   title: Schema.optional(TrimmedNonEmptyString),
   regenerateTitle: Schema.optional(Schema.Literal(true)),
   modelSelection: Schema.optional(ModelSelection),
@@ -926,7 +973,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
     text: Schema.String,
-    attachments: Schema.Array(UploadChatAttachment),
+    attachments: Schema.Array(Schema.Union([UploadChatAttachment, ChatAttachment])),
   }),
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
@@ -951,6 +998,7 @@ const ThreadQueuedTurnCreateCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   origin: Schema.optional(MessageOrigin),
+  crossThreadSourceThreadId: Schema.optional(ThreadId),
   createdAt: IsoDateTime,
 });
 
@@ -965,6 +1013,8 @@ const ClientThreadQueuedTurnCreateCommand = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  crossThreadSourceThreadId: Schema.optional(ThreadId),
+  crossThreadDispatchCapability: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
 });
 
@@ -1105,7 +1155,19 @@ const WorkflowRunFinalizeCommand = Schema.Struct({
   completedAt: IsoDateTime,
 });
 
+const ThreadChildReportCommand = Schema.Struct({
+  type: Schema.Literal("thread.child.report"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  reportId: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  kind: ChildReportKind,
+  summary: TrimmedNonEmptyString.check(Schema.isMaxLength(4000)),
+  crossThreadDispatchCapability: Schema.optional(Schema.String),
+  createdAt: IsoDateTime,
+});
+
 const DispatchableClientOrchestrationCommand = Schema.Union([
+  ThreadChildReportCommand,
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
@@ -1142,6 +1204,7 @@ export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
 
 export const ClientOrchestrationCommand = Schema.Union([
+  ThreadChildReportCommand,
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
@@ -1379,6 +1442,7 @@ export const ProjectDeletedPayload = Schema.Struct({
 });
 
 export const ThreadCreatedPayload = Schema.Struct({
+  nudging: Schema.optional(ThreadNudging),
   threadId: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
@@ -1474,6 +1538,7 @@ export const ThreadDecoupledPayload = Schema.Struct({
 });
 
 export const ThreadMetaUpdatedPayload = Schema.Struct({
+  nudging: Schema.optional(ThreadNudging),
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
   /** Intent marker consumed by the title-generation reactor. Keeping this on

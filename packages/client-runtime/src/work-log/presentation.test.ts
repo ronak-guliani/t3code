@@ -4,6 +4,14 @@ import { ThreadId } from "@t3tools/contracts";
 
 import {
   commandDetailRepeatsCommand,
+  compactWorkEntryLabel,
+  deriveWorkGroupActivity,
+  workGroupReceiptLabel,
+  extractWorkLogToolLifecycleStatus,
+  groupConsecutiveWorkEntries,
+  groupRepeatedWorkEntries,
+  hasWorkLogToolData,
+  mergeWorkLogToolData,
   extractCommandOutputText,
   resolveViewedImageAsset,
   resolveWorkEntryToolPresentation,
@@ -12,7 +20,428 @@ import {
   toolGroupSummaryKind,
   type WorkLogPresentationEntry,
   workEntryViewedImagePath,
+  workGroupAccessibleLabel,
 } from "./presentation.js";
+
+describe("live activity strips", () => {
+  it.each([
+    [0, "Reading file.ts"],
+    [1, "Reading file.ts"],
+    [2, "Reading file.ts, 1 more active"],
+    [4, "Reading file.ts, 3 more active"],
+  ])("announces parallel work for %i active calls", (activeCount, expected) => {
+    expect(workGroupAccessibleLabel("Reading file.ts", activeCount)).toBe(expected);
+  });
+
+  const read = (name: string, status = "completed"): WorkLogPresentationEntry => ({
+    label: "Read file",
+    tone: "tool",
+    detail: `/workspace/src/${name}`,
+    toolLifecycleStatus: status,
+  });
+
+  it("keeps the oldest active call in front and counts parallel work", () => {
+    const entries = [
+      read("done.ts"),
+      read("first.ts", "inProgress"),
+      read("second.ts", "inProgress"),
+    ];
+    expect(deriveWorkGroupActivity(entries, true)).toMatchObject({
+      label: "Reading first.ts",
+      activeCount: 2,
+      shimmer: true,
+    });
+    expect(deriveWorkGroupActivity(entries.slice(1), true).lead).toBe(entries[1]);
+    expect(deriveWorkGroupActivity(entries, false)).toMatchObject({
+      activeCount: 0,
+      shimmer: false,
+    });
+  });
+
+  it("does not shimmer a completed call between tools", () => {
+    expect(deriveWorkGroupActivity([read("done.ts")], true)).toMatchObject({
+      state: "complete",
+      label: "Read done.ts",
+      shimmer: false,
+    });
+  });
+
+  it.each(["inProgress", "failed", "stopped"] as const)(
+    "does not summarize completed history while showing a %s lead",
+    (status) => {
+      let historicalLabelReads = 0;
+      const history = Array.from({ length: 5_000 }, () => ({
+        ...read("done.ts"),
+        get label() {
+          historicalLabelReads += 1;
+          return "Read file";
+        },
+      }));
+      const activity = deriveWorkGroupActivity([...history, read("lead.ts", status)], true);
+      expect(activity.label).toContain("lead.ts");
+      expect(historicalLabelReads).toBe(0);
+    },
+  );
+
+  it("keeps earlier failures visible when later work succeeds", () => {
+    expect(
+      deriveWorkGroupActivity([read("failed.ts", "failed"), read("done.ts")], false),
+    ).toMatchObject({
+      state: "failed",
+      label: "Failed failed.ts",
+      shimmer: false,
+    });
+  });
+
+  it("keeps unresolved approval and input requests above active tools", () => {
+    const approval: WorkLogPresentationEntry = {
+      label: "Approve command",
+      tone: "info",
+      requestId: "approval-1",
+      sourceActivityKind: "approval.requested",
+    };
+    const active = read("live.ts", "inProgress");
+    expect(deriveWorkGroupActivity([approval, active], true)).toMatchObject({
+      label: "Approval needed",
+      shimmer: false,
+      activeCount: 1,
+    });
+    expect(
+      deriveWorkGroupActivity(
+        [approval, { ...approval, sourceActivityKind: "approval.resolved" }, active],
+        true,
+      ),
+    ).toMatchObject({
+      label: "Reading live.ts",
+      shimmer: true,
+    });
+    expect(
+      deriveWorkGroupActivity([{ ...approval, sourceActivityKind: "user-input.requested" }], true)
+        .label,
+    ).toBe("Input needed");
+  });
+
+  it("groups only adjacent successful actions without swallowing active or failed work", () => {
+    const entries = [
+      read("a.ts"),
+      read("b.ts"),
+      read("c.ts", "failed"),
+      read("d.ts", "inProgress"),
+      read("e.ts"),
+    ];
+    const groups = groupConsecutiveWorkEntries(entries, (entry) => entry);
+    expect(groups.map((group) => group.entries.length)).toEqual([2, 1, 1, 1]);
+    expect(groups[0]?.label).toBe("Read 2 files");
+    expect(groups.flatMap((group) => group.entries)).toEqual(entries);
+  });
+
+  it("keeps mixed completed receipts compact without hiding failures", () => {
+    const command = {
+      label: "Run command",
+      tone: "tool" as const,
+      command: "pnpm test",
+      toolLifecycleStatus: "completed",
+    };
+    expect(workGroupReceiptLabel([read("a.ts"), command])).toBe("2 actions");
+    expect(workGroupReceiptLabel([read("a.ts"), read("b.ts")])).toBe("Read 2 files");
+    expect(workGroupReceiptLabel([read("a.ts", "failed"), command])).toBe("Failed a.ts");
+  });
+
+  it("folds only adjacent identical completed actions without discarding calls", () => {
+    const first = { ...read("same.ts"), turnId: "one" };
+    const second = { ...first, toolCallId: "another-call" };
+    const boundary = null;
+    const entries = [
+      first,
+      second,
+      read("different.ts"),
+      boundary,
+      first,
+      { ...first, toolLifecycleStatus: "failed" },
+      first,
+      { ...first, toolLifecycleStatus: "inProgress" },
+      first,
+      { ...first, toolLifecycleStatus: "stopped" },
+      { ...first, turnId: "two" },
+    ];
+    const groups = groupRepeatedWorkEntries(entries, (entry) => entry);
+    expect(groups.map((group) => group.entries.length)).toEqual([2, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    expect(groups[0]?.label).toBe("Read same.ts");
+    expect(groups.flatMap((group) => group.entries)).toEqual(entries);
+    expect(
+      groupRepeatedWorkEntries(
+        [first, { ...first, detail: "/elsewhere/same.ts" }],
+        (entry) => entry,
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("does not fold distinct commands merely because their program label matches", () => {
+    const command: WorkLogPresentationEntry = {
+      label: "Ran command",
+      tone: "tool",
+      command: "pnpm test",
+      toolLifecycleStatus: "completed",
+    };
+    expect(
+      groupRepeatedWorkEntries([command, { ...command, command: "pnpm lint" }], (entry) => entry),
+    ).toHaveLength(2);
+  });
+
+  it("does not treat edit-success prose as a filename", () => {
+    expect(
+      compactWorkEntryLabel({
+        label: "Edited files",
+        tone: "tool",
+        itemType: "file_change",
+        detail: "Edit applied successfully.",
+        toolData: { rawOutput: { content: "Edit applied successfully." } },
+      }),
+    ).toBe("Edited files");
+  });
+
+  it.each([undefined, null, "", "  ", {}, []])(
+    "does not offer an empty metadata disclosure for %j",
+    (data) => {
+      expect(hasWorkLogToolData(data)).toBe(false);
+    },
+  );
+
+  it("uses concise cross-platform filenames and command names without dropping detail", () => {
+    const entry = { ...read("a.ts"), detail: "C:\\work\\src\\a.ts" };
+    expect(compactWorkEntryLabel(entry)).toBe("Read a.ts");
+    expect(entry.detail).toBe("C:\\work\\src\\a.ts");
+    expect(
+      compactWorkEntryLabel({
+        label: "Run",
+        tone: "tool",
+        command: "pnpm test --run",
+        toolLifecycleStatus: "inProgress",
+      }),
+    ).toBe("Running pnpm");
+  });
+
+  it("prefers the complete input path over a shortened provider preview", () => {
+    const filename = "durable-worktree-cleanup-reconciliation.integration.test.ts";
+    expect(
+      compactWorkEntryLabel({
+        label: "Edit file",
+        tone: "tool",
+        changedFiles: ["/src/durable-worktree-c..."],
+        detail: "/src/durable-worktree-c...",
+        toolData: { rawInput: { filePath: `/src/${filename}` } },
+        toolLifecycleStatus: "completed",
+      }),
+    ).toBe(`Edited ${filename}`);
+  });
+
+  it("does not expose generic provider categories as action labels", () => {
+    expect(compactWorkEntryLabel({ label: "other", tone: "tool" })).toBe("Used tool");
+    expect(
+      compactWorkEntryLabel({
+        label: "other",
+        tone: "tool",
+        toolData: { toolName: "inspect_workspace" },
+      }),
+    ).toBe("inspect workspace");
+  });
+
+  it.each([
+    {
+      rawInput:
+        "*** Begin Patch\n*** Update File: /workspace/src/component-layout.tsx\n@@\n-old\n+new\n*** End Patch",
+    },
+    {
+      rawInput: {
+        patch:
+          "*** Begin Patch\n*** Add File: C:\\repo\\src\\component-layout.tsx\n+new\n*** End Patch",
+      },
+    },
+    { rawInput: { filename: "/workspace/src/component-layout.tsx" } },
+    { locations: [{ path: "/workspace/src/component-layout.tsx", line: 10 }] },
+    { input: { edits: [{ filePath: "/workspace/src/component-layout.tsx" }] } },
+  ])("uses complete provider paths without a workspace root: %j", (toolData) => {
+    expect(
+      compactWorkEntryLabel({
+        label: "Edit file",
+        tone: "tool",
+        toolData: { copilotToolName: "functions.apply_patch", ...toolData },
+        detail: "/workspace/src/comp...",
+        changedFiles: ["/workspace/src/comp..."],
+      }),
+    ).toBe("Edited component-layout.tsx");
+  });
+
+  it("recognizes patch actions even when normalized changed files are unavailable", () => {
+    expect(
+      compactWorkEntryLabel({
+        label: "other",
+        tone: "tool",
+        toolData: {
+          copilotToolName: "functions.apply_patch",
+          rawInput:
+            "*** Begin Patch\n*** Update File: /repo/full-filename.ts\n@@\n-a\n+b\n*** End Patch",
+        },
+      }),
+    ).toBe("Edited full-filename.ts");
+  });
+
+  it.each([
+    '{"available":true,"url":"http://localhost:6432"}',
+    '["src/file.ts"]',
+    "/src/comp...",
+    "/src/comp…",
+    "Arbitrary output",
+  ])("does not use structured output or incomplete previews as filenames: %s", (detail) => {
+    expect(compactWorkEntryLabel({ label: "Read file", tone: "tool", detail })).toBe("Read file");
+  });
+
+  describe.each(["detail", "changedFiles", "viewedImagePath"] as const)(
+    "%s filename fallback",
+    (source) => {
+      const entry = (value: string): WorkLogPresentationEntry => ({
+        label: "Read file",
+        tone: "tool",
+        ...(source === "changedFiles"
+          ? { changedFiles: [value] }
+          : source === "viewedImagePath"
+            ? { viewedImagePath: value }
+            : { detail: value }),
+      });
+
+      it.each([
+        '"/src/file.ts"',
+        ' "README.md" ',
+        JSON.stringify("C:\\src\\file.ts"),
+        '{"path":"/src/file.ts"}',
+        '["/src/file.ts"]',
+        "1.25",
+      ])("rejects the complete JSON value %s", (value) => {
+        expect(compactWorkEntryLabel(entry(value))).toBe("Read file");
+      });
+
+      it.each([
+        ["/src/[id].tsx", "[id].tsx"],
+        ["/src/{locale}.ts", "{locale}.ts"],
+        ["C:\\src\\[slug].tsx", "[slug].tsx"],
+        ["[...slug].tsx", "[...slug].tsx"],
+        ['[id]/{"version":1}.ts', '{"version":1}.ts'],
+      ])("preserves valid path %s", (value, filename) => {
+        expect(compactWorkEntryLabel(entry(value))).toBe(`Read ${filename}`);
+      });
+    },
+  );
+
+  it.each([
+    "t3-code-preview_status",
+    "t3-code.t3-code-preview_status",
+    "mcp__t3-code__t3-code-preview_status",
+  ])("uses Copilot's %s identity instead of its generic read category", (copilotToolName) => {
+    expect(
+      compactWorkEntryLabel({
+        label: "Read file",
+        tone: "tool",
+        toolData: { copilotToolName },
+        detail: '{"available":true}',
+      }),
+    ).toBe("Getting preview browser status");
+  });
+
+  it("caches path traversal without reading authoritative output", () => {
+    let patchReads = 0;
+    const toolData = {
+      copilotToolName: "functions.apply_patch",
+      get patch() {
+        patchReads += 1;
+        return "*** Update File: /src/full-filename.ts";
+      },
+      get rawOutput() {
+        throw new Error("Collapsed labels must not inspect output");
+      },
+    };
+    const entry: WorkLogPresentationEntry = { label: "Edit file", tone: "tool", toolData };
+    for (let index = 0; index < 100; index += 1) {
+      expect(compactWorkEntryLabel(entry)).toBe("Edited full-filename.ts");
+    }
+    expect(patchReads).toBe(1);
+    expect(
+      compactWorkEntryLabel({
+        ...entry,
+        toolData: {
+          copilotToolName: "functions.apply_patch",
+          rawInput: { path: "/src/new-filename.ts" },
+        },
+      }),
+    ).toBe("Edited new-filename.ts");
+  });
+
+  it("normalizes interrupted and background task lifecycles", () => {
+    expect(extractWorkLogToolLifecycleStatus({ status: "cancelled" })).toBe("stopped");
+    expect(extractWorkLogToolLifecycleStatus({ status: "idle", taskType: "subagent_batch" })).toBe(
+      "stopped",
+    );
+    expect(extractWorkLogToolLifecycleStatus({ status: "running" })).toBe("inProgress");
+    expect(extractWorkLogToolLifecycleStatus({ status: "unknown" })).toBeUndefined();
+  });
+
+  it.each([
+    [
+      { toolName: "other", rawInput: { skill: "typescript-best-practices" } },
+      undefined,
+      "Loaded typescript-best-practices",
+    ],
+    [
+      { toolName: "other", rawInput: { pattern: "extractCommandOutputText" } },
+      undefined,
+      "Searched code",
+    ],
+    [{ toolName: "functions.rg" }, undefined, "Searched code"],
+    [
+      { toolName: "other" },
+      'Skill "typescript-best-practices" loaded successfully.',
+      "Loaded typescript-best-practices",
+    ],
+    [{ toolName: "other" }, undefined, "Used tool"],
+  ])("uses meaningful names for generic provider categories: %j", (toolData, detail, expected) => {
+    expect(
+      compactWorkEntryLabel({
+        label: "other",
+        toolTitle: "other",
+        tone: "tool",
+        toolData,
+        ...(detail ? { detail } : {}),
+        toolLifecycleStatus: "completed",
+      }),
+    ).toBe(expected);
+  });
+
+  it("retains the input filename when completed output replaces the preview", () => {
+    const toolData = mergeWorkLogToolData(
+      { rawInput: { path: "/src/activity.ts" } },
+      { rawOutput: { content: "export const activity = 1;" } },
+    );
+    expect(
+      compactWorkEntryLabel({
+        label: "Read file",
+        tone: "tool",
+        detail: "export const activity = 1;",
+        toolData,
+      }),
+    ).toBe("Read activity.ts");
+    expect(toolData).toEqual({
+      rawInput: { path: "/src/activity.ts" },
+      rawOutput: { content: "export const activity = 1;" },
+    });
+  });
+
+  it("preserves merged payload identity when unchanged history is re-derived", () => {
+    const started = { item: { server: "t3-code", tool: "preview_click" } };
+    const completed = { item: { result: "Clicked" } };
+    const merged = mergeWorkLogToolData(started, completed);
+    expect(mergeWorkLogToolData(started, completed)).toBe(merged);
+    expect(mergeWorkLogToolData(started, { item: { result: "Failed" } })).not.toBe(merged);
+  });
+});
 
 describe("summarizeToolGroup", () => {
   it.each(["command", "file-read", "file-change"])(
@@ -43,7 +472,7 @@ describe("summarizeToolGroup", () => {
           ...approvals,
           { label: "Read", tone: "tool", itemType: "dynamic_tool_call" },
         ]),
-      ).toBe("Received 3 updates and used 1 tool");
+      ).toBe("Received 3 updates and read 1 file");
       expect(summarizeToolGroup(approvals)).toBe("Received 3 updates");
       expect(toolGroupSummaryKind(approvals)).toBe("update");
     },
@@ -402,7 +831,7 @@ describe("workEntryViewedImagePath", () => {
     expect(
       workEntryViewedImagePath({ ...entry, itemType: "image_view", detail: "a.png\nb.png" }),
     ).toBeNull();
-    expect(workEntryViewedImagePath({ ...entry, detail: "a.png" })).toBeNull();
+    expect(workEntryViewedImagePath({ ...entry, label: "Search", detail: "a.png" })).toBeNull();
   });
 });
 

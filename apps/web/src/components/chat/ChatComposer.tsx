@@ -73,6 +73,7 @@ import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPreviewAnnotationCards } from "./ComposerPreviewAnnotationCards";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
+import { CopilotCompletionWarning } from "./CopilotCompletionWarning";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
@@ -108,6 +109,7 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
+import { automaticPrFeedbackBlockReason } from "@t3tools/shared/automaticPrFeedback";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
@@ -430,6 +432,7 @@ export interface ChatComposerProps {
   ) => Promise<void>;
   onUpdateQueuedTurn: (queuedTurnId: QueuedTurnId, text: string) => void;
   onDeleteQueuedTurn: (queuedTurnId: QueuedTurnId) => void;
+  onSetChildFollowUpPaused?: (paused: boolean) => void;
   onSelectActivePendingUserInputOption: (questionId: string, optionLabel: string) => void;
   onAdvanceActivePendingUserInput: () => void;
   onPreviousActivePendingUserInputQuestion: () => void;
@@ -509,6 +512,7 @@ export const ChatComposer = memo(
       onRespondToApproval,
       onUpdateQueuedTurn,
       onDeleteQueuedTurn,
+      onSetChildFollowUpPaused,
       onSelectActivePendingUserInputOption,
       onAdvanceActivePendingUserInput,
       onPreviousActivePendingUserInputQuestion,
@@ -572,6 +576,37 @@ export const ChatComposer = memo(
       activeThreadModelSelection?.instanceId ??
       activeProjectDefaultModelSelection?.instanceId ??
       null;
+    const queuedPolicyBlocks = useMemo(() => {
+      const blocks = new Map<QueuedTurnId, string>();
+      for (const turn of queuedTurns) {
+        if (turn.failedAt !== null || turn.origin?.kind !== "pull-request-monitor") continue;
+        const target = turn.modelSelection?.instanceId ?? activeThreadModelSelection?.instanceId;
+        if (!target) continue;
+        const session = activeThread?.session;
+        const reason = automaticPrFeedbackBlockReason(
+          {
+            providerInstances: settings.providerInstances,
+            copilotAutomaticPrFeedback: settings.copilotAutomaticPrFeedback,
+          },
+          target,
+          session
+            ? {
+                providerName: session.provider,
+                providerInstanceId: session.providerInstanceId,
+                status: session.orchestrationStatus,
+              }
+            : null,
+        );
+        if (reason) blocks.set(turn.id, reason);
+      }
+      return blocks;
+    }, [
+      queuedTurns,
+      activeThreadModelSelection?.instanceId,
+      activeThread?.session,
+      settings.providerInstances,
+      settings.copilotAutomaticPrFeedback,
+    ]);
     const explicitSelectedInstanceId = selectedProviderByThreadId ?? threadProvider;
 
     const unlockedSelectedProvider =
@@ -2091,8 +2126,13 @@ export const ChatComposer = memo(
             onPointerEnter={onComposerIntent}
             onBlurCapture={scheduleComposerCollapseCheck}
           >
+            <CopilotCompletionWarning activities={activeThread?.activities} />
             {activePendingApproval || pendingUserInputs.length > 0 ? null : (
               <QueuedMessagesPanel
+                childFollowUpPaused={activeThread?.nudging?.paused === true}
+                onSetChildFollowUpPaused={onSetChildFollowUpPaused}
+                onRetryQueuedTurn={(turn) => onUpdateQueuedTurn(turn.id, turn.message.text)}
+                policyBlocks={queuedPolicyBlocks}
                 queuedTurns={queuedTurns}
                 editingQueuedTurnId={editingQueuedTurn?.id ?? null}
                 editingText={editingQueuedTurn?.text ?? ""}

@@ -56,7 +56,11 @@ import {
   type ThreadListV2ListItem,
 } from "../threads/threadListV2";
 import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-shelf-preferences";
-import { useDismissedAgentRunKeys } from "../threads/thread-hierarchy-controls";
+import {
+  useDismissedAgentRunKeys,
+  useThreadChildReadAt,
+  useThreadCompletionReadAt,
+} from "../threads/thread-hierarchy-controls";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
   buildHomeListLayout,
@@ -210,6 +214,8 @@ export function HomeScreen(props: HomeScreenProps) {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const threadListV2Enabled = useThreadListV2Enabled();
   const dismissedAgentRunKeys = useDismissedAgentRunKeys();
+  const threadChildReadAt = useThreadChildReadAt();
+  const threadCompletionReadAt = useThreadCompletionReadAt();
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const listRef = useRef<LegendListRef | null>(null);
@@ -345,6 +351,16 @@ export function HomeScreen(props: HomeScreenProps) {
             ),
     [threadListV2Enabled, props.projects, selectedProjectRefKeys],
   );
+  const projectCwdByKey = useMemo(
+    () =>
+      new Map(
+        props.projects.map((project) => [
+          scopedProjectKey(project.environmentId, project.id),
+          project.workspaceRoot,
+        ]),
+      ),
+    [props.projects],
+  );
   const scopedThreads = useMemo(
     () =>
       threadListV2Enabled
@@ -364,7 +380,7 @@ export function HomeScreen(props: HomeScreenProps) {
           ? props.pendingTasks
           : props.pendingTasks.filter((pendingTask) =>
               selectedProjectRefKeys.has(
-                scopedProjectKey(pendingTask.message.environmentId, pendingTask.creation.projectId),
+                scopedProjectKey(pendingTask.environmentId, pendingTask.projectId),
               ),
             ),
     [threadListV2Enabled, props.pendingTasks, selectedProjectRefKeys],
@@ -409,6 +425,8 @@ export function HomeScreen(props: HomeScreenProps) {
             displayStates: effectiveGroupDisplayStates,
             showAllThreads: hasSearchQuery,
             dismissedAgentRunKeys,
+            threadChildReadAt,
+            threadCompletionReadAt,
           }),
     [
       threadListV2Enabled,
@@ -416,6 +434,8 @@ export function HomeScreen(props: HomeScreenProps) {
       effectiveGroupDisplayStates,
       hasSearchQuery,
       dismissedAgentRunKeys,
+      threadChildReadAt,
+      threadCompletionReadAt,
     ],
   );
 
@@ -629,6 +649,8 @@ export function HomeScreen(props: HomeScreenProps) {
     return buildThreadListV2Items({
       threads: props.threads,
       dismissedAgentRunKeys,
+      threadChildReadAt,
+      threadCompletionReadAt,
       environmentId: props.selectedEnvironmentId,
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
       searchQuery: props.searchQuery,
@@ -644,6 +666,7 @@ export function HomeScreen(props: HomeScreenProps) {
   }, [
     nowMinute,
     dismissedAgentRunKeys,
+    threadChildReadAt,
     snoozeWakeTick,
     snoozedShelfExpanded,
     settledShelfExpanded,
@@ -681,10 +704,10 @@ export function HomeScreen(props: HomeScreenProps) {
       props.pendingTasks.filter(
         (pendingTask) =>
           (props.selectedEnvironmentId === null ||
-            pendingTask.message.environmentId === props.selectedEnvironmentId) &&
+            pendingTask.environmentId === props.selectedEnvironmentId) &&
           (v2ScopedProjectKeys === null ||
             v2ScopedProjectKeys.has(
-              scopedProjectKey(pendingTask.message.environmentId, pendingTask.creation.projectId),
+              scopedProjectKey(pendingTask.environmentId, pendingTask.projectId),
             )) &&
           (v2SearchQuery.length === 0 ||
             pendingTask.title.toLocaleLowerCase().includes(v2SearchQuery)),
@@ -747,7 +770,9 @@ export function HomeScreen(props: HomeScreenProps) {
       const thread = item.item.thread;
       return (
         <ThreadListV2Row
+          status={item.item.status}
           thread={thread}
+          projectCwd={projectCwdByKey.get(scopedProjectKey(thread.environmentId, thread.projectId))}
           hierarchy={item.item.hierarchy}
           variant={item.item.variant}
           snoozed={item.item.snoozed}
@@ -819,6 +844,7 @@ export function HomeScreen(props: HomeScreenProps) {
       toggleSnoozedShelf,
       props.searchQuery,
       nowMinute,
+      projectCwdByKey,
     ],
   );
   const v2KeyExtractor = useCallback((item: ThreadListV2ListItem) => item.key, []);
@@ -828,20 +854,22 @@ export function HomeScreen(props: HomeScreenProps) {
   // HomeScreen render.
   const v2ExtraData = useMemo(
     () => ({
+      projectCwdByKey,
       serverConfigs,
       searchQuery: props.searchQuery,
       snoozePresetMinute: nowMinute,
       threadSearchMatchByKey,
     }),
-    [props.searchQuery, serverConfigs, nowMinute, threadSearchMatchByKey],
+    [projectCwdByKey, props.searchQuery, serverConfigs, nowMinute, threadSearchMatchByKey],
   );
 
   const extraData = useMemo(
     () => ({
+      projectCwdByKey,
       searchQuery: props.searchQuery,
       threadSearchMatchByKey,
     }),
-    [props.searchQuery, threadSearchMatchByKey],
+    [projectCwdByKey, props.searchQuery, threadSearchMatchByKey],
   );
 
   const renderItem = useCallback(
@@ -880,9 +908,13 @@ export function HomeScreen(props: HomeScreenProps) {
           const thread = item.thread;
           return (
             <ThreadListRow
+              status={item.status}
               hierarchy={item.hierarchy}
               variant="compact"
               thread={thread}
+              projectCwd={projectCwdByKey.get(
+                scopedProjectKey(thread.environmentId, thread.projectId),
+              )}
               isLast={item.isLast}
               searchMatch={threadSearchMatchByKey.get(
                 threadSearchMatchKey({
@@ -917,6 +949,7 @@ export function HomeScreen(props: HomeScreenProps) {
       handleSwipeableClose,
       handleSwipeableWillOpen,
       handleRegenerateThreadTitle,
+      projectCwdByKey,
       props.onArchiveThread,
       props.onDeletePendingTask,
       props.onDeleteThread,

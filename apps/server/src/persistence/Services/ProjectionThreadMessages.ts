@@ -52,6 +52,11 @@ export const DeleteProjectionThreadMessagesInput = Schema.Struct({
 });
 export type DeleteProjectionThreadMessagesInput = typeof DeleteProjectionThreadMessagesInput.Type;
 
+export const GetLatestUserMessageAtInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type GetLatestUserMessageAtInput = typeof GetLatestUserMessageAtInput.Type;
+
 /**
  * ProjectionThreadMessageRepositoryShape - Service API for projected thread messages.
  */
@@ -87,6 +92,16 @@ export interface ProjectionThreadMessageRepositoryShape {
   readonly deleteByThreadId: (
     input: DeleteProjectionThreadMessagesInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Read the newest user-authored message timestamp for a thread.
+   *
+   * Aggregate-only: never fetches message text, attachments, or origins.
+   * Returns `null` when the thread has no user messages.
+   */
+  readonly getLatestUserMessageAt: (
+    input: GetLatestUserMessageAtInput,
+  ) => Effect.Effect<typeof IsoDateTime.Type | null, ProjectionRepositoryError>;
 }
 
 /**

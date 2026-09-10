@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { MarkdownNode } from "react-native-nitro-markdown/headless";
+import type { NativeMarkdownDocumentChunk } from "@t3tools/mobile-markdown-text/markdown";
 
 import {
   nativeMarkdownChunkSpacing,
@@ -509,6 +510,153 @@ describe("nativeMarkdownListItemBlocks", () => {
 });
 
 describe("nativeMarkdownDocumentChunks", () => {
+  const chunksFor = (
+    children: ReadonlyArray<MarkdownNode>,
+    previous: ReadonlyArray<NativeMarkdownDocumentChunk> = [],
+  ) => nativeMarkdownDocumentChunks({ type: "document", children: [...children] }, previous);
+
+  it("keeps the active streaming chunk key stable while its end offset grows", () => {
+    const first = chunksFor([
+      {
+        type: "paragraph",
+        beg: 0,
+        end: 15,
+        children: [{ type: "text", content: "First paragraph" }],
+      },
+    ]);
+    const second = chunksFor(
+      [
+        {
+          type: "paragraph",
+          beg: 0,
+          end: 31,
+          children: [{ type: "text", content: "First paragraph keeps streaming" }],
+        },
+      ],
+      first,
+    );
+
+    expect(second[0]?.key).toBe(first[0]?.key);
+    expect(second[0]).not.toBe(first[0]);
+  });
+
+  it("reuses parser-confirmed unchanged completed chunks across streaming appends", () => {
+    const completed: ReadonlyArray<MarkdownNode> = [
+      {
+        type: "paragraph",
+        beg: 0,
+        end: 7,
+        children: [{ type: "text", content: "Before." }],
+      },
+      {
+        type: "code_block",
+        beg: 9,
+        end: 35,
+        language: "ts",
+        children: [{ type: "text", content: "const value = 1;\n" }],
+      },
+    ];
+    const first = chunksFor([
+      ...completed,
+      {
+        type: "paragraph",
+        beg: 37,
+        end: 42,
+        children: [{ type: "text", content: "After" }],
+      },
+    ]);
+    const second = chunksFor(
+      [
+        ...completed,
+        {
+          type: "paragraph",
+          beg: 37,
+          end: 58,
+          children: [{ type: "text", content: "After keeps streaming" }],
+        },
+      ],
+      first,
+    );
+
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).toBe(first[1]);
+    expect(second[2]?.key).toBe(first[2]?.key);
+    expect(second[2]).not.toBe(first[2]);
+  });
+
+  it.each([
+    [
+      "an appended fence",
+      { type: "paragraph", children: [{ type: "text", content: "```ts\nconst value = 1;" }] },
+      {
+        type: "code_block",
+        language: "ts",
+        children: [{ type: "text", content: "const value = 1;\n" }],
+      },
+    ],
+    [
+      "an appended list continuation",
+      {
+        type: "list",
+        children: [{ type: "list_item", children: [{ type: "text", content: "first" }] }],
+      },
+      {
+        type: "list",
+        children: [
+          {
+            type: "list_item",
+            children: [
+              { type: "text", content: "first" },
+              {
+                type: "list",
+                children: [{ type: "list_item", children: [{ type: "text", content: "nested" }] }],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    [
+      "an appended table delimiter",
+      { type: "paragraph", children: [{ type: "text", content: "Name | Value" }] },
+      { type: "table", children: [{ type: "text", content: "NameValueOneTwo" }] },
+    ],
+    [
+      "an appended reference definition",
+      { type: "paragraph", children: [{ type: "text", content: "[label][target]" }] },
+      {
+        type: "paragraph",
+        children: [
+          {
+            type: "link",
+            href: "https://example.com",
+            children: [{ type: "text", content: "label" }],
+          },
+        ],
+      },
+    ],
+    [
+      "an appended soft break",
+      { type: "paragraph", children: [{ type: "text", content: "first" }] },
+      {
+        type: "paragraph",
+        children: [
+          { type: "text", content: "first" },
+          { type: "soft_break" },
+          { type: "text", content: "second" },
+        ],
+      },
+    ],
+  ] satisfies ReadonlyArray<readonly [string, MarkdownNode, MarkdownNode]>)(
+    "does not reuse a chunk changed by %s",
+    (_name, before, after) => {
+      const first = chunksFor([before]);
+      const second = chunksFor([after], first);
+
+      expect(second[0]).not.toBe(first[0]);
+    },
+  );
+
   it("renders plain blockquotes as rich blocks so their marker spans wrapped lines", () => {
     const blockquote: MarkdownNode = {
       type: "blockquote",
@@ -536,7 +684,7 @@ describe("nativeMarkdownDocumentChunks", () => {
     ).toEqual([
       {
         kind: "rich",
-        key: "rich:blockquote:0:120",
+        key: "rich:blockquote:0",
         node: blockquote,
       },
     ]);
@@ -663,7 +811,7 @@ describe("nativeMarkdownDocumentChunks", () => {
     expect(chunks[0]).toMatchObject({ kind: "selectable" });
     expect(chunks[1]).toEqual({
       kind: "rich",
-      key: "rich:code_block:11:35",
+      key: "rich:code_block:11",
       node: document.children?.[1],
     });
     expect(chunks[2]).toMatchObject({ kind: "selectable" });
@@ -700,7 +848,7 @@ describe("nativeMarkdownDocumentChunks", () => {
     expect(nativeMarkdownDocumentChunks(document)).toEqual([
       {
         kind: "rich",
-        key: "rich:list:0:45",
+        key: "rich:list:0",
         node: document.children?.[0],
       },
     ]);
@@ -728,7 +876,7 @@ describe("nativeMarkdownDocumentChunks", () => {
     expect(chunks[0]).toMatchObject({ kind: "selectable" });
     expect(chunks[1]).toEqual({
       kind: "rich",
-      key: "rich:horizontal_rule:1:1",
+      key: "rich:horizontal_rule:1",
       node: document.children?.[1],
     });
     expect(chunks[2]).toMatchObject({ kind: "selectable" });
@@ -774,7 +922,7 @@ describe("nativeMarkdownDocumentChunks", () => {
     expect(chunks[0]).toMatchObject({ kind: "selectable" });
     expect(chunks[1]).toEqual({
       kind: "rich",
-      key: "rich:list:1:1",
+      key: "rich:list:1",
       node: document.children?.[1],
     });
     expect(chunks[2]).toMatchObject({ kind: "selectable" });

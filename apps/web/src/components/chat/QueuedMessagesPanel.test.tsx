@@ -1,4 +1,4 @@
-import type { OrchestrationQueuedTurn } from "@t3tools/contracts";
+import { MessageId, ThreadId, type OrchestrationQueuedTurn } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
@@ -35,10 +35,14 @@ const handoffOrigin = {
   worktreePath: "/tmp/handoff",
 } as OrchestrationQueuedTurn["origin"];
 
-function render(queuedTurns: ReadonlyArray<OrchestrationQueuedTurn>) {
+function render(
+  queuedTurns: ReadonlyArray<OrchestrationQueuedTurn>,
+  policyBlocks?: ReadonlyMap<OrchestrationQueuedTurn["id"], string>,
+) {
   return renderToStaticMarkup(
     <QueuedMessagesPanel
       queuedTurns={queuedTurns}
+      policyBlocks={policyBlocks}
       editingQueuedTurnId={null}
       editingText=""
       onStartEditingQueuedTurn={() => {}}
@@ -64,6 +68,43 @@ function renderEditing(queuedTurn: OrchestrationQueuedTurn) {
 }
 
 describe("QueuedMessagesPanel", () => {
+  it("shows paused child updates with resume and dismiss, without editing generated prompts", () => {
+    const html = renderToStaticMarkup(
+      <QueuedMessagesPanel
+        queuedTurns={[
+          queuedTurn("nudge", "Generated prompt", {
+            kind: "child-nudge",
+            updates: [
+              {
+                id: "update",
+                childThreadId: ThreadId.make("child"),
+                childTitle: "Migration helper",
+                assignmentId: MessageId.make("assignment"),
+                kind: "decision-needed",
+                summary: "Choose a path",
+              },
+            ],
+          }),
+        ]}
+        childFollowUpPaused
+        onSetChildFollowUpPaused={() => {}}
+        editingQueuedTurnId={null}
+        editingText=""
+        onStartEditingQueuedTurn={() => {}}
+        onCancelEditingQueuedTurn={() => {}}
+        onSaveEditingQueuedTurn={() => {}}
+        onDeleteQueuedTurn={() => {}}
+      />,
+    );
+    expect(html).toContain("Child follow-up paused");
+    expect(html).toContain("Resume child follow-up");
+    expect(html).toContain("Dismiss child updates");
+    expect(html).toContain("Migration helper");
+    expect(html).not.toContain("Edit queued message");
+    expect(html).not.toContain("Up next");
+    expect(html).not.toContain("Generated prompt");
+  });
+
   it("hides a healthy workspace handoff continuation", () => {
     const html = render([queuedTurn("q-1", "Continue the task", handoffOrigin)]);
 
@@ -99,5 +140,34 @@ describe("QueuedMessagesPanel", () => {
     expect(html).toContain("Editing queued message");
     expect(html).toContain("Save");
     expect(html).not.toContain("<textarea");
+  });
+
+  it("keeps the full paused-feedback explanation readable", () => {
+    const html = render([
+      {
+        ...queuedTurn("q-1", "PR feedback", undefined, "2026-01-01T00:00:05Z"),
+        failureMessage:
+          "Automatic PR feedback is paused. Review the session before enabling automatic delivery.",
+      },
+    ]);
+    expect(html).toContain("Review the session before enabling automatic delivery.");
+    expect(html).toContain("whitespace-pre-wrap break-words");
+  });
+
+  it("shows policy-blocked feedback as pending while explicit work is up next", () => {
+    const feedback = queuedTurn("feedback", "PR feedback", {
+      kind: "pull-request-monitor",
+      repository: "acme/app",
+      number: 42,
+    });
+    const html = render(
+      [feedback, queuedTurn("explicit", "My next message")],
+      new Map([[feedback.id, "Enable automatic PR feedback in Settings to resume."]]),
+    );
+    expect(html).toContain("Pending");
+    expect(html).toContain("Up next");
+    expect(html).toContain("Settings to resume.");
+    expect(html).not.toContain("Paused");
+    expect(html).not.toContain("bg-destructive/5");
   });
 });

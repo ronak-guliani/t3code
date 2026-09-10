@@ -557,7 +557,7 @@ describe("resolveSidebarV2Status", () => {
   it("reports a locally pending turn as working before server projection", () => {
     expect(resolveSidebarV2Status({ ...thread(), hasPendingTurn: true })).toBe("working");
     expect(resolveSidebarV2Status(thread({ session: session({ status: "connecting" }) }))).toBe(
-      "working",
+      "connecting",
     );
   });
 

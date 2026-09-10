@@ -214,6 +214,56 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Source chat unavailable");
   });
 
+  it.each([
+    { summary: "Migration is ready for review.", expected: "Migration is ready for review." },
+    {
+      summary:
+        "Literal example:\n\n<terminal_context>\n- Terminal 1 lines 1-2:\n  1 | echo test\n</terminal_context>",
+      expected: "&lt;terminal_context&gt;",
+    },
+    {
+      summary:
+        "Literal example:\n\n<preview_annotation>\nPreview annotation:\nId: annotation-1\nPage: Welcome\nComment: Make it bolder.\nTargets: 1 selected element.\n</preview_annotation>",
+      expected: "&lt;preview_annotation&gt;",
+    },
+  ])(
+    "shows child summary $expected without interpreting prompt metadata",
+    ({ summary, expected }) => {
+      const entry = buildUserTimelineEntry("Internal wake instructions");
+      const markup = renderToStaticMarkup(
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[
+            {
+              ...entry,
+              message: {
+                ...entry.message,
+                origin: {
+                  kind: "child-nudge",
+                  updates: [
+                    {
+                      id: "result",
+                      childThreadId: ThreadId.make("child"),
+                      childTitle: "Migration helper",
+                      assignmentId: MessageId.make("assignment"),
+                      kind: "result-available",
+                      summary,
+                    },
+                  ],
+                },
+              },
+            },
+          ]}
+        />,
+      );
+      expect(markup).toContain("Child updates");
+      expect(markup).toContain("Migration helper");
+      expect(markup).toContain(expected);
+      expect(markup).not.toContain("Internal wake instructions");
+      expect(markup).not.toContain("lucide-terminal");
+    },
+  );
+
   it("renders pull request monitor provenance above a user message bubble", () => {
     const entry = buildUserTimelineEntry("Review new PR feedback.");
     const markup = renderToStaticMarkup(
@@ -781,7 +831,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Ran command");
   });
 
-  it("keeps completed tool-call groups open while the response is still active", async () => {
+  it("keeps completed calls visible and still until an assistant response starts", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -816,12 +866,11 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).not.toContain("Tool Calls (2)");
-    expect(markup).not.toContain('aria-expanded="false"');
-    expect(markup).toContain("Read file");
-    expect(markup).toContain("Ran command");
+    expect(markup).toContain("Tool Calls (2)");
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toContain("Read 1 file");
+    expect(markup).not.toContain("work-activity-shimmer");
     expect(markup).toContain("work-group-section");
-    expect(markup).toContain("text-[length:inherit]");
     expect(markup).not.toContain("truncate text-xs leading-5");
     expect(markup).not.toContain("truncate text-[11px] leading-5");
   });
@@ -969,7 +1018,8 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Worked for 1m 55s");
     expect(markup).toContain('aria-expanded="false"');
-    expect(markup).not.toContain("Read files");
+    expect(markup).toContain("Read files");
+    expect(markup).not.toContain('aria-label="Expand Tool Calls (1)"');
     expect(markup).not.toContain(">Response<");
     expect(markup).toContain("Here is the review.");
   });
@@ -1022,11 +1072,11 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).not.toContain("Worked for");
-    expect(markup).toContain("Read files");
+    expect(markup).toContain("Read file");
     expect(markup).toContain("Here is the review.");
   });
 
-  it("keeps incomplete work-log groups expanded while the response is active", async () => {
+  it("shows work history automatically during an active work phase", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -1055,6 +1105,7 @@ describe("MessagesTimeline", () => {
               label: "Reading file",
               tone: "tool",
               isComplete: false,
+              toolLifecycleStatus: "inProgress",
             },
           },
         ]}
@@ -1062,12 +1113,13 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Work log (2)");
-    expect(markup).not.toContain('aria-expanded="false"');
+    expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain("Plan updated");
     expect(markup).toContain("Reading file");
+    expect(markup).toContain("work-activity-shimmer");
   });
 
-  it("formats changed file paths from the workspace root", async () => {
+  it("uses just the filename in a collapsed file change", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -1089,7 +1141,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("t3code/apps/web/src/session-logic.ts");
+    expect(markup).toContain("Edited session-logic.ts");
     expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
   });
 

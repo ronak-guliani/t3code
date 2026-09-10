@@ -111,6 +111,51 @@ layer("ProjectionThreadMessageRepository", (it) => {
     }),
   );
 
+  it.effect("returns the newest user message timestamp without fetching rows", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-latest-user-message-at");
+
+      assert.strictEqual(yield* repository.getLatestUserMessageAt({ threadId }), null);
+
+      yield* repository.upsert({
+        messageId: MessageId.make("message-latest-user-assistant"),
+        threadId,
+        turnId: null,
+        role: "assistant",
+        text: "newer but not a user message",
+        isStreaming: false,
+        createdAt: "2026-03-02T00:00:03.000Z",
+        updatedAt: "2026-03-02T00:00:03.000Z",
+      });
+      yield* repository.upsert({
+        messageId: MessageId.make("message-latest-user-older"),
+        threadId,
+        turnId: null,
+        role: "user",
+        text: "older",
+        isStreaming: false,
+        createdAt: "2026-03-02T00:00:01.000Z",
+        updatedAt: "2026-03-02T00:00:01.000Z",
+      });
+      yield* repository.upsert({
+        messageId: MessageId.make("message-latest-user-newer"),
+        threadId,
+        turnId: null,
+        role: "user",
+        text: "newer",
+        isStreaming: false,
+        createdAt: "2026-03-02T00:00:02.000Z",
+        updatedAt: "2026-03-02T00:00:02.000Z",
+      });
+
+      assert.strictEqual(
+        yield* repository.getLatestUserMessageAt({ threadId }),
+        "2026-03-02T00:00:02.000Z",
+      );
+    }),
+  );
+
   it.effect("persists cross-thread provenance across later message updates", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadMessageRepository;

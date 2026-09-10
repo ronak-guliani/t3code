@@ -58,6 +58,16 @@ export interface GitPreparedCommitContext {
   stagedPatch: string;
 }
 
+export interface GitRegisteredWorktree {
+  readonly path: string;
+  readonly branch: string | null;
+}
+
+export interface GitRegisteredWorktreeResult {
+  readonly isRepo: boolean;
+  readonly worktrees: ReadonlyArray<GitRegisteredWorktree>;
+}
+
 export interface ExecuteGitProgress {
   readonly onStdoutLine?: (line: string) => Effect.Effect<void, never>;
   readonly onStderrLine?: (line: string) => Effect.Effect<void, never>;
@@ -166,6 +176,11 @@ export interface GitCoreShape {
   readonly statusDetailsLocal: (cwd: string) => Effect.Effect<GitStatusDetails, GitCommandError>;
 
   /**
+   * Check cleanliness with mutation-safe Git status flags.
+   */
+  readonly isWorktreeCleanForRemoval: (cwd: string) => Effect.Effect<boolean, GitCommandError>;
+
+  /**
    * Build staged change context for commit generation.
    */
   readonly prepareCommitContext: (
@@ -233,6 +248,13 @@ export interface GitCoreShape {
   readonly listBranches: (
     input: GitListBranchesInput,
   ) => Effect.Effect<GitListBranchesResult, GitCommandError>;
+
+  /**
+   * List every registered worktree, including detached worktrees.
+   */
+  readonly listRegisteredWorktrees: (
+    cwd: string,
+  ) => Effect.Effect<GitRegisteredWorktreeResult, GitCommandError>;
 
   /**
    * Pull current branch from upstream using fast-forward only.

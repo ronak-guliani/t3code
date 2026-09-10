@@ -2124,6 +2124,7 @@ const chatNewCommand = Command.make("new", {
     Flag.withDescription("Parent thread id or title."),
   ),
   title: Flag.string("title").pipe(Flag.withDefault("New chat")),
+  followUp: Flag.choice("follow-up", ["automatic", "notify-only"]).pipe(Flag.optional),
   runtimeMode: runtimeModeFlag,
   interactionMode: interactionModeFlag,
   branch: Flag.string("branch").pipe(Flag.optional),
@@ -2153,6 +2154,9 @@ const chatNewCommand = Command.make("new", {
             new Error(`Parent thread '${parent.id}' belongs to a different project.`),
           );
         }
+        if (Option.isSome(flags.followUp) && parent === null) {
+          return yield* Effect.fail(new Error("--follow-up requires --parent"));
+        }
         const modelSelection = yield* resolveModelSelectionWithDefault(
           flags,
           resolveDefaultModelSelectionForProject(project),
@@ -2172,6 +2176,7 @@ const chatNewCommand = Command.make("new", {
         }
 
         const threadId = ThreadId.make(crypto.randomUUID());
+        const firstMessageId = MessageId.make(crypto.randomUUID());
         const createdAt = new Date().toISOString();
         const outcome = yield* runNestedThreadCreationPhases(
           threadId,
@@ -2183,6 +2188,15 @@ const chatNewCommand = Command.make("new", {
               threadId,
               projectId: project.id,
               parentThreadId: parent?.id ?? null,
+              ...(Option.isSome(flags.followUp)
+                ? {
+                    delegation: {
+                      assignmentId: firstMessageId,
+                      followUp: flags.followUp.value,
+                      completedAt: null,
+                    },
+                  }
+                : {}),
               title: flags.title,
               modelSelection,
               runtimeMode: flags.runtimeMode,
@@ -2196,7 +2210,7 @@ const chatNewCommand = Command.make("new", {
               commandId: CommandId.make(crypto.randomUUID()),
               threadId,
               message: {
-                messageId: MessageId.make(crypto.randomUUID()),
+                messageId: firstMessageId,
                 role: "user",
                 text: flags.prompt,
                 attachments: [],
@@ -2340,6 +2354,11 @@ const chatQueueAddCommand = Command.make("add", {
   ...modelSelectionFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
   prompt: Argument.string("prompt").pipe(Argument.withDescription("Queued prompt text.")),
+  crossThreadSource: Flag.string("cross-thread-source").pipe(
+    Flag.optional,
+    Flag.withDescription("Authenticated source thread for a queued cross-thread message."),
+  ),
+  crossThreadCapability: Flag.string("cross-thread-capability").pipe(Flag.optional),
 }).pipe(
   Command.withDescription("Add a queued turn."),
   Command.withHandler((flags) =>
@@ -2359,6 +2378,12 @@ const chatQueueAddCommand = Command.make("add", {
             attachments: [],
           },
           ...(Option.isSome(modelSelection) ? { modelSelection: modelSelection.value } : {}),
+          ...(Option.isSome(flags.crossThreadSource)
+            ? {
+                crossThreadSourceThreadId: ThreadId.make(flags.crossThreadSource.value),
+                crossThreadDispatchCapability: Option.getOrUndefined(flags.crossThreadCapability),
+              }
+            : {}),
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
           createdAt: new Date().toISOString(),
@@ -2471,6 +2496,32 @@ const chatCommand = Command.make("chat").pipe(
     chatInterruptCommand,
     chatStopCommand,
     chatQueueCommand,
+    Command.make("report", {
+      ...liveTargetFlags,
+      chat: Argument.string("chat"),
+      summary: Argument.string("summary"),
+      kind: Flag.choice("kind", ["progress", "decision-needed", "important-update"]),
+      reportId: Flag.string("report-id"),
+      crossThreadCapability: Flag.string("cross-thread-capability"),
+    }).pipe(
+      Command.withDescription("Report an update from an authenticated delegated child."),
+      Command.withHandler((flags) =>
+        withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
+          dispatch({
+            type: "thread.child.report",
+            commandId: CommandId.make(
+              `child-report:${thread.id}:${thread.nudging?.delegation ? `${thread.nudging.delegation.assignmentId}:` : ""}${flags.reportId}`,
+            ),
+            threadId: thread.id,
+            reportId: flags.reportId,
+            kind: flags.kind,
+            summary: flags.summary,
+            crossThreadDispatchCapability: flags.crossThreadCapability,
+            createdAt: new Date().toISOString(),
+          }).pipe(Effect.flatMap(printJson)),
+        ),
+      ),
+    ),
   ]),
 );
 

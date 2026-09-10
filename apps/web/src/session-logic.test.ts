@@ -1093,7 +1093,7 @@ describe("deriveWorkLogEntries", () => {
     );
   });
 
-  it("extracts command text from command detail when structured command metadata is missing", () => {
+  it("preserves legacy detail without guessing that it is command input", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
         id: "command-tool-windows-detail-fallback",
@@ -1108,10 +1108,51 @@ describe("deriveWorkLogEntries", () => {
     ];
 
     const [entry] = deriveWorkLogEntries(activities, undefined);
-    expect(entry?.command).toBe('rg -n -F "new Date()" .');
-    expect(entry?.rawCommand).toBe(
+    expect(entry?.command).toBeUndefined();
+    expect(entry?.rawCommand).toBeUndefined();
+    expect(entry?.detail).toBe(
       `"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoLogo -NoProfile -Command 'rg -n -F "new Date()" .'`,
     );
+  });
+
+  it.each([
+    "package.json:2: output",
+    "directConnectSmoke.integration.test.ts(419,13): error",
+    "orchestration.ts:307:export",
+  ])("never treats command output as the invoked program: %s", (detail) => {
+    const [entry] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "output-not-command",
+          kind: "tool.completed",
+          summary: "Ran command",
+          payload: { itemType: "command_execution", detail },
+        }),
+      ],
+      undefined,
+    );
+    expect(entry?.command).toBeUndefined();
+    expect(entry?.detail).toBe(detail);
+  });
+
+  it("extracts rawInput command without substituting command output", () => {
+    const [entry] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "command-raw-input",
+          kind: "tool.completed",
+          summary: "Ran command",
+          payload: {
+            itemType: "command_execution",
+            detail: "package.json:2: output",
+            data: { rawInput: { command: "pnpm lint" } },
+          },
+        }),
+      ],
+      undefined,
+    );
+    expect(entry?.command).toBe("pnpm lint");
+    expect(entry?.detail).toBe("package.json:2: output");
   });
 
   it("does not unwrap shell commands when no wrapper flag is present", () => {
@@ -1582,7 +1623,13 @@ describe("deriveWorkLogEntries", () => {
       stableId: "tool:tool-copilot-read-1",
       toolTitle: "Read file",
       itemType: "dynamic_tool_call",
+      sourceActivityKind: "tool.completed",
+      toolLifecycleStatus: "completed",
+      toolData: { rawOutput: { content: "export function deriveWorkLogEntries() {}\n" } },
     });
+    expect(deriveWorkLogEntries([toolUpdate], undefined)[0]?.toolLifecycleStatus).toBe(
+      "inProgress",
+    );
     expect(initialTimelineEntries[0]?.id).toBe("tool:tool-copilot-read-1");
     expect(completedTimelineEntries[1]?.id).toBe("tool:tool-copilot-read-1");
   });
@@ -1911,6 +1958,11 @@ describe("hasToolActivityForTurn", () => {
 });
 
 describe("hasActionableQueuedTurn", () => {
+  it("does not turn an unread child update into parent execution status", () => {
+    expect(hasActionableQueuedTurn([{ failedAt: null, origin: { kind: "child-nudge" } }])).toBe(
+      false,
+    );
+  });
   it("is true only for non-failed queued turns", () => {
     expect(hasActionableQueuedTurn(undefined)).toBe(false);
     expect(hasActionableQueuedTurn([])).toBe(false);

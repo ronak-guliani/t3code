@@ -9,7 +9,14 @@ import {
   useMemo,
   useRef,
 } from "react";
-import { Platform, Pressable, View, type ColorValue, type PressableProps } from "react-native";
+import {
+  Platform,
+  Pressable,
+  View,
+  type ColorValue,
+  type PressableProps,
+  type AccessibilityProps,
+} from "react-native";
 import { withUniwind } from "uniwind";
 import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
 
@@ -146,10 +153,11 @@ export function ControlPill(props: {
 export function ControlPillMenu(
   props: Omit<ComponentProps<typeof MenuView>, "children" | "themeVariant"> &
     Pick<
-      PressableProps,
-      | "accessibilityRole"
-      | "accessibilityLabel"
+      AccessibilityProps,
+      | "accessible"
       | "accessibilityHint"
+      | "accessibilityLabel"
+      | "accessibilityRole"
       | "accessibilityState"
       | "onAccessibilityTap"
     > & {

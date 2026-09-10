@@ -1,7 +1,7 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { TextInputWrapper } from "expo-paste-input";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, View, useWindowDimensions } from "react-native";
 import { KeyboardAvoidingView, KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -17,6 +17,7 @@ import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import { convertPastedImagesToAttachments, pickComposerImages } from "../../lib/composerImages";
 import { useNativePaste } from "../../lib/useNativePaste";
 import { setPendingConnectionError } from "../../state/use-remote-environment-registry";
+import { releaseUnusedComposerAttachmentFiles } from "../../state/use-composer-drafts";
 import { appendReviewCommentToDraft } from "../../state/use-thread-composer-state";
 import {
   clearReviewCommentTarget,
@@ -54,6 +55,8 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
     Record<string, ReadonlyArray<ReviewHighlightedToken>>
   >({});
   const [attachments, setAttachments] = useState<ReadonlyArray<DraftComposerImageAttachment>>([]);
+  const attachmentsRef = useRef(attachments);
+  const mountedRef = useRef(true);
   const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
 
   const selectedLines = useMemo(
@@ -83,6 +86,30 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
     clearReviewCommentTarget();
     navigation.goBack();
   }, [navigation]);
+  const appendAttachments = useCallback((images: ReadonlyArray<DraftComposerImageAttachment>) => {
+    if (images.length === 0) return;
+    if (!mountedRef.current) {
+      void releaseUnusedComposerAttachmentFiles(images).catch((error) => {
+        reportClientError("[review comment] error releasing late images", error);
+      });
+      return;
+    }
+    setAttachments((current) => {
+      const next = [...current, ...images];
+      attachmentsRef.current = next;
+      return next;
+    });
+  }, []);
+  const removeAttachment = useCallback((imageId: string) => {
+    const removed = attachmentsRef.current.find((image) => image.id === imageId);
+    if (!removed) return;
+    const next = attachmentsRef.current.filter((image) => image.id !== imageId);
+    attachmentsRef.current = next;
+    setAttachments(next);
+    void releaseUnusedComposerAttachmentFiles([removed]).catch((error) => {
+      reportClientError("[review comment] error releasing removed image", error);
+    });
+  }, []);
   const handleNativePaste = useNativePaste((uris) => {
     void (async () => {
       try {
@@ -90,14 +117,25 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
           uris,
           existingCount: attachments.length,
         });
-        if (images.length > 0) {
-          setAttachments((current) => [...current, ...images]);
-        }
+        appendAttachments(images);
       } catch (error) {
         reportClientError("[review comment] error converting pasted images", error);
       }
     })();
   });
+
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+      const abandoned = attachmentsRef.current;
+      attachmentsRef.current = [];
+      if (abandoned.length === 0) return;
+      void releaseUnusedComposerAttachmentFiles(abandoned).catch((error) => {
+        reportClientError("[review comment] error releasing abandoned images", error);
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!target || selectedLines.length === 0) {
@@ -129,9 +167,7 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
 
   async function handlePickImages(): Promise<void> {
     const result = await pickComposerImages({ existingCount: attachments.length });
-    if (result.images.length > 0) {
-      setAttachments((current) => [...current, ...result.images]);
-    }
+    appendAttachments(result.images);
     if (result.error) {
       setPendingConnectionError(result.error);
     }
@@ -148,6 +184,7 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
       text: formatReviewCommentContext(target, commentText),
       attachments,
     });
+    attachmentsRef.current = [];
     setAttachments([]);
     dismissComposer();
   }, [attachments, commentText, dismissComposer, environmentId, target, threadId]);
@@ -275,11 +312,7 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
                         imageSize={60}
                         onPressPreview={setPreviewFile}
                         removeButtonPlacement="gutter"
-                        onRemove={(imageId) => {
-                          setAttachments((current) =>
-                            current.filter((image) => image.id !== imageId),
-                          );
-                        }}
+                        onRemove={removeAttachment}
                       />
                     </View>
                   ) : null}

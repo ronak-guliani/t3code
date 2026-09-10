@@ -1,5 +1,6 @@
 import {
   DEFAULT_REVIEW_CHANGES_PROMPT_TEMPLATE,
+  type AgentWorkflowSettings,
   type ReviewChangesScope,
   type ReviewChangesWorkflowSettings,
 } from "@t3tools/contracts";
@@ -8,6 +9,14 @@ export const REVIEW_CHANGES_WORKFLOW_ID = "review-changes";
 
 export const REVIEW_CHANGES_VARIANT_IDS = ["uncommitted", "against-base", "pull-request"] as const;
 export type ReviewChangesVariantId = (typeof REVIEW_CHANGES_VARIANT_IDS)[number];
+
+export function isReviewChangesWorkflowEnabled(
+  settings: Pick<AgentWorkflowSettings, "reviewChanges" | "builtInOverrides">,
+): boolean {
+  return (
+    settings.builtInOverrides[REVIEW_CHANGES_WORKFLOW_ID]?.enabled ?? settings.reviewChanges.enabled
+  );
+}
 
 export function parseReviewChangesScope(value: unknown): ReviewChangesScope | null {
   switch (value) {

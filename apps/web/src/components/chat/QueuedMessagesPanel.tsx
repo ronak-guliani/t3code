@@ -5,6 +5,10 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 
 interface QueuedMessagesPanelProps {
+  childFollowUpPaused?: boolean;
+  onSetChildFollowUpPaused?: ((paused: boolean) => void) | undefined;
+  onRetryQueuedTurn?: (turn: OrchestrationQueuedTurn) => void;
+  policyBlocks?: ReadonlyMap<QueuedTurnId, string> | undefined;
   queuedTurns: ReadonlyArray<OrchestrationQueuedTurn>;
   editingQueuedTurnId: QueuedTurnId | null;
   editingText: string;
@@ -25,6 +29,9 @@ function isHiddenQueuedTurn(queuedTurn: OrchestrationQueuedTurn): boolean {
 }
 
 function queuedTurnLabel(queuedTurn: OrchestrationQueuedTurn): string | null {
+  if (queuedTurn.origin?.kind === "child-nudge") {
+    return `Child updates: ${queuedTurn.origin.updates.map((update) => update.childTitle).join(", ")}`;
+  }
   return queuedTurn.origin?.kind === "workspace-handoff"
     ? `Continue in ${queuedTurn.origin.branch}`
     : queuedTurn.message.text;
@@ -39,6 +46,10 @@ function attachmentLabel(queuedTurn: OrchestrationQueuedTurn): string | null {
 }
 
 export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
+  childFollowUpPaused = false,
+  onSetChildFollowUpPaused,
+  onRetryQueuedTurn,
+  policyBlocks,
   queuedTurns,
   editingQueuedTurnId,
   editingText,
@@ -47,8 +58,10 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
   onSaveEditingQueuedTurn,
   onDeleteQueuedTurn,
 }: QueuedMessagesPanelProps) {
-  // Labels track the real dispatch position: a hidden handoff continuation is
-  // still queued ahead of the user's own messages and runs before them.
+  const nextEligibleId = queuedTurns.find(
+    (turn) =>
+      !policyBlocks?.has(turn.id) && !(childFollowUpPaused && turn.origin?.kind === "child-nudge"),
+  )?.id;
   const visibleQueuedTurns = queuedTurns.flatMap((queuedTurn, queueIndex) =>
     isHiddenQueuedTurn(queuedTurn) ? [] : [{ queuedTurn, queueIndex }],
   );
@@ -58,18 +71,42 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
 
   return (
     <div className="composer-input-font border-b border-border/55 px-3 py-2">
+      {queuedTurns.some((turn) => turn.origin?.kind === "child-nudge") &&
+      onSetChildFollowUpPaused ? (
+        <div className="mb-1 flex items-center justify-between text-muted-foreground">
+          <span>
+            {childFollowUpPaused ? "Child follow-up paused" : "Automatic child follow-up"}
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={() => onSetChildFollowUpPaused(!childFollowUpPaused)}
+          >
+            {childFollowUpPaused ? "Resume child follow-up" : "Pause child follow-up"}
+          </Button>
+        </div>
+      ) : null}
       <ul className="flex flex-col gap-0.5">
         {visibleQueuedTurns.map(({ queuedTurn, queueIndex }) => {
           const isEditing = editingQueuedTurnId === queuedTurn.id;
-          const isPaused = queuedTurn.failedAt !== null;
+          const isFailed = queuedTurn.failedAt !== null;
+          const isNudge = queuedTurn.origin?.kind === "child-nudge";
+          const policyBlock =
+            policyBlocks?.get(queuedTurn.id) ??
+            (isNudge && childFollowUpPaused ? "Automatic follow-up is paused." : undefined);
           const meta = attachmentLabel(queuedTurn);
-          const label = queueIndex === 0 ? "Up next" : `Queued ${queueIndex + 1}`;
+          const label = policyBlock
+            ? "Pending"
+            : queuedTurn.id === nextEligibleId
+              ? "Up next"
+              : `Queued ${queueIndex + 1}`;
           return (
             <li
               key={queuedTurn.id}
               className={cn(
                 "group -mx-1 rounded-lg px-1 py-1 transition-colors",
-                isPaused ? "bg-destructive/5" : "hover:bg-muted/35",
+                isFailed ? "bg-destructive/5" : "hover:bg-muted/35",
               )}
             >
               {isEditing ? (
@@ -106,10 +143,10 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                   <span
                     className={cn(
                       "composer-input-font-secondary w-16 shrink-0 font-medium text-muted-foreground",
-                      isPaused ? "text-destructive" : null,
+                      isFailed ? "text-destructive" : null,
                     )}
                   >
-                    {isPaused ? "Paused" : label}
+                    {isFailed ? "Paused" : label}
                   </span>
                   <div className="min-w-0 flex-1 truncate text-foreground/85">
                     {queuedTurnLabel(queuedTurn) || (meta ?? "Queued message")}
@@ -120,22 +157,35 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                     ) : null}
                   </div>
                   <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                    {isNudge ? (
+                      isFailed && onRetryQueuedTurn ? (
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => onRetryQueuedTurn(queuedTurn)}
+                        >
+                          Retry child follow-up
+                        </Button>
+                      ) : null
+                    ) : (
+                      <Button
+                        type="button"
+                        size="icon-xs"
+                        variant="ghost"
+                        aria-label="Edit queued message"
+                        title="Edit"
+                        onClick={() => onStartEditingQueuedTurn(queuedTurn)}
+                      >
+                        <Pencil />
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       size="icon-xs"
                       variant="ghost"
-                      aria-label="Edit queued message"
-                      title="Edit"
-                      onClick={() => onStartEditingQueuedTurn(queuedTurn)}
-                    >
-                      <Pencil />
-                    </Button>
-                    <Button
-                      type="button"
-                      size="icon-xs"
-                      variant="ghost"
-                      aria-label="Delete queued message"
-                      title="Delete"
+                      aria-label={isNudge ? "Dismiss child updates" : "Delete queued message"}
+                      title={isNudge ? "Dismiss" : "Delete"}
                       onClick={() => onDeleteQueuedTurn(queuedTurn.id)}
                     >
                       <Trash2 />
@@ -143,9 +193,14 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                   </div>
                 </div>
               )}
-              {!isEditing && isPaused && queuedTurn.failureMessage ? (
-                <div className="composer-input-font-secondary ml-[4.625rem] mt-0.5 truncate text-destructive">
+              {!isEditing && isFailed && queuedTurn.failureMessage ? (
+                <div className="composer-input-font-secondary ml-[4.625rem] mt-0.5 whitespace-pre-wrap break-words text-destructive">
                   {queuedTurn.failureMessage}
+                </div>
+              ) : null}
+              {!isEditing && policyBlock ? (
+                <div className="composer-input-font-secondary ml-[4.625rem] mt-0.5 break-words text-muted-foreground">
+                  {policyBlock}
                 </div>
               ) : null}
             </li>
