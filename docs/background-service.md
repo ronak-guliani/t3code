@@ -90,7 +90,8 @@ use explicit remote pairing when automatic local attachment is unavailable.
 Before issuing that credential, desktop verifies ownership and write permissions on the
 environment directory and runtime/identity/database files. Windows uses the current account
 SID and filesystem ACLs; only that account, SYSTEM, and local Administrators may have mutation
-rights. Missing or unverifiable ACLs fail closed. POSIX requires matching ownership and no
+rights. The probe uses its own Windows PowerShell built-in modules rather than inherited
+PowerShell 7 module paths. Missing or unverifiable ACLs fail closed. POSIX requires matching ownership and no
 group/other write permission.
 
 Every server launcher acquires a lifetime startup claim before services, migrations, or HTTP

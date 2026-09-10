@@ -22,12 +22,13 @@ const entry = () => ({
 });
 let directory: string | undefined;
 afterEach(async () => {
+  vi.unstubAllEnvs();
   if (directory) await rm(directory, { recursive: true, force: true });
 });
 
 describe("Windows local attachment ownership", () => {
   it.skipIf(process.platform !== "win32")(
-    "checks real Windows ACLs and refuses a writable-by-everyone directory",
+    "checks real Windows ACLs despite inherited module paths and refuses unsafe permissions",
     async () => {
       directory = await mkdtemp(join(tmpdir(), "t3-native-acl-"));
       const userdata = join(directory, "userdata");
@@ -40,6 +41,19 @@ describe("Windows local attachment ownership", () => {
       ];
       await writeFile(paths[2]!, "test");
       await writeFile(paths[3]!, "test");
+      const inheritedModules = join(directory, "inherited-modules");
+      for (const [name, command] of [
+        ["Microsoft.PowerShell.Security", "Get-Acl"],
+        ["Microsoft.PowerShell.Utility", "ConvertFrom-Json"],
+      ] as const) {
+        const moduleDirectory = join(inheritedModules, name);
+        await mkdir(moduleDirectory, { recursive: true });
+        await writeFile(
+          join(moduleDirectory, `${name}.psm1`),
+          `function ${command} { throw 'Inherited module must not be loaded' }\nExport-ModuleMember -Function ${command}`,
+        );
+      }
+      vi.stubEnv("PSModulePath", inheritedModules);
       const powershell = win32.join(
         process.env.SystemRoot ?? "C:\\Windows",
         "System32",
@@ -50,7 +64,13 @@ describe("Windows local attachment ownership", () => {
       const run = (script: string) =>
         promisify(execFile)(
           powershell,
-          ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+          [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `$env:PSModulePath = [System.IO.Path]::Combine($PSHOME, 'Modules')\n${script}`,
+          ],
           {
             env: { ...process.env, T3CODE_TEST_ACL_PATHS: JSON.stringify(paths) },
             timeout: 15000,
@@ -70,6 +90,7 @@ describe("Windows local attachment ownership", () => {
       }
     `);
       await verifyLocalEnvironmentOwnership(directory);
+      expect(process.env.PSModulePath).toBe(inheritedModules);
       await run(`
       $ErrorActionPreference = 'Stop'
       $path = (ConvertFrom-Json -InputObject $env:T3CODE_TEST_ACL_PATHS)[0]

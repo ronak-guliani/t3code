@@ -34,6 +34,8 @@ const ownershipError = () =>
 // Paths travel as JSON data, never as PowerShell source or wildcard patterns.
 const inspectAclScript = `
 $ErrorActionPreference = 'Stop'
+# Node can inherit PowerShell 7 module paths; use only this runtime's built-in modules.
+$env:PSModulePath = [System.IO.Path]::Combine($PSHOME, 'Modules')
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $paths = ConvertFrom-Json -InputObject $env:T3CODE_LOCAL_ACL_PATHS
 $entries = @($paths | ForEach-Object {
