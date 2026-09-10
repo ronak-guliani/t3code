@@ -1,9 +1,14 @@
-import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, writeFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inspectLocalEnvironment } from "@t3tools/shared/localEnvironment";
 import { prepareLocalAttachment } from "./localEnvironment.ts";
+import { verifyLocalEnvironmentOwnership } from "./localEnvironmentOwnership.ts";
+
+vi.mock("./localEnvironmentOwnership.ts", () => ({
+  verifyLocalEnvironmentOwnership: vi.fn(),
+}));
 
 let directory: string;
 let cliEntry: string;
@@ -15,6 +20,7 @@ const descriptor = {
   capabilities: {},
 };
 beforeEach(async () => {
+  vi.mocked(verifyLocalEnvironmentOwnership).mockResolvedValue(undefined);
   directory = await realpath(await mkdtemp(join(tmpdir(), "t3-attach-test-")));
   cliEntry = join(directory, "fixture.mjs");
   await mkdir(join(directory, "userdata"), { mode: 0o700 });
@@ -34,7 +40,14 @@ beforeEach(async () => {
     "fetch",
     vi.fn(async () => Response.json(descriptor)),
   );
-  await writeFile(cliEntry, 'console.log(JSON.stringify({ credential: "test-only-credential" }));');
+  await writeFile(
+    cliEntry,
+    `
+    import { writeFileSync } from "node:fs";
+    writeFileSync(${JSON.stringify(join(directory, "credential-issued"))}, "");
+    console.log(JSON.stringify({ credential: "test-only-credential" }));
+  `,
+  );
 });
 afterEach(async () => {
   vi.unstubAllGlobals();
@@ -47,6 +60,15 @@ async function attach(appVersion = descriptor.serverVersion) {
   return prepareLocalAttachment({ environment, cliEntry, appVersion });
 }
 describe("desktop attachment", () => {
+  it("does not issue credentials when OS ownership verification fails", async () => {
+    vi.mocked(verifyLocalEnvironmentOwnership).mockRejectedValue(
+      new Error("Ownership not verified"),
+    );
+    await expect(attach()).rejects.toThrow("Ownership not verified");
+    await expect(access(join(directory, "credential-issued"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
   it("uses a verified existing local endpoint and a private short-lived credential", async () => {
     expect(await attach()).toEqual({
       origin: "http://127.0.0.1:13773",

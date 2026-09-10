@@ -1,9 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { lstat } from "node:fs/promises";
-import { join } from "node:path";
 import { Schema } from "effect";
 import { inspectLocalEnvironment, type LocalEnvironment } from "@t3tools/shared/localEnvironment";
+import { verifyLocalEnvironmentOwnership } from "./localEnvironmentOwnership.ts";
 
 const Pairing = Schema.Struct({ credential: Schema.String });
 const decodePairing = Schema.decodeUnknownSync(Schema.fromJsonString(Pairing));
@@ -29,21 +28,7 @@ export async function prepareLocalAttachment(input: {
       "The local server and desktop versions differ. Update them to the same version, or use explicit remote pairing.",
     );
   }
-  for (const path of [
-    current.baseDir,
-    join(current.baseDir, "userdata"),
-    join(current.baseDir, "userdata", "environment-id"),
-  ]) {
-    const info = await lstat(path);
-    if (
-      info.isSymbolicLink() ||
-      (process.getuid && (info.uid !== process.getuid() || (info.mode & 0o022) !== 0))
-    ) {
-      throw new Error(
-        "Automatic attachment requires local environment files owned by this user and not writable by other users.",
-      );
-    }
-  }
+  await verifyLocalEnvironmentOwnership(current.baseDir);
   const { stdout } = await promisify(execFile)(
     process.execPath,
     [

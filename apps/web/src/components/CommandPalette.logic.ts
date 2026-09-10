@@ -2,6 +2,9 @@ import {
   type KeybindingCommand,
   type FilesystemBrowseEntry,
   type EnvironmentId,
+  type ThreadId,
+  type ScopedThreadRef,
+  type OrchestrationTranscriptSearchMatch,
 } from "@t3tools/contracts";
 import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import { type ReactNode } from "react";
@@ -39,6 +42,46 @@ export interface CommandPaletteActionItem extends CommandPaletteItem {
   readonly kind: "action";
   readonly keepOpen?: boolean;
   readonly run: () => Promise<void>;
+}
+
+export interface TranscriptSearchItem {
+  readonly environmentId: EnvironmentId;
+  readonly match: OrchestrationTranscriptSearchMatch;
+}
+
+function threadSearchValue(environmentId: EnvironmentId, threadId: ThreadId): string {
+  return `thread:${environmentId}:${threadId}`;
+}
+
+export function buildTranscriptActionItems(input: {
+  readonly matches: readonly TranscriptSearchItem[];
+  readonly metadataGroups: readonly CommandPaletteGroup[];
+  readonly icon: ReactNode;
+  readonly runThread: (ref: ScopedThreadRef) => Promise<void>;
+}): CommandPaletteActionItem[] {
+  const metadataValues = new Set(
+    input.metadataGroups.flatMap((group) => group.items.map((item) => item.value)),
+  );
+  return input.matches
+    .filter(
+      ({ environmentId, match }) =>
+        !metadataValues.has(threadSearchValue(environmentId, match.threadId)),
+    )
+    .map(({ environmentId, match }) => {
+      const context = [match.projectTitle, match.branch ? `#${match.branch}` : null]
+        .filter((part): part is string => part !== null)
+        .join(" · ");
+      return {
+        kind: "action",
+        value: `transcript:${environmentId}:${match.threadId}`,
+        environmentId,
+        searchTerms: [match.title, match.excerpt],
+        title: match.title,
+        description: `${context ? `${context} · ` : ""}${match.role === "user" ? "You" : "Assistant"}: ${match.excerpt}`,
+        icon: input.icon,
+        run: () => input.runThread({ environmentId, threadId: match.threadId }),
+      };
+    });
 }
 
 export interface CommandPaletteSubmenuItem extends CommandPaletteItem {
@@ -187,7 +230,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
     return Object.assign(
       {
         kind: "action" as const,
-        value: `thread:${thread.environmentId}:${thread.id}`,
+        value: threadSearchValue(thread.environmentId, thread.id),
         searchTerms,
         searchIndex: buildCommandPaletteSearchIndex(searchTerms),
         title: thread.title,

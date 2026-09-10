@@ -87,6 +87,18 @@ starts its bundled backend there. Version mismatches, unreachable live processes
 identity mismatches block attachment instead of falling back. Update both installations or
 use explicit remote pairing when automatic local attachment is unavailable.
 
+Before issuing that credential, desktop verifies ownership and write permissions on the
+environment directory and runtime/identity/database files. Windows uses the current account
+SID and filesystem ACLs; only that account, SYSTEM, and local Administrators may have mutation
+rights. Missing or unverifiable ACLs fail closed. POSIX requires matching ownership and no
+group/other write permission.
+
+Every server launcher acquires a lifetime startup claim before services, migrations, or HTTP
+startup, then rechecks persisted runtime ownership. The claim uses a dedicated
+`server-startup.sqlite` file in the selected state directory; never delete it to bypass a
+running server. A losing launcher exits without starting another backend, and process exit
+releases the claim. Keep environment state on a local filesystem with working SQLite locks.
+
 **Settings > Connections > Local environments** shows identity, data directory, process,
 endpoint, build, and whether desktop owns the backend. Selection requires native confirmation
 and restarts desktop; finish active desktop work first. Dev builds and explicit home overrides

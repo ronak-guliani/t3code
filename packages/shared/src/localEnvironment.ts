@@ -103,11 +103,17 @@ export async function inspectLocalEnvironment(
     serverVersion: null,
     error: null,
   };
+  let runtimeMetadata: Pick<LocalEnvironment, "origin" | "pid" | "startedAt"> = {
+    origin: null,
+    pid: null,
+    startedAt: null,
+  };
   try {
     const text = await optionalText(join(canonical, stateDirectory, "server-runtime.json"));
     if (text === null) return base;
     const runtime = decodeRuntime(text);
     if (runtime.pid <= 0) throw new Error("Invalid environment process ID.");
+    runtimeMetadata = { origin: null, pid: runtime.pid, startedAt: runtime.startedAt };
     try {
       process.kill(runtime.pid, 0);
     } catch (error) {
@@ -125,6 +131,7 @@ export async function inspectLocalEnvironment(
     ) {
       throw new Error("Local discovery requires an exact loopback HTTP origin.");
     }
+    runtimeMetadata = { ...runtimeMetadata, origin: url.origin };
     const response = await fetch(`${url.origin}/.well-known/t3/environment`, {
       signal: AbortSignal.timeout(2_000),
       redirect: "error",
@@ -145,6 +152,7 @@ export async function inspectLocalEnvironment(
   } catch (error) {
     return {
       ...base,
+      ...runtimeMetadata,
       status: "unavailable",
       error: error instanceof Error ? error.message : "Environment inspection failed.",
     };

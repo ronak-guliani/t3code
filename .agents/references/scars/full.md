@@ -17,6 +17,8 @@
 
 ## Runtime lifecycle and projection foundations
 
+- Runtime PID files published after HTTP startup are observations, not startup ownership. Hold a shared per-state-directory OS-backed claim before constructing runtime services/migrations, revalidate legacy runtime evidence under it, and never unlink the claim file to recover a crash.
+
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
 - Session startup/resume and turn lifecycle require predictable recovery: terminal reconciliation must settle the matching projected turn and clear `session.activeTurnId`; preserve a pre-acknowledgement start failure's `messageId`; and preserve terminal provider-event ordering during normal adapter shutdown.
 - `TurnLifecycleRuntime` owns provider-session reconciliation, provider intent execution, runtime-event ingestion, and completion checkpoint ordering behind one `start`/`drain` interface; reconcile sessions before starting workers, and keep explicit thread-title regeneration outside this module.

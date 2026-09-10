@@ -5,6 +5,7 @@ import {
   buildCommandPaletteSearchIndex,
   buildProjectActionItems,
   buildThreadActionItems,
+  buildTranscriptActionItems,
   filterCommandPaletteGroups,
   type CommandPaletteGroup,
 } from "./CommandPalette.logic";
@@ -59,6 +60,51 @@ describe("buildCommandPaletteSearchIndex", () => {
       normalizedTerms: ["fix navbar", "feature/branch"],
       haystack: "fix navbar feature/branch",
     });
+  });
+});
+
+describe("transcript search identity", () => {
+  it("deduplicates mixed metadata/transcript matches only within the same environment", async () => {
+    const remote = EnvironmentId.make("environment-remote");
+    const sharedThreadId = ThreadId.make("shared-thread");
+    const matches = [LOCAL_ENVIRONMENT_ID, remote].map((environmentId) => ({
+      environmentId,
+      match: {
+        threadId: sharedThreadId,
+        title: "Matching thread",
+        projectTitle: "Project",
+        branch: null,
+        role: "user" as const,
+        excerpt: "Search phrase",
+        updatedAt: "2026-09-10T00:00:00.000Z",
+      },
+    }));
+    const metadataItems = buildThreadActionItems({
+      threads: [makeThread({ id: sharedThreadId })],
+      projectTitleById: new Map(),
+      sortOrder: "created_at",
+      icon: null,
+      runThread: async () => {},
+    });
+    const runThread = vi.fn(async () => {});
+    const items = buildTranscriptActionItems({
+      matches,
+      metadataGroups: [{ value: "threads", label: "Threads", items: metadataItems }],
+      icon: null,
+      runThread,
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      environmentId: remote,
+      value: `transcript:${remote}:${sharedThreadId}`,
+    });
+    await items[0]!.run();
+    expect(runThread).toHaveBeenCalledWith({ environmentId: remote, threadId: sharedThreadId });
+    expect(
+      buildTranscriptActionItems({ matches, metadataGroups: [], icon: null, runThread }).map(
+        (item) => item.environmentId,
+      ),
+    ).toEqual([LOCAL_ENVIRONMENT_ID, remote]);
   });
 });
 

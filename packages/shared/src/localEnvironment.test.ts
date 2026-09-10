@@ -88,6 +88,9 @@ describe("local environment discovery and default", () => {
     expect(await inspectLocalEnvironment(dir)).toMatchObject({
       status: "unavailable",
       error: "Connection refused",
+      pid: process.pid,
+      origin: "http://127.0.0.1:13773",
+      startedAt: expect.any(String),
     });
   });
   it.each([
@@ -100,7 +103,11 @@ describe("local environment discovery and default", () => {
     await runtime(dir, origin);
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
-    expect(await inspectLocalEnvironment(dir)).toMatchObject({ status: "unavailable" });
+    expect(await inspectLocalEnvironment(dir)).toMatchObject({
+      status: "unavailable",
+      pid: process.pid,
+      origin: null,
+    });
     expect(fetch).not.toHaveBeenCalled();
   });
   it("rejects malformed runtime files instead of launching a second server", async () => {
