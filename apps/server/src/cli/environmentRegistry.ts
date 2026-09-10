@@ -156,12 +156,14 @@ export const writeEnvironmentRegistry = (
     const registryPath = yield* environmentRegistryPath(baseDir);
     const tempPath = `${registryPath}.${randomUUID()}.tmp`;
     yield* fs.makeDirectory(path.dirname(registryPath), { recursive: true });
-    yield* fs.writeFileString(tempPath, `${JSON.stringify(registry, null, 2)}\n`, {
-      mode: ENVIRONMENT_REGISTRY_FILE_MODE,
-    });
-    yield* fs.chmod(tempPath, ENVIRONMENT_REGISTRY_FILE_MODE);
-    yield* fs.rename(tempPath, registryPath);
-    yield* fs.chmod(registryPath, ENVIRONMENT_REGISTRY_FILE_MODE);
+    yield* Effect.gen(function* () {
+      yield* fs.writeFileString(tempPath, `${JSON.stringify(registry, null, 2)}\n`, {
+        mode: ENVIRONMENT_REGISTRY_FILE_MODE,
+      });
+      yield* fs.chmod(tempPath, ENVIRONMENT_REGISTRY_FILE_MODE);
+      yield* fs.rename(tempPath, registryPath);
+      yield* fs.chmod(registryPath, ENVIRONMENT_REGISTRY_FILE_MODE);
+    }).pipe(Effect.onError(() => fs.remove(tempPath).pipe(Effect.ignore)));
   });
 
 export const manualEnvironmentCandidates = (

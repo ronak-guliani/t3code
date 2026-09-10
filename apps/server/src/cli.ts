@@ -244,7 +244,7 @@ const liveTokenFlag = Flag.string("token").pipe(
   Flag.optional,
 );
 const liveEnvironmentFlag = Flag.string("environment").pipe(
-  Flag.withDescription("Account environment ID or unambiguous label for this command."),
+  Flag.withDescription("Environment ID, source-qualified ID, or unambiguous label."),
   Flag.optional,
 );
 const payloadFlag = Flag.string("payload").pipe(
@@ -4797,7 +4797,7 @@ const envListCommand = Command.make("list", {
         environments: {
           ...Object.fromEntries(
             Object.entries(registry.environments).map(([id, entry]) => [
-              id,
+              `manual:${id}`,
               {
                 source: "manual",
                 selector: `manual:${id}`,

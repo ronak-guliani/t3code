@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -97,6 +97,31 @@ it("writes the typed registry with owner-only permissions", async () => {
     const path = join(baseDir, "cli-environments.json");
     assert.equal((await stat(path)).mode & 0o777, 0o600);
     assert.include(await readFile(path, "utf8"), '"source": "manual"');
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+it("removes the temporary registry file when persistence fails", async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), "t3-cli-env-registry-cleanup-"));
+  try {
+    await mkdir(join(baseDir, "cli-environments.json"));
+
+    await Effect.runPromise(
+      writeEnvironmentRegistry(Option.some(baseDir), {
+        version: 2,
+        environments: {
+          desktop: {
+            id: "desktop",
+            label: "Desktop",
+            url: "https://desktop.example.test",
+            token: "secret",
+          },
+        },
+      }).pipe(Effect.flip, Effect.provide(NodeServices.layer)),
+    );
+
+    assert.isFalse((await readdir(baseDir)).some((entry) => entry.endsWith(".tmp")));
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }

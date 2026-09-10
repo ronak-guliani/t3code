@@ -4,8 +4,16 @@ import { verifyDpopProof } from "@t3tools/shared/dpop";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
-import type { ServerSecretStoreShape } from "../auth/ServerSecretStore.ts";
-import { findReusableEnvironmentToken, makeCliDpopSigner } from "./accountEnvironment.ts";
+import {
+  SecretStorePersistError,
+  SecretStoreReadError,
+  type ServerSecretStoreShape,
+} from "../auth/ServerSecretStore.ts";
+import {
+  findReusableEnvironmentToken,
+  makeCliDpopSigner,
+  makeRelayTokenStore,
+} from "./accountEnvironment.ts";
 
 const token = {
   accountId: "account-a",
@@ -106,5 +114,23 @@ it.effect("persists a DPoP key and creates bound proofs", () =>
       nowEpochSeconds: Math.floor(Date.now() / 1_000),
     });
     assert.isTrue(verified.ok);
+  }),
+);
+
+it.effect("treats relay token cache failures as best-effort", () =>
+  Effect.gen(function* () {
+    const secrets: ServerSecretStoreShape = {
+      get: (name) => Effect.fail(new SecretStoreReadError({ resource: name })),
+      set: (name) => Effect.fail(new SecretStorePersistError({ resource: name })),
+      create: () => Effect.die("unused"),
+      getOrCreateRandom: () => Effect.die("unused"),
+      remove: (name) => Effect.fail(new SecretStorePersistError({ resource: name })),
+      list: () => Effect.die("unused"),
+    };
+    const store = makeRelayTokenStore(secrets);
+
+    assert.deepEqual(yield* store.load, []);
+    yield* store.save([]);
+    yield* store.clear;
   }),
 );

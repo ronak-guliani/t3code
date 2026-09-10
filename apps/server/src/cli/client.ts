@@ -252,6 +252,7 @@ const candidateTarget = (
   candidate: CliEnvironmentCandidate,
   baseDir: string,
   selectionReason: "--environment" | "persisted-selection",
+  manualAuthBaseDir?: string,
 ): Effect.Effect<ResolvedCliLiveTarget, CliLiveTargetError> =>
   candidate.source === "manual"
     ? normalizeHttpOrigin(candidate.profile.url).pipe(
@@ -261,6 +262,7 @@ const candidateTarget = (
               kind: "bearer",
               origin,
               ...(candidate.profile.token === undefined ? {} : { token: candidate.profile.token }),
+              ...(manualAuthBaseDir === undefined ? {} : { baseDir: manualAuthBaseDir }),
               source: "manual",
               selectionReason,
               id: candidate.id,
@@ -303,7 +305,9 @@ export const resolveLiveTarget = (flags: CliLiveTargetFlags) =>
       });
     }
 
-    const baseDir = yield* resolveCliBaseDir(flags.registryBaseDir ?? Option.none());
+    const registryBaseDir = flags.registryBaseDir ?? Option.none();
+    const baseDir = yield* resolveCliBaseDir(registryBaseDir);
+    const manualAuthBaseDir = Option.isSome(registryBaseDir) ? baseDir : undefined;
     const registry = yield* readEnvironmentRegistry(Option.some(baseDir)).pipe(
       Effect.mapError(
         (cause) =>
@@ -334,7 +338,7 @@ export const resolveLiveTarget = (flags: CliLiveTargetFlags) =>
             }),
         ),
       );
-      return yield* candidateTarget(candidate, baseDir, "--environment");
+      return yield* candidateTarget(candidate, baseDir, "--environment", manualAuthBaseDir);
     }
 
     if (registry.current?.source === "manual") {
@@ -355,6 +359,7 @@ export const resolveLiveTarget = (flags: CliLiveTargetFlags) =>
         },
         baseDir,
         "persisted-selection",
+        manualAuthBaseDir,
       );
     }
 

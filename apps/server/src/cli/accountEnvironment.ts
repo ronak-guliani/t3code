@@ -347,14 +347,28 @@ const getAccountSession = Effect.fn("cli.accountEnvironment.getAccountSession")(
   } satisfies CliAccountSession;
 });
 
-const makeRelayTokenStore = (
+const logRelayTokenStoreFailure = (operation: "load" | "save" | "clear", cause: unknown) =>
+  Effect.logWarning("CLI relay token cache unavailable; continuing without cached credentials.", {
+    operation,
+    cause,
+  });
+
+export const makeRelayTokenStore = (
   secrets: ServerSecretStore.ServerSecretStoreShape,
 ): ManagedRelay.ManagedRelayAccessTokenStore => ({
   load: readJsonSecret(secrets, RELAY_TOKEN_CACHE_SECRET, decodeRelayTokenCache, []).pipe(
-    Effect.orDie,
+    Effect.tapError((cause) => logRelayTokenStoreFailure("load", cause)),
+    Effect.orElseSucceed(() => []),
   ),
-  save: (entries) => writeJsonSecret(secrets, RELAY_TOKEN_CACHE_SECRET, entries).pipe(Effect.orDie),
-  clear: secrets.remove(RELAY_TOKEN_CACHE_SECRET).pipe(Effect.orDie),
+  save: (entries) =>
+    writeJsonSecret(secrets, RELAY_TOKEN_CACHE_SECRET, entries).pipe(
+      Effect.tapError((cause) => logRelayTokenStoreFailure("save", cause)),
+      Effect.ignore,
+    ),
+  clear: secrets.remove(RELAY_TOKEN_CACHE_SECRET).pipe(
+    Effect.tapError((cause) => logRelayTokenStoreFailure("clear", cause)),
+    Effect.ignore,
+  ),
 });
 
 const loadEnvironmentTokens = (secrets: ServerSecretStore.ServerSecretStoreShape) =>

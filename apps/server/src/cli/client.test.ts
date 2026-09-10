@@ -199,6 +199,43 @@ it("uses a persisted manual environment before legacy local discovery", async ()
   }
 });
 
+it("preserves an explicit registry base for tokenless manual environment authentication", async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), "t3-cli-tokenless-manual-env-"));
+  try {
+    await writeFile(
+      join(baseDir, "cli-environments.json"),
+      JSON.stringify({
+        version: 2,
+        environments: {
+          local: {
+            id: "local",
+            label: "Local",
+            url: "http://127.0.0.1:45678",
+          },
+        },
+      }),
+    );
+
+    const target = await Effect.runPromise(
+      resolveLiveTarget({
+        url: Option.none(),
+        token: Option.none(),
+        baseDir: Option.none(),
+        environment: Option.some("manual:local"),
+        registryBaseDir: Option.some(baseDir),
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    assert.equal(target.kind, "bearer");
+    if (target.kind !== "bearer") throw new Error("Expected manual bearer target.");
+    assert.equal(target.source, "manual");
+    assert.equal(target.baseDir, baseDir);
+    assert.isUndefined(target.token);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
 it("keeps explicit base-dir authoritative over selected and one-shot environments", async () => {
   const baseDir = await mkdtemp(join(tmpdir(), "t3-cli-explicit-base-dir-"));
   const runtimeStatePath = join(baseDir, "userdata", "server-runtime.json");
