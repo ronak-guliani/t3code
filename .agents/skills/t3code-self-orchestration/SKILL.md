@@ -63,6 +63,8 @@ are rejected before mutation; case-only path differences do not establish indepe
 
 ## Child prompt contract
 
+Apply [skill-delivery.md](../../references/skill-delivery.md) to the parent request and every child prompt. State investigation-only, implementation, commit, and publication permissions explicitly; omit unauthorized template blocks. Delegation cannot expand the parent's authorization, and "leave uncommitted" or "do not push" must survive into each child's instructions.
+
 Helper prompts must be self-contained:
 
 - Goal and expected output.
