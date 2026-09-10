@@ -1376,6 +1376,10 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
       assert.equal(list.environments.local?.secrets?.API_KEY, "<redacted>");
 
       yield* runCliWithRuntime(["env", "rename", "local", "Renamed Local", "--base-dir", baseDir]);
+      yield* runCliWithRuntime(["env", "use", "Renamed Local", "--base-dir", baseDir]);
+      yield* runCliWithRuntime(["env", "clear", "--base-dir", baseDir]);
+      const clearedOutput = yield* captureStdout(runCli(["env", "list", "--base-dir", baseDir]));
+      assert.isNull((JSON.parse(clearedOutput.output) as { readonly current: unknown }).current);
       yield* runCliWithRuntime([
         "env",
         "secret",

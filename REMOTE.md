@@ -79,6 +79,46 @@ From there, connect from another device in either of these ways:
 
 Use `t3 serve --help` for the full flag reference. It supports the same general startup options as the normal server command, including an optional `cwd` argument.
 
+### Use account environments from the CLI
+
+After `t3 connect login`, the CLI can discover every environment linked to that
+T3 Connect account without copying a tunnel URL or credential:
+
+```bash
+t3 env list
+t3 env use "MacBook Pro Dev"
+t3 chat list
+t3 project list
+t3 env current
+t3 env clear
+```
+
+Use `--environment <environment-id-or-unambiguous-label>` for a one-command
+override. Source-qualified selectors such as `account:<environment-id>` and
+`manual:<profile-id>` are deterministic when labels or IDs collide. Ambiguous
+labels are rejected.
+`t3 env clear` removes the saved selection and restores legacy local runtime
+discovery.
+
+Target precedence is deterministic:
+
+1. `--url` (with optional `--token`)
+2. explicit `--base-dir`, or a compatibility `--token` without `--url`
+3. `--environment`
+4. the selection saved by `t3 env use`
+5. legacy local runtime discovery
+
+An explicit `--base-dir` therefore keeps MCP-launched agent commands pinned to
+their hosting environment. Once a manual or account environment is selected,
+authentication, offline, or configuration failures are reported for that
+environment and never fall back to the local host.
+
+Account targets use the existing Connect OAuth refresh credential, relay DPoP
+authorization, a short-lived environment access token with standard client
+scopes, and a newly minted single-use WebSocket ticket for each connection or
+reconnection. The CLI stores its DPoP key and token caches in the same
+owner-only server secret directory as the Connect login.
+
 ### Pair an already-running server
 
 `t3 pair` discovers a live foreground server or the per-base-directory background service, verifies its PID and public environment descriptor, and mints a one-time client credential without restarting it.
