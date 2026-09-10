@@ -77,8 +77,8 @@ describe("buildProjectActionItems", () => {
     });
 
     expect(items[0]?.searchIndex).toEqual({
-      normalizedTerms: ["web app", "/users/example/large project"],
-      haystack: "web app /users/example/large project",
+      normalizedTerms: ["web app", "/users/example/large project", "environment-local"],
+      haystack: "web app /users/example/large project environment-local",
     });
 
     const groups = filterCommandPaletteGroups({
@@ -122,8 +122,8 @@ describe("buildThreadActionItems", () => {
       });
 
       expect(items.map((item) => item.value)).toEqual([
-        "thread:thread-older",
-        "thread:thread-newer",
+        "thread:environment-local:thread-older",
+        "thread:environment-local:thread-newer",
       ]);
       expect(items[0]?.timestamp).toBe("1d ago");
       expect(items[1]?.timestamp).toBe("5d ago");
@@ -164,8 +164,8 @@ describe("buildThreadActionItems", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]?.value).toBe("threads-search");
     expect(groups[0]?.items.map((item) => item.value)).toEqual([
-      "thread:thread-title-match",
-      "thread:thread-context-match",
+      "thread:environment-local:thread-title-match",
+      "thread:environment-local:thread-context-match",
     ]);
   });
 
@@ -220,6 +220,6 @@ describe("buildThreadActionItems", () => {
       runThread: async (_thread) => undefined,
     });
 
-    expect(items.map((item) => item.value)).toEqual(["thread:thread-active"]);
+    expect(items.map((item) => item.value)).toEqual(["thread:environment-local:thread-active"]);
   });
 });

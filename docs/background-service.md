@@ -61,6 +61,75 @@ failure and retains the runtime rather than deleting files a process might still
 
 ### Multiple desktop and CLI environments
 
+Threads belong to a server environment, not the phone, browser, or desktop viewing it.
+Identical project names or folders on two environments do not imply shared history.
+
+Use this fork's executable (not an unrelated `npx t3` installation) to inspect and choose:
+
+```sh
+t3 local list
+t3 local select --base-dir /absolute/path/to/existing/.t3-rg
+```
+
+The explicit selection is stored in `~/.config/t3/local-environment.json` with the environment
+ID. Ordinary CLI defaults and the regular desktop application follow it on their next launch.
+`--base-dir`, `T3CODE_HOME`, injected agent targets, and development desktop launches retain
+their explicit isolation. A missing or changed selected identity fails rather than opening
+another environment. Existing legacy `~/.t3` defaults remain valid; when it is absent but a
+known non-development home exists, the CLI asks you to select one instead of silently creating
+another. Discovery checks known home directories, not your entire filesystem.
+
+On first regular desktop launch, choose an existing environment or explicitly keep a separate
+desktop environment. A running, same-version, same-user loopback server is attached using a
+private short-lived pairing credential: no token copying and no second server process.
+Desktop exit never stops an attached server. If the selected environment is stopped, desktop
+starts its bundled backend there. Version mismatches, unreachable live processes, and endpoint
+identity mismatches block attachment instead of falling back. Update both installations or
+use explicit remote pairing when automatic local attachment is unavailable.
+
+**Settings > Connections > Local environments** shows identity, data directory, process,
+endpoint, build, and whether desktop owns the backend. Selection requires native confirmation
+and restarts desktop; finish active desktop work first. Dev builds and explicit home overrides
+show their pinned state and cannot silently change their own target through this picker.
+
+Thread headers, sidebar rows, search results, and the composer identify their execution host.
+The **Other environments** hint offers loaded threads from same-named projects on other hosts;
+it is a possible-mismatch hint, not proof that two repositories are identical. Connect or add
+an environment before expecting its threads to be visible.
+
+#### Safe consolidation and recovery
+
+Choose one environment as the default and retain the others as explicit connections for their
+history. Selection never merges databases, moves project checkouts, deletes old environments,
+or replays provider sessions. Before retiring an unused environment, stop it and make a backup:
+
+```sh
+t3 local backup --base-dir /absolute/path/to/home --output /private/backups/t3-before-consolidation
+```
+
+The output must be a new directory outside the source. A completed backup has a versioned
+manifest with per-file SHA-256 hashes. Running/unverifiable environments, changed source files,
+symlinks, special files, and existing backup destinations are refused. An incomplete backup is
+retained for diagnosis without a usable manifest; the original is never modified.
+
+Backups include private history **and credentials**. Store them privately, restrict Windows
+folder permissions to your user, and never upload or commit them. This is a full data-directory
+backup, not a portable history interchange format; external project checkouts and OS keychain
+entries are not included.
+
+Recovery is intentionally limited to the original, absent directory. Stop all writers,
+preserve the old directory separately, then run:
+
+```sh
+t3 local restore --archive /private/backups/t3-before-consolidation --base-dir /original/absolute/path/to/home --confirm
+```
+
+Recovery verifies the manifest and identity, stages files before publishing, and discards stale
+runtime PID information. It refuses existing destinations, portable identity clones, and merges.
+Keep preserved copies stopped. Do not run two copies of the same environment identity.
+Moving individual threads between existing environments is not supported by this workflow;
+keep both connected or use the existing Markdown thread export for a reference copy.
+
 Each environment must keep its own data directory. Do not start a foreground `t3` against a
 directory already served in the background. Connect targets the server's actual listening
 address family and port rather than `localhost`, so a separate IPv6 server cannot intercept

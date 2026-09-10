@@ -39,6 +39,9 @@ const SHOW_NOTIFICATION_CHANNEL = "desktop:show-notification";
 const NOTIFICATION_CLICKED_CHANNEL = "desktop:notification-clicked";
 
 contextBridge.exposeInMainWorld("desktopBridge", {
+  getLocalEnvironments: () => ipcRenderer.invoke("desktop:local-environments"),
+  selectLocalEnvironment: (baseDir) =>
+    ipcRenderer.invoke("desktop:select-local-environment", baseDir),
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(GET_APP_BRANDING_CHANNEL);
     if (typeof result !== "object" || result === null) {

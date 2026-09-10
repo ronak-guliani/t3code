@@ -147,6 +147,8 @@
 
 ## Pairing and environment recovery
 
+- A desktop attaching to an existing local host must verify the persisted environment ID against the live loopback descriptor, fail on version/ownership ambiguity, and leave the external process untouched on exit. An explicit missing default must never create a replacement history.
+
 - Owned tunnels are independent of account-linked Connect. Persist disabled intent before stopping, stop on unreadable configuration, and verify the public endpoint's environment ID before minting pairing links. Keep client revocation available even when the origin listens only on loopback.
 - Owner role does not override explicit session scopes; enforce operation scopes on every management route. Connector crash backoff must gate polling reconciliation as well as exit supervision.
 - Pairing QR payloads must use the shared canonical `/pair#token=...` URL; desktop-only deep-link shapes can silently parse as tokenless hosts in the RN client.

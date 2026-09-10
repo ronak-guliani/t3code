@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./localEnvironment": {
+      "types": "./src/localEnvironment.ts",
+      "import": "./src/localEnvironment.ts"
+    },
     "./cliRuntime": {
       "types": "./src/cliRuntime.ts",
       "import": "./src/cliRuntime.ts"

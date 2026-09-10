@@ -46,6 +46,7 @@ import {
 import { Button } from "./ui/button";
 import { SidebarMenuButton, SidebarMenuItem } from "./ui/sidebar";
 import { Tooltip, TooltipTrigger } from "./ui/tooltip";
+import { EnvironmentIdentity } from "./EnvironmentIdentity";
 
 // Lifts the selected row off the sidebar surface. Kept as a plain shadow
 // rather than a ring because the row already spends `ring` on focus-visible,
@@ -407,6 +408,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
               </span>
               <span className="flex min-w-0 items-center gap-[var(--app-sidebar-row-inline-gap)] text-[length:var(--app-sidebar-meta-font-size)] font-normal text-muted-foreground">
                 <span className="truncate">{projectName}</span>
+                <EnvironmentIdentity environmentId={thread.environmentId} compact />
                 <span className="shrink-0 tabular-nums">
                   {compactSidebarTimeLabel(
                     formatRelativeTimeLabel(thread.updatedAt ?? thread.createdAt),
@@ -476,6 +478,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
               <span className="min-w-0 flex-1 truncate text-muted-foreground/85">
                 {projectName}
               </span>
+              <EnvironmentIdentity environmentId={thread.environmentId} compact />
               {/* Status at rest, settle/snooze on hover: the label hides rather
                 than unmounting so the header line never reflows, and it swaps
                 instantly so the row feels immediate under the pointer. */}

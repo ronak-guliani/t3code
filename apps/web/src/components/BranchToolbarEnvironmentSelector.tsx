@@ -34,7 +34,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
     () =>
       availableEnvironments.map((env) => ({
         value: env.environmentId,
-        label: env.label,
+        label: `${env.label} · ${env.environmentId.slice(0, 6)}`,
       })),
     [availableEnvironments],
   );
@@ -47,7 +47,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
         ) : (
           <CloudIcon className="size-3" />
         )}
-        {activeEnvironment?.label ?? "Run on"}
+        {activeEnvironment?.label ?? "Run on"} · {environmentId.slice(0, 6)}
       </span>
     );
   }
@@ -78,7 +78,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
                 ) : (
                   <CloudIcon className="size-3" />
                 )}
-                {env.label}
+                {env.label} · {env.environmentId.slice(0, 6)}
               </span>
             </SelectItem>
           ))}

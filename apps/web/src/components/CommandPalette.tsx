@@ -643,9 +643,13 @@ function OpenCommandPaletteDialog() {
     (option) => ({
       kind: "action",
       value: `action:add-project:environment:${option.environmentId}`,
-      searchTerms: [option.label, option.environmentId, option.isPrimary ? "this device" : ""],
+      searchTerms: [
+        option.label,
+        option.environmentId,
+        option.isPrimary ? "primary environment" : "",
+      ],
       title: option.label,
-      description: option.isPrimary ? "This device" : option.environmentId,
+      description: option.environmentId,
       icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
       keepOpen: true,
       run: async () => {

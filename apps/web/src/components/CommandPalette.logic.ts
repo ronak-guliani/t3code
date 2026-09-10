@@ -1,4 +1,8 @@
-import { type KeybindingCommand, type FilesystemBrowseEntry } from "@t3tools/contracts";
+import {
+  type KeybindingCommand,
+  type FilesystemBrowseEntry,
+  type EnvironmentId,
+} from "@t3tools/contracts";
 import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import { type ReactNode } from "react";
 import { sortThreads } from "../lib/threadSort";
@@ -17,6 +21,7 @@ export interface CommandPaletteItem {
   readonly title: ReactNode;
   readonly description?: string;
   readonly timestamp?: string;
+  readonly environmentId?: EnvironmentId;
   readonly icon: ReactNode;
   /** Optional content rendered inline before the title text. */
   readonly titleLeadingContent?: ReactNode;
@@ -111,7 +116,7 @@ export function buildProjectActionItems(input: {
   runProject: (project: Project) => Promise<void>;
 }): CommandPaletteActionItem[] {
   return input.projects.map((project) => {
-    const searchTerms = [project.name, project.cwd];
+    const searchTerms = [project.name, project.cwd, project.environmentId];
 
     return {
       kind: "action",
@@ -119,6 +124,7 @@ export function buildProjectActionItems(input: {
       searchTerms,
       searchIndex: buildCommandPaletteSearchIndex(searchTerms),
       title: project.name,
+      environmentId: project.environmentId,
       description: project.cwd,
       icon: input.icon(project),
       run: async () => {
@@ -171,15 +177,21 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
 
     const leadingContent = input.renderLeadingContent?.(thread);
     const trailingContent = input.renderTrailingContent?.(thread);
-    const searchTerms = [thread.title, projectTitle ?? ``, thread.branch ?? ``];
+    const searchTerms = [
+      thread.title,
+      projectTitle ?? ``,
+      thread.branch ?? ``,
+      thread.environmentId,
+    ];
 
     return Object.assign(
       {
         kind: "action" as const,
-        value: `thread:${thread.id}`,
+        value: `thread:${thread.environmentId}:${thread.id}`,
         searchTerms,
         searchIndex: buildCommandPaletteSearchIndex(searchTerms),
         title: thread.title,
+        environmentId: thread.environmentId,
         description: descriptionParts.join(` · `),
         timestamp: formatRelativeTimeLabel(
           thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,

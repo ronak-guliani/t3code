@@ -96,7 +96,7 @@ describe("resolveEnvironmentOptionLabel", () => {
     ).toBe("Julius's Mac mini");
   });
 
-  it("falls back to 'This device' for generic primary labels", () => {
+  it("identifies a generic primary server without claiming it is the viewing device", () => {
     expect(
       resolveEnvironmentOptionLabel({
         isPrimary: true,
@@ -104,7 +104,7 @@ describe("resolveEnvironmentOptionLabel", () => {
         runtimeLabel: "Local environment",
         savedLabel: "Local",
       }),
-    ).toBe("This device");
+    ).toBe(`Primary environment ${localEnvironmentId.slice(0, 8)}`);
   });
 
   it("keeps configured labels for non-primary environments", () => {
