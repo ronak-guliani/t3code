@@ -13,7 +13,10 @@ const list = Command.make("list").pipe(
   Command.withDescription("Inspect known local environments without changing the default."),
   Command.withHandler(() =>
     Effect.gen(function* () {
-      const environments = yield* Effect.tryPromise(() => discoverLocalEnvironments());
+      const { environments, selectionError } = yield* Effect.tryPromise(() =>
+        discoverLocalEnvironments(),
+      );
+      if (selectionError) yield* Console.error(selectionError);
       yield* Console.log(JSON.stringify(environments, null, 2));
     }),
   ),

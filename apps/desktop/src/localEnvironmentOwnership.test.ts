@@ -177,4 +177,17 @@ describe("Windows local attachment ownership", () => {
       }),
     ).rejects.toThrow("ACL unavailable");
   });
+  it("fails with a controlled retry error when runtime evidence disappears", async () => {
+    directory = await mkdtemp(join(tmpdir(), "t3-missing-runtime-"));
+    await mkdir(join(directory, "userdata"));
+    await writeFile(join(directory, "userdata", "environment-id"), "test");
+    const probe = vi.fn(async () => ({ currentUserSid: sid, entries: [] }));
+    await expect(
+      verifyLocalEnvironmentOwnership(directory, {
+        platform: "win32",
+        windowsAcl: probe,
+      }),
+    ).rejects.toThrow("Restart the desktop to retry; no pairing credential was issued");
+    expect(probe).not.toHaveBeenCalled();
+  });
 });

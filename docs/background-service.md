@@ -78,6 +78,9 @@ their explicit isolation. A missing or changed selected identity fails rather th
 another environment. Existing legacy `~/.t3` defaults remain valid; when it is absent but a
 known non-development home exists, the CLI asks you to select one instead of silently creating
 another. Discovery checks known home directories, not your entire filesystem.
+If the saved selection is broken, `t3 local list` still prints healthy candidates and warns on
+stderr; the desktop inspector shows the same warning without disabling explicit selection.
+Startup remains blocked until you repair the selection; discovery never changes the default.
 
 On first regular desktop launch, choose an existing environment or explicitly keep a separate
 desktop environment. A running, same-version, same-user loopback server is attached using a

@@ -64,6 +64,11 @@ export function LocalEnvironmentsSettings() {
           {error}
         </p>
       ) : null}
+      {inspection?.selectionError ? (
+        <p role="alert" className="text-xs text-destructive">
+          {inspection.selectionError}
+        </p>
+      ) : null}
       {inspection && !inspection.canChooseDefault ? (
         <p className="text-xs text-muted-foreground">
           This launch is pinned to its data directory. Development apps and explicit T3CODE_HOME

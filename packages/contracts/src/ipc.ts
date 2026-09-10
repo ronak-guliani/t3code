@@ -887,6 +887,7 @@ export interface DesktopPreviewBridge {
 
 export interface DesktopBridge {
   getLocalEnvironments?: () => Promise<{
+    readonly selectionError?: string | null;
     readonly currentBaseDir: string;
     readonly canChooseDefault: boolean;
     readonly ownership: "desktop" | "external";

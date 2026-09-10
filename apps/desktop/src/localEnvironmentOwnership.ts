@@ -129,7 +129,20 @@ export async function verifyLocalEnvironmentOwnership(
       if (!isMissingFile(error)) throw error;
     }
   }
-  const stats = await Promise.all(paths.map((path) => lstat(path)));
+  const stats = await Promise.all(
+    paths.map(async (path) => {
+      try {
+        return await lstat(path);
+      } catch (error) {
+        if (isMissingFile(error)) {
+          throw new Error(
+            "The local environment changed while verifying ownership. Restart the desktop to retry; no pairing credential was issued.",
+          );
+        }
+        throw error;
+      }
+    }),
+  );
   if (stats.some((info) => info.isSymbolicLink())) throw ownershipError();
   if ((options.platform ?? process.platform) === "win32") {
     assertWindowsOwnership(await (options.windowsAcl ?? inspectWindowsAcl)(paths), paths.length);

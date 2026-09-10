@@ -1695,7 +1695,7 @@ function registerIpcHandlers(): void {
       throw new Error("Local environment inspection is only available in the desktop application.");
     }
     return {
-      environments: await discoverLocalEnvironments([BASE_DIR, backendBaseDir]),
+      ...(await discoverLocalEnvironments([BASE_DIR, backendBaseDir])),
       currentBaseDir: backendBaseDir,
       ownership: attachedLocalEnvironment ? "external" : "desktop",
       canChooseDefault: canChooseLocalDefault,
@@ -2381,7 +2381,7 @@ async function bootstrap(): Promise<void> {
     if (selected) {
       backendBaseDir = selected.baseDir;
     } else {
-      const candidates = await discoverLocalEnvironments([BASE_DIR]);
+      const { environments: candidates } = await discoverLocalEnvironments([BASE_DIR]);
       if (candidates.length > 0) {
         const choice = await dialog.showMessageBox({
           type: "question",

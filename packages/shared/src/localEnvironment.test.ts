@@ -77,10 +77,38 @@ describe("local environment discovery and default", () => {
     await environment("arbitrary-project");
     const alias = join(home, "alias");
     await symlink(dir, alias, process.platform === "win32" ? "junction" : "dir");
-    expect(await discoverLocalEnvironments([alias, dir], home)).toMatchObject([
-      { baseDir: dir, status: "offline", environmentId: "test-environment" },
-    ]);
+    expect(await discoverLocalEnvironments([alias, dir], home)).toMatchObject({
+      selectionError: null,
+      environments: [{ baseDir: dir, status: "offline", environmentId: "test-environment" }],
+    });
   });
+  it.each(["missing", "changed", "relative", "malformed"])(
+    "lists repair candidates without changing a %s selection or relaxing default resolution",
+    async (failure) => {
+      const selected = await environment("custom-home", "selected-id");
+      const healthy = await environment();
+      await selectLocalEnvironment(selected, home);
+      if (failure === "missing") await rm(selected, { recursive: true });
+      if (failure === "changed")
+        await writeFile(join(selected, "userdata", "environment-id"), "changed-id");
+      if (failure === "relative")
+        await writeFile(
+          localSelectionPath(home),
+          JSON.stringify({ version: 1, baseDir: "relative", environmentId: "selected-id" }),
+        );
+      if (failure === "malformed") await writeFile(localSelectionPath(home), "{");
+      const saved = await readFile(localSelectionPath(home), "utf8");
+      expect(await discoverLocalEnvironments([], home)).toMatchObject({
+        selectionError: expect.stringContaining("no default was changed"),
+        environments: [{ baseDir: healthy, environmentId: "test-environment" }],
+      });
+      await expect(resolveDefaultLocalBaseDir(home)).rejects.toThrow();
+      expect(await readFile(localSelectionPath(home), "utf8")).toBe(saved);
+      await selectLocalEnvironment(healthy, home);
+      expect(await resolveDefaultLocalBaseDir(home)).toBe(healthy);
+      expect((await discoverLocalEnvironments([], home)).selectionError).toBeNull();
+    },
+  );
   it("does not treat an alive but unreachable process as offline", async () => {
     const dir = await environment();
     await runtime(dir, "http://127.0.0.1:13773");

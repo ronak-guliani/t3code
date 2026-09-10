@@ -178,8 +178,15 @@ export async function resolveDefaultLocalBaseDir(home = homedir()): Promise<stri
 export async function discoverLocalEnvironments(
   extra: readonly string[] = [],
   home = homedir(),
-): Promise<LocalEnvironment[]> {
-  const selected = await readLocalEnvironmentSelection(home);
+): Promise<{ environments: LocalEnvironment[]; selectionError: string | null }> {
+  let selected: typeof Selection.Type | null = null;
+  let selectionError: string | null = null;
+  try {
+    selected = await readLocalEnvironmentSelection(home);
+  } catch {
+    selectionError =
+      "The saved local environment selection cannot be used. Select an existing environment again; no default was changed.";
+  }
   const candidates = [
     ...new Set([
       ...(selected ? [selected.baseDir] : []),
@@ -199,9 +206,12 @@ export async function discoverLocalEnvironments(
       return inspectLocalEnvironment(baseDir);
     }),
   );
-  return found
-    .filter((entry): entry is LocalEnvironment => entry !== null)
-    .filter(
-      (entry, index, all) => all.findIndex((other) => other.baseDir === entry.baseDir) === index,
-    );
+  return {
+    selectionError,
+    environments: found
+      .filter((entry): entry is LocalEnvironment => entry !== null)
+      .filter(
+        (entry, index, all) => all.findIndex((other) => other.baseDir === entry.baseDir) === index,
+      ),
+  };
 }
