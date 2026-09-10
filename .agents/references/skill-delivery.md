@@ -11,6 +11,8 @@ Use these terms consistently in implementation, PR, and delegation workflows. Re
 
 "Draft a PR description" requests text, not a GitHub draft PR. "Create a PR" authorizes publication and defaults to ready-for-review; use draft status only when explicitly requested.
 
+Thread association is a persistent side effect, not read-only inspection. Investigation-only, description-only, implementation, and commit delivery do not authorize associating a PR to a thread. Publication includes association of the created or existing PR; an explicit request to associate an existing PR authorizes only that association, not publication or other mutations.
+
 "Prepare for review" alone does not authorize publication. Follow explicit implementation or commit instructions, otherwise inspect and report readiness without mutations. Ask only when a consequential ambiguity prevents safe progress.
 
 Honor "leave uncommitted", "do not push", and investigation-only limits in every invoked skill and child prompt. Do not pass permission blocks beyond the authorized delivery. If requested publication conflicts with an explicit restriction, stop at the permitted boundary and report the conflict.

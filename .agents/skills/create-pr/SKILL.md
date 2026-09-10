@@ -62,7 +62,7 @@ For publication requests, create a **ready-for-review, non-draft PR** by default
    gh pr view --json url --jq .url
    ```
 
-   If a PR exists, report its URL and update it only with explicit user approval. Otherwise, commit any task-scoped changes and push if the branch has no upstream or commits have not been pushed:
+   If a PR exists, skip creation and proceed to step 8 with its URL. Associate it with the current thread, but update its GitHub metadata or branch only with explicit user approval. Otherwise, commit any task-scoped changes and push if the branch has no upstream or commits have not been pushed:
 
    ```sh
    git push -u origin "$(git branch --show-current)"
@@ -76,9 +76,9 @@ For publication requests, create a **ready-for-review, non-draft PR** by default
 
    Omit `--draft` for normal PR creation. Use `--draft` only for an explicitly requested draft PR; use `--reviewer` and `--label` only when requested.
 
-8. After `gh pr create` succeeds, call the T3 `associate_pull_request` tool with the returned PR URL. This is required so the current thread's sidebar PR badge is durable; do not infer association from the checked-out branch. Return the PR URL after the association succeeds.
+8. Call the T3 `associate_pull_request` tool with the existing PR URL from step 6 or the newly created PR URL from step 7. This publication-only step is required so the current thread's sidebar PR badge is durable; do not infer association from the checked-out branch. Return the PR URL after the association succeeds.
 
-   If association fails, report the created PR URL and the association blocker. Retry association when appropriate, never PR creation.
+   If association fails, report the existing or created PR URL and the association blocker. Retry association when appropriate, never PR creation.
 
 ## Safety rules
 
