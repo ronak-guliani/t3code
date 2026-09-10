@@ -716,6 +716,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ORDER BY created_at DESC, activity_id DESC
             ) AS activity_rank
           FROM projection_thread_activities
+          -- Scope to known threads before windowing: orphaned rows for
+          -- deleted/purged threads are never attached to the snapshot, so
+          -- ranking them only burns sort + join work on every snapshot.
+          WHERE thread_id IN (
+            SELECT thread_id
+            FROM projection_threads
+          )
         )
         SELECT
           activities.activity_id AS "activityId",
@@ -746,20 +753,26 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WITH background_tasks AS (
           SELECT
             thread_id,
-            json_extract(payload_json, '$.taskId') AS task_id,
+            task_id,
             MAX(created_at) AS latest_created_at,
             MAX(activity_id) AS latest_activity_id
           FROM projection_thread_activities
           WHERE kind IN ('task.started', 'task.completed')
-            AND json_extract(payload_json, '$.taskId') IS NOT NULL
+            AND task_id IS NOT NULL
+            -- The shell snapshot only publishes live threads; ranking tasks
+            -- for deleted threads decodes rows the client never sees.
+            AND thread_id IN (
+              SELECT thread_id
+              FROM projection_threads
+              WHERE deleted_at IS NULL
+            )
             AND EXISTS (
               SELECT 1
               FROM projection_thread_activities AS started
               WHERE started.thread_id = projection_thread_activities.thread_id
+                AND started.task_id = projection_thread_activities.task_id
                 AND started.kind = 'task.started'
-                AND json_extract(started.payload_json, '$.taskType') = 'background-agent'
-                AND json_extract(started.payload_json, '$.taskId') =
-                  json_extract(projection_thread_activities.payload_json, '$.taskId')
+                AND started.task_type = 'background-agent'
             )
           GROUP BY thread_id, task_id
         ),
@@ -786,7 +799,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM ranked_tasks
         INNER JOIN projection_thread_activities AS activities
           ON activities.thread_id = ranked_tasks.thread_id
-          AND json_extract(activities.payload_json, '$.taskId') = ranked_tasks.task_id
+          AND activities.task_id = ranked_tasks.task_id
         WHERE ranked_tasks.task_rank <= ${MAX_BACKGROUND_AGENT_RUNS_PER_THREAD}
           AND activities.kind IN ('task.started', 'task.completed')
         ORDER BY
@@ -1337,22 +1350,30 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         WITH approval_ranked AS (
           SELECT
-            activities.*,
+            activity_id,
+            thread_id,
+            turn_id,
+            tone,
+            kind,
+            summary,
+            payload_json,
+            sequence,
+            created_at,
             ROW_NUMBER() OVER (
-              PARTITION BY json_extract(payload_json, '$.requestId')
+              PARTITION BY request_id
               ORDER BY
                 created_at DESC,
                 CASE WHEN kind = 'approval.requested' THEN 0 ELSE 1 END DESC,
                 activity_id DESC
             ) AS lifecycle_rank
-          FROM projection_thread_activities AS activities
+          FROM projection_thread_activities
           WHERE thread_id = ${threadId}
             AND kind IN (
               'approval.requested',
               'approval.resolved',
               'provider.approval.respond.failed'
             )
-            AND json_extract(payload_json, '$.requestId') IS NOT NULL
+            AND request_id IS NOT NULL
             AND (
               kind <> 'provider.approval.respond.failed'
               OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
@@ -1365,22 +1386,30 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
         user_input_ranked AS (
           SELECT
-            activities.*,
+            activity_id,
+            thread_id,
+            turn_id,
+            tone,
+            kind,
+            summary,
+            payload_json,
+            sequence,
+            created_at,
             ROW_NUMBER() OVER (
-              PARTITION BY json_extract(payload_json, '$.requestId')
+              PARTITION BY request_id
               ORDER BY
                 created_at DESC,
                 CASE WHEN kind = 'user-input.requested' THEN 0 ELSE 1 END DESC,
                 activity_id DESC
             ) AS lifecycle_rank
-          FROM projection_thread_activities AS activities
+          FROM projection_thread_activities
           WHERE thread_id = ${threadId}
             AND kind IN (
               'user-input.requested',
               'user-input.resolved',
               'provider.user-input.respond.failed'
             )
-            AND json_extract(payload_json, '$.requestId') IS NOT NULL
+            AND request_id IS NOT NULL
             AND (
               kind <> 'provider.user-input.respond.failed'
               OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
@@ -1391,23 +1420,31 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
         task_ranked AS (
           SELECT
-            activities.*,
+            activity_id,
+            thread_id,
+            turn_id,
+            tone,
+            kind,
+            summary,
+            payload_json,
+            sequence,
+            created_at,
             ROW_NUMBER() OVER (
-              PARTITION BY json_extract(payload_json, '$.taskId')
+              PARTITION BY task_id
               ORDER BY
                 created_at DESC,
                 CASE WHEN kind = 'task.started' THEN 0 ELSE 1 END DESC,
                 activity_id DESC
             ) AS lifecycle_rank
-          FROM projection_thread_activities AS activities
+          FROM projection_thread_activities
           WHERE thread_id = ${threadId}
             AND kind IN ('task.started', 'task.completed')
-            AND json_extract(payload_json, '$.taskId') IS NOT NULL
+            AND task_id IS NOT NULL
             AND (
               kind = 'task.completed'
               OR (
                 kind = 'task.started'
-                AND json_extract(payload_json, '$.taskType') = 'background-agent'
+                AND task_type = 'background-agent'
               )
             )
         ),
@@ -1423,9 +1460,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           UNION ALL
           SELECT * FROM (
             SELECT
-              activities.*,
+              activity_id,
+              thread_id,
+              turn_id,
+              tone,
+              kind,
+              summary,
+              payload_json,
+              sequence,
+              created_at,
               1 AS lifecycle_rank
-            FROM projection_thread_activities AS activities
+            FROM projection_thread_activities
             WHERE thread_id = ${threadId}
               AND kind = 'turn.plan.updated'
             ORDER BY created_at DESC, activity_id DESC
@@ -1465,25 +1510,24 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_thread_activities AS recent
         INNER JOIN (
           SELECT
-            json_extract(payload_json, '$.taskId') AS task_id
+            task_id
           FROM projection_thread_activities
           WHERE thread_id = ${threadId}
             AND kind IN ('task.started', 'task.completed')
-            AND json_extract(payload_json, '$.taskId') IS NOT NULL
+            AND task_id IS NOT NULL
             AND EXISTS (
               SELECT 1
               FROM projection_thread_activities AS started
               WHERE started.thread_id = ${threadId}
+                AND started.task_id = projection_thread_activities.task_id
                 AND started.kind = 'task.started'
-                AND json_extract(started.payload_json, '$.taskType') = 'background-agent'
-                AND json_extract(started.payload_json, '$.taskId') =
-                  json_extract(projection_thread_activities.payload_json, '$.taskId')
+                AND started.task_type = 'background-agent'
             )
           GROUP BY task_id
           ORDER BY MAX(created_at) DESC, MAX(activity_id) DESC
           LIMIT ${MAX_BACKGROUND_AGENT_RUNS_PER_THREAD}
         ) AS selected_tasks
-          ON json_extract(recent.payload_json, '$.taskId') = selected_tasks.task_id
+          ON recent.task_id = selected_tasks.task_id
         WHERE recent.thread_id = ${threadId}
           AND recent.kind IN ('task.started', 'task.completed')
         ORDER BY recent.created_at ASC, recent.activity_id ASC
@@ -2679,7 +2723,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             messages.message_id AS "messageId",
             messages.thread_id AS "threadId",
             messages.updated_at AS "updatedAt",
-            rank AS score
+            bm25(projection_thread_message_fts) AS score,
+            snippet(projection_thread_message_fts, 0, '', '', '...', 20) AS excerpt
           FROM projection_thread_message_fts
           JOIN projection_thread_messages AS messages
             ON messages.rowid = projection_thread_message_fts.rowid
@@ -2687,8 +2732,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           WHERE projection_thread_message_fts MATCH ${matchQuery}
             AND threads.archived_at IS NULL
             AND threads.deleted_at IS NULL
+          -- Bound the FTS hit set before windowing: rank is computed per
+          -- match, so cap by best-first score here instead of ranking every
+          -- match and discarding most of them below.
+          ORDER BY score
+          LIMIT 500
         ),
-        ranked AS (
+        ranked AS MATERIALIZED (
           SELECT
             hits.*,
             ROW_NUMBER() OVER (
@@ -2710,16 +2760,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           projects.title AS "projectTitle",
           threads.branch,
           messages.role,
-          snippet(projection_thread_message_fts, 0, '', '', '...', 20) AS excerpt,
+          top_hits.excerpt AS excerpt,
           top_hits."updatedAt"
         FROM top_hits
         JOIN projection_thread_messages AS messages
           ON messages.rowid = top_hits."messageRowid"
         JOIN projection_threads AS threads ON threads.thread_id = top_hits."threadId"
         LEFT JOIN projection_projects AS projects ON projects.project_id = threads.project_id
-        JOIN projection_thread_message_fts
-          ON projection_thread_message_fts.rowid = top_hits."messageRowid"
-        WHERE projection_thread_message_fts MATCH ${matchQuery}
         ORDER BY top_hits.score, top_hits."updatedAt" DESC, top_hits."threadId"
       `,
     })({ query: literalQuery }).pipe(
