@@ -372,6 +372,15 @@ const logRelayTokenStoreFailure = (operation: "load" | "save" | "clear", cause: 
     cause,
   });
 
+const logEnvironmentTokenStoreFailure = (operation: "load" | "save", cause: unknown) =>
+  Effect.logWarning(
+    "CLI environment token cache unavailable; continuing without cached credentials.",
+    {
+      operation,
+      cause,
+    },
+  );
+
 export const makeRelayTokenStore = (
   secrets: ServerSecretStore.ServerSecretStoreShape,
 ): ManagedRelay.ManagedRelayAccessTokenStore => ({
@@ -390,13 +399,22 @@ export const makeRelayTokenStore = (
   ),
 });
 
-const loadEnvironmentTokens = (secrets: ServerSecretStore.ServerSecretStoreShape) =>
-  readJsonSecret(secrets, ENVIRONMENT_TOKEN_CACHE_SECRET, decodeUsableEnvironmentTokenCache, []);
-
-const saveEnvironmentTokens = (
-  secrets: ServerSecretStore.ServerSecretStoreShape,
-  entries: ReadonlyArray<EnvironmentTokenCacheEntry>,
-) => writeJsonSecret(secrets, ENVIRONMENT_TOKEN_CACHE_SECRET, entries);
+export const makeEnvironmentTokenStore = (secrets: ServerSecretStore.ServerSecretStoreShape) => ({
+  load: readJsonSecret(
+    secrets,
+    ENVIRONMENT_TOKEN_CACHE_SECRET,
+    decodeUsableEnvironmentTokenCache,
+    [],
+  ).pipe(
+    Effect.tapError((cause) => logEnvironmentTokenStoreFailure("load", cause)),
+    Effect.orElseSucceed(() => []),
+  ),
+  save: (entries: ReadonlyArray<EnvironmentTokenCacheEntry>) =>
+    writeJsonSecret(secrets, ENVIRONMENT_TOKEN_CACHE_SECRET, entries).pipe(
+      Effect.tapError((cause) => logEnvironmentTokenStoreFailure("save", cause)),
+      Effect.ignore,
+    ),
+});
 
 const CLIENT_PRESENTATION: AuthClientPresentationMetadata = {
   label: "T3 CLI",
@@ -500,26 +518,8 @@ export const resolveCliEnvironmentCandidate = (
     if (selector.startsWith("manual:")) {
       return yield* resolveCandidateEffect(selector, manualCandidates);
     }
-    const accountDiscovery = yield* discoverCliEnvironmentCandidates(baseDir, registry).pipe(
-      Effect.result,
-    );
-    if (accountDiscovery._tag === "Success") {
-      return yield* resolveCandidateEffect(selector, accountDiscovery.success.candidates);
-    }
-    const manualSelection = yield* resolveCandidateEffect(selector, manualCandidates).pipe(
-      Effect.result,
-    );
-    if (manualSelection._tag === "Success" && !selector.startsWith("account:")) {
-      return manualSelection.success;
-    }
-    if (
-      manualSelection._tag === "Failure" &&
-      isCliEnvironmentSelectionError(manualSelection.failure) &&
-      manualSelection.failure.reason !== "not-found"
-    ) {
-      return yield* manualSelection.failure;
-    }
-    return yield* accountDiscovery.failure;
+    const accountDiscovery = yield* discoverCliEnvironmentCandidates(baseDir, registry);
+    return yield* resolveCandidateEffect(selector, accountDiscovery.candidates);
   });
 
 const assertSameAccount = Effect.fn("cli.accountEnvironment.assertSameAccount")(function* (
@@ -554,6 +554,7 @@ const prepareAccountEnvironment = (
       }
       const environmentId = EnvironmentId.make(selection.environmentId);
       const tokenLock = yield* Semaphore.make(1);
+      const tokenStore = makeEnvironmentTokenStore(secrets);
 
       const mintToken = Effect.fn("cli.accountEnvironment.mintToken")(function* () {
         const connected = yield* relay.connectEnvironment({
@@ -597,8 +598,8 @@ const prepareAccountEnvironment = (
           expiresAtEpochMs: now + exchanged.expires_in * 1_000,
           dpopThumbprint: signer.thumbprint,
         };
-        const stored = yield* loadEnvironmentTokens(secrets);
-        yield* saveEnvironmentTokens(secrets, [
+        const stored = yield* tokenStore.load;
+        yield* tokenStore.save([
           ...stored.filter(
             (entry) =>
               entry.environmentId !== environmentId || entry.accountId !== session.accountId,
@@ -613,7 +614,7 @@ const prepareAccountEnvironment = (
           .withPermits(1)(
             Effect.gen(function* () {
               const now = Date.now();
-              const stored = yield* loadEnvironmentTokens(secrets);
+              const stored = yield* tokenStore.load;
               const cached = findReusableEnvironmentToken(stored, {
                 accountId: session.accountId,
                 environmentId,

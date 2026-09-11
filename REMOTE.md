@@ -96,7 +96,10 @@ t3 env clear
 Use `--environment <environment-id-or-unambiguous-label>` for a one-command
 override. Source-qualified selectors such as `account:<environment-id>` and
 `manual:<profile-id>` are deterministic when labels or IDs collide. Ambiguous
-labels are rejected.
+labels are rejected. Explicit `manual:` selectors remain available when account
+discovery is unavailable; unqualified selectors fail closed until discovery can
+confirm that they are unambiguous. The legacy `env test/connect --id` flag
+continues to address raw manual profile IDs only.
 `t3 env clear` removes the saved selection and restores legacy local runtime
 discovery.
 

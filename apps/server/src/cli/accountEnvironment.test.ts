@@ -1,3 +1,8 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { verifyDpopProof } from "@t3tools/shared/dpop";
@@ -13,7 +18,9 @@ import {
   decodeUsableEnvironmentTokenCache,
   findReusableEnvironmentToken,
   makeCliDpopSigner,
+  makeEnvironmentTokenStore,
   makeRelayTokenStore,
+  resolveCliEnvironmentCandidate,
 } from "./accountEnvironment.ts";
 
 const token = {
@@ -160,3 +167,53 @@ it.effect("treats relay token cache failures as best-effort", () =>
     yield* store.clear;
   }),
 );
+
+it.effect("treats environment token cache failures as best-effort", () =>
+  Effect.gen(function* () {
+    const secrets: ServerSecretStoreShape = {
+      get: (name) => Effect.fail(new SecretStoreReadError({ resource: name })),
+      set: (name) => Effect.fail(new SecretStorePersistError({ resource: name })),
+      create: () => Effect.die("unused"),
+      getOrCreateRandom: () => Effect.die("unused"),
+      remove: () => Effect.die("unused"),
+      list: () => Effect.die("unused"),
+    };
+    const store = makeEnvironmentTokenStore(secrets);
+
+    assert.deepEqual(yield* store.load, []);
+    yield* store.save([token]);
+  }),
+);
+
+it("requires source-qualified manual selectors when account discovery is unavailable", async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), "t3-cli-account-discovery-"));
+  try {
+    const registry = {
+      version: 2 as const,
+      environments: {
+        desktop: {
+          id: "desktop",
+          label: "Desktop",
+          url: "https://desktop.example.test",
+        },
+      },
+    };
+
+    const manual = await Effect.runPromise(
+      resolveCliEnvironmentCandidate(baseDir, registry, "manual:desktop").pipe(
+        Effect.provide(NodeServices.layer),
+      ),
+    );
+    assert.equal(manual.source, "manual");
+
+    const error = await Effect.runPromise(
+      resolveCliEnvironmentCandidate(baseDir, registry, "desktop").pipe(
+        Effect.flip,
+        Effect.provide(NodeServices.layer),
+      ),
+    );
+    assert.include(error.message, "not signed in");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});

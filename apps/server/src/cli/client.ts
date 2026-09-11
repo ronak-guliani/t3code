@@ -585,12 +585,11 @@ export const withBorrowedBearerToken = <A, E, R>(
     return yield* withBorrowedBearerTokenForTarget(target, run);
   });
 
-export const withLiveRpcClient = <A, E, R>(
-  flags: CliLiveTargetFlags,
+export const withResolvedLiveRpcClient = <A, E, R>(
+  target: ResolvedCliLiveTarget,
   run: (client: WsRpcClient) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
-    const target = yield* resolveLiveTarget(flags);
     if (target.kind === "account") {
       return yield* withAccountEnvironment(
         target.baseDir,
@@ -605,6 +604,12 @@ export const withLiveRpcClient = <A, E, R>(
       withRpcClientForBearerToken(origin, bearerToken, run),
     );
   }).pipe(Effect.provide(FetchHttpClient.layer));
+
+export const withLiveRpcClient = <A, E, R>(
+  flags: CliLiveTargetFlags,
+  run: (client: WsRpcClient) => Effect.Effect<A, E, R>,
+) =>
+  resolveLiveTarget(flags).pipe(Effect.flatMap((target) => withResolvedLiveRpcClient(target, run)));
 
 const withBorrowedBearerTokenForTarget = <A, E, R>(
   target: Extract<ResolvedCliLiveTarget, { readonly kind: "bearer" }>,

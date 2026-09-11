@@ -111,6 +111,7 @@ import {
   runReconnectingStream,
   withLiveOrchestrationClient,
   withLiveRpcClient,
+  withResolvedLiveRpcClient,
   withLiveSnapshotClient,
   withLiveSnapshotAndRpc,
   watchShell,
@@ -123,6 +124,7 @@ import {
 } from "./cli/accountEnvironment.ts";
 import {
   candidateForSelection,
+  environmentCommandSelector,
   manualEnvironmentCandidates,
   readEnvironmentRegistry,
   redactEnvironmentEntry,
@@ -5040,7 +5042,7 @@ const envTestCommand = Command.make("test", {
       if (Option.isSome(flags.id) && Option.isSome(flags.environment)) {
         return yield* Effect.fail(new Error("Use either --id or --environment, not both."));
       }
-      const environment = Option.isSome(flags.environment) ? flags.environment : flags.id;
+      const environment = environmentCommandSelector(flags.environment, flags.id);
       const config = yield* callWsRpc(
         {
           url: Option.none(),
@@ -5070,7 +5072,7 @@ const envConnectCommand = Command.make("connect", {
       if (Option.isSome(flags.id) && Option.isSome(flags.environment)) {
         return yield* Effect.fail(new Error("Use either --id or --environment, not both."));
       }
-      const environment = Option.isSome(flags.environment) ? flags.environment : flags.id;
+      const environment = environmentCommandSelector(flags.environment, flags.id);
       const config = yield* callWsRpc(
         {
           url: Option.none(),
@@ -5093,7 +5095,7 @@ const envCurrentCommand = Command.make("current", {
   Command.withHandler((flags) =>
     Effect.gen(function* () {
       const target = yield* resolveLiveTarget(flags);
-      const connected = yield* callWsRpc(flags, (client) =>
+      const connected = yield* withResolvedLiveRpcClient(target, (client) =>
         client[WS_METHODS.serverGetConfig]({}),
       ).pipe(Effect.result);
       yield* printJson({

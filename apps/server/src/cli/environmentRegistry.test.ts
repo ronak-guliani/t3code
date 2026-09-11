@@ -6,9 +6,12 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as PlatformError from "effect/PlatformError";
 
 import {
+  environmentCommandSelector,
   readEnvironmentRegistry,
   resolveEnvironmentCandidate,
   writeEnvironmentRegistry,
@@ -125,6 +128,44 @@ it("removes the temporary registry file when persistence fails", async () => {
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
+});
+
+it.effect("preserves registry inspection failures instead of treating them as missing", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const failingFileSystem = {
+      ...fs,
+      exists: (path: string) =>
+        path.endsWith("cli-environments.json")
+          ? Effect.fail(
+              PlatformError.systemError({
+                _tag: "PermissionDenied",
+                module: "FileSystem",
+                method: "exists",
+                pathOrDescriptor: path,
+                description: "Permission denied while inspecting registry.",
+              }),
+            )
+          : fs.exists(path),
+    } satisfies FileSystem.FileSystem;
+
+    const error = yield* readEnvironmentRegistry(
+      Option.some("/tmp/t3-cli-registry-permission-test"),
+    ).pipe(Effect.provideService(FileSystem.FileSystem, failingFileSystem), Effect.flip);
+
+    assert.include(error.message, "Could not inspect environment registry");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it("keeps legacy environment ids manual and gives --environment precedence", () => {
+  assert.deepEqual(
+    environmentCommandSelector(Option.none(), Option.some("account:prod")),
+    Option.some("manual:account:prod"),
+  );
+  assert.deepEqual(
+    environmentCommandSelector(Option.some("account:prod"), Option.some("manual-profile")),
+    Option.some("account:prod"),
+  );
 });
 
 it("prefers stable ids and rejects ambiguous labels across sources", () => {

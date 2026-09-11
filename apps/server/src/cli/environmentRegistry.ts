@@ -100,6 +100,12 @@ export const emptyEnvironmentRegistry = (): CliEnvironmentRegistry => ({
   environments: {},
 });
 
+export const environmentCommandSelector = (
+  environment: Option.Option<string>,
+  legacyId: Option.Option<string>,
+): Option.Option<string> =>
+  Option.isSome(environment) ? environment : Option.map(legacyId, (id) => `manual:${id}`);
+
 export const environmentRegistryPath = (baseDir: Option.Option<string>) =>
   Effect.gen(function* () {
     const resolvedBaseDir = yield* resolveBaseDir(
@@ -113,9 +119,25 @@ export const readEnvironmentRegistry = (baseDir: Option.Option<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const registryPath = yield* environmentRegistryPath(baseDir);
-    const exists = yield* fs.exists(registryPath).pipe(Effect.orElseSucceed(() => false));
+    const exists = yield* fs.exists(registryPath).pipe(
+      Effect.mapError(
+        (cause) =>
+          new CliEnvironmentRegistryError({
+            message: `Could not inspect environment registry: ${registryPath}`,
+            cause,
+          }),
+      ),
+    );
     if (!exists) return emptyEnvironmentRegistry();
-    const raw = yield* fs.readFileString(registryPath);
+    const raw = yield* fs.readFileString(registryPath).pipe(
+      Effect.mapError(
+        (cause) =>
+          new CliEnvironmentRegistryError({
+            message: `Could not read environment registry: ${registryPath}`,
+            cause,
+          }),
+      ),
+    );
     const parsed = yield* Effect.try({
       try: () => JSON.parse(raw) as unknown,
       catch: (cause) =>
