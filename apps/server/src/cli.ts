@@ -1,11 +1,14 @@
 // @ts-nocheck
 import { NetService } from "@t3tools/shared/Net";
+import { localCommand } from "./cli/local.ts";
 import type { NodeServices } from "@effect/platform-node/NodeServices";
 import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
 import { REVIEW_CHANGES_WORKFLOW_ID } from "@t3tools/shared/workflows/reviewChanges";
 import {
   ApprovalRequestId,
   AuthSessionId,
+  ChildDecision,
+  ChildWaitCondition,
   CommandId,
   EditorId,
   KeybindingRule,
@@ -108,15 +111,32 @@ import {
   isDefinitiveCommandRejectionError,
   printJson,
   readJsonPayload,
+  resolveLiveTarget,
   runReconnectingStream,
   withLiveOrchestrationClient,
   withLiveRpcClient,
+  withResolvedLiveRpcClient,
   withLiveSnapshotClient,
   withLiveSnapshotAndRpc,
   watchShell,
   CliPayloadError,
   type CliLiveTargetFlags,
 } from "./cli/client.ts";
+import {
+  discoverCliEnvironmentCandidates,
+  resolveCliEnvironmentCandidate,
+} from "./cli/accountEnvironment.ts";
+import {
+  candidateForSelection,
+  environmentCommandSelector,
+  manualEnvironmentCandidates,
+  readEnvironmentRegistry,
+  redactEnvironmentEntry,
+  selectionForCandidate,
+  writeEnvironmentRegistry,
+  type CliEnvironmentEntry,
+  type CliEnvironmentRegistry,
+} from "./cli/environmentRegistry.ts";
 import {
   activeProjectsOf,
   activeThreadsOf,
@@ -222,12 +242,16 @@ const logWebSocketEventsFlag = Flag.boolean("log-websocket-events").pipe(
 
 const liveUrlFlag = Flag.string("url").pipe(
   Flag.withDescription(
-    "HTTP(S) origin for a running T3 server. Defaults to persisted local runtime state.",
+    "HTTP(S) origin for a running T3 server. Overrides environment selection and local discovery.",
   ),
   Flag.optional,
 );
 const liveTokenFlag = Flag.string("token").pipe(
   Flag.withDescription("Bearer session token for the target T3 server."),
+  Flag.optional,
+);
+const liveEnvironmentFlag = Flag.string("environment").pipe(
+  Flag.withDescription("Environment ID, source-qualified ID, or unambiguous label."),
   Flag.optional,
 );
 const payloadFlag = Flag.string("payload").pipe(
@@ -685,7 +709,7 @@ const resolveProjectExecutionPlan = Effect.fn("resolveProjectExecutionPlan")(fun
 });
 
 const runProjectMutation = Effect.fn("runProjectMutation")(function* (
-  flags: CliAuthLocationFlags,
+  flags: CliLiveTargetFlags,
   run: (input: {
     readonly snapshot: CliSnapshot;
     readonly dispatch: (
@@ -701,6 +725,28 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
     readonly forceOffline?: boolean;
   },
 ) {
+  const shouldUseSelectedLiveTarget =
+    options?.forceOffline !== true &&
+    (Option.isSome(flags.url) ||
+      Option.isSome(flags.token) ||
+      Option.isSome(flags.environment) ||
+      (Option.isNone(flags.baseDir) &&
+        (yield* readEnvironmentRegistry(Option.none())).current !== undefined));
+  if (shouldUseSelectedLiveTarget) {
+    return yield* withLiveRpcClient(flags, (client) =>
+      Effect.gen(function* () {
+        const snapshot = yield* client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({});
+        const output = yield* run({
+          snapshot,
+          dispatch: (command) =>
+            client[ORCHESTRATION_WS_METHODS.dispatchCommand](command).pipe(Effect.asVoid),
+          mode: "live",
+        });
+        yield* Console.log(output);
+      }),
+    );
+  }
+
   const logLevel = yield* GlobalFlag.LogLevel;
   const config = yield* resolveCliAuthConfig(flags, logLevel);
   const minimumLogLevel = config.logLevel;
@@ -758,14 +804,11 @@ const sharedServerLocationFlags = {
   devUrl: devUrlFlag,
 } as const;
 
-const projectLocationFlags = {
-  baseDir: baseDirFlag,
-} as const;
-
 const liveTargetFlags = {
   url: liveUrlFlag,
   token: liveTokenFlag,
   baseDir: baseDirFlag,
+  environment: liveEnvironmentFlag,
 } as const;
 
 const sharedServerCommandFlags = {
@@ -988,6 +1031,10 @@ const authCommand = Command.make("auth").pipe(
 );
 
 const decodeModelSelection = Schema.decodeUnknownEffect(ModelSelection);
+const decodeChildWaitJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.NullOr(ChildWaitCondition)),
+);
+const decodeChildDecisionJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ChildDecision));
 const decodeProjectScripts = Schema.decodeUnknownEffect(Schema.Array(ProjectScript));
 const decodeEditorId = Schema.decodeUnknownEffect(EditorId);
 const decodeKeybindingRule = Schema.decodeUnknownEffect(KeybindingRule);
@@ -1216,7 +1263,7 @@ const projectShowCommand = Command.make("show", {
 );
 
 const projectAddCommand = Command.make("add", {
-  ...projectLocationFlags,
+  ...liveTargetFlags,
   offline: offlineFlag,
   workspaceRoot: Argument.string("path").pipe(
     Argument.withDescription("Workspace root to add as a project."),
@@ -1265,7 +1312,7 @@ const projectAddCommand = Command.make("add", {
 );
 
 const projectRemoveCommand = Command.make("remove", {
-  ...projectLocationFlags,
+  ...liveTargetFlags,
   offline: offlineFlag,
   project: Argument.string("project").pipe(
     Argument.withDescription("Project id, title, or workspace root to remove."),
@@ -1298,7 +1345,7 @@ const projectRemoveCommand = Command.make("remove", {
 );
 
 const projectRenameCommand = Command.make("rename", {
-  ...projectLocationFlags,
+  ...liveTargetFlags,
   offline: offlineFlag,
   project: Argument.string("project").pipe(
     Argument.withDescription("Project id, title, or workspace root to rename."),
@@ -1338,7 +1385,7 @@ const projectRenameCommand = Command.make("rename", {
 );
 
 const projectSetDefaultModelCommand = Command.make("set-default-model", {
-  ...projectLocationFlags,
+  ...liveTargetFlags,
   offline: offlineFlag,
   project: Argument.string("project").pipe(
     Argument.withDescription("Project id, title, or workspace root."),
@@ -1373,7 +1420,7 @@ const projectSetDefaultModelCommand = Command.make("set-default-model", {
 );
 
 const projectSetScriptsCommand = Command.make("set-scripts", {
-  ...projectLocationFlags,
+  ...liveTargetFlags,
   offline: offlineFlag,
   project: Argument.string("project").pipe(
     Argument.withDescription("Project id, title, or workspace root."),
@@ -2247,7 +2294,11 @@ const chatNewCommand = Command.make("new", {
             }),
           },
         );
-        yield* printJson(outcome);
+        yield* printJson(
+          outcome.status === "created" && Option.isSome(flags.followUp)
+            ? { ...outcome, assignmentId: firstMessageId }
+            : outcome,
+        );
         if (outcome.status !== "created") {
           return yield* Effect.fail(new NestedThreadCreationCliError(outcome));
         }
@@ -2356,6 +2407,12 @@ const chatStopCommand = Command.make("stop", {
 );
 
 const chatQueueAddCommand = Command.make("add", {
+  assignmentFollowUp: Flag.choice("assignment-follow-up", ["automatic", "notify-only"]).pipe(
+    Flag.optional,
+  ),
+  assignmentId: Flag.string("assignment-id").pipe(Flag.optional),
+  respondToReportId: Flag.string("respond-to-report").pipe(Flag.optional),
+  requestId: Flag.string("request-id").pipe(Flag.optional),
   ...liveTargetFlags,
   ...modelSelectionFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
@@ -2371,14 +2428,22 @@ const chatQueueAddCommand = Command.make("add", {
     withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
       Effect.gen(function* () {
         const modelSelection = yield* buildModelSelectionFromFlags(flags);
-        const queuedTurnId = QueuedTurnId.make(crypto.randomUUID());
+        const requestId = Option.getOrUndefined(flags.requestId);
+        const queuedTurnId = QueuedTurnId.make(
+          requestId ? `assignment-queue:${thread.id}:${requestId}` : crypto.randomUUID(),
+        );
+        const messageId = MessageId.make(
+          requestId ? `assignment:${thread.id}:${requestId}` : crypto.randomUUID(),
+        );
         const result = yield* dispatch({
           type: "thread.queued-turn.create",
-          commandId: CommandId.make(crypto.randomUUID()),
+          commandId: CommandId.make(
+            requestId ? `assignment-enqueue:${thread.id}:${requestId}` : crypto.randomUUID(),
+          ),
           threadId: thread.id,
           queuedTurnId,
           message: {
-            messageId: MessageId.make(crypto.randomUUID()),
+            messageId,
             role: "user",
             text: flags.prompt,
             attachments: [],
@@ -2393,8 +2458,21 @@ const chatQueueAddCommand = Command.make("add", {
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
           createdAt: new Date().toISOString(),
+          ...(Option.isSome(flags.assignmentFollowUp)
+            ? { assignment: { followUp: flags.assignmentFollowUp.value } }
+            : {}),
+          ...(Option.isSome(flags.assignmentId)
+            ? { assignmentId: MessageId.make(flags.assignmentId.value) }
+            : {}),
+          ...(Option.isSome(flags.respondToReportId)
+            ? { respondToReportId: flags.respondToReportId.value }
+            : {}),
         });
-        yield* printJson({ queuedTurnId, result });
+        yield* printJson({
+          queuedTurnId,
+          ...(Option.isSome(flags.assignmentFollowUp) ? { assignmentId: messageId } : {}),
+          result,
+        });
       }),
     ),
   ),
@@ -2502,29 +2580,70 @@ const chatCommand = Command.make("chat").pipe(
     chatInterruptCommand,
     chatStopCommand,
     chatQueueCommand,
+    Command.make("wait", {
+      ...liveTargetFlags,
+      chat: Argument.string("chat"),
+      condition: Argument.string("condition"),
+    }).pipe(
+      Command.withDescription(
+        "Set a child wait condition as JSON, or null to restore automatic follow-up.",
+      ),
+      Command.withHandler((flags) =>
+        withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
+          Effect.gen(function* () {
+            const childWait = yield* decodeChildWaitJson(flags.condition);
+            yield* dispatch({
+              type: "thread.meta.update",
+              commandId: CommandId.make(crypto.randomUUID()),
+              threadId: thread.id,
+              childWait,
+            }).pipe(Effect.flatMap(printJson));
+          }),
+        ),
+      ),
+    ),
     Command.make("report", {
       ...liveTargetFlags,
       chat: Argument.string("chat"),
       summary: Argument.string("summary"),
       kind: Flag.choice("kind", ["progress", "decision-needed", "important-update"]),
       reportId: Flag.string("report-id"),
+      assignmentId: Flag.string("assignment-id").pipe(Flag.optional),
+      decision: Flag.string("decision").pipe(Flag.optional),
+      canContinue: Flag.choice("can-continue", ["true", "false"]).pipe(Flag.optional),
+      supersedesReportId: Flag.string("supersedes-report").pipe(Flag.optional),
       crossThreadCapability: Flag.string("cross-thread-capability"),
     }).pipe(
       Command.withDescription("Report an update from an authenticated delegated child."),
       Command.withHandler((flags) =>
         withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
-          dispatch({
-            type: "thread.child.report",
-            commandId: CommandId.make(
-              `child-report:${thread.id}:${thread.nudging?.delegation ? `${thread.nudging.delegation.assignmentId}:` : ""}${flags.reportId}`,
-            ),
-            threadId: thread.id,
-            reportId: flags.reportId,
-            kind: flags.kind,
-            summary: flags.summary,
-            crossThreadDispatchCapability: flags.crossThreadCapability,
-            createdAt: new Date().toISOString(),
-          }).pipe(Effect.flatMap(printJson)),
+          Effect.gen(function* () {
+            const decision = Option.isSome(flags.decision)
+              ? yield* decodeChildDecisionJson(flags.decision.value)
+              : undefined;
+            return yield* dispatch({
+              type: "thread.child.report",
+              commandId: CommandId.make(
+                `child-report:${thread.id}:${Option.getOrUndefined(flags.assignmentId) ?? thread.nudging?.delegation?.assignmentId ?? ""}:${flags.reportId}`,
+              ),
+              threadId: thread.id,
+              reportId: flags.reportId,
+              kind: flags.kind,
+              summary: flags.summary,
+              ...(Option.isSome(flags.assignmentId)
+                ? { assignmentId: MessageId.make(flags.assignmentId.value) }
+                : {}),
+              ...(decision ? { decision } : {}),
+              ...(Option.isSome(flags.canContinue)
+                ? { canContinue: flags.canContinue.value === "true" }
+                : {}),
+              ...(Option.isSome(flags.supersedesReportId)
+                ? { supersedesReportId: flags.supersedesReportId.value }
+                : {}),
+              crossThreadDispatchCapability: flags.crossThreadCapability,
+              createdAt: new Date().toISOString(),
+            }).pipe(Effect.flatMap(printJson));
+          }),
         ),
       ),
     ),
@@ -4729,73 +4848,6 @@ const diagnosticsCommand = Command.make("diagnostics").pipe(
   ]),
 );
 
-type CliEnvironmentEntry = {
-  readonly id: string;
-  readonly label: string;
-  readonly url: string;
-  readonly token?: string;
-  readonly environmentId?: string;
-  readonly secrets?: Record<string, string>;
-};
-
-type CliEnvironmentRegistry = {
-  readonly current?: string;
-  readonly environments: Record<string, CliEnvironmentEntry>;
-};
-
-const emptyEnvironmentRegistry = (): CliEnvironmentRegistry => ({ environments: {} });
-
-const environmentRegistryPath = (baseDir: Option.Option<string>) =>
-  Effect.gen(function* () {
-    const resolvedBaseDir = yield* resolveBaseDir(Option.getOrUndefined(baseDir));
-    const path = yield* Path.Path;
-    return path.join(resolvedBaseDir, "cli-environments.json");
-  });
-
-const readEnvironmentRegistry = (baseDir: Option.Option<string>) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const registryPath = yield* environmentRegistryPath(baseDir);
-    const exists = yield* fs.exists(registryPath).pipe(Effect.orElseSucceed(() => false));
-    if (!exists) return emptyEnvironmentRegistry();
-    const raw = yield* fs.readFileString(registryPath);
-    return yield* Effect.try({
-      try: () => JSON.parse(raw) as CliEnvironmentRegistry,
-      catch: (cause) =>
-        new CliPayloadError({
-          message: `Invalid environment registry: ${registryPath}`,
-          cause,
-        }),
-    });
-  });
-
-const ENVIRONMENT_REGISTRY_FILE_MODE = 0o600;
-
-const writeEnvironmentRegistry = (
-  baseDir: Option.Option<string>,
-  registry: CliEnvironmentRegistry,
-) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const registryPath = yield* environmentRegistryPath(baseDir);
-    yield* fs.makeDirectory(path.dirname(registryPath), { recursive: true });
-    yield* fs.writeFileString(registryPath, JSON.stringify(registry, null, 2), {
-      mode: ENVIRONMENT_REGISTRY_FILE_MODE,
-    });
-    // writeFileString's mode only applies on creation; enforce it so a
-    // pre-existing world-readable file holding tokens/secrets is tightened.
-    yield* fs.chmod(registryPath, ENVIRONMENT_REGISTRY_FILE_MODE);
-  });
-
-const redactEnvironmentEntry = (entry: CliEnvironmentEntry) => ({
-  ...entry,
-  ...(entry.token !== undefined ? { token: "<redacted>" } : {}),
-  ...(entry.secrets !== undefined
-    ? { secrets: Object.fromEntries(Object.keys(entry.secrets).map((key) => [key, "<redacted>"])) }
-    : {}),
-});
-
 const envListCommand = Command.make("list", {
   baseDir: baseDirFlag,
   reveal: Flag.boolean("reveal").pipe(Flag.withDefault(false)),
@@ -4804,14 +4856,79 @@ const envListCommand = Command.make("list", {
   Command.withHandler((flags) =>
     Effect.gen(function* () {
       const registry = yield* readEnvironmentRegistry(flags.baseDir);
+      const resolvedBaseDir = yield* resolveBaseDir(
+        Option.getOrUndefined(flags.baseDir) ?? process.env.T3CODE_HOME,
+      );
+      const accountDiscovery = yield* discoverCliEnvironmentCandidates(
+        resolvedBaseDir,
+        registry,
+      ).pipe(Effect.result);
+      const accountCandidates =
+        accountDiscovery._tag === "Success"
+          ? accountDiscovery.success.candidates.filter(
+              (candidate) => candidate.source === "account",
+            )
+          : [];
+      const candidates = [...manualEnvironmentCandidates(registry), ...accountCandidates];
+      const currentCandidate =
+        registry.current === undefined
+          ? undefined
+          : candidateForSelection(registry.current, candidates);
       yield* printJson({
-        current: registry.current ?? null,
-        environments: Object.fromEntries(
-          Object.entries(registry.environments).map(([id, entry]) => [
-            id,
-            flags.reveal ? entry : redactEnvironmentEntry(entry),
-          ]),
-        ),
+        current:
+          registry.current === undefined
+            ? null
+            : registry.current.source === "manual"
+              ? registry.current.id
+              : `account:${registry.current.environmentId}`,
+        selection: registry.current ?? null,
+        environments: {
+          ...Object.fromEntries(
+            Object.entries(registry.environments).map(([id, entry]) => [
+              `manual:${id}`,
+              {
+                source: "manual",
+                selector: `manual:${id}`,
+                ...(flags.reveal ? entry : redactEnvironmentEntry(entry)),
+              },
+            ]),
+          ),
+          ...Object.fromEntries(
+            accountCandidates.map((candidate) => [
+              `account:${candidate.id}`,
+              {
+                source: "account",
+                id: candidate.id,
+                label: candidate.label,
+                selector: `account:${candidate.id}`,
+                accountId: candidate.accountId,
+                providerKind: candidate.environment.endpoint.providerKind,
+                linkedAt: candidate.environment.linkedAt,
+              },
+            ]),
+          ),
+        },
+        effective:
+          currentCandidate === undefined
+            ? null
+            : {
+                source: currentCandidate.source,
+                id: currentCandidate.id,
+                label: currentCandidate.label,
+              },
+        account:
+          accountDiscovery._tag === "Success"
+            ? {
+                status: "available",
+                signedIn: true,
+                accountId: accountDiscovery.success.session.accountId,
+                identity: accountDiscovery.success.session.identity ?? null,
+                environmentCount: accountDiscovery.success.environments.length,
+              }
+            : {
+                status: "unavailable",
+                error: accountDiscovery.failure.message,
+              },
       });
     }),
   ),
@@ -4840,12 +4957,13 @@ const envAddCommand = Command.make("add", {
       };
       const next = {
         ...(flags.use
-          ? { current: flags.id }
+          ? { current: { source: "manual", id: flags.id } as const }
           : registry.current !== undefined
             ? { current: registry.current }
             : {}),
+        version: 2 as const,
         environments: { ...registry.environments, [flags.id]: entry },
-      };
+      } satisfies CliEnvironmentRegistry;
       yield* writeEnvironmentRegistry(flags.baseDir, next);
       yield* printJson(redactEnvironmentEntry(entry));
     }),
@@ -4863,11 +4981,13 @@ const envRemoveCommand = Command.make("remove", {
       const environments = { ...registry.environments };
       delete environments[flags.id];
       const next = {
-        ...(registry.current !== undefined && registry.current !== flags.id
+        ...(registry.current !== undefined &&
+        !(registry.current.source === "manual" && registry.current.id === flags.id)
           ? { current: registry.current }
           : {}),
+        version: 2 as const,
         environments,
-      };
+      } satisfies CliEnvironmentRegistry;
       yield* writeEnvironmentRegistry(flags.baseDir, next);
       yield* printJson({ removed: flags.id });
     }),
@@ -4900,18 +5020,42 @@ const envRenameCommand = Command.make("rename", {
 
 const envUseCommand = Command.make("use", {
   baseDir: baseDirFlag,
-  id: Argument.string("id").pipe(Argument.withDescription("Environment profile id.")),
+  id: Argument.string("id").pipe(
+    Argument.withDescription("Environment ID, source-qualified ID, or unambiguous label."),
+  ),
 }).pipe(
-  Command.withDescription("Set the current CLI environment profile."),
+  Command.withDescription("Set the current CLI environment."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
       const registry = yield* readEnvironmentRegistry(flags.baseDir);
-      if (registry.environments[flags.id] === undefined) {
-        return yield* Effect.fail(new Error(`Environment '${flags.id}' not found.`));
-      }
-      const next = { ...registry, current: flags.id };
+      const resolvedBaseDir = yield* resolveBaseDir(
+        Option.getOrUndefined(flags.baseDir) ?? process.env.T3CODE_HOME,
+      );
+      const selected = yield* resolveCliEnvironmentCandidate(resolvedBaseDir, registry, flags.id);
+      const current = selectionForCandidate(selected);
+      const next = { ...registry, version: 2 as const, current };
       yield* writeEnvironmentRegistry(flags.baseDir, next);
-      yield* printJson({ current: flags.id });
+      yield* printJson({
+        current: current.source === "manual" ? current.id : `account:${current.environmentId}`,
+        selection: current,
+        label: selected.label,
+      });
+    }),
+  ),
+);
+
+const envClearCommand = Command.make("clear", {
+  baseDir: baseDirFlag,
+}).pipe(
+  Command.withDescription("Clear the saved CLI environment and restore local discovery."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const registry = yield* readEnvironmentRegistry(flags.baseDir);
+      yield* writeEnvironmentRegistry(flags.baseDir, {
+        version: 2,
+        environments: registry.environments,
+      });
+      yield* printJson({ current: null });
     }),
   ),
 );
@@ -4973,38 +5117,29 @@ const envSecretCommand = Command.make("secret").pipe(
   Command.withSubcommands([envSecretSetCommand, envSecretRemoveCommand]),
 );
 
-const resolveEnvironmentTarget = (baseDir: Option.Option<string>, id: Option.Option<string>) =>
-  Effect.gen(function* () {
-    const registry = yield* readEnvironmentRegistry(baseDir);
-    const selected = Option.getOrUndefined(id) ?? registry.current;
-    if (selected === undefined) {
-      return yield* Effect.fail(new Error("No environment selected. Use --id or `t3 env use`."));
-    }
-    const entry = registry.environments[selected];
-    if (entry === undefined) {
-      return yield* Effect.fail(new Error(`Environment '${selected}' not found.`));
-    }
-    return entry;
-  });
-
 const envTestCommand = Command.make("test", {
   baseDir: baseDirFlag,
   id: Flag.string("id").pipe(Flag.optional),
+  environment: liveEnvironmentFlag,
 }).pipe(
   Command.withDescription("Test a CLI environment connection."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      const entry = yield* resolveEnvironmentTarget(flags.baseDir, flags.id);
+      if (Option.isSome(flags.id) && Option.isSome(flags.environment)) {
+        return yield* Effect.fail(new Error("Use either --id or --environment, not both."));
+      }
+      const environment = environmentCommandSelector(flags.environment, flags.id);
       const config = yield* callWsRpc(
         {
-          url: Option.some(entry.url),
-          token: Option.fromUndefinedOr(entry.token),
-          baseDir: flags.baseDir,
+          url: Option.none(),
+          token: Option.none(),
+          baseDir: Option.none(),
+          registryBaseDir: flags.baseDir,
+          environment,
         },
         (client) => client[WS_METHODS.serverGetConfig]({}),
       );
       yield* printJson({
-        id: entry.id,
         connected: true,
         environment: config.environment,
       });
@@ -5015,16 +5150,22 @@ const envTestCommand = Command.make("test", {
 const envConnectCommand = Command.make("connect", {
   baseDir: baseDirFlag,
   id: Flag.string("id").pipe(Flag.optional),
+  environment: liveEnvironmentFlag,
 }).pipe(
   Command.withDescription("Connect to a CLI environment and print its server config."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      const entry = yield* resolveEnvironmentTarget(flags.baseDir, flags.id);
+      if (Option.isSome(flags.id) && Option.isSome(flags.environment)) {
+        return yield* Effect.fail(new Error("Use either --id or --environment, not both."));
+      }
+      const environment = environmentCommandSelector(flags.environment, flags.id);
       const config = yield* callWsRpc(
         {
-          url: Option.some(entry.url),
-          token: Option.fromUndefinedOr(entry.token),
-          baseDir: flags.baseDir,
+          url: Option.none(),
+          token: Option.none(),
+          baseDir: Option.none(),
+          registryBaseDir: flags.baseDir,
+          environment,
         },
         (client) => client[WS_METHODS.serverGetConfig]({}),
       );
@@ -5039,8 +5180,34 @@ const envCurrentCommand = Command.make("current", {
   Command.withDescription("Print the current server environment descriptor."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      const config = yield* callWsRpc(flags, (client) => client[WS_METHODS.serverGetConfig]({}));
-      yield* printJson(config.environment);
+      const target = yield* resolveLiveTarget(flags);
+      const connected = yield* withResolvedLiveRpcClient(target, (client) =>
+        client[WS_METHODS.serverGetConfig]({}),
+      ).pipe(Effect.result);
+      yield* printJson({
+        source: target.source,
+        selectionReason: target.selectionReason,
+        ...(target.kind === "account"
+          ? {
+              accountId: target.accountId,
+              environmentId: target.environmentId,
+              label: target.label ?? null,
+            }
+          : {
+              id: target.id ?? null,
+              environmentId: target.environmentId ?? null,
+              label: target.label ?? null,
+              origin: target.origin,
+            }),
+        connected: connected._tag === "Success",
+        environment: connected._tag === "Success" ? connected.success.environment : null,
+        error:
+          connected._tag === "Failure"
+            ? connected.failure instanceof Error
+              ? connected.failure.message
+              : String(connected.failure)
+            : null,
+      });
     }),
   ),
 );
@@ -5053,6 +5220,7 @@ const envCommand = Command.make("env").pipe(
     envRemoveCommand,
     envRenameCommand,
     envUseCommand,
+    envClearCommand,
     envSecretCommand,
     envConnectCommand,
     envTestCommand,
@@ -5251,6 +5419,7 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
       keybindingCommand,
       diagnosticsCommand,
       envCommand,
+      localCommand,
       skillsCommand,
       mcpCommand,
       rpcCommand,

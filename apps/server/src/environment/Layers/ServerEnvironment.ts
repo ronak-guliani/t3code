@@ -103,6 +103,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       threadPinning: true,
       threadPinReorder: true,
       threadTitleRegeneration: true,
+      agentWorkflows: true,
     },
   };
 

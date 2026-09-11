@@ -1,4 +1,11 @@
-import { type KeybindingCommand, type FilesystemBrowseEntry } from "@t3tools/contracts";
+import {
+  type KeybindingCommand,
+  type FilesystemBrowseEntry,
+  type EnvironmentId,
+  type ThreadId,
+  type ScopedThreadRef,
+  type OrchestrationTranscriptSearchMatch,
+} from "@t3tools/contracts";
 import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import { type ReactNode } from "react";
 import { sortThreads } from "../lib/threadSort";
@@ -17,6 +24,7 @@ export interface CommandPaletteItem {
   readonly title: ReactNode;
   readonly description?: string;
   readonly timestamp?: string;
+  readonly environmentId?: EnvironmentId;
   readonly icon: ReactNode;
   /** Optional content rendered inline before the title text. */
   readonly titleLeadingContent?: ReactNode;
@@ -34,6 +42,46 @@ export interface CommandPaletteActionItem extends CommandPaletteItem {
   readonly kind: "action";
   readonly keepOpen?: boolean;
   readonly run: () => Promise<void>;
+}
+
+export interface TranscriptSearchItem {
+  readonly environmentId: EnvironmentId;
+  readonly match: OrchestrationTranscriptSearchMatch;
+}
+
+function threadSearchValue(environmentId: EnvironmentId, threadId: ThreadId): string {
+  return `thread:${environmentId}:${threadId}`;
+}
+
+export function buildTranscriptActionItems(input: {
+  readonly matches: readonly TranscriptSearchItem[];
+  readonly metadataGroups: readonly CommandPaletteGroup[];
+  readonly icon: ReactNode;
+  readonly runThread: (ref: ScopedThreadRef) => Promise<void>;
+}): CommandPaletteActionItem[] {
+  const metadataValues = new Set(
+    input.metadataGroups.flatMap((group) => group.items.map((item) => item.value)),
+  );
+  return input.matches
+    .filter(
+      ({ environmentId, match }) =>
+        !metadataValues.has(threadSearchValue(environmentId, match.threadId)),
+    )
+    .map(({ environmentId, match }) => {
+      const context = [match.projectTitle, match.branch ? `#${match.branch}` : null]
+        .filter((part): part is string => part !== null)
+        .join(" · ");
+      return {
+        kind: "action",
+        value: `transcript:${environmentId}:${match.threadId}`,
+        environmentId,
+        searchTerms: [match.title, match.excerpt],
+        title: match.title,
+        description: `${context ? `${context} · ` : ""}${match.role === "user" ? "You" : "Assistant"}: ${match.excerpt}`,
+        icon: input.icon,
+        run: () => input.runThread({ environmentId, threadId: match.threadId }),
+      };
+    });
 }
 
 export interface CommandPaletteSubmenuItem extends CommandPaletteItem {
@@ -111,7 +159,7 @@ export function buildProjectActionItems(input: {
   runProject: (project: Project) => Promise<void>;
 }): CommandPaletteActionItem[] {
   return input.projects.map((project) => {
-    const searchTerms = [project.name, project.cwd];
+    const searchTerms = [project.name, project.cwd, project.environmentId];
 
     return {
       kind: "action",
@@ -119,6 +167,7 @@ export function buildProjectActionItems(input: {
       searchTerms,
       searchIndex: buildCommandPaletteSearchIndex(searchTerms),
       title: project.name,
+      environmentId: project.environmentId,
       description: project.cwd,
       icon: input.icon(project),
       run: async () => {
@@ -171,15 +220,21 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
 
     const leadingContent = input.renderLeadingContent?.(thread);
     const trailingContent = input.renderTrailingContent?.(thread);
-    const searchTerms = [thread.title, projectTitle ?? ``, thread.branch ?? ``];
+    const searchTerms = [
+      thread.title,
+      projectTitle ?? ``,
+      thread.branch ?? ``,
+      thread.environmentId,
+    ];
 
     return Object.assign(
       {
         kind: "action" as const,
-        value: `thread:${thread.id}`,
+        value: threadSearchValue(thread.environmentId, thread.id),
         searchTerms,
         searchIndex: buildCommandPaletteSearchIndex(searchTerms),
         title: thread.title,
+        environmentId: thread.environmentId,
         description: descriptionParts.join(` · `),
         timestamp: formatRelativeTimeLabel(
           thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,

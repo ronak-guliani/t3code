@@ -233,6 +233,7 @@ describe("MessagesTimeline", () => {
       const markup = renderToStaticMarkup(
         <MessagesTimeline
           {...buildProps()}
+          activeChatFindRowId={entry.id}
           timelineEntries={[
             {
               ...entry,
@@ -256,7 +257,7 @@ describe("MessagesTimeline", () => {
           ]}
         />,
       );
-      expect(markup).toContain("Child updates");
+      expect(markup).toContain("Continued with 1 child update");
       expect(markup).toContain("Migration helper");
       expect(markup).toContain(expected);
       expect(markup).not.toContain("Internal wake instructions");

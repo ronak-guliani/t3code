@@ -230,6 +230,7 @@ it.effect("exchanges a validated out-of-band code and returns account identity",
     assert.equal(authorization.token.accessToken, "access-token");
     assert.equal(authorization.token.refreshToken, "refresh-token");
     assert.equal(authorization.token.identity, "user@example.test");
+    assert.equal(authorization.token.accountId, "account-123");
   }).pipe(
     Effect.provide(
       ConfigProvider.layer(
@@ -251,7 +252,7 @@ it.effect("exchanges a validated out-of-band code and returns account identity",
             Response.json({
               access_token: "access-token",
               refresh_token: "refresh-token",
-              id_token: idToken({ email: "user@example.test" }),
+              id_token: idToken({ email: "user@example.test", sub: "account-123" }),
               expires_in: 3600,
               token_type: "Bearer",
             }),

@@ -2345,6 +2345,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         url: Option.some(yield* getHttpServerUrl()),
         token: Option.some(yield* getAuthenticatedBearerSessionToken()),
         baseDir: Option.none(),
+        environment: Option.none(),
       });
 
       assert.equal(snapshot.threads.length, 338);

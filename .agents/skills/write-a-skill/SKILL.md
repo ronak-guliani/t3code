@@ -16,6 +16,10 @@ description: Create or update an agent skill when the user explicitly asks to au
 
 3. **Review** - check the trigger, references, relative links, permissions, and completion criteria. Ask for review when the user requested an interactive design process or when a consequential choice remains unresolved.
 
+4. **Evaluate behavior** - add positive and negative routing cases, authorized/forbidden side effects, and recovery cases for changed workflows. Use [skill-behavior-cases.md](../../references/skill-behavior-cases.md) for the evaluation procedure and existing cases. Record actual traces or mark cases not run; frontmatter checks alone do not prove behavior.
+
+Use [skill-delivery.md](../../references/skill-delivery.md) when defining implementation, commit, publication, or investigation-only permissions rather than inventing conflicting delivery terms.
+
 ## Skill Structure
 
 ```
@@ -103,3 +107,5 @@ After drafting, verify:
 - [ ] Consistent terminology
 - [ ] Concrete examples included
 - [ ] References one level deep
+- [ ] Positive and negative behavior cases cover routing and delivery boundaries
+- [ ] Failure/retry cases preserve identity and do not duplicate external side effects

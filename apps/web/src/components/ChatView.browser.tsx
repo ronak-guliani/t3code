@@ -6056,7 +6056,11 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await palette.getByText("Add project", { exact: true }).click();
       await expect.element(palette.getByText("Environments", { exact: true })).toBeInTheDocument();
       await expect
-        .element(palette.getByText("This device", { exact: true }).first())
+        .element(
+          palette
+            .getByText(fixture.serverConfig.environment.environmentId, { exact: true })
+            .first(),
+        )
         .toBeInTheDocument();
       await palette.getByText("Staging", { exact: true }).click();
 

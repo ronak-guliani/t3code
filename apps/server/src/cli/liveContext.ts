@@ -96,6 +96,7 @@ export const projectSummary = (project: ActiveProject) => ({
 });
 
 export const threadSummary = (thread: CliThread) => ({
+  nudging: thread.nudging,
   id: thread.id,
   projectId: thread.projectId,
   parentThreadId: thread.parentThreadId,

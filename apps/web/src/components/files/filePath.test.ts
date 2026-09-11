@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { fileBreadcrumbs } from "./filePath";
+import { collapseBreadcrumbs, fileBreadcrumbs } from "./filePath";
 
 describe("fileBreadcrumbs", () => {
   it("builds project, directory, and file crumbs", () => {
@@ -28,6 +28,27 @@ describe("fileBreadcrumbs", () => {
       { label: "web", path: "apps/web", kind: "directory" },
       { label: "src", path: "apps/web/src", kind: "directory" },
       { label: "main.tsx", path: "apps/web/src/main.tsx", kind: "file" },
+    ]);
+  });
+});
+
+describe("collapseBreadcrumbs", () => {
+  it("keeps short trails intact", () => {
+    const crumbs = fileBreadcrumbs("t3code", "src/main.tsx");
+    expect(collapseBreadcrumbs(crumbs)).toEqual(crumbs);
+  });
+
+  it("collapses deep trails to project, ellipsis, parent, and file", () => {
+    const crumbs = fileBreadcrumbs("t3code", "packages/contracts/src/background.test.ts");
+    expect(collapseBreadcrumbs(crumbs)).toEqual([
+      { label: "t3code", path: "", kind: "project" },
+      { label: "…", path: "", kind: "ellipsis" },
+      { label: "src", path: "packages/contracts/src", kind: "directory" },
+      {
+        label: "background.test.ts",
+        path: "packages/contracts/src/background.test.ts",
+        kind: "file",
+      },
     ]);
   });
 });

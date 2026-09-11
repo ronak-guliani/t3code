@@ -16,6 +16,7 @@ it("infers root routes without losing required thread and file parameters", () =
     | "ThreadTerminal"
     | "ThreadReview"
     | "ThreadReviewComment"
+    | "PullRequestReview"
     | "ThreadFiles"
     | "ThreadFile"
     | "ThreadSettingsSheet"
@@ -37,6 +38,7 @@ it("infers root routes without losing required thread and file parameters", () =
     readonly threadId: string;
   }>();
   expectTypeOf<RootParams["RelatedThreads"]>().toEqualTypeOf<RootParams["Thread"]>();
+  expectTypeOf<RootParams["PullRequestReview"]>().toEqualTypeOf<RootParams["Thread"]>();
   expectTypeOf<{ threadId: string }>().not.toMatchTypeOf<RootParams["Thread"]>();
   expectTypeOf<undefined>().not.toMatchTypeOf<RootParams["Thread"]>();
   expectTypeOf<RootParams["ThreadFile"]>().toEqualTypeOf<{

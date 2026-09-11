@@ -35,11 +35,15 @@ import { AuthControlPlane } from "../auth/Services/AuthControlPlane.ts";
 import { deriveServerPaths, ServerConfig, type ServerConfigShape } from "../config.ts";
 import { resolveBaseDir } from "../os-jank.ts";
 import { inspectPersistedServerRuntimeState, runtimePidIsAlive } from "../serverRuntimeState.ts";
+import { resolveCliEnvironmentCandidate, withAccountEnvironment } from "./accountEnvironment.ts";
+import { readEnvironmentRegistry, type CliEnvironmentCandidate } from "./environmentRegistry.ts";
 
 export interface CliLiveTargetFlags {
   readonly url: Option.Option<string>;
   readonly token: Option.Option<string>;
   readonly baseDir: Option.Option<string>;
+  readonly environment: Option.Option<string>;
+  readonly registryBaseDir?: Option.Option<string>;
 }
 
 export const makeCommandId = (tag: string): CommandId =>
@@ -123,7 +127,7 @@ export interface CliLiveSnapshotClient {
   readonly getArchivedSnapshot: ReturnType<typeof fetchLiveOrchestrationArchivedShellSnapshot>;
   readonly getThreadSnapshot: (
     threadId: import("@t3tools/contracts").ThreadId,
-  ) => ReturnType<typeof fetchLiveOrchestrationThreadSnapshot>;
+  ) => Effect.Effect<OrchestrationThreadDetailSnapshot, unknown, HttpClient.HttpClient>;
 }
 
 export function formatJson(value: unknown): string {
@@ -177,17 +181,43 @@ const parseJsonPayload = (raw: string, source: string) =>
 const resolveCliBaseDir = (baseDir: Option.Option<string>) =>
   resolveBaseDir(Option.getOrUndefined(baseDir) ?? process.env.T3CODE_HOME);
 
-export const resolveLiveTarget = (flags: CliLiveTargetFlags) =>
-  Effect.gen(function* () {
-    if (Option.isSome(flags.url)) {
-      return {
-        origin: yield* normalizeHttpOrigin(flags.url.value),
-        token: Option.getOrUndefined(flags.token),
-        baseDir: Option.getOrUndefined(flags.baseDir),
-      };
+export type ResolvedCliLiveTarget =
+  | {
+      readonly kind: "bearer";
+      readonly origin: string;
+      readonly token?: string;
+      readonly baseDir?: string;
+      readonly source: "explicit-url" | "explicit-base-dir" | "manual" | "implicit-local";
+      readonly selectionReason:
+        | "--url"
+        | "--base-dir"
+        | "--token"
+        | "--environment"
+        | "persisted-selection"
+        | "legacy-local-discovery";
+      readonly id?: string;
+      readonly label?: string;
+      readonly environmentId?: string;
     }
+  | {
+      readonly kind: "account";
+      readonly baseDir: string;
+      readonly accountId: string;
+      readonly environmentId: string;
+      readonly source: "account";
+      readonly selectionReason: "--environment" | "persisted-selection";
+      readonly label?: string;
+    };
 
-    const baseDir = yield* resolveCliBaseDir(flags.baseDir);
+const resolveLocalRuntimeTarget = (
+  baseDir: string,
+  input: {
+    readonly token?: string;
+    readonly source: "explicit-base-dir" | "implicit-local";
+    readonly selectionReason: "--base-dir" | "--token" | "legacy-local-discovery";
+  },
+) =>
+  Effect.gen(function* () {
     const paths = yield* deriveServerPaths(baseDir, undefined);
     const runtimeState = yield* inspectPersistedServerRuntimeState(paths.serverRuntimeStatePath);
     if (runtimeState._tag === "Missing") {
@@ -209,10 +239,145 @@ export const resolveLiveTarget = (flags: CliLiveTargetFlags) =>
     }
 
     return {
+      kind: "bearer",
       origin: yield* normalizeHttpOrigin(runtimeState.state.origin),
-      token: Option.getOrUndefined(flags.token),
+      ...(input.token === undefined ? {} : { token: input.token }),
       baseDir,
-    };
+      source: input.source,
+      selectionReason: input.selectionReason,
+    } satisfies ResolvedCliLiveTarget;
+  });
+
+const candidateTarget = (
+  candidate: CliEnvironmentCandidate,
+  baseDir: string,
+  selectionReason: "--environment" | "persisted-selection",
+  manualAuthBaseDir?: string,
+): Effect.Effect<ResolvedCliLiveTarget, CliLiveTargetError> =>
+  candidate.source === "manual"
+    ? normalizeHttpOrigin(candidate.profile.url).pipe(
+        Effect.map(
+          (origin) =>
+            ({
+              kind: "bearer",
+              origin,
+              ...(candidate.profile.token === undefined ? {} : { token: candidate.profile.token }),
+              ...(manualAuthBaseDir === undefined ? {} : { baseDir: manualAuthBaseDir }),
+              source: "manual",
+              selectionReason,
+              id: candidate.id,
+              label: candidate.label,
+              ...(candidate.profile.environmentId === undefined
+                ? {}
+                : { environmentId: candidate.profile.environmentId }),
+            }) satisfies ResolvedCliLiveTarget,
+        ),
+      )
+    : Effect.succeed({
+        kind: "account",
+        baseDir,
+        accountId: candidate.accountId,
+        environmentId: candidate.environment.environmentId,
+        source: "account",
+        selectionReason,
+        label: candidate.label,
+      } satisfies ResolvedCliLiveTarget);
+
+export const resolveLiveTarget = (flags: CliLiveTargetFlags) =>
+  Effect.gen(function* () {
+    if (Option.isSome(flags.url)) {
+      return {
+        kind: "bearer",
+        origin: yield* normalizeHttpOrigin(flags.url.value),
+        ...(Option.isSome(flags.token) ? { token: flags.token.value } : {}),
+        ...(Option.isSome(flags.baseDir) ? { baseDir: flags.baseDir.value } : {}),
+        source: "explicit-url",
+        selectionReason: "--url",
+      } satisfies ResolvedCliLiveTarget;
+    }
+
+    if (Option.isSome(flags.baseDir) || Option.isSome(flags.token)) {
+      const baseDir = yield* resolveCliBaseDir(flags.baseDir);
+      return yield* resolveLocalRuntimeTarget(baseDir, {
+        ...(Option.isSome(flags.token) ? { token: flags.token.value } : {}),
+        source: "explicit-base-dir",
+        selectionReason: Option.isSome(flags.baseDir) ? "--base-dir" : "--token",
+      });
+    }
+
+    const registryBaseDir = flags.registryBaseDir ?? Option.none();
+    const baseDir = yield* resolveCliBaseDir(registryBaseDir);
+    const manualAuthBaseDir = Option.isSome(registryBaseDir) ? baseDir : undefined;
+    const registry = yield* readEnvironmentRegistry(Option.some(baseDir)).pipe(
+      Effect.mapError(
+        (cause) =>
+          new CliLiveTargetError({
+            message: cause.message,
+            cause,
+          }),
+      ),
+    );
+
+    if (Option.isSome(flags.environment)) {
+      const candidate = yield* resolveCliEnvironmentCandidate(
+        baseDir,
+        registry,
+        flags.environment.value,
+      ).pipe(
+        Effect.mapError(
+          (cause) =>
+            new CliLiveTargetError({
+              message:
+                typeof cause === "object" &&
+                cause !== null &&
+                "message" in cause &&
+                typeof cause.message === "string"
+                  ? cause.message
+                  : String(cause),
+              cause,
+            }),
+        ),
+      );
+      return yield* candidateTarget(candidate, baseDir, "--environment", manualAuthBaseDir);
+    }
+
+    if (registry.current?.source === "manual") {
+      const profile = registry.environments[registry.current.id];
+      if (profile === undefined) {
+        return yield* new CliLiveTargetError({
+          message:
+            `Selected manual environment '${registry.current.id}' no longer exists. ` +
+            "Run `t3 env list` and choose another environment.",
+        });
+      }
+      return yield* candidateTarget(
+        {
+          source: "manual",
+          id: profile.id,
+          label: profile.label,
+          profile,
+        },
+        baseDir,
+        "persisted-selection",
+        manualAuthBaseDir,
+      );
+    }
+
+    if (registry.current?.source === "account") {
+      return {
+        kind: "account",
+        baseDir,
+        accountId: registry.current.accountId,
+        environmentId: registry.current.environmentId,
+        source: "account",
+        selectionReason: "persisted-selection",
+      } satisfies ResolvedCliLiveTarget;
+    }
+
+    return yield* resolveLocalRuntimeTarget(baseDir, {
+      source: "implicit-local",
+      selectionReason: "legacy-local-discovery",
+    });
   });
 
 const normalizeHttpOrigin = (rawUrl: string) =>
@@ -412,16 +577,77 @@ export const withBorrowedBearerToken = <A, E, R>(
 ) =>
   Effect.gen(function* () {
     const target = yield* resolveLiveTarget(flags);
-    if (target.token !== undefined) {
-      return yield* run({ origin: target.origin, bearerToken: target.token });
-    }
-    if (target.baseDir === undefined) {
+    if (target.kind === "account") {
       return yield* new CliLiveTargetError({
-        message: "Missing --token for remote --url target.",
+        message: "This operation does not support account environment authentication.",
+      });
+    }
+    return yield* withBorrowedBearerTokenForTarget(target, run);
+  });
+
+export const withResolvedLiveRpcClient = <A, E, R>(
+  target: ResolvedCliLiveTarget,
+  run: (client: WsRpcClient) => Effect.Effect<A, E, R>,
+) =>
+  Effect.gen(function* () {
+    if (target.kind === "account") {
+      return yield* withAccountEnvironment(
+        target.baseDir,
+        {
+          accountId: target.accountId,
+          environmentId: target.environmentId,
+        },
+        (accountTarget) => withRpcClientForSocketUrl(accountTarget.socketUrl, run),
+      );
+    }
+    return yield* withBorrowedBearerTokenForTarget(target, ({ origin, bearerToken }) =>
+      withRpcClientForBearerToken(origin, bearerToken, run),
+    );
+  }).pipe(Effect.provide(FetchHttpClient.layer));
+
+export const withLiveRpcClient = <A, E, R>(
+  flags: CliLiveTargetFlags,
+  run: (client: WsRpcClient) => Effect.Effect<A, E, R>,
+) =>
+  resolveLiveTarget(flags).pipe(Effect.flatMap((target) => withResolvedLiveRpcClient(target, run)));
+
+const withBorrowedBearerTokenForTarget = <A, E, R>(
+  target: Extract<ResolvedCliLiveTarget, { readonly kind: "bearer" }>,
+  run: (input: { readonly origin: string; readonly bearerToken: string }) => Effect.Effect<A, E, R>,
+) => {
+  if (target.token !== undefined) {
+    return run({ origin: target.origin, bearerToken: target.token });
+  }
+  if (target.baseDir === undefined) {
+    return Effect.fail(
+      new CliLiveTargetError({
+        message: "Missing --token for remote --url or manual environment target.",
+      }),
+    );
+  }
+  return withBorrowedLocalBearerToken(target.baseDir, target.origin, run);
+};
+
+const withBorrowedLocalBearerToken = <A, E, R>(
+  baseDir: string,
+  origin: string,
+  run: (input: { readonly origin: string; readonly bearerToken: string }) => Effect.Effect<A, E, R>,
+) =>
+  Effect.gen(function* () {
+    const localTarget = yield* resolveLocalRuntimeTarget(baseDir, {
+      source: "explicit-base-dir",
+      selectionReason: "--base-dir",
+    });
+    if (localTarget.origin !== origin) {
+      return yield* new CliLiveTargetError({
+        message:
+          `Refusing to send a credential borrowed from '${baseDir}' to '${origin}'. ` +
+          `That base directory belongs to the live server at '${localTarget.origin}'. ` +
+          "Configure an explicit --token for a different target.",
       });
     }
 
-    const paths = yield* deriveServerPaths(target.baseDir, undefined);
+    const paths = yield* deriveServerPaths(baseDir, undefined);
     const config = {
       logLevel: "Error",
       traceMinLevel: "Error",
@@ -437,7 +663,7 @@ export const withBorrowedBearerToken = <A, E, R>(
       port: 0,
       host: undefined,
       cwd: process.cwd(),
-      baseDir: target.baseDir,
+      baseDir,
       ...paths,
       staticDir: undefined,
       devUrl: undefined,
@@ -466,11 +692,12 @@ export const withBorrowedBearerToken = <A, E, R>(
       return yield* Effect.acquireUseRelease(
         retryLockedSqlite(
           authControlPlane.issueSession({
+            ttl: Duration.minutes(5),
             role: "owner",
             label: "t3 cli",
           }),
         ),
-        (issued) => run({ origin: target.origin, bearerToken: issued.token }),
+        (issued) => run({ origin, bearerToken: issued.token }),
         (issued) =>
           retryLockedSqlite(authControlPlane.revokeSession(issued.sessionId)).pipe(Effect.ignore),
       );
@@ -516,17 +743,39 @@ export const withRpcClientForBearerToken = <A, E, R>(
   Effect.gen(function* () {
     const wsToken = yield* requestWebSocketToken(origin, bearerToken);
     const wsUrl = originToWsUrl(origin, wsToken.token);
-    return yield* makeWsRpcClient.pipe(
-      Effect.flatMap(run),
-      Effect.provide(wsRpcProtocolLayer(wsUrl)),
-      Effect.scoped,
-    );
+    return yield* withRpcClientForSocketUrl(wsUrl, run);
   });
 
+const withRpcClientForSocketUrl = <A, E, R>(
+  socketUrl: string,
+  run: (client: WsRpcClient) => Effect.Effect<A, E, R>,
+) =>
+  makeWsRpcClient.pipe(
+    Effect.flatMap(run),
+    Effect.provide(wsRpcProtocolLayer(socketUrl)),
+    Effect.scoped,
+  );
+
 export const getLiveOrchestrationShellSnapshot = (flags: CliLiveTargetFlags) =>
-  withBorrowedBearerToken(flags, ({ origin, bearerToken }) =>
-    fetchLiveOrchestrationShellSnapshot(origin, bearerToken),
-  ).pipe(Effect.provide(FetchHttpClient.layer));
+  Effect.gen(function* () {
+    const target = yield* resolveLiveTarget(flags);
+    if (target.kind === "account") {
+      return yield* withAccountEnvironment(
+        target.baseDir,
+        {
+          accountId: target.accountId,
+          environmentId: target.environmentId,
+        },
+        (accountTarget) =>
+          withRpcClientForSocketUrl(accountTarget.socketUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({}),
+          ),
+      );
+    }
+    return yield* withBorrowedBearerTokenForTarget(target, ({ origin, bearerToken }) =>
+      fetchLiveOrchestrationShellSnapshot(origin, bearerToken),
+    );
+  }).pipe(Effect.provide(FetchHttpClient.layer));
 
 export const getLiveOrchestrationArchivedShellSnapshot = (flags: CliLiveTargetFlags) =>
   withBorrowedBearerToken(flags, ({ origin, bearerToken }) =>
@@ -537,26 +786,67 @@ export const withLiveOrchestrationClient = <A, E, R>(
   flags: CliLiveTargetFlags,
   run: (client: CliLiveOrchestrationClient) => Effect.Effect<A, E, R>,
 ) =>
-  withBorrowedBearerToken(flags, ({ origin, bearerToken }) =>
-    run({
-      getSnapshot: fetchLiveOrchestrationShellSnapshot(origin, bearerToken),
-      getArchivedSnapshot: fetchLiveOrchestrationArchivedShellSnapshot(origin, bearerToken),
-      dispatch: (command) => dispatchCommand(origin, bearerToken, command),
-    }),
-  ).pipe(Effect.provide(FetchHttpClient.layer));
+  Effect.gen(function* () {
+    const target = yield* resolveLiveTarget(flags);
+    if (target.kind === "account") {
+      return yield* withAccountEnvironment(
+        target.baseDir,
+        {
+          accountId: target.accountId,
+          environmentId: target.environmentId,
+        },
+        (accountTarget) =>
+          withRpcClientForSocketUrl(accountTarget.socketUrl, (client) =>
+            run({
+              getSnapshot: client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({}),
+              getArchivedSnapshot: client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({}),
+              dispatch: (command) => client[ORCHESTRATION_WS_METHODS.dispatchCommand](command),
+            }),
+          ),
+      );
+    }
+    return yield* withBorrowedBearerTokenForTarget(target, ({ origin, bearerToken }) =>
+      run({
+        getSnapshot: fetchLiveOrchestrationShellSnapshot(origin, bearerToken),
+        getArchivedSnapshot: fetchLiveOrchestrationArchivedShellSnapshot(origin, bearerToken),
+        dispatch: (command) => dispatchCommand(origin, bearerToken, command),
+      }),
+    );
+  }).pipe(Effect.provide(FetchHttpClient.layer));
 
 export const withLiveSnapshotClient = <A, E, R>(
   flags: CliLiveTargetFlags,
   run: (client: CliLiveSnapshotClient) => Effect.Effect<A, E, R>,
 ) =>
-  withBorrowedBearerToken(flags, ({ origin, bearerToken }) =>
-    run({
-      getSnapshot: fetchLiveOrchestrationShellSnapshot(origin, bearerToken),
-      getArchivedSnapshot: fetchLiveOrchestrationArchivedShellSnapshot(origin, bearerToken),
-      getThreadSnapshot: (threadId) =>
-        fetchLiveOrchestrationThreadSnapshot(origin, bearerToken, threadId),
-    }),
-  ).pipe(Effect.provide(FetchHttpClient.layer));
+  Effect.gen(function* () {
+    const target = yield* resolveLiveTarget(flags);
+    if (target.kind === "account") {
+      return yield* withAccountEnvironment(
+        target.baseDir,
+        {
+          accountId: target.accountId,
+          environmentId: target.environmentId,
+        },
+        (accountTarget) =>
+          withRpcClientForSocketUrl(accountTarget.socketUrl, (client) =>
+            run({
+              getSnapshot: client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({}),
+              getArchivedSnapshot: client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({}),
+              getThreadSnapshot: (threadId) =>
+                client[ORCHESTRATION_WS_METHODS.getThreadSnapshot]({ threadId }),
+            }),
+          ),
+      );
+    }
+    return yield* withBorrowedBearerTokenForTarget(target, ({ origin, bearerToken }) =>
+      run({
+        getSnapshot: fetchLiveOrchestrationShellSnapshot(origin, bearerToken),
+        getArchivedSnapshot: fetchLiveOrchestrationArchivedShellSnapshot(origin, bearerToken),
+        getThreadSnapshot: (threadId) =>
+          fetchLiveOrchestrationThreadSnapshot(origin, bearerToken, threadId),
+      }),
+    );
+  }).pipe(Effect.provide(FetchHttpClient.layer));
 
 export const withLiveSnapshotAndRpc = <A, E, R>(
   flags: CliLiveTargetFlags,
@@ -647,10 +937,7 @@ function isSqliteDatabaseLocked(cause: unknown): boolean {
 export const dispatchRawOrchestrationCommand = (input: {
   readonly flags: CliLiveTargetFlags;
   readonly command: ClientOrchestrationCommand;
-}) =>
-  withBorrowedBearerToken(input.flags, ({ origin, bearerToken }) =>
-    dispatchCommand(origin, bearerToken, input.command),
-  ).pipe(Effect.provide(FetchHttpClient.layer));
+}) => withLiveOrchestrationClient(input.flags, (client) => client.dispatch(input.command));
 
 const STREAM_RECONNECT_INITIAL_DELAY = Duration.seconds(1);
 const STREAM_RECONNECT_MAX_DELAY = Duration.seconds(30);

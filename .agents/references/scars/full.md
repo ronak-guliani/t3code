@@ -17,6 +17,8 @@
 
 ## Runtime lifecycle and projection foundations
 
+- Runtime PID files published after HTTP startup are observations, not startup ownership. Hold a shared per-state-directory OS-backed claim before constructing runtime services/migrations, revalidate legacy runtime evidence under it, and never unlink the claim file to recover a crash.
+
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
 - Session startup/resume and turn lifecycle require predictable recovery: terminal reconciliation must settle the matching projected turn and clear `session.activeTurnId`; preserve a pre-acknowledgement start failure's `messageId`; and preserve terminal provider-event ordering during normal adapter shutdown.
 - `TurnLifecycleRuntime` owns provider-session reconciliation, provider intent execution, runtime-event ingestion, and completion checkpoint ordering behind one `start`/`drain` interface; reconcile sessions before starting workers, and keep explicit thread-title regeneration outside this module.
@@ -87,6 +89,11 @@
 
 ## Delegation and handoff transactions
 
+- Reused children need explicit assignment identity on reports and a checkpoint generation fence; never infer a late report's assignment from the child's current metadata. Queue an assignment or decision response in the same transaction as its lifecycle change.
+- Keep an undelivered decision response correlated with its original report until dispatch. Deleting it restores the question; deleting a queued assignment must terminate that assignment rather than strand it.
+- Persist collection deadlines and reconstruct scoped timers on restart. A delayed nudge must not block explicit user work, and a decision's delivery or dismissal must not resolve the decision. Keep only current assignment/decision state in thread metadata; historical reports belong to the existing event/activity log.
+- Coalesce drain requests received while a thread is already draining; dropping a deadline wake defers ready work to the recovery sweep. Failed automatic nudges must remain retryable without blocking explicit queued turns.
+
 - Child notification dedupe must also suppress causally derived queue/meta events in the same transaction; otherwise a retried notification can recreate a dismissed nudge. Keep queued child updates separate from parent execution status until dispatch.
 - Provider notifications retain source timestamps. When appending a new nudge batch, order it after the existing queue tail; never let delayed completion timestamps move it ahead of user-authored queued messages.
 - `thread.turn.diff.complete` also carries speculative mid-turn diffs; exclude those from assignment completion. Render child report summaries literally, without parsing user-prompt terminal or preview metadata.
@@ -103,6 +110,8 @@
 - Local desktop flavors must never use Official's `~/.t3` home. If a divergent build replaces role auth tables with scope-only tables, append a repair above the latest auth migration; replaying an earlier repair is impossible once the ledger high-water mark has passed it.
 
 ## PR reviews and checkpoint provenance
+
+- Skill triggers that include "draft a PR description" must branch to read-only delivery before staging or publishing; only a publication request authorizes creating a PR, which defaults to ready-for-review unless draft status is explicit.
 
 - Review findings must never be silently dropped: reviewers cite file line numbers that often land on unchanged context, so anchor findings to any line the diff renders and only discard ones naming a file outside the reviewed diff. Review threads stay conversational — refresh the result on every turn that emits reviewer JSON, re-resolve the snapshot it is anchored to, and identify the raw-JSON message by content rather than assuming it is the last assistant message.
 - PR metadata writes preserve monitor ownership by default. Only commands carrying explicit transfer intent may replace an owner; inherited/refresh writes use ancestry only as an ownerless fallback, validated before a compare-and-swap claim.
@@ -137,6 +146,7 @@
 - `HttpApiBuilder.group` only defines handlers; mount typed HTTP groups through `HttpApiBuilder.layer` or requests fall through to the SPA while clients report JSON decode failures.
 - Official mobile clients report background activity immediately and every 25 seconds; identify leases by authenticated session plus stable device ID, retain a monotonic internal socket generation for ownership, cleanup, and per-socket caps, suppress cross-session heartbeat fanout, expire stale host-power constraints, and reject both late reports and late teardown from superseded sockets.
 - T3 Connect credentials are DPoP-bound end to end: persist the relay-minted proof-key thumbprint through pairing and session issuance, return `token_type=DPoP`, consume each proof `jti` once, verify its key, URL, method, and token hash, and permit proof-bound sessions to mint only single-use `wsTicket` credentials.
+- CLI environment selection must preserve explicit `--base-dir` as the authoritative same-environment agent binding, apply persisted account/manual selection only to otherwise untargeted user commands, and fail closed instead of falling back to local when a selected remote target is unavailable.
 - Windows Smoke must keep the broad package suite but use a curated server seam; the full server suite contains POSIX service, path, permission, and descriptor contracts that belong on the Linux quality runner.
 - Background-service health must use an instance-private PID-owned state file while the server also maintains shared CLI discovery state; a shared health file lets unrelated foreground servers satisfy or erase service health.
 - LaunchAgent bootstrap already starts `RunAtLoad` jobs: never immediately kill that process with `kickstart -k`. Wait for asynchronous bootout to fully unload before restarting, then wait boundedly for a running PID before probing it. Copy installed production dependencies with the CLI; a relocated `dist` alone cannot resolve external packages.
@@ -170,6 +180,8 @@
 - Archiving a parent thread archives its nested chats; if the active route is in that subtree, navigate to a new draft. Active shell snapshots omit archived threads, so archive screens must query the archived-shell snapshot and web/mobile archive events must emit explicit removals rather than re-querying the active shell.
 
 ## Pairing and environment recovery
+
+- Public environment IDs, file ownership, and live PIDs do not authenticate a local HTTP listener: PID reuse and port takeover can admit impostor HTML into a privileged renderer. Keep automatic desktop attachment disabled until the transport is instance-authenticated; use explicit API connections from a desktop-owned renderer. An explicit missing default must never create a replacement history.
 
 - Owned tunnels are independent of account-linked Connect. Persist disabled intent before stopping, stop on unreadable configuration, and verify the public endpoint's environment ID before minting pairing links. Keep client revocation available even when the origin listens only on loopback.
 - Owner role does not override explicit session scopes; enforce operation scopes on every management route. Connector crash backoff must gate polling reconciliation as well as exit supervision.
@@ -255,8 +267,10 @@
 
 - Mobile capability flags are promises across both orchestration and `mobile.v1`; command schemas, mobile allowlists, server dispatch guards, and every exported live-event reducer must move together before advertising support.
 - Long-running mobile mutations need durable pending state plus correlated completion commands; clear interrupted work on reactor startup and ignore stale completions so reconnects and manual edits cannot be overwritten.
+- Keep a mobile workflow launch's idempotency key until its returned child thread is routable. An RPC success followed by projection timeout is still an ambiguous navigation outcome; retrying with a new key creates a duplicate child.
 - Use `Schema.is` rather than `instanceof` for Effect Schema types; the patched Windows TypeScript runner treats `instanceof` diagnostics as fatal.
 - Cross-platform subprocess fixtures must use the guaranteed Node runtime (`process.execPath`), not an undeclared Bun dependency; Windows resolves missing commands through `cmd.exe` and obscures the startup failure as exit code 1.
+- A Windows PowerShell subprocess launched through Node can inherit PowerShell 7's incompatible module paths. Restrict built-in-only probes to `$PSHOME/Modules` inside the child before any cmdlet runs; cover inherited shadow modules without weakening ACL failures.
 
 ## UI discovery and browser capture
 

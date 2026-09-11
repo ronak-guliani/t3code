@@ -76,6 +76,7 @@ import {
 import * as RelayClient from "@t3tools/shared/relayClient";
 import {
   buildReviewChangesPrompt,
+  isReviewChangesWorkflowEnabled,
   parseReviewChangesScope,
   REVIEW_CHANGES_WORKFLOW_ID,
 } from "@t3tools/shared/workflows/reviewChanges";
@@ -553,7 +554,10 @@ const makeWsRpcLayer = (
           if (customWorkflow === undefined) {
             const workflowSettings =
               input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID ? fixSettings : reviewSettings;
-            const enabled = override?.enabled ?? workflowSettings.enabled;
+            const enabled =
+              input.workflowId === REVIEW_CHANGES_WORKFLOW_ID
+                ? isReviewChangesWorkflowEnabled(settings.agentWorkflows)
+                : (override?.enabled ?? workflowSettings.enabled);
             if (!enabled) {
               return workflowSkipped(
                 input,

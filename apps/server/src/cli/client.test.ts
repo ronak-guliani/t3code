@@ -13,6 +13,7 @@ import {
   isDefinitiveCommandRejectionError,
   isDefinitiveCommandRejectionResponse,
   resolveLiveTarget,
+  withBorrowedBearerToken,
   wsRpcProtocolLayer,
 } from "./client.ts";
 
@@ -68,6 +69,7 @@ it("reports malformed persisted runtime state with actionable recovery", async (
         url: Option.none(),
         token: Option.none(),
         baseDir: Option.some(baseDir),
+        environment: Option.none(),
       }).pipe(Effect.flip, Effect.provide(NodeServices.layer)),
     );
 
@@ -102,9 +104,12 @@ it("uses T3CODE_HOME for live commands when --base-dir is omitted", async () => 
         url: Option.none(),
         token: Option.none(),
         baseDir: Option.none(),
+        environment: Option.none(),
       }).pipe(Effect.provide(NodeServices.layer)),
     );
 
+    assert.equal(target.kind, "bearer");
+    if (target.kind !== "bearer") throw new Error("Expected local bearer target.");
     assert.equal(target.baseDir, baseDir);
     assert.equal(target.origin, "http://127.0.0.1:45678");
   } finally {
@@ -139,12 +144,239 @@ it("rejects persisted runtime state owned by a stopped process", async () => {
         url: Option.none(),
         token: Option.none(),
         baseDir: Option.some(baseDir),
+        environment: Option.none(),
       }).pipe(Effect.flip, Effect.provide(NodeServices.layer)),
     );
 
     assert.include(error.message, "stopped process");
     assert.include(error.message, runtimeStatePath);
   } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+it("uses a persisted manual environment before legacy local discovery", async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), "t3-cli-selected-env-"));
+  const previousHome = process.env.T3CODE_HOME;
+  try {
+    await writeFile(
+      join(baseDir, "cli-environments.json"),
+      JSON.stringify({
+        version: 2,
+        current: { source: "manual", id: "windows" },
+        environments: {
+          windows: {
+            id: "windows",
+            label: "Windows",
+            url: "https://windows.example.test/path",
+            token: "remote-token",
+          },
+        },
+      }),
+    );
+    process.env.T3CODE_HOME = baseDir;
+
+    const target = await Effect.runPromise(
+      resolveLiveTarget({
+        url: Option.none(),
+        token: Option.none(),
+        baseDir: Option.none(),
+        environment: Option.none(),
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    assert.equal(target.kind, "bearer");
+    assert.equal(target.source, "manual");
+    assert.equal(target.selectionReason, "persisted-selection");
+    if (target.kind !== "bearer") throw new Error("Expected manual bearer target.");
+    assert.equal(target.origin, "https://windows.example.test");
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.T3CODE_HOME;
+    } else {
+      process.env.T3CODE_HOME = previousHome;
+    }
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+it("preserves an explicit registry base for tokenless manual environment authentication", async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), "t3-cli-tokenless-manual-env-"));
+  try {
+    await writeFile(
+      join(baseDir, "cli-environments.json"),
+      JSON.stringify({
+        version: 2,
+        environments: {
+          local: {
+            id: "local",
+            label: "Local",
+            url: "http://127.0.0.1:45678",
+          },
+        },
+      }),
+    );
+
+    const target = await Effect.runPromise(
+      resolveLiveTarget({
+        url: Option.none(),
+        token: Option.none(),
+        baseDir: Option.none(),
+        environment: Option.some("manual:local"),
+        registryBaseDir: Option.some(baseDir),
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    assert.equal(target.kind, "bearer");
+    if (target.kind !== "bearer") throw new Error("Expected manual bearer target.");
+    assert.equal(target.source, "manual");
+    assert.equal(target.baseDir, baseDir);
+    assert.isUndefined(target.token);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+it("refuses to send a borrowed local credential to a different manual origin", async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), "t3-cli-tokenless-origin-mismatch-"));
+  try {
+    await mkdir(join(baseDir, "userdata"), { recursive: true });
+    await writeFile(
+      join(baseDir, "userdata", "server-runtime.json"),
+      JSON.stringify({
+        version: 1,
+        pid: process.pid,
+        port: 45_678,
+        origin: "http://127.0.0.1:45678",
+        startedAt: new Date().toISOString(),
+      }),
+    );
+    await writeFile(
+      join(baseDir, "cli-environments.json"),
+      JSON.stringify({
+        version: 2,
+        environments: {
+          remote: {
+            id: "remote",
+            label: "Remote",
+            url: "https://remote.example.test",
+          },
+        },
+      }),
+    );
+
+    const error = await Effect.runPromise(
+      withBorrowedBearerToken(
+        {
+          url: Option.none(),
+          token: Option.none(),
+          baseDir: Option.none(),
+          environment: Option.some("manual:remote"),
+          registryBaseDir: Option.some(baseDir),
+        },
+        () => Effect.die("Borrowed credential must not reach a different origin."),
+      ).pipe(Effect.flip, Effect.provide(NodeServices.layer)),
+    );
+
+    assert.include(error.message, "Refusing to send a credential");
+    assert.include(error.message, "http://127.0.0.1:45678");
+    assert.include(error.message, "https://remote.example.test");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+it("keeps explicit base-dir authoritative over selected and one-shot environments", async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), "t3-cli-explicit-base-dir-"));
+  const runtimeStatePath = join(baseDir, "userdata", "server-runtime.json");
+  try {
+    await mkdir(join(baseDir, "userdata"), { recursive: true });
+    await writeFile(
+      runtimeStatePath,
+      JSON.stringify({
+        version: 1,
+        pid: process.pid,
+        port: 45_679,
+        origin: "http://127.0.0.1:45679",
+        startedAt: new Date().toISOString(),
+      }),
+    );
+    await writeFile(
+      join(baseDir, "cli-environments.json"),
+      JSON.stringify({
+        version: 2,
+        current: { source: "manual", id: "remote" },
+        environments: {
+          remote: {
+            id: "remote",
+            label: "Remote",
+            url: "https://remote.example.test",
+            token: "remote-token",
+          },
+        },
+      }),
+    );
+
+    const target = await Effect.runPromise(
+      resolveLiveTarget({
+        url: Option.none(),
+        token: Option.none(),
+        baseDir: Option.some(baseDir),
+        environment: Option.some("remote"),
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    assert.equal(target.kind, "bearer");
+    assert.equal(target.source, "explicit-base-dir");
+    assert.equal(target.selectionReason, "--base-dir");
+    if (target.kind !== "bearer") throw new Error("Expected local bearer target.");
+    assert.equal(target.origin, "http://127.0.0.1:45679");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+it("does not fall back to local discovery when a selected environment is invalid", async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), "t3-cli-selected-missing-"));
+  const previousHome = process.env.T3CODE_HOME;
+  try {
+    await mkdir(join(baseDir, "userdata"), { recursive: true });
+    await writeFile(
+      join(baseDir, "userdata", "server-runtime.json"),
+      JSON.stringify({
+        version: 1,
+        pid: process.pid,
+        port: 45_680,
+        origin: "http://127.0.0.1:45680",
+        startedAt: new Date().toISOString(),
+      }),
+    );
+    await writeFile(
+      join(baseDir, "cli-environments.json"),
+      JSON.stringify({
+        version: 2,
+        current: { source: "manual", id: "removed" },
+        environments: {},
+      }),
+    );
+    process.env.T3CODE_HOME = baseDir;
+
+    const error = await Effect.runPromise(
+      resolveLiveTarget({
+        url: Option.none(),
+        token: Option.none(),
+        baseDir: Option.none(),
+        environment: Option.none(),
+      }).pipe(Effect.flip, Effect.provide(NodeServices.layer)),
+    );
+
+    assert.include(error.message, "no longer exists");
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.T3CODE_HOME;
+    } else {
+      process.env.T3CODE_HOME = previousHome;
+    }
     await rm(baseDir, { recursive: true, force: true });
   }
 });
