@@ -2,6 +2,7 @@ import { Effect, Layer } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 
 import { ServerConfig } from "./config.ts";
+import { ServerStartupClaimLive } from "./serverStartupClaim.ts";
 import {
   assetRouteLayer,
   attachmentsRouteLayer,
@@ -515,6 +516,7 @@ export const makeServerLayer = Layer.unwrap(
       Layer.provideMerge(HttpServerLive),
       Layer.provide(ObservabilityLive),
       Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provide(ServerStartupClaimLive),
       Layer.provideMerge(PlatformServicesLive),
     );
   }),

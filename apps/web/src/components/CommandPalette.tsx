@@ -6,7 +6,6 @@ import {
   type EnvironmentId,
   type FilesystemBrowseResult,
   type ProjectId,
-  type OrchestrationTranscriptSearchMatch,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -79,6 +78,8 @@ import {
   buildProjectActionItems,
   buildRootGroups,
   buildThreadActionItems,
+  buildTranscriptActionItems,
+  type TranscriptSearchItem,
   type CommandPaletteActionItem,
   type CommandPaletteGroup,
   type CommandPaletteSubmenuItem,
@@ -115,11 +116,6 @@ const EMPTY_THREAD_SEARCH_ITEMS: ReadonlyArray<CommandPaletteActionItem> = [];
 const EMPTY_COMMAND_PALETTE_GROUPS: ReadonlyArray<CommandPaletteGroup> = [];
 const BROWSE_STALE_TIME_MS = 30_000;
 const TRANSCRIPT_SEARCH_DEBOUNCE_MS = 125;
-
-interface TranscriptSearchItem {
-  readonly environmentId: EnvironmentId;
-  readonly match: OrchestrationTranscriptSearchMatch;
-}
 
 function getLocalFileManagerName(platform: string): string {
   if (isMacPlatform(platform)) {
@@ -643,9 +639,13 @@ function OpenCommandPaletteDialog() {
     (option) => ({
       kind: "action",
       value: `action:add-project:environment:${option.environmentId}`,
-      searchTerms: [option.label, option.environmentId, option.isPrimary ? "this device" : ""],
+      searchTerms: [
+        option.label,
+        option.environmentId,
+        option.isPrimary ? "primary environment" : "",
+      ],
       title: option.label,
-      description: option.isPrimary ? "This device" : option.environmentId,
+      description: option.environmentId,
       icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
       keepOpen: true,
       run: async () => {
@@ -814,33 +814,14 @@ function OpenCommandPaletteDialog() {
     if (transcriptSearchItems.length === 0 || currentView !== null || isActionsOnly) {
       return null;
     }
-    const metadataThreadKeys = new Set(
-      filteredGroups
-        .flatMap((group) => group.items)
-        .filter((item) => item.value.startsWith("thread:"))
-        .map((item) => item.value.slice("thread:".length)),
-    );
-    const items = transcriptSearchItems
-      .filter(({ match }) => !metadataThreadKeys.has(match.threadId))
-      .map(({ environmentId, match }) => {
-        const context = [match.projectTitle, match.branch ? `#${match.branch}` : null]
-          .filter((part): part is string => part !== null)
-          .join(" · ");
-        return {
-          kind: "action" as const,
-          value: `transcript:${environmentId}:${match.threadId}`,
-          searchTerms: [match.title, match.excerpt],
-          title: match.title,
-          description: `${context ? `${context} · ` : ""}${match.role === "user" ? "You" : "Assistant"}: ${match.excerpt}`,
-          icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
-          run: async () => {
-            await navigate({
-              to: "/$environmentId/$threadId",
-              params: buildThreadRouteParams(scopeThreadRef(environmentId, match.threadId)),
-            });
-          },
-        } satisfies CommandPaletteActionItem;
-      });
+    const items = buildTranscriptActionItems({
+      matches: transcriptSearchItems,
+      metadataGroups: filteredGroups,
+      icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+      runThread: async (ref) => {
+        await navigate({ to: "/$environmentId/$threadId", params: buildThreadRouteParams(ref) });
+      },
+    });
     return items.length > 0
       ? { value: "conversation-matches", label: "Conversation matches", items }
       : null;

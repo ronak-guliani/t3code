@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { NetService } from "@t3tools/shared/Net";
+import { localCommand } from "./cli/local.ts";
 import type { NodeServices } from "@effect/platform-node/NodeServices";
 import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
 import { REVIEW_CHANGES_WORKFLOW_ID } from "@t3tools/shared/workflows/reviewChanges";
@@ -5244,6 +5245,7 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
       keybindingCommand,
       diagnosticsCommand,
       envCommand,
+      localCommand,
       skillsCommand,
       mcpCommand,
       rpcCommand,
