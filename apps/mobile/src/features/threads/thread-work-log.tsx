@@ -906,6 +906,7 @@ function WorkDetailSheet(props: {
 }
 
 export function ThreadWorkGroupToggle(props: {
+  readonly entryLabel?: string;
   readonly environmentId: EnvironmentId;
   readonly rowSizing: ReturnType<typeof deriveThreadWorkLogSizing>;
   readonly expanded: boolean;
@@ -935,7 +936,7 @@ export function ThreadWorkGroupToggle(props: {
         accessibilityRole="button"
         accessibilityState={{ expanded: props.expanded }}
         accessibilityLabel={accessibilityLabel}
-        accessibilityHint={`Double tap to ${props.expanded ? "hide" : "show"} ${props.hiddenCount} tool ${props.hiddenCount === 1 ? "call" : "calls"}.`}
+        accessibilityHint={`Double tap to ${props.expanded ? "hide" : "show"} ${props.hiddenCount} ${props.entryLabel ?? (props.hiddenCount === 1 ? "tool call" : "tool calls")}.`}
         hitSlop={8}
         onPress={() => {
           void Haptics.selectionAsync();

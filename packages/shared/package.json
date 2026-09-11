@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./childFollowUp": {
+      "types": "./src/childFollowUp.ts",
+      "import": "./src/childFollowUp.ts"
+    },
     "./localEnvironment": {
       "types": "./src/localEnvironment.ts",
       "import": "./src/localEnvironment.ts"

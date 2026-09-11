@@ -89,6 +89,11 @@ describe("wakePrompt", () => {
     });
     expect(prompt).toContain("PR has merge conflicts with main");
     expect(prompt).not.toContain("behind main");
+    expect(prompt).toContain("Merge the base branch into the PR branch");
+    expect(prompt).toContain("push without asking again");
+    expect(prompt).toContain(
+      "Merging the PR into its target branch, force-pushing, or rewriting history requires explicit human approval",
+    );
   });
 
   it("suppresses legacy base-distance events", () => {
@@ -120,6 +125,11 @@ describe("wakePrompt", () => {
     expect(prompt).toContain("fallback PR maintenance");
     expect(prompt).toContain("sole modifying owner");
     expect(prompt).toContain("CI still red");
+    expect(prompt).toContain("Merge the base branch into the PR branch");
+    expect(prompt).toContain("push without asking again");
+    expect(prompt).toContain(
+      "Merging the PR into its target branch, force-pushing, or rewriting history requires explicit human approval",
+    );
     expect(prompt.length).toBeLessThan(4_000);
   });
 

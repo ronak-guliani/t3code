@@ -57,6 +57,7 @@ import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { ChildFollowUpReceipt } from "./ChildFollowUpPanel";
 import {
   collectReviewOutputMessageIds,
   computeStableMessagesTimelineRows,
@@ -529,24 +530,26 @@ function TimelineRowContent(props: { row: TimelineRow }) {
         (() => {
           const userImages = row.message.attachments ?? [];
           const childNudge = row.message.origin?.kind === "child-nudge" ? row.message.origin : null;
-          const displayedUserMessage = childNudge
-            ? {
-                contexts: [],
-                visibleText: childNudge.updates
-                  .map((update) => `${update.childTitle}: ${update.summary}`)
-                  .join("\n\n"),
-              }
-            : deriveDisplayedUserMessageState(row.message.text);
+          if (childNudge) {
+            return (
+              <ChildFollowUpReceipt
+                updates={childNudge.updates}
+                environmentId={ctx.activeThreadEnvironmentId}
+                forceExpanded={ctx.activeChatFindRowId === row.id}
+                initialExpanded={ctx.workGroupExpansion.get(row.id) ?? false}
+                onExpandedChange={(expanded) => ctx.workGroupExpansion.set(row.id, expanded)}
+              />
+            );
+          }
+          const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
           const terminalContexts = displayedUserMessage.contexts;
           const previewAnnotations: ParsedPreviewAnnotation[] = [];
           let visibleText = displayedUserMessage.visibleText;
-          if (!childNudge) {
-            while (true) {
-              const extracted = extractTrailingPreviewAnnotation(visibleText);
-              if (!extracted.annotation) break;
-              previewAnnotations.unshift(extracted.annotation);
-              visibleText = extracted.promptText;
-            }
+          while (true) {
+            const extracted = extractTrailingPreviewAnnotation(visibleText);
+            if (!extracted.annotation) break;
+            previewAnnotations.unshift(extracted.annotation);
+            visibleText = extracted.promptText;
           }
           const previewImages = userImages.filter((image) =>
             image.name.startsWith("preview-annotation-"),
@@ -559,24 +562,6 @@ function TimelineRowContent(props: { row: TimelineRow }) {
             <div className="flex flex-col items-end">
               {row.message.origin?.kind === "cross-thread" ? (
                 <CrossThreadProvenance origin={row.message.origin} />
-              ) : row.message.origin?.kind === "child-nudge" ? (
-                <div
-                  className="mb-1 flex flex-wrap justify-end gap-1"
-                  aria-label="Child assignment updates"
-                >
-                  <span className="text-xs text-muted-foreground">Child updates</span>
-                  {row.message.origin.updates.map((update) => (
-                    <CrossThreadProvenance
-                      key={update.id}
-                      origin={{
-                        kind: "cross-thread",
-                        sourceThreadId: update.childThreadId,
-                        sourceThreadTitle: update.childTitle,
-                        sourceMessageId: update.sourceMessageId ?? update.assignmentId,
-                      }}
-                    />
-                  ))}
-                </div>
               ) : row.message.origin?.kind === "pull-request-monitor" ? (
                 <PullRequestMonitorProvenance origin={row.message.origin} />
               ) : null}

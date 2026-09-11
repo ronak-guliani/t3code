@@ -64,6 +64,7 @@ export const PROVIDER_OPTIONS: Array<{
 ];
 
 export interface WorkLogEntry {
+  childReportId?: string;
   toolLifecycleStatus?: import("@t3tools/client-runtime/work-log/presentation").WorkLogToolLifecycleStatus;
   toolData?: unknown;
   turnId?: string;
@@ -830,6 +831,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
   const childLifecycleActivity = isChildLifecycleThreadActivity(activity) ? activity : null;
+  if (childLifecycleActivity?.payload.report) {
+    entry.childReportId = childLifecycleActivity.payload.report.id;
+  }
   const externalAction =
     childLifecycleActivity?.payload.lifecycle === "pr-created"
       ? {
@@ -1410,6 +1414,13 @@ export function deriveTimelineEntries(
   workEntries: WorkLogEntry[],
 ): TimelineEntry[] {
   const messageOrderById = new Map(messages.map((message, index) => [message.id, index]));
+  const deliveredChildReportIds = new Set(
+    messages.flatMap((message) =>
+      message.origin?.kind === "child-nudge"
+        ? message.origin.updates.map((report) => report.id)
+        : [],
+    ),
+  );
   const messageRows: TimelineEntry[] = messages.map((message) => ({
     id: message.id,
     kind: "message",
@@ -1422,12 +1433,14 @@ export function deriveTimelineEntries(
     createdAt: proposedPlan.createdAt,
     proposedPlan,
   }));
-  const workRows: TimelineEntry[] = workEntries.map((entry) => ({
-    id: entry.stableId ?? entry.id,
-    kind: "work",
-    createdAt: entry.createdAt,
-    entry,
-  }));
+  const workRows: TimelineEntry[] = workEntries
+    .filter((entry) => !entry.childReportId || !deliveredChildReportIds.has(entry.childReportId))
+    .map((entry) => ({
+      id: entry.stableId ?? entry.id,
+      kind: "work",
+      createdAt: entry.createdAt,
+      entry,
+    }));
   return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) => {
     if (a.kind === "message" && b.kind === "message") {
       return (messageOrderById.get(a.message.id) ?? 0) - (messageOrderById.get(b.message.id) ?? 0);

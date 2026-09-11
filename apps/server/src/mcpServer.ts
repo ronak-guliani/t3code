@@ -5,11 +5,11 @@ import { createInterface } from "node:readline";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import type { ProviderInstanceId, RuntimeMode } from "@t3tools/contracts";
 import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 import { killProcessTree } from "@t3tools/shared/processTree";
-import { ThreadId } from "@t3tools/contracts";
+import { ChildDecision, ChildWaitCondition, ThreadId } from "@t3tools/contracts";
 
 import { issueCrossThreadDispatchCapability } from "./orchestration/CrossThreadDispatchCapability.ts";
 import { composeDelegationPrompt, DELEGATION_PROMPT_BLOCKS } from "./delegationPrompt.ts";
@@ -58,6 +58,8 @@ export interface McpHttpServer {
 }
 
 const MAX_FILE_BYTES = 1024 * 1024;
+const decodeChildWait = Schema.decodeUnknownSync(Schema.NullOr(ChildWaitCondition));
+const decodeChildDecision = Schema.decodeUnknownSync(ChildDecision);
 const MAX_HTTP_REQUEST_BYTES = 1024 * 1024;
 const MAX_SEARCH_RESULTS = 100;
 const MAX_TERMINAL_OUTPUT_BYTES = 64 * 1024;
@@ -94,6 +96,8 @@ const TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
   ["create_nested_threads", "create_nested_threads"],
   ["send_to_thread", "send_to_thread"],
   ["report_to_parent", "report_to_parent"],
+  ["assign_to_thread", "assign_to_thread"],
+  ["set_child_wait", "set_child_wait"],
   ["associate_pull_request", "associate_pull_request"],
 ] as const);
 
@@ -1583,14 +1587,29 @@ async function createNestedThreadsTool(
 async function sendToThreadTool(
   options: McpServeOptions,
   args: Record<string, unknown>,
+  mode: "message" | "assignment" = "message",
 ): Promise<string> {
+  const toolName = mode === "assignment" ? "assign_to_thread" : "send_to_thread";
   if (!options.threadId) {
-    throw new Error("send_to_thread is only available from a T3 provider session");
+    throw new Error(`${toolName} is only available from a T3 provider session`);
   }
   const thread = asString(args.thread)?.trim();
   const prompt = asString(args.prompt)?.trim();
-  if (!thread) throw new Error("send_to_thread requires a non-empty thread");
-  if (!prompt) throw new Error("send_to_thread requires a non-empty prompt");
+  if (!thread) throw new Error(`${toolName} requires a non-empty thread`);
+  if (!prompt) throw new Error(`${toolName} requires a non-empty prompt`);
+  const requestId = asString(args.requestId)?.trim();
+  const respondToReportId = asString(args.respondToReportId)?.trim();
+  const assignmentId = asString(args.assignmentId)?.trim();
+  const followUp = args.followUp ?? "automatic";
+  if (mode === "assignment" && followUp !== "automatic" && followUp !== "notify-only") {
+    throw new Error("followUp must be automatic or notify-only");
+  }
+  if ((mode === "assignment" || respondToReportId) && !requestId) {
+    throw new Error("Tracked assignments and decision responses require a stable requestId.");
+  }
+  if (respondToReportId && (!assignmentId || mode === "assignment")) {
+    throw new Error("A decision response requires its assignmentId and cannot create new work.");
+  }
 
   const result = await runCommand(options.cwd, options.cliCommand, [
     ...(options.cliArgsPrefix ?? []),
@@ -1603,6 +1622,27 @@ async function sendToThreadTool(
     options.threadId,
     "--cross-thread-capability",
     issueCrossThreadDispatchCapability(ThreadId.make(options.threadId)),
+    ...(mode === "assignment" ? ["--assignment-follow-up", String(followUp)] : []),
+    ...(requestId ? ["--request-id", requestId] : []),
+    ...(respondToReportId ? ["--respond-to-report", respondToReportId] : []),
+    ...(assignmentId ? ["--assignment-id", assignmentId] : []),
+    ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
+  ]);
+  return result.stdout.trim();
+}
+
+async function setChildWaitTool(
+  options: McpServeOptions,
+  args: Record<string, unknown>,
+): Promise<string> {
+  if (!options.threadId) throw new Error("set_child_wait requires a T3 provider session");
+  const condition = decodeChildWait(args.condition);
+  const result = await runCommand(options.cwd, options.cliCommand, [
+    ...(options.cliArgsPrefix ?? []),
+    "chat",
+    "wait",
+    options.threadId,
+    JSON.stringify(condition),
     ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
   ]);
   return result.stdout.trim();
@@ -1616,6 +1656,11 @@ async function reportToParentTool(
   const reportId = asString(args.reportId)?.trim();
   const summary = asString(args.summary)?.trim();
   const kind = args.kind;
+  const assignmentId = asString(args.assignmentId)?.trim();
+  const decision = args.decision === undefined ? undefined : decodeChildDecision(args.decision);
+  if (args.canContinue !== undefined && typeof args.canContinue !== "boolean") {
+    throw new Error("canContinue must be a boolean");
+  }
   if (
     !reportId ||
     reportId.length > 200 ||
@@ -1637,6 +1682,12 @@ async function reportToParentTool(
     kind,
     "--report-id",
     reportId,
+    ...(assignmentId ? ["--assignment-id", assignmentId] : []),
+    ...(decision ? ["--decision", JSON.stringify(decision)] : []),
+    ...(args.canContinue !== undefined ? ["--can-continue", String(args.canContinue)] : []),
+    ...(asString(args.supersedesReportId)
+      ? ["--supersedes-report", String(args.supersedesReportId)]
+      : []),
     "--cross-thread-capability",
     issueCrossThreadDispatchCapability(ThreadId.make(options.threadId)),
     ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
@@ -1809,6 +1860,56 @@ const NESTED_THREAD_REQUIRED_INPUTS = ["project", "title", "prompt", "model"] as
 
 const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
+    name: "assign_to_thread",
+    description:
+      "Create a new tracked assignment in an existing child of this thread. The previous assignment must be finished and have no unresolved decision. Atomically queues the prompt and returns assignmentId. Reuse requestId on retry. For a decision response, use send_to_thread with respondToReportId instead.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        thread: { type: "string" },
+        prompt: { type: "string" },
+        requestId: { type: "string", minLength: 1, maxLength: 200 },
+        followUp: { type: "string", enum: ["automatic", "notify-only"] },
+      },
+      required: ["thread", "prompt", "requestId"],
+    },
+  },
+  {
+    name: "set_child_wait",
+    description:
+      "Set when this parent should continue: any selected result, all selected results, or decisions/blockers only. Pass null to restore automatic follow-up. Use exact assignment IDs from spawn/assignment results or chat show. Membership is fixed; partial spawn failures must be handled explicitly. Never interrupts an active turn or overrides Stop.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        condition: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              properties: {
+                mode: { type: "string", enum: ["any", "all", "decisions-only"] },
+                assignments: {
+                  type: "array",
+                  maxItems: 32,
+                  items: {
+                    type: "object",
+                    properties: {
+                      childThreadId: { type: "string" },
+                      assignmentId: { type: "string" },
+                    },
+                    required: ["childThreadId", "assignmentId"],
+                  },
+                },
+              },
+              required: ["mode", "assignments"],
+            },
+          ],
+        },
+      },
+      required: ["condition"],
+    },
+  },
+  {
     name: "report_to_parent",
     description:
       "Report progress or an early decision/blocker to the authenticated child's parent. Progress never wakes the parent; actionable reports follow the parent's policy and never interrupt it. Reuse reportId when retrying the same report. Results and failures are reported automatically; do not send duplicate completion messages.",
@@ -1818,6 +1919,25 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
         reportId: { type: "string", minLength: 1, maxLength: 200 },
         kind: { type: "string", enum: ["progress", "decision-needed", "important-update"] },
         summary: { type: "string", minLength: 1, maxLength: 4000 },
+        assignmentId: {
+          type: "string",
+          description:
+            "The assignment that produced this report. Required for reused children; never substitute a newer assignment.",
+        },
+        decision: {
+          type: "object",
+          properties: {
+            question: { type: "string", minLength: 1, maxLength: 2000 },
+            options: { type: "array", maxItems: 8, items: { type: "string", maxLength: 500 } },
+            recommendation: { type: "string", maxLength: 1000 },
+          },
+          required: ["question"],
+        },
+        canContinue: { type: "boolean" },
+        supersedesReportId: {
+          type: "string",
+          description: "Exact ID of the unresolved decision being replaced.",
+        },
       },
       required: ["reportId", "kind", "summary"],
     },
@@ -1999,6 +2119,15 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
       properties: {
         thread: { type: "string", description: "Destination thread id or title." },
         prompt: { type: "string" },
+        requestId: {
+          type: "string",
+          description: "Stable retry ID; required for decision responses.",
+        },
+        assignmentId: { type: "string" },
+        respondToReportId: {
+          type: "string",
+          description: "Resolve this decision atomically with queueing the response.",
+        },
       },
       required: ["thread", "prompt"],
     },
@@ -2068,6 +2197,10 @@ async function callTool(options: McpServeOptions, name: string, args: Record<str
       return await sendToThreadTool(options, args);
     case "report_to_parent":
       return await reportToParentTool(options, args);
+    case "assign_to_thread":
+      return await sendToThreadTool(options, args, "assignment");
+    case "set_child_wait":
+      return await setChildWaitTool(options, args);
     case "associate_pull_request":
       return await associatePullRequestTool(options, args);
     default:

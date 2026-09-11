@@ -157,6 +157,356 @@ function report(
 }
 
 describe("child nudging", () => {
+  it("collects routine results for a fixed two seconds without extending the deadline", async () => {
+    let state = model(thread("a", true), thread("b", true));
+    state = (await apply(state, finish("a"))).readModel;
+    state = (await apply(state, { ...finish("b"), createdAt: "2026-09-09T00:01:01.000Z" }))
+      .readModel;
+    const queued = state.threads[0]!.queuedTurns![0]!;
+    expect(queued.origin).toMatchObject({ collectUntil: "2026-09-09T00:01:02.000Z" });
+    const dispatch = {
+      type: "thread.queued-turn.dispatch" as const,
+      commandId: CommandId.make("collect"),
+      threadId: parentId,
+      queuedTurnId: queued.id,
+      dispatchedAt: "2026-09-09T00:01:01.999Z",
+    };
+    await expect(apply(state, dispatch)).rejects.toThrow("Collecting");
+    const delivered = await apply(state, { ...dispatch, dispatchedAt: "2026-09-09T00:01:02.000Z" });
+    expect(
+      delivered.events.filter((event) => event.type === "thread.turn-start-requested"),
+    ).toHaveLength(1);
+    expect(delivered.readModel.threads[0]!.messages[0]!.origin).toMatchObject({
+      updates: [{ childThreadId: "a" }, { childThreadId: "b" }],
+    });
+  });
+
+  it.each(["any", "all"] as const)(
+    "supports a durable %s wait and satisfies it once",
+    async (mode) => {
+      let state = model(thread("a", true), thread("b", true));
+      state = (
+        await apply(state, {
+          type: "thread.meta.update",
+          commandId: CommandId.make("wait"),
+          threadId: parentId,
+          childWait: {
+            mode,
+            assignments: ["a", "b"].map((id) => ({
+              childThreadId: ThreadId.make(id),
+              assignmentId: MessageId.make(`assignment-${id}`),
+            })),
+          },
+        })
+      ).readModel;
+      state = (await apply(state, finish("a"))).readModel;
+      const dispatch = {
+        type: "thread.queued-turn.dispatch" as const,
+        commandId: CommandId.make("wait-dispatch"),
+        threadId: parentId,
+        queuedTurnId: state.threads[0]!.queuedTurns![0]!.id,
+        dispatchedAt: "2026-09-09T00:01:02.000Z",
+      };
+      if (mode === "all") {
+        await expect(apply(state, dispatch)).rejects.toThrow("Waiting for 1 child");
+        state = (await apply(state, finish("b"))).readModel;
+      }
+      const delivered = await apply(state, dispatch);
+      expect(delivered.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBe(
+        dispatch.dispatchedAt,
+      );
+      const waitEvent = delivered.events.find(
+        (event) => event.type === "thread.meta-updated" && event.payload.nudging?.wait?.satisfiedAt,
+      );
+      expect(delivered.events.some((event) => event.eventId === waitEvent?.causationEventId)).toBe(
+        true,
+      );
+    },
+  );
+
+  it("escalates failures during an all wait without counting them as successful results", async () => {
+    const failedChild = thread("a", true);
+    failedChild.activities = [{ ...failedChild.activities[0]!, payload: { state: "failed" } }];
+    let state = (
+      await apply(model(failedChild, thread("b", true)), {
+        type: "thread.meta.update",
+        commandId: CommandId.make("wait"),
+        threadId: parentId,
+        childWait: {
+          mode: "all",
+          assignments: ["a", "b"].map((id) => ({
+            childThreadId: ThreadId.make(id),
+            assignmentId: MessageId.make(`assignment-${id}`),
+          })),
+        },
+      })
+    ).readModel;
+    state = (await apply(state, finish("a"))).readModel;
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("failure-dispatch"),
+      threadId: parentId,
+      queuedTurnId: state.threads[0]!.queuedTurns![0]!.id,
+      dispatchedAt: finished,
+    });
+    expect(delivered.readModel.threads[0]!.nudging?.wait).toMatchObject({
+      assignments: [{ outcome: "failed" }, {}],
+    });
+    expect(delivered.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBeUndefined();
+  });
+
+  it("holds routine reports under decision-only policy but dispatches a structured decision", async () => {
+    let state = withParent(model(thread("a", true)), {
+      nudging: { wait: { mode: "decisions-only", assignments: [] } },
+    });
+    state = (await apply(state, report("a", "important-update"))).readModel;
+    const dispatch = {
+      type: "thread.queued-turn.dispatch" as const,
+      commandId: CommandId.make("decision-dispatch"),
+      threadId: parentId,
+      queuedTurnId: state.threads[0]!.queuedTurns![0]!.id,
+      dispatchedAt: finished,
+    };
+    await expect(apply(state, dispatch)).rejects.toThrow("Only decisions");
+    state = (
+      await apply(state, {
+        ...report("a", "decision-needed"),
+        assignmentId: MessageId.make("assignment-a"),
+        decision: { question: "Which approach?", options: ["A", "B"], recommendation: "A" },
+        canContinue: false,
+      })
+    ).readModel;
+    expect(state.threads[1]!.nudging?.delegation?.decision?.decision?.question).toBe(
+      "Which approach?",
+    );
+    const delivered = await apply(state, dispatch);
+    expect(delivered.readModel.threads[0]!.messages[0]!.text).toContain(
+      "Question: Which approach?",
+    );
+    expect(delivered.readModel.threads[1]!.nudging?.delegation?.decision).not.toBeNull();
+  });
+
+  it("resolves decisions atomically with child responses and filters stale reports from mixed deliveries", async () => {
+    let state = (await apply(model(thread("a", true)), report("a", "decision-needed"))).readModel;
+    state = (await apply(state, report("a", "important-update"))).readModel;
+    const decision = state.threads[1]!.nudging!.delegation!.decision!;
+    const response: OrchestrationCommand = {
+      type: "thread.queued-turn.create",
+      commandId: CommandId.make("answer"),
+      threadId: ThreadId.make("a"),
+      queuedTurnId: QueuedTurnId.make("answer"),
+      assignmentId: decision.assignmentId,
+      respondToReportId: decision.id,
+      message: {
+        messageId: MessageId.make("answer"),
+        role: "user",
+        text: "Use A",
+        attachments: [],
+      },
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      createdAt: finished,
+    };
+    state = (await apply(state, response)).readModel;
+    expect(state.threads[1]!.nudging?.delegation?.decision).toBeNull();
+    expect(state.threads[1]!.queuedTurns?.[0]?.message.text).toBe("Use A");
+    await expect(
+      apply(state, { ...response, queuedTurnId: QueuedTurnId.make("duplicate") }),
+    ).rejects.toThrow("no longer current");
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("mixed-dispatch"),
+      threadId: parentId,
+      queuedTurnId: state.threads[0]!.queuedTurns![0]!.id,
+      dispatchedAt: "2026-09-09T00:01:02.000Z",
+    });
+    expect(delivered.readModel.threads[0]!.messages[0]!.origin).toMatchObject({
+      updates: [{ kind: "important-update" }],
+    });
+    const responseDelivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("answer-dispatch"),
+      threadId: ThreadId.make("a"),
+      queuedTurnId: QueuedTurnId.make("answer"),
+      dispatchedAt: finished,
+    });
+    expect(responseDelivered.readModel.threads[1]!.nudging?.delegation?.pendingResponse).toBeNull();
+  });
+
+  it("does not finish an assignment with an unresolved decision", async () => {
+    const state = (await apply(model(thread("a", true)), report("a", "decision-needed"))).readModel;
+    const finishedState = (await apply(state, finish("a"))).readModel;
+    expect(finishedState.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+  });
+
+  it("restores the unresolved question when an undelivered answer is deleted", async () => {
+    let state = (await apply(model(thread("a", true)), report("a", "decision-needed"))).readModel;
+    const decision = state.threads[1]!.nudging!.delegation!.decision!;
+    state = (
+      await apply(state, {
+        type: "thread.queued-turn.create",
+        commandId: CommandId.make("answer"),
+        threadId: ThreadId.make("a"),
+        queuedTurnId: QueuedTurnId.make("answer"),
+        assignmentId: decision.assignmentId,
+        respondToReportId: decision.id,
+        message: {
+          messageId: MessageId.make("answer"),
+          role: "user",
+          text: "Use A",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: finished,
+      })
+    ).readModel;
+    expect(state.threads[1]!.nudging?.delegation?.pendingResponse?.report).toEqual(decision);
+    state = (
+      await apply(state, {
+        type: "thread.queued-turn.fail",
+        commandId: CommandId.make("answer-failed"),
+        threadId: ThreadId.make("a"),
+        queuedTurnId: QueuedTurnId.make("answer"),
+        failureMessage: "Unavailable",
+        failedAt: finished,
+      })
+    ).readModel;
+    expect(state.threads[1]!.nudging?.delegation?.pendingResponse?.report).toEqual(decision);
+    expect(state.threads[1]!.queuedTurns?.[0]?.failureMessage).toBe("Unavailable");
+    state = (
+      await apply(state, {
+        type: "thread.queued-turn.delete",
+        commandId: CommandId.make("delete-answer"),
+        threadId: ThreadId.make("a"),
+        queuedTurnId: QueuedTurnId.make("answer"),
+        deletedAt: finished,
+      })
+    ).readModel;
+    expect(state.threads[1]!.nudging?.delegation?.decision).toEqual(decision);
+    expect(state.threads[1]!.nudging?.delegation?.pendingResponse).toBeNull();
+  });
+
+  it("reports cancellation when a queued assignment is removed", async () => {
+    let state = (await apply(model(thread("a", true)), finish("a"))).readModel;
+    state = (
+      await apply(state, {
+        type: "thread.queued-turn.create",
+        commandId: CommandId.make("assign"),
+        threadId: ThreadId.make("a"),
+        queuedTurnId: QueuedTurnId.make("cancel-assignment"),
+        assignment: { followUp: "automatic" },
+        message: {
+          messageId: MessageId.make("assignment-b"),
+          role: "user",
+          text: "New work",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: finished,
+      })
+    ).readModel;
+    state = (
+      await apply(state, {
+        type: "thread.queued-turn.delete",
+        commandId: CommandId.make("cancel"),
+        threadId: ThreadId.make("a"),
+        queuedTurnId: QueuedTurnId.make("cancel-assignment"),
+        deletedAt: finished,
+      })
+    ).readModel;
+    expect(state.threads[1]!.nudging?.delegation).toMatchObject({
+      outcome: "blocked",
+      completedAt: finished,
+    });
+    expect(state.threads[0]!.queuedTurns?.[0]?.origin).toMatchObject({
+      updates: [
+        { assignmentId: "assignment-a" },
+        { assignmentId: "assignment-b", kind: "blocked" },
+      ],
+    });
+  });
+
+  it("drops queued follow-up from a detached child without starting the former parent", async () => {
+    let state = (await apply(model(thread("a", true)), report("a", "important-update"))).readModel;
+    state = {
+      ...state,
+      threads: state.threads.map((entry) =>
+        entry.id === ThreadId.make("a") ? { ...entry, parentThreadId: null } : entry,
+      ),
+    };
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("detached-dispatch"),
+      threadId: parentId,
+      queuedTurnId: state.threads[0]!.queuedTurns![0]!.id,
+      dispatchedAt: finished,
+    });
+    expect(delivered.readModel.threads[0]!.messages).toEqual([]);
+    expect(delivered.readModel.threads[0]!.queuedTurns).toEqual([]);
+  });
+
+  it("reuses a finished child with a new assignment and rejects old or uncorrelated reports", async () => {
+    let state = (await apply(model(thread("a", true)), finish("a"))).readModel;
+    const assign: OrchestrationCommand = {
+      type: "thread.queued-turn.create",
+      commandId: CommandId.make("assign"),
+      threadId: ThreadId.make("a"),
+      queuedTurnId: QueuedTurnId.make("assignment-b"),
+      assignment: { followUp: "automatic" },
+      message: {
+        messageId: MessageId.make("assignment-b"),
+        role: "user",
+        text: "Revise the result",
+        attachments: [],
+      },
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      createdAt: "2026-09-09T00:02:00.000Z",
+    };
+    state = (await apply(state, assign)).readModel;
+    expect(state.threads[1]!.nudging?.delegation).toMatchObject({
+      assignmentId: "assignment-b",
+      completedAt: null,
+      decision: null,
+    });
+    await expect(
+      apply(state, { ...report("a", "progress"), assignmentId: MessageId.make("assignment-a") }),
+    ).rejects.toThrow("does not match");
+    await expect(apply(state, report("a", "progress"))).rejects.toThrow("does not match");
+    await expect(
+      apply(state, { ...assign, queuedTurnId: QueuedTurnId.make("overlap") }),
+    ).rejects.toThrow("Finish the current assignment");
+    const oldCompletion = await apply(state, finish("a"));
+    expect(oldCompletion.readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+    await expect(
+      apply(state, { ...report("a", "progress"), assignmentId: MessageId.make("assignment-b") }),
+    ).resolves.toBeDefined();
+  });
+
+  it("rejects empty, foreign, and forged-complete wait conditions", async () => {
+    for (const childWait of [
+      { mode: "all" as const, assignments: [] },
+      {
+        mode: "all" as const,
+        assignments: [
+          { childThreadId: ThreadId.make("other"), assignmentId: MessageId.make("other") },
+        ],
+      },
+      { mode: "decisions-only" as const, assignments: [], satisfiedAt: finished },
+    ]) {
+      await expect(
+        apply(model(), {
+          type: "thread.meta.update",
+          commandId: CommandId.make("invalid-wait"),
+          threadId: parentId,
+          childWait,
+        }),
+      ).rejects.toThrow();
+    }
+  });
+
   it("bounds a batch at 32 reports and rejects edits to generated prompts", async () => {
     let state = model(thread("child", true));
     for (let index = 0; index < 33; index++) {
@@ -246,7 +596,7 @@ describe("child nudging", () => {
       commandId: CommandId.make("dispatch"),
       threadId: parentId,
       queuedTurnId: state.threads[0]!.queuedTurns![0]!.id,
-      dispatchedAt: finished,
+      dispatchedAt: "2026-09-09T00:01:02.000Z",
     };
     await expect(apply(state, dispatch)).rejects.toThrow("paused");
     state = (
