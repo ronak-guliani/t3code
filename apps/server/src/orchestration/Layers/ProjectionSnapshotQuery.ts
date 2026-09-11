@@ -2718,38 +2718,47 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       Request: Schema.Struct({ query: Schema.String }),
       Result: TranscriptSearchRowSchema,
       execute: ({ query: matchQuery }) => sql`
-        WITH hits AS MATERIALIZED (
+        WITH candidates AS MATERIALIZED (
+          SELECT
+            projection_thread_message_fts.rowid AS "messageRowid",
+            messages.message_id AS "messageId",
+            messages.thread_id AS "threadId",
+            messages.updated_at AS "updatedAt",
+            bm25(projection_thread_message_fts) AS score
+          FROM projection_thread_message_fts
+          JOIN projection_thread_messages AS messages
+            ON messages.rowid = projection_thread_message_fts.rowid
+          JOIN projection_threads AS threads ON threads.thread_id = messages.thread_id
+          WHERE projection_thread_message_fts MATCH ${matchQuery}
+            AND threads.archived_at IS NULL
+            AND threads.deleted_at IS NULL
+          -- Bound candidates before the first window so ranking works over
+          -- at most 2,000 rows instead of the full MATCH set. bm25() can
+          -- only run in the MATCH scope above, hence this separate level.
+          -- 2,000 is 4x the 500-row per-thread-capped set below: large
+          -- enough to keep other threads' best hits when one thread
+          -- dominates (see the 505-row crowd regression test), while still
+          -- bounding the window sorts. Snippets stay out of this path and
+          -- are computed only for the final 20 rows below.
+          ORDER BY score
+          LIMIT 2000
+        ),
+        hits AS MATERIALIZED (
           SELECT *
           FROM (
             SELECT
-              scored.*,
+              candidates.*,
               ROW_NUMBER() OVER (
-                PARTITION BY scored."threadId"
-                ORDER BY scored.score, scored."updatedAt" DESC, scored."messageId"
+                PARTITION BY candidates."threadId"
+                ORDER BY candidates.score, candidates."updatedAt" DESC, candidates."messageId"
               ) AS "threadHitRank"
-            FROM (
-              SELECT
-                projection_thread_message_fts.rowid AS "messageRowid",
-                messages.message_id AS "messageId",
-                messages.thread_id AS "threadId",
-                messages.updated_at AS "updatedAt",
-                bm25(projection_thread_message_fts) AS score,
-                snippet(projection_thread_message_fts, 0, '', '', '...', 20) AS excerpt
-              FROM projection_thread_message_fts
-              JOIN projection_thread_messages AS messages
-                ON messages.rowid = projection_thread_message_fts.rowid
-              JOIN projection_threads AS threads ON threads.thread_id = messages.thread_id
-              WHERE projection_thread_message_fts MATCH ${matchQuery}
-                AND threads.archived_at IS NULL
-                AND threads.deleted_at IS NULL
-            ) AS scored
+            FROM candidates
           )
-          -- Bound the FTS hit set before windowing, but keep each thread's
-          -- best hits: a bare global cap lets one giant thread consume the
-          -- whole candidate set and hide other matching threads from the
-          -- per-thread window below. The pre-cap ordering matches the final
-          -- tiebreaks so the per-thread winner is deterministic. (bm25() can
-          -- only run in the MATCH scope above, hence the nesting.)
+          -- Keep each thread's best hits: a bare global cap lets one giant
+          -- thread consume the whole candidate set and hide other matching
+          -- threads from the per-thread window below. The pre-cap ordering
+          -- matches the final tiebreaks so the per-thread winner is
+          -- deterministic.
           WHERE "threadHitRank" <= 25
           ORDER BY score
           LIMIT 500
@@ -2776,13 +2785,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           projects.title AS "projectTitle",
           threads.branch,
           messages.role,
-          top_hits.excerpt AS excerpt,
+          snippet(projection_thread_message_fts, 0, '', '', '...', 20) AS excerpt,
           top_hits."updatedAt"
         FROM top_hits
         JOIN projection_thread_messages AS messages
           ON messages.rowid = top_hits."messageRowid"
         JOIN projection_threads AS threads ON threads.thread_id = top_hits."threadId"
         LEFT JOIN projection_projects AS projects ON projects.project_id = threads.project_id
+        -- snippet() needs the MATCH scope, so rejoin the FTS index here:
+        -- it runs only for the final 20 rows instead of every MATCH hit.
+        JOIN projection_thread_message_fts
+          ON projection_thread_message_fts.rowid = top_hits."messageRowid"
+        WHERE projection_thread_message_fts MATCH ${matchQuery}
         ORDER BY top_hits.score, top_hits."updatedAt" DESC, top_hits."threadId"
       `,
     })({ query: literalQuery }).pipe(
