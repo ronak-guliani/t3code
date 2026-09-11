@@ -12,6 +12,7 @@ import { AppText as Text } from "../../components/AppText";
 import { CompactThreadRow } from "./compact-thread-row";
 import { PendingTaskListRow } from "./thread-list-items";
 import type { MobileThreadTreeRow, MobileThreadShell } from "./mobile-thread-hierarchy";
+import type { ThreadListRowStatus } from "./thread-list-row-status";
 import { useNestedThreadActions } from "./use-nested-thread-actions";
 import { cn } from "../../lib/cn";
 import { relativeTime } from "../../lib/time";
@@ -24,10 +25,8 @@ import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regenerati
 import {
   resolveThreadListV2SnoozeMenuSelection,
   resolveThreadListV2SnoozeGateExpiryMs,
-  resolveThreadListV2Status,
   resolveThreadListV2SwipeActions,
 } from "./threadListV2";
-import { hierarchyThreadKey } from "@t3tools/client-runtime/state/thread-hierarchy";
 
 /**
  * Active work and the quieter settled tail share compact rows, with their
@@ -192,6 +191,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly thread: MobileThreadShell;
   readonly projectCwd?: string | null;
   readonly hierarchy?: MobileThreadTreeRow | undefined;
+  readonly status: Exclude<ThreadListRowStatus, "queued" | "draft">;
   readonly hideRelated?: boolean;
   readonly variant: "card" | "slim";
   /** Snoozed-shelf row: shows its wake time and offers Wake. */
@@ -248,7 +248,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly onSwipeableClose: (methods: SwipeableMethods) => void;
   readonly searchMatch?: EnvironmentThreadSearchMatch;
   readonly searchQuery?: string;
-  readonly completionReadAt?: Readonly<Record<string, string>>;
   readonly simultaneousSwipeGesture?: ComponentProps<
     typeof ThreadSwipeable
   >["simultaneousWithExternalGesture"];
@@ -281,10 +280,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const selected = props.selected === true;
   const pullRequest = useThreadPr(thread, props.projectCwd ?? null);
 
-  const status = resolveThreadListV2Status(
-    thread,
-    props.completionReadAt?.[hierarchyThreadKey(thread)],
-  );
+  const status = props.status;
   // Settled rows label by the same stamp they sort by, so order and label
   // can't disagree. updatedAt is always present, so the resolver never
   // returns null here.

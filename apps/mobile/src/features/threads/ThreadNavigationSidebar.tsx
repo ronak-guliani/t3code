@@ -355,6 +355,7 @@ function ThreadNavigationSidebarPane(
             showAllThreads: hasSearchQuery,
             dismissedAgentRunKeys,
             threadChildReadAt,
+            threadCompletionReadAt,
             selectedThreadKey: props.selectedThreadKey,
           }),
     [
@@ -365,6 +366,7 @@ function ThreadNavigationSidebarPane(
       props.selectedThreadKey,
       dismissedAgentRunKeys,
       threadChildReadAt,
+      threadCompletionReadAt,
     ],
   );
 
@@ -483,6 +485,7 @@ function ThreadNavigationSidebarPane(
       threads,
       dismissedAgentRunKeys,
       threadChildReadAt,
+      threadCompletionReadAt,
       environmentId: options.selectedEnvironmentId,
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
       searchQuery: props.searchQuery,
@@ -756,6 +759,7 @@ function ThreadNavigationSidebarPane(
           previous.item.hierarchy?.archiveBlocked === item.item.hierarchy?.archiveBlocked &&
           previous.item.hierarchy?.latestRelatedNotificationAt ===
             item.item.hierarchy?.latestRelatedNotificationAt &&
+          previous.item.status === item.item.status &&
           previous.item.variant === item.item.variant &&
           previous.item.snoozed === item.item.snoozed &&
           previous.item.pinned === item.item.pinned &&
@@ -830,7 +834,7 @@ function ThreadNavigationSidebarPane(
           const thread = item.item.thread;
           return (
             <ThreadListV2Row
-              completionReadAt={threadCompletionReadAt}
+              status={item.item.status}
               hierarchy={item.item.hierarchy}
               thread={thread}
               projectCwd={projectCwdByKey.get(
@@ -948,7 +952,7 @@ function ThreadNavigationSidebarPane(
           const thread = item.thread;
           return (
             <ThreadListRow
-              completionReadAt={threadCompletionReadAt}
+              status={item.status}
               hierarchy={item.hierarchy}
               variant="sidebar"
               thread={thread}

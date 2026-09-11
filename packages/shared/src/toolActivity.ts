@@ -52,21 +52,28 @@ function extractCommandFromTitle(title: string | undefined): string | undefined 
   return backtickMatch?.[1]?.trim() || undefined;
 }
 
-function extractToolCommand(data: Record<string, unknown> | undefined, title: string | undefined) {
+export function extractToolCommandInput(
+  data: Record<string, unknown> | undefined,
+): string | unknown[] | undefined {
   const item = asRecord(data?.item);
   const itemInput = asRecord(item?.input);
   const itemResult = asRecord(item?.result);
   const rawInput = asRecord(data?.rawInput);
+  const input = asRecord(data?.input);
   const candidates = [
-    normalizeCommandValue(item?.command),
-    normalizeCommandValue(itemInput?.command),
-    normalizeCommandValue(itemResult?.command),
-    normalizeCommandValue(data?.command),
-    normalizeCommandValue(rawInput?.command),
+    item?.command,
+    itemInput?.command,
+    itemResult?.command,
+    data?.command,
+    rawInput?.command,
+    input?.command,
   ];
-  const direct = candidates.find((candidate) => candidate !== undefined);
-  if (direct) {
-    return direct;
+  for (const candidate of candidates) {
+    if (
+      (typeof candidate === "string" || Array.isArray(candidate)) &&
+      normalizeCommandValue(candidate)
+    )
+      return candidate;
   }
   const executable = asTrimmedString(rawInput?.executable);
   const args = normalizeCommandValue(rawInput?.args);
@@ -76,7 +83,11 @@ function extractToolCommand(data: Record<string, unknown> | undefined, title: st
   if (executable) {
     return executable;
   }
-  return extractCommandFromTitle(title);
+  return undefined;
+}
+
+function extractToolCommand(data: Record<string, unknown> | undefined, title: string | undefined) {
+  return normalizeCommandValue(extractToolCommandInput(data)) ?? extractCommandFromTitle(title);
 }
 
 function maybePathLike(value: string | undefined): string | undefined {

@@ -643,6 +643,38 @@ describe("buildThreadFeed", () => {
     expect(row?.getCopyText()).toBe(`Command run\n${command}`);
   });
 
+  it.each([undefined, "pnpm lint"])(
+    "keeps output separate from command input on mobile: %s",
+    (command) => {
+      const detail = "directConnectSmoke.integration.test.ts(419,13): error";
+      const [group] = buildThreadFeed(
+        makeThread({
+          id: ThreadId.make("command-provenance"),
+          projectId: ProjectId.make("project-1"),
+          title: "Command provenance",
+          activities: [
+            makeActivity({
+              id: EventId.make("command-provenance-tool"),
+              kind: "tool.completed",
+              createdAt: "2026-09-08T10:00:00.000Z",
+              tone: "tool",
+              summary: "Ran command",
+              payload: {
+                itemType: "command_execution",
+                detail,
+                data: command ? { rawInput: { command } } : {},
+              },
+            }),
+          ],
+        }),
+      );
+      expect(group?.type).toBe("activity-group");
+      if (group?.type !== "activity-group") return;
+      expect(group.activities[0]?.workEntry.command).toBe(command);
+      expect(group.activities[0]?.getFullDetail()).toContain(detail);
+    },
+  );
+
   it("keeps command output when it equals the displayed command", () => {
     const command = "printf hello";
     const thread = makeThread({
@@ -1249,6 +1281,7 @@ describe("buildThreadFeed", () => {
             title: "Run tests",
             itemType: "command_execution",
             detail: "/bin/zsh -lc 'bun run test'",
+            data: { command: "/bin/zsh -lc 'bun run test'", kind: "execute" },
           },
         }),
         makeActivity({
@@ -1262,6 +1295,7 @@ describe("buildThreadFeed", () => {
             title: "Run tests",
             itemType: "command_execution",
             detail: "/bin/zsh -lc 'bun run test'",
+            data: { command: "/bin/zsh -lc 'bun run test'", kind: "execute" },
           },
         }),
       ],
@@ -3092,12 +3126,28 @@ describe("buildThreadFeed", () => {
       ],
     });
     const expandedHistory = deriveThreadFeedPresentation(feed, null, new Set([turnId]));
-    expect(expandedHistory.some((entry) => entry.type === "work-toggle")).toBe(false);
-    expect(expandedHistory.find((entry) => entry.type === "activity-group")).toMatchObject({
-      activities: [{ id: "call-a-1" }, { id: "call-b-2" }],
+    const groupId = `work-group:tool:${turnId}:call-a`;
+    const repeatId = `${groupId}:repeat:call-a-1`;
+    expect(expandedHistory.find((entry) => entry.type === "work-toggle")).toMatchObject({
+      groupId: repeatId,
+      hiddenCount: 2,
+      expanded: false,
+      summary: "Ran command · 2 calls",
+    });
+    expect(expandedHistory.some((entry) => entry.type === "activity-group")).toBe(false);
+    const repeatedHistory = deriveThreadFeedPresentation(
+      feed,
+      null,
+      new Set([turnId]),
+      new Set([repeatId]),
+    );
+    expect(repeatedHistory.find((entry) => entry.type === "activity-group")).toMatchObject({
+      activities: [
+        { id: "call-a-1", detail: "first output" },
+        { id: "call-b-2", detail: "second output" },
+      ],
     });
 
-    const groupId = `work-group:tool:${turnId}:call-a`;
     const startedAt = "2026-04-01T00:00:00.000Z";
     const runningRows = deriveThreadFeedPresentation(
       buildThreadFeed({ ...thread, activities: thread.activities.slice(0, 2) }),
@@ -3118,10 +3168,10 @@ describe("buildThreadFeed", () => {
       feed,
       null,
       new Set([turnId]),
-      new Set([groupId]),
+      new Set([groupId, repeatId]),
     );
     expect(completedRows.find((entry) => entry.type === "activity-group")).toMatchObject({
-      id: `work-details:${groupId}`,
+      id: `work-details:${repeatId}`,
       activities: [
         { id: "call-a-1", lifecycleStatus: "completed", groupedToolDetail: true, live: false },
         { id: "call-b-2", lifecycleStatus: "completed", groupedToolDetail: true, live: false },

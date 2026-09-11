@@ -15,6 +15,7 @@ import {
   CommandShortcut,
 } from "./ui/command";
 import { cn } from "~/lib/utils";
+import { EnvironmentIdentity } from "./EnvironmentIdentity";
 
 interface CommandPaletteResultsProps {
   emptyStateMessage?: string;
@@ -102,6 +103,9 @@ function CommandPaletteResultRow(props: {
           {props.item.titleTrailingContent}
         </span>
       )}
+      {props.item.environmentId ? (
+        <EnvironmentIdentity environmentId={props.item.environmentId} />
+      ) : null}
       {props.item.timestamp ? (
         <span className="min-w-12 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground/70">
           {props.item.timestamp}

@@ -9,6 +9,8 @@ import {
   workGroupReceiptLabel,
   extractWorkLogToolLifecycleStatus,
   groupConsecutiveWorkEntries,
+  groupRepeatedWorkEntries,
+  hasWorkLogToolData,
   mergeWorkLogToolData,
   extractCommandOutputText,
   resolveViewedImageAsset,
@@ -145,6 +147,66 @@ describe("live activity strips", () => {
     expect(workGroupReceiptLabel([read("a.ts", "failed"), command])).toBe("Failed a.ts");
   });
 
+  it("folds only adjacent identical completed actions without discarding calls", () => {
+    const first = { ...read("same.ts"), turnId: "one" };
+    const second = { ...first, toolCallId: "another-call" };
+    const boundary = null;
+    const entries = [
+      first,
+      second,
+      read("different.ts"),
+      boundary,
+      first,
+      { ...first, toolLifecycleStatus: "failed" },
+      first,
+      { ...first, toolLifecycleStatus: "inProgress" },
+      first,
+      { ...first, toolLifecycleStatus: "stopped" },
+      { ...first, turnId: "two" },
+    ];
+    const groups = groupRepeatedWorkEntries(entries, (entry) => entry);
+    expect(groups.map((group) => group.entries.length)).toEqual([2, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    expect(groups[0]?.label).toBe("Read same.ts");
+    expect(groups.flatMap((group) => group.entries)).toEqual(entries);
+    expect(
+      groupRepeatedWorkEntries(
+        [first, { ...first, detail: "/elsewhere/same.ts" }],
+        (entry) => entry,
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("does not fold distinct commands merely because their program label matches", () => {
+    const command: WorkLogPresentationEntry = {
+      label: "Ran command",
+      tone: "tool",
+      command: "pnpm test",
+      toolLifecycleStatus: "completed",
+    };
+    expect(
+      groupRepeatedWorkEntries([command, { ...command, command: "pnpm lint" }], (entry) => entry),
+    ).toHaveLength(2);
+  });
+
+  it("does not treat edit-success prose as a filename", () => {
+    expect(
+      compactWorkEntryLabel({
+        label: "Edited files",
+        tone: "tool",
+        itemType: "file_change",
+        detail: "Edit applied successfully.",
+        toolData: { rawOutput: { content: "Edit applied successfully." } },
+      }),
+    ).toBe("Edited files");
+  });
+
+  it.each([undefined, null, "", "  ", {}, []])(
+    "does not offer an empty metadata disclosure for %j",
+    (data) => {
+      expect(hasWorkLogToolData(data)).toBe(false);
+    },
+  );
+
   it("uses concise cross-platform filenames and command names without dropping detail", () => {
     const entry = { ...read("a.ts"), detail: "C:\\work\\src\\a.ts" };
     expect(compactWorkEntryLabel(entry)).toBe("Read a.ts");
@@ -182,6 +244,135 @@ describe("live activity strips", () => {
         toolData: { toolName: "inspect_workspace" },
       }),
     ).toBe("inspect workspace");
+  });
+
+  it.each([
+    {
+      rawInput:
+        "*** Begin Patch\n*** Update File: /workspace/src/component-layout.tsx\n@@\n-old\n+new\n*** End Patch",
+    },
+    {
+      rawInput: {
+        patch:
+          "*** Begin Patch\n*** Add File: C:\\repo\\src\\component-layout.tsx\n+new\n*** End Patch",
+      },
+    },
+    { rawInput: { filename: "/workspace/src/component-layout.tsx" } },
+    { locations: [{ path: "/workspace/src/component-layout.tsx", line: 10 }] },
+    { input: { edits: [{ filePath: "/workspace/src/component-layout.tsx" }] } },
+  ])("uses complete provider paths without a workspace root: %j", (toolData) => {
+    expect(
+      compactWorkEntryLabel({
+        label: "Edit file",
+        tone: "tool",
+        toolData: { copilotToolName: "functions.apply_patch", ...toolData },
+        detail: "/workspace/src/comp...",
+        changedFiles: ["/workspace/src/comp..."],
+      }),
+    ).toBe("Edited component-layout.tsx");
+  });
+
+  it("recognizes patch actions even when normalized changed files are unavailable", () => {
+    expect(
+      compactWorkEntryLabel({
+        label: "other",
+        tone: "tool",
+        toolData: {
+          copilotToolName: "functions.apply_patch",
+          rawInput:
+            "*** Begin Patch\n*** Update File: /repo/full-filename.ts\n@@\n-a\n+b\n*** End Patch",
+        },
+      }),
+    ).toBe("Edited full-filename.ts");
+  });
+
+  it.each([
+    '{"available":true,"url":"http://localhost:6432"}',
+    '["src/file.ts"]',
+    "/src/comp...",
+    "/src/comp…",
+    "Arbitrary output",
+  ])("does not use structured output or incomplete previews as filenames: %s", (detail) => {
+    expect(compactWorkEntryLabel({ label: "Read file", tone: "tool", detail })).toBe("Read file");
+  });
+
+  describe.each(["detail", "changedFiles", "viewedImagePath"] as const)(
+    "%s filename fallback",
+    (source) => {
+      const entry = (value: string): WorkLogPresentationEntry => ({
+        label: "Read file",
+        tone: "tool",
+        ...(source === "changedFiles"
+          ? { changedFiles: [value] }
+          : source === "viewedImagePath"
+            ? { viewedImagePath: value }
+            : { detail: value }),
+      });
+
+      it.each([
+        '"/src/file.ts"',
+        ' "README.md" ',
+        JSON.stringify("C:\\src\\file.ts"),
+        '{"path":"/src/file.ts"}',
+        '["/src/file.ts"]',
+        "1.25",
+      ])("rejects the complete JSON value %s", (value) => {
+        expect(compactWorkEntryLabel(entry(value))).toBe("Read file");
+      });
+
+      it.each([
+        ["/src/[id].tsx", "[id].tsx"],
+        ["/src/{locale}.ts", "{locale}.ts"],
+        ["C:\\src\\[slug].tsx", "[slug].tsx"],
+        ["[...slug].tsx", "[...slug].tsx"],
+        ['[id]/{"version":1}.ts', '{"version":1}.ts'],
+      ])("preserves valid path %s", (value, filename) => {
+        expect(compactWorkEntryLabel(entry(value))).toBe(`Read ${filename}`);
+      });
+    },
+  );
+
+  it.each([
+    "t3-code-preview_status",
+    "t3-code.t3-code-preview_status",
+    "mcp__t3-code__t3-code-preview_status",
+  ])("uses Copilot's %s identity instead of its generic read category", (copilotToolName) => {
+    expect(
+      compactWorkEntryLabel({
+        label: "Read file",
+        tone: "tool",
+        toolData: { copilotToolName },
+        detail: '{"available":true}',
+      }),
+    ).toBe("Getting preview browser status");
+  });
+
+  it("caches path traversal without reading authoritative output", () => {
+    let patchReads = 0;
+    const toolData = {
+      copilotToolName: "functions.apply_patch",
+      get patch() {
+        patchReads += 1;
+        return "*** Update File: /src/full-filename.ts";
+      },
+      get rawOutput() {
+        throw new Error("Collapsed labels must not inspect output");
+      },
+    };
+    const entry: WorkLogPresentationEntry = { label: "Edit file", tone: "tool", toolData };
+    for (let index = 0; index < 100; index += 1) {
+      expect(compactWorkEntryLabel(entry)).toBe("Edited full-filename.ts");
+    }
+    expect(patchReads).toBe(1);
+    expect(
+      compactWorkEntryLabel({
+        ...entry,
+        toolData: {
+          copilotToolName: "functions.apply_patch",
+          rawInput: { path: "/src/new-filename.ts" },
+        },
+      }),
+    ).toBe("Edited new-filename.ts");
   });
 
   it("normalizes interrupted and background task lifecycles", () => {

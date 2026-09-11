@@ -17,6 +17,8 @@
 
 ## Runtime lifecycle and projection foundations
 
+- Runtime PID files published after HTTP startup are observations, not startup ownership. Hold a shared per-state-directory OS-backed claim before constructing runtime services/migrations, revalidate legacy runtime evidence under it, and never unlink the claim file to recover a crash.
+
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
 - Session startup/resume and turn lifecycle require predictable recovery: terminal reconciliation must settle the matching projected turn and clear `session.activeTurnId`; preserve a pre-acknowledgement start failure's `messageId`; and preserve terminal provider-event ordering during normal adapter shutdown.
 - `TurnLifecycleRuntime` owns provider-session reconciliation, provider intent execution, runtime-event ingestion, and completion checkpoint ordering behind one `start`/`drain` interface; reconcile sessions before starting workers, and keep explicit thread-title regeneration outside this module.
@@ -40,6 +42,9 @@
 
 ## Desktop packaging and React state
 
+- Work-log display paths must use verbatim provider candidates, not Git-normalized changed paths: absolute patch paths are rejected without a cwd. Prefer raw input/ACP locations over shortened previews, and never treat JSON output as a filename.
+- Keep visited work-log bodies local to their virtual timeline row, lazy before first expansion, and hidden after collapse. Preserve mounted details through closing/reversal so output parsing and DOM reconstruction do not interrupt the animation.
+- Command labels must come from input metadata, never a tool's output/detail fallback. Repeated completed work may be folded for display, but preserve every call and keep distinct commands, paths, turns, active calls, and failures separate.
 - Packaged desktop startup builds cloud runtime services eagerly; `CloudRuntimeLayerLive` must provide its own auth control plane, server environment, orchestration, repository identity, and persistence dependencies, and startup logs should include a clear cloud-runtime-ready marker.
 - Worktree dependency copies can dereference macOS Electron framework symlinks; desktop packaging must validate an installed `Electron.app` before reusing it as `electronDist` and fall back to electron-builder's archive when invalid.
 - macOS native sidebar vibrancy can leave stale/ghosted row pixels when translucent sidebar rows animate opacity/transform/color over the visual-effect backing; keep vibrancy stable across focus changes and isolate native-vibrancy thread rows with paint containment, compositor promotion, and disabled row transitions.
@@ -105,6 +110,8 @@
 - Local desktop flavors must never use Official's `~/.t3` home. If a divergent build replaces role auth tables with scope-only tables, append a repair above the latest auth migration; replaying an earlier repair is impossible once the ledger high-water mark has passed it.
 
 ## PR reviews and checkpoint provenance
+
+- Skill triggers that include "draft a PR description" must branch to read-only delivery before staging or publishing; only a publication request authorizes creating a PR, which defaults to ready-for-review unless draft status is explicit.
 
 - Review findings must never be silently dropped: reviewers cite file line numbers that often land on unchanged context, so anchor findings to any line the diff renders and only discard ones naming a file outside the reviewed diff. Review threads stay conversational — refresh the result on every turn that emits reviewer JSON, re-resolve the snapshot it is anchored to, and identify the raw-JSON message by content rather than assuming it is the last assistant message.
 - PR metadata writes preserve monitor ownership by default. Only commands carrying explicit transfer intent may replace an owner; inherited/refresh writes use ancestry only as an ownerless fallback, validated before a compare-and-swap claim.
@@ -173,6 +180,8 @@
 
 ## Pairing and environment recovery
 
+- Public environment IDs, file ownership, and live PIDs do not authenticate a local HTTP listener: PID reuse and port takeover can admit impostor HTML into a privileged renderer. Keep automatic desktop attachment disabled until the transport is instance-authenticated; use explicit API connections from a desktop-owned renderer. An explicit missing default must never create a replacement history.
+
 - Owned tunnels are independent of account-linked Connect. Persist disabled intent before stopping, stop on unreadable configuration, and verify the public endpoint's environment ID before minting pairing links. Keep client revocation available even when the origin listens only on loopback.
 - Owner role does not override explicit session scopes; enforce operation scopes on every management route. Connector crash backoff must gate polling reconciliation as well as exit supervision.
 - Pairing QR payloads must use the shared canonical `/pair#token=...` URL; desktop-only deep-link shapes can silently parse as tokenless hosts in the RN client.
@@ -222,12 +231,14 @@
 - The web transport parks a stream that fails for a non-transport reason until the next reconnect, so a thread-detail subscription opened before the thread's projection row exists (`subscribeThread` answers "thread was not found") stays dead and is reused from the warm cache: the chat renders its optimistic message and "Working" forever until a reload. Gate `retainThreadDetailSubscription` on the thread being published in the shell projection and re-attach when it appears, and never dispose a retained subscription while reconciling a shell snapshot that may lag a freshly created thread.
 - Never suppress typechecking on `apps/server/src/ws.ts`. Parked web stream subscriptions must retry with bounded backoff and jitter so a handler defect cannot freeze the UI until reconnect.
 - Unread completion state is global across environment snapshots: never prune durable visit stamps from a partial snapshot, seed missing startup stamps through `latestTurn.completedAt`, and repair persisted stamps equal to the legacy metadata seed when that seed predates completion. V1 rows must preserve their parent-projected visit-aware status unless a local pending turn needs an immediate Working overlay.
+- Virtualized row items must own every primitive that changes their rendering. Derive receipt-aware status before list rendering and compare it in item equality; do not hide row state in render closures, whole-map props, or `extraData`, because mounted rows can remain stale after persistence updates.
 - Workspace handoff intentionally ends turn A and queues a continuation before turn B starts. Project non-failed queue presence onto the shell as `hasPendingQueuedTurn` (do not read detail-only `queuedTurnsByThreadId` for sidebar/notify). Treat that flag as still-working in status, archive guards, settle/snooze, and completion notifications so the idle gap does not flash "Done" / "Chat completed"; do not seed `notifiedTurnKeys` while the queue is pending.
 - Completion notifications must prefer a matching `insights.turn.completed` provider state over checkpoint-derived shell/detail state; `missing` checkpoint status and normal shutdown ordering can transiently or permanently misclassify a successful turn as interrupted. Briefly confirm fallback interruptions before notifying.
 
 ## Projection performance and service composition
 
 - Shell-summary projection refreshes scan full thread history; only run them for events that can change summary fields, and execute independent repository reads concurrently.
+- Shell-summary refreshes must use targeted aggregate/lifecycle queries (MAX/COUNT/kind-filtered scans), not full-history list + in-JS derive: `NodeSqliteClient` is a single connection behind `Semaphore(1)`, so `Effect` fan-out cannot overlap SELECTs and fewer decoded rows is the only de-serialization lever.
 - Live activity windows are ordered and capped; fast-path new tail appends, but retain the dedupe/sort fallback for duplicate IDs, out-of-order events, and unsorted restored state.
 - Restart hydration must apply the live projector's per-thread activity cap in SQL before decoding payload JSON; full projection histories can exceed the V8 heap even when each live thread is bounded in memory.
 - Projection bootstrap must prune cursor rows for retired projector names; a renamed projector can otherwise pin a global minimum cursor and replay gigabytes of event history on every startup.
@@ -255,8 +266,10 @@
 
 - Mobile capability flags are promises across both orchestration and `mobile.v1`; command schemas, mobile allowlists, server dispatch guards, and every exported live-event reducer must move together before advertising support.
 - Long-running mobile mutations need durable pending state plus correlated completion commands; clear interrupted work on reactor startup and ignore stale completions so reconnects and manual edits cannot be overwritten.
+- Keep a mobile workflow launch's idempotency key until its returned child thread is routable. An RPC success followed by projection timeout is still an ambiguous navigation outcome; retrying with a new key creates a duplicate child.
 - Use `Schema.is` rather than `instanceof` for Effect Schema types; the patched Windows TypeScript runner treats `instanceof` diagnostics as fatal.
 - Cross-platform subprocess fixtures must use the guaranteed Node runtime (`process.execPath`), not an undeclared Bun dependency; Windows resolves missing commands through `cmd.exe` and obscures the startup failure as exit code 1.
+- A Windows PowerShell subprocess launched through Node can inherit PowerShell 7's incompatible module paths. Restrict built-in-only probes to `$PSHOME/Modules` inside the child before any cmdlet runs; cover inherited shadow modules without weakening ACL failures.
 
 ## UI discovery and browser capture
 

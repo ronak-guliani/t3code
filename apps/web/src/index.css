@@ -803,6 +803,27 @@ label:has(> select#reasoning-effort) select {
   line-height: 1.6;
 }
 
+.chat-work-panel {
+  contain: layout;
+  transition-duration: 120ms;
+  transition-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.chat-work-panel-body {
+  contain: layout style;
+}
+
+.chat-work-chevron {
+  transition: transform 120ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-work-panel,
+  .chat-work-chevron {
+    transition: none;
+  }
+}
+
 .chat-work-trigger {
   display: flex;
   align-items: baseline;

@@ -9,21 +9,13 @@ import { cn } from "../../lib/cn";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAppNavigation } from "../../lib/use-app-navigation";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
-import type {
-  MobileThreadShell,
-  MobileThreadTreeRow,
-  NestedThreadStatus,
-} from "./mobile-thread-hierarchy";
+import type { MobileThreadShell, MobileThreadTreeRow } from "./mobile-thread-hierarchy";
+import type { ThreadListRowStatus } from "./thread-list-row-status";
 import type { ThreadPrPresentation } from "../../state/thread-pr-presentation";
 import { useUnreadChildNotification } from "./thread-hierarchy-controls";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 
-export type CompactThreadStatus =
-  | NestedThreadStatus
-  | "completed"
-  | "queued"
-  | "draft"
-  | "plan-ready";
+export type CompactThreadStatus = ThreadListRowStatus;
 
 const NESTED_INDENT = 12;
 const MAX_NESTED_INDENT_DEPTH = 3;

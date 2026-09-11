@@ -43,6 +43,26 @@ export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
 export type DeleteProjectionThreadActivitiesInput =
   typeof DeleteProjectionThreadActivitiesInput.Type;
 
+export const ListProjectionThreadUserInputActivitiesInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type ListProjectionThreadUserInputActivitiesInput =
+  typeof ListProjectionThreadUserInputActivitiesInput.Type;
+
+/**
+ * Narrow activity row for user-input lifecycle derivation: kind plus
+ * payload only, without tone or summary columns.
+ *
+ * Returned in ascending `(createdAt, activityId)` order.
+ */
+export const ProjectionThreadUserInputActivity = Schema.Struct({
+  activityId: EventId,
+  kind: Schema.String,
+  payload: Schema.Unknown,
+  createdAt: IsoDateTime,
+});
+export type ProjectionThreadUserInputActivity = typeof ProjectionThreadUserInputActivity.Type;
+
 /**
  * ProjectionThreadActivityRepositoryShape - Service API for projected thread activity.
  */
@@ -65,6 +85,19 @@ export interface ProjectionThreadActivityRepositoryShape {
   readonly listByThreadId: (
     input: ListProjectionThreadActivitiesInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadActivity>, ProjectionRepositoryError>;
+
+  /**
+   * List only user-input lifecycle activities for a thread
+   * (`user-input.requested`, `user-input.resolved`,
+   * `provider.user-input.respond.failed`).
+   *
+   * Returned in ascending `(createdAt, activityId)` order. Narrower and
+   * cheaper than `listByThreadId`: unrelated activity payloads are never
+   * fetched or JSON-decoded.
+   */
+  readonly listUserInputLifecycleByThreadId: (
+    input: ListProjectionThreadUserInputActivitiesInput,
+  ) => Effect.Effect<ReadonlyArray<ProjectionThreadUserInputActivity>, ProjectionRepositoryError>;
 
   /**
    * Delete projected thread activity rows by thread.

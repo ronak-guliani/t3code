@@ -49,6 +49,9 @@ const OPTIONAL_RPC_CAPABILITIES: Readonly<
   [WS_METHODS.pullRequestsSubscribeRefreshes]: "pullRequests",
   [WS_METHODS.pullRequestsLabelCandidates]: "pullRequests",
   [WS_METHODS.pullRequestsSetLabels]: "pullRequests",
+  [WS_METHODS.gitListOpenPullRequests]: "agentWorkflows",
+  [WS_METHODS.gitPrewarmReviewChangesContext]: "agentWorkflows",
+  [WS_METHODS.workflowRun]: "agentWorkflows",
 };
 
 export function requiredRpcCapability(
