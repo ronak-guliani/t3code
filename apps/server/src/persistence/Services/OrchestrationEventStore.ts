@@ -9,8 +9,8 @@
  *
  * @module OrchestrationEventStore
  */
-import { OrchestrationEvent } from "@t3tools/contracts";
-import { Context } from "effect";
+import { MessageId, OrchestrationEvent, ThreadId } from "@t3tools/contracts";
+import { Context, Option } from "effect";
 import type { Effect, Stream } from "effect";
 
 import type { OrchestrationEventStoreError } from "../Errors.ts";
@@ -51,6 +51,14 @@ export interface OrchestrationEventStoreShape {
    * @returns Stream containing all stored events.
    */
   readonly readAll: () => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
+
+  readonly findTurnStartRequested: (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+  }) => Effect.Effect<
+    Option.Option<Extract<OrchestrationEvent, { type: "thread.turn-start-requested" }>>,
+    OrchestrationEventStoreError
+  >;
 }
 
 /**
