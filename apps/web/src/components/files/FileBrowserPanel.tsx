@@ -67,6 +67,7 @@ export default function FileBrowserPanel({
   const { resolvedTheme } = useTheme();
   const entriesQuery = useProjectEntriesQuery(environmentId, cwd);
   const entries = entriesQuery.data?.entries ?? [];
+  const isIndexing = entriesQuery.isPending && entriesQuery.data === null;
   const entryKinds = useMemo(
     () => new Map(entries.map((entry) => [entry.path, entry.kind] as const)),
     [entries],
@@ -80,8 +81,9 @@ export default function FileBrowserPanel({
   const previousPathsRef = useRef<ReadonlySet<string> | null>(null);
   const syncingSelectionRef = useRef(false);
   const lastRevealedSelectionRef = useRef<string | null>(null);
+  const lastRevealRequestRef = useRef<number | null>(null);
   const [allExpanded, setAllExpanded] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(true);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const { model } = useFileTree({
@@ -137,15 +139,22 @@ export default function FileBrowserPanel({
     }
   }, [entryKinds, model, treePaths]);
 
+  // Returns true when the target was revealed, false when the tree does not
+  // contain it yet so callers can retry after entries load.
   const reveal = useCallback(
-    (path: string, select: boolean) => {
+    (path: string, select: boolean): boolean => {
       const normalized = path.replace(/\/$/, "");
-      if (select && entryKindsRef.current.get(normalized) !== "file") return;
+      if (select) {
+        const kind = entryKindsRef.current.get(normalized);
+        // Entries still loading: retry once the tree is populated.
+        if (kind === undefined) return false;
+        if (kind !== "file") return true;
+      }
       if (
         model.getSelectedPaths().some((candidate) => candidate.replace(/\/$/, "") === normalized)
       ) {
         model.scrollToPath(select ? normalized : path, { focus: false, offset: "nearest" });
-        return;
+        return true;
       }
       const segments = normalized.split("/").filter(Boolean);
       let ancestor = "";
@@ -155,11 +164,14 @@ export default function FileBrowserPanel({
         if (item && "expand" in item) item.expand();
       }
       if (!select) {
+        const target =
+          model.getItem(path) ?? model.getItem(normalized) ?? model.getItem(`${normalized}/`);
+        if (!target) return false;
         model.scrollToPath(path, { focus: false, offset: "nearest" });
-        return;
+        return true;
       }
       const item = model.getItem(normalized);
-      if (!item) return;
+      if (!item) return false;
       syncingSelectionRef.current = true;
       for (const selected of model.getSelectedPaths()) {
         if (selected.replace(/\/$/, "") !== normalized) model.getItem(selected)?.deselect();
@@ -169,23 +181,29 @@ export default function FileBrowserPanel({
       queueMicrotask(() => {
         syncingSelectionRef.current = false;
       });
+      return true;
     },
     [model],
   );
 
   // Follow the open file, but only when the selection itself changes.
   // Refreshing entries must not steal scroll/focus or close an active search.
+  // Retries while indexing so files opened before the listing completes are
+  // still revealed; once loaded, a missing path is accepted as-is instead of
+  // retrying on every refresh.
   useEffect(() => {
     if (!selectedPath || lastRevealedSelectionRef.current === selectedPath) return;
+    if (!reveal(selectedPath, true) && isIndexing) return;
     lastRevealedSelectionRef.current = selectedPath;
-    reveal(selectedPath, true);
-  }, [model, reveal, selectedPath]);
+  }, [model, reveal, selectedPath, treePaths, isIndexing]);
 
   // Breadcrumb clicks reveal a directory without touching file selection.
+  // Retries while indexing so clicks during loading are not lost.
   useEffect(() => {
-    if (!revealRequest) return;
-    reveal(revealRequest.path, false);
-  }, [model, reveal, revealRequest]);
+    if (!revealRequest || lastRevealRequestRef.current === revealRequest.nonce) return;
+    if (!reveal(revealRequest.path, false) && isIndexing) return;
+    lastRevealRequestRef.current = revealRequest.nonce;
+  }, [model, reveal, revealRequest, treePaths, isIndexing]);
 
   const toggleAllDirectories = () => {
     const next = !allExpanded;
@@ -213,8 +231,8 @@ export default function FileBrowserPanel({
     () => entries.reduce((count, entry) => count + (entry.kind === "file" ? 1 : 0), 0),
     [entries],
   );
-  const isIndexing = entriesQuery.isPending && entriesQuery.data === null;
   const showSearchRow = searchOpen || searchValue.length > 0;
+  const hasNoMatches = searchValue.length > 0 && matchCount === 0;
 
   const renderContextMenu = useCallback(
     (item: ContextMenuItem, context: ContextMenuOpenContext) => {
@@ -354,7 +372,7 @@ export default function FileBrowserPanel({
       ) : null}
       {entriesQuery.data?.truncated && !isIndexing ? (
         <div className="shrink-0 border-b border-amber-500/25 bg-amber-500/10 px-3 py-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-300">
-          Showing a partial list. Refine the filter to find files outside it.
+          Showing a partial list. Search covers the listed entries only.
         </div>
       ) : null}
       {entriesQuery.error && entriesQuery.data === null ? (
@@ -381,7 +399,7 @@ export default function FileBrowserPanel({
             />
           ))}
         </div>
-      ) : entries.length === 0 ? (
+      ) : entries.length === 0 || hasNoMatches ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-1 p-4 text-center">
           <p className="text-xs font-medium text-foreground">No files found</p>
           <p className="text-[11px] leading-relaxed text-muted-foreground">

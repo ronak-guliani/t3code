@@ -404,7 +404,7 @@ export function FilePreviewPanel({
             <div className="flex h-full w-max min-w-full items-center text-xs">
               {breadcrumbs.map((crumb, index) => (
                 <div
-                  key={crumb.path || "project"}
+                  key={`${crumb.kind}:${crumb.path}`}
                   className="flex min-w-0 shrink-0 items-center"
                   data-current-file-crumb={crumb.kind === "file"}
                 >
