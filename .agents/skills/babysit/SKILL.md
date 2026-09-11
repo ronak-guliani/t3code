@@ -7,7 +7,7 @@ description: Keeps a GitHub pull request moving by monitoring CI, reviews, merge
 
 Use this skill to stay with a PR after it has been opened or while it is waiting on CI, reviews, mergeability, or small follow-up fixes.
 
-The goal is: keep the PR moving until it is ready to merge. Do not merge unless the user explicitly asks.
+The goal is: keep the PR moving until it is ready to merge. Do not merge the PR into its target branch unless the user explicitly asks. Merging the base branch into the PR branch to resolve conflicts is authorized maintenance and needs no separate confirmation.
 
 ## Start
 
@@ -51,7 +51,7 @@ Repeat until the PR is ready to merge, blocked on a human decision, or the user 
    - `gh pr checks` or `gh pr checks --watch` when checks are pending.
 2. Handle the highest-priority blocker first.
    - **Draft:** ask before marking ready for review unless the user already asked you to make it ready.
-   - **Merge conflicts or stale base:** rebase or merge from the base branch using the repo's normal style. Prefer the existing branch style if visible in history. Ask before force-pushing rewritten history unless the user already explicitly authorized force-pushes for this PR.
+   - **Merge conflicts or stale base:** merge the base into the PR branch, resolve known conflicts, validate, commit, and push normally without another approval. Prefer this history-preserving path; rebasing or force-pushing requires explicit authorization. Ask only about ambiguous intent or narrower user restrictions.
    - **Failed checks:** inspect the failing job logs with `gh run view --log-failed` or the relevant provider logs. Fix the root cause, run focused local validation, commit, and push.
    - **Changes requested:** read review comments, make the requested changes when they are clear and appropriate, run focused validation, commit, and push. If a requested change is ambiguous, product-sensitive, or contradicts repo conventions, ask the user.
    - **Pending checks:** wait for the existing run instead of starting duplicate long-running validation. If a check appears stuck, report the stuck check and elapsed time before retrying or asking.

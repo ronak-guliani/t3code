@@ -1,7 +1,9 @@
 ---
 name: resolving-merge-conflicts
-description: Use when you need to resolve an in-progress git merge or rebase conflict.
+description: Resolves Git conflicts while preserving both sides' intent. Use for an in-progress merge or rebase, or when an authorized PR-maintenance task reports merge conflicts.
 ---
+
+For authorized PR maintenance, merge the PR's base branch into the PR branch, resolve known conflicts, validate, commit, and push normally without asking again. This updates the PR branch; it does not authorize merging the PR into its target branch. PR merges, force-pushes, and history rewrites still require explicit approval. Respect narrower instructions such as inspection-only or no-push.
 
 1. Inspect the current merge or rebase state with `git status`, `git diff --name-only --diff-filter=U`, and the recent history. Record unrelated staged, unstaged, and untracked work before editing.
 
