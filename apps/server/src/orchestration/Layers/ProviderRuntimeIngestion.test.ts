@@ -598,6 +598,242 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("turn failed");
   });
 
+  it("settles the active turn when the provider aborts it", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-aborted");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-aborted-started"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId,
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "running" && thread.session?.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("evt-turn-aborted"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId,
+      payload: {
+        reason: "Aborted",
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.session?.status === "interrupted" &&
+        entry.session.activeTurnId === null &&
+        entry.session.lastError === null,
+    );
+    expect(thread.latestTurn).toMatchObject({
+      turnId,
+      state: "interrupted",
+    });
+    expect(thread.latestTurn?.completedAt).not.toBeNull();
+  });
+
+  it("ignores an abort for a stale turn while a newer turn is active", async () => {
+    const harness = await createHarness();
+    const activeTurnId = asTurnId("turn-current");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-current-started"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId: activeTurnId,
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.session?.status === "running" && thread.session.activeTurnId === activeTurnId,
+    );
+
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("evt-turn-stale-aborted"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId: asTurnId("turn-stale"),
+      payload: {
+        reason: "Late abort",
+      },
+    });
+    await harness.drain();
+
+    const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads[0];
+    expect(thread?.session).toMatchObject({
+      status: "running",
+      activeTurnId,
+      lastError: null,
+    });
+    expect(thread?.latestTurn).toMatchObject({
+      turnId: activeTurnId,
+      state: "running",
+      completedAt: null,
+    });
+  });
+
+  it("does not turn a user-requested interruption into a provider error", async () => {
+    const harness = await createHarness();
+    const activeTurnId = asTurnId("turn-user-interrupted");
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-user-interrupted-started"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: activeTurnId,
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.session?.status === "running" && thread.session.activeTurnId === activeTurnId,
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-turn-user-interrupted"),
+        threadId: asThreadId("thread-1"),
+        turnId: activeTurnId,
+        createdAt: now,
+      }),
+    );
+
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("evt-turn-user-interrupted-aborted"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId: activeTurnId,
+      payload: {
+        reason: "Interrupted by user.",
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "interrupted" && entry.session.activeTurnId === null,
+    );
+    expect(thread.session?.lastError).toBeNull();
+    expect(thread.latestTurn?.state).toBe("interrupted");
+  });
+
+  it("ignores a late abort after the active turn has already settled", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-already-settled");
+    const completionEventId = asEventId("evt-turn-already-settled-completed");
+    const completionProcessed = runtime!.runPromise(
+      harness.ingestion.awaitTurnCompletionProcessed(completionEventId),
+    );
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-already-settled-started"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId,
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "running" && thread.session.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: completionEventId,
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId,
+      payload: {
+        state: "completed",
+      },
+    });
+    await completionProcessed;
+
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("evt-turn-already-settled-aborted"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId,
+      payload: {
+        reason: "Late abort",
+      },
+    });
+    await harness.drain();
+
+    const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads[0];
+    expect(thread?.session).toMatchObject({
+      status: "ready",
+      activeTurnId: null,
+      lastError: null,
+    });
+  });
+
+  it("applies an abort without a provider turn id to the active turn", async () => {
+    const harness = await createHarness();
+    const activeTurnId = asTurnId("turn-aborted-without-id");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-aborted-without-id-started"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId: activeTurnId,
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.session?.status === "running" && thread.session.activeTurnId === activeTurnId,
+    );
+
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("evt-turn-aborted-without-id"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      payload: {
+        reason: "Provider aborted the turn",
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.session?.status === "interrupted" &&
+        entry.session.activeTurnId === null &&
+        entry.latestTurn?.turnId === activeTurnId &&
+        entry.latestTurn.state === "interrupted",
+    );
+    expect(thread.session?.lastError).toBeNull();
+  });
+
   it("coalesces repeated tool progress and acknowledges events after projection", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

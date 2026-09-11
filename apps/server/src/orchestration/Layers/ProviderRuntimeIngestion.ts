@@ -1691,7 +1691,9 @@ const make = Effect.gen(function* () {
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
       const lifecycleTurnId =
-        event.type === "turn.completed" && eventTurnId === undefined && activeTurnId !== null
+        (event.type === "turn.completed" || event.type === "turn.aborted") &&
+        eventTurnId === undefined &&
+        activeTurnId !== null
           ? activeTurnId
           : eventTurnId;
 
@@ -1722,6 +1724,12 @@ const make = Effect.gen(function* () {
             }
             // If no active turn is tracked, accept completion scoped to this thread.
             return true;
+          case "turn.aborted":
+            return (
+              activeTurnId !== null &&
+              lifecycleTurnId !== undefined &&
+              sameId(activeTurnId, lifecycleTurnId)
+            );
           default:
             return true;
         }
@@ -1737,7 +1745,8 @@ const make = Effect.gen(function* () {
         event.type === "session.exited" ||
         event.type === "thread.started" ||
         event.type === "turn.started" ||
-        event.type === "turn.completed";
+        event.type === "turn.completed" ||
+        event.type === "turn.aborted";
       const dispatchThreadLifecycleUpdate = () =>
         Effect.gen(function* () {
           if (!isThreadLifecycleEvent || !shouldApplyThreadLifecycle) {
@@ -1747,7 +1756,9 @@ const make = Effect.gen(function* () {
           const nextActiveTurnId =
             event.type === "turn.started"
               ? (lifecycleTurnId ?? null)
-              : event.type === "turn.completed" || event.type === "session.exited"
+              : event.type === "turn.completed" ||
+                  event.type === "turn.aborted" ||
+                  event.type === "session.exited"
                 ? null
                 : activeTurnId;
           const status = (() => {
@@ -1762,6 +1773,8 @@ const make = Effect.gen(function* () {
                 return normalizeRuntimeTurnState(event.payload.state) === "failed"
                   ? "error"
                   : "ready";
+              case "turn.aborted":
+                return "interrupted";
               case "session.started":
               case "thread.started":
                 // Provider thread/session start notifications can arrive during an
@@ -1775,9 +1788,11 @@ const make = Effect.gen(function* () {
               : event.type === "turn.completed" &&
                   normalizeRuntimeTurnState(event.payload.state) === "failed"
                 ? (event.payload.errorMessage ?? thread.session?.lastError ?? "Turn failed")
-                : status === "ready"
-                  ? null
-                  : (thread.session?.lastError ?? null);
+                : event.type === "turn.aborted"
+                  ? (thread.session?.lastError ?? null)
+                  : status === "ready"
+                    ? null
+                    : (thread.session?.lastError ?? null);
 
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
             yield* markSourceProposedPlanImplemented(
@@ -1823,12 +1838,15 @@ const make = Effect.gen(function* () {
         });
 
       if (isThreadLifecycleEvent) {
-        if (event.type === "turn.completed") {
-          const completedTurnId = lifecycleTurnId;
-          if (completedTurnId) {
+        if (
+          shouldApplyThreadLifecycle &&
+          (event.type === "turn.completed" || event.type === "turn.aborted")
+        ) {
+          const terminalTurnId = lifecycleTurnId;
+          if (terminalTurnId) {
             const assistantMessageIds = yield* getAssistantMessageIdsForTurn(
               thread.id,
-              completedTurnId,
+              terminalTurnId,
             );
             yield* Effect.forEach(
               assistantMessageIds,
@@ -1837,7 +1855,7 @@ const make = Effect.gen(function* () {
                   event,
                   threadId: thread.id,
                   messageId: assistantMessageId,
-                  turnId: completedTurnId,
+                  turnId: terminalTurnId,
                   createdAt: now,
                   commandTag: "assistant-complete-finalize",
                   finalDeltaCommandTag: "assistant-delta-finalize-fallback",
@@ -1847,17 +1865,19 @@ const make = Effect.gen(function* () {
                 }),
               { concurrency: 1 },
             ).pipe(Effect.asVoid);
-            yield* clearAssistantMessageIdsForTurn(thread.id, completedTurnId);
-            yield* clearAssistantSegmentStateForTurn(thread.id, completedTurnId);
+            yield* clearAssistantMessageIdsForTurn(thread.id, terminalTurnId);
+            yield* clearAssistantSegmentStateForTurn(thread.id, terminalTurnId);
 
-            yield* finalizeBufferedProposedPlan({
-              event,
-              threadId: thread.id,
-              threadProposedPlans: thread.proposedPlans,
-              planId: proposedPlanIdForTurn(thread.id, completedTurnId),
-              turnId: completedTurnId,
-              updatedAt: now,
-            });
+            if (event.type === "turn.completed") {
+              yield* finalizeBufferedProposedPlan({
+                event,
+                threadId: thread.id,
+                threadProposedPlans: thread.proposedPlans,
+                planId: proposedPlanIdForTurn(thread.id, terminalTurnId),
+                turnId: terminalTurnId,
+                updatedAt: now,
+              });
+            }
           }
         }
 
