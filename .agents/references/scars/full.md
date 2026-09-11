@@ -27,6 +27,7 @@
 - SQLite migration IDs are globally append-only, including divergent historical ledgers. New migrations must be idempotent repairs: ensure prerequisite tables exist before `ALTER` and append missing-column/table fixes above every historical ID rather than rewriting skipped IDs.
 - Backfill projection keys from event JSON in one grouped pass, then join by indexed IDs; a correlated event-history lookup per projection row makes startup work quadratic.
 - Materialize FTS5 `rank` before windowing; compute snippets only for selected rows.
+- Transcript search limits apply to thread winners, not raw messages: even a large message cap can hide a thread. Preserve score, timestamp, thread-ID, and message-ID tie-breaks before truncating; cover a dominant thread beyond the cap and equal-score hits across more than 20 threads.
 - Bound thread activity reads before decoding payloads; page legacy `NULL` sequences by timestamp and ID.
 - Fast-append projected thread activity only when the current array is comparator-sorted, its ID is new, and it belongs at or after the tail; restart-loaded, duplicate, and out-of-order activity must retain the filter/sort fallback and 500-item cap.
 - History pagination availability must follow the rendered turn, not total thread activity; during live caps, mark history only when an activity from that turn is actually evicted.
