@@ -82,20 +82,20 @@ If the saved selection is broken, `t3 local list` still prints healthy candidate
 stderr; the desktop inspector shows the same warning without disabling explicit selection.
 Startup remains blocked until you repair the selection; discovery never changes the default.
 
-On first regular desktop launch, choose an existing environment or explicitly keep a separate
-desktop environment. A running, same-version, same-user loopback server is attached using a
-private short-lived pairing credential: no token copying and no second server process.
-Desktop exit never stops an attached server. If the selected environment is stopped, desktop
-starts its bundled backend there. Version mismatches, unreachable live processes, and endpoint
-identity mismatches block attachment instead of falling back. Update both installations or
-use explicit remote pairing when automatic local attachment is unavailable.
+On first regular desktop launch, choose an existing **stopped** environment or explicitly keep
+a separate desktop environment. Desktop starts its bundled backend in the selected directory.
+If another server is running there, desktop refuses to start: it neither mints a pairing
+credential nor loads that server's pages into its privileged renderer.
 
-Before issuing that credential, desktop verifies ownership and write permissions on the
-environment directory and runtime/identity/database files. Windows uses the current account
-SID and filesystem ACLs; only that account, SYSTEM, and local Administrators may have mutation
-rights. The probe uses its own Windows PowerShell built-in modules rather than inherited
-PowerShell 7 module paths. Missing or unverifiable ACLs fail closed. POSIX requires matching ownership and no
-group/other write permission.
+**Automatic attachment is disabled for security.** Matching public environment IDs, live PIDs,
+and file ownership do not authenticate the HTTP listener. Safe automatic attachment requires
+an authenticated transport that remains bound to the intended server instance.
+
+To keep a CLI/service environment running, launch desktop with a separate `T3CODE_HOME`, then
+add the running environment through **Settings > Connections** using explicit pairing or
+Connect. The existing host is an API connection, not the source of the privileged desktop
+application. Alternatively, stop the CLI/service first and let desktop own that environment.
+Selection never stops another process or silently falls back to a different directory.
 
 Every server launcher acquires a lifetime startup claim before services, migrations, or HTTP
 startup, then rechecks persisted runtime ownership. The claim uses a dedicated

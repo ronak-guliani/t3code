@@ -29,7 +29,7 @@ const select = Command.make("select", { baseDir }).pipe(
     Effect.gen(function* () {
       yield* Effect.tryPromise(() => selectLocalEnvironment(baseDir));
       yield* Console.log(
-        "Default local environment selected. Restart the regular desktop app to attach. No history was copied or merged.",
+        "Default local environment selected. Stop any server using it before restarting the regular desktop app. To keep that server running, use a separate desktop home and add it through Settings > Connections. No history was copied or merged.",
       );
     }),
   ),

@@ -5,7 +5,7 @@ import {
   readLocalEnvironmentSelection,
   selectLocalEnvironment,
 } from "@t3tools/shared/localEnvironment";
-import { prepareLocalAttachment } from "./localEnvironment.ts";
+import { assertDesktopCanOwnEnvironment } from "./localEnvironmentStartup.ts";
 import * as Crypto from "node:crypto";
 import * as FS from "node:fs";
 import * as OS from "node:os";
@@ -173,8 +173,7 @@ const BASE_DIR =
   process.env.T3CODE_HOME?.trim() || Path.join(OS.homedir(), DEFAULT_T3_HOME_DIR_NAME);
 const canChooseLocalDefault = !isDevelopment && !isDevAppFlavor && !process.env.T3CODE_HOME?.trim();
 let backendBaseDir = BASE_DIR;
-let attachedLocalEnvironment: import("@t3tools/shared/localEnvironment").LocalEnvironment | null =
-  null;
+let localBackendStartupAllowed = false;
 const STATE_DIR = Path.join(BASE_DIR, "userdata");
 const DESKTOP_SETTINGS_PATH = Path.join(STATE_DIR, "desktop-settings.json");
 const CLIENT_SETTINGS_PATH = Path.join(STATE_DIR, "client-settings.json");
@@ -398,11 +397,6 @@ async function applyDesktopServerExposureMode(
   mode: DesktopServerExposureMode,
   options?: { readonly persist?: boolean; readonly rejectIfUnavailable?: boolean },
 ): Promise<DesktopServerExposureState> {
-  if (attachedLocalEnvironment) {
-    throw new Error(
-      "This server is owned by another process. Change its network settings on the host, not through the attached desktop.",
-    );
-  }
   const advertisedHostOverride = resolveAdvertisedHostOverride();
   const requestedMode = mode;
   let exposure = resolveDesktopServerExposure({
@@ -551,7 +545,7 @@ async function waitForBackendWindowReady(baseUrl: string): Promise<"listening" |
 
 function ensureInitialBackendWindowOpen(): void {
   const existingWindow = mainWindow ?? BrowserWindow.getAllWindows()[0] ?? null;
-  if (isDevelopment || backendInitialWindowOpenInFlight !== null) {
+  if (isDevelopment || !localBackendStartupAllowed || backendInitialWindowOpenInFlight !== null) {
     return;
   }
   const startupWindow =
@@ -1504,7 +1498,7 @@ function scheduleBackendRestart(reason: string): void {
 }
 
 function startBackend(): void {
-  if (isQuitting || backendProcess || attachedLocalEnvironment) return;
+  if (isQuitting || backendProcess) return;
 
   backendObservabilitySettings = readPersistedBackendObservabilitySettings();
   const backendEntry = resolveBackendEntry();
@@ -1697,7 +1691,7 @@ function registerIpcHandlers(): void {
     return {
       ...(await discoverLocalEnvironments([BASE_DIR, backendBaseDir])),
       currentBaseDir: backendBaseDir,
-      ownership: attachedLocalEnvironment ? "external" : "desktop",
+      ownership: "desktop",
       canChooseDefault: canChooseLocalDefault,
     };
   });
@@ -1721,6 +1715,7 @@ function registerIpcHandlers(): void {
     if (!candidate || candidate.status === "unavailable") {
       throw new Error(candidate?.error ?? "No T3 environment exists in this directory.");
     }
+    if (candidate.baseDir !== backendBaseDir) assertDesktopCanOwnEnvironment(candidate);
     const answer = await dialog.showMessageBox({
       type: "question",
       buttons: ["Cancel", "Use environment and restart"],
@@ -1742,8 +1737,8 @@ function registerIpcHandlers(): void {
   ipcMain.removeAllListeners(GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL);
   ipcMain.on(GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL, (event) => {
     event.returnValue = {
-      label: attachedLocalEnvironment?.label ?? "Local environment",
-      ownership: attachedLocalEnvironment ? "external" : "desktop",
+      label: "Local environment",
+      ownership: "desktop",
       httpBaseUrl: backendHttpUrl || null,
       wsBaseUrl: backendWsUrl || null,
       bootstrapToken: backendBootstrapToken || undefined,
@@ -2344,7 +2339,11 @@ function createWindow(initialUrl?: string): BrowserWindow {
     void window.loadURL(resolveDesktopDevServerUrl());
     window.webContents.openDevTools({ mode: "detach" });
   } else {
-    void window.loadURL(initialUrl ?? backendHttpUrl);
+    void window.loadURL(
+      localBackendStartupAllowed
+        ? (initialUrl ?? backendHttpUrl)
+        : createPackagedStartupLoadingUrl(APP_DISPLAY_NAME),
+    );
   }
 
   window.on("closed", () => {
@@ -2404,8 +2403,7 @@ async function bootstrap(): Promise<void> {
         }
         const candidate = candidates[choice.response];
         if (candidate) {
-          if (candidate.status === "unavailable")
-            throw new Error(candidate.error ?? "Environment unavailable.");
+          assertDesktopCanOwnEnvironment(candidate);
           await selectLocalEnvironment(candidate.baseDir);
           backendBaseDir = candidate.baseDir;
         } else if (await inspectLocalEnvironment(BASE_DIR)) {
@@ -2437,24 +2435,8 @@ async function bootstrap(): Promise<void> {
   }
 
   const existing = isDevelopment ? null : await inspectLocalEnvironment(backendBaseDir);
-  if (existing?.status === "unavailable") {
-    throw new Error(existing.error ?? "Cannot safely start the selected environment.");
-  }
-  if (existing?.status === "online") {
-    const attachment = await prepareLocalAttachment({
-      environment: existing,
-      cliEntry: resolveBackendEntry(),
-      appVersion: app.getVersion(),
-    });
-    attachedLocalEnvironment = existing;
-    backendHttpUrl = attachment.origin;
-    backendWsUrl = attachment.origin.replace(/^http/, "ws") + "/ws";
-    backendBootstrapToken = attachment.credential;
-    backendPort = Number(new URL(attachment.origin).port);
-    writeDesktopLogHeader(
-      `attached existing environment id=${existing.environmentId} pid=${existing.pid}`,
-    );
-  }
+  assertDesktopCanOwnEnvironment(existing);
+  localBackendStartupAllowed = true;
 
   registerIpcHandlers();
   previewRuntime = await startPreviewRuntime({ browserArtifactsDir: BROWSER_ARTIFACTS_DIR });

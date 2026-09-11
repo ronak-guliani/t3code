@@ -173,7 +173,7 @@
 
 ## Pairing and environment recovery
 
-- A desktop attaching to an existing local host must verify the persisted environment ID against the live loopback descriptor, fail on version/ownership ambiguity, and leave the external process untouched on exit. An explicit missing default must never create a replacement history.
+- Public environment IDs, file ownership, and live PIDs do not authenticate a local HTTP listener: PID reuse and port takeover can admit impostor HTML into a privileged renderer. Keep automatic desktop attachment disabled until the transport is instance-authenticated; use explicit API connections from a desktop-owned renderer. An explicit missing default must never create a replacement history.
 
 - Owned tunnels are independent of account-linked Connect. Persist disabled intent before stopping, stop on unreadable configuration, and verify the public endpoint's environment ID before minting pairing links. Keep client revocation available even when the origin listens only on loopback.
 - Owner role does not override explicit session scopes; enforce operation scopes on every management route. Connector crash backoff must gate polling reconciliation as well as exit supervision.
