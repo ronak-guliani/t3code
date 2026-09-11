@@ -19,7 +19,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 
 import FileBrowserPanel from "./FileBrowserPanel";
 import { projectFileCacheKey } from "./fileContentRevision";
-import { fileBreadcrumbs } from "./filePath";
+import { collapseBreadcrumbs, fileBreadcrumbs } from "./filePath";
 import { getProjectFileSaveSession } from "./projectFileSaveSession";
 import { useProjectFileQuery } from "./projectFilesQueryState";
 
@@ -297,7 +297,7 @@ export function FilePreviewPanel({
   const breadcrumbRef = useRef<HTMLDivElement>(null);
   const previewBodyRef = useRef<HTMLDivElement>(null);
   const breadcrumbs = useMemo(
-    () => (relativePath ? fileBreadcrumbs(projectName, relativePath) : []),
+    () => (relativePath ? collapseBreadcrumbs(fileBreadcrumbs(projectName, relativePath)) : []),
     [projectName, relativePath],
   );
 
@@ -411,7 +411,11 @@ export function FilePreviewPanel({
                   {index > 0 ? (
                     <ChevronRight className="mx-1 size-3.5 shrink-0 text-muted-foreground/60" />
                   ) : null}
-                  {crumb.kind === "file" ? (
+                  {crumb.kind === "ellipsis" ? (
+                    <span className="shrink-0 text-muted-foreground/60" aria-hidden>
+                      {crumb.label}
+                    </span>
+                  ) : crumb.kind === "file" ? (
                     <button
                       type="button"
                       className="max-w-40 truncate font-medium text-foreground hover:underline"
