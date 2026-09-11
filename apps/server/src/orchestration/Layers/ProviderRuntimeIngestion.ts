@@ -764,15 +764,15 @@ const make = Effect.gen(function* () {
     return true;
   };
 
-  const clearProjectedToolUpdate = (event: ProviderRuntimeEvent): void => {
+  const clearProjectedToolUpdate = (event: ProviderRuntimeEvent, terminalTurnId?: TurnId): void => {
     if (event.type === "item.completed" && event.itemId !== undefined) {
       projectedToolUpdateStatuses.delete(
         `${event.threadId}\u0000${event.turnId ?? ""}\u0000${event.itemId}`,
       );
       return;
     }
-    if (event.type === "turn.completed") {
-      const prefix = `${event.threadId}\u0000${event.turnId ?? ""}\u0000`;
+    if (event.type === "turn.completed" || event.type === "turn.aborted") {
+      const prefix = `${event.threadId}\u0000${terminalTurnId ?? event.turnId ?? ""}\u0000`;
       for (const key of projectedToolUpdateStatuses.keys()) {
         if (key.startsWith(prefix)) {
           projectedToolUpdateStatuses.delete(key);
@@ -1692,15 +1692,23 @@ const make = Effect.gen(function* () {
       const activeTurnId = thread.session?.activeTurnId ?? null;
       const lifecycleTurnId =
         (event.type === "turn.completed" || event.type === "turn.aborted") &&
-        eventTurnId === undefined &&
-        activeTurnId !== null
-          ? activeTurnId
+        eventTurnId === undefined
+          ? (activeTurnId ??
+            (event.type === "turn.aborted" && thread.latestTurn?.state === "interrupted"
+              ? thread.latestTurn.turnId
+              : undefined))
           : eventTurnId;
 
-      const conflictsWithActiveTurn =
+      const matchesActiveTurn =
         activeTurnId !== null &&
         lifecycleTurnId !== undefined &&
-        !sameId(activeTurnId, lifecycleTurnId);
+        sameId(activeTurnId, lifecycleTurnId);
+      const conflictsWithActiveTurn =
+        activeTurnId !== null && lifecycleTurnId !== undefined && !matchesActiveTurn;
+      const matchesExpectedInterruptedTurn =
+        lifecycleTurnId !== undefined &&
+        thread.latestTurn?.state === "interrupted" &&
+        sameId(thread.latestTurn.turnId, lifecycleTurnId);
 
       const shouldApplyThreadLifecycle = (() => {
         if (!STRICT_PROVIDER_LIFECYCLE_GUARD) {
@@ -1725,15 +1733,17 @@ const make = Effect.gen(function* () {
             // If no active turn is tracked, accept completion scoped to this thread.
             return true;
           case "turn.aborted":
-            return (
-              activeTurnId !== null &&
-              lifecycleTurnId !== undefined &&
-              sameId(activeTurnId, lifecycleTurnId)
-            );
+            return matchesActiveTurn;
           default:
             return true;
         }
       })();
+      const shouldFinalizeTerminalTurn =
+        event.type === "turn.completed" ||
+        (event.type === "turn.aborted" &&
+          (!STRICT_PROVIDER_LIFECYCLE_GUARD ||
+            matchesActiveTurn ||
+            matchesExpectedInterruptedTurn));
       const acceptedTurnStartedSourcePlan =
         event.type === "turn.started" && shouldApplyThreadLifecycle
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
@@ -1838,10 +1848,7 @@ const make = Effect.gen(function* () {
         });
 
       if (isThreadLifecycleEvent) {
-        if (
-          shouldApplyThreadLifecycle &&
-          (event.type === "turn.completed" || event.type === "turn.aborted")
-        ) {
+        if (shouldFinalizeTerminalTurn) {
           const terminalTurnId = lifecycleTurnId;
           if (terminalTurnId) {
             const assistantMessageIds = yield* getAssistantMessageIdsForTurn(
@@ -2205,7 +2212,7 @@ const make = Effect.gen(function* () {
           createdAt: activity.createdAt,
         }),
       ).pipe(Effect.asVoid);
-      clearProjectedToolUpdate(event);
+      clearProjectedToolUpdate(event, lifecycleTurnId);
     });
 
   const processRuntimeEventSafely = (event: ProviderRuntimeEvent) =>

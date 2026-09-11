@@ -21,7 +21,7 @@
 
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
 - Session startup/resume and turn lifecycle require predictable recovery: terminal reconciliation must settle the matching projected turn and clear `session.activeTurnId`; preserve a pre-acknowledgement start failure's `messageId`; and preserve terminal provider-event ordering during normal adapter shutdown.
-- Provider `turn.aborted` events are terminal only for the matching active turn: clear `session.activeTurnId`, finalize streaming assistant state, ignore stale/late aborts, and do not turn a user-requested interruption into a provider error.
+- Provider `turn.aborted` events may arrive after interrupt handling clears `session.activeTurnId`: use the matching interrupted turn only to finalize per-turn state, mutate session lifecycle only for the matching active turn, ignore stale/late aborts, and clear tool-update fingerprints.
 - `TurnLifecycleRuntime` owns provider-session reconciliation, provider intent execution, runtime-event ingestion, and completion checkpoint ordering behind one `start`/`drain` interface; reconcile sessions before starting workers, and keep explicit thread-title regeneration outside this module.
 - Projection rows, projector cursors, and durable reconciliation intent must commit together; run shell-summary and attachment reconciliation only after commit, keep it idempotent, and resume pending work during bootstrap.
 - Attachment reconciliation must retain every persisted `ChatAttachment` variant through `attachmentRelativePath`, not just images; file attachments use `.bin`.
