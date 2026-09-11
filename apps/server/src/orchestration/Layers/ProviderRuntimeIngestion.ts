@@ -1709,6 +1709,8 @@ const make = Effect.gen(function* () {
         lifecycleTurnId !== undefined &&
         thread.latestTurn?.state === "interrupted" &&
         sameId(thread.latestTurn.turnId, lifecycleTurnId);
+      const isDuplicateCompletionAfterInterruption =
+        event.type === "turn.completed" && activeTurnId === null && matchesExpectedInterruptedTurn;
 
       const shouldApplyThreadLifecycle = (() => {
         if (!STRICT_PROVIDER_LIFECYCLE_GUARD) {
@@ -1723,6 +1725,9 @@ const make = Effect.gen(function* () {
           case "turn.started":
             return !conflictsWithActiveTurn;
           case "turn.completed":
+            if (isDuplicateCompletionAfterInterruption) {
+              return false;
+            }
             if (conflictsWithActiveTurn) {
               return false;
             }
@@ -1739,7 +1744,7 @@ const make = Effect.gen(function* () {
         }
       })();
       const shouldFinalizeTerminalTurn =
-        event.type === "turn.completed" ||
+        (event.type === "turn.completed" && !isDuplicateCompletionAfterInterruption) ||
         (event.type === "turn.aborted" &&
           (!STRICT_PROVIDER_LIFECYCLE_GUARD ||
             matchesActiveTurn ||
@@ -1843,6 +1848,9 @@ const make = Effect.gen(function* () {
               lastError,
               updatedAt: now,
             },
+            ...(event.type === "turn.aborted" && lifecycleTurnId !== undefined
+              ? { expectedActiveTurnId: lifecycleTurnId }
+              : {}),
             createdAt: now,
           });
         });
@@ -2199,10 +2207,17 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities =
-        event.type === "item.updated" && !shouldProjectToolUpdate(event)
+      const activities = isDuplicateCompletionAfterInterruption
+        ? []
+        : event.type === "item.updated" && !shouldProjectToolUpdate(event)
           ? []
-          : runtimeEventToActivities(event);
+          : runtimeEventToActivities(
+              event.type === "turn.aborted" &&
+                event.turnId === undefined &&
+                lifecycleTurnId !== undefined
+                ? { ...event, turnId: lifecycleTurnId }
+                : event,
+            );
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",

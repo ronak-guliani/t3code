@@ -945,6 +945,138 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("ignores OpenCode completion emitted after an interrupted turn", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-aborted-before-idle");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-aborted-before-idle-started"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId,
+    });
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("evt-turn-aborted-before-idle-aborted"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId,
+      payload: {
+        reason: "Interrupted by user.",
+      },
+    });
+
+    await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.session?.status === "interrupted" &&
+        thread.session.activeTurnId === null &&
+        thread.latestTurn?.state === "interrupted",
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-aborted-before-idle-completed"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId,
+      payload: {
+        state: "completed",
+      },
+    });
+    await harness.drain();
+
+    const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads[0];
+    expect(thread?.session).toMatchObject({
+      status: "interrupted",
+      activeTurnId: null,
+    });
+    expect(thread?.latestTurn).toMatchObject({
+      turnId,
+      state: "interrupted",
+    });
+    expect(
+      thread?.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "insights.turn.completed" && activity.turnId === turnId,
+      ),
+    ).toBe(false);
+  });
+
+  it("does not clear a newer turn that starts while abort finalization is in flight", async () => {
+    const abortSessionDispatch = Effect.runSync(Deferred.make<void>());
+    const releaseAbortSessionDispatch = Effect.runSync(Deferred.make<void>());
+    const abortedTurnId = asTurnId("turn-abort-race");
+    const newerTurnId = asTurnId("turn-newer-during-abort");
+    const harness = await createHarness({
+      beforeDispatch: (command) =>
+        command.type === "thread.session.set" && command.expectedActiveTurnId === abortedTurnId
+          ? Deferred.succeed(abortSessionDispatch, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseAbortSessionDispatch)),
+            )
+          : Effect.void,
+    });
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-abort-race-started"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId: abortedTurnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === abortedTurnId);
+
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("evt-turn-abort-race-aborted"),
+      provider: ProviderDriverKind.make("opencode"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId: abortedTurnId,
+      payload: {
+        reason: "Aborted",
+      },
+    });
+    await Effect.runPromise(Deferred.await(abortSessionDispatch));
+
+    const now = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-turn-newer-during-abort"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "running",
+          providerName: "opencode",
+          runtimeMode: "approval-required",
+          activeTurnId: newerTurnId,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(Deferred.succeed(releaseAbortSessionDispatch, undefined));
+    await harness.drain();
+
+    const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads[0];
+    expect(thread?.session).toMatchObject({
+      status: "running",
+      activeTurnId: newerTurnId,
+      lastError: null,
+    });
+    expect(thread?.latestTurn).toMatchObject({
+      turnId: newerTurnId,
+      state: "running",
+    });
+  });
+
   it("applies an abort without a provider turn id to the active turn", async () => {
     const harness = await createHarness();
     const activeTurnId = asTurnId("turn-aborted-without-id");
@@ -984,6 +1116,12 @@ describe("ProviderRuntimeIngestion", () => {
         entry.latestTurn.state === "interrupted",
     );
     expect(thread.session?.lastError).toBeNull();
+    expect(
+      thread.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "insights.turn.aborted" && activity.turnId === activeTurnId,
+      ),
+    ).toBe(true);
   });
 
   it("coalesces repeated tool progress and acknowledges events after projection", async () => {
