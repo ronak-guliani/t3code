@@ -155,6 +155,69 @@ describe("child follow-up presentation", () => {
     expect(html).toContain("Migration helper");
   });
 
+  it.each(["resolved", "reassigned", "detached"] as const)(
+    "filters %s reports from pending counts and details while the parent is busy",
+    (state) => {
+      fixture.children = [
+        {
+          ...child,
+          parentThreadId: state === "detached" ? null : parent.id,
+          nudging: {
+            delegation: {
+              ...child.nudging!.delegation!,
+              assignmentId:
+                state === "reassigned" ? MessageId.make("new-assignment") : report.assignmentId,
+              decision: null,
+            },
+          },
+        },
+      ];
+      const stale = { ...report, kind: "decision-needed" as const, summary: "Stale question" };
+      const current = {
+        ...report,
+        id: "current",
+        childThreadId: ThreadId.make("other"),
+        summary: "Current result",
+      };
+      const html = renderToStaticMarkup(
+        <ChildFollowUpPanel
+          thread={parent}
+          queuedTurns={[{ ...nudge, origin: { kind: "child-nudge", updates: [stale, current] } }]}
+          isWorking
+          onError={vi.fn()}
+        />,
+      );
+      expect(html).toContain("1 child updates ready");
+      expect(html).not.toContain("2 child updates ready");
+      expect(html).not.toContain("Stale question");
+      expect(html).toContain("Current result");
+    },
+  );
+
+  it("does not retain failure status for an entirely stale batch", () => {
+    fixture.children = [
+      { ...child, nudging: { delegation: { ...child.nudging!.delegation!, decision: null } } },
+    ];
+    const html = renderToStaticMarkup(
+      <ChildFollowUpPanel
+        thread={parent}
+        isWorking
+        onError={vi.fn()}
+        queuedTurns={[
+          {
+            ...nudge,
+            failedAt: parent.createdAt,
+            failureMessage: "Old delivery failure",
+            origin: { kind: "child-nudge", updates: [{ ...report, kind: "decision-needed" }] },
+          },
+        ]}
+      />,
+    );
+    expect(html).toContain("1 child working");
+    expect(html).not.toContain("Child follow-up delivery failed");
+    expect(html).not.toContain("Old delivery failure");
+  });
+
   it("collapses historical reports by default and renders literal details when expanded", () => {
     const collapsed = renderToStaticMarkup(
       <ChildFollowUpReceipt updates={[report]} environmentId={parent.environmentId} />,

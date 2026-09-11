@@ -41,6 +41,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
   const serverSettings = yield* ServerSettingsService;
   const wakeScope = yield* Effect.scope;
   const drainingThreadIds = new Set<string>();
+  const pendingThreadIds = new Set<ThreadId>();
   const scheduledChildWakes = new Set<string>();
 
   const failQueuedTurn = (input: {
@@ -59,6 +60,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
 
   const drainThread = Effect.fn("QueuedTurnReactor.drainThread")(function* (threadId: ThreadId) {
     if (drainingThreadIds.has(threadId)) {
+      pendingThreadIds.add(threadId);
       return;
     }
     drainingThreadIds.add(threadId);
@@ -82,6 +84,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
           eligibleTurns.push(turn);
           continue;
         }
+        if (turn.failedAt !== null) continue;
         const followUp = evaluateChildFollowUp(thread, turn, threadsById, nowIso);
         if (followUp.dueAt) {
           const key = `${threadId}:${followUp.dueAt}`;
@@ -304,6 +307,9 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         );
     } finally {
       drainingThreadIds.delete(threadId);
+      if (pendingThreadIds.delete(threadId)) {
+        yield* drainThreadSafely(threadId).pipe(Effect.forkIn(wakeScope));
+      }
     }
   });
 

@@ -231,23 +231,43 @@ export const ChildFollowUpPanel = memo(function ChildFollowUpPanel({
   blockedByInteraction?: boolean;
   onError: (threadId: Thread["id"] | null, error: string | null) => void;
 }) {
-  const children = useStore(
+  const nudges = useMemo(
+    () => queuedTurns.filter((turn) => turn.origin?.kind === "child-nudge"),
+    [queuedTurns],
+  );
+  const reportedChildIds = useMemo(
+    () =>
+      new Set(
+        nudges.flatMap((turn) =>
+          turn.origin?.kind === "child-nudge"
+            ? turn.origin.updates.map((report) => report.childThreadId)
+            : [],
+        ),
+      ),
+    [nudges],
+  );
+  const referencedChildren = useStore(
     useShallow((state) => {
       const environment = state.environmentStateById[thread.environmentId];
       return (environment?.threadIdsByProjectId[thread.projectId] ?? []).flatMap((id) => {
         const child = environment?.threadShellById[id];
-        return child?.parentThreadId === thread.id &&
-          child.archivedAt === null &&
-          child.nudging?.delegation
+        return child &&
+          (reportedChildIds.has(id) ||
+            (child.parentThreadId === thread.id &&
+              child.archivedAt === null &&
+              child.nudging?.delegation))
           ? [child]
           : [];
       });
     }),
   );
-  const childById = useMemo(() => new Map(children.map((child) => [child.id, child])), [children]);
-  const nudges = useMemo(
-    () => queuedTurns.filter((turn) => turn.origin?.kind === "child-nudge"),
-    [queuedTurns],
+  const childById = useMemo(
+    () => new Map(referencedChildren.map((child) => [child.id, child])),
+    [referencedChildren],
+  );
+  const children = referencedChildren.filter(
+    (child) =>
+      child.parentThreadId === thread.id && child.archivedAt === null && child.nudging?.delegation,
   );
   const [expanded, setExpanded] = useState(false);
   const [choosingWait, setChoosingWait] = useState(false);
@@ -256,6 +276,10 @@ export const ChildFollowUpPanel = memo(function ChildFollowUpPanel({
   const [changing, setChanging] = useState(false);
   const [now, setNow] = useState(Date.now);
   const currentTime = new Date(Math.max(now, Date.now())).toISOString();
+  const currentNudges = nudges.flatMap((turn) => {
+    const followUp = evaluateChildFollowUp(thread, turn, childById, currentTime);
+    return followUp.updates.length ? [{ turn, followUp }] : [];
+  });
   const navigate = useNavigate();
   useEffect(() => {
     const deadlines = nudges
@@ -311,10 +335,8 @@ export const ChildFollowUpPanel = memo(function ChildFollowUpPanel({
   const waiting = !!wait && !wait.satisfiedAt && !childWaitIsSatisfied(wait);
   const relevantIds = new Set([
     ...(waiting ? wait.assignments.map((entry) => entry.childThreadId) : []),
-    ...nudges.flatMap((turn) =>
-      turn.origin?.kind === "child-nudge"
-        ? turn.origin.updates.map((report) => report.childThreadId)
-        : [],
+    ...currentNudges.flatMap(({ followUp }) =>
+      followUp.updates.map((report) => report.childThreadId),
     ),
   ]);
   const visibleChildren = children.filter(
@@ -328,14 +350,12 @@ export const ChildFollowUpPanel = memo(function ChildFollowUpPanel({
     return outcome === "failed" || outcome === "blocked";
   });
   const waitReason = childWaitBlockReason(wait, childById, thread.id);
-  const pendingCount = nudges.reduce(
-    (count, turn) => count + (turn.origin?.kind === "child-nudge" ? turn.origin.updates.length : 0),
+  const pendingCount = currentNudges.reduce(
+    (count, { followUp }) => count + followUp.updates.length,
     0,
   );
-  const failedDelivery = nudges.some((turn) => turn.failedAt !== null);
-  const collecting = nudges.some(
-    (turn) => evaluateChildFollowUp(thread, turn, childById, currentTime).dueAt !== null,
-  );
+  const failedDelivery = currentNudges.some(({ turn }) => turn.failedAt !== null);
+  const collecting = currentNudges.some(({ followUp }) => followUp.dueAt !== null);
   if (!active.length && !pendingCount && !decisionChild && !paused && !waiting) return null;
   const label = decisionChild
     ? `Decision needed · ${decisionChild.title}`
@@ -542,9 +562,7 @@ export const ChildFollowUpPanel = memo(function ChildFollowUpPanel({
                 </div>
               );
             })}
-            {nudges.map((turn) => {
-              if (turn.origin?.kind !== "child-nudge") return null;
-              const followUp = evaluateChildFollowUp(thread, turn, childById, currentTime);
+            {currentNudges.map(({ turn, followUp }) => {
               return (
                 <div key={turn.id} className="border-t border-border/40 pt-1">
                   <p className={turn.failedAt ? "text-destructive" : "text-muted-foreground"}>
@@ -557,7 +575,7 @@ export const ChildFollowUpPanel = memo(function ChildFollowUpPanel({
                             ? "Available after the current response and any pending interaction."
                             : "Ready for the next safe opportunity."))}
                   </p>
-                  {turn.origin.updates
+                  {followUp.updates
                     .filter(
                       (report) =>
                         report.kind !== "decision-needed" ||

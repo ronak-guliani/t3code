@@ -1461,6 +1461,9 @@ function renderFeedEntry(
                   {report.decision ? (
                     <Text selectable className="text-xs text-foreground">
                       {report.decision.question}
+                      {report.decision.options
+                        ?.map((option, index) => `\n${index + 1}. ${option}`)
+                        .join("")}
                       {report.decision.recommendation
                         ? `\nRecommended: ${report.decision.recommendation}`
                         : ""}

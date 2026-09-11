@@ -364,6 +364,28 @@ describe("send_to_thread MCP tool", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each(["message", "assignment"] as const)(
+    "names the %s tool in validation errors",
+    async (mode) => {
+      const toolName = mode === "assignment" ? "assign_to_thread" : "send_to_thread";
+      const options = {
+        cwd: process.cwd(),
+        cliCommand: process.execPath,
+        toolsets: new Set([toolName]),
+        threadId: "source",
+      };
+      await expect(
+        __testing.sendToThreadTool({ ...options, threadId: undefined }, {}, mode),
+      ).rejects.toThrow(`${toolName} is only available from a T3 provider session`);
+      await expect(__testing.sendToThreadTool(options, { prompt: "Work" }, mode)).rejects.toThrow(
+        `${toolName} requires a non-empty thread`,
+      );
+      await expect(__testing.sendToThreadTool(options, { thread: "child" }, mode)).rejects.toThrow(
+        `${toolName} requires a non-empty prompt`,
+      );
+    },
+  );
 });
 
 describe("create_nested_thread MCP tool", () => {

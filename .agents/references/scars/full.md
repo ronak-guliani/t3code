@@ -87,6 +87,7 @@
 - Reused children need explicit assignment identity on reports and a checkpoint generation fence; never infer a late report's assignment from the child's current metadata. Queue an assignment or decision response in the same transaction as its lifecycle change.
 - Keep an undelivered decision response correlated with its original report until dispatch. Deleting it restores the question; deleting a queued assignment must terminate that assignment rather than strand it.
 - Persist collection deadlines and reconstruct scoped timers on restart. A delayed nudge must not block explicit user work, and a decision's delivery or dismissal must not resolve the decision. Keep only current assignment/decision state in thread metadata; historical reports belong to the existing event/activity log.
+- Coalesce drain requests received while a thread is already draining; dropping a deadline wake defers ready work to the recovery sweep. Failed automatic nudges must remain retryable without blocking explicit queued turns.
 
 - Child notification dedupe must also suppress causally derived queue/meta events in the same transaction; otherwise a retried notification can recreate a dismissed nudge. Keep queued child updates separate from parent execution status until dispatch.
 - Provider notifications retain source timestamps. When appending a new nudge batch, order it after the existing queue tail; never let delayed completion timestamps move it ahead of user-authored queued messages.

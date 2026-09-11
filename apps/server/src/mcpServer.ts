@@ -1589,13 +1589,14 @@ async function sendToThreadTool(
   args: Record<string, unknown>,
   mode: "message" | "assignment" = "message",
 ): Promise<string> {
+  const toolName = mode === "assignment" ? "assign_to_thread" : "send_to_thread";
   if (!options.threadId) {
-    throw new Error("send_to_thread is only available from a T3 provider session");
+    throw new Error(`${toolName} is only available from a T3 provider session`);
   }
   const thread = asString(args.thread)?.trim();
   const prompt = asString(args.prompt)?.trim();
-  if (!thread) throw new Error("send_to_thread requires a non-empty thread");
-  if (!prompt) throw new Error("send_to_thread requires a non-empty prompt");
+  if (!thread) throw new Error(`${toolName} requires a non-empty thread`);
+  if (!prompt) throw new Error(`${toolName} requires a non-empty prompt`);
   const requestId = asString(args.requestId)?.trim();
   const respondToReportId = asString(args.respondToReportId)?.trim();
   const assignmentId = asString(args.assignmentId)?.trim();
