@@ -326,14 +326,33 @@ function eventTargetElement(target: EventTarget | null): Element | null {
   return null;
 }
 
+function isTypeToFocusGuardElement(element: Element | null): boolean {
+  if (!element) return false;
+  return (
+    element.closest(TYPE_TO_FOCUS_EDITABLE_SELECTOR) !== null ||
+    element.closest(TYPE_TO_FOCUS_INTERACTIVE_SELECTOR) !== null ||
+    element.closest("[data-file-browser-search]") !== null
+  );
+}
+
 function shouldTypeToFocusComposer(event: KeyboardEvent): boolean {
   if (event.defaultPrevented || event.isComposing) return false;
   if (event.metaKey || event.ctrlKey || event.altKey) return false;
   if (event.key.length !== 1) return false;
 
   const target = eventTargetElement(event.target);
-  if (target?.closest(TYPE_TO_FOCUS_EDITABLE_SELECTOR)) return false;
-  if (target?.closest(TYPE_TO_FOCUS_INTERACTIVE_SELECTOR)) return false;
+  if (isTypeToFocusGuardElement(target)) return false;
+  // Key events from inside a shadow root (e.g. the file tree search) are
+  // retargeted to the host element, so inspect the composed path for the
+  // real editable or interactive target.
+  if (typeof event.composedPath === "function") {
+    for (const node of event.composedPath()) {
+      if (node instanceof Element && isTypeToFocusGuardElement(node)) return false;
+    }
+  }
+  // If focus already lives in an editable field, never steal it.
+  const active = document.activeElement;
+  if (active instanceof Element && isTypeToFocusGuardElement(active)) return false;
   if (document.querySelector(TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR)) return false;
 
   return true;
