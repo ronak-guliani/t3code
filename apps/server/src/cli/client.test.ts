@@ -13,6 +13,7 @@ import {
   isDefinitiveCommandRejectionError,
   isDefinitiveCommandRejectionResponse,
   resolveLiveTarget,
+  withBorrowedBearerToken,
   wsRpcProtocolLayer,
 } from "./client.ts";
 
@@ -231,6 +232,55 @@ it("preserves an explicit registry base for tokenless manual environment authent
     assert.equal(target.source, "manual");
     assert.equal(target.baseDir, baseDir);
     assert.isUndefined(target.token);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+it("refuses to send a borrowed local credential to a different manual origin", async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), "t3-cli-tokenless-origin-mismatch-"));
+  try {
+    await mkdir(join(baseDir, "userdata"), { recursive: true });
+    await writeFile(
+      join(baseDir, "userdata", "server-runtime.json"),
+      JSON.stringify({
+        version: 1,
+        pid: process.pid,
+        port: 45_678,
+        origin: "http://127.0.0.1:45678",
+        startedAt: new Date().toISOString(),
+      }),
+    );
+    await writeFile(
+      join(baseDir, "cli-environments.json"),
+      JSON.stringify({
+        version: 2,
+        environments: {
+          remote: {
+            id: "remote",
+            label: "Remote",
+            url: "https://remote.example.test",
+          },
+        },
+      }),
+    );
+
+    const error = await Effect.runPromise(
+      withBorrowedBearerToken(
+        {
+          url: Option.none(),
+          token: Option.none(),
+          baseDir: Option.none(),
+          environment: Option.some("manual:remote"),
+          registryBaseDir: Option.some(baseDir),
+        },
+        () => Effect.die("Borrowed credential must not reach a different origin."),
+      ).pipe(Effect.flip, Effect.provide(NodeServices.layer)),
+    );
+
+    assert.include(error.message, "Refusing to send a credential");
+    assert.include(error.message, "http://127.0.0.1:45678");
+    assert.include(error.message, "https://remote.example.test");
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }

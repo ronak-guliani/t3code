@@ -112,6 +112,9 @@ An explicit `--base-dir` therefore keeps MCP-launched agent commands pinned to
 their hosting environment. Once a manual or account environment is selected,
 authentication, offline, or configuration failures are reported for that
 environment and never fall back to the local host.
+When a manual profile omits its own token, the CLI borrows a short-lived local
+credential only if that profile's normalized origin exactly matches the live
+runtime owned by the supplied registry base directory.
 
 Account targets use the existing Connect OAuth refresh credential, relay DPoP
 authorization, a short-lived environment access token with standard client

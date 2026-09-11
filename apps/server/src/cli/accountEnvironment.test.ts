@@ -10,6 +10,7 @@ import {
   type ServerSecretStoreShape,
 } from "../auth/ServerSecretStore.ts";
 import {
+  decodeUsableEnvironmentTokenCache,
   findReusableEnvironmentToken,
   makeCliDpopSigner,
   makeRelayTokenStore,
@@ -18,6 +19,7 @@ import {
 const token = {
   accountId: "account-a",
   environmentId: EnvironmentId.make("environment-1"),
+  relayUrl: "https://relay-a.example.test",
   label: "Desktop",
   endpoint: {
     httpBaseUrl: "https://desktop.example.test",
@@ -35,6 +37,7 @@ it("reuses environment credentials only for the same account and DPoP key", () =
     findReusableEnvironmentToken([token], {
       accountId: "account-a",
       environmentId,
+      relayUrl: "https://relay-a.example.test",
       dpopThumbprint: "thumbprint-a",
       nowEpochMs: 1_000_000,
     })?.accessToken,
@@ -44,6 +47,7 @@ it("reuses environment credentials only for the same account and DPoP key", () =
     findReusableEnvironmentToken([token], {
       accountId: "account-b",
       environmentId,
+      relayUrl: "https://relay-a.example.test",
       dpopThumbprint: "thumbprint-a",
       nowEpochMs: 1_000_000,
     }),
@@ -52,11 +56,31 @@ it("reuses environment credentials only for the same account and DPoP key", () =
     findReusableEnvironmentToken([token], {
       accountId: "account-a",
       environmentId,
+      relayUrl: "https://relay-a.example.test",
       dpopThumbprint: "thumbprint-b",
       nowEpochMs: 1_000_000,
     }),
   );
 });
+
+it("does not reuse environment credentials issued through a different relay", () => {
+  assert.isUndefined(
+    findReusableEnvironmentToken([token], {
+      accountId: "account-a",
+      environmentId: EnvironmentId.make("environment-1"),
+      relayUrl: "https://relay-b.example.test",
+      dpopThumbprint: "thumbprint-a",
+      nowEpochMs: 1_000_000,
+    }),
+  );
+});
+
+it.effect("invalidates legacy environment credentials without a relay binding", () =>
+  Effect.gen(function* () {
+    const { relayUrl: _, ...legacyToken } = token;
+    assert.deepEqual(yield* decodeUsableEnvironmentTokenCache([legacyToken]), []);
+  }),
+);
 
 it("does not reuse rejected or nearly expired environment credentials", () => {
   const environmentId = EnvironmentId.make("environment-1");
@@ -64,6 +88,7 @@ it("does not reuse rejected or nearly expired environment credentials", () => {
     findReusableEnvironmentToken([token], {
       accountId: "account-a",
       environmentId,
+      relayUrl: "https://relay-a.example.test",
       dpopThumbprint: "thumbprint-a",
       nowEpochMs: 1_000_000,
       rejectedAccessToken: "environment-token",
@@ -73,6 +98,7 @@ it("does not reuse rejected or nearly expired environment credentials", () => {
     findReusableEnvironmentToken([token], {
       accountId: "account-a",
       environmentId,
+      relayUrl: "https://relay-a.example.test",
       dpopThumbprint: "thumbprint-a",
       nowEpochMs: token.expiresAtEpochMs - 30_000,
     }),

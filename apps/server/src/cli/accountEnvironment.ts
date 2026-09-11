@@ -77,6 +77,7 @@ const RelayTokenCache = Schema.Array(RelayTokenCacheEntry);
 const EnvironmentTokenCacheEntry = Schema.Struct({
   accountId: Schema.String,
   environmentId: EnvironmentId,
+  relayUrl: Schema.String,
   label: Schema.String,
   endpoint: RelayManagedEndpoint,
   accessToken: Schema.String,
@@ -84,11 +85,27 @@ const EnvironmentTokenCacheEntry = Schema.Struct({
   dpopThumbprint: Schema.String,
 });
 type EnvironmentTokenCacheEntry = typeof EnvironmentTokenCacheEntry.Type;
-const EnvironmentTokenCache = Schema.Array(EnvironmentTokenCacheEntry);
+const LegacyEnvironmentTokenCacheEntry = Schema.Struct({
+  accountId: Schema.String,
+  environmentId: EnvironmentId,
+  label: Schema.String,
+  endpoint: RelayManagedEndpoint,
+  accessToken: Schema.String,
+  expiresAtEpochMs: Schema.Finite,
+  dpopThumbprint: Schema.String,
+});
+const EnvironmentTokenCache = Schema.Array(
+  Schema.Union([EnvironmentTokenCacheEntry, LegacyEnvironmentTokenCacheEntry]),
+);
+const isEnvironmentTokenCacheEntry = Schema.is(EnvironmentTokenCacheEntry);
 
 const decodeDpopPrivateJwk = Schema.decodeUnknownEffect(DpopPrivateJwk);
 const decodeRelayTokenCache = Schema.decodeUnknownEffect(RelayTokenCache);
 const decodeEnvironmentTokenCache = Schema.decodeUnknownEffect(EnvironmentTokenCache);
+export const decodeUsableEnvironmentTokenCache = (value: unknown) =>
+  decodeEnvironmentTokenCache(value).pipe(
+    Effect.map((entries) => entries.filter(isEnvironmentTokenCacheEntry)),
+  );
 
 export class CliAccountEnvironmentError extends Schema.TaggedErrorClass<CliAccountEnvironmentError>()(
   "CliAccountEnvironmentError",
@@ -143,6 +160,7 @@ export function findReusableEnvironmentToken(
   input: {
     readonly accountId: string;
     readonly environmentId: EnvironmentId;
+    readonly relayUrl: string;
     readonly dpopThumbprint: string;
     readonly nowEpochMs: number;
     readonly rejectedAccessToken?: string;
@@ -152,6 +170,7 @@ export function findReusableEnvironmentToken(
     (entry) =>
       entry.accountId === input.accountId &&
       entry.environmentId === input.environmentId &&
+      entry.relayUrl === input.relayUrl &&
       entry.dpopThumbprint === input.dpopThumbprint &&
       entry.expiresAtEpochMs > input.nowEpochMs + TOKEN_REFRESH_SKEW_MS &&
       entry.accessToken !== input.rejectedAccessToken,
@@ -372,7 +391,7 @@ export const makeRelayTokenStore = (
 });
 
 const loadEnvironmentTokens = (secrets: ServerSecretStore.ServerSecretStoreShape) =>
-  readJsonSecret(secrets, ENVIRONMENT_TOKEN_CACHE_SECRET, decodeEnvironmentTokenCache, []);
+  readJsonSecret(secrets, ENVIRONMENT_TOKEN_CACHE_SECRET, decodeUsableEnvironmentTokenCache, []);
 
 const saveEnvironmentTokens = (
   secrets: ServerSecretStore.ServerSecretStoreShape,
@@ -392,6 +411,7 @@ const withAccountRuntime = <A, E, R>(
     readonly secrets: ServerSecretStore.ServerSecretStoreShape;
     readonly tokens: CliTokenManager.CloudCliTokenManager["Service"];
     readonly relay: ManagedRelay.ManagedRelayClient["Service"];
+    readonly relayUrl: string;
     readonly signer: CliDpopSigner;
   }) => Effect.Effect<A, E, R>,
 ) =>
@@ -435,7 +455,7 @@ const withAccountRuntime = <A, E, R>(
       }).pipe(Layer.provide(signerLayer), Layer.provide(FetchHttpClient.layer));
       return yield* Effect.gen(function* () {
         const relay = yield* ManagedRelay.ManagedRelayClient;
-        return yield* run({ session, secrets, tokens, relay, signer });
+        return yield* run({ session, secrets, tokens, relay, relayUrl, signer });
       }).pipe(Effect.provide(relayLayer));
     }).pipe(Effect.provide(baseLayer));
   }).pipe(
@@ -523,7 +543,7 @@ const prepareAccountEnvironment = (
     readonly environmentId: string;
   },
 ) =>
-  withAccountRuntime(baseDir, ({ session, secrets, tokens, relay, signer }) =>
+  withAccountRuntime(baseDir, ({ session, secrets, tokens, relay, relayUrl, signer }) =>
     Effect.gen(function* () {
       if (session.accountId !== selection.accountId) {
         return yield* new CliAccountEnvironmentError({
@@ -570,6 +590,7 @@ const prepareAccountEnvironment = (
         const minted: EnvironmentTokenCacheEntry = {
           accountId: session.accountId,
           environmentId,
+          relayUrl,
           label: descriptor.label,
           endpoint: connected.endpoint,
           accessToken: exchanged.access_token,
@@ -596,6 +617,7 @@ const prepareAccountEnvironment = (
               const cached = findReusableEnvironmentToken(stored, {
                 accountId: session.accountId,
                 environmentId,
+                relayUrl,
                 dpopThumbprint: signer.thumbprint,
                 nowEpochMs: now,
                 ...(rejectedAccessToken === undefined ? {} : { rejectedAccessToken }),

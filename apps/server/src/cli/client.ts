@@ -629,6 +629,19 @@ const withBorrowedLocalBearerToken = <A, E, R>(
   run: (input: { readonly origin: string; readonly bearerToken: string }) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
+    const localTarget = yield* resolveLocalRuntimeTarget(baseDir, {
+      source: "explicit-base-dir",
+      selectionReason: "--base-dir",
+    });
+    if (localTarget.origin !== origin) {
+      return yield* new CliLiveTargetError({
+        message:
+          `Refusing to send a credential borrowed from '${baseDir}' to '${origin}'. ` +
+          `That base directory belongs to the live server at '${localTarget.origin}'. ` +
+          "Configure an explicit --token for a different target.",
+      });
+    }
+
     const paths = yield* deriveServerPaths(baseDir, undefined);
     const config = {
       logLevel: "Error",
@@ -674,6 +687,7 @@ const withBorrowedLocalBearerToken = <A, E, R>(
       return yield* Effect.acquireUseRelease(
         retryLockedSqlite(
           authControlPlane.issueSession({
+            ttl: Duration.minutes(5),
             role: "owner",
             label: "t3 cli",
           }),
