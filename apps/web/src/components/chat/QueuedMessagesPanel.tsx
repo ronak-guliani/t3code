@@ -5,9 +5,6 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 
 interface QueuedMessagesPanelProps {
-  childFollowUpPaused?: boolean;
-  onSetChildFollowUpPaused?: ((paused: boolean) => void) | undefined;
-  onRetryQueuedTurn?: (turn: OrchestrationQueuedTurn) => void;
   policyBlocks?: ReadonlyMap<QueuedTurnId, string> | undefined;
   queuedTurns: ReadonlyArray<OrchestrationQueuedTurn>;
   editingQueuedTurnId: QueuedTurnId | null;
@@ -25,13 +22,13 @@ interface QueuedMessagesPanelProps {
  * ones stay visible so the stalled handoff is recoverable.
  */
 function isHiddenQueuedTurn(queuedTurn: OrchestrationQueuedTurn): boolean {
-  return queuedTurn.origin?.kind === "workspace-handoff" && queuedTurn.failedAt === null;
+  return (
+    queuedTurn.origin?.kind === "child-nudge" ||
+    (queuedTurn.origin?.kind === "workspace-handoff" && queuedTurn.failedAt === null)
+  );
 }
 
 function queuedTurnLabel(queuedTurn: OrchestrationQueuedTurn): string | null {
-  if (queuedTurn.origin?.kind === "child-nudge") {
-    return `Child updates: ${queuedTurn.origin.updates.map((update) => update.childTitle).join(", ")}`;
-  }
   return queuedTurn.origin?.kind === "workspace-handoff"
     ? `Continue in ${queuedTurn.origin.branch}`
     : queuedTurn.message.text;
@@ -46,9 +43,6 @@ function attachmentLabel(queuedTurn: OrchestrationQueuedTurn): string | null {
 }
 
 export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
-  childFollowUpPaused = false,
-  onSetChildFollowUpPaused,
-  onRetryQueuedTurn,
   policyBlocks,
   queuedTurns,
   editingQueuedTurnId,
@@ -59,8 +53,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
   onDeleteQueuedTurn,
 }: QueuedMessagesPanelProps) {
   const nextEligibleId = queuedTurns.find(
-    (turn) =>
-      !policyBlocks?.has(turn.id) && !(childFollowUpPaused && turn.origin?.kind === "child-nudge"),
+    (turn) => !policyBlocks?.has(turn.id) && turn.origin?.kind !== "child-nudge",
   )?.id;
   const visibleQueuedTurns = queuedTurns.flatMap((queuedTurn, queueIndex) =>
     isHiddenQueuedTurn(queuedTurn) ? [] : [{ queuedTurn, queueIndex }],
@@ -71,30 +64,11 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
 
   return (
     <div className="composer-input-font border-b border-border/55 px-3 py-2">
-      {queuedTurns.some((turn) => turn.origin?.kind === "child-nudge") &&
-      onSetChildFollowUpPaused ? (
-        <div className="mb-1 flex items-center justify-between text-muted-foreground">
-          <span>
-            {childFollowUpPaused ? "Child follow-up paused" : "Automatic child follow-up"}
-          </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            onClick={() => onSetChildFollowUpPaused(!childFollowUpPaused)}
-          >
-            {childFollowUpPaused ? "Resume child follow-up" : "Pause child follow-up"}
-          </Button>
-        </div>
-      ) : null}
       <ul className="flex flex-col gap-0.5">
         {visibleQueuedTurns.map(({ queuedTurn, queueIndex }) => {
           const isEditing = editingQueuedTurnId === queuedTurn.id;
           const isFailed = queuedTurn.failedAt !== null;
-          const isNudge = queuedTurn.origin?.kind === "child-nudge";
-          const policyBlock =
-            policyBlocks?.get(queuedTurn.id) ??
-            (isNudge && childFollowUpPaused ? "Automatic follow-up is paused." : undefined);
+          const policyBlock = policyBlocks?.get(queuedTurn.id);
           const meta = attachmentLabel(queuedTurn);
           const label = policyBlock
             ? "Pending"
@@ -157,35 +131,22 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                     ) : null}
                   </div>
                   <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-                    {isNudge ? (
-                      isFailed && onRetryQueuedTurn ? (
-                        <Button
-                          type="button"
-                          size="xs"
-                          variant="ghost"
-                          onClick={() => onRetryQueuedTurn(queuedTurn)}
-                        >
-                          Retry child follow-up
-                        </Button>
-                      ) : null
-                    ) : (
-                      <Button
-                        type="button"
-                        size="icon-xs"
-                        variant="ghost"
-                        aria-label="Edit queued message"
-                        title="Edit"
-                        onClick={() => onStartEditingQueuedTurn(queuedTurn)}
-                      >
-                        <Pencil />
-                      </Button>
-                    )}
                     <Button
                       type="button"
                       size="icon-xs"
                       variant="ghost"
-                      aria-label={isNudge ? "Dismiss child updates" : "Delete queued message"}
-                      title={isNudge ? "Dismiss" : "Delete"}
+                      aria-label="Edit queued message"
+                      title="Edit"
+                      onClick={() => onStartEditingQueuedTurn(queuedTurn)}
+                    >
+                      <Pencil />
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label="Delete queued message"
+                      title="Delete"
                       onClick={() => onDeleteQueuedTurn(queuedTurn.id)}
                     >
                       <Trash2 />

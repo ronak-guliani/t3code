@@ -21,6 +21,7 @@ import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { QueuedTurnReactor, type QueuedTurnReactorShape } from "../Services/QueuedTurnReactor.ts";
 import { isThreadReadyForQueuedDispatch } from "../commandInvariants.ts";
 import { isAutomaticChildNudgeBlocked } from "../childNudging.ts";
+import { evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
 
 const MONITOR_REVALIDATION_RETRY_INTERVAL = Duration.seconds(20);
 const MAX_MONITOR_REVALIDATION_ATTEMPTS = 3;
@@ -38,7 +39,9 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
   const pullRequests = yield* PullRequestService;
   const monitorFeedback = yield* PullRequestMonitorFeedbackService;
   const serverSettings = yield* ServerSettingsService;
+  const wakeScope = yield* Effect.scope;
   const drainingThreadIds = new Set<string>();
+  const scheduledChildWakes = new Set<string>();
 
   const failQueuedTurn = (input: {
     readonly threadId: ThreadId;
@@ -67,9 +70,34 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         return;
       }
 
-      const eligibleTurns = queuedTurns.filter(
-        (turn) => turn.origin?.kind !== "child-nudge" || !isAutomaticChildNudgeBlocked(thread),
+      const threadsById = new Map(
+        queuedTurns.some((turn) => turn.origin?.kind === "child-nudge")
+          ? readModel.threads.map((entry) => [entry.id, entry] as const)
+          : [],
       );
+      const nowIso = new Date().toISOString();
+      const eligibleTurns = [];
+      for (const turn of queuedTurns) {
+        if (turn.origin?.kind !== "child-nudge") {
+          eligibleTurns.push(turn);
+          continue;
+        }
+        const followUp = evaluateChildFollowUp(thread, turn, threadsById, nowIso);
+        if (followUp.dueAt) {
+          const key = `${threadId}:${followUp.dueAt}`;
+          if (!scheduledChildWakes.has(key)) {
+            scheduledChildWakes.add(key);
+            yield* Effect.sleep(
+              Duration.millis(Math.max(0, Date.parse(followUp.dueAt) - Date.now())),
+            ).pipe(
+              Effect.andThen(Effect.suspend(() => drainThreadSafely(threadId))),
+              Effect.ensuring(Effect.sync(() => scheduledChildWakes.delete(key))),
+              Effect.forkIn(wakeScope),
+            );
+          }
+        }
+        if (!followUp.reason) eligibleTurns.push(turn);
+      }
       let nextQueuedTurn = eligibleTurns[0];
       if (eligibleTurns.some((turn) => turn.origin?.kind === "pull-request-monitor")) {
         const settings = yield* serverSettings.getSettings;
@@ -248,7 +276,13 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
                 !latestThread ||
                 !isThreadReadyForQueuedDispatch(latestThread) ||
                 (nextQueuedTurn.origin?.kind === "child-nudge" &&
-                  isAutomaticChildNudgeBlocked(latestThread))
+                  (isAutomaticChildNudgeBlocked(latestThread) ||
+                    evaluateChildFollowUp(
+                      latestThread,
+                      nextQueuedTurn,
+                      new Map(latestReadModel.threads.map((entry) => [entry.id, entry])),
+                      new Date().toISOString(),
+                    ).reason !== null))
               ) {
                 return;
               }
@@ -273,7 +307,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     }
   });
 
-  const drainThreadSafely = (threadId: ThreadId) =>
+  const drainThreadSafely = (threadId: ThreadId): Effect.Effect<void> =>
     drainThread(threadId).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("queued turn reactor failed to drain thread", {
@@ -298,7 +332,20 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
         const threadId = threadIdForEvent(event);
-        return threadId === null ? Effect.void : drainThreadSafely(threadId);
+        if (threadId === null) return Effect.void;
+        return Effect.gen(function* () {
+          yield* drainThreadSafely(threadId);
+          if (
+            event.type === "thread.meta-updated" ||
+            event.type === "thread.archived" ||
+            event.type === "thread.deleted" ||
+            event.type === "thread.decoupled"
+          ) {
+            const state = yield* orchestrationEngine.getReadModel();
+            const parentId = state.threads.find((thread) => thread.id === threadId)?.parentThreadId;
+            if (parentId) yield* drainThreadSafely(parentId);
+          }
+        });
       }),
     );
     yield* Effect.forkScoped(

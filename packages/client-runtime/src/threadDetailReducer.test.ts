@@ -13,6 +13,7 @@ import {
 import type { OrchestrationThread } from "@t3tools/contracts";
 
 import { applyThreadDetailEvent } from "./threadDetailReducer.ts";
+import { applyThreadDetailEvent as applyStateThreadDetailEvent } from "./state/threadReducer.ts";
 
 const baseEventFields = {
   eventId: EventId.make("event-1"),
@@ -46,6 +47,68 @@ const baseThread: OrchestrationThread = {
 };
 
 describe("applyThreadDetailEvent", () => {
+  it.each([applyThreadDetailEvent, applyStateThreadDetailEvent])(
+    "preserves follow-up metadata through live creation and resolution",
+    (reduce) => {
+      const nudging: NonNullable<OrchestrationThread["nudging"]> = {
+        paused: true,
+        wait: { mode: "decisions-only", assignments: [] },
+        delegation: {
+          assignmentId: MessageId.make("assignment"),
+          followUp: "automatic",
+          completedAt: null,
+          decision: {
+            id: "question",
+            childThreadId: baseThread.id,
+            childTitle: baseThread.title,
+            assignmentId: MessageId.make("assignment"),
+            kind: "decision-needed",
+            summary: "Choose",
+            decision: { question: "Which option?", options: ["A", "B"] },
+          },
+        },
+      };
+      const created = reduce(baseThread, {
+        ...baseEventFields,
+        sequence: 1,
+        occurredAt: baseThread.createdAt,
+        aggregateKind: "thread",
+        aggregateId: baseThread.id,
+        type: "thread.created",
+        payload: {
+          threadId: baseThread.id,
+          projectId: baseThread.projectId,
+          parentThreadId: null,
+          title: baseThread.title,
+          modelSelection: baseThread.modelSelection,
+          runtimeMode: baseThread.runtimeMode,
+          pendingRuntimeMode: null,
+          interactionMode: baseThread.interactionMode,
+          branch: null,
+          worktreePath: null,
+          createdAt: baseThread.createdAt,
+          updatedAt: baseThread.updatedAt,
+          nudging,
+        },
+      });
+      expect(created.kind).toBe("updated");
+      if (created.kind !== "updated") throw new Error("Expected created thread");
+      expect(created.thread.nudging).toEqual(nudging);
+      const resolved = { ...nudging, delegation: { ...nudging.delegation!, decision: null } };
+      const updated = reduce(created.thread, {
+        ...baseEventFields,
+        sequence: 2,
+        occurredAt: baseThread.createdAt,
+        aggregateKind: "thread",
+        aggregateId: baseThread.id,
+        type: "thread.meta-updated",
+        payload: { threadId: baseThread.id, nudging: resolved, updatedAt: baseThread.updatedAt },
+      });
+      expect(updated.kind).toBe("updated");
+      if (updated.kind !== "updated") throw new Error("Expected updated thread");
+      expect(updated.thread.nudging).toEqual(resolved);
+    },
+  );
   describe("project events", () => {
     it("returns unchanged for project.created", () => {
       const result = applyThreadDetailEvent(baseThread, {

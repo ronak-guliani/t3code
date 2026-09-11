@@ -177,6 +177,8 @@ describe("buildCopilotAcpSpawnInput", () => {
           "create_nested_threads",
           "send_to_thread",
           "report_to_parent",
+          "assign_to_thread",
+          "set_child_wait",
           "associate_pull_request",
         ]),
         threadId: "thread-1",
@@ -240,6 +242,8 @@ describe("buildCopilotAcpSpawnInput", () => {
           "create_nested_threads",
           "send_to_thread",
           "report_to_parent",
+          "assign_to_thread",
+          "set_child_wait",
         ]),
       );
     });
@@ -269,6 +273,8 @@ describe("buildCopilotAcpSpawnInput", () => {
           "create_nested_threads",
           "send_to_thread",
           "report_to_parent",
+          "assign_to_thread",
+          "set_child_wait",
           "associate_pull_request",
         ]),
         threadId: "thread-1",

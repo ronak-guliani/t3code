@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./childFollowUp": {
+      "types": "./src/childFollowUp.ts",
+      "import": "./src/childFollowUp.ts"
+    },
     "./automaticPrFeedback": {
       "types": "./src/automaticPrFeedback.ts",
       "import": "./src/automaticPrFeedback.ts"

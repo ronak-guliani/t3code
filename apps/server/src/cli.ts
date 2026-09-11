@@ -6,6 +6,8 @@ import { REVIEW_CHANGES_WORKFLOW_ID } from "@t3tools/shared/workflows/reviewChan
 import {
   ApprovalRequestId,
   AuthSessionId,
+  ChildDecision,
+  ChildWaitCondition,
   CommandId,
   EditorId,
   KeybindingRule,
@@ -986,6 +988,10 @@ const authCommand = Command.make("auth").pipe(
 );
 
 const decodeModelSelection = Schema.decodeUnknownEffect(ModelSelection);
+const decodeChildWaitJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.NullOr(ChildWaitCondition)),
+);
+const decodeChildDecisionJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ChildDecision));
 const decodeProjectScripts = Schema.decodeUnknownEffect(Schema.Array(ProjectScript));
 const decodeEditorId = Schema.decodeUnknownEffect(EditorId);
 const decodeKeybindingRule = Schema.decodeUnknownEffect(KeybindingRule);
@@ -2240,7 +2246,11 @@ const chatNewCommand = Command.make("new", {
             }),
           },
         );
-        yield* printJson(outcome);
+        yield* printJson(
+          outcome.status === "created" && Option.isSome(flags.followUp)
+            ? { ...outcome, assignmentId: firstMessageId }
+            : outcome,
+        );
         if (outcome.status !== "created") {
           return yield* Effect.fail(new NestedThreadCreationCliError(outcome));
         }
@@ -2349,6 +2359,12 @@ const chatStopCommand = Command.make("stop", {
 );
 
 const chatQueueAddCommand = Command.make("add", {
+  assignmentFollowUp: Flag.choice("assignment-follow-up", ["automatic", "notify-only"]).pipe(
+    Flag.optional,
+  ),
+  assignmentId: Flag.string("assignment-id").pipe(Flag.optional),
+  respondToReportId: Flag.string("respond-to-report").pipe(Flag.optional),
+  requestId: Flag.string("request-id").pipe(Flag.optional),
   ...liveTargetFlags,
   ...modelSelectionFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
@@ -2364,14 +2380,22 @@ const chatQueueAddCommand = Command.make("add", {
     withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
       Effect.gen(function* () {
         const modelSelection = yield* buildModelSelectionFromFlags(flags);
-        const queuedTurnId = QueuedTurnId.make(crypto.randomUUID());
+        const requestId = Option.getOrUndefined(flags.requestId);
+        const queuedTurnId = QueuedTurnId.make(
+          requestId ? `assignment-queue:${thread.id}:${requestId}` : crypto.randomUUID(),
+        );
+        const messageId = MessageId.make(
+          requestId ? `assignment:${thread.id}:${requestId}` : crypto.randomUUID(),
+        );
         const result = yield* dispatch({
           type: "thread.queued-turn.create",
-          commandId: CommandId.make(crypto.randomUUID()),
+          commandId: CommandId.make(
+            requestId ? `assignment-enqueue:${thread.id}:${requestId}` : crypto.randomUUID(),
+          ),
           threadId: thread.id,
           queuedTurnId,
           message: {
-            messageId: MessageId.make(crypto.randomUUID()),
+            messageId,
             role: "user",
             text: flags.prompt,
             attachments: [],
@@ -2386,8 +2410,21 @@ const chatQueueAddCommand = Command.make("add", {
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
           createdAt: new Date().toISOString(),
+          ...(Option.isSome(flags.assignmentFollowUp)
+            ? { assignment: { followUp: flags.assignmentFollowUp.value } }
+            : {}),
+          ...(Option.isSome(flags.assignmentId)
+            ? { assignmentId: MessageId.make(flags.assignmentId.value) }
+            : {}),
+          ...(Option.isSome(flags.respondToReportId)
+            ? { respondToReportId: flags.respondToReportId.value }
+            : {}),
         });
-        yield* printJson({ queuedTurnId, result });
+        yield* printJson({
+          queuedTurnId,
+          ...(Option.isSome(flags.assignmentFollowUp) ? { assignmentId: messageId } : {}),
+          result,
+        });
       }),
     ),
   ),
@@ -2495,29 +2532,70 @@ const chatCommand = Command.make("chat").pipe(
     chatInterruptCommand,
     chatStopCommand,
     chatQueueCommand,
+    Command.make("wait", {
+      ...liveTargetFlags,
+      chat: Argument.string("chat"),
+      condition: Argument.string("condition"),
+    }).pipe(
+      Command.withDescription(
+        "Set a child wait condition as JSON, or null to restore automatic follow-up.",
+      ),
+      Command.withHandler((flags) =>
+        withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
+          Effect.gen(function* () {
+            const childWait = yield* decodeChildWaitJson(flags.condition);
+            yield* dispatch({
+              type: "thread.meta.update",
+              commandId: CommandId.make(crypto.randomUUID()),
+              threadId: thread.id,
+              childWait,
+            }).pipe(Effect.flatMap(printJson));
+          }),
+        ),
+      ),
+    ),
     Command.make("report", {
       ...liveTargetFlags,
       chat: Argument.string("chat"),
       summary: Argument.string("summary"),
       kind: Flag.choice("kind", ["progress", "decision-needed", "important-update"]),
       reportId: Flag.string("report-id"),
+      assignmentId: Flag.string("assignment-id").pipe(Flag.optional),
+      decision: Flag.string("decision").pipe(Flag.optional),
+      canContinue: Flag.choice("can-continue", ["true", "false"]).pipe(Flag.optional),
+      supersedesReportId: Flag.string("supersedes-report").pipe(Flag.optional),
       crossThreadCapability: Flag.string("cross-thread-capability"),
     }).pipe(
       Command.withDescription("Report an update from an authenticated delegated child."),
       Command.withHandler((flags) =>
         withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
-          dispatch({
-            type: "thread.child.report",
-            commandId: CommandId.make(
-              `child-report:${thread.id}:${thread.nudging?.delegation ? `${thread.nudging.delegation.assignmentId}:` : ""}${flags.reportId}`,
-            ),
-            threadId: thread.id,
-            reportId: flags.reportId,
-            kind: flags.kind,
-            summary: flags.summary,
-            crossThreadDispatchCapability: flags.crossThreadCapability,
-            createdAt: new Date().toISOString(),
-          }).pipe(Effect.flatMap(printJson)),
+          Effect.gen(function* () {
+            const decision = Option.isSome(flags.decision)
+              ? yield* decodeChildDecisionJson(flags.decision.value)
+              : undefined;
+            return yield* dispatch({
+              type: "thread.child.report",
+              commandId: CommandId.make(
+                `child-report:${thread.id}:${Option.getOrUndefined(flags.assignmentId) ?? thread.nudging?.delegation?.assignmentId ?? ""}:${flags.reportId}`,
+              ),
+              threadId: thread.id,
+              reportId: flags.reportId,
+              kind: flags.kind,
+              summary: flags.summary,
+              ...(Option.isSome(flags.assignmentId)
+                ? { assignmentId: MessageId.make(flags.assignmentId.value) }
+                : {}),
+              ...(decision ? { decision } : {}),
+              ...(Option.isSome(flags.canContinue)
+                ? { canContinue: flags.canContinue.value === "true" }
+                : {}),
+              ...(Option.isSome(flags.supersedesReportId)
+                ? { supersedesReportId: flags.supersedesReportId.value }
+                : {}),
+              crossThreadDispatchCapability: flags.crossThreadCapability,
+              createdAt: new Date().toISOString(),
+            }).pipe(Effect.flatMap(printJson));
+          }),
         ),
       ),
     ),

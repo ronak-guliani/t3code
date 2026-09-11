@@ -152,6 +152,7 @@ async function runReactor(
   readModelInput: OrchestrationReadModel,
   snapshot: PullRequestMonitorSnapshot,
   options?: {
+    readonly waitAfterStartMs?: number;
     readonly snapshotError?: PullRequestOperationError;
     readonly onRetryQueuedDelivery?: (deliveryId: string) => void;
     readonly retryQueuedDeliveryError?: PullRequestMonitorError;
@@ -277,7 +278,7 @@ async function runReactor(
             copilotAutomaticPrFeedback: { [ProviderInstanceId.make("copilot")]: true },
           });
         }
-        yield* Effect.sleep("10 millis");
+        yield* Effect.sleep(options?.waitAfterStartMs ?? 10);
       }),
     ).pipe(Effect.provide(layer)),
   );
@@ -285,6 +286,33 @@ async function runReactor(
 }
 
 describe("QueuedTurnReactor", () => {
+  it("reconstructs a persisted collection timer without waiting for another event or the recovery sweep", async () => {
+    const collectUntil = new Date(Date.now() + 150).toISOString();
+    const state = queuedReadModel({
+      origin: {
+        kind: "child-nudge",
+        collectUntil,
+        updates: [
+          {
+            id: "collected",
+            childThreadId: ThreadId.make("child"),
+            childTitle: "Child",
+            assignmentId: MessageId.make("assignment"),
+            kind: "result-available",
+            summary: "Result ready",
+          },
+        ],
+      },
+    });
+    const commands = await runReactor(state, monitorSnapshot("head"), { waitAfterStartMs: 300 });
+    expect(commands).toHaveLength(1);
+    const command = commands[0]!;
+    expect(command.type).toBe("thread.queued-turn.dispatch");
+    if (command.type === "thread.queued-turn.dispatch") {
+      expect(Date.parse(command.dispatchedAt)).toBeGreaterThanOrEqual(Date.parse(collectUntil));
+    }
+  });
+
   it("recovers a nudge after restart, but skips it while paused without blocking user work", async () => {
     const ready = queuedReadModel({
       origin: {

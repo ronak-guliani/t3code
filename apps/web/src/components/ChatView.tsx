@@ -3515,31 +3515,6 @@ function ChatViewBody(
       });
   };
 
-  const onSetChildFollowUpPaused = useCallback(
-    (paused: boolean) => {
-      const api = readEnvironmentApi(environmentId);
-      if (!activeThreadId) return;
-      if (!api) {
-        setThreadError(activeThreadId, "Cannot change child follow-up while disconnected.");
-        return;
-      }
-      void api.orchestration
-        .dispatchCommand({
-          type: "thread.meta.update",
-          commandId: newCommandId(),
-          threadId: activeThreadId,
-          childFollowUpPaused: paused,
-        })
-        .catch((error: unknown) => {
-          setThreadError(
-            activeThreadId,
-            error instanceof Error ? error.message : "Failed to change child follow-up.",
-          );
-        });
-    },
-    [activeThreadId, environmentId, setThreadError],
-  );
-
   const onUpdateQueuedTurn = useCallback(
     (queuedTurnId: QueuedTurnId, text: string) => {
       const api = readEnvironmentApi(environmentId);
@@ -4896,7 +4871,6 @@ function ChatViewBody(
                   pendingApprovals={pendingApprovals}
                   pendingUserInputs={pendingUserInputs}
                   queuedTurns={activeThread.queuedTurns ?? []}
-                  onSetChildFollowUpPaused={onSetChildFollowUpPaused}
                   activePendingProgress={activePendingProgress}
                   activePendingResolvedAnswers={activePendingResolvedAnswers}
                   activePendingIsResponding={activePendingIsResponding}
