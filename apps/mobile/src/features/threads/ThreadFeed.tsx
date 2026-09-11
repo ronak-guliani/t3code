@@ -1469,6 +1469,13 @@ function renderFeedEntry(
                         : ""}
                     </Text>
                   ) : null}
+                  {report.canContinue !== undefined ? (
+                    <Text selectable className="text-xs text-foreground-muted">
+                      {report.canContinue
+                        ? "Child can continue without an answer."
+                        : "Child is waiting for an answer."}
+                    </Text>
+                  ) : null}
                 </View>
               ))}
               <Text className="text-xs text-foreground-muted">
