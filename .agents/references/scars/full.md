@@ -104,6 +104,8 @@
 
 ## PR reviews and checkpoint provenance
 
+- Skill triggers that include "draft a PR description" must branch to read-only delivery before staging or publishing; only a publication request authorizes creating a PR, which defaults to ready-for-review unless draft status is explicit.
+
 - Review findings must never be silently dropped: reviewers cite file line numbers that often land on unchanged context, so anchor findings to any line the diff renders and only discard ones naming a file outside the reviewed diff. Review threads stay conversational — refresh the result on every turn that emits reviewer JSON, re-resolve the snapshot it is anchored to, and identify the raw-JSON message by content rather than assuming it is the last assistant message.
 - PR metadata writes preserve monitor ownership by default. Only commands carrying explicit transfer intent may replace an owner; inherited/refresh writes use ancestry only as an ownerless fallback, validated before a compare-and-swap claim.
 - Agent PR creation can succeed without the follow-up association tool. Recover from persisted, unambiguous assistant PR URLs only after fresh checkout validation; retry missing metadata after restart and guard dispatch against concurrent thread updates. Never infer an association from branch equality alone.
