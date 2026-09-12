@@ -1568,6 +1568,32 @@ describe("mobile composer drafts", () => {
     });
   });
 
+  it("does not delete environment attachments when the cleanup snapshot write fails", async () => {
+    await waitForComposerDraftsLoaded();
+    const file = {
+      id: "file-env-cleanup",
+      type: "file" as const,
+      name: "report.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 42,
+      fileUri: "file:///documents/t3-composer-attachments/report.pdf",
+    };
+    const environmentId = EnvironmentId.make("environment-1");
+    appAtomRegistry.set(composerDraftsAtom, {
+      [`${environmentId}:thread-1`]: { text: "Unsent notes", attachments: [file] },
+    });
+    composerDraftFileMocks.setWriteError(new Error("storage unavailable"));
+
+    try {
+      await expect(clearComposerDraftsEnvironment(environmentId)).rejects.toBeInstanceOf(
+        ComposerDraftPersistenceError,
+      );
+      expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
+    } finally {
+      composerDraftFileMocks.setWriteError(null);
+    }
+  });
+
   it("clears sent content without clearing the selected model or workspace", () => {
     const draftKey = "environment-1:thread-1";
     const draft: ComposerDraft = {
