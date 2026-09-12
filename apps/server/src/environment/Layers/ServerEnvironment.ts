@@ -97,7 +97,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       ownedMobileProtocolVersion: 1,
       repositoryIdentity: true,
       connectionProbe: true,
-      pullRequests: false,
+      pullRequests: true,
       threadSettlement: true,
       threadSnooze: true,
       threadPinning: true,
