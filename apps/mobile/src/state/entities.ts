@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentProject,
+  EnvironmentShellStatus,
   EnvironmentShellState,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
@@ -12,12 +13,22 @@ import type {
 } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 
+import { environmentCatalog } from "../connection/catalog";
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom, serverEnvironment } from "./server";
 import { environmentThreadShells } from "./threads";
 import { environmentShell } from "./shell";
 
 const EMPTY_SHELL_STATE_ATOM = Atom.make<EnvironmentShellState | null>(null);
+const environmentShellStatusesAtom = Atom.make(
+  (get): ReadonlyMap<EnvironmentId, EnvironmentShellStatus> => {
+    const statuses = new Map<EnvironmentId, EnvironmentShellStatus>();
+    for (const environmentId of get(environmentCatalog.catalogValueAtom).entries.keys()) {
+      statuses.set(environmentId, get(environmentShell.stateValueAtom(environmentId)).status);
+    }
+    return statuses;
+  },
+).pipe(Atom.withLabel("mobile:environment-shell-statuses"));
 
 export function useEnvironmentShellState(environmentId: EnvironmentId | null) {
   return useAtomValue(
@@ -43,6 +54,10 @@ export function useProjects(): ReadonlyArray<EnvironmentProject> {
 
 export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
   return useAtomValue(environmentThreadShells.threadShellsAtom);
+}
+
+export function useEnvironmentShellStatuses(): ReadonlyMap<EnvironmentId, EnvironmentShellStatus> {
+  return useAtomValue(environmentShellStatusesAtom);
 }
 
 export function useProject(ref: ScopedProjectRef | null): EnvironmentProject | null {

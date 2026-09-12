@@ -1,11 +1,17 @@
 ---
 name: create-pr
-description: Creates a focused GitHub pull request from the current branch by inspecting its diff, composing accurate metadata, pushing the branch, and invoking the GitHub CLI. Use when the user asks to create a PR, draft a PR description, or prepare current branch changes for review.
+description: Creates a ready-for-review GitHub pull request, or prepares PR text without publishing. Use when the user asks to create a PR, draft a PR description, or prepare current branch changes for review; description-only and readiness requests do not authorize publication.
 ---
 
 # Create PR
 
 Create a reviewable PR that accurately describes the branch's changes. Use `gh` for GitHub operations.
+
+## Delivery mode
+
+Apply [skill-delivery.md](../../references/skill-delivery.md) before mutations. For description-only or readiness requests, perform only read-only inspection and return the requested text or readiness findings; stop before workflow step 5. Do not stage, commit, push, create/update a PR, or associate a thread in this mode.
+
+For publication requests, create a **ready-for-review, non-draft PR** by default. "Draft a description" is not "create a draft PR"; use draft status only when the user explicitly requests a draft PR.
 
 ## Workflow
 
@@ -60,7 +66,7 @@ Create a reviewable PR that accurately describes the branch's changes. Use `gh` 
    gh pr view --json url --jq .url
    ```
 
-   If a PR exists, report its URL and update it only with explicit user approval. Otherwise, commit any task-scoped changes and push if the branch has no upstream or commits have not been pushed:
+   If a PR exists, skip creation and proceed to step 8 with its URL. Associate it with the current thread, but update its GitHub metadata or branch only with explicit user approval. Otherwise, commit any task-scoped changes and push if the branch has no upstream or commits have not been pushed:
 
    ```sh
    git push -u origin "$(git branch --show-current)"
@@ -72,9 +78,11 @@ Create a reviewable PR that accurately describes the branch's changes. Use `gh` 
    gh pr create --base "<base>" --title "<title>" --body "<body>"
    ```
 
-   Use `--draft`, `--reviewer`, and `--label` only when requested.
+   Omit `--draft` for normal PR creation. Use `--draft` only for an explicitly requested draft PR; use `--reviewer` and `--label` only when requested.
 
-8. After `gh pr create` succeeds, call the T3 `associate_pull_request` tool with the returned PR URL. This is required so the current thread's sidebar PR badge is durable; do not infer association from the checked-out branch. Return the PR URL after the association succeeds.
+8. Call the T3 `associate_pull_request` tool with the existing PR URL from step 6 or the newly created PR URL from step 7. This publication-only step is required so the current thread's sidebar PR badge is durable; do not infer association from the checked-out branch. Return the PR URL after the association succeeds.
+
+   If association fails, report the existing or created PR URL and the association blocker. Retry association when appropriate, never PR creation.
 
 ## Safety rules
 

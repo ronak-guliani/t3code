@@ -1,5 +1,5 @@
 import { Debouncer } from "@tanstack/react-pacer";
-import type { EventId, TurnDiffScope } from "@t3tools/contracts";
+import type { TurnDiffScope } from "@t3tools/contracts";
 import { create } from "zustand";
 import type {
   EnvironmentId,
@@ -1023,9 +1023,6 @@ export function setAgentRunDismissed(
 }
 
 interface UiStateStore extends UiState {
-  // Session-only acknowledgments survive chat remounts, but not an app reload.
-  dismissedCopilotWarningIds: ReadonlySet<EventId>;
-  dismissCopilotWarning: (id: EventId) => void;
   syncProjects: (projects: readonly SyncProjectInput[]) => void;
   syncThreads: (threads: readonly SyncThreadInput[]) => void;
   markThreadVisited: (threadId: string, visitedAt?: string) => void;
@@ -1053,13 +1050,6 @@ interface UiStateStore extends UiState {
 
 export const useUiStateStore = create<UiStateStore>((set, get) => ({
   ...readPersistedState(),
-  dismissedCopilotWarningIds: new Set(),
-  dismissCopilotWarning: (id) =>
-    set((state) =>
-      state.dismissedCopilotWarningIds.has(id)
-        ? state
-        : { dismissedCopilotWarningIds: new Set([...state.dismissedCopilotWarningIds, id]) },
-    ),
   syncProjects: (projects) => set((state) => syncProjects(state, projects)),
   syncThreads: (threads) => set((state) => syncThreads(state, threads)),
   markThreadVisited: (threadId, visitedAt) =>

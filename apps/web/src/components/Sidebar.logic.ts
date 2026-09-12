@@ -9,11 +9,11 @@ import {
 import type { SidebarThreadSummary, Thread } from "../types";
 import { DEFAULT_NEW_THREAD_WORKSPACE } from "../lib/newThreadDefaults";
 import { cn } from "../lib/utils";
+import { isLatestTurnSettled } from "../session-logic";
 import {
-  isLatestTurnSettled,
-  isThreadActivelyWorking,
-  latestValidTimestamp,
-} from "../session-logic";
+  hasUnseenThreadCompletion,
+  resolveThreadSemanticStatus,
+} from "@t3tools/client-runtime/state/thread-status";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -77,6 +77,7 @@ export interface ThreadStatusPill {
   readonly label:
     | "Working"
     | "Connecting"
+    | "Failed"
     | "Completed"
     | "Pending Approval"
     | "Awaiting Input"
@@ -92,6 +93,13 @@ const THREAD_STATUSES = {
     label: "Pending Approval",
     colorClass: "text-amber-600 dark:text-amber-300/90",
     dotClass: "bg-amber-500 dark:bg-amber-300/90",
+    pulse: false,
+    presentation: "label",
+  },
+  failed: {
+    label: "Failed",
+    colorClass: "text-red-600 dark:text-red-300/90",
+    dotClass: "bg-red-500 dark:bg-red-300/90",
     pulse: false,
     presentation: "label",
   },
@@ -133,11 +141,12 @@ const THREAD_STATUSES = {
 } as const satisfies Record<string, ThreadStatusPill>;
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
-  "Pending Approval": 6,
-  "Awaiting Input": 5,
-  Working: 4,
+  "Pending Approval": 7,
+  "Awaiting Input": 6,
+  Working: 5,
   Connecting: 4,
-  "Plan Ready": 3,
+  Failed: 3,
+  "Plan Ready": 2,
   Completed: 1,
 };
 
@@ -243,13 +252,7 @@ export function hasUnseenCompletion(thread: {
   latestTurn: SidebarThreadSummary["latestTurn"];
   lastVisitedAt?: string | null | undefined;
 }): boolean {
-  const latestNotificationAt = latestValidTimestamp([thread.latestTurn?.completedAt]);
-  if (latestNotificationAt === undefined) return false;
-  if (!thread.lastVisitedAt) return true;
-
-  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(lastVisitedAt)) return true;
-  return Date.parse(latestNotificationAt) > lastVisitedAt;
+  return hasUnseenThreadCompletion(thread);
 }
 
 export { hasUnseenChildNotification } from "@t3tools/client-runtime/state/thread-hierarchy";
@@ -464,47 +467,44 @@ export function resolveThreadStatusPill(input: {
   readonly hasPendingTurn?: boolean;
 }): ThreadStatusPill | null {
   const { thread } = input;
-
-  if (thread.hasPendingApprovals) {
-    return THREAD_STATUSES.pendingApproval;
-  }
-
-  if (thread.hasPendingUserInput) {
-    return THREAD_STATUSES.awaitingInput;
-  }
-
-  if (
-    input.hasPendingTurn ||
-    thread.hasPendingQueuedTurn ||
-    thread.virtualAgentRun?.status === "running" ||
-    isThreadActivelyWorking(thread.latestTurn, thread.session)
-  ) {
-    return THREAD_STATUSES.working;
-  }
-
-  if (thread.session?.status === "connecting") {
-    return THREAD_STATUSES.connecting;
-  }
-
   const hasPlanReadyPrompt =
     !thread.hasPendingUserInput &&
     thread.interactionMode === "plan" &&
     isLatestTurnSettled(thread.latestTurn, thread.session) &&
     thread.hasActionableProposedPlan;
-  if (hasPlanReadyPrompt) {
-    return THREAD_STATUSES.planReady;
-  }
-
-  if (
-    hasUnseenCompletion({
+  const semanticStatus = resolveThreadSemanticStatus({
+    hasPendingApprovals: thread.hasPendingApprovals,
+    hasPendingUserInput: thread.hasPendingUserInput,
+    hasPendingQueuedTurn: thread.hasPendingQueuedTurn,
+    hasPendingTurn: input.hasPendingTurn,
+    latestTurn: thread.latestTurn,
+    session: thread.session,
+    virtualAgentRun: thread.virtualAgentRun,
+    hasPlanReady: hasPlanReadyPrompt,
+    hasUnseenCompletion: hasUnseenCompletion({
       latestTurn: thread.latestTurn,
       lastVisitedAt: input.lastVisitedAt,
-    })
-  ) {
-    return THREAD_STATUSES.completed;
-  }
+    }),
+  });
 
-  return null;
+  switch (semanticStatus) {
+    case "approval":
+      return THREAD_STATUSES.pendingApproval;
+    case "input":
+      return THREAD_STATUSES.awaitingInput;
+    case "working":
+      return THREAD_STATUSES.working;
+    case "connecting":
+      return THREAD_STATUSES.connecting;
+    case "failed":
+      return THREAD_STATUSES.failed;
+    case "plan-ready":
+      return THREAD_STATUSES.planReady;
+    case "completed":
+      return THREAD_STATUSES.completed;
+    case "ready":
+      return null;
+  }
 }
 
 export function resolveSidebarThreadRowStatus(input: {

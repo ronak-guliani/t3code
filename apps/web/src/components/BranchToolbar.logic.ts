@@ -36,7 +36,7 @@ export function resolveEnvironmentOptionLabel(input: {
       if (!label) return false;
       return !GENERIC_LOCAL_ENVIRONMENT_LABELS.has(label.toLowerCase());
     });
-    return preferredLocalLabel ?? "This device";
+    return preferredLocalLabel ?? `Primary environment ${input.environmentId.slice(0, 8)}`;
   }
 
   return runtimeLabel ?? savedLabel ?? input.environmentId;

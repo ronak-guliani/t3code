@@ -2,6 +2,7 @@ import { Effect, Layer } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 
 import { ServerConfig } from "./config.ts";
+import { ServerStartupClaimLive } from "./serverStartupClaim.ts";
 import {
   assetRouteLayer,
   attachmentsRouteLayer,
@@ -86,6 +87,9 @@ import {
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
+  worktreeCleanupInventoryRouteLayer,
+  worktreeCleanupKeepRouteLayer,
+  worktreeCleanupRetryRouteLayer,
 } from "./orchestration/http.ts";
 import { NetService } from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
@@ -435,6 +439,9 @@ export const makeRoutesLayer = Layer.mergeAll(
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
+  worktreeCleanupInventoryRouteLayer,
+  worktreeCleanupKeepRouteLayer,
+  worktreeCleanupRetryRouteLayer,
   pullRequestHttpApiRoutesLayer,
   ConnectHttpApiRoutesLayerLive,
   remoteAccessRoutes,
@@ -509,6 +516,7 @@ export const makeServerLayer = Layer.unwrap(
       Layer.provideMerge(HttpServerLive),
       Layer.provide(ObservabilityLive),
       Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provide(ServerStartupClaimLive),
       Layer.provideMerge(PlatformServicesLive),
     );
   }),

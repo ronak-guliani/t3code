@@ -836,9 +836,9 @@ it.effect("preserves the active service when candidate copying fails", () =>
   }),
 );
 
-it.effect("explicitly defers Linux and Windows", () =>
+it.effect("explicitly defers Linux", () =>
   Effect.gen(function* () {
-    for (const platform of ["linux", "win32"] as const) {
+    for (const platform of ["linux"] as const) {
       const fake = makeHost();
       const service = yield* make({
         baseDir: "/data/one",

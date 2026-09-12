@@ -266,6 +266,56 @@ describe("associate_pull_request MCP tool", () => {
 });
 
 describe("send_to_thread MCP tool", () => {
+  it("reports only from the authenticated child and validates the report before invoking the CLI", async () => {
+    const options = {
+      cwd: process.cwd(),
+      toolsets: new Set(["report_to_parent"]),
+      threadId: "child-1",
+      cliCommand: process.execPath,
+      cliArgsPrefix: ["-e", "console.log(JSON.stringify(process.argv.slice(1)))"],
+      cliBaseDir: "/tmp/isolated-report",
+    };
+    const output = JSON.parse(
+      await __testing.reportToParentTool(options, {
+        reportId: "decision-1",
+        kind: "decision-needed",
+        summary: "Choose the migration approach.",
+        thread: "untrusted-target",
+      }),
+    );
+    expect(output).toEqual([
+      "chat",
+      "report",
+      "child-1",
+      "Choose the migration approach.",
+      "--kind",
+      "decision-needed",
+      "--report-id",
+      "decision-1",
+      "--cross-thread-capability",
+      expect.any(String),
+      "--base-dir",
+      "/tmp/isolated-report",
+    ]);
+    await expect(
+      __testing.reportToParentTool(options, {
+        reportId: "bad",
+        kind: "completion",
+        summary: "Done",
+      }),
+    ).rejects.toThrow("valid kind");
+    await expect(
+      __testing.reportToParentTool(
+        { ...options, threadId: undefined },
+        {
+          reportId: "no-source",
+          kind: "progress",
+          summary: "Working",
+        },
+      ),
+    ).rejects.toThrow("requires a T3 provider session");
+  });
+
   it("queues through the authenticated source thread", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-send-thread-"));
     const cliPath = path.join(root, "t3-test");
@@ -314,6 +364,28 @@ describe("send_to_thread MCP tool", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each(["message", "assignment"] as const)(
+    "names the %s tool in validation errors",
+    async (mode) => {
+      const toolName = mode === "assignment" ? "assign_to_thread" : "send_to_thread";
+      const options = {
+        cwd: process.cwd(),
+        cliCommand: process.execPath,
+        toolsets: new Set([toolName]),
+        threadId: "source",
+      };
+      await expect(
+        __testing.sendToThreadTool({ ...options, threadId: undefined }, {}, mode),
+      ).rejects.toThrow(`${toolName} is only available from a T3 provider session`);
+      await expect(__testing.sendToThreadTool(options, { prompt: "Work" }, mode)).rejects.toThrow(
+        `${toolName} requires a non-empty thread`,
+      );
+      await expect(__testing.sendToThreadTool(options, { thread: "child" }, mode)).rejects.toThrow(
+        `${toolName} requires a non-empty prompt`,
+      );
+    },
+  );
 });
 
 describe("create_nested_thread MCP tool", () => {
@@ -417,6 +489,8 @@ describe("create_nested_thread MCP tool", () => {
         "project-1",
         "--parent",
         "parent-1",
+        "--follow-up",
+        "automatic",
         "--cross-thread-source",
         "parent-1",
         "--cross-thread-capability",
@@ -546,6 +620,8 @@ Report the outcome, material findings or changes, validation results, commit SHA
         "project-1",
         "--parent",
         "parent-1",
+        "--follow-up",
+        "automatic",
         "--cross-thread-source",
         "parent-1",
         "--cross-thread-capability",
@@ -626,6 +702,8 @@ Report the outcome, material findings or changes, validation results, commit SHA
         "project-1",
         "--parent",
         "parent-1",
+        "--follow-up",
+        "automatic",
         "--cross-thread-source",
         "parent-1",
         "--cross-thread-capability",

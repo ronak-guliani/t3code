@@ -30,6 +30,7 @@ const NestedThreadUrl = Schema.NullOr(ThreadUrl).pipe(
 export const NestedThreadCreationOutcome = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("created"),
+    assignmentId: Schema.optional(Schema.String),
     threadId: Schema.String,
     threadUrl: NestedThreadUrl,
     retryable: Schema.Literal(false),

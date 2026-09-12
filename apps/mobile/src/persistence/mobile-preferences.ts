@@ -8,6 +8,7 @@ import * as Semaphore from "effect/Semaphore";
 import type { SidebarProjectGroupingMode } from "@t3tools/contracts";
 import { reportClientWarning } from "../lib/clientLogger";
 import { MOBILE_THEME_IDS, type MobileThemeId, type MobileThemeMode } from "../lib/mobileTheme";
+import { ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION } from "../state/thread-completion-read-migration";
 
 import * as MobileDatabase from "./mobile-database";
 import * as MobileSecureStorage from "./mobile-secure-storage";
@@ -49,6 +50,8 @@ export interface Preferences {
   readonly dismissedAgentRunKeys?: readonly string[];
   readonly threadChildNotificationReadAt?: Readonly<Record<string, string>>;
   readonly threadChildReadAt?: Readonly<Record<string, string>>;
+  readonly threadCompletionReadAt?: Readonly<Record<string, string>>;
+  readonly threadCompletionReadAtMigrationVersion?: number;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedErrorClass<MobilePreferencesLoadError>()(
@@ -112,17 +115,27 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     dismissedAgentRunKeys?: readonly string[];
     threadChildNotificationReadAt?: Readonly<Record<string, string>>;
     threadChildReadAt?: Readonly<Record<string, string>>;
+    threadCompletionReadAt?: Readonly<Record<string, string>>;
+    threadCompletionReadAtMigrationVersion?: number;
   } = {};
+
+  const sanitizeTimestampMap = (value: unknown): Readonly<Record<string, string>> | undefined => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+    const entries = Object.entries(value)
+      .filter(
+        ([, candidate]) => typeof candidate === "string" && Number.isFinite(Date.parse(candidate)),
+      )
+      .sort(([left], [right]) => left.localeCompare(right));
+    return entries.length > 0 ? Object.fromEntries(entries) : {};
+  };
 
   if (
     parsed.threadChildNotificationReadAt &&
     typeof parsed.threadChildNotificationReadAt === "object" &&
     !Array.isArray(parsed.threadChildNotificationReadAt)
   ) {
-    preferences.threadChildNotificationReadAt = Object.fromEntries(
-      Object.entries(parsed.threadChildNotificationReadAt).filter(
-        ([, value]) => typeof value === "string" && Number.isFinite(Date.parse(value)),
-      ),
+    preferences.threadChildNotificationReadAt = sanitizeTimestampMap(
+      parsed.threadChildNotificationReadAt,
     );
   }
   if (Array.isArray(parsed.dismissedAgentRunKeys)) {
@@ -135,11 +148,22 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     typeof parsed.threadChildReadAt === "object" &&
     !Array.isArray(parsed.threadChildReadAt)
   ) {
-    preferences.threadChildReadAt = Object.fromEntries(
-      Object.entries(parsed.threadChildReadAt).filter(
-        ([, value]) => typeof value === "string" && Number.isFinite(Date.parse(value)),
-      ),
-    );
+    preferences.threadChildReadAt = sanitizeTimestampMap(parsed.threadChildReadAt);
+  }
+  if (
+    parsed.threadCompletionReadAt &&
+    typeof parsed.threadCompletionReadAt === "object" &&
+    !Array.isArray(parsed.threadCompletionReadAt)
+  ) {
+    preferences.threadCompletionReadAt = sanitizeTimestampMap(parsed.threadCompletionReadAt);
+  }
+  if (
+    typeof parsed.threadCompletionReadAtMigrationVersion === "number" &&
+    Number.isInteger(parsed.threadCompletionReadAtMigrationVersion) &&
+    parsed.threadCompletionReadAtMigrationVersion >= ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION
+  ) {
+    preferences.threadCompletionReadAtMigrationVersion =
+      parsed.threadCompletionReadAtMigrationVersion;
   }
   if (
     parsed.threadExpandedOverrides &&

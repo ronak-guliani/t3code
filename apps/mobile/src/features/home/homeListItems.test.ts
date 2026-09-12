@@ -10,6 +10,7 @@ import {
   DEFAULT_GROUP_DISPLAY_STATE,
   HOME_INITIAL_VISIBLE_THREADS,
   HOME_SHOW_MORE_STEP,
+  homeListItemsAreEqual,
   nextGroupDisplayState,
   type HomeGroupDisplayState,
   type HomeListItem,
@@ -198,6 +199,7 @@ describe("buildHomeListLayout", () => {
       displayStates: new Map(),
       threadChildReadAt: { [`${environmentId}:${child.id}`]: child.latestTurn.completedAt },
     });
+
     expect(
       read.items.filter((item) => item.type === "thread").map((item) => item.thread.id),
     ).toEqual([parent.id]);
@@ -205,6 +207,35 @@ describe("buildHomeListLayout", () => {
       childCount: 0,
       relatedChildCount: 1,
     });
+  });
+
+  it("changes the row item when a root completion is acknowledged", () => {
+    const completedAt = "2026-06-02T00:00:00.000Z";
+    const thread = {
+      ...makeThread("completed", ProjectId.make("completion")),
+      latestTurn: {
+        turnId: TurnId.make("completed-turn"),
+        state: "completed" as const,
+        requestedAt: completedAt,
+        startedAt: completedAt,
+        completedAt,
+        assistantMessageId: null,
+      },
+    };
+    const group = makeGroup("completion", 0);
+    const groups = [{ ...group, threads: [thread], recentThreads: [thread] }];
+    const unread = buildHomeListLayout({ groups, displayStates: new Map() });
+    const read = buildHomeListLayout({
+      groups,
+      displayStates: new Map(),
+      threadCompletionReadAt: { [`${environmentId}:${thread.id}`]: completedAt },
+    });
+    const unreadItem = unread.items.find((item) => item.type === "thread");
+    const readItem = read.items.find((item) => item.type === "thread");
+
+    expect(unreadItem).toMatchObject({ status: "completed" });
+    expect(readItem).toMatchObject({ status: "ready" });
+    expect(unreadItem && readItem ? homeListItemsAreEqual(unreadItem, readItem) : true).toBe(false);
   });
 
   it("renders a header plus all threads for a small group without a show-more row", () => {

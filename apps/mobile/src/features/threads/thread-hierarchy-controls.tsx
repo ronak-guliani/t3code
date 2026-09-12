@@ -1,17 +1,26 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { AppState } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
+import type { EnvironmentId } from "@t3tools/contracts";
 import {
   hasUnseenChildNotification,
   hierarchyThreadKey,
 } from "@t3tools/client-runtime/state/thread-hierarchy";
-import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import type {
+  EnvironmentThreadShell,
+  EnvironmentShellStatus,
+} from "@t3tools/client-runtime/state/shell";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION } from "../../state/thread-completion-read-migration";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import type { MobileThreadShell, MobileThreadTreeRow } from "./mobile-thread-hierarchy";
-import { markNestedThreadRead } from "./nested-thread-read";
+import {
+  markNestedThreadRead,
+  markRootThreadCompletionRead,
+  seedRootThreadCompletionReadAt,
+} from "./nested-thread-read";
 
 const NO_DISMISSED_RUNS: readonly string[] = [];
 export function useDismissedAgentRunKeys(): readonly string[] {
@@ -24,6 +33,65 @@ export function useDismissedAgentRunKeys(): readonly string[] {
 export function useThreadChildReadAt(): Readonly<Record<string, string>> {
   const result = useAtomValue(mobilePreferencesAtom);
   return AsyncResult.isSuccess(result) ? (result.value.threadChildReadAt ?? {}) : {};
+}
+
+export function useThreadCompletionReadAt(): Readonly<Record<string, string>> {
+  const result = useAtomValue(mobilePreferencesAtom);
+  return AsyncResult.isSuccess(result) ? (result.value.threadCompletionReadAt ?? {}) : {};
+}
+
+export function useSeedRootThreadCompletionReadAt(
+  threads: readonly MobileThreadShell[],
+  shellStatuses: ReadonlyMap<EnvironmentId, EnvironmentShellStatus>,
+) {
+  const result = useAtomValue(mobilePreferencesAtom);
+  const save = useAtomSet(updateMobilePreferencesAtom);
+  const migrationClaimed = useRef(false);
+  useEffect(() => {
+    if (
+      migrationClaimed.current ||
+      !AsyncResult.isSuccess(result) ||
+      threads.length === 0 ||
+      shellStatuses.size === 0 ||
+      [...shellStatuses.values()].some((status) => status !== "live")
+    ) {
+      return;
+    }
+    const current = appAtomRegistry.get(mobilePreferencesAtom);
+    if (!AsyncResult.isSuccess(current)) return;
+    if (
+      (current.value.threadCompletionReadAtMigrationVersion ?? 0) >=
+      ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION
+    ) {
+      migrationClaimed.current = true;
+      return;
+    }
+    const existing = current.value.threadCompletionReadAt;
+    const seeded = seedRootThreadCompletionReadAt(threads, existing);
+    migrationClaimed.current = true;
+    save({
+      threadCompletionReadAt: seeded ?? existing ?? {},
+      threadCompletionReadAtMigrationVersion: ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION,
+    });
+  }, [result, save, shellStatuses, threads]);
+}
+
+export function useMarkRootThreadCompletionRead(thread: MobileThreadShell | null) {
+  const focused = useIsFocused();
+  const result = useAtomValue(mobilePreferencesAtom);
+  const save = useAtomSet(updateMobilePreferencesAtom);
+  useEffect(() => {
+    if (!focused || thread === null || thread.parentThreadId != null) return;
+    const markRead = () => {
+      if (AppState.currentState !== "active" || !AsyncResult.isSuccess(result)) return;
+      const current = appAtomRegistry.get(mobilePreferencesAtom);
+      if (!AsyncResult.isSuccess(current)) return;
+      markRootThreadCompletionRead(thread, current.value, save);
+    };
+    markRead();
+    const subscription = AppState.addEventListener("change", markRead);
+    return () => subscription.remove();
+  }, [focused, result, save, thread]);
 }
 
 export function useMarkNestedThreadRead(thread: MobileThreadShell | null) {

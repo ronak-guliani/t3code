@@ -1,6 +1,7 @@
 import { ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer, Option } from "effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 import { WorktreeCleanupJobRepositoryLive } from "./WorktreeCleanupJobs.ts";
@@ -13,53 +14,340 @@ const testLayer = it.layer(
   ),
 );
 
+const at = (seconds: number) =>
+  `1970-01-01T00:${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(
+    seconds % 60,
+  ).padStart(2, "0")}.000Z`;
+
+const intent = (input: {
+  readonly id: string;
+  readonly path: string;
+  readonly source?: "archive" | "delete";
+  readonly requestedAt?: string;
+  readonly allowTerminalReset?: boolean;
+}) => ({
+  threadId: ThreadId.make(input.id),
+  cwd: "/tmp/project",
+  worktreePath: input.path,
+  canonicalWorktreePath: input.path,
+  requestedAt: input.requestedAt ?? at(0),
+  source: input.source ?? "archive",
+  allowTerminalReset: input.allowTerminalReset ?? false,
+});
+
 testLayer("WorktreeCleanupJobRepository", (it) => {
-  it.effect("cancels retained jobs without reserving their path", () =>
+  it.effect("keeps intents separate from canonical-path removal reservations", () =>
     Effect.gen(function* () {
       const jobs = yield* WorktreeCleanupJobRepository;
-      const threadId = ThreadId.make("thread-cleanup-job");
-      const worktreePath = "/tmp/worktree-cleanup-job";
-      const job = {
-        threadId,
-        cwd: "/tmp/project",
-        worktreePath,
-        requestedAt: "2026-07-30T00:00:00.000Z",
-      };
-
-      yield* jobs.upsert(job);
-      assert.isTrue(yield* jobs.existsByPath(worktreePath));
-      assert.deepEqual(yield* jobs.getPendingByThreadId(threadId), Option.some(job));
-
-      assert.deepEqual(
-        yield* jobs.recordFailure({
-          threadId,
-          error: "first failure",
-          maxAttempts: 2,
-        }),
-        Option.some({ attemptCount: 1, status: "pending" }),
+      const first = yield* jobs.enqueue(intent({ id: "cleanup-first", path: "/tmp/shared" }));
+      const second = yield* jobs.enqueue(
+        intent({ id: "cleanup-second", path: "/tmp/shared", source: "delete" }),
       );
-      assert.isTrue(yield* jobs.existsByPath(worktreePath));
+
+      assert.equal(first.status, "waiting");
+      assert.equal(second.status, "waiting");
+      assert.isFalse(yield* jobs.hasReservationByPath("/tmp/shared"));
       assert.deepEqual(
-        yield* jobs.recordFailure({
-          threadId,
-          error: "second failure",
-          maxAttempts: 2,
-        }),
-        Option.some({ attemptCount: 2, status: "cancelled" }),
+        (yield* jobs.listDue({ now: at(0) })).map((job) => job.threadId),
+        [first.threadId, second.threadId],
       );
-      assert.isFalse(yield* jobs.existsByPath(worktreePath));
 
-      yield* jobs.upsert(job);
-      yield* jobs.cancelByThreadId(threadId);
-      assert.isFalse(yield* jobs.existsByPath(worktreePath));
-      assert.isTrue(Option.isNone(yield* jobs.getPendingByThreadId(threadId)));
-      assert.deepEqual(yield* jobs.list(), []);
-
-      yield* jobs.upsert({
-        ...job,
-        threadId: ThreadId.make("thread-cleanup-job-reused"),
+      const reservation = yield* jobs.tryReserveForRemoval({
+        threadId: first.threadId,
+        canonicalWorktreePath: "/tmp/shared",
+        reservedAt: at(0),
       });
-      assert.isTrue(yield* jobs.existsByPath(worktreePath));
+      assert.isTrue(Option.isSome(reservation));
+      assert.isTrue(yield* jobs.hasReservationByPath("/tmp/shared"));
+      assert.equal(
+        (yield* jobs.getByThreadId(first.threadId)).pipe(Option.getOrThrow).status,
+        "removing",
+      );
+      assert.isTrue(
+        Option.isNone(
+          yield* jobs.tryReserveForRemoval({
+            threadId: second.threadId,
+            canonicalWorktreePath: "/tmp/shared",
+            reservedAt: at(0),
+          }),
+        ),
+      );
+
+      const needsAttention = yield* jobs.markNeedsAttention({
+        threadId: first.threadId,
+        reason: "dirty-worktree",
+      });
+      assert.equal(needsAttention.pipe(Option.getOrThrow).status, "needs-attention");
+      assert.isFalse(yield* jobs.hasReservationByPath("/tmp/shared"));
+
+      const secondReservation = yield* jobs.tryReserveForRemoval({
+        threadId: second.threadId,
+        canonicalWorktreePath: "/tmp/shared",
+        reservedAt: at(0),
+      });
+      assert.isTrue(Option.isSome(secondReservation));
+      const completed = yield* jobs.markCompleted({ threadId: second.threadId });
+      assert.equal(completed.pipe(Option.getOrThrow).status, "completed");
+      assert.isFalse(yield* jobs.hasReservationByPath("/tmp/shared"));
+    }),
+  );
+
+  it.effect(
+    "persists backoff and escalates repeated failures without retaining a reservation",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* WorktreeCleanupJobRepository;
+        const cleanup = yield* jobs.enqueue(
+          intent({ id: "cleanup-retry", path: "/tmp/retry", requestedAt: at(0) }),
+        );
+
+        yield* jobs.tryReserveForRemoval({
+          threadId: cleanup.threadId,
+          canonicalWorktreePath: "/tmp/retry",
+          reservedAt: at(0),
+        });
+        const firstFailure = yield* jobs.recordFailure({
+          threadId: cleanup.threadId,
+          error: "git unavailable",
+          reason: "git-command-failed",
+          now: at(1),
+          nextAttemptAt: at(10),
+          maxAttempts: 2,
+        });
+        assert.deepEqual(
+          firstFailure,
+          Option.some({
+            attemptCount: 1,
+            status: "waiting",
+            nextAttemptAt: at(10),
+            lastReason: "git-command-failed",
+            lastError: "git unavailable",
+          }),
+        );
+        assert.isFalse(yield* jobs.hasReservationByPath("/tmp/retry"));
+        assert.deepEqual(yield* jobs.listDue({ now: at(9) }), []);
+        assert.equal((yield* jobs.listDue({ now: at(10) })).length, 1);
+
+        yield* jobs.tryReserveForRemoval({
+          threadId: cleanup.threadId,
+          canonicalWorktreePath: "/tmp/retry",
+          reservedAt: at(10),
+        });
+        const secondFailure = yield* jobs.recordFailure({
+          threadId: cleanup.threadId,
+          error: "git still unavailable",
+          reason: "git-command-failed",
+          now: at(11),
+          nextAttemptAt: at(20),
+          maxAttempts: 2,
+        });
+        assert.equal(secondFailure.pipe(Option.getOrThrow).status, "needs-attention");
+        assert.isFalse(yield* jobs.hasReservationByPath("/tmp/retry"));
+        assert.isFalse(
+          (yield* jobs.listDue({ now: at(100) })).some((job) => job.threadId === cleanup.threadId),
+        );
+      }),
+  );
+
+  it.effect("preserves explicit cancellation and does not reactivate cancelled rows", () =>
+    Effect.gen(function* () {
+      const jobs = yield* WorktreeCleanupJobRepository;
+      const cleanup = yield* jobs.enqueue(
+        intent({ id: "cleanup-cancelled", path: "/tmp/cancelled" }),
+      );
+      yield* jobs.cancelByThreadId(cleanup.threadId);
+
+      const cancelled = yield* jobs.getByThreadId(cleanup.threadId);
+      assert.equal(cancelled.pipe(Option.getOrThrow).status, "cancelled");
+      assert.isFalse(yield* jobs.hasReservationByPath("/tmp/cancelled"));
+
+      const reenqueue = yield* jobs.enqueue(
+        intent({ id: "cleanup-cancelled", path: "/tmp/cancelled", source: "delete" }),
+      );
+      assert.equal(reenqueue.status, "cancelled");
+      assert.equal(
+        (yield* jobs.getByThreadId(cleanup.threadId)).pipe(Option.getOrThrow).status,
+        "cancelled",
+      );
+    }),
+  );
+
+  it.effect("does not cancel an in-progress removal or release its reservation", () =>
+    Effect.gen(function* () {
+      const jobs = yield* WorktreeCleanupJobRepository;
+      const cleanup = yield* jobs.enqueue(
+        intent({ id: "cleanup-removing", path: "/tmp/removing" }),
+      );
+      yield* jobs.tryReserveForRemoval({
+        threadId: cleanup.threadId,
+        canonicalWorktreePath: "/tmp/removing",
+        reservedAt: at(0),
+      });
+      const lifecycleRefresh = yield* jobs.enqueue(
+        intent({
+          id: "cleanup-removing",
+          path: "/tmp/reassigned",
+          allowTerminalReset: true,
+          source: "delete",
+          requestedAt: at(10),
+        }),
+      );
+      assert.equal(lifecycleRefresh.status, "removing");
+      assert.equal(lifecycleRefresh.worktreePath, "/tmp/removing");
+      assert.equal(lifecycleRefresh.canonicalWorktreePath, "/tmp/removing");
+      assert.equal(lifecycleRefresh.requestedAt, at(0));
+      assert.equal(lifecycleRefresh.source, "archive");
+
+      yield* jobs.cancelByThreadId(cleanup.threadId);
+
+      assert.equal(
+        (yield* jobs.getByThreadId(cleanup.threadId)).pipe(Option.getOrThrow).status,
+        "removing",
+      );
+      assert.isTrue(yield* jobs.hasReservationByPath("/tmp/removing"));
+    }),
+  );
+
+  it.effect("revives needs-attention only for explicit cleanup consent", () =>
+    Effect.gen(function* () {
+      const jobs = yield* WorktreeCleanupJobRepository;
+      const cleanup = yield* jobs.enqueue(
+        intent({ id: "cleanup-needs-attention", path: "/tmp/reviewed" }),
+      );
+      yield* jobs.tryReserveForRemoval({
+        threadId: cleanup.threadId,
+        canonicalWorktreePath: "/tmp/reviewed",
+        reservedAt: at(0),
+      });
+      yield* jobs.recordFailure({
+        threadId: cleanup.threadId,
+        error: "permanent failure",
+        now: at(1),
+        maxAttempts: 1,
+      });
+
+      const reactivated = yield* jobs.enqueue(
+        intent({
+          id: "cleanup-needs-attention",
+          path: "/tmp/reviewed-again",
+          source: "delete",
+          requestedAt: at(10),
+          allowTerminalReset: true,
+        }),
+      );
+
+      assert.equal(reactivated.status, "waiting");
+      assert.equal(reactivated.worktreePath, "/tmp/reviewed-again");
+      assert.equal(reactivated.source, "delete");
+      assert.equal(reactivated.attemptCount, 0);
+      assert.equal(reactivated.nextAttemptAt, at(10));
+      assert.equal(reactivated.lastReason, null);
+      assert.equal(reactivated.lastError, null);
+    }),
+  );
+
+  it.effect("returns a reserved removal to waiting when cleanup is deferred", () =>
+    Effect.gen(function* () {
+      const jobs = yield* WorktreeCleanupJobRepository;
+      const cleanup = yield* jobs.enqueue(
+        intent({ id: "cleanup-deferred", path: "/tmp/deferred" }),
+      );
+      yield* jobs.tryReserveForRemoval({
+        threadId: cleanup.threadId,
+        canonicalWorktreePath: "/tmp/deferred",
+        reservedAt: at(0),
+      });
+
+      const deferred = yield* jobs.defer({
+        threadId: cleanup.threadId,
+        nextAttemptAt: at(10),
+        reason: "dirty-worktree",
+      });
+
+      assert.equal(deferred.pipe(Option.getOrThrow).status, "waiting");
+      assert.equal(deferred.pipe(Option.getOrThrow).nextAttemptAt, at(10));
+      assert.isFalse(yield* jobs.hasReservationByPath("/tmp/deferred"));
+      assert.isFalse(
+        (yield* jobs.listDue({ now: at(9) })).some((job) => job.threadId === cleanup.threadId),
+      );
+      assert.isTrue(
+        (yield* jobs.listDue({ now: at(10) })).some((job) => job.threadId === cleanup.threadId),
+      );
+    }),
+  );
+
+  it.effect("reactivates a terminal row only for an explicit new lifecycle", () =>
+    Effect.gen(function* () {
+      const jobs = yield* WorktreeCleanupJobRepository;
+      const cleanup = yield* jobs.enqueue(intent({ id: "cleanup-reused", path: "/tmp/reused" }));
+      yield* jobs.cancelByThreadId(cleanup.threadId);
+
+      const reactivated = yield* jobs.enqueue(
+        intent({
+          id: "cleanup-reused",
+          path: "/tmp/reused-again",
+          source: "delete",
+          allowTerminalReset: true,
+        }),
+      );
+
+      assert.equal(reactivated.status, "waiting");
+      assert.equal(reactivated.worktreePath, "/tmp/reused-again");
+      assert.equal(reactivated.source, "delete");
+      assert.equal(reactivated.attemptCount, 0);
+    }),
+  );
+
+  it.effect("can complete a waiting intent when another alias already removed the path", () =>
+    Effect.gen(function* () {
+      const jobs = yield* WorktreeCleanupJobRepository;
+      const cleanup = yield* jobs.enqueue(
+        intent({ id: "cleanup-already-absent", path: "/tmp/already-absent" }),
+      );
+
+      const completed = yield* jobs.markCompletedWithoutRemoval({
+        threadId: cleanup.threadId,
+      });
+
+      assert.equal(completed.pipe(Option.getOrThrow).status, "completed");
+      assert.equal(
+        (yield* jobs.getByThreadId(cleanup.threadId)).pipe(Option.getOrThrow).lastReason,
+        "worktree-already-absent",
+      );
+      assert.isFalse(
+        (yield* jobs.listDue({ now: at(100) })).some((job) => job.threadId === cleanup.threadId),
+      );
+    }),
+  );
+
+  it.effect("does not offer legacy rows for manual retry", () =>
+    Effect.gen(function* () {
+      const jobs = yield* WorktreeCleanupJobRepository;
+      const threadId = ThreadId.make("legacy-retry");
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO worktree_cleanup_jobs (
+          thread_id, cwd, worktree_path, canonical_worktree_path,
+          requested_at, source, status
+        )
+        VALUES (
+          ${threadId}, '/tmp/project', '/tmp/legacy-retry', '/tmp/legacy-retry',
+          ${at(0)}, 'legacy', 'needs-attention'
+        )
+      `;
+
+      assert.isTrue(
+        Option.isNone(
+          yield* jobs.retry({
+            threadId,
+            nextAttemptAt: at(1),
+          }),
+        ),
+      );
+      assert.equal(
+        (yield* jobs.getByThreadId(threadId)).pipe(Option.getOrThrow).status,
+        "needs-attention",
+      );
     }),
   );
 });

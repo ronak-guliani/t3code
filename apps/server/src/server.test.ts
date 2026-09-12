@@ -104,6 +104,7 @@ import {
   type ProjectionSnapshotQueryShape,
 } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
+import { WorktreeCleanupJobRepositoryLive } from "./persistence/Layers/WorktreeCleanupJobs.ts";
 import {
   ProviderRegistry,
   type ProviderRegistryShape,
@@ -592,6 +593,9 @@ const buildAppUnderTest = (options?: {
           getThreadCheckpointContext: () => Effect.succeed(Option.none()),
           ...options?.layers?.projectionSnapshotQuery,
         }),
+      ),
+      Layer.provideMerge(
+        WorktreeCleanupJobRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
       ),
       Layer.provide(
         Layer.mock(CheckpointDiffQuery)({
@@ -2341,6 +2345,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         url: Option.some(yield* getHttpServerUrl()),
         token: Option.some(yield* getAuthenticatedBearerSessionToken()),
         baseDir: Option.none(),
+        environment: Option.none(),
       });
 
       assert.equal(snapshot.threads.length, 338);

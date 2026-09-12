@@ -5,6 +5,7 @@ import {
   mergeWorkLogToolData,
 } from "@t3tools/client-runtime/work-log/presentation";
 import { extractNormalizedChangedFilePathsFromToolPayload } from "@t3tools/shared/toolChangedFiles";
+import { extractToolCommandInput } from "@t3tools/shared/toolActivity";
 import {
   ApprovalRequestId,
   type ChildThreadLifecycle,
@@ -19,6 +20,10 @@ import {
   ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
+import {
+  isLatestTurnSettled as resolveLatestTurnSettled,
+  isThreadActivelyWorking as resolveThreadActivelyWorking,
+} from "@t3tools/client-runtime/state/thread-status";
 import {
   isChildLifecycleThreadActivity,
   isTurnLifecycleInsightActivity,
@@ -59,6 +64,7 @@ export const PROVIDER_OPTIONS: Array<{
 ];
 
 export interface WorkLogEntry {
+  childReportId?: string;
   toolLifecycleStatus?: import("@t3tools/client-runtime/work-log/presentation").WorkLogToolLifecycleStatus;
   toolData?: unknown;
   turnId?: string;
@@ -252,71 +258,37 @@ export function latestValidTimestamp(
 type LatestTurnTiming = Pick<OrchestrationLatestTurn, "turnId" | "startedAt" | "completedAt">;
 type SessionActivityState = Pick<ThreadSession, "orchestrationStatus" | "activeTurnId">;
 
-function isTerminalSessionActivity(session: SessionActivityState | null): boolean {
-  return (
-    session?.orchestrationStatus === "idle" ||
-    session?.orchestrationStatus === "interrupted" ||
-    session?.orchestrationStatus === "stopped" ||
-    session?.orchestrationStatus === "error"
-  );
-}
-
 /**
  * Non-failed queued turns mean the thread still has work to do — including the
  * gap between a workspace-handoff turn completing and its continuation starting.
  * Prefer the shell-projected `hasPendingQueuedTurn` flag for sidebar/notify paths.
  */
 export function hasActionableQueuedTurn(
-  queuedTurns: readonly { readonly failedAt: string | null }[] | null | undefined,
+  queuedTurns:
+    | readonly {
+        readonly failedAt: string | null;
+        readonly origin?: { readonly kind: string } | undefined;
+      }[]
+    | null
+    | undefined,
 ): boolean {
-  return (queuedTurns ?? []).some((queuedTurn) => queuedTurn.failedAt === null);
+  return (queuedTurns ?? []).some(
+    (queuedTurn) => queuedTurn.failedAt === null && queuedTurn.origin?.kind !== "child-nudge",
+  );
 }
 
 export function isThreadActivelyWorking(
   latestTurn: LatestTurnTiming | null,
   session: SessionActivityState | null,
 ): boolean {
-  if (isTerminalSessionActivity(session)) {
-    return false;
-  }
-
-  if (latestTurn?.startedAt && !latestTurn.completedAt) {
-    return true;
-  }
-
-  if (session?.orchestrationStatus !== "running") {
-    return false;
-  }
-
-  if (!session.activeTurnId) {
-    return false;
-  }
-
-  if (!latestTurn) {
-    return true;
-  }
-
-  if (latestTurn.turnId !== session.activeTurnId) {
-    return true;
-  }
-
-  return !latestTurn.completedAt;
+  return resolveThreadActivelyWorking({ latestTurn, session });
 }
 
 export function isLatestTurnSettled(
   latestTurn: LatestTurnTiming | null,
   session: SessionActivityState | null,
 ): boolean {
-  if (!latestTurn) {
-    return !(session?.orchestrationStatus === "running" && session.activeTurnId);
-  }
-  if (isTerminalSessionActivity(session)) return true;
-  if (!latestTurn.startedAt) return false;
-  if (!latestTurn.completedAt) return false;
-  if (!session) return true;
-  if (session.orchestrationStatus !== "running") return true;
-  if (!session.activeTurnId) return true;
-  return session.activeTurnId === latestTurn.turnId;
+  return resolveLatestTurnSettled(latestTurn, session);
 }
 
 export function deriveActiveWorkStartedAt(
@@ -788,6 +760,7 @@ const CHILD_LIFECYCLE_ACTION_LABELS: Record<ChildThreadLifecycle, string> = {
   failed: "Review failure",
   completed: "View result",
   "pr-created": "Open pull request",
+  reported: "Open child thread",
 };
 
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
@@ -858,6 +831,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
   const childLifecycleActivity = isChildLifecycleThreadActivity(activity) ? activity : null;
+  if (childLifecycleActivity?.payload.report) {
+    entry.childReportId = childLifecycleActivity.payload.report.id;
+  }
   const externalAction =
     childLifecycleActivity?.payload.lifecycle === "pr-created"
       ? {
@@ -1229,34 +1205,11 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
   command: string | null;
   rawCommand: string | null;
 } {
-  const data = asRecord(payload?.data);
-  const item = asRecord(data?.item);
-  const itemResult = asRecord(item?.result);
-  const itemInput = asRecord(item?.input);
-  const itemType = asTrimmedString(payload?.itemType);
-  const detail = asTrimmedString(payload?.detail);
-  const candidates: unknown[] = [
-    item?.command,
-    itemInput?.command,
-    itemResult?.command,
-    data?.command,
-    itemType === "command_execution" && detail ? stripTrailingExitCode(detail).output : null,
-  ];
-
-  for (const candidate of candidates) {
-    const command = normalizeCommandValue(candidate);
-    if (!command) {
-      continue;
-    }
-    return {
-      command,
-      rawCommand: toRawToolCommand(candidate, command),
-    };
-  }
-
+  const candidate = extractToolCommandInput(asRecord(payload?.data) ?? undefined);
+  const command = normalizeCommandValue(candidate);
   return {
-    command: null,
-    rawCommand: null,
+    command,
+    rawCommand: toRawToolCommand(candidate, command),
   };
 }
 
@@ -1461,6 +1414,13 @@ export function deriveTimelineEntries(
   workEntries: WorkLogEntry[],
 ): TimelineEntry[] {
   const messageOrderById = new Map(messages.map((message, index) => [message.id, index]));
+  const deliveredChildReportIds = new Set(
+    messages.flatMap((message) =>
+      message.origin?.kind === "child-nudge"
+        ? message.origin.updates.map((report) => report.id)
+        : [],
+    ),
+  );
   const messageRows: TimelineEntry[] = messages.map((message) => ({
     id: message.id,
     kind: "message",
@@ -1473,12 +1433,14 @@ export function deriveTimelineEntries(
     createdAt: proposedPlan.createdAt,
     proposedPlan,
   }));
-  const workRows: TimelineEntry[] = workEntries.map((entry) => ({
-    id: entry.stableId ?? entry.id,
-    kind: "work",
-    createdAt: entry.createdAt,
-    entry,
-  }));
+  const workRows: TimelineEntry[] = workEntries
+    .filter((entry) => !entry.childReportId || !deliveredChildReportIds.has(entry.childReportId))
+    .map((entry) => ({
+      id: entry.stableId ?? entry.id,
+      kind: "work",
+      createdAt: entry.createdAt,
+      entry,
+    }));
   return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) => {
     if (a.kind === "message" && b.kind === "message") {
       return (messageOrderById.get(a.message.id) ?? 0) - (messageOrderById.get(b.message.id) ?? 0);

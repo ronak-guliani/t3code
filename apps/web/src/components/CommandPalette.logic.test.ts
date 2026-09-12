@@ -5,6 +5,7 @@ import {
   buildCommandPaletteSearchIndex,
   buildProjectActionItems,
   buildThreadActionItems,
+  buildTranscriptActionItems,
   filterCommandPaletteGroups,
   type CommandPaletteGroup,
 } from "./CommandPalette.logic";
@@ -62,6 +63,51 @@ describe("buildCommandPaletteSearchIndex", () => {
   });
 });
 
+describe("transcript search identity", () => {
+  it("deduplicates mixed metadata/transcript matches only within the same environment", async () => {
+    const remote = EnvironmentId.make("environment-remote");
+    const sharedThreadId = ThreadId.make("shared-thread");
+    const matches = [LOCAL_ENVIRONMENT_ID, remote].map((environmentId) => ({
+      environmentId,
+      match: {
+        threadId: sharedThreadId,
+        title: "Matching thread",
+        projectTitle: "Project",
+        branch: null,
+        role: "user" as const,
+        excerpt: "Search phrase",
+        updatedAt: "2026-09-10T00:00:00.000Z",
+      },
+    }));
+    const metadataItems = buildThreadActionItems({
+      threads: [makeThread({ id: sharedThreadId })],
+      projectTitleById: new Map(),
+      sortOrder: "created_at",
+      icon: null,
+      runThread: async () => {},
+    });
+    const runThread = vi.fn(async () => {});
+    const items = buildTranscriptActionItems({
+      matches,
+      metadataGroups: [{ value: "threads", label: "Threads", items: metadataItems }],
+      icon: null,
+      runThread,
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      environmentId: remote,
+      value: `transcript:${remote}:${sharedThreadId}`,
+    });
+    await items[0]!.run();
+    expect(runThread).toHaveBeenCalledWith({ environmentId: remote, threadId: sharedThreadId });
+    expect(
+      buildTranscriptActionItems({ matches, metadataGroups: [], icon: null, runThread }).map(
+        (item) => item.environmentId,
+      ),
+    ).toEqual([LOCAL_ENVIRONMENT_ID, remote]);
+  });
+});
+
 describe("buildProjectActionItems", () => {
   it("precomputes search indexes for project results", () => {
     const items = buildProjectActionItems({
@@ -77,8 +123,8 @@ describe("buildProjectActionItems", () => {
     });
 
     expect(items[0]?.searchIndex).toEqual({
-      normalizedTerms: ["web app", "/users/example/large project"],
-      haystack: "web app /users/example/large project",
+      normalizedTerms: ["web app", "/users/example/large project", "environment-local"],
+      haystack: "web app /users/example/large project environment-local",
     });
 
     const groups = filterCommandPaletteGroups({
@@ -122,8 +168,8 @@ describe("buildThreadActionItems", () => {
       });
 
       expect(items.map((item) => item.value)).toEqual([
-        "thread:thread-older",
-        "thread:thread-newer",
+        "thread:environment-local:thread-older",
+        "thread:environment-local:thread-newer",
       ]);
       expect(items[0]?.timestamp).toBe("1d ago");
       expect(items[1]?.timestamp).toBe("5d ago");
@@ -164,8 +210,8 @@ describe("buildThreadActionItems", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]?.value).toBe("threads-search");
     expect(groups[0]?.items.map((item) => item.value)).toEqual([
-      "thread:thread-title-match",
-      "thread:thread-context-match",
+      "thread:environment-local:thread-title-match",
+      "thread:environment-local:thread-context-match",
     ]);
   });
 
@@ -220,6 +266,6 @@ describe("buildThreadActionItems", () => {
       runThread: async (_thread) => undefined,
     });
 
-    expect(items.map((item) => item.value)).toEqual(["thread:thread-active"]);
+    expect(items.map((item) => item.value)).toEqual(["thread:environment-local:thread-active"]);
   });
 });

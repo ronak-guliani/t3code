@@ -75,6 +75,7 @@ import { ComposerPreviewAnnotationCards } from "./ComposerPreviewAnnotationCards
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { CopilotCompletionWarning } from "./CopilotCompletionWarning";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
+import { ChildFollowUpPanel } from "./ChildFollowUpPanel";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
 import {
@@ -605,6 +606,10 @@ export const ChatComposer = memo(
       settings.providerInstances,
       settings.copilotAutomaticPrFeedback,
     ]);
+    const messageQueue = useMemo(
+      () => queuedTurns.filter((turn) => turn.origin?.kind !== "child-nudge"),
+      [queuedTurns],
+    );
     const explicitSelectedInstanceId = selectedProviderByThreadId ?? threadProvider;
 
     const unlockedSelectedProvider =
@@ -2124,11 +2129,21 @@ export const ChatComposer = memo(
             onPointerEnter={onComposerIntent}
             onBlurCapture={scheduleComposerCollapseCheck}
           >
-            <CopilotCompletionWarning key={activeThreadId} activities={activeThread?.activities} />
+            <CopilotCompletionWarning activities={activeThread?.activities} />
+            {activeThread ? (
+              <ChildFollowUpPanel
+                key={activeThread.id}
+                thread={activeThread}
+                queuedTurns={queuedTurns}
+                isWorking={phase === "running"}
+                blockedByInteraction={!!activePendingApproval || pendingUserInputs.length > 0}
+                onError={setThreadError}
+              />
+            ) : null}
             {activePendingApproval || pendingUserInputs.length > 0 ? null : (
               <QueuedMessagesPanel
                 policyBlocks={queuedPolicyBlocks}
-                queuedTurns={queuedTurns}
+                queuedTurns={messageQueue}
                 editingQueuedTurnId={editingQueuedTurn?.id ?? null}
                 editingText={editingQueuedTurn?.text ?? ""}
                 onStartEditingQueuedTurn={startEditingQueuedTurn}

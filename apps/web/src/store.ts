@@ -314,6 +314,7 @@ function mapProject(
 
 function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): Thread {
   return {
+    nudging: thread.nudging,
     id: thread.id,
     environmentId,
     codexThreadId: null,
@@ -361,6 +362,7 @@ function mapThreadShell(
   summary: SidebarThreadSummary;
 } {
   const shell: ThreadShell = {
+    nudging: thread.nudging,
     id: thread.id,
     environmentId,
     codexThreadId: null,
@@ -425,6 +427,7 @@ function mapThreadShell(
 
 function toThreadShell(thread: Thread): ThreadShell {
   return {
+    nudging: thread.nudging,
     id: thread.id,
     environmentId: thread.environmentId,
     codexThreadId: thread.codexThreadId,
@@ -647,7 +650,8 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.updatedAt === right.updatedAt &&
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
-    pullRequestsEqual(left.pullRequest, right.pullRequest)
+    pullRequestsEqual(left.pullRequest, right.pullRequest) &&
+    resumeCursorsEqual(left.nudging, right.nudging)
   );
 }
 
@@ -1918,6 +1922,7 @@ function applyEnvironmentOrchestrationEvent(
       const previousThread = getThreadFromEnvironmentState(state, event.payload.threadId);
       const nextThread = mapThread(
         {
+          nudging: event.payload.nudging,
           id: event.payload.threadId,
           projectId: event.payload.projectId,
           parentThreadId: event.payload.parentThreadId ?? null,
@@ -2009,6 +2014,7 @@ function applyEnvironmentOrchestrationEvent(
     case "thread.meta-updated":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
+        ...(event.payload.nudging !== undefined ? { nudging: event.payload.nudging } : {}),
         ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
         ...(event.payload.modelSelection !== undefined
           ? { modelSelection: normalizeModelSelection(event.payload.modelSelection) }

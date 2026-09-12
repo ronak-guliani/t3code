@@ -171,6 +171,7 @@ describe("compact inbox row", () => {
       )[1]!;
       const shared = {
         thread: child,
+        status: "ready" as const,
         hierarchy,
         hideRelated: true,
         onSelectThread: vi.fn(),
@@ -254,6 +255,7 @@ describe("compact inbox row", () => {
       const onSelectThread = vi.fn();
       const shared = {
         thread: parent,
+        status: "ready" as const,
         hierarchy,
         onSelectThread,
         onArchiveThread: vi.fn(),
@@ -325,6 +327,7 @@ describe("compact inbox row", () => {
       const onSelectThread = vi.fn();
       const shared = {
         thread: parent,
+        status: "ready" as const,
         hierarchy,
         onSelectThread,
         onArchiveThread: vi.fn(),

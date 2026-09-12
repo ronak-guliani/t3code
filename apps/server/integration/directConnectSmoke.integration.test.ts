@@ -346,7 +346,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(serverConfig.environment.capabilities).toMatchObject({
           ownedMobileProtocolVersion: 1,
           connectionProbe: true,
-          pullRequests: false,
+          pullRequests: true,
           threadSettlement: true,
           threadSnooze: true,
           threadPinning: true,

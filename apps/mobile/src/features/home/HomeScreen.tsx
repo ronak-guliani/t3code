@@ -59,6 +59,7 @@ import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-s
 import {
   useDismissedAgentRunKeys,
   useThreadChildReadAt,
+  useThreadCompletionReadAt,
 } from "../threads/thread-hierarchy-controls";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
@@ -214,6 +215,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const threadListV2Enabled = useThreadListV2Enabled();
   const dismissedAgentRunKeys = useDismissedAgentRunKeys();
   const threadChildReadAt = useThreadChildReadAt();
+  const threadCompletionReadAt = useThreadCompletionReadAt();
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const listRef = useRef<LegendListRef | null>(null);
@@ -424,6 +426,7 @@ export function HomeScreen(props: HomeScreenProps) {
             showAllThreads: hasSearchQuery,
             dismissedAgentRunKeys,
             threadChildReadAt,
+            threadCompletionReadAt,
           }),
     [
       threadListV2Enabled,
@@ -432,6 +435,7 @@ export function HomeScreen(props: HomeScreenProps) {
       hasSearchQuery,
       dismissedAgentRunKeys,
       threadChildReadAt,
+      threadCompletionReadAt,
     ],
   );
 
@@ -646,6 +650,7 @@ export function HomeScreen(props: HomeScreenProps) {
       threads: props.threads,
       dismissedAgentRunKeys,
       threadChildReadAt,
+      threadCompletionReadAt,
       environmentId: props.selectedEnvironmentId,
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
       searchQuery: props.searchQuery,
@@ -765,6 +770,7 @@ export function HomeScreen(props: HomeScreenProps) {
       const thread = item.item.thread;
       return (
         <ThreadListV2Row
+          status={item.item.status}
           thread={thread}
           projectCwd={projectCwdByKey.get(scopedProjectKey(thread.environmentId, thread.projectId))}
           hierarchy={item.item.hierarchy}
@@ -902,6 +908,7 @@ export function HomeScreen(props: HomeScreenProps) {
           const thread = item.thread;
           return (
             <ThreadListRow
+              status={item.status}
               hierarchy={item.hierarchy}
               variant="compact"
               thread={thread}

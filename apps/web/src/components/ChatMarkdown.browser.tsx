@@ -1,15 +1,17 @@
 import "../index.css";
 
+import { Profiler } from "react";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 
 const {
   createAssetUrlMock,
   openFileInPreviewMock,
   openBrowserMock,
+  openFileMock,
   openInPreferredEditorMock,
   openPreviewMock,
   navigateMock,
@@ -18,13 +20,20 @@ const {
   createAssetUrlMock: vi.fn(async () => ({ relativeUrl: "/assets/signed" })),
   openFileInPreviewMock: vi.fn(async () => ({ _tag: "Success", value: undefined })),
   openBrowserMock: vi.fn(),
+  openFileMock: vi.fn(),
   openInPreferredEditorMock: vi.fn(async () => "vscode"),
   openPreviewMock: vi.fn(),
   navigateMock: vi.fn(async () => undefined),
-  readLocalApiMock: vi.fn(() => ({
-    server: { getConfig: vi.fn(async () => ({ availableEditors: ["vscode"] })) },
-    shell: { openInEditor: vi.fn(async () => undefined) },
-  })),
+  readLocalApiMock: vi.fn(),
+}));
+
+readLocalApiMock.mockImplementation(() => ({
+  server: { getConfig: vi.fn(async () => ({ availableEditors: ["vscode"] })) },
+  shell: { openInEditor: vi.fn(async () => undefined) },
+  persistence: {
+    getClientSettings: vi.fn(async () => ({ browserLinkTarget: "app" as const })),
+    setClientSettings: vi.fn(async () => undefined),
+  },
 }));
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
@@ -37,9 +46,7 @@ vi.mock("../editorPreferences", () => ({
 }));
 
 vi.mock("../localApi", () => ({
-  ensureLocalApi: vi.fn(() => {
-    throw new Error("ensureLocalApi not implemented in browser test");
-  }),
+  ensureLocalApi: readLocalApiMock,
   readLocalApi: readLocalApiMock,
 }));
 
@@ -52,6 +59,11 @@ vi.mock("../environmentApi", () => ({
 vi.mock("../environments/runtime", () => ({
   getEnvironmentHttpBaseUrl: vi.fn(() => "http://localhost:3773"),
   resolveEnvironmentHttpUrl: vi.fn((_environmentId: string, path: string) => path),
+}));
+
+vi.mock("../environments/primary", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../environments/primary")>()),
+  usePrimaryEnvironmentId: () => null,
 }));
 
 vi.mock("../previewStateStore", () => ({
@@ -70,7 +82,7 @@ vi.mock("../state/preview", () => ({
 
 vi.mock("../rightPanelStore", () => ({
   useRightPanelStore: {
-    getState: () => ({ openBrowser: openBrowserMock }),
+    getState: () => ({ openBrowser: openBrowserMock, openFile: openFileMock }),
   },
 }));
 
@@ -81,6 +93,7 @@ vi.mock("../browser/openFileInPreview", () => ({
 
 import ChatMarkdown from "./ChatMarkdown";
 import { selectEnvironmentState, useStore } from "../store";
+import { INTERNAL_PULL_REQUEST_NAVIGATION_EVENT } from "../lib/openPullRequestLink";
 
 const threadRef = scopeThreadRef(
   EnvironmentId.make("environment-markdown"),
@@ -88,7 +101,14 @@ const threadRef = scopeThreadRef(
 );
 const initialStoreState = useStore.getState();
 
-function addThreadSummary(threadId: ThreadId, title: string) {
+function addThreadSummary(
+  threadId: ThreadId,
+  title: string,
+  pullRequest?: {
+    readonly number: number;
+    readonly url: string;
+  },
+) {
   const state = useStore.getState();
   const environmentState = selectEnvironmentState(state, threadRef.environmentId);
   useStore.setState({
@@ -96,6 +116,41 @@ function addThreadSummary(threadId: ThreadId, title: string) {
       ...state.environmentStateById,
       [threadRef.environmentId]: {
         ...environmentState,
+        threadShellById: {
+          ...environmentState.threadShellById,
+          [threadId]: {
+            id: threadId,
+            environmentId: threadRef.environmentId,
+            codexThreadId: null,
+            projectId: ProjectId.make("project-markdown"),
+            parentThreadId: null,
+            title,
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5.4",
+            },
+            runtimeMode: "full-access",
+            pendingRuntimeMode: null,
+            interactionMode: "default",
+            error: null,
+            createdAt: "2026-07-31T00:00:00.000Z",
+            archivedAt: null,
+            branch: null,
+            worktreePath: null,
+            ...(pullRequest
+              ? {
+                  pullRequest: {
+                    number: pullRequest.number,
+                    title,
+                    url: pullRequest.url,
+                    baseBranch: "main",
+                    headBranch: "feature",
+                    state: "open" as const,
+                  },
+                }
+              : {}),
+          },
+        },
         sidebarThreadSummaryById: {
           ...environmentState.sidebarThreadSummaryById,
           [threadId]: {
@@ -116,6 +171,18 @@ function addThreadSummary(threadId: ThreadId, title: string) {
             hasPendingUserInput: false,
             hasActionableProposedPlan: false,
             hasPendingQueuedTurn: false,
+            ...(pullRequest
+              ? {
+                  pullRequest: {
+                    number: pullRequest.number,
+                    title: title,
+                    url: pullRequest.url,
+                    baseBranch: "main",
+                    headBranch: "feature",
+                    state: "open" as const,
+                  },
+                }
+              : {}),
           },
         },
       },
@@ -128,6 +195,7 @@ describe("ChatMarkdown", () => {
     useStore.setState(initialStoreState, true);
     openInPreferredEditorMock.mockClear();
     openFileInPreviewMock.mockClear();
+    openFileMock.mockClear();
     openPreviewMock.mockClear();
     navigateMock.mockClear();
     createAssetUrlMock.mockClear();
@@ -291,13 +359,259 @@ describe("ChatMarkdown", () => {
       await vi.waitFor(() => {
         expect(openPreviewMock).toHaveBeenCalledWith({
           environmentId: threadRef.environmentId,
-          input: {
+          input: expect.objectContaining({
             threadId: threadRef.threadId,
             url: "https://openai.com/docs",
-          },
+          }),
         });
         expect(openBrowserMock).toHaveBeenCalledWith(threadRef, "tab-web-link");
       });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("navigates explicit T3 thread links internally instead of opening preview", async () => {
+    const linkedThreadId = ThreadId.make("bc880b45-fd48-42db-98fa-f211bae7cc0a");
+    addThreadSummary(linkedThreadId, "Replacement thread");
+    const screen = await render(
+      <ChatMarkdown
+        text={`[new thread](${globalThis.location.origin}/${threadRef.environmentId}/${linkedThreadId})`}
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: "Open thread new thread" });
+      await expect
+        .element(link)
+        .toHaveAttribute("href", `/${threadRef.environmentId}/${linkedThreadId}`);
+      await link.click();
+      await vi.waitFor(() => {
+        expect(navigateMock).toHaveBeenCalledWith({
+          to: "/$environmentId/$threadId",
+          params: {
+            environmentId: threadRef.environmentId,
+            threadId: linkedThreadId,
+          },
+        });
+      });
+      expect(openPreviewMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("navigates reference-style T3 thread links internally instead of opening preview", async () => {
+    const linkedThreadId = ThreadId.make("bc880b45-fd48-42db-98fa-f211bae7cc0a");
+    addThreadSummary(linkedThreadId, "Replacement thread");
+    const screen = await render(
+      <ChatMarkdown
+        text={`[new thread][child]\n\n[child]: /${threadRef.environmentId}/${linkedThreadId}`}
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: "Open thread new thread" });
+      await expect
+        .element(link)
+        .toHaveAttribute("href", `/${threadRef.environmentId}/${linkedThreadId}`);
+      await link.click();
+      await vi.waitFor(() => {
+        expect(navigateMock).toHaveBeenCalledWith({
+          to: "/$environmentId/$threadId",
+          params: {
+            environmentId: threadRef.environmentId,
+            threadId: linkedThreadId,
+          },
+        });
+      });
+      expect(openPreviewMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it.each(["http://127.0.0.1:3773", "http://localhost:4773", "http://[::1]:4773"])(
+    "navigates local thread links from %s inside the app",
+    async (origin) => {
+      const linkedThreadId = ThreadId.make("bc880b45-fd48-42db-98fa-f211bae7cc0a");
+      addThreadSummary(linkedThreadId, "Replacement thread");
+      const screen = await render(
+        <ChatMarkdown
+          text={`[replacement thread](${origin}/${threadRef.environmentId}/${linkedThreadId})`}
+          cwd="/repo/project"
+          threadRef={threadRef}
+        />,
+      );
+
+      try {
+        const link = page.getByRole("link", { name: "Open thread replacement thread" });
+        await expect
+          .element(link)
+          .toHaveAttribute("href", `/${threadRef.environmentId}/${linkedThreadId}`);
+        await expect.element(link).not.toHaveAttribute("target");
+        await link.click();
+        expect(navigateMock).toHaveBeenCalledWith({
+          to: "/$environmentId/$threadId",
+          params: { environmentId: threadRef.environmentId, threadId: linkedThreadId },
+        });
+        expect(openPreviewMock).not.toHaveBeenCalled();
+      } finally {
+        await screen.unmount();
+      }
+    },
+  );
+
+  it("routes reference-style pull request links through internal navigation", async () => {
+    const eventHandler = vi.fn();
+    window.addEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, eventHandler);
+    addThreadSummary(threadRef.threadId, "Current thread", {
+      number: 42,
+      url: "https://github.com/owner/repo/pull/42",
+    });
+    const screen = await render(
+      <ChatMarkdown
+        text={"[pull request][pr]\n\n[pr]: https://github.com/owner/repo/pull/42"}
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: "pull request" });
+      await expect.element(link).toHaveAttribute("href", "https://github.com/owner/repo/pull/42");
+      await link.click();
+      await vi.waitFor(() => {
+        expect(eventHandler).toHaveBeenCalledWith(
+          expect.objectContaining({
+            detail: {
+              host: "github.com",
+              repository: "owner/repo",
+              number: 42,
+              url: "https://github.com/owner/repo/pull/42",
+            },
+          }),
+        );
+      });
+      expect(openPreviewMock).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, eventHandler);
+      await screen.unmount();
+    }
+  });
+
+  it("routes context-qualified GitHub shorthand through internal navigation", async () => {
+    const eventHandler = vi.fn();
+    window.addEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, eventHandler);
+    addThreadSummary(threadRef.threadId, "Current thread", {
+      number: 42,
+      url: "https://github.com/owner/repo/pull/42",
+    });
+    const screen = await render(
+      <ChatMarkdown
+        text="See owner/repo#42 for the related change."
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: "owner/repo#42" });
+      await expect.element(link).toHaveAttribute("href", "https://github.com/owner/repo/pull/42");
+      await link.click();
+      await vi.waitFor(() => {
+        expect(eventHandler).toHaveBeenCalledWith(
+          expect.objectContaining({
+            detail: {
+              host: "github.com",
+              repository: "owner/repo",
+              number: 42,
+              url: "https://github.com/owner/repo/pull/42",
+            },
+          }),
+        );
+      });
+      expect(openPreviewMock).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, eventHandler);
+      await screen.unmount();
+    }
+  });
+
+  it("keeps PR URLs with query strings or fragments on the external-link path", async () => {
+    openPreviewMock.mockResolvedValueOnce({
+      _tag: "Success",
+      value: {
+        threadId: threadRef.threadId,
+        tabId: "tab-pr-discussion",
+        navStatus: {
+          _tag: "Loading",
+          url: "https://github.com/owner/repo/pull/42?tab=files#discussion_r1",
+          title: "",
+        },
+        canGoBack: false,
+        canGoForward: false,
+        updatedAt: "2026-08-10T00:00:00.000Z",
+      },
+    });
+    const eventHandler = vi.fn();
+    window.addEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, eventHandler);
+    const url = "https://github.com/owner/repo/pull/42?tab=files#discussion_r1";
+    const screen = await render(
+      <ChatMarkdown text={`[discussion](${url})`} cwd="/repo/project" threadRef={threadRef} />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: "discussion" });
+      await expect.element(link).toHaveAttribute("href", url);
+      await expect.element(link).toHaveAttribute("target", "_blank");
+      await link.click();
+      await vi.waitFor(() => {
+        expect(openPreviewMock).toHaveBeenCalledWith({
+          environmentId: threadRef.environmentId,
+          input: expect.objectContaining({
+            threadId: threadRef.threadId,
+            url,
+          }),
+        });
+      });
+      expect(eventHandler).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, eventHandler);
+      await screen.unmount();
+    }
+  });
+
+  it("does not re-render historical Markdown for unrelated environment-state updates", async () => {
+    const commits: Array<number> = [];
+    addThreadSummary(threadRef.threadId, "Historical thread");
+    const screen = await render(
+      <Profiler id="historical-markdown" onRender={() => commits.push(Date.now())}>
+        <ChatMarkdown text="Historical message" cwd="/repo/project" threadRef={threadRef} />
+      </Profiler>,
+    );
+
+    try {
+      await vi.waitFor(() => expect(commits.length).toBeGreaterThan(0));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const initialCommitCount = commits.length;
+      const state = useStore.getState();
+      const environmentState = selectEnvironmentState(state, threadRef.environmentId);
+      useStore.setState({
+        environmentStateById: {
+          ...state.environmentStateById,
+          [threadRef.environmentId]: {
+            ...environmentState,
+            bootstrapComplete: !environmentState.bootstrapComplete,
+          },
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(commits).toHaveLength(initialCommitCount);
     } finally {
       await screen.unmount();
     }
@@ -378,6 +692,69 @@ describe("ChatMarkdown", () => {
         });
       });
       expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens workspace files in the integrated file browser", async () => {
+    const screen = await render(
+      <ChatMarkdown
+        text="[index.ts](./src/index.ts#L12)"
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      await page.getByRole("link", { name: "index.ts · L12" }).click();
+      await vi.waitFor(() => {
+        expect(openFileMock).toHaveBeenCalledWith(threadRef, "src/index.ts", 12);
+      });
+      expect(openFileInPreviewMock).not.toHaveBeenCalled();
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens inline code file mentions in the integrated file browser", async () => {
+    const screen = await render(
+      <ChatMarkdown
+        text="See `src/index.ts:40` for details"
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      await page.getByRole("link", { name: "index.ts · L40" }).click();
+      await vi.waitFor(() => {
+        expect(openFileMock).toHaveBeenCalledWith(threadRef, "src/index.ts", 40);
+      });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("falls back to the external editor for files outside the workspace", async () => {
+    const filePath = "/Users/other/project/outside.ts";
+    const screen = await render(
+      <ChatMarkdown
+        text={`[outside.ts](file://${filePath})`}
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      await page.getByRole("link", { name: "outside.ts" }).click();
+      await vi.waitFor(() => {
+        expect(openInPreferredEditorMock).toHaveBeenCalledWith(expect.anything(), filePath);
+      });
+      expect(openFileMock).not.toHaveBeenCalled();
+      expect(openFileInPreviewMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }

@@ -63,6 +63,8 @@ are rejected before mutation; case-only path differences do not establish indepe
 
 ## Child prompt contract
 
+Apply [skill-delivery.md](../../references/skill-delivery.md) to the parent request and every child prompt. State investigation-only, implementation, commit, and publication permissions explicitly; omit unauthorized template blocks. Delegation cannot expand the parent's authorization, and "leave uncommitted" or "do not push" must survive into each child's instructions.
+
 Helper prompts must be self-contained:
 
 - Goal and expected output.
@@ -79,6 +81,40 @@ Helper prompts must be self-contained:
 The child cannot see the parent conversation; include every required decision and constraint.
 
 ## Monitoring
+
+New MCP-created children have one delegated assignment. T3 automatically reports the returned
+result or failure and queues a parent follow-up; no completion-message tool call is needed.
+Set `followUp: "notify-only"` when spawning to retain notifications without automatic follow-up.
+Existing children and ordinary `send_to_thread` messages do not create new assignments.
+Use `assign_to_thread` to give new work to an existing, finished child. Reuse its `requestId`
+on retry; creation of the assignment and queue entry is atomic. Only one assignment and one
+unresolved decision may be active per child. An answer continues the same assignment, not a new one.
+
+Capture the `assignmentId` returned by creation or assignment, or inspect `t3 chat show <id>`.
+Use `set_child_wait` with `{mode: "any" | "all", assignments: [{childThreadId, assignmentId}]}`
+to wait for selected results. Membership is fixed: handle partial batch failures before setting it.
+Use `{mode: "decisions-only", assignments: []}` to suppress routine wakes, or `null` to restore
+automatic follow-up. A satisfied wait is consumed once; a failure escalates without pretending
+the wait succeeded. Missing required assignments need an explicit wait revision.
+
+For an early decision or important finding, a child can call `report_to_parent` with
+`kind: "decision-needed"` or `"important-update"`, a concise `summary`, and a stable `reportId`.
+Reuse that ID on retries. `kind: "progress"` records an update without waking the parent.
+Include the original `assignmentId` when reporting, especially from a reused child. A structured
+decision includes `decision: {question, options?, recommendation?}` and `canContinue`.
+To revise an open decision, pass its full report ID as `supersedesReportId`.
+Answer with `send_to_thread` carrying `assignmentId`, `respondToReportId`, and a stable `requestId`;
+enqueueing the answer and resolution are recorded atomically. Pending response provenance survives
+queue delivery failure; inspect the child queue to retry. Deleting an undelivered response restores
+the question. Deleting a queued assignment records an unconfirmed stop. Reading or dismissing a notification
+does not resolve its question. Provider approvals remain a separate, explicitly authorized flow.
+Do not send acknowledgment-only replies or duplicate T3's automatic result report.
+
+Follow-ups wait for the parent's current turn and approvals/input. Stop pauses automatic child
+follow-up durably; use the Child work menu above the composer to resume it, including when the
+queue is empty. Routine reports collect for a fixed two seconds; decisions/failures bypass the
+collection delay but never active turns, approvals, Stop, or preceding user messages. Results are reports,
+not proof of task success or completion of untracked background work: inspect the child evidence.
 
 Use point-in-time commands by child `threadId`:
 

@@ -1731,6 +1731,9 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       assert.deepEqual(
         body.result?.tools?.map((tool) => tool.name),
         [
+          "assign_to_thread",
+          "set_child_wait",
+          "report_to_parent",
           "read_file",
           "search_files",
           "create_isolated_workspace",

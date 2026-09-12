@@ -35,7 +35,7 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CliState from "../cloud/CliState.ts";
 import * as CliTokenManager from "../cloud/CliTokenManager.ts";
 import * as BootService from "../cloud/bootService.ts";
-import { offerServiceDuringOnboarding, recoverServiceOnboardingOffer } from "./service.ts";
+import { offerServiceDuringOnboarding } from "./service.ts";
 import { CLOUD_LINKED_USER_ID, RELAY_URL_SECRET } from "../cloud/config.ts";
 import {
   hasCloudCliOAuthConfig,
@@ -50,6 +50,9 @@ import {
   type PersistedServerRuntimeState,
 } from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
+import { installationPreflight, installationIdentity } from "./installation.ts";
+import { hostSetupLocation, runConnectSetup, setupStage } from "./connectSetup.ts";
+import { hostedAppUrlConfig } from "../cloud/publicConfig.ts";
 
 const jsonFlag = Flag.boolean("json").pipe(
   Flag.withDescription("Emit JSON instead of human-readable output."),
@@ -395,24 +398,28 @@ type LiveCloudLinkStateResult =
   | { readonly status: "available"; readonly value: EnvironmentCloudLinkStateResult }
   | { readonly status: "unavailable"; readonly cause: Cause.Cause<unknown> };
 
-const runLiveCloudLinkState = Effect.fn("cloud.cli.run_live_link_state")(function* () {
+const runLiveCloudLinkState = Effect.fn("cloud.cli.run_live_link_state")(function* (
+  existingToken?: string,
+) {
   const runtimeState = yield* readPreferredCloudRuntimeState;
   if (Option.isNone(runtimeState)) {
     return { status: "not-running" } satisfies LiveCloudLinkStateResult;
   }
 
   const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
-  const result = yield* Effect.exit(
-    withCloudCliSessionToken(environmentAuth, (token) =>
-      HttpApiClient.make(EnvironmentHttpApi, {
-        baseUrl: runtimeState.value.origin,
-      }).pipe(
-        Effect.flatMap((client) =>
-          client.connect.linkState({ headers: { authorization: `Bearer ${token}` } }),
-        ),
-        Effect.timeout(CLOUD_CLI_LIVE_SERVER_TIMEOUT),
+  const readState = (token: string) =>
+    HttpApiClient.make(EnvironmentHttpApi, {
+      baseUrl: runtimeState.value.origin,
+    }).pipe(
+      Effect.flatMap((client) =>
+        client.connect.linkState({ headers: { authorization: `Bearer ${token}` } }),
       ),
-    ),
+      Effect.timeout(CLOUD_CLI_LIVE_SERVER_TIMEOUT),
+    );
+  const result = yield* Effect.exit(
+    existingToken === undefined
+      ? withCloudCliSessionToken(environmentAuth, readState)
+      : readState(existingToken),
   );
   return Exit.isSuccess(result)
     ? ({ status: "available", value: result.value } satisfies LiveCloudLinkStateResult)
@@ -825,44 +832,154 @@ const connectLogoutCommand = Command.make("logout", {
 const connectSetupCommand = Command.make("connect", {
   ...projectLocationFlags,
   headless: headlessFlag,
+  role: Flag.choice("role", ["host", "client"]).pipe(Flag.optional),
 }).pipe(
-  Command.withDescription("Set up T3 Connect for this machine."),
+  Command.withDescription(
+    "Choose host setup or connect to another computer. Retries retain completed stages.",
+  ),
   Command.withHandler((flags) =>
-    runCloudCommand(
-      flags,
-      Effect.gen(function* () {
-        yield* requireCloudPublicConfig;
-        const relayClient = yield* RelayClient.RelayClient;
-        const installed = yield* acquireRelayClientForLink(
-          relayClient,
-          confirmRelayClientInstall,
-          reportRelayClientInstallProgress,
-        );
-        if (Option.isNone(installed)) {
-          yield* Console.log("T3 Connect setup cancelled. The relay client was not installed.");
-          return;
-        }
-        const identity = yield* authorizeCli(flags);
-        yield* CliState.setCliDesiredCloudLink(true);
-        yield* Console.log(`T3 Connect authorization saved${identity ? ` for ${identity}` : ""}.`);
-        const config = yield* ServerConfig.ServerConfig;
-        const background = yield* recoverServiceOnboardingOffer(
-          offerServiceDuringOnboarding({
-            baseDir: config.baseDir,
-          }).pipe(
-            Effect.provide(
-              Layer.effect(BootService.BootService, BootService.make({ baseDir: config.baseDir })),
-            ),
-          ),
-        );
-        yield* Console.log(
-          background
-            ? "T3 is running in the background. Sign in to the same T3 account on your other devices and select this environment.\nUse `t3 connect status` with the same --base-dir to check relay readiness. Keep this host awake and online; after reboot, sign in to macOS."
-            : "Run `t3 connect` again to retry background setup, or start T3 to provision this environment. Use the same --base-dir to keep your account link.",
-        );
-      }),
-      { configuration: "full" },
-    ),
+    Effect.gen(function* () {
+      const role = Option.isSome(flags.role)
+        ? flags.role.value
+        : yield* Prompt.run(
+            Prompt.select({
+              message: "How will you use this computer?",
+              choices: [
+                { title: "Connect to another computer (no local host)", value: "client" },
+                { title: "Host projects and coding providers here", value: "host" },
+              ],
+            }),
+          );
+      yield* runConnectSetup({
+        role,
+        client: Effect.gen(function* () {
+          const appUrl = yield* hostedAppUrlConfig;
+          yield* Console.log(
+            `Open ${appUrl} and sign in to the same T3 account as your host, then select that computer.\nIn desktop, use Connections to add the host. No local host was created or linked.`,
+          );
+        }),
+        host: Effect.gen(function* () {
+          const location = yield* hostSetupLocation(
+            Option.getOrUndefined(flags.baseDir) ?? process.env.T3CODE_HOME,
+          );
+          if (location.kind === "choose" && location.selectionError)
+            yield* Console.warn(location.selectionError);
+          const baseDir =
+            location.kind === "explicit"
+              ? location.baseDir
+              : yield* Prompt.run(
+                  Prompt.select({
+                    message: "Which local environment should this host use?",
+                    choices: location.choices,
+                  }),
+                );
+          const identity = installationIdentity();
+          yield* Console.log(
+            `${identity.distribution} ${identity.version} (${identity.channel})\nExecutable: ${identity.executable}\nEntrypoint: ${identity.entrypoint}\nHost data: ${baseDir}`,
+          );
+          yield* setupStage(
+            "preflight",
+            Effect.gen(function* () {
+              const report = yield* Effect.tryPromise(() =>
+                installationPreflight({ baseDir, role: "host" }),
+              );
+              for (const check of report.checks.filter((check) => check.status !== "pass")) {
+                yield* Console.log(`${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+              }
+              if (!report.ready)
+                return yield* Effect.fail(
+                  new Error("Resolve preflight failures before continuing."),
+                );
+            }),
+          );
+          yield* runCloudCommand(
+            { ...flags, baseDir: Option.some(baseDir) },
+            Effect.gen(function* () {
+              yield* requireCloudPublicConfig;
+              const tokens = yield* CliTokenManager.CloudCliTokenManager;
+              const previouslyAuthorized = yield* tokens.hasCredential;
+              const previouslyDesired = yield* CliState.readCliDesiredCloudLink;
+              const identity = yield* setupStage("account", authorizeCli(flags));
+              const relayClient = yield* RelayClient.RelayClient;
+              const installed = yield* setupStage(
+                "relay-client",
+                acquireRelayClientForLink(
+                  relayClient,
+                  confirmRelayClientInstall,
+                  reportRelayClientInstallProgress,
+                ),
+              );
+              if (Option.isNone(installed)) {
+                return yield* Effect.fail(
+                  new Error(
+                    "Setup paused at relay-client. Authorization was retained; rerun the same host setup command to resume.",
+                  ),
+                );
+              }
+              if (!previouslyDesired) yield* CliState.setCliDesiredCloudLink(true);
+              yield* Console.log(
+                `T3 Connect authorization saved${identity ? ` for ${identity}` : ""}.`,
+              );
+              const config = yield* ServerConfig.ServerConfig;
+              const liveBeforeStartup =
+                previouslyDesired && previouslyAuthorized
+                  ? yield* runLiveCloudLinkState()
+                  : undefined;
+              const background = yield* setupStage(
+                "server",
+                offerServiceDuringOnboarding({
+                  baseDir: config.baseDir,
+                  restartRequired:
+                    !previouslyDesired ||
+                    !previouslyAuthorized ||
+                    (liveBeforeStartup?.status === "available" && !liveBeforeStartup.value.linked),
+                }).pipe(
+                  Effect.provide(
+                    Layer.effect(
+                      BootService.BootService,
+                      BootService.make({ baseDir: config.baseDir }),
+                    ),
+                  ),
+                ),
+              );
+              if (!background)
+                return yield* Effect.fail(
+                  new Error(
+                    "Background hosting was not enabled. Start this environment with serve, or rerun connect --role host with the same --base-dir.",
+                  ),
+                );
+              yield* setupStage(
+                "provisioning",
+                withCloudCliSessionToken(yield* EnvironmentAuth.EnvironmentAuth, (token) =>
+                  Effect.gen(function* () {
+                    for (let attempt = 0; attempt < 30; attempt++) {
+                      const live = yield* runLiveCloudLinkState(token);
+                      if (
+                        live.status === "available" &&
+                        live.value.linked &&
+                        live.value.endpointRuntimeStatus.status === "running"
+                      )
+                        return;
+                      yield* Effect.sleep("2 seconds");
+                    }
+                    return yield* Effect.fail(
+                      new Error(
+                        "Relay readiness is still pending. The host remains running; inspect connect status and retry without reinstalling.",
+                      ),
+                    );
+                  }).pipe(Effect.timeout("60 seconds")),
+                ),
+              );
+              const appUrl = yield* hostedAppUrlConfig;
+              yield* Console.log(
+                `Host setup is ready.\nClient verification: pending. Open ${appUrl} on another device, sign in to the same account, and open this environment to confirm access.\nKeep this host awake and online; the background task starts after user sign-in.`,
+              );
+            }),
+            { configuration: "full" },
+          );
+        }),
+      });
+    }),
   ),
 );
 

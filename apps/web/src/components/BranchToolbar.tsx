@@ -40,6 +40,7 @@ import {
   MenuTrigger,
 } from "./ui/menu";
 import { Separator } from "./ui/separator";
+import { EnvironmentIdentity } from "./EnvironmentIdentity";
 
 interface BranchToolbarProps {
   environmentId: EnvironmentId;
@@ -235,7 +236,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   const branchLocked = envLocked && !(canPrepareServerWorktree && effectiveEnvMode === "worktree");
 
   const showEnvironmentPicker = Boolean(
-    availableEnvironments && availableEnvironments.length > 1 && onEnvironmentChange,
+    availableEnvironments && availableEnvironments.length > 0 && onEnvironmentChange,
   );
   const isMobile = useIsMobile();
 
@@ -252,6 +253,9 @@ export const BranchToolbar = memo(function BranchToolbar({
         paddingRight: "calc(env(safe-area-inset-right) + var(--spacing) * 2.5)",
       }}
     >
+      {!showEnvironmentPicker ? (
+        <EnvironmentIdentity environmentId={environmentId} compact={isMobile} />
+      ) : null}
       {showGitControls ? (
         <>
           {isMobile ? (

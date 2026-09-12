@@ -1,4 +1,4 @@
-import type { OrchestrationQueuedTurn } from "@t3tools/contracts";
+import { MessageId, ThreadId, type OrchestrationQueuedTurn } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
@@ -68,6 +68,38 @@ function renderEditing(queuedTurn: OrchestrationQueuedTurn) {
 }
 
 describe("QueuedMessagesPanel", () => {
+  it("leaves child updates to the dedicated follow-up surface", () => {
+    const html = renderToStaticMarkup(
+      <QueuedMessagesPanel
+        queuedTurns={[
+          queuedTurn("nudge", "Generated prompt", {
+            kind: "child-nudge",
+            updates: [
+              {
+                id: "update",
+                childThreadId: ThreadId.make("child"),
+                childTitle: "Migration helper",
+                assignmentId: MessageId.make("assignment"),
+                kind: "decision-needed",
+                summary: "Choose a path",
+              },
+            ],
+          }),
+        ]}
+        editingQueuedTurnId={null}
+        editingText=""
+        onStartEditingQueuedTurn={() => {}}
+        onCancelEditingQueuedTurn={() => {}}
+        onSaveEditingQueuedTurn={() => {}}
+        onDeleteQueuedTurn={() => {}}
+      />,
+    );
+    expect(html).toBe("");
+    expect(html).not.toContain("Edit queued message");
+    expect(html).not.toContain("Up next");
+    expect(html).not.toContain("Generated prompt");
+  });
+
   it("hides a healthy workspace handoff continuation", () => {
     const html = render([queuedTurn("q-1", "Continue the task", handoffOrigin)]);
 

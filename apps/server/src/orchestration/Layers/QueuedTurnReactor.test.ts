@@ -152,6 +152,8 @@ async function runReactor(
   readModelInput: OrchestrationReadModel,
   snapshot: PullRequestMonitorSnapshot,
   options?: {
+    readonly waitAfterStartMs?: number;
+    readonly firstDispatchDelayMs?: number;
     readonly snapshotError?: PullRequestOperationError;
     readonly onRetryQueuedDelivery?: (deliveryId: string) => void;
     readonly retryQueuedDeliveryError?: PullRequestMonitorError;
@@ -166,6 +168,7 @@ async function runReactor(
 ): Promise<ReadonlyArray<OrchestrationCommand>> {
   let readModel = readModelInput;
   const commands: OrchestrationCommand[] = [];
+  let dispatchesStarted = 0;
   const engineLayer = Layer.succeed(OrchestrationEngineService, {
     getReadModel: () => Effect.succeed(readModel),
     readEvents: () => Stream.empty,
@@ -214,7 +217,11 @@ async function runReactor(
         }
         return { sequence: 2 };
       }),
-    withWorktreeLock: (effect) => effect,
+    withWorktreeLock: (effect) =>
+      Effect.suspend(() => {
+        const delay = dispatchesStarted++ === 0 ? (options?.firstDispatchDelayMs ?? 0) : 0;
+        return delay > 0 ? Effect.sleep(delay).pipe(Effect.andThen(effect)) : effect;
+      }),
     streamDomainEvents: options?.resume
       ? Stream.fromEffect(
           Effect.sync(() => {
@@ -277,7 +284,7 @@ async function runReactor(
             copilotAutomaticPrFeedback: { [ProviderInstanceId.make("copilot")]: true },
           });
         }
-        yield* Effect.sleep("10 millis");
+        yield* Effect.sleep(options?.waitAfterStartMs ?? 10);
       }),
     ).pipe(Effect.provide(layer)),
   );
@@ -285,6 +292,169 @@ async function runReactor(
 }
 
 describe("QueuedTurnReactor", () => {
+  it("retains a deadline wake that arrives while an explicit turn owns the drain", async () => {
+    const collectUntil = new Date(Date.now() + 150).toISOString();
+    const state = queuedReadModel({
+      origin: {
+        kind: "child-nudge",
+        collectUntil,
+        updates: [
+          {
+            id: "collected",
+            childThreadId: ThreadId.make("child"),
+            childTitle: "Child",
+            assignmentId: MessageId.make("assignment"),
+            kind: "result-available",
+            summary: "Ready",
+          },
+        ],
+      },
+    });
+    const queuedThread = state.threads[0]!;
+    const commands = await runReactor(
+      {
+        ...state,
+        threads: [
+          {
+            ...queuedThread,
+            queuedTurns: [
+              ...queuedThread.queuedTurns!,
+              {
+                ...queuedThread.queuedTurns![0]!,
+                id: QueuedTurnId.make("explicit"),
+                origin: undefined,
+              },
+            ],
+          },
+        ],
+      },
+      monitorSnapshot("head"),
+      { firstDispatchDelayMs: 300, waitAfterStartMs: 600 },
+    );
+    expect(commands).toMatchObject([
+      { type: "thread.queued-turn.dispatch", queuedTurnId: "explicit" },
+      { type: "thread.queued-turn.dispatch", queuedTurnId },
+    ]);
+    const wake = commands[1]!;
+    if (wake.type !== "thread.queued-turn.dispatch") throw new Error("Expected a nudge dispatch");
+    expect(Date.parse(wake.dispatchedAt)).toBeGreaterThanOrEqual(Date.parse(collectUntil));
+    expect(Date.parse(wake.dispatchedAt) - Date.parse(collectUntil)).toBeLessThan(1000);
+  });
+
+  it("leaves failed automatic nudges retryable without blocking explicit queued work", async () => {
+    const state = queuedReadModel({
+      failedAt: now,
+      failureMessage: "Delivery failed",
+      origin: {
+        kind: "child-nudge",
+        updates: [
+          {
+            id: "failed-delivery",
+            childThreadId: ThreadId.make("child"),
+            childTitle: "Child",
+            assignmentId: MessageId.make("assignment"),
+            kind: "result-available",
+            summary: "Ready",
+          },
+        ],
+      },
+    });
+    const queuedThread = state.threads[0]!;
+    const commands = await runReactor(
+      {
+        ...state,
+        threads: [
+          {
+            ...queuedThread,
+            queuedTurns: [
+              ...queuedThread.queuedTurns!,
+              {
+                ...queuedThread.queuedTurns![0]!,
+                id: QueuedTurnId.make("explicit"),
+                origin: undefined,
+                failedAt: null,
+                failureMessage: null,
+              },
+            ],
+          },
+        ],
+      },
+      monitorSnapshot("head"),
+    );
+    expect(commands).toMatchObject([
+      { type: "thread.queued-turn.dispatch", queuedTurnId: "explicit" },
+    ]);
+  });
+
+  it("reconstructs a persisted collection timer without waiting for another event or the recovery sweep", async () => {
+    const collectUntil = new Date(Date.now() + 150).toISOString();
+    const state = queuedReadModel({
+      origin: {
+        kind: "child-nudge",
+        collectUntil,
+        updates: [
+          {
+            id: "collected",
+            childThreadId: ThreadId.make("child"),
+            childTitle: "Child",
+            assignmentId: MessageId.make("assignment"),
+            kind: "result-available",
+            summary: "Result ready",
+          },
+        ],
+      },
+    });
+    const commands = await runReactor(state, monitorSnapshot("head"), { waitAfterStartMs: 300 });
+    expect(commands).toHaveLength(1);
+    const command = commands[0]!;
+    expect(command.type).toBe("thread.queued-turn.dispatch");
+    if (command.type === "thread.queued-turn.dispatch") {
+      expect(Date.parse(command.dispatchedAt)).toBeGreaterThanOrEqual(Date.parse(collectUntil));
+    }
+  });
+
+  it("recovers a nudge after restart, but skips it while paused without blocking user work", async () => {
+    const ready = queuedReadModel({
+      origin: {
+        kind: "child-nudge",
+        updates: [
+          {
+            id: "child-result",
+            childThreadId: ThreadId.make("child"),
+            childTitle: "Child",
+            assignmentId: MessageId.make("assignment"),
+            kind: "result-available",
+            summary: "Inspect the result",
+          },
+        ],
+      },
+    });
+    expect(await runReactor(ready, monitorSnapshot("head"))).toMatchObject([
+      { type: "thread.queued-turn.dispatch", queuedTurnId },
+    ]);
+    const paused = {
+      ...ready,
+      threads: ready.threads.map((thread) => ({
+        ...thread,
+        nudging: { paused: true },
+      })),
+    };
+    expect(await runReactor(paused, monitorSnapshot("head"))).toEqual([]);
+    const explicit = {
+      ...paused,
+      threads: paused.threads.map((thread) => ({
+        ...thread,
+        queuedTurns: [
+          ...thread.queuedTurns!,
+          { ...thread.queuedTurns![0]!, id: QueuedTurnId.make("explicit"), origin: undefined },
+        ],
+      })),
+    };
+    expect(await runReactor(explicit, monitorSnapshot("head"))).toMatchObject([
+      { type: "thread.queued-turn.dispatch", queuedTurnId: "explicit" },
+    ]);
+  });
+
   it("waits for the destination turn to finish before dispatching a persisted cross-thread message", async () => {
     const ready = queuedReadModel({
       origin: {

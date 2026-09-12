@@ -22,7 +22,10 @@ interface QueuedMessagesPanelProps {
  * ones stay visible so the stalled handoff is recoverable.
  */
 function isHiddenQueuedTurn(queuedTurn: OrchestrationQueuedTurn): boolean {
-  return queuedTurn.origin?.kind === "workspace-handoff" && queuedTurn.failedAt === null;
+  return (
+    queuedTurn.origin?.kind === "child-nudge" ||
+    (queuedTurn.origin?.kind === "workspace-handoff" && queuedTurn.failedAt === null)
+  );
 }
 
 function queuedTurnLabel(queuedTurn: OrchestrationQueuedTurn): string | null {
@@ -49,7 +52,9 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
   onSaveEditingQueuedTurn,
   onDeleteQueuedTurn,
 }: QueuedMessagesPanelProps) {
-  const nextEligibleId = queuedTurns.find((turn) => !policyBlocks?.has(turn.id))?.id;
+  const nextEligibleId = queuedTurns.find(
+    (turn) => !policyBlocks?.has(turn.id) && turn.origin?.kind !== "child-nudge",
+  )?.id;
   const visibleQueuedTurns = queuedTurns.flatMap((queuedTurn, queueIndex) =>
     isHiddenQueuedTurn(queuedTurn) ? [] : [{ queuedTurn, queueIndex }],
   );
@@ -62,7 +67,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
       <ul className="flex flex-col gap-0.5">
         {visibleQueuedTurns.map(({ queuedTurn, queueIndex }) => {
           const isEditing = editingQueuedTurnId === queuedTurn.id;
-          const isPaused = queuedTurn.failedAt !== null;
+          const isFailed = queuedTurn.failedAt !== null;
           const policyBlock = policyBlocks?.get(queuedTurn.id);
           const meta = attachmentLabel(queuedTurn);
           const label = policyBlock
@@ -75,7 +80,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
               key={queuedTurn.id}
               className={cn(
                 "group -mx-1 rounded-lg px-1 py-1 transition-colors",
-                isPaused ? "bg-destructive/5" : "hover:bg-muted/35",
+                isFailed ? "bg-destructive/5" : "hover:bg-muted/35",
               )}
             >
               {isEditing ? (
@@ -112,10 +117,10 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                   <span
                     className={cn(
                       "composer-input-font-secondary w-16 shrink-0 font-medium text-muted-foreground",
-                      isPaused ? "text-destructive" : null,
+                      isFailed ? "text-destructive" : null,
                     )}
                   >
-                    {isPaused ? "Paused" : label}
+                    {isFailed ? "Paused" : label}
                   </span>
                   <div className="min-w-0 flex-1 truncate text-foreground/85">
                     {queuedTurnLabel(queuedTurn) || (meta ?? "Queued message")}
@@ -149,7 +154,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                   </div>
                 </div>
               )}
-              {!isEditing && isPaused && queuedTurn.failureMessage ? (
+              {!isEditing && isFailed && queuedTurn.failureMessage ? (
                 <div className="composer-input-font-secondary ml-[4.625rem] mt-0.5 whitespace-pre-wrap break-words text-destructive">
                   {queuedTurn.failureMessage}
                 </div>

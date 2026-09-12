@@ -20,6 +20,7 @@ const CHILD_LIFECYCLE_ACTIVITY_PRESENTATION = {
   failed: { summarySuffix: "failed", tone: "error" },
   completed: { summarySuffix: "completed", tone: "info" },
   "pr-created": { summarySuffix: "created a pull request", tone: "info" },
+  reported: { summarySuffix: "sent an update", tone: "info" },
 } as const satisfies Record<
   ChildThreadLifecycle,
   {
@@ -45,7 +46,9 @@ export function childLifecycleNotificationToActivity(input: {
     id: input.eventId,
     tone: presentation.tone,
     kind: `child.lifecycle.${input.payload.lifecycle}`,
-    summary: `${input.payload.childTitle} ${presentation.summarySuffix}`,
+    summary: input.payload.report
+      ? `${input.payload.childTitle}: ${input.payload.report.summary}`
+      : `${input.payload.childTitle} ${presentation.summarySuffix}`,
     payload: input.payload,
     turnId: null,
     ...(input.sequence === undefined ? {} : { sequence: input.sequence }),

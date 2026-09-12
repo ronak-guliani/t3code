@@ -584,6 +584,7 @@ function areWorkLogEntriesUnchanged(a: WorkLogEntry, b: WorkLogEntry): boolean {
     a.stableId === b.stableId &&
     a.turnId === b.turnId &&
     a.requestId === b.requestId &&
+    a.childReportId === b.childReportId &&
     a.toolLifecycleStatus === b.toolLifecycleStatus &&
     a.toolData === b.toolData &&
     a.sourceActivityKind === b.sourceActivityKind &&

@@ -18,15 +18,11 @@ import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import type { HomeGroupDisplayAction } from "../home/homeListItems";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { CompactThreadRow } from "./compact-thread-row";
-import {
-  resolveNestedThreadStatus,
-  type MobileThreadTreeRow,
-  type MobileThreadShell,
-} from "./mobile-thread-hierarchy";
+import { type MobileThreadTreeRow, type MobileThreadShell } from "./mobile-thread-hierarchy";
 import { useNestedThreadActions } from "./use-nested-thread-actions";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
-import { resolveThreadStatus } from "./threadPresentation";
 import { useThreadPr } from "../../state/use-thread-pr";
+import type { ThreadListRowStatus } from "./thread-list-row-status";
 
 export type ThreadListVariant = "compact" | "sidebar";
 export const THREAD_LIST_COMPACT_INSET = HOME_HORIZONTAL_INSET;
@@ -175,6 +171,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly hierarchy?: MobileThreadTreeRow | undefined;
   readonly searchMatch?: EnvironmentThreadSearchMatch;
   readonly searchQuery?: string;
+  readonly status: Exclude<ThreadListRowStatus, "queued" | "draft">;
   readonly isLast: boolean;
   readonly selected?: boolean;
   readonly hideRelated?: boolean;
@@ -253,11 +250,6 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
     },
     [nesting.handleAction, handleArchive, handleDelete, onRegenerateThreadTitle, thread],
   );
-  const ownStatus = resolveNestedThreadStatus(thread);
-  const status =
-    ownStatus === "ready" && resolveThreadStatus(thread)?.kind === "plan-ready"
-      ? "plan-ready"
-      : ownStatus;
   return (
     <ThreadSwipeable
       backgroundColor={
@@ -281,7 +273,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
           timestamp={relativeTime(
             thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
           )}
-          status={status}
+          status={props.status}
           sidebar={props.variant === "sidebar"}
           depth={props.hierarchy?.depth}
           selected={props.selected}

@@ -39,6 +39,7 @@ const PersistedToken = Schema.Struct({
   refreshToken: Schema.String,
   expiresAtEpochMs: Schema.Number,
   identity: Schema.optional(Schema.String),
+  accountId: Schema.optional(Schema.String),
 });
 export type PersistedToken = typeof PersistedToken.Type;
 
@@ -63,18 +64,24 @@ const OidcIdentityClaimsJson = Schema.fromJsonString(
 );
 const decodeOidcIdentityClaims = Schema.decodeUnknownOption(OidcIdentityClaimsJson);
 
-function idTokenIdentity(idToken: string | undefined): string | null {
+function idTokenClaims(idToken: string | undefined): {
+  readonly identity: string | null;
+  readonly accountId: string | null;
+} {
   const payload = idToken?.split(".")[1];
-  if (!payload) return null;
+  if (!payload) return { identity: null, accountId: null };
   const decoded = Encoding.decodeBase64UrlString(payload);
-  if (decoded._tag !== "Success") return null;
+  if (decoded._tag !== "Success") return { identity: null, accountId: null };
   const claims = decodeOidcIdentityClaims(decoded.success);
-  if (Option.isNone(claims)) return null;
-  return (
-    [claims.value.email, claims.value.preferred_username, claims.value.sub].find(
-      (value): value is string => typeof value === "string" && value.length > 0,
-    ) ?? null
-  );
+  if (Option.isNone(claims)) return { identity: null, accountId: null };
+  return {
+    identity:
+      [claims.value.email, claims.value.preferred_username, claims.value.sub].find(
+        (value): value is string => typeof value === "string" && value.length > 0,
+      ) ?? null,
+    accountId:
+      typeof claims.value.sub === "string" && claims.value.sub.length > 0 ? claims.value.sub : null,
+  };
 }
 
 export const exchangeOAuthToken = Effect.fn("cloud.cli_token.exchange")(function* (
@@ -88,15 +95,16 @@ export const exchangeOAuthToken = Effect.fn("cloud.cli_token.exchange")(function
     Effect.flatMap(HttpClientResponse.schemaBodyJson(OAuthTokenResponse)),
   );
   const now = yield* Clock.currentTimeMillis;
-  const identity = idTokenIdentity(response.id_token);
+  const claims = idTokenClaims(response.id_token);
   return {
     token: {
       accessToken: response.access_token,
       refreshToken: response.refresh_token ?? params.refresh_token ?? "",
       expiresAtEpochMs: now + response.expires_in * 1_000,
-      ...(identity === null ? {} : { identity }),
+      ...(claims.identity === null ? {} : { identity: claims.identity }),
+      ...(claims.accountId === null ? {} : { accountId: claims.accountId }),
     } satisfies PersistedToken,
-    identity,
+    identity: claims.identity,
   };
 });
 
@@ -272,9 +280,15 @@ export const make = Effect.gen(function* () {
       refresh_token: token.refreshToken,
       client_id: metadata.clientId,
     });
-    return refreshed.identity === undefined && token.identity !== undefined
-      ? { ...refreshed, identity: token.identity }
-      : refreshed;
+    return {
+      ...refreshed,
+      ...(refreshed.identity === undefined && token.identity !== undefined
+        ? { identity: token.identity }
+        : {}),
+      ...(refreshed.accountId === undefined && token.accountId !== undefined
+        ? { accountId: token.accountId }
+        : {}),
+    };
   });
 
   const login = Effect.fn("cloud.cli_token.login")(function* () {

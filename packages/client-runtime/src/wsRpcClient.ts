@@ -131,12 +131,19 @@ export interface WsRpcClient {
       options?: GitRunStackedActionOptions,
     ) => Promise<GitRunStackedActionResult>;
     readonly resolvePullRequest: RpcUnaryMethod<typeof WS_METHODS.gitResolvePullRequest>;
+    readonly listOpenPullRequests: RpcUnaryMethod<typeof WS_METHODS.gitListOpenPullRequests>;
     readonly preparePullRequestThread: RpcUnaryMethod<
       typeof WS_METHODS.gitPreparePullRequestThread
+    >;
+    readonly prewarmReviewChangesContext: RpcUnaryMethod<
+      typeof WS_METHODS.gitPrewarmReviewChangesContext
     >;
   };
   readonly review: {
     readonly getDiffPreview: RpcUnaryMethod<typeof WS_METHODS.reviewGetDiffPreview>;
+  };
+  readonly workflow: {
+    readonly run: RpcUnaryMethod<typeof WS_METHODS.workflowRun>;
   };
   readonly server: {
     readonly getConfig: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetConfig>;
@@ -322,12 +329,19 @@ export function createWsRpcClient(
       },
       resolvePullRequest: (input) =>
         transport.request((client) => client[WS_METHODS.gitResolvePullRequest](input)),
+      listOpenPullRequests: (input) =>
+        transport.request((client) => client[WS_METHODS.gitListOpenPullRequests](input)),
       preparePullRequestThread: (input) =>
         transport.request((client) => client[WS_METHODS.gitPreparePullRequestThread](input)),
+      prewarmReviewChangesContext: (input) =>
+        transport.request((client) => client[WS_METHODS.gitPrewarmReviewChangesContext](input)),
     },
     review: {
       getDiffPreview: (input) =>
         transport.request((client) => client[WS_METHODS.reviewGetDiffPreview](input)),
+    },
+    workflow: {
+      run: (input) => transport.request((client) => client[WS_METHODS.workflowRun](input)),
     },
     server: {
       getConfig: () => transport.request((client) => client[WS_METHODS.serverGetConfig]({})),

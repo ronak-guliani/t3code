@@ -1,13 +1,15 @@
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
-import { NonNegativeInt } from "@t3tools/contracts";
+import { EventId, IsoDateTime, NonNegativeInt } from "@t3tools/contracts";
 import { Effect, Layer, Schema, Struct } from "effect";
 
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
 
 import {
   DeleteProjectionThreadActivitiesInput,
+  HasProjectionThreadActivityKindForTurnInput,
   ListProjectionThreadActivitiesInput,
+  ListProjectionThreadUserInputActivitiesInput,
   ProjectionThreadActivity,
   ProjectionThreadActivityRepository,
   type ProjectionThreadActivityRepositoryShape,
@@ -94,12 +96,55 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  const ProjectionThreadUserInputActivityDbRowSchema = Schema.Struct({
+    activityId: EventId,
+    kind: Schema.String,
+    payload: Schema.fromJsonString(Schema.Unknown),
+    createdAt: IsoDateTime,
+  });
+
+  const listProjectionThreadUserInputActivityRows = SqlSchema.findAll({
+    Request: ListProjectionThreadUserInputActivitiesInput,
+    Result: ProjectionThreadUserInputActivityDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          activity_id AS "activityId",
+          kind,
+          payload_json AS "payload",
+          created_at AS "createdAt"
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind IN (
+            'user-input.requested',
+            'user-input.resolved',
+            'provider.user-input.respond.failed'
+          )
+        ORDER BY created_at ASC, activity_id ASC
+      `,
+  });
+
   const deleteProjectionThreadActivityRows = SqlSchema.void({
     Request: DeleteProjectionThreadActivitiesInput,
     execute: ({ threadId }) =>
       sql`
         DELETE FROM projection_thread_activities
         WHERE thread_id = ${threadId}
+      `,
+  });
+
+  const hasProjectionThreadActivityKindForTurn = SqlSchema.findOne({
+    Request: HasProjectionThreadActivityKindForTurnInput,
+    Result: Schema.Struct({ found: Schema.Number }),
+    execute: ({ threadId, turnId, kind }) =>
+      sql`
+        SELECT EXISTS(
+          SELECT 1
+          FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+            AND turn_id = ${turnId}
+            AND kind = ${kind}
+        ) AS found
       `,
   });
 
@@ -143,10 +188,34 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       ),
     );
 
+  const listUserInputLifecycleByThreadId: ProjectionThreadActivityRepositoryShape["listUserInputLifecycleByThreadId"] =
+    (input) =>
+      listProjectionThreadUserInputActivityRows(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionThreadActivityRepository.listUserInputLifecycleByThreadId:query",
+            "ProjectionThreadActivityRepository.listUserInputLifecycleByThreadId:decodeRows",
+          ),
+        ),
+      );
+
+  const hasKindForTurn: ProjectionThreadActivityRepositoryShape["hasKindForTurn"] = (input) =>
+    hasProjectionThreadActivityKindForTurn(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionThreadActivityRepository.hasKindForTurn:query",
+          "ProjectionThreadActivityRepository.hasKindForTurn:decodeRow",
+        ),
+      ),
+      Effect.map((row) => row.found === 1),
+    );
+
   return {
     upsert,
     listByThreadId,
     deleteByThreadId,
+    listUserInputLifecycleByThreadId,
+    hasKindForTurn,
   } satisfies ProjectionThreadActivityRepositoryShape;
 });
 

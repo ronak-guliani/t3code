@@ -1,5 +1,6 @@
 import * as OS from "node:os";
 import { Effect, Path } from "effect";
+import { resolveDefaultLocalBaseDir } from "@t3tools/shared/localEnvironment";
 import {
   readPathFromLoginShell,
   readEnvironmentFromWindowsShell,
@@ -93,9 +94,9 @@ export const expandHomePath = Effect.fn(function* (input: string) {
 });
 
 export const resolveBaseDir = Effect.fn(function* (raw: string | undefined) {
-  const { join, resolve } = yield* Path.Path;
+  const { resolve } = yield* Path.Path;
   if (!raw || raw.trim().length === 0) {
-    return join(OS.homedir(), ".t3");
+    return yield* Effect.tryPromise(() => resolveDefaultLocalBaseDir());
   }
   return resolve(yield* expandHomePath(raw.trim()));
 });
