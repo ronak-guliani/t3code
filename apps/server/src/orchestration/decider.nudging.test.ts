@@ -771,13 +771,19 @@ describe("child nudging", () => {
     expect((await apply(result.readModel, finish("child"))).events).toHaveLength(1);
   });
 
-  it("accepts a report from the active execution and propagates its dispatch", async () => {
+  it("accepts a report from the authorized turn and propagates its dispatch", async () => {
     const child = thread("child", true);
     child.nudging = {
-      delegation: { ...child.nudging!.delegation!, dispatchId: "dispatch-1" },
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-1",
+        dispatchSequence: 1,
+        dispatchTurnId: TurnId.make("turn-a"),
+      },
     };
     const { readModel, events } = await apply(model(child), {
       ...report("child", "decision-needed"),
+      originTurnId: TurnId.make("turn-a"),
       dispatchId: "dispatch-1",
     });
     expect(events.some((event) => event.type === "thread.child-lifecycle-notified")).toBe(true);
@@ -791,10 +797,16 @@ describe("child nudging", () => {
   it("records a superseded execution report as stale without waking the parent", async () => {
     const child = thread("child", true);
     child.nudging = {
-      delegation: { ...child.nudging!.delegation!, dispatchId: "dispatch-2" },
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-2",
+        dispatchSequence: 2,
+        dispatchTurnId: TurnId.make("turn-b"),
+      },
     };
     const { readModel, events } = await apply(model(child), {
       ...report("child", "decision-needed"),
+      originTurnId: TurnId.make("turn-a"),
       dispatchId: "dispatch-1",
     });
     expect(events.map((event) => event.type)).toEqual(["thread.activity-appended"]);
@@ -804,23 +816,37 @@ describe("child nudging", () => {
       },
     });
     expect(readModel.threads[0]!.queuedTurns).toEqual([]);
-    expect(readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+    expect(readModel.threads[1]!.nudging?.delegation).toMatchObject({
+      dispatchId: "dispatch-2",
+      dispatchTurnId: "turn-b",
+      completedAt: null,
+    });
   });
 
-  it("records an unfenced-proof report on a fenced delegation as stale", async () => {
+  it("keeps progress history but requires proof for state-changing reports", async () => {
     const child = thread("child", true);
     child.nudging = {
-      delegation: { ...child.nudging!.delegation!, dispatchId: "dispatch-1" },
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-1",
+        dispatchSequence: 1,
+        dispatchTurnId: TurnId.make("turn-a"),
+      },
     };
-    const { readModel, events } = await apply(model(child), report("child", "important-update"));
-    expect(events.map((event) => event.type)).toEqual(["thread.activity-appended"]);
-    expect(events[0]).toMatchObject({
+    const progress = await apply(model(child), report("child", "progress"));
+    expect(progress.events.some((event) => event.type === "thread.child-lifecycle-notified")).toBe(
+      true,
+    );
+    expect(progress.readModel.threads[0]!.queuedTurns).toEqual([]);
+    const actionable = await apply(model(child), report("child", "important-update"));
+    expect(actionable.events.map((event) => event.type)).toEqual(["thread.activity-appended"]);
+    expect(actionable.events[0]).toMatchObject({
       payload: { activity: { payload: { dispatchVerdict: "stale" } } },
     });
-    expect(readModel.threads[0]!.queuedTurns).toEqual([]);
+    expect(actionable.readModel.threads[0]!.queuedTurns).toEqual([]);
   });
 
-  it("acknowledges reports on completed assignments without a second wake", async () => {
+  it("acknowledges exact duplicates on closed work but fences novel reports", async () => {
     let state = (await apply(model(thread("child", true)), finish("child"))).readModel;
     expect(state.threads[0]!.queuedTurns).toHaveLength(1);
     const { readModel, events } = await apply(state, {
@@ -830,8 +856,258 @@ describe("child nudging", () => {
     });
     expect(events.map((event) => event.type)).toEqual(["thread.activity-appended"]);
     expect(events[0]).toMatchObject({
+      payload: { activity: { payload: { dispatchVerdict: "stale" } } },
+    });
+    expect(readModel.threads[0]!.queuedTurns).toHaveLength(1);
+  });
+
+  it("replays the recorded verdict for a retried report without a second wake", async () => {
+    const first = {
+      ...report("child", "important-update"),
+      commandId: CommandId.make("report-once"),
+      reportId: "once",
+    };
+    let state = (await apply(model(thread("child", true)), first)).readModel;
+    expect(state.threads[0]!.queuedTurns).toHaveLength(1);
+    state = (await apply(state, finish("child"))).readModel;
+    expect(state.threads[1]!.nudging?.delegation?.completedAt).toBe(finished);
+    // The auto-completion batches into the existing nudge turn instead of
+    // waking the parent twice.
+    expect(state.threads[0]!.queuedTurns).toHaveLength(1);
+    const { readModel, events } = await apply(state, first);
+    expect(events.map((event) => event.type)).toEqual(["thread.activity-appended"]);
+    expect(events[0]).toMatchObject({
       payload: { activity: { payload: { dispatchVerdict: "already-recorded" } } },
     });
     expect(readModel.threads[0]!.queuedTurns).toHaveLength(1);
+  });
+
+  it("binds the first execution turn and adopts legacy delegations into the fenced path", async () => {
+    const child = thread("child", true);
+    const bound = await apply(model(child), {
+      type: "thread.session.set",
+      commandId: CommandId.make("session-start-a"),
+      threadId: child.id,
+      session: {
+        threadId: child.id,
+        status: "running",
+        providerName: "copilot",
+        providerInstanceId: ProviderInstanceId.make("copilot"),
+        runtimeMode: "approval-required",
+        activeTurnId: TurnId.make("turn-a"),
+        lastError: null,
+        updatedAt: finished,
+      },
+      createdAt: finished,
+    });
+    const delegation = bound.readModel.threads[1]!.nudging?.delegation!;
+    expect(delegation.dispatchTurnId).toBe("turn-a");
+    expect(delegation.dispatchId).toBeDefined();
+    expect(delegation.dispatchSequence).toBe(1);
+    expect(delegation.completedAt).toBeNull();
+  });
+
+  it("mints a fresh dispatch when the bound turn is superseded, preserving replays", async () => {
+    const child = thread("child", true);
+    let state = (
+      await apply(model(child), {
+        type: "thread.session.set",
+        commandId: CommandId.make("session-start-a"),
+        threadId: child.id,
+        session: {
+          threadId: child.id,
+          status: "running",
+          providerName: "copilot",
+          providerInstanceId: ProviderInstanceId.make("copilot"),
+          runtimeMode: "approval-required",
+          activeTurnId: TurnId.make("turn-a"),
+          lastError: null,
+          updatedAt: finished,
+        },
+        createdAt: finished,
+      })
+    ).readModel;
+    const first = state.threads[1]!.nudging?.delegation!;
+    state = (
+      await apply(state, {
+        type: "thread.session.set",
+        commandId: CommandId.make("session-start-b"),
+        threadId: child.id,
+        session: {
+          threadId: child.id,
+          status: "running",
+          providerName: "copilot",
+          providerInstanceId: ProviderInstanceId.make("copilot"),
+          runtimeMode: "approval-required",
+          activeTurnId: TurnId.make("turn-b"),
+          lastError: null,
+          updatedAt: finished,
+        },
+        createdAt: finished,
+      })
+    ).readModel;
+    const second = state.threads[1]!.nudging?.delegation!;
+    expect(second.dispatchTurnId).toBe("turn-b");
+    expect(second.dispatchId).not.toBe(first.dispatchId);
+    expect(second.dispatchSequence).toBe((first.dispatchSequence ?? 0) + 1);
+    const replayed = await apply(state, {
+      type: "thread.session.set",
+      commandId: CommandId.make("session-start-b-retry"),
+      threadId: child.id,
+      session: {
+        threadId: child.id,
+        status: "running",
+        providerName: "copilot",
+        providerInstanceId: ProviderInstanceId.make("copilot"),
+        runtimeMode: "approval-required",
+        activeTurnId: TurnId.make("turn-b"),
+        lastError: null,
+        updatedAt: finished,
+      },
+      createdAt: finished,
+    });
+    expect(replayed.readModel.threads[1]!.nudging?.delegation).toEqual(second);
+  });
+
+  it("fences a late report across a real bind-then-replace sequence", async () => {
+    const child = thread("child", true);
+    const sessionFor = (commandId: string, turn: string) =>
+      ({
+        type: "thread.session.set",
+        commandId: CommandId.make(commandId),
+        threadId: child.id,
+        session: {
+          threadId: child.id,
+          status: "running",
+          providerName: "copilot",
+          providerInstanceId: ProviderInstanceId.make("copilot"),
+          runtimeMode: "approval-required",
+          activeTurnId: TurnId.make(turn),
+          lastError: null,
+          updatedAt: finished,
+        },
+        createdAt: finished,
+      }) as Extract<OrchestrationCommand, { type: "thread.session.set" }>;
+    let state = (await apply(model(child), sessionFor("session-a", "turn-a"))).readModel;
+    const firstDispatch = state.threads[1]!.nudging?.delegation!.dispatchId!;
+    state = (await apply(state, sessionFor("session-b", "turn-b"))).readModel;
+    const secondDispatch = state.threads[1]!.nudging?.delegation!.dispatchId!;
+    expect(secondDispatch).not.toBe(firstDispatch);
+    const { readModel, events } = await apply(state, {
+      ...report("child", "decision-needed"),
+      commandId: CommandId.make("late-report-a"),
+      reportId: "late-a",
+      originTurnId: TurnId.make("turn-a"),
+      dispatchId: firstDispatch,
+    });
+    expect(events.map((event) => event.type)).toEqual(["thread.activity-appended"]);
+    expect(events[0]).toMatchObject({
+      payload: { activity: { payload: { dispatchVerdict: "stale" } } },
+    });
+    expect(readModel.threads[0]!.queuedTurns).toEqual([]);
+    expect(readModel.threads[1]!.nudging?.delegation).toMatchObject({
+      dispatchId: secondDispatch,
+      dispatchTurnId: "turn-b",
+      completedAt: null,
+    });
+  });
+
+  it("keeps delayed checkpoints as diagnostics without completing the assignment", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-2",
+        dispatchSequence: 2,
+        dispatchTurnId: TurnId.make("turn-b"),
+      },
+    };
+    child.latestTurn = { ...child.latestTurn!, turnId: TurnId.make("turn-a") };
+    const delayedCheckpoint = {
+      ...finish("child"),
+      commandId: CommandId.make("finish-turn-a"),
+      turnId: TurnId.make("turn-a"),
+    };
+    const { readModel, events } = await apply(model(child), delayedCheckpoint);
+    expect(events.map((event) => event.type)).toEqual(["thread.turn-diff-completed"]);
+    expect(readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+    expect(readModel.threads[0]!.queuedTurns).toEqual([]);
+  });
+
+  it("does not terminate the delegation on a delayed runtime failure", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-2",
+        dispatchSequence: 2,
+        dispatchTurnId: TurnId.make("turn-b"),
+      },
+    };
+    const failed: OrchestrationCommand = {
+      type: "thread.activity.append",
+      commandId: CommandId.make("late-failure"),
+      threadId: child.id,
+      createdAt: finished,
+      activity: {
+        id: EventId.make("late-failure"),
+        kind: "runtime.error",
+        tone: "error",
+        summary: "Late failure from a superseded turn",
+        payload: {},
+        turnId: TurnId.make("turn-a"),
+        createdAt: finished,
+      },
+    };
+    const { readModel, events } = await apply(model(child), failed);
+    expect(events.some((event) => event.type === "thread.child-lifecycle-notified")).toBe(true);
+    expect(readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+    expect(readModel.threads[0]!.queuedTurns).toEqual([]);
+  });
+
+  it("replaces executions explicitly with a compare-and-swap guard", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-1",
+        dispatchSequence: 1,
+        dispatchTurnId: TurnId.make("turn-a"),
+      },
+    };
+    const state = model(child);
+    await expect(
+      apply(state, {
+        type: "thread.dispatch.replace",
+        commandId: CommandId.make("replace-wrong"),
+        threadId: child.id,
+        expectedDispatchId: "dispatch-9",
+        createdAt: finished,
+      }),
+    ).rejects.toThrow("changed since this replacement was prepared");
+    const { readModel } = await apply(state, {
+      type: "thread.dispatch.replace",
+      commandId: CommandId.make("replace-ok"),
+      threadId: child.id,
+      expectedDispatchId: "dispatch-1",
+      createdAt: finished,
+    });
+    const delegation = readModel.threads[1]!.nudging?.delegation!;
+    expect(delegation.dispatchId).not.toBe("dispatch-1");
+    expect(delegation.dispatchSequence).toBe(2);
+    expect(delegation.dispatchTurnId).toBeNull();
+    expect(delegation.assignmentId).toBe("assignment-child");
+  });
+
+  it("keeps exact legacy keys for pre-fence reports", async () => {
+    const { readModel, events } = await apply(
+      model(thread("child", true)),
+      report("child", "decision-needed"),
+    );
+    expect(events.some((event) => event.type === "thread.child-lifecycle-notified")).toBe(true);
+    expect(readModel.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
+      kind: "child-nudge",
+      updates: [{ id: "report:child:assignment-child:decision-needed" }],
+    });
   });
 });

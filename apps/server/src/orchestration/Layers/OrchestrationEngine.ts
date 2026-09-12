@@ -1,4 +1,5 @@
 import type {
+  DispatchReportVerdict,
   DispatchResult,
   OrchestrationEvent,
   OrchestrationReadModel,
@@ -113,14 +114,74 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const withWorktreeLock: OrchestrationEngineShape["withWorktreeLock"] = (effect) =>
     worktreeLock.withPermits(1)(effect);
 
-  const dispatchResult = (command: OrchestrationCommand, sequence: number): DispatchResult => ({
+  const dispatchResult = (
+    command: OrchestrationCommand,
+    sequence: number,
+    reportVerdict?: DispatchReportVerdict,
+  ): DispatchResult => ({
     sequence,
     ...((command.type === "thread.create" ||
       (command.type === "thread.turn.start" && command.bootstrap?.createThread !== undefined)) &&
     Option.isSome(threadUrls)
       ? { threadUrl: threadUrls.value.forThread(command.threadId) }
       : {}),
+    ...(reportVerdict !== undefined ? { reportVerdict } : {}),
   });
+
+  // Recovers the fencing outcome of a child report from durable receipt
+  // activities, so retried deliveries replay the recorded verdict instead
+  // of re-mutating. Returns undefined when the command produced no report
+  // receipt (e.g. pre-fence history or a different command type).
+  const reportVerdictFromReceiptPayload = (payload: unknown): DispatchReportVerdict | undefined => {
+    const verdict = (payload as { readonly dispatchVerdict?: unknown } | null | undefined)
+      ?.dispatchVerdict;
+    return verdict === "accepted" || verdict === "already-recorded" || verdict === "stale"
+      ? verdict
+      : undefined;
+  };
+
+  const reportVerdictFromActivity = (activity: {
+    readonly id?: unknown;
+    readonly kind?: unknown;
+    readonly payload?: unknown;
+  }): DispatchReportVerdict | undefined =>
+    activity.kind === "delegation.reported"
+      ? reportVerdictFromReceiptPayload(activity.payload)
+      : undefined;
+
+  const reportVerdictForCommand = (
+    commandId: string,
+    events: ReadonlyArray<{ readonly type: string; readonly payload?: unknown }>,
+  ): DispatchReportVerdict | undefined => {
+    for (const event of events) {
+      if (event.type !== "thread.activity-appended") {
+        continue;
+      }
+      const activity = (event.payload as { readonly activity?: unknown } | undefined)?.activity as
+        | { readonly id?: unknown; readonly kind?: unknown; readonly payload?: unknown }
+        | undefined;
+      if (activity?.id !== commandId) {
+        continue;
+      }
+      const verdict = activity ? reportVerdictFromActivity(activity) : undefined;
+      if (verdict !== undefined) {
+        return verdict;
+      }
+    }
+    return undefined;
+  };
+
+  const reportVerdictFromActivities = (
+    commandId: string,
+    activities: ReadonlyArray<{
+      readonly id?: unknown;
+      readonly kind?: unknown;
+      readonly payload?: unknown;
+    }>,
+  ): DispatchReportVerdict | undefined => {
+    const activity = activities.find((entry) => entry.id === commandId);
+    return activity ? reportVerdictFromActivity(activity) : undefined;
+  };
 
   const commandWorktreePath = (command: OrchestrationCommand): string | null => {
     switch (command.type) {
@@ -226,7 +287,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         });
         if (Option.isSome(existingReceipt)) {
           if (existingReceipt.value.status === "accepted") {
-            return dispatchResult(command, existingReceipt.value.resultSequence);
+            // Durable verdict replay: a retried report returns its recorded
+            // outcome from receipt activities without re-mutating.
+            const completedCommand = envelope.command;
+            const replayedVerdict =
+              completedCommand.type === "thread.child.report"
+                ? reportVerdictFromActivities(
+                    completedCommand.commandId,
+                    readModel.threads.find((thread) => thread.id === completedCommand.threadId)
+                      ?.activities ?? [],
+                  )
+                : undefined;
+            return dispatchResult(command, existingReceipt.value.resultSequence, replayedVerdict);
           }
           return yield* new OrchestrationCommandPreviouslyRejectedError({
             commandId: envelope.command.commandId,
@@ -387,7 +459,13 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             );
           }
         }
-        return dispatchResult(command, committedCommand.lastSequence);
+        return dispatchResult(
+          command,
+          committedCommand.lastSequence,
+          command.type === "thread.child.report"
+            ? reportVerdictForCommand(command.commandId, committedCommand.committedEvents)
+            : undefined,
+        );
       }).pipe(Effect.withSpan(`orchestration.command.${envelope.command.type}`)),
     ).pipe(
       Effect.flatMap((exit) =>

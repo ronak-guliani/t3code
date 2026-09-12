@@ -901,6 +901,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             : customInstructionsDirs.withoutBrowser,
           prewarmPool,
           runtimeMode: input.runtimeMode,
+          getCurrentTurnId: () => input.getCurrentTurnId() ?? undefined,
           ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
           ...(input.resumeFallback ? { resumeFallback: input.resumeFallback } : {}),
           ...acpNativeLoggers,

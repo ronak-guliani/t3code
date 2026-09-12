@@ -49,6 +49,13 @@ export interface McpServeOptions {
   readonly cliBaseDir?: string;
   readonly runtimeMode?: RuntimeMode;
   readonly providerInstanceId?: ProviderInstanceId;
+  /**
+   * Execution-scoped provenance: the provider turn running in the session
+   * this server was created for. Evaluated at report time against the
+   * session's own context — never against live thread state — so a late
+   * report from a superseded execution still presents its own turn.
+   */
+  readonly getCurrentTurnId?: () => string | undefined;
 }
 
 export interface McpHttpServer {
@@ -1672,6 +1679,10 @@ async function reportToParentTool(
       "report_to_parent requires reportId (1-200 characters), summary (1-4000 characters), and a valid kind",
     );
   }
+  // Execution provenance comes from this session's own context, never from
+  // tool arguments or live thread state: a late report from a superseded
+  // execution still presents its own turn and is fenced as stale.
+  const originTurnId = options.getCurrentTurnId?.();
   const result = await runCommand(options.cwd, options.cliCommand, [
     ...(options.cliArgsPrefix ?? []),
     "chat",
@@ -1685,6 +1696,7 @@ async function reportToParentTool(
     ...(assignmentId ? ["--assignment-id", assignmentId] : []),
     ...(decision ? ["--decision", JSON.stringify(decision)] : []),
     ...(args.canContinue !== undefined ? ["--can-continue", String(args.canContinue)] : []),
+    ...(originTurnId ? ["--turn-id", originTurnId] : []),
     ...(asString(args.supersedesReportId)
       ? ["--supersedes-report", String(args.supersedesReportId)]
       : []),
