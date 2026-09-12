@@ -7,6 +7,7 @@ import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
 
 import {
   DeleteProjectionThreadActivitiesInput,
+  HasProjectionThreadActivityKindForTurnInput,
   ListProjectionThreadActivitiesInput,
   ListProjectionThreadUserInputActivitiesInput,
   ProjectionThreadActivity,
@@ -132,6 +133,21 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  const hasProjectionThreadActivityKindForTurn = SqlSchema.findOne({
+    Request: HasProjectionThreadActivityKindForTurnInput,
+    Result: Schema.Struct({ found: Schema.Number }),
+    execute: ({ threadId, turnId, kind }) =>
+      sql`
+        SELECT EXISTS(
+          SELECT 1
+          FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+            AND turn_id = ${turnId}
+            AND kind = ${kind}
+        ) AS found
+      `,
+  });
+
   const upsert: ProjectionThreadActivityRepositoryShape["upsert"] = (row) =>
     upsertProjectionThreadActivityRow(row).pipe(
       Effect.mapError(
@@ -183,11 +199,23 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
         ),
       );
 
+  const hasKindForTurn: ProjectionThreadActivityRepositoryShape["hasKindForTurn"] = (input) =>
+    hasProjectionThreadActivityKindForTurn(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionThreadActivityRepository.hasKindForTurn:query",
+          "ProjectionThreadActivityRepository.hasKindForTurn:decodeRow",
+        ),
+      ),
+      Effect.map((row) => row.found === 1),
+    );
+
   return {
     upsert,
     listByThreadId,
     deleteByThreadId,
     listUserInputLifecycleByThreadId,
+    hasKindForTurn,
   } satisfies ProjectionThreadActivityRepositoryShape;
 });
 

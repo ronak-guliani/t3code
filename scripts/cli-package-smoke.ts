@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -134,6 +142,68 @@ try {
     run(process.execPath, [join(isolatedRuntime, "bin.mjs"), "service", "--help"], runtimeTempDir),
     "Install or repair",
   );
+  const releaseAssets = join(tempDir, "fork-assets");
+  run(process.execPath, ["scripts/package-cli-release.ts", releaseAssets], repoRoot);
+  const installerHome = join(tempDir, "installer-home");
+  mkdirSync(installerHome);
+  const preload = join(tempDir, "release-fixture.mjs");
+  writeFileSync(
+    preload,
+    `
+    import { readFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    globalThis.fetch = async (url) => {
+      const parsed = new URL(url);
+      if (parsed.origin !== 'https://github.com' || !parsed.pathname.startsWith('/ronak-guliani/t3code/releases/download/')) throw new Error('Unexpected download target');
+      const name = parsed.pathname.split('/').at(-1);
+      if (!['t3code-cli.tgz','t3code-cli.sha256'].includes(name)) throw new Error('Unexpected release asset');
+      return new Response(process.env.T3_SMOKE_CORRUPT && name.endsWith('.sha256') ? 'invalid' : readFileSync(join(${JSON.stringify(releaseAssets)},name)));
+    };
+  `,
+  );
+  const packageVersion = JSON.parse(originalManifest).version as string;
+  const installerArgs = [
+    "--import",
+    preload,
+    join(repoRoot, "scripts/install-release-cli.mjs"),
+    packageVersion,
+  ];
+  const installerEnv = { HOME: installerHome, USERPROFILE: installerHome };
+  run(process.execPath, installerArgs, tempDir, installerEnv);
+  const activePath = join(installerHome, ".t3-cli", "active.json");
+  const firstPointer = readFileSync(activePath, "utf8");
+  const first = JSON.parse(firstPointer) as { entrypoint: string };
+  const identity = JSON.parse(
+    run(process.execPath, [first.entrypoint, "installation", "identity", "--json"], tempDir),
+  ) as { distribution: string; version: string };
+  if (identity.distribution !== "ronak-guliani/t3code" || identity.version !== packageVersion)
+    throw new Error("Fork package identity mismatch");
+  run(process.execPath, installerArgs, tempDir, installerEnv);
+  const updatedPointer = readFileSync(activePath, "utf8");
+  if (updatedPointer === firstPointer || !existsSync(first.entrypoint))
+    throw new Error("Installer did not preserve immutable update snapshots");
+  let rejected = false;
+  try {
+    run(process.execPath, installerArgs, tempDir, { ...installerEnv, T3_SMOKE_CORRUPT: "1" });
+  } catch {
+    rejected = true;
+  }
+  if (
+    !rejected ||
+    readFileSync(activePath, "utf8") !== updatedPointer ||
+    existsSync(join(installerHome, ".t3-cli", "install.lock"))
+  )
+    throw new Error(
+      "Checksum failure did not preserve the active installation and release its lock",
+    );
+  const clientState = join(installerHome, "client-only");
+  run(
+    process.execPath,
+    [first.entrypoint, "connect", "--role", "client", "--base-dir", clientState],
+    tempDir,
+    installerEnv,
+  );
+  if (existsSync(clientState)) throw new Error("Client-only setup created local host state");
   console.log("Packaged T3 Connect CLI and isolated service runtime smoke passed.");
 } finally {
   if (originalManifest !== undefined) {

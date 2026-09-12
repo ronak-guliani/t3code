@@ -68,7 +68,7 @@ function renderEditing(queuedTurn: OrchestrationQueuedTurn) {
 }
 
 describe("QueuedMessagesPanel", () => {
-  it("shows paused child updates with resume and dismiss, without editing generated prompts", () => {
+  it("leaves child updates to the dedicated follow-up surface", () => {
     const html = renderToStaticMarkup(
       <QueuedMessagesPanel
         queuedTurns={[
@@ -86,8 +86,6 @@ describe("QueuedMessagesPanel", () => {
             ],
           }),
         ]}
-        childFollowUpPaused
-        onSetChildFollowUpPaused={() => {}}
         editingQueuedTurnId={null}
         editingText=""
         onStartEditingQueuedTurn={() => {}}
@@ -96,10 +94,7 @@ describe("QueuedMessagesPanel", () => {
         onDeleteQueuedTurn={() => {}}
       />,
     );
-    expect(html).toContain("Child follow-up paused");
-    expect(html).toContain("Resume child follow-up");
-    expect(html).toContain("Dismiss child updates");
-    expect(html).toContain("Migration helper");
+    expect(html).toBe("");
     expect(html).not.toContain("Edit queued message");
     expect(html).not.toContain("Up next");
     expect(html).not.toContain("Generated prompt");

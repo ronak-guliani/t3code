@@ -1,4 +1,11 @@
 import * as ChildProcess from "node:child_process";
+import {
+  discoverLocalEnvironments,
+  inspectLocalEnvironment,
+  readLocalEnvironmentSelection,
+  selectLocalEnvironment,
+} from "@t3tools/shared/localEnvironment";
+import { assertDesktopCanOwnEnvironment } from "./localEnvironmentStartup.ts";
 import * as Crypto from "node:crypto";
 import * as FS from "node:fs";
 import * as OS from "node:os";
@@ -164,6 +171,9 @@ const SHOW_NOTIFICATION_CHANNEL = "desktop:show-notification";
 const NOTIFICATION_CLICKED_CHANNEL = "desktop:notification-clicked";
 const BASE_DIR =
   process.env.T3CODE_HOME?.trim() || Path.join(OS.homedir(), DEFAULT_T3_HOME_DIR_NAME);
+const canChooseLocalDefault = !isDevelopment && !isDevAppFlavor && !process.env.T3CODE_HOME?.trim();
+let backendBaseDir = BASE_DIR;
+let localBackendStartupAllowed = false;
 const STATE_DIR = Path.join(BASE_DIR, "userdata");
 const DESKTOP_SETTINGS_PATH = Path.join(STATE_DIR, "desktop-settings.json");
 const CLIENT_SETTINGS_PATH = Path.join(STATE_DIR, "client-settings.json");
@@ -178,7 +188,6 @@ let previewRuntime: PreviewRuntimeHandle | null = null;
 const LOG_FILE_MAX_BYTES = 10 * 1024 * 1024;
 const LOG_FILE_MAX_FILES = 10;
 const APP_RUN_ID = Crypto.randomBytes(6).toString("hex");
-const SERVER_SETTINGS_PATH = Path.join(STATE_DIR, "settings.json");
 const AUTO_UPDATE_STARTUP_DELAY_MS = 15_000;
 const AUTO_UPDATE_POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
@@ -309,10 +318,11 @@ function readPersistedBackendObservabilitySettings(): {
   readonly otlpMetricsUrl: string | undefined;
 } {
   try {
-    if (!FS.existsSync(SERVER_SETTINGS_PATH)) {
+    const serverSettingsPath = Path.join(backendBaseDir, "userdata", "settings.json");
+    if (!FS.existsSync(serverSettingsPath)) {
       return { otlpTracesUrl: undefined, otlpMetricsUrl: undefined };
     }
-    return parsePersistedServerObservabilitySettings(FS.readFileSync(SERVER_SETTINGS_PATH, "utf8"));
+    return parsePersistedServerObservabilitySettings(FS.readFileSync(serverSettingsPath, "utf8"));
   } catch (error) {
     console.warn("[desktop] failed to read persisted backend observability settings", error);
     return { otlpTracesUrl: undefined, otlpMetricsUrl: undefined };
@@ -343,7 +353,7 @@ function resolveDesktopDevServerUrl(): string {
 
 function backendChildEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  env.T3CODE_HOME = BASE_DIR;
+  env.T3CODE_HOME = backendBaseDir;
   env.T3CODE_ENVIRONMENT_LABEL_SUFFIX = desktopAppBranding.stageLabel;
   delete env.T3CODE_PORT;
   delete env.T3CODE_MODE;
@@ -535,7 +545,7 @@ async function waitForBackendWindowReady(baseUrl: string): Promise<"listening" |
 
 function ensureInitialBackendWindowOpen(): void {
   const existingWindow = mainWindow ?? BrowserWindow.getAllWindows()[0] ?? null;
-  if (isDevelopment || backendInitialWindowOpenInFlight !== null) {
+  if (isDevelopment || !localBackendStartupAllowed || backendInitialWindowOpenInFlight !== null) {
     return;
   }
   const startupWindow =
@@ -1517,7 +1527,7 @@ function startBackend(): void {
         mode: "desktop",
         noBrowser: true,
         port: backendPort,
-        t3Home: BASE_DIR,
+        t3Home: backendBaseDir,
         host: backendBindHost,
         desktopBootstrapToken: backendBootstrapToken,
         ...(backendObservabilitySettings.otlpTracesUrl
@@ -1670,6 +1680,55 @@ async function stopBackendAndWaitForExit(timeoutMs = 5_000): Promise<void> {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.removeHandler("desktop:local-environments");
+  ipcMain.handle("desktop:local-environments", async (event) => {
+    if (
+      event.sender !== mainWindow?.webContents ||
+      event.senderFrame !== mainWindow.webContents.mainFrame
+    ) {
+      throw new Error("Local environment inspection is only available in the desktop application.");
+    }
+    return {
+      ...(await discoverLocalEnvironments([BASE_DIR, backendBaseDir])),
+      currentBaseDir: backendBaseDir,
+      ownership: "desktop",
+      canChooseDefault: canChooseLocalDefault,
+    };
+  });
+  ipcMain.removeHandler("desktop:select-local-environment");
+  ipcMain.handle("desktop:select-local-environment", async (_event, baseDir: unknown) => {
+    if (
+      _event.sender !== mainWindow?.webContents ||
+      _event.senderFrame !== mainWindow.webContents.mainFrame
+    ) {
+      throw new Error("Local environment selection is only available in the desktop application.");
+    }
+    if (!canChooseLocalDefault) {
+      throw new Error(
+        "Development launches and explicit T3CODE_HOME directories are pinned. Launch the regular desktop app without an override to select a shared default.",
+      );
+    }
+    if (typeof baseDir !== "string" || !Path.isAbsolute(baseDir)) {
+      throw new Error("Select an absolute environment data directory.");
+    }
+    const candidate = await inspectLocalEnvironment(baseDir);
+    if (!candidate || candidate.status === "unavailable") {
+      throw new Error(candidate?.error ?? "No T3 environment exists in this directory.");
+    }
+    if (candidate.baseDir !== backendBaseDir) assertDesktopCanOwnEnvironment(candidate);
+    const answer = await dialog.showMessageBox({
+      type: "question",
+      buttons: ["Cancel", "Use environment and restart"],
+      defaultId: 0,
+      cancelId: 0,
+      message: `Use ${candidate.label} as the default local environment?`,
+      detail: `${candidate.baseDir}\nEnvironment: ${candidate.environmentId}\nExisting threads stay in their original environment. This does not copy or delete any data. Finish active desktop work before restarting.`,
+    });
+    if (answer.response !== 1) return false;
+    await selectLocalEnvironment(candidate.baseDir);
+    relaunchDesktopApp("selected local environment");
+    return true;
+  });
   ipcMain.removeAllListeners(GET_APP_BRANDING_CHANNEL);
   ipcMain.on(GET_APP_BRANDING_CHANNEL, (event) => {
     event.returnValue = desktopAppBranding;
@@ -1679,6 +1738,7 @@ function registerIpcHandlers(): void {
   ipcMain.on(GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL, (event) => {
     event.returnValue = {
       label: "Local environment",
+      ownership: "desktop",
       httpBaseUrl: backendHttpUrl || null,
       wsBaseUrl: backendWsUrl || null,
       bootstrapToken: backendBootstrapToken || undefined,
@@ -2279,7 +2339,11 @@ function createWindow(initialUrl?: string): BrowserWindow {
     void window.loadURL(resolveDesktopDevServerUrl());
     window.webContents.openDevTools({ mode: "detach" });
   } else {
-    void window.loadURL(initialUrl ?? backendHttpUrl);
+    void window.loadURL(
+      localBackendStartupAllowed
+        ? (initialUrl ?? backendHttpUrl)
+        : createPackagedStartupLoadingUrl(APP_DISPLAY_NAME),
+    );
   }
 
   window.on("closed", () => {
@@ -2311,6 +2375,43 @@ async function bootstrap(): Promise<void> {
       : `using configured backend port port=${backendPort}`,
   );
   backendBootstrapToken = Crypto.randomBytes(24).toString("hex");
+  if (canChooseLocalDefault) {
+    const selected = await readLocalEnvironmentSelection();
+    if (selected) {
+      backendBaseDir = selected.baseDir;
+    } else {
+      const { environments: candidates } = await discoverLocalEnvironments([BASE_DIR]);
+      if (candidates.length > 0) {
+        const choice = await dialog.showMessageBox({
+          type: "question",
+          message: "Choose your default local T3 environment",
+          detail:
+            "Desktop and CLI installations can have separate threads, even for the same project folder. Reuse an existing environment, or explicitly keep a separate desktop environment. Running servers are attached, never replaced.",
+          buttons: [
+            ...candidates.map(
+              (candidate) => `${candidate.label} (${candidate.status}) — ${candidate.baseDir}`,
+            ),
+            "Keep separate desktop environment",
+            "Cancel",
+          ],
+          defaultId: 0,
+          cancelId: candidates.length + 1,
+        });
+        if (choice.response === candidates.length + 1) {
+          app.quit();
+          return;
+        }
+        const candidate = candidates[choice.response];
+        if (candidate) {
+          assertDesktopCanOwnEnvironment(candidate);
+          await selectLocalEnvironment(candidate.baseDir);
+          backendBaseDir = candidate.baseDir;
+        } else if (await inspectLocalEnvironment(BASE_DIR)) {
+          await selectLocalEnvironment(BASE_DIR);
+        }
+      }
+    }
+  }
   if (desktopSettings.serverExposureMode !== DEFAULT_DESKTOP_SETTINGS.serverExposureMode) {
     writeDesktopLogHeader(
       `bootstrap restoring persisted server exposure mode mode=${desktopSettings.serverExposureMode}`,
@@ -2333,6 +2434,10 @@ async function bootstrap(): Promise<void> {
     );
   }
 
+  const existing = isDevelopment ? null : await inspectLocalEnvironment(backendBaseDir);
+  assertDesktopCanOwnEnvironment(existing);
+  localBackendStartupAllowed = true;
+
   registerIpcHandlers();
   previewRuntime = await startPreviewRuntime({ browserArtifactsDir: BROWSER_ARTIFACTS_DIR });
   if (mainWindow) {
@@ -2341,6 +2446,10 @@ async function bootstrap(): Promise<void> {
   writeDesktopLogHeader("bootstrap ipc handlers registered");
   startBackend();
   writeDesktopLogHeader("bootstrap backend start requested");
+  if (canChooseLocalDefault && !(await readLocalEnvironmentSelection())) {
+    await waitForBackendWindowReady(backendHttpUrl);
+    await selectLocalEnvironment(backendBaseDir);
+  }
 
   if (isDevelopment) {
     mainWindow = createWindow();

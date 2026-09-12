@@ -43,6 +43,7 @@ describe("resolved Expo native configuration", () => {
     expect(config).toHaveProperty("_internal.modResults.ios.entitlements", {
       "com.apple.security.application-groups": [`group.${id}`],
       "com.apple.developer.applesignin": ["Default"],
+      "keychain-access-groups": [`$(AppIdentifierPrefix)${id}`],
     });
     expect(config).toHaveProperty("_internal.modResults.ios.infoPlist.ClerkExpoVersion");
     expect(config).toHaveProperty("_internal.modResults.ios.infoPlist.ClerkTheme");

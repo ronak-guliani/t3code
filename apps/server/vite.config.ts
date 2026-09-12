@@ -3,6 +3,7 @@ import { defineConfig, mergeConfig } from "vite-plus";
 
 import baseConfig from "../../vite.config.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import { execFileSync } from "node:child_process";
 
 const repoEnv = loadRepoEnv();
 
@@ -35,6 +36,10 @@ export default mergeConfig(
         js: "#!/usr/bin/env node\n",
       },
       define: {
+        __T3CODE_BUILD_COMMIT__: JSON.stringify(
+          execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+        ),
+        __T3CODE_BUILD_CHANNEL__: JSON.stringify(repoEnv.T3CODE_RELEASE_CHANNEL ?? "local"),
         __T3CODE_BUILD_RELAY_URL__: JSON.stringify(repoEnv.T3CODE_RELAY_URL?.trim() ?? ""),
         __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
           repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",

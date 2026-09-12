@@ -13,6 +13,7 @@ import {
 import { parsePnpmWorkspaceConfig } from "../../../scripts/lib/pnpm-workspace.ts";
 import { resolveCatalogDependencies } from "../../../scripts/lib/resolve-catalog.ts";
 import serverPackageJson from "../package.json" with { type: "json" };
+import { assertFreshClientBuild } from "../../../scripts/lib/client-build.ts";
 
 interface PackageJson {
   name: string;
@@ -144,6 +145,22 @@ const buildCmd = Command.make(
       const fs = yield* FileSystem.FileSystem;
       const repoRoot = yield* RepoRoot;
       const serverDir = path.join(repoRoot, "apps/server");
+      const webDist = path.join(repoRoot, "apps/web/dist");
+      if (!(yield* fs.exists(path.join(webDist, "index.html")))) {
+        return yield* new CliError({
+          message:
+            "Missing web build. Run pnpm build from the repository root before packaging the CLI.",
+        });
+      }
+      yield* Effect.try({
+        try: () => assertFreshClientBuild(repoRoot, webDist),
+        catch: (cause) =>
+          new CliError({
+            message:
+              "Web build is missing its current source stamp. Run pnpm build at the repository root.",
+            cause,
+          }),
+      });
 
       yield* Effect.log("[cli] Running tsdown...");
       yield* runCommand(
@@ -156,16 +173,19 @@ const buildCmd = Command.make(
         }),
       );
 
-      const webDist = path.join(repoRoot, "apps/web/dist");
       const clientTarget = path.join(serverDir, "dist/client");
+      yield* Effect.try({
+        try: () => assertFreshClientBuild(repoRoot, webDist),
+        catch: (cause) =>
+          new CliError({
+            message: "Web sources changed while building the CLI. Rerun pnpm build.",
+            cause,
+          }),
+      });
 
-      if (yield* fs.exists(webDist)) {
-        yield* fs.copy(webDist, clientTarget);
-        yield* applyDevelopmentIconOverrides(repoRoot, serverDir);
-        yield* Effect.log("[cli] Bundled web app into dist/client");
-      } else {
-        yield* Effect.logWarning("[cli] Web dist not found — skipping client bundle.");
-      }
+      yield* fs.copy(webDist, clientTarget);
+      yield* applyDevelopmentIconOverrides(repoRoot, serverDir);
+      yield* Effect.log("[cli] Bundled web app into dist/client");
     }),
 ).pipe(Command.withDescription("Build the server package (tsdown + bundle web client)."));
 

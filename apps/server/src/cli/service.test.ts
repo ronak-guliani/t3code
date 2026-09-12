@@ -44,7 +44,7 @@ it("reports unsupported platforms explicitly", () => {
   );
 });
 
-it.effect("restarts an already healthy service so Connect reconciles immediately", () =>
+it.effect("retains a healthy service on setup retries", () =>
   Effect.gen(function* () {
     let restarts = 0;
     const service = BootService.BootService.of({
@@ -85,6 +85,8 @@ it.effect("restarts an already healthy service so Connect reconciles immediately
         current: true,
       }),
     );
+    assert.equal(restarts, 0);
+    assert.isTrue(yield* restartHealthyCurrentService(service, yield* service.status, true));
     assert.equal(restarts, 1);
   }),
 );

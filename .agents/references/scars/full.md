@@ -17,8 +17,11 @@
 
 ## Runtime lifecycle and projection foundations
 
+- Runtime PID files published after HTTP startup are observations, not startup ownership. Hold a shared per-state-directory OS-backed claim before constructing runtime services/migrations, revalidate legacy runtime evidence under it, and never unlink the claim file to recover a crash.
+
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
 - Session startup/resume and turn lifecycle require predictable recovery: terminal reconciliation must settle the matching projected turn and clear `session.activeTurnId`; preserve a pre-acknowledgement start failure's `messageId`; and preserve terminal provider-event ordering during normal adapter shutdown.
+- Provider `turn.aborted` events may arrive after interrupt handling clears `session.activeTurnId`: use durable per-turn abort activity to reject later completion signals, condition session writes on the expected active turn at command application, project resolved turn IDs into activity, and clear tool-update fingerprints.
 - `TurnLifecycleRuntime` owns provider-session reconciliation, provider intent execution, runtime-event ingestion, and completion checkpoint ordering behind one `start`/`drain` interface; reconcile sessions before starting workers, and keep explicit thread-title regeneration outside this module.
 - Projection rows, projector cursors, and durable reconciliation intent must commit together; run shell-summary and attachment reconciliation only after commit, keep it idempotent, and resume pending work during bootstrap.
 - Attachment reconciliation must retain every persisted `ChatAttachment` variant through `attachmentRelativePath`, not just images; file attachments use `.bin`.
@@ -27,6 +30,7 @@
 - SQLite migration IDs are globally append-only, including divergent historical ledgers. New migrations must be idempotent repairs: ensure prerequisite tables exist before `ALTER` and append missing-column/table fixes above every historical ID rather than rewriting skipped IDs.
 - Backfill projection keys from event JSON in one grouped pass, then join by indexed IDs; a correlated event-history lookup per projection row makes startup work quadratic.
 - Materialize FTS5 `rank` before windowing; compute snippets only for selected rows.
+- Transcript search limits apply to thread winners, not raw messages: even a large message cap can hide a thread. Preserve score, timestamp, thread-ID, and message-ID tie-breaks before truncating; cover a dominant thread beyond the cap and equal-score hits across more than 20 threads.
 - Bound thread activity reads before decoding payloads; page legacy `NULL` sequences by timestamp and ID.
 - Fast-append projected thread activity only when the current array is comparator-sorted, its ID is new, and it belongs at or after the tail; restart-loaded, duplicate, and out-of-order activity must retain the filter/sort fallback and 500-item cap.
 - History pagination availability must follow the rendered turn, not total thread activity; during live caps, mark history only when an activity from that turn is actually evicted.
@@ -40,6 +44,7 @@
 
 ## Desktop packaging and React state
 
+- Chat thread URLs can outlive a desktop backend port. Resolve stale loopback links by their explicitly registered environment ID, while preserving exact-origin environment bindings and keeping arbitrary website URLs external.
 - Work-log display paths must use verbatim provider candidates, not Git-normalized changed paths: absolute patch paths are rejected without a cwd. Prefer raw input/ACP locations over shortened previews, and never treat JSON output as a filename.
 - Keep visited work-log bodies local to their virtual timeline row, lazy before first expansion, and hidden after collapse. Preserve mounted details through closing/reversal so output parsing and DOM reconstruction do not interrupt the animation.
 - Command labels must come from input metadata, never a tool's output/detail fallback. Repeated completed work may be folded for display, but preserve every call and keep distinct commands, paths, turns, active calls, and failures separate.
@@ -87,6 +92,11 @@
 
 ## Delegation and handoff transactions
 
+- Reused children need explicit assignment identity on reports and a checkpoint generation fence; never infer a late report's assignment from the child's current metadata. Queue an assignment or decision response in the same transaction as its lifecycle change.
+- Keep an undelivered decision response correlated with its original report until dispatch. Deleting it restores the question; deleting a queued assignment must terminate that assignment rather than strand it.
+- Persist collection deadlines and reconstruct scoped timers on restart. A delayed nudge must not block explicit user work, and a decision's delivery or dismissal must not resolve the decision. Keep only current assignment/decision state in thread metadata; historical reports belong to the existing event/activity log.
+- Coalesce drain requests received while a thread is already draining; dropping a deadline wake defers ready work to the recovery sweep. Failed automatic nudges must remain retryable without blocking explicit queued turns.
+
 - Child notification dedupe must also suppress causally derived queue/meta events in the same transaction; otherwise a retried notification can recreate a dismissed nudge. Keep queued child updates separate from parent execution status until dispatch.
 - Provider notifications retain source timestamps. When appending a new nudge batch, order it after the existing queue tail; never let delayed completion timestamps move it ahead of user-authored queued messages.
 - `thread.turn.diff.complete` also carries speculative mid-turn diffs; exclude those from assignment completion. Render child report summaries literally, without parsing user-prompt terminal or preview metadata.
@@ -104,6 +114,8 @@
 
 ## PR reviews and checkpoint provenance
 
+- Skill triggers that include "draft a PR description" must branch to read-only delivery before staging or publishing; only a publication request authorizes creating a PR, which defaults to ready-for-review unless draft status is explicit.
+
 - Review findings must never be silently dropped: reviewers cite file line numbers that often land on unchanged context, so anchor findings to any line the diff renders and only discard ones naming a file outside the reviewed diff. Review threads stay conversational — refresh the result on every turn that emits reviewer JSON, re-resolve the snapshot it is anchored to, and identify the raw-JSON message by content rather than assuming it is the last assistant message.
 - PR metadata writes preserve monitor ownership by default. Only commands carrying explicit transfer intent may replace an owner; inherited/refresh writes use ancestry only as an ownerless fallback, validated before a compare-and-swap claim.
 - Agent PR creation can succeed without the follow-up association tool. Recover from persisted, unambiguous assistant PR URLs only after fresh checkout validation; retry missing metadata after restart and guard dispatch against concurrent thread updates. Never infer an association from branch equality alone.
@@ -118,6 +130,11 @@
 - Resolve preferred/fallback checkpoint refs once inside the diff operation and reuse their commit OIDs for projection and Git diff; separate existence preflights duplicate Git work and can race ref updates.
 
 ## Release builds and mobile integration
+
+- Root build commands must name real package tasks, not self-pruned recursive aliases. Stamp web inputs before compilation, compare after compilation and before server packaging, and reject missing/stale clients rather than shipping a successful headless-only artifact.
+- Web freshness includes every directly imported workspace package and the normalized effective public build configuration, not only tracked web files. Hash configuration rather than recording values, and keep ordinary strict default-directory resolution out of an explicit discovery picker.
+- Resumed host setup must not restart an already-current healthy service merely to check readiness. Preserve installed bind/cwd settings on updates, and reuse one revocable CLI session across bounded provisioning polls.
+- Fork release CLI packages need their own executable name and GitHub release assets. Do not copy pnpm selector-style overrides into npm manifests: selectors such as `parent>child` are invalid npm package names.
 
 - Keep mobile chat virtual-cell geometry synchronous: interrupted Reanimated layout transitions can finish at stale positions after text resizing or scroll-anchor corrections. Preserve opacity/chevron animations, and inspect native frames visually; LegendList's reported positions can remain correct while UIKit draws gaps or overlaps.
 - Installer path checks may ascend missing ancestors only after `ENOENT` and an absent `lstat` entry; permission/I/O errors and dangling or looping symlinks must not become accepted lexical paths.
@@ -137,6 +154,7 @@
 - `HttpApiBuilder.group` only defines handlers; mount typed HTTP groups through `HttpApiBuilder.layer` or requests fall through to the SPA while clients report JSON decode failures.
 - Official mobile clients report background activity immediately and every 25 seconds; identify leases by authenticated session plus stable device ID, retain a monotonic internal socket generation for ownership, cleanup, and per-socket caps, suppress cross-session heartbeat fanout, expire stale host-power constraints, and reject both late reports and late teardown from superseded sockets.
 - T3 Connect credentials are DPoP-bound end to end: persist the relay-minted proof-key thumbprint through pairing and session issuance, return `token_type=DPoP`, consume each proof `jti` once, verify its key, URL, method, and token hash, and permit proof-bound sessions to mint only single-use `wsTicket` credentials.
+- CLI environment selection must preserve explicit `--base-dir` as the authoritative same-environment agent binding, apply persisted account/manual selection only to otherwise untargeted user commands, and fail closed instead of falling back to local when a selected remote target is unavailable.
 - Windows Smoke must keep the broad package suite but use a curated server seam; the full server suite contains POSIX service, path, permission, and descriptor contracts that belong on the Linux quality runner.
 - Background-service health must use an instance-private PID-owned state file while the server also maintains shared CLI discovery state; a shared health file lets unrelated foreground servers satisfy or erase service health.
 - LaunchAgent bootstrap already starts `RunAtLoad` jobs: never immediately kill that process with `kickstart -k`. Wait for asynchronous bootout to fully unload before restarting, then wait boundedly for a running PID before probing it. Copy installed production dependencies with the CLI; a relocated `dist` alone cannot resolve external packages.
@@ -171,6 +189,8 @@
 
 ## Pairing and environment recovery
 
+- Public environment IDs, file ownership, and live PIDs do not authenticate a local HTTP listener: PID reuse and port takeover can admit impostor HTML into a privileged renderer. Keep automatic desktop attachment disabled until the transport is instance-authenticated; use explicit API connections from a desktop-owned renderer. An explicit missing default must never create a replacement history.
+
 - Owned tunnels are independent of account-linked Connect. Persist disabled intent before stopping, stop on unreadable configuration, and verify the public endpoint's environment ID before minting pairing links. Keep client revocation available even when the origin listens only on loopback.
 - Owner role does not override explicit session scopes; enforce operation scopes on every management route. Connector crash backoff must gate polling reconciliation as well as exit supervision.
 - Pairing QR payloads must use the shared canonical `/pair#token=...` URL; desktop-only deep-link shapes can silently parse as tokenless hosts in the RN client.
@@ -200,6 +220,9 @@
 
 - Migrations that `ALTER` a table created by an earlier ID must first ensure that table exists: a divergent ledger high-water mark can skip the CREATE (e.g. 033 `projection_queued_turns`) and leave later migrations such as 056 failing with `no such table`, blocking CLI/server startup. Prefer reusing the earlier migration's idempotent `CREATE IF NOT EXISTS` before adding columns.
 - Divergent ledgers can also skip mid-range column migrations while still advancing past them (e.g. 29-34 reused for unrelated names). Later startup then fails with `no such column` on shell/thread projection (`parent_thread_id`, `pending_runtime_mode`, `resume_cursor_json`, turn-file checkpoint columns). Append an idempotent repair migration above every historical ledger ID rather than rewriting the skipped IDs.
+- Generated columns are hidden from `PRAGMA table_info` (use `table_xinfo`): a `table_info` idempotency guard re-runs `ADD COLUMN` and fails with a duplicate column error, and migration tests asserting via `table_info` pass vacuously. Guard and assert generated columns with `table_xinfo`.
+- Generated column expressions must be total over real rows: `json_extract` throws `malformed JSON` on invalid payloads, which fails the INSERT (snapshot capping happens before decode, so invalid rows legitimately exist). Guard extractions with `json_valid`.
+- `NodeSqliteClient` decides reader vs writer via `statement.columns().length`: preparing `ALTER ... ADD COLUMN ... STORED` reports a `raise(ABORT, 'cannot add a STORED column')` pseudo-column, so a pure-write DDL takes the `.all()` reader path. It still applies today, but DDL behavior depends on statement-shape sniffing rather than intent — prefer metadata-only changes such as VIRTUAL generated columns, and assert the resulting schema in the migration test, not just a clean run.
 
 ## Client state and completion
 
@@ -259,6 +282,7 @@
 - Use `Schema.is` rather than `instanceof` for Effect Schema types; the patched Windows TypeScript runner treats `instanceof` diagnostics as fatal.
 - Cross-platform subprocess fixtures must use the guaranteed Node runtime (`process.execPath`), not an undeclared Bun dependency; Windows resolves missing commands through `cmd.exe` and obscures the startup failure as exit code 1.
 - When adapting web perf rules to mobile, share one native `AppState` subscription with a module-level fan-out (`subscribeToAppStateChange`) instead of one listener per hook instance, and version persisted mobile documents in-payload with legacy-tolerant readers rather than renaming keys; key renames orphan existing installs while missing-version reads stay backward compatible.
+- A Windows PowerShell subprocess launched through Node can inherit PowerShell 7's incompatible module paths. Restrict built-in-only probes to `$PSHOME/Modules` inside the child before any cmdlet runs; cover inherited shadow modules without weakening ACL failures.
 
 ## UI discovery and browser capture
 

@@ -40,6 +40,8 @@ import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts"
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
+import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
 import {
   latestCapturedCheckpointTurnCount,
   resolveThreadWorkspaceCwd,
@@ -733,6 +735,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
   const serverSettingsService = yield* ServerSettingsService;
   const processedEventReceipts = yield* SynchronizedRef.make<ProcessedEventReceiptState>({
     completed: new Set(),
@@ -764,15 +767,15 @@ const make = Effect.gen(function* () {
     return true;
   };
 
-  const clearProjectedToolUpdate = (event: ProviderRuntimeEvent): void => {
+  const clearProjectedToolUpdate = (event: ProviderRuntimeEvent, terminalTurnId?: TurnId): void => {
     if (event.type === "item.completed" && event.itemId !== undefined) {
       projectedToolUpdateStatuses.delete(
         `${event.threadId}\u0000${event.turnId ?? ""}\u0000${event.itemId}`,
       );
       return;
     }
-    if (event.type === "turn.completed") {
-      const prefix = `${event.threadId}\u0000${event.turnId ?? ""}\u0000`;
+    if (event.type === "turn.completed" || event.type === "turn.aborted") {
+      const prefix = `${event.threadId}\u0000${terminalTurnId ?? event.turnId ?? ""}\u0000`;
       for (const key of projectedToolUpdateStatuses.keys()) {
         if (key.startsWith(prefix)) {
           projectedToolUpdateStatuses.delete(key);
@@ -1691,14 +1694,34 @@ const make = Effect.gen(function* () {
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
       const lifecycleTurnId =
-        event.type === "turn.completed" && eventTurnId === undefined && activeTurnId !== null
-          ? activeTurnId
+        (event.type === "turn.completed" || event.type === "turn.aborted") &&
+        eventTurnId === undefined
+          ? (activeTurnId ??
+            (event.type === "turn.aborted" && thread.latestTurn?.state === "interrupted"
+              ? thread.latestTurn.turnId
+              : undefined))
           : eventTurnId;
 
-      const conflictsWithActiveTurn =
+      const matchesActiveTurn =
         activeTurnId !== null &&
         lifecycleTurnId !== undefined &&
-        !sameId(activeTurnId, lifecycleTurnId);
+        sameId(activeTurnId, lifecycleTurnId);
+      const conflictsWithActiveTurn =
+        activeTurnId !== null && lifecycleTurnId !== undefined && !matchesActiveTurn;
+      const matchesExpectedInterruptedTurn =
+        lifecycleTurnId !== undefined &&
+        thread.latestTurn?.state === "interrupted" &&
+        sameId(thread.latestTurn.turnId, lifecycleTurnId);
+      const wasTurnAborted =
+        event.type === "turn.completed" && lifecycleTurnId !== undefined
+          ? yield* projectionThreadActivityRepository.hasKindForTurn({
+              threadId: thread.id,
+              turnId: lifecycleTurnId,
+              kind: "insights.turn.aborted",
+            })
+          : false;
+      const isDuplicateCompletionAfterInterruption =
+        event.type === "turn.completed" && wasTurnAborted;
 
       const shouldApplyThreadLifecycle = (() => {
         if (!STRICT_PROVIDER_LIFECYCLE_GUARD) {
@@ -1713,6 +1736,9 @@ const make = Effect.gen(function* () {
           case "turn.started":
             return !conflictsWithActiveTurn;
           case "turn.completed":
+            if (isDuplicateCompletionAfterInterruption) {
+              return false;
+            }
             if (conflictsWithActiveTurn) {
               return false;
             }
@@ -1722,10 +1748,18 @@ const make = Effect.gen(function* () {
             }
             // If no active turn is tracked, accept completion scoped to this thread.
             return true;
+          case "turn.aborted":
+            return matchesActiveTurn;
           default:
             return true;
         }
       })();
+      const shouldFinalizeTerminalTurn =
+        (event.type === "turn.completed" && !isDuplicateCompletionAfterInterruption) ||
+        (event.type === "turn.aborted" &&
+          (!STRICT_PROVIDER_LIFECYCLE_GUARD ||
+            matchesActiveTurn ||
+            matchesExpectedInterruptedTurn));
       const acceptedTurnStartedSourcePlan =
         event.type === "turn.started" && shouldApplyThreadLifecycle
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
@@ -1737,7 +1771,8 @@ const make = Effect.gen(function* () {
         event.type === "session.exited" ||
         event.type === "thread.started" ||
         event.type === "turn.started" ||
-        event.type === "turn.completed";
+        event.type === "turn.completed" ||
+        event.type === "turn.aborted";
       const dispatchThreadLifecycleUpdate = () =>
         Effect.gen(function* () {
           if (!isThreadLifecycleEvent || !shouldApplyThreadLifecycle) {
@@ -1747,7 +1782,9 @@ const make = Effect.gen(function* () {
           const nextActiveTurnId =
             event.type === "turn.started"
               ? (lifecycleTurnId ?? null)
-              : event.type === "turn.completed" || event.type === "session.exited"
+              : event.type === "turn.completed" ||
+                  event.type === "turn.aborted" ||
+                  event.type === "session.exited"
                 ? null
                 : activeTurnId;
           const status = (() => {
@@ -1762,6 +1799,8 @@ const make = Effect.gen(function* () {
                 return normalizeRuntimeTurnState(event.payload.state) === "failed"
                   ? "error"
                   : "ready";
+              case "turn.aborted":
+                return "interrupted";
               case "session.started":
               case "thread.started":
                 // Provider thread/session start notifications can arrive during an
@@ -1775,9 +1814,11 @@ const make = Effect.gen(function* () {
               : event.type === "turn.completed" &&
                   normalizeRuntimeTurnState(event.payload.state) === "failed"
                 ? (event.payload.errorMessage ?? thread.session?.lastError ?? "Turn failed")
-                : status === "ready"
-                  ? null
-                  : (thread.session?.lastError ?? null);
+                : event.type === "turn.aborted"
+                  ? (thread.session?.lastError ?? null)
+                  : status === "ready"
+                    ? null
+                    : (thread.session?.lastError ?? null);
 
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
             yield* markSourceProposedPlanImplemented(
@@ -1818,17 +1859,20 @@ const make = Effect.gen(function* () {
               lastError,
               updatedAt: now,
             },
+            ...(event.type === "turn.aborted" && lifecycleTurnId !== undefined
+              ? { expectedActiveTurnId: lifecycleTurnId }
+              : {}),
             createdAt: now,
           });
         });
 
       if (isThreadLifecycleEvent) {
-        if (event.type === "turn.completed") {
-          const completedTurnId = lifecycleTurnId;
-          if (completedTurnId) {
+        if (shouldFinalizeTerminalTurn) {
+          const terminalTurnId = lifecycleTurnId;
+          if (terminalTurnId) {
             const assistantMessageIds = yield* getAssistantMessageIdsForTurn(
               thread.id,
-              completedTurnId,
+              terminalTurnId,
             );
             yield* Effect.forEach(
               assistantMessageIds,
@@ -1837,7 +1881,7 @@ const make = Effect.gen(function* () {
                   event,
                   threadId: thread.id,
                   messageId: assistantMessageId,
-                  turnId: completedTurnId,
+                  turnId: terminalTurnId,
                   createdAt: now,
                   commandTag: "assistant-complete-finalize",
                   finalDeltaCommandTag: "assistant-delta-finalize-fallback",
@@ -1847,17 +1891,19 @@ const make = Effect.gen(function* () {
                 }),
               { concurrency: 1 },
             ).pipe(Effect.asVoid);
-            yield* clearAssistantMessageIdsForTurn(thread.id, completedTurnId);
-            yield* clearAssistantSegmentStateForTurn(thread.id, completedTurnId);
+            yield* clearAssistantMessageIdsForTurn(thread.id, terminalTurnId);
+            yield* clearAssistantSegmentStateForTurn(thread.id, terminalTurnId);
 
-            yield* finalizeBufferedProposedPlan({
-              event,
-              threadId: thread.id,
-              threadProposedPlans: thread.proposedPlans,
-              planId: proposedPlanIdForTurn(thread.id, completedTurnId),
-              turnId: completedTurnId,
-              updatedAt: now,
-            });
+            if (event.type === "turn.completed") {
+              yield* finalizeBufferedProposedPlan({
+                event,
+                threadId: thread.id,
+                threadProposedPlans: thread.proposedPlans,
+                planId: proposedPlanIdForTurn(thread.id, terminalTurnId),
+                turnId: terminalTurnId,
+                updatedAt: now,
+              });
+            }
           }
         }
 
@@ -2172,10 +2218,17 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities =
-        event.type === "item.updated" && !shouldProjectToolUpdate(event)
+      const activities = isDuplicateCompletionAfterInterruption
+        ? []
+        : event.type === "item.updated" && !shouldProjectToolUpdate(event)
           ? []
-          : runtimeEventToActivities(event);
+          : runtimeEventToActivities(
+              event.type === "turn.aborted" &&
+                event.turnId === undefined &&
+                lifecycleTurnId !== undefined
+                ? { ...event, turnId: lifecycleTurnId }
+                : event,
+            );
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",
@@ -2185,7 +2238,7 @@ const make = Effect.gen(function* () {
           createdAt: activity.createdAt,
         }),
       ).pipe(Effect.asVoid);
-      clearProjectedToolUpdate(event);
+      clearProjectedToolUpdate(event, lifecycleTurnId);
     });
 
   const processRuntimeEventSafely = (event: ProviderRuntimeEvent) =>
@@ -2296,4 +2349,8 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive), Layer.provideMerge(CheckoutCoordinatorLive));
+).pipe(
+  Layer.provide(ProjectionTurnRepositoryLive),
+  Layer.provide(ProjectionThreadActivityRepositoryLive),
+  Layer.provideMerge(CheckoutCoordinatorLive),
+);

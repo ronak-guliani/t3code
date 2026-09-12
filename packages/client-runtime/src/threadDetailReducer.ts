@@ -181,6 +181,7 @@ export function applyThreadDetailEvent(
       return {
         kind: "updated",
         thread: {
+          nudging: event.payload.nudging,
           id: event.payload.threadId,
           projectId: event.payload.projectId,
           parentThreadId: event.payload.parentThreadId ?? null,
@@ -321,6 +322,7 @@ export function applyThreadDetailEvent(
         kind: "updated",
         thread: {
           ...thread,
+          ...(event.payload.nudging !== undefined ? { nudging: event.payload.nudging } : {}),
           ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
           ...(event.payload.titleRegeneration !== undefined
             ? { titleRegeneration: event.payload.titleRegeneration }

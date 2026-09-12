@@ -13,7 +13,7 @@ const baseDir = Flag.string("base-dir").pipe(Flag.optional);
 
 export const remoteRequest = (baseDir: Option.Option<string>, body?: object) =>
   withBorrowedBearerToken(
-    { baseDir, url: Option.none(), token: Option.none() },
+    { baseDir, url: Option.none(), token: Option.none(), environment: Option.none() },
     ({ origin, bearerToken }) =>
       Effect.gen(function* () {
         const request = body

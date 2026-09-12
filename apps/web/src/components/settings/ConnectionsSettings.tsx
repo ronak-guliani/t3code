@@ -69,6 +69,7 @@ import {
 } from "~/environments/runtime";
 import { MobilePairingDialog } from "./MobilePairingDialog";
 import { RemoteAccessSettings } from "./RemoteAccessSettings";
+import { LocalEnvironmentsSettings } from "./LocalEnvironmentsSettings";
 import { resolveCurrentOriginPairingUrl, useMobilePairing } from "./useMobilePairing";
 
 const accessTimestampFormatter = new Intl.DateTimeFormat(undefined, {
@@ -785,6 +786,9 @@ function SavedBackendListRow({
 
 export function ConnectionsSettings() {
   const desktopBridge = window.desktopBridge;
+  const [externallyManaged] = useState(
+    () => desktopBridge?.getLocalEnvironmentBootstrap?.()?.ownership === "external",
+  );
   const [currentSessionRole, setCurrentSessionRole] = useState<"owner" | "client" | null>(
     desktopBridge ? "owner" : null,
   );
@@ -838,7 +842,7 @@ export function ConnectionsSettings() {
   const [pendingDesktopServerExposureMode, setPendingDesktopServerExposureMode] = useState<
     DesktopServerExposureState["mode"] | null
   >(null);
-  const canManageLocalBackend = currentSessionRole === "owner";
+  const canManageLocalBackend = currentSessionRole === "owner" && !externallyManaged;
   const isLocalBackendNetworkAccessible = desktopBridge
     ? desktopServerExposureState?.mode === "network-accessible"
     : currentAuthPolicy === "remote-reachable";
@@ -1196,6 +1200,7 @@ export function ConnectionsSettings() {
   );
   return (
     <SettingsPageContainer>
+      <LocalEnvironmentsSettings />
       {canManageLocalBackend ? (
         <>
           <RemoteAccessSettings />

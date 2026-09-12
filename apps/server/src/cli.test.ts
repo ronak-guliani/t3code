@@ -1362,6 +1362,15 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
         "--base-dir",
         baseDir,
       ]);
+      yield* runCliWithRuntime([
+        "env",
+        "add",
+        "account:prod",
+        "--url",
+        "https://manual-prod.example.test",
+        "--base-dir",
+        baseDir,
+      ]);
 
       const listOutput = yield* captureStdout(runCli(["env", "list", "--base-dir", baseDir]));
       const list = JSON.parse(listOutput.output) as {
@@ -1372,10 +1381,15 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
         >;
       };
       assert.equal(list.current, "local");
-      assert.equal(list.environments.local?.token, "<redacted>");
-      assert.equal(list.environments.local?.secrets?.API_KEY, "<redacted>");
+      assert.equal(list.environments["manual:local"]?.token, "<redacted>");
+      assert.equal(list.environments["manual:local"]?.secrets?.API_KEY, "<redacted>");
+      assert.property(list.environments, "manual:account:prod");
 
       yield* runCliWithRuntime(["env", "rename", "local", "Renamed Local", "--base-dir", baseDir]);
+      yield* runCliWithRuntime(["env", "use", "manual:local", "--base-dir", baseDir]);
+      yield* runCliWithRuntime(["env", "clear", "--base-dir", baseDir]);
+      const clearedOutput = yield* captureStdout(runCli(["env", "list", "--base-dir", baseDir]));
+      assert.isNull((JSON.parse(clearedOutput.output) as { readonly current: unknown }).current);
       yield* runCliWithRuntime([
         "env",
         "secret",
@@ -1386,6 +1400,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
         baseDir,
       ]);
       yield* runCliWithRuntime(["env", "remove", "local", "--base-dir", baseDir]);
+      yield* runCliWithRuntime(["env", "remove", "account:prod", "--base-dir", baseDir]);
 
       const afterRemoveOutput = yield* captureStdout(
         runCli(["env", "list", "--base-dir", baseDir]),
