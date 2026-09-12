@@ -111,7 +111,7 @@ export async function makeWindowsService(input: {
     runtimeStatePath: join(instanceDir, "server-runtime.json"),
   };
   const description = `T3 Code managed host: ${baseDir}`;
-  const connect = `$scheduler=New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); $folder=$scheduler.GetFolder('\\'); $task=$null; try {$task=$folder.GetTask(${powershellLiteral(label)})} catch {if ($_.Exception.HResult -ne -2147024894) {throw}}; if ($task -and ($task.Definition.Principal.UserId -ne ${powershellLiteral(sid)} -or $task.Definition.Principal.LogonType -ne 3 -or $task.Definition.RegistrationInfo.Description -ne ${powershellLiteral(description)})) {throw 'Refusing to modify a scheduled task not owned by this T3 environment.'};`;
+  const connect = `$scheduler=New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); $folder=$scheduler.GetFolder('\\'); $task=$null; try {$task=$folder.GetTask(${powershellLiteral(label)})} catch {if ($_.Exception.GetBaseException().HResult -ne -2147024894) {throw}}; if ($task -and ($task.Definition.Principal.UserId -ne ${powershellLiteral(sid)} -or $task.Definition.Principal.LogonType -ne 3 -or $task.Definition.RegistrationInfo.Description -ne ${powershellLiteral(description)})) {throw 'Refusing to modify a scheduled task not owned by this T3 environment.'};`;
   const state = async () =>
     decodeState(
       await run(
