@@ -18,10 +18,14 @@ export async function readSelfTestRevision(cwd: string): Promise<SelfTestRevisio
   const hash = createHash("sha256").update(diff);
   for (const file of untracked.split("\0").filter(Boolean).sort()) {
     const path = join(cwd, file);
-    const contents = (await lstat(path)).isSymbolicLink()
-      ? await readlink(path)
-      : await readFile(path);
-    hash.update("\0").update(file).update("\0").update(contents);
+    const metadata = await lstat(path);
+    const type = metadata.isSymbolicLink() ? "symlink" : "file";
+    if (!metadata.isSymbolicLink() && !metadata.isFile()) {
+      throw new Error(`Unsupported untracked file type: ${file}`);
+    }
+    const contents = metadata.isSymbolicLink() ? await readlink(path) : await readFile(path);
+    hash.update(JSON.stringify([file, type, metadata.mode & 0o111, Buffer.byteLength(contents)]));
+    hash.update("\0").update(contents);
   }
   return { commit: commit.trim(), contentHash: hash.digest("hex") };
 }

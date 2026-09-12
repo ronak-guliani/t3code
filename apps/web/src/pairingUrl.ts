@@ -56,7 +56,7 @@ export function parsePairingCredential(value: string, origin: string): string {
   }
   const token = getPairingTokenFromUrl(url);
   if (url.pathname !== "/pair" || !token) {
-    throw new Error("This pairing link must contain /pair#token= and a one-time token.");
+    throw new Error("This pairing link must use the /pair path and contain a one-time token.");
   }
   return token;
 }

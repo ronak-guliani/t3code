@@ -14,6 +14,15 @@ describe("parsePairingCredential", () => {
     expect(parsePairingCredential(input, origin)).toBe(expected);
   });
 
+  it.each([`${origin}/pair?token=`, `${origin}/pair#token=`])(
+    "gives format-neutral guidance for an empty link token",
+    (input) => {
+      expect(() => parsePairingCredential(input, origin)).toThrow(
+        "This pairing link must use the /pair path and contain a one-time token.",
+      );
+    },
+  );
+
   it.each([
     "",
     "two tokens",

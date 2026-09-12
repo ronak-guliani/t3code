@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Effect, Schema } from "effect";
-import type { Browser, Page } from "playwright";
+import type { Browser, BrowserContext, Page, Request } from "playwright";
 import type { SelfTestDiagnostics, SelfTestMedia } from "../../../scripts/lib/selfTestEvidence.ts";
 
 export function createSelfTestContext(
@@ -20,16 +20,109 @@ export function createSelfTestContext(
           : {}),
       });
     }),
-    (context) =>
-      Effect.promise(async () => {
-        await context.close();
-        if (output) {
-          await writeFile(join(output, "diagnostics.json"), JSON.stringify(diagnostics), {
-            mode: 0o600,
-          });
-        }
-      }),
+    (context) => Effect.promise(() => closeSelfTestContext(context, output, diagnostics)),
   );
+}
+
+export async function closeSelfTestContext(
+  context: Pick<BrowserContext, "close">,
+  output: string | undefined,
+  diagnostics: SelfTestDiagnostics,
+) {
+  const failures: unknown[] = [];
+  try {
+    await context.close();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (output) {
+    try {
+      await writeFile(join(output, "diagnostics.json"), JSON.stringify(diagnostics), {
+        mode: 0o600,
+      });
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Browser shutdown and diagnostics persistence failed.");
+  }
+}
+
+export function hashSelfTestFrame(data: Uint8ClampedArray): number {
+  let hash = 2166136261;
+  for (let i = 0; i < data.length; i += 4) {
+    for (let channel = 0; channel < 3; channel += 1) {
+      hash = Math.imul(hash ^ (data[i + channel]! >> 4), 16777619);
+    }
+  }
+  return hash;
+}
+
+export function trackSelfTestRequests(
+  page: Page,
+  origin: string,
+  diagnostics: { failedRequests: number },
+  expectingRejectedToken: () => boolean,
+) {
+  const failures: string[] = [];
+  const inFlight = new Set<Request>();
+  const navigationAborts = new WeakSet<Request>();
+  const acknowledgedTraceExports = new WeakSet<Request>();
+  let navigationPending = false;
+  page.on("request", (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      for (const pending of inFlight) navigationAborts.add(pending);
+    }
+    inFlight.add(request);
+    if (navigationPending) navigationAborts.add(request);
+  });
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) navigationPending = false;
+  });
+  page.on("requestfinished", (request) => inFlight.delete(request));
+  page.on("requestfailed", (request) => {
+    inFlight.delete(request);
+    if (
+      (navigationAborts.has(request) || acknowledgedTraceExports.has(request)) &&
+      request.failure()?.errorText === "net::ERR_ABORTED"
+    )
+      return;
+    failures.push(
+      `${request.failure()?.errorText ?? "request failed"} ${new URL(request.url()).pathname}`,
+    );
+    diagnostics.failedRequests += 1;
+  });
+  page.on("response", (response) => {
+    // The scoped tracing client cancels its fetch after the server's no-content acknowledgement.
+    if (
+      response.status() === 204 &&
+      response.url() === `${origin}/api/observability/v1/traces` &&
+      response.request().method() === "POST"
+    )
+      acknowledgedTraceExports.add(response.request());
+    if (response.status() < 400) return;
+    if (
+      expectingRejectedToken() &&
+      response.status() === 401 &&
+      response.url() === `${origin}/api/auth/bootstrap` &&
+      response.request().method() === "POST"
+    )
+      return;
+    failures.push(`${response.status()} ${new URL(response.url()).pathname}`);
+    diagnostics.failedRequests += 1;
+  });
+  const navigate = async <T>(action: () => Promise<T>): Promise<T> => {
+    for (const request of inFlight) navigationAborts.add(request);
+    navigationPending = true;
+    try {
+      return await action();
+    } finally {
+      navigationPending = false;
+    }
+  };
+  return { failures, navigate };
 }
 
 export function trackSelfTestConsole(
@@ -97,11 +190,7 @@ async function inspectMedia(page: Page, bytes: Buffer, recording: boolean) {
           max = Math.max(max, value);
         }
         if (max - min < 12) throw new Error("Capture appears blank");
-        let hash = 2166136261;
-        for (let i = 0; i < data.length; i += 4) {
-          hash = Math.imul(hash ^ (data[i] >> 4), 16777619);
-        }
-        frames.add(hash);
+        frames.add((${hashSelfTestFrame.toString()})(data));
       };
       ${
         recording

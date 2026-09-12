@@ -36,6 +36,9 @@ Failed runs retain unverified recordings in the run's `raw/` directory and count
 Unexpected console errors block verification, including during pairing. The intentional
 consumed-token bootstrap 401 and native unauthenticated WebSocket rejection during pairing
 are counted separately, not silently ignored; application `console.error` calls still fail.
+Network checks cover pairing and recovery too. Exempt only the intentional bootstrap rejection,
+requests aborted by a recorded navigation, and tracing fetch cancellation after an exact 204
+acknowledgement. A blanket pairing-phase or aborted-request exclusion is not valid.
 
 Use this skill for the web client. This checkout does not install a `test-t3-mobile` skill. For mobile testing, use the existing app-specific tooling and an isolated backend, or state clearly that mobile validation is unavailable rather than following a missing workflow.
 

@@ -43,6 +43,7 @@ import {
   createSelfTestContext,
   finishSelfTestCapture,
   trackSelfTestConsole,
+  trackSelfTestRequests,
 } from "./selfTestCapture.ts";
 
 const desktopBootstrapToken = "direct-connect-smoke-owner";
@@ -523,9 +524,13 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         });
         const browserDiagnostics: string[] = [];
         const pageErrors: string[] = [];
-        const failedRequests: string[] = [];
-        let checkingAuthenticatedRequests = false;
         let consolePhase: "pairing" | "rejected-token" | "authenticated" = "pairing";
+        const { failures: failedRequests, navigate } = trackSelfTestRequests(
+          page,
+          origin,
+          diagnostics,
+          () => consolePhase === "rejected-token",
+        );
         trackSelfTestConsole(page, origin, diagnostics, () => consolePhase);
         page.on("console", (message) => {
           if (message.type() === "error" || message.type() === "warning") {
@@ -537,21 +542,6 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           pageErrors.push(error.name);
           diagnostics.pageErrors += 1;
         });
-        page.on("requestfailed", (request) => {
-          if (
-            checkingAuthenticatedRequests &&
-            request.failure()?.errorText !== "net::ERR_ABORTED"
-          ) {
-            failedRequests.push(new URL(request.url()).pathname);
-            diagnostics.failedRequests += 1;
-          }
-        });
-        page.on("response", (response) => {
-          if (checkingAuthenticatedRequests && response.status() >= 400) {
-            failedRequests.push(`${response.status()} ${new URL(response.url()).pathname}`);
-            diagnostics.failedRequests += 1;
-          }
-        });
         let browserWebSocketCount = 0;
         page.on("websocket", (socket) => {
           if (new URL(socket.url()).pathname === "/ws") {
@@ -559,7 +549,9 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           }
         });
         yield* Effect.promise(() =>
-          page.goto(`${origin}/pair#token=${encodeURIComponent(browserCredential)}`),
+          navigate(() =>
+            page.goto(`${origin}/pair#token=${encodeURIComponent(browserCredential)}`),
+          ),
         );
         yield* Effect.promise(async () => {
           try {
@@ -587,7 +579,6 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(cookies.some((cookie) => cookie.name.startsWith("t3_session"))).toBe(true);
         expect(browserWebSocketCount).toBeGreaterThan(0);
 
-        checkingAuthenticatedRequests = true;
         consolePhase = "authenticated";
         const browserSockets: WebSocketRoute[] = [];
         yield* Effect.promise(() =>
@@ -599,7 +590,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
             },
           ),
         );
-        yield* Effect.promise(() => page.reload());
+        yield* Effect.promise(() => navigate(() => page.reload()));
         yield* Effect.promise(() =>
           page.getByText("Direct Connect Project", { exact: true }).waitFor({
             state: "visible",
@@ -654,11 +645,23 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(browserNavigationCount).toBe(navigationCountBeforeDrop);
 
         // Exercise the manual recovery path with the real server, not a mocked bootstrap.
-        checkingAuthenticatedRequests = false;
         consolePhase = "pairing";
         yield* Effect.promise(() => context.clearCookies());
-        yield* Effect.promise(() => page.goto(`${origin}/pair`));
+        yield* Effect.promise(() => navigate(() => page.goto(`${origin}/pair`)));
         yield* Effect.promise(() => page.getByLabel("Pairing token").waitFor({ state: "visible" }));
+        yield* Effect.promise(() => page.getByLabel("Pairing token").fill(`${origin}/pair?token=`));
+        yield* Effect.promise(() =>
+          page.getByRole("button", { name: "Continue", exact: true }).click(),
+        );
+        yield* Effect.promise(() => page.getByRole("alert").waitFor({ state: "visible" }));
+        expect(yield* Effect.promise(() => page.getByRole("alert").innerText())).toBe(
+          "This pairing link must use the /pair path and contain a one-time token.",
+        );
+        const invalidLinkScreenshot = captureOutput
+          ? yield* Effect.promise(() =>
+              captureSelfTestScreenshot(page, captureOutput, "pairing-invalid-link.png"),
+            )
+          : undefined;
         yield* Effect.promise(() =>
           page.getByLabel("Pairing token").fill(`${origin}/pair#token=${browserCredential}`),
         );
@@ -684,9 +687,8 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         yield* Effect.promise(() =>
           page.getByText("Direct Connect Project", { exact: true }).waitFor({ state: "visible" }),
         );
-        checkingAuthenticatedRequests = true;
         consolePhase = "authenticated";
-        yield* Effect.promise(() => page.reload());
+        yield* Effect.promise(() => navigate(() => page.reload()));
         yield* Effect.promise(() =>
           page.getByText("Direct Connect Project", { exact: true }).waitFor({ state: "visible" }),
         );
@@ -703,7 +705,6 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(pageErrors).toEqual([]);
         expect(failedRequests).toEqual([]);
         expect(diagnostics.consoleErrors, browserDiagnostics.join("\n")).toBe(0);
-        checkingAuthenticatedRequests = false;
 
         unsubscribeShell();
         unsubscribeLifecycle();
@@ -742,7 +743,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(revokedSnapshot.status).toBe(401);
 
         yield* Effect.promise(() => transport.dispose()).pipe(Effect.timeout("10 seconds"));
-        yield* Effect.promise(() => context.close());
+        yield* Effect.promise(() => navigate(() => context.close()));
         if (captureOutput && screenshot) {
           const videoPath = yield* Effect.promise(() => page.video()!.path());
           yield* Effect.promise(() =>
@@ -750,10 +751,13 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
               browser,
               captureOutput,
               videoPath,
-              recoveryScreenshot ? [recoveryScreenshot, screenshot] : [screenshot],
+              [invalidLinkScreenshot, recoveryScreenshot, screenshot].filter(
+                (item) => item !== undefined,
+              ),
               [
                 "One-time URL pairing establishes an authenticated browser session.",
                 "Consumed credentials fail visibly and are cleared.",
+                "Malformed pairing links show format-neutral guidance for query and fragment tokens.",
                 "A fresh same-origin pairing link can be pasted into the recovery form.",
                 "The authenticated project remains visible after reload.",
                 "The browser recovers from a forced WebSocket disconnect without reloading and receives live project updates.",
@@ -891,4 +895,51 @@ it("retains unverified video and console diagnostics after a browser assertion f
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
+}, 30_000);
+
+it("counts unexpected network failures throughout pairing and recovery", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const origin = "http://self-test.invalid";
+    await page.route(`${origin}/**`, async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/") {
+        await route.fulfill({ contentType: "text/html", body: "<h1>Network accounting</h1>" });
+      } else if (path === "/aborted") {
+        await route.abort("aborted");
+      } else {
+        await route.fulfill({ status: path === "/api/auth/bootstrap" ? 401 : 503, body: "" });
+      }
+    });
+    const diagnostics = { failedRequests: 0 };
+    let rejectedToken = false;
+    const { failures } = trackSelfTestRequests(page, origin, diagnostics, () => rejectedToken);
+    await page.goto(origin);
+    await page.evaluate(`fetch("/initial-asset").then(response => response.text())`);
+    await expect.poll(() => diagnostics.failedRequests).toBe(1);
+    rejectedToken = true;
+    await page.evaluate(
+      `fetch("/api/auth/bootstrap", {method: "POST"}).then(response => response.text())`,
+    );
+    await page.evaluate(`fetch("/recovery-api").then(response => response.text())`);
+    await expect.poll(() => diagnostics.failedRequests).toBe(2);
+    rejectedToken = false;
+    await page.evaluate(
+      `fetch("/api/auth/bootstrap", {method: "POST"}).then(response => response.text())`,
+    );
+    await expect.poll(() => diagnostics.failedRequests).toBe(3);
+    await page.evaluate(
+      `fetch("/aborted").then(() => { throw new Error("Expected request failure"); }, () => undefined)`,
+    );
+    await expect.poll(() => diagnostics.failedRequests).toBe(4);
+    expect(failures).toEqual([
+      "503 /initial-asset",
+      "503 /recovery-api",
+      "401 /api/auth/bootstrap",
+      "net::ERR_ABORTED /aborted",
+    ]);
+  } finally {
+    await browser.close();
+  }
 }, 30_000);

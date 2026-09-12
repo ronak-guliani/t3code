@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -48,6 +48,30 @@ describe("self-test revision identity", () => {
     await writeFile(join(cwd, " new.txt"), "two");
     expect((await readSelfTestRevision(cwd)).contentHash).not.toBe(first.contentHash);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "distinguishes a file from a symlink with identical payload bytes",
+    async () => {
+      const path = join(cwd, "entry");
+      await writeFile(path, "target");
+      const regular = await readSelfTestRevision(cwd);
+      await rm(path);
+      await symlink("target", path);
+      expect((await readSelfTestRevision(cwd)).contentHash).not.toBe(regular.contentHash);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "invalidates executable-mode changes on untracked files",
+    async () => {
+      const path = join(cwd, "script");
+      await writeFile(path, "#!/bin/sh\nexit 0\n");
+      await chmod(path, 0o644);
+      const regular = await readSelfTestRevision(cwd);
+      await chmod(path, 0o755);
+      expect((await readSelfTestRevision(cwd)).contentHash).not.toBe(regular.contentHash);
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "hashes a symlink without following it outside the checkout",
