@@ -227,6 +227,27 @@ const completeInitialConfig = Effect.fn("TestRpcSessionFactory.completeInitialCo
 });
 
 describe("RpcSessionFactory", () => {
+  it.effect(
+    "classifies malformed initial configuration as incompatible rather than retryable transport failure",
+    () =>
+      Effect.gen(function* () {
+        const { factory, sockets } = yield* makeFactory();
+        const session = yield* factory.connect(PREPARED);
+        const ready = yield* session.ready.pipe(Effect.flip, Effect.forkChild);
+        const socket = yield* awaitSocket(sockets);
+        socket.open();
+        const request = yield* awaitRequest(socket);
+        socket.serverMessage(
+          encodeJson({
+            _tag: "Exit",
+            requestId: request.id,
+            exit: { _tag: "Success", value: { environment: "incompatible" } },
+          }),
+        );
+        const error = yield* Fiber.join(ready);
+        expect(error).toMatchObject({ _tag: "ConnectionBlockedError", reason: "unsupported" });
+      }),
+  );
   it.effect("rejects incompatible config before the driver exposes a connected session", () =>
     Effect.gen(function* () {
       const { factory, sockets } = yield* makeFactory();

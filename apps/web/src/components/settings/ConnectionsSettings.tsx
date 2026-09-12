@@ -69,6 +69,8 @@ import {
 } from "~/environments/runtime";
 import { MobilePairingDialog } from "./MobilePairingDialog";
 import { RemoteAccessSettings } from "./RemoteAccessSettings";
+import { connectAccountManagementUrl } from "../../cloud/connectCliAuth";
+import { CONNECT_ACTION_HELP } from "@t3tools/shared/connectManagement";
 import { LocalEnvironmentsSettings } from "./LocalEnvironmentsSettings";
 import { resolveCurrentOriginPairingUrl, useMobilePairing } from "./useMobilePairing";
 
@@ -1200,6 +1202,22 @@ export function ConnectionsSettings() {
   );
   return (
     <SettingsPageContainer>
+      <SettingsSection title="T3 Connect account">
+        <SettingsRow
+          title="Account environments"
+          description={CONNECT_ACTION_HELP}
+          control={
+            <a
+              className="text-sm underline"
+              href={connectAccountManagementUrl()}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Manage / Deregister environments
+            </a>
+          }
+        />
+      </SettingsSection>
       <LocalEnvironmentsSettings />
       {canManageLocalBackend ? (
         <>

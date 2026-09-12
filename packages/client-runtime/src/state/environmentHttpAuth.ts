@@ -4,7 +4,10 @@ import { FetchHttpClient, type HttpMethod } from "effect/unstable/http";
 
 import type { PreparedHttpAuthorization } from "../connection/model.ts";
 import type { ManagedRelayDpopSigner } from "../relay/managedRelay.ts";
-import { RemoteEnvironmentAuthFetchError } from "../rpc/http.ts";
+import {
+  RemoteEnvironmentAuthFetchError,
+  type RemoteEnvironmentRequestError,
+} from "../rpc/http.ts";
 
 export interface EnvironmentHttpAuthHeaders {
   readonly authorization?: string;
@@ -58,16 +61,72 @@ export const buildEnvironmentAuthHeaders = (
         cause: authorization._tag,
       });
     }
-    const proof = yield* signer.value
-      .createProof({ method, url, accessToken: authorization.accessToken })
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new RemoteEnvironmentAuthFetchError({
-              message: "Could not create the environment request authorization proof.",
-              cause,
-            }),
-        ),
-      );
-    return { authorization: `DPoP ${authorization.accessToken}`, dpop: proof };
+    const accessToken = authorization.renewAccessToken
+      ? yield* authorization.renewAccessToken().pipe(
+          Effect.mapError(
+            (cause) =>
+              new RemoteEnvironmentAuthFetchError({
+                message: "Could not renew environment HTTP authorization.",
+                cause,
+              }),
+          ),
+        )
+      : authorization.accessToken;
+    const proof = yield* signer.value.createProof({ method, url, accessToken }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new RemoteEnvironmentAuthFetchError({
+            message: "Could not create the environment request authorization proof.",
+            cause,
+          }),
+      ),
+    );
+    return { authorization: `DPoP ${accessToken}`, dpop: proof };
+  });
+
+/** The caller must be a read operation, even when its HTTP method is POST. */
+export const requestEnvironmentRead = <A, R>(
+  authorization: PreparedHttpAuthorization | null,
+  url: string,
+  signer: Option.Option<ManagedRelayDpopSigner["Service"]>,
+  request: (
+    headers: EnvironmentHttpAuthHeaders,
+  ) => Effect.Effect<A, RemoteEnvironmentRequestError, R>,
+  method: HttpMethod.HttpMethod = "GET",
+): Effect.Effect<A, RemoteEnvironmentRequestError, R> =>
+  Effect.gen(function* () {
+    const headers = yield* buildEnvironmentAuthHeaders(authorization, method, url, signer);
+    return yield* withEnvironmentCredentials(authorization, request(headers)).pipe(
+      Effect.catch((error) => {
+        const renew = authorization?._tag === "Dpop" ? authorization.renewAccessToken : undefined;
+        if (
+          !renew ||
+          !(
+            error._tag === "EnvironmentAuthInvalidError" ||
+            (error._tag === "RemoteEnvironmentAuthUndeclaredStatusError" && error.status === 401)
+          )
+        ) {
+          return Effect.fail(error);
+        }
+        return Effect.gen(function* () {
+          const rejected = headers.authorization?.slice("DPoP ".length);
+          const accessToken = yield* renew(rejected).pipe(
+            Effect.mapError(
+              (cause) =>
+                new RemoteEnvironmentAuthFetchError({
+                  message: "Could not renew rejected environment HTTP authorization.",
+                  cause,
+                }),
+            ),
+          );
+          const retryHeaders = yield* buildEnvironmentAuthHeaders(
+            { _tag: "Dpop", accessToken },
+            method,
+            url,
+            signer,
+          );
+          return yield* request(retryHeaders);
+        });
+      }),
+    );
   });

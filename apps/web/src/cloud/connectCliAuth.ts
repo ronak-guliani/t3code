@@ -35,6 +35,10 @@ function configuredHostedAppUrl(): string {
   return trimNonEmpty(import.meta.env.VITE_HOSTED_APP_URL) ?? DEFAULT_HOSTED_APP_URL;
 }
 
+export function connectAccountManagementUrl(): string {
+  return new URL("/connect/environments", configuredHostedAppUrl()).href;
+}
+
 export function buildConnectCliAuthorizeUrl(request: ConnectAuthorizeRequest): string | null {
   const publishableKey = resolveConnectCliAuthPublishableKey();
   const clientId = trimNonEmpty(import.meta.env.VITE_CLERK_CLI_OAUTH_CLIENT_ID);

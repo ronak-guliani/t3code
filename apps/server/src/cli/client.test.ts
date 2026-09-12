@@ -7,6 +7,9 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as NodeSocket from "@effect/platform-node/NodeSocket";
+import * as RpcClient from "effect/unstable/rpc/RpcClient";
+import { WsRpcGroup, WS_METHODS } from "@t3tools/contracts";
 
 import {
   CliRpcError,
@@ -22,6 +25,62 @@ it.effect("provides a Node WebSocket constructor for the CLI RPC protocol", () =
     Layer.build(wsRpcProtocolLayer("ws://127.0.0.1:3100/ws")).pipe(
       Effect.tap(() => Effect.sync(() => assert.isTrue(true))),
     ),
+  ),
+);
+
+it.live("resolves a fresh account ticket on every CLI protocol reconnect", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = yield* Effect.acquireRelease(
+        Effect.promise(
+          () =>
+            new Promise<NodeSocket.NodeWS.WebSocketServer>((resolve) => {
+              const server: NodeSocket.NodeWS.WebSocketServer =
+                new NodeSocket.NodeWS.WebSocketServer({ host: "127.0.0.1", port: 0 }, () =>
+                  resolve(server),
+                );
+            }),
+        ),
+        (server) =>
+          Effect.promise(
+            () =>
+              new Promise<void>((resolve) => {
+                for (const socket of server.clients) socket.terminate();
+                server.close(() => resolve());
+              }),
+          ),
+      );
+      const address = server.address();
+      if (!address || typeof address === "string")
+        return yield* Effect.die("Expected a TCP address");
+      const urls: string[] = [];
+      let closeFirst: (() => void) | undefined;
+      server.on("connection", (socket, request) => {
+        urls.push(request.url ?? "");
+        if (urls.length === 1) closeFirst = () => socket.close(1012, "test reconnect");
+        socket.on("message", (raw) => {
+          const message = JSON.parse(raw.toString());
+          if (message._tag === "Ping") socket.send(JSON.stringify({ _tag: "Pong" }));
+          if (message._tag === "Request")
+            socket.send(
+              JSON.stringify({
+                _tag: "Exit",
+                requestId: message.id,
+                exit: { _tag: "Success", value: {} },
+              }),
+            );
+        });
+      });
+      let ticket = 0;
+      const nextUrl = Effect.sync(() => `ws://127.0.0.1:${address.port}/ws?wsTicket=${++ticket}`);
+      yield* Effect.gen(function* () {
+        const client = yield* RpcClient.make(WsRpcGroup);
+        yield* client[WS_METHODS.serverProbe]({});
+        closeFirst?.();
+        while (urls.length < 2) yield* Effect.sleep("20 millis");
+        assert.deepEqual(urls.slice(0, 2), ["/ws?wsTicket=1", "/ws?wsTicket=2"]);
+      }).pipe(Effect.provide(wsRpcProtocolLayer(nextUrl)), Effect.timeout("5 seconds"));
+    }),
   ),
 );
 

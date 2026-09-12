@@ -210,6 +210,11 @@
 
 ## Mobile protocol compatibility
 
+- Browser DPoP requires `dpop` in the actual CORS allow-list; test a real preflight and a proof-bound authenticated request, including replay rejection, rather than only a header helper.
+- Resolve single-use CLI tickets inside WebSocket acquisition, not once before constructing a reconnecting transport. Recheck account and endpoint identity before sending cached credentials.
+- Initial RPC schema failures can arrive as defects rather than `RpcClientError`; normalize only schema defects into blocked compatibility errors and test a malformed wire response.
+- Share HTTP renewals in the runtime scope, not the initiating request's scope, and bind cached credentials to account/session identity, relay, key, environment, and scopes. Renewal must not tear down healthy sockets or clear drafts/outbox.
+
 - Favicon caches may key by workspace and icon revision locally, but keep `projectId` in the asset request; replacing it with required `cwd` breaks both old-client/new-server and new-client/old-server pairings.
 - Official mobile compatibility is an additive protocol boundary: retain legacy bootstrap and `wsToken` routes while serving scoped OAuth access tokens and `wsTicket`; persist granted scopes because role-derived authorization cannot represent restricted upstream tokens.
 - Effect RPC request IDs changed wire types across mobile releases; accept safe numeric and decimal-string IDs, normalize them internally, and echo each connection's original representation in chunks, exits, and defects.

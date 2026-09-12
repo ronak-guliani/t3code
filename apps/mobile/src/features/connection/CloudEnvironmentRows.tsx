@@ -8,6 +8,15 @@ import type { EnvironmentId, EnvironmentMachineKind } from "@t3tools/contracts";
 import { resolveEnvironmentMachineKind } from "@t3tools/shared/environmentMachine";
 import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useState } from "react";
+import { Alert } from "react-native";
+import { managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
+import {
+  CONNECT_ACTION_HELP,
+  CONNECT_CAPACITY_UNAVAILABLE,
+  DEREGISTER_ENVIRONMENT_CONSEQUENCES,
+} from "@t3tools/shared/connectManagement";
+import { deregisterEnvironment } from "../cloud/deregisterEnvironment";
+import { useAtomCommand } from "../../state/use-atom-command";
 import {
   ActivityIndicator,
   Pressable,
@@ -81,6 +90,27 @@ function CloudEnvironmentRowsContent(
   props: CloudEnvironmentRowsProps & { readonly discoveryAvailable?: boolean },
 ) {
   const controller = useConnectionController();
+  const identity = useAtomValue(managedRelaySessionAtom);
+  const deregister = useAtomCommand(deregisterEnvironment, "Deregister account environment");
+  const confirmDeregister = (environmentId: EnvironmentId, label: string) => {
+    if (!identity) return;
+    Alert.alert(
+      `Deregister ${label}?`,
+      `${environmentId}\n\n${DEREGISTER_ENVIRONMENT_CONSEQUENCES}`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Deregister",
+          style: "destructive",
+          onPress: () => {
+            void deregister({ environmentId, identity }).then((result) => {
+              if (result._tag === "Success") void controller.refreshRelayEnvironments();
+            });
+          },
+        },
+      ],
+    );
+  };
   const discoveryAvailable = props.discoveryAvailable ?? true;
   const availableCloudEnvironments = discoveryAvailable
     ? (props.showcaseAvailableEnvironments ?? controller.availableRelayEnvironments)
@@ -145,6 +175,11 @@ function CloudEnvironmentRowsContent(
               onDisconnect={() => handleDisconnectCloudEnvironment(environment.environmentId)}
               errorExpanded={expandedErrorId === environment.environmentId}
               onToggleError={() => handleToggleCloudError(environment.environmentId)}
+              onDeregister={
+                discoveryAvailable && identity
+                  ? () => confirmDeregister(environment.environmentId, environment.environmentLabel)
+                  : undefined
+              }
             />
           ))}
           {availableCloudEnvironments.map((environment, index) => (
@@ -155,6 +190,15 @@ function CloudEnvironmentRowsContent(
               onConnect={() => handleConnectCloudEnvironment(environment)}
               errorExpanded={expandedErrorId === environment.environment.environmentId}
               onToggleError={() => handleToggleCloudError(environment.environment.environmentId)}
+              onDeregister={
+                identity
+                  ? () =>
+                      confirmDeregister(
+                        environment.environment.environmentId,
+                        environment.environment.label,
+                      )
+                  : undefined
+              }
             />
           ))}
         </View>
@@ -172,6 +216,12 @@ function CloudEnvironmentRowsContent(
           </Text>
         </View>
       )}
+      {discoveryAvailable ? (
+        <View className="gap-2 px-1">
+          <Text className="text-xs text-foreground-muted">{CONNECT_ACTION_HELP}</Text>
+          <Text className="text-xs text-foreground-muted">{CONNECT_CAPACITY_UNAVAILABLE}</Text>
+        </View>
+      ) : null}
 
       {/* Rendered alongside any connected rows — a failed discovery must not
           hide behind an otherwise-healthy list. */}
@@ -202,6 +252,7 @@ function CloudEnvironmentRowsContent(
 }
 
 function ConnectedCloudEnvironmentRow(props: {
+  readonly onDeregister?: (() => void) | undefined;
   readonly environment: ConnectedEnvironmentSummary;
   readonly borderTop: boolean;
   readonly errorExpanded: boolean;
@@ -221,6 +272,8 @@ function ConnectedCloudEnvironmentRow(props: {
         connectionState={props.environment.connectionState}
         errorExpanded={props.errorExpanded}
         label={props.environment.environmentLabel}
+        environmentId={props.environment.environmentId}
+        onDeregister={props.onDeregister}
         machine={resolveEnvironmentMachineKind(serverConfig)}
         onValueChange={(enabled) => {
           if (enabled) {
@@ -237,6 +290,7 @@ function ConnectedCloudEnvironmentRow(props: {
 }
 
 function CloudEnvironmentRow(props: {
+  readonly onDeregister?: (() => void) | undefined;
   readonly environment: RelayEnvironmentView;
   readonly borderTop: boolean;
   readonly errorExpanded: boolean;
@@ -258,6 +312,8 @@ function CloudEnvironmentRow(props: {
       connectionState={presentation.connectionState}
       errorExpanded={props.errorExpanded}
       label={props.environment.environment.label}
+      environmentId={props.environment.environment.environmentId}
+      onDeregister={props.onDeregister}
       onValueChange={(enabled) => {
         if (enabled) {
           props.onConnect();
@@ -271,6 +327,8 @@ function CloudEnvironmentRow(props: {
 }
 
 function CloudEnvironmentRowShell(props: {
+  readonly environmentId: EnvironmentId;
+  readonly onDeregister?: (() => void) | undefined;
   readonly borderTop: boolean;
   readonly connectionError: string | null;
   readonly connectionErrorTraceId: string | null;
@@ -348,7 +406,20 @@ function CloudEnvironmentRowShell(props: {
           >
             {props.label}
           </Text>
+          {props.onDeregister ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Deregister ${props.label}`}
+              onPress={props.onDeregister}
+              className="px-2 py-1"
+            >
+              <Text className="text-xs text-adaptive-rose-500-400">Deregister</Text>
+            </Pressable>
+          ) : null}
         </View>
+        <Text selectable className="text-xs text-foreground-muted">
+          {props.environmentId}
+        </Text>
         {props.connectionError ? (
           <Text
             aria-hidden

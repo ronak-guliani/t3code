@@ -19,6 +19,7 @@ import { Route as SettingsWorkflowsRouteImport } from './routes/settings.workflo
 import { Route as SettingsGeneralRouteImport } from './routes/settings.general'
 import { Route as SettingsConnectionsRouteImport } from './routes/settings.connections'
 import { Route as SettingsArchivedRouteImport } from './routes/settings.archived'
+import { Route as ConnectEnvironmentsRouteImport } from './routes/connect_.environments'
 import { Route as ConnectCallbackRouteImport } from './routes/connect_.callback'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
@@ -73,6 +74,11 @@ const SettingsArchivedRoute = SettingsArchivedRouteImport.update({
   path: '/archived',
   getParentRoute: () => SettingsRoute,
 } as any)
+const ConnectEnvironmentsRoute = ConnectEnvironmentsRouteImport.update({
+  id: '/connect_/environments',
+  path: '/connect/environments',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ConnectCallbackRoute = ConnectCallbackRouteImport.update({
   id: '/connect_/callback',
   path: '/connect/callback',
@@ -103,6 +109,7 @@ export interface FileRoutesByFullPath {
   '/skills': typeof SkillsRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/connect/callback': typeof ConnectCallbackRoute
+  '/connect/environments': typeof ConnectEnvironmentsRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
   '/settings/general': typeof SettingsGeneralRoute
@@ -117,6 +124,7 @@ export interface FileRoutesByTo {
   '/skills': typeof SkillsRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/connect/callback': typeof ConnectCallbackRoute
+  '/connect/environments': typeof ConnectEnvironmentsRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
   '/settings/general': typeof SettingsGeneralRoute
@@ -134,6 +142,7 @@ export interface FileRoutesById {
   '/skills': typeof SkillsRoute
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/connect_/callback': typeof ConnectCallbackRoute
+  '/connect_/environments': typeof ConnectEnvironmentsRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
   '/settings/general': typeof SettingsGeneralRoute
@@ -152,6 +161,7 @@ export interface FileRouteTypes {
     | '/skills'
     | '/pull-requests'
     | '/connect/callback'
+    | '/connect/environments'
     | '/settings/archived'
     | '/settings/connections'
     | '/settings/general'
@@ -166,6 +176,7 @@ export interface FileRouteTypes {
     | '/skills'
     | '/pull-requests'
     | '/connect/callback'
+    | '/connect/environments'
     | '/settings/archived'
     | '/settings/connections'
     | '/settings/general'
@@ -182,6 +193,7 @@ export interface FileRouteTypes {
     | '/skills'
     | '/_chat/pull-requests'
     | '/connect_/callback'
+    | '/connect_/environments'
     | '/settings/archived'
     | '/settings/connections'
     | '/settings/general'
@@ -198,6 +210,7 @@ export interface RootRouteChildren {
   SettingsRoute: typeof SettingsRouteWithChildren
   SkillsRoute: typeof SkillsRoute
   ConnectCallbackRoute: typeof ConnectCallbackRoute
+  ConnectEnvironmentsRoute: typeof ConnectEnvironmentsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -272,6 +285,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsArchivedRouteImport
       parentRoute: typeof SettingsRoute
     }
+    '/connect_/environments': {
+      id: '/connect_/environments'
+      path: '/connect/environments'
+      fullPath: '/connect/environments'
+      preLoaderRoute: typeof ConnectEnvironmentsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/connect_/callback': {
       id: '/connect_/callback'
       path: '/connect/callback'
@@ -344,6 +364,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsRoute: SettingsRouteWithChildren,
   SkillsRoute: SkillsRoute,
   ConnectCallbackRoute: ConnectCallbackRoute,
+  ConnectEnvironmentsRoute: ConnectEnvironmentsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

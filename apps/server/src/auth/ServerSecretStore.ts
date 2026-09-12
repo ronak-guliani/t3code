@@ -4,6 +4,7 @@ import { Context, Data, Effect, FileSystem, Layer, Option, Path, Predicate } fro
 import * as PlatformError from "effect/PlatformError";
 
 import { ServerConfig } from "../config.ts";
+import { protectWindowsSecretDirectory } from "./windowsSecretProtection.ts";
 
 export class SecretStorePersistError extends Data.TaggedError("SecretStorePersistError")<{
   readonly resource: string;
@@ -85,6 +86,12 @@ export const layer = Layer.effect(
     const serverConfig = yield* ServerConfig;
 
     yield* fileSystem.makeDirectory(serverConfig.secretsDir, { recursive: true });
+    if (process.platform === "win32") {
+      yield* Effect.tryPromise({
+        try: () => protectWindowsSecretDirectory(serverConfig.secretsDir),
+        catch: (cause) => new SecretStorePersistError({ resource: serverConfig.secretsDir, cause }),
+      });
+    }
     yield* fileSystem.chmod(serverConfig.secretsDir, 0o700).pipe(
       Effect.mapError(
         (cause) =>
