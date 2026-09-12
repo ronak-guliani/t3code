@@ -1,4 +1,4 @@
-import { EventId, ThreadId } from "@t3tools/contracts";
+import { EventId, ThreadId, TurnId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
@@ -11,6 +11,40 @@ const layer = it.layer(
 );
 
 layer("ProjectionThreadActivityRepository", (it) => {
+  it.effect("checks activity kind by concrete turn", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadActivityRepository;
+      const threadId = ThreadId.make("thread-turn-kind");
+      const turnId = TurnId.make("turn-aborted");
+
+      yield* repository.upsert({
+        activityId: EventId.make("activity-turn-aborted"),
+        threadId,
+        turnId,
+        tone: "info",
+        kind: "insights.turn.aborted",
+        summary: "Turn aborted",
+        payload: {},
+        createdAt: "2026-09-12T00:00:00.000Z",
+      });
+
+      assert.isTrue(
+        yield* repository.hasKindForTurn({
+          threadId,
+          turnId,
+          kind: "insights.turn.aborted",
+        }),
+      );
+      assert.isFalse(
+        yield* repository.hasKindForTurn({
+          threadId,
+          turnId,
+          kind: "insights.turn.completed",
+        }),
+      );
+    }),
+  );
+
   it.effect("lists only user-input lifecycle activities in chronological order", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadActivityRepository;

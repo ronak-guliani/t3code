@@ -2092,6 +2092,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (
+        command.expectedActiveTurnId !== undefined &&
+        thread.session?.activeTurnId !== command.expectedActiveTurnId
+      ) {
+        return [];
+      }
       const sessionSetEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
