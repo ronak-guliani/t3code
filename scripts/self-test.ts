@@ -13,6 +13,7 @@ import {
   type SelfTestMedia,
 } from "./lib/selfTestEvidence.ts";
 import { readSelfTestRevision } from "./lib/selfTestRevision.ts";
+import { verifySelfTestMedia } from "./lib/selfTestPublication.ts";
 
 const exec = promisify(execFile);
 const decodeManifest = Schema.decodeUnknownSync(SelfTestManifest);
@@ -58,11 +59,7 @@ async function verifyPublication(manifest: SelfTestManifest): Promise<void> {
     ) {
       throw new Error("A published artifact is missing from the PR.");
     }
-    const response = await fetch(media.url, {
-      method: "HEAD",
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!response.ok) throw new Error("A published artifact is no longer accessible.");
+    await verifySelfTestMedia(media);
   }
 }
 
@@ -198,12 +195,6 @@ async function publish(prUrl: string | undefined): Promise<void> {
       });
       await save(manifest);
     }
-    const response = await fetch(manifest.media[index]!.url!, {
-      method: "HEAD",
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!response.ok)
-      throw new Error("Published evidence is not accessible; PR was not marked verified.");
   }
   const section = [
     "## Self-test evidence",
