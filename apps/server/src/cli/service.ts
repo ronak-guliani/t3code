@@ -188,6 +188,25 @@ const installPreservingServiceSettings = (
     });
   });
 
+export const resolveBackgroundServiceAction = (
+  status: BootService.ServiceStatus,
+  restartRequired = false,
+) => {
+  if (
+    status.installed &&
+    status.enabled &&
+    status.current &&
+    status.processAlive &&
+    status.responsive
+  ) {
+    return restartRequired ? ("restart" as const) : ("ready" as const);
+  }
+  if (status.installed && status.enabled && status.current && status.processAlive) {
+    return "restart" as const;
+  }
+  return "install" as const;
+};
+
 export const ensureBackgroundService = (input?: {
   readonly cwd?: string;
   readonly restartRequired?: boolean;
@@ -198,20 +217,9 @@ export const ensureBackgroundService = (input?: {
     if (!status.supported) {
       return yield* new BootService.BootServiceUnsupportedError({ platform: status.platform });
     }
-    if (
-      status.installed &&
-      status.enabled &&
-      status.current &&
-      status.processAlive &&
-      status.responsive
-    ) {
-      if (input?.restartRequired) {
-        yield* service.restart;
-        return "restarted" as const;
-      }
-      return "ready" as const;
-    }
-    if (status.installed && status.current && status.processAlive) {
+    const action = resolveBackgroundServiceAction(status, input?.restartRequired);
+    if (action === "ready") return "ready" as const;
+    if (action === "restart") {
       yield* service.restart;
       return "restarted" as const;
     }

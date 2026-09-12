@@ -5,6 +5,7 @@ import * as BootService from "../cloud/bootService.ts";
 import {
   ensureBackgroundService,
   formatServiceStatus,
+  resolveBackgroundServiceAction,
   restartHealthyCurrentService,
 } from "./service.ts";
 
@@ -212,3 +213,21 @@ it.effect("restarts an unresponsive current service during remote setup", () =>
     assert.equal(restarts, 1);
   }),
 );
+
+it("repairs rather than restarts a disabled service with a live process", () => {
+  assert.strictEqual(
+    resolveBackgroundServiceAction({
+      ...paths,
+      supported: true,
+      platform: "win32",
+      installed: true,
+      enabled: false,
+      loaded: true,
+      processAlive: true,
+      responsive: false,
+      pid: 4321,
+      current: true,
+    }),
+    "install",
+  );
+});

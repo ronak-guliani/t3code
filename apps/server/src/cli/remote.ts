@@ -14,23 +14,35 @@ import { ensureBackgroundServiceForBaseDir } from "./service.ts";
 
 const baseDir = Flag.string("base-dir").pipe(Flag.optional);
 
-const ensureRemoteSetupHost = (resolvedBaseDir: string) =>
-  Effect.gen(function* () {
-    const runtime = yield* Effect.tryPromise(() => inspectRuntimeOwnership(resolvedBaseDir));
-    if (runtime.state === "running" && runtime.owner !== "background") return;
-    const outcome = yield* ensureBackgroundServiceForBaseDir(resolvedBaseDir, {
-      restartRequired: runtime.state === "stopped",
-    });
-    if (outcome !== "ready") {
-      yield* Console.log(
-        outcome === "installed"
-          ? "No T3 host was running, so the background service was installed and started."
-          : outcome === "repaired"
-            ? "The background service was repaired and started."
-            : "The background service was restarted.",
+export const makeEnsureRemoteSetupHost =
+  (dependencies: {
+    readonly inspectRuntimeOwnership: typeof inspectRuntimeOwnership;
+    readonly ensureBackgroundServiceForBaseDir: typeof ensureBackgroundServiceForBaseDir;
+  }) =>
+  (resolvedBaseDir: string) =>
+    Effect.gen(function* () {
+      const runtime = yield* Effect.tryPromise(() =>
+        dependencies.inspectRuntimeOwnership(resolvedBaseDir),
       );
-    }
-  });
+      if (runtime.state === "running" && runtime.owner !== "background") return;
+      const outcome = yield* dependencies.ensureBackgroundServiceForBaseDir(resolvedBaseDir, {
+        restartRequired: runtime.state === "stopped",
+      });
+      if (outcome !== "ready") {
+        yield* Console.log(
+          outcome === "installed"
+            ? "No T3 host was running, so the background service was installed and started."
+            : outcome === "repaired"
+              ? "The background service was repaired and started."
+              : "The background service was restarted.",
+        );
+      }
+    });
+
+const ensureRemoteSetupHost = makeEnsureRemoteSetupHost({
+  inspectRuntimeOwnership,
+  ensureBackgroundServiceForBaseDir,
+});
 
 export const remoteRequest = (baseDir: Option.Option<string>, body?: object) =>
   withBorrowedBearerToken(
