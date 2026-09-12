@@ -1672,6 +1672,10 @@ async function reportToParentTool(
       "report_to_parent requires reportId (1-200 characters), summary (1-4000 characters), and a valid kind",
     );
   }
+  const originTurnId = asString(args.originTurnId)?.trim();
+  if (!originTurnId) {
+    throw new Error("report_to_parent requires originTurnId from the current T3 execution context");
+  }
   const result = await runCommand(options.cwd, options.cliCommand, [
     ...(options.cliArgsPrefix ?? []),
     "chat",
@@ -1685,6 +1689,8 @@ async function reportToParentTool(
     ...(assignmentId ? ["--assignment-id", assignmentId] : []),
     ...(decision ? ["--decision", JSON.stringify(decision)] : []),
     ...(args.canContinue !== undefined ? ["--can-continue", String(args.canContinue)] : []),
+    "--turn-id",
+    originTurnId,
     ...(asString(args.supersedesReportId)
       ? ["--supersedes-report", String(args.supersedesReportId)]
       : []),
@@ -1938,8 +1944,13 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
           type: "string",
           description: "Exact ID of the unresolved decision being replaced.",
         },
+        originTurnId: {
+          type: "string",
+          description:
+            "The immutable T3 execution turn ID provided in the current prompt. Pass it exactly; never infer it from current thread state.",
+        },
       },
-      required: ["reportId", "kind", "summary"],
+      required: ["reportId", "kind", "summary", "originTurnId"],
     },
   },
   {

@@ -2239,6 +2239,7 @@ const chatNewCommand = Command.make("new", {
                 ? {
                     delegation: {
                       assignmentId: firstMessageId,
+                      dispatchId: crypto.randomUUID(),
                       followUp: flags.followUp.value,
                       completedAt: null,
                     },
@@ -2607,6 +2608,18 @@ const chatCommand = Command.make("chat").pipe(
       canContinue: Flag.choice("can-continue", ["true", "false"]).pipe(Flag.optional),
       supersedesReportId: Flag.string("supersedes-report").pipe(Flag.optional),
       crossThreadCapability: Flag.string("cross-thread-capability"),
+      dispatchId: Flag.string("dispatch-id").pipe(
+        Flag.optional,
+        Flag.withDescription(
+          "Execution dispatch presenting this report. Must come from the reporting execution's context; never inferred from live thread state.",
+        ),
+      ),
+      originTurnId: Flag.string("turn-id").pipe(
+        Flag.optional,
+        Flag.withDescription(
+          "Provider turn that produced this report. Must come from the reporting execution's session context.",
+        ),
+      ),
     }).pipe(
       Command.withDescription("Report an update from an authenticated delegated child."),
       Command.withHandler((flags) =>
@@ -2615,11 +2628,24 @@ const chatCommand = Command.make("chat").pipe(
             const decision = Option.isSome(flags.decision)
               ? yield* decodeChildDecisionJson(flags.decision.value)
               : undefined;
+            const presentedDispatchId = Option.getOrUndefined(flags.dispatchId);
+            const originTurnId = Option.getOrUndefined(flags.originTurnId);
+            const dispatchId =
+              presentedDispatchId ?? thread.nudging?.delegation?.dispatchId ?? undefined;
+            const assignmentId =
+              Option.getOrUndefined(flags.assignmentId) ??
+              thread.nudging?.delegation?.assignmentId ??
+              "";
+            // Older report_to_parent clients omit the dispatch. Resolve the
+            // active generation before receipt lookup so a new execution cannot
+            // replay a prior generation's command receipt. The immutable turn
+            // still proves which execution issued the report.
+            const keyBase = dispatchId
+              ? `child-report:${thread.id}:${dispatchId}:${assignmentId}:${flags.reportId}`
+              : `child-report:${thread.id}:${assignmentId}:${flags.reportId}`;
             return yield* dispatch({
               type: "thread.child.report",
-              commandId: CommandId.make(
-                `child-report:${thread.id}:${Option.getOrUndefined(flags.assignmentId) ?? thread.nudging?.delegation?.assignmentId ?? ""}:${flags.reportId}`,
-              ),
+              commandId: CommandId.make(originTurnId ? `${keyBase}:${originTurnId}` : keyBase),
               threadId: thread.id,
               reportId: flags.reportId,
               kind: flags.kind,
@@ -2627,6 +2653,8 @@ const chatCommand = Command.make("chat").pipe(
               ...(Option.isSome(flags.assignmentId)
                 ? { assignmentId: MessageId.make(flags.assignmentId.value) }
                 : {}),
+              ...(dispatchId ? { dispatchId } : {}),
+              ...(originTurnId ? { originTurnId: TurnId.make(originTurnId) } : {}),
               ...(decision ? { decision } : {}),
               ...(Option.isSome(flags.canContinue)
                 ? { canContinue: flags.canContinue.value === "true" }
