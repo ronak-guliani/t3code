@@ -13,6 +13,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/unstable/ai";
 import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { PNG } from "pngjs";
 
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -22,10 +23,10 @@ const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
 const tabId = PreviewTabId.make("tab-mcp-test");
 const alternateTabId = PreviewTabId.make("tab-mcp-alternate");
-const png = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1cAAAAASUVORK5CYII=",
-  "base64",
-);
+const png = PNG.sync.write(new PNG({ width: 1, height: 1 }));
+const invalidCrcPng = Buffer.from(png);
+invalidCrcPng.writeUInt32BE(0, 29);
+const missingPixelsPng = Buffer.concat([png.subarray(0, 33), png.subarray(-12)]);
 const invocation = {
   environmentId,
   threadId,
@@ -65,18 +66,24 @@ it.each([
   { data: Buffer.from("not a png").toString("base64"), width: 1280, height: 800 },
   { data: png.toString("base64"), width: 1280, height: 800 },
   { data: png.subarray(0, 33).toString("base64"), width: 1, height: 1 },
-])("reports invalid screenshot pixels as failure while retaining diagnostics", (screenshot) => {
-  const result = McpHttpServer.encodePreviewSnapshotResult({
-    visibleText: "Pair with this environment",
-    screenshot: { mimeType: "image/png", ...screenshot },
-  });
-  expect(result.isError).toBe(true);
-  expect(result.content.some((item) => item.type === "image")).toBe(false);
-  expect(result.structuredContent).toMatchObject({
-    visibleText: "Pair with this environment",
-    error: { _tag: "PreviewScreenshotInvalid" },
-  });
-});
+  { data: invalidCrcPng.toString("base64"), width: 1, height: 1 },
+  { data: missingPixelsPng.toString("base64"), width: 1, height: 1 },
+  { data: png.toString("base64"), width: 100_000, height: 100_000 },
+])(
+  "reports invalid screenshot pixels as failure while retaining diagnostics",
+  async (screenshot) => {
+    const result = await McpHttpServer.encodePreviewSnapshotResult({
+      visibleText: "Pair with this environment",
+      screenshot: { mimeType: "image/png", ...screenshot },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content.some((item) => item.type === "image")).toBe(false);
+    expect(result.structuredContent).toMatchObject({
+      visibleText: "Pair with this environment",
+      error: { _tag: "PreviewScreenshotInvalid" },
+    });
+  },
+);
 
 it("returns an actionable expired-session response with a Bearer challenge", () => {
   expect(McpHttpServer.invalidMcpCredentialResponse.status).toBe(401);

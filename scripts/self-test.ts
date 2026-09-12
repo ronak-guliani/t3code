@@ -1,6 +1,6 @@
 import { spawn, execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Schema } from "effect";
@@ -8,6 +8,7 @@ import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 import {
   SelfTestManifest,
   SelfTestCapture,
+  SelfTestDiagnostics,
   selfTestBlockers,
   replaceSelfTestSection,
   type SelfTestMedia,
@@ -18,6 +19,7 @@ import { verifySelfTestMedia } from "./lib/selfTestPublication.ts";
 const exec = promisify(execFile);
 const decodeManifest = Schema.decodeUnknownSync(SelfTestManifest);
 const decodeCapture = Schema.decodeUnknownSync(SelfTestCapture);
+const decodeDiagnostics = Schema.decodeUnknownSync(SelfTestDiagnostics);
 const root = resolve(import.meta.dirname, "..");
 const directory = join(root, ".t3", "self-test");
 const latestPath = join(directory, "latest.json");
@@ -122,6 +124,15 @@ async function run(): Promise<void> {
   });
   manifest = { ...manifest, status: "failed", exitCode, completedAt: new Date().toISOString() };
   await save(manifest);
+  if ((await readdir(output)).includes("diagnostics.json")) {
+    manifest = {
+      ...manifest,
+      diagnostics: decodeDiagnostics(
+        JSON.parse(await readFile(join(output, "diagnostics.json"), "utf8")),
+      ),
+    };
+    await save(manifest);
+  }
   if (exitCode !== 0) throw new Error(`Self-test failed (exit ${exitCode}); see ${output}.`);
   const capture = decodeCapture(JSON.parse(await readFile(join(output, "capture.json"), "utf8")));
   const captured: SelfTestManifest = { ...manifest, ...capture, status: "passed" };

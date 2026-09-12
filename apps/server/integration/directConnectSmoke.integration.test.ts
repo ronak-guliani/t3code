@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import { chromium } from "playwright";
 import {
+  Cause,
   Deferred,
   Data,
   DateTime,
@@ -37,7 +38,12 @@ import { ClientPresentation } from "../../../packages/client-runtime/src/platfor
 import { remoteHttpClientLayer } from "../../../packages/client-runtime/src/rpc/http.ts";
 import { resolveRemoteWebSocketConnectionUrl } from "../../../packages/client-runtime/src/remote.ts";
 import { WsTransport } from "../../../packages/client-runtime/src/wsTransport.ts";
-import { captureSelfTestScreenshot, finishSelfTestCapture } from "./selfTestCapture.ts";
+import {
+  captureSelfTestScreenshot,
+  createSelfTestContext,
+  finishSelfTestCapture,
+  trackSelfTestConsole,
+} from "./selfTestCapture.ts";
 
 const desktopBootstrapToken = "direct-connect-smoke-owner";
 const projectId = ProjectId.make("project-direct-connect-smoke");
@@ -503,27 +509,20 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           Effect.promise(() => chromium.launch({ headless: true })),
           (instance) => Effect.promise(() => instance.close()),
         );
-        const context = yield* Effect.acquireRelease(
-          Effect.promise(() =>
-            browser.newContext({
-              viewport: { width: 1280, height: 800 },
-              ...(captureOutput
-                ? {
-                    recordVideo: {
-                      dir: path.join(baseDir, "videos"),
-                      size: { width: 1280, height: 800 },
-                    },
-                  }
-                : {}),
-            }),
-          ),
-          (browserContext) => Effect.promise(() => browserContext.close()),
-        );
+        const diagnostics = {
+          pageErrors: 0,
+          failedRequests: 0,
+          consoleErrors: 0,
+          expectedConsoleErrors: 0,
+        };
+        const context = yield* createSelfTestContext(browser, captureOutput, diagnostics);
         const page = yield* Effect.promise(() => context.newPage());
         const browserDiagnostics: string[] = [];
         const pageErrors: string[] = [];
         const failedRequests: string[] = [];
         let checkingAuthenticatedRequests = false;
+        let consolePhase: "pairing" | "rejected-token" | "authenticated" = "pairing";
+        trackSelfTestConsole(page, origin, diagnostics, () => consolePhase);
         page.on("console", (message) => {
           if (message.type() === "error" || message.type() === "warning") {
             browserDiagnostics.push(`${message.type()}: ${message.text()}`);
@@ -532,6 +531,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         page.on("pageerror", (error) => {
           browserDiagnostics.push(`pageerror: ${error.message}`);
           pageErrors.push(error.name);
+          diagnostics.pageErrors += 1;
         });
         page.on("requestfailed", (request) => {
           if (
@@ -539,11 +539,13 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
             request.failure()?.errorText !== "net::ERR_ABORTED"
           ) {
             failedRequests.push(new URL(request.url()).pathname);
+            diagnostics.failedRequests += 1;
           }
         });
         page.on("response", (response) => {
           if (checkingAuthenticatedRequests && response.status() >= 400) {
             failedRequests.push(`${response.status()} ${new URL(response.url()).pathname}`);
+            diagnostics.failedRequests += 1;
           }
         });
         let browserWebSocketCount = 0;
@@ -582,6 +584,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(browserWebSocketCount).toBeGreaterThan(0);
 
         checkingAuthenticatedRequests = true;
+        consolePhase = "authenticated";
         yield* Effect.promise(() => page.reload());
         yield* Effect.promise(() =>
           page.getByText("Direct Connect Project", { exact: true }).waitFor({
@@ -600,17 +603,20 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
 
         // Exercise the manual recovery path with the real server, not a mocked bootstrap.
         checkingAuthenticatedRequests = false;
+        consolePhase = "pairing";
         yield* Effect.promise(() => context.clearCookies());
         yield* Effect.promise(() => page.goto(`${origin}/pair`));
         yield* Effect.promise(() => page.getByLabel("Pairing token").waitFor({ state: "visible" }));
         yield* Effect.promise(() =>
           page.getByLabel("Pairing token").fill(`${origin}/pair#token=${browserCredential}`),
         );
+        consolePhase = "rejected-token";
         yield* Effect.promise(() =>
           page.getByRole("button", { name: "Continue", exact: true }).click(),
         );
         yield* Effect.promise(() => page.getByRole("alert").waitFor({ state: "visible" }));
         expect(yield* Effect.promise(() => page.getByLabel("Pairing token").inputValue())).toBe("");
+        consolePhase = "pairing";
         const recoveryScreenshot = captureOutput
           ? yield* Effect.promise(() =>
               captureSelfTestScreenshot(page, captureOutput, "pairing-recovery.png"),
@@ -627,6 +633,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           page.getByText("Direct Connect Project", { exact: true }).waitFor({ state: "visible" }),
         );
         checkingAuthenticatedRequests = true;
+        consolePhase = "authenticated";
         yield* Effect.promise(() => page.reload());
         yield* Effect.promise(() =>
           page.getByText("Direct Connect Project", { exact: true }).waitFor({ state: "visible" }),
@@ -643,6 +650,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           : undefined;
         expect(pageErrors).toEqual([]);
         expect(failedRequests).toEqual([]);
+        expect(diagnostics.consoleErrors, browserDiagnostics.join("\n")).toBe(0);
         checkingAuthenticatedRequests = false;
 
         unsubscribeShell();
@@ -698,7 +706,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
                 "The authenticated project remains visible after reload.",
                 "Live synchronization and involuntary reconnect preserve project state.",
               ],
-              { pageErrors: pageErrors.length, failedRequests: failedRequests.length },
+              diagnostics,
             ),
           );
         }
@@ -771,3 +779,63 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 }, 120_000);
+
+it("retains unverified video and console diagnostics after a browser assertion fails", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const output = yield* fs.makeTempDirectoryScoped();
+        const browser = yield* Effect.acquireRelease(
+          Effect.promise(() => chromium.launch({ headless: true })),
+          (instance) => Effect.promise(() => instance.close()),
+        );
+        const diagnostics = {
+          pageErrors: 0,
+          failedRequests: 0,
+          consoleErrors: 0,
+          expectedConsoleErrors: 0,
+        };
+        const failure = yield* Effect.exit(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const context = yield* createSelfTestContext(browser, output, diagnostics);
+              const page = yield* Effect.promise(() => context.newPage());
+              trackSelfTestConsole(page, "http://localhost", diagnostics, () => "rejected-token");
+              yield* Effect.promise(async () => {
+                await page.setContent("<h1>Deliberate failure capture</h1>");
+                await page.evaluate(`console.error("deliberate console failure")`);
+                await page.evaluate(
+                  `console.error("Failed to load resource: the server responded with a status of 401 (Unauthorized)")`,
+                );
+                await page.evaluate(
+                  `console.error("WebSocket connection to 'ws://localhost/ws' failed: HTTP Authentication failed; no valid credentials available")`,
+                );
+                await page.getByRole("heading").screenshot();
+                expect(await page.getByRole("heading").innerText()).toBe(
+                  "deliberately wrong heading",
+                );
+              });
+            }),
+          ),
+        );
+        if (Exit.isSuccess(failure))
+          throw new Error("The deliberate browser assertion did not fail.");
+        expect(Cause.pretty(failure.cause)).toContain("deliberately wrong heading");
+        expect(diagnostics.consoleErrors).toBe(3);
+        expect(diagnostics.expectedConsoleErrors).toBe(0);
+        const videos = yield* fs.readDirectory(path.join(output, "raw"));
+        expect(videos).toHaveLength(1);
+        expect(videos[0]).toMatch(/\.webm$/);
+        expect((yield* fs.readFile(path.join(output, "raw", videos[0]!))).length).toBeGreaterThan(
+          0,
+        );
+        expect(JSON.parse(yield* fs.readFileString(path.join(output, "diagnostics.json")))).toEqual(
+          diagnostics,
+        );
+        expect(yield* fs.exists(path.join(output, "capture.json"))).toBe(false);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+}, 30_000);

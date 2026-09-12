@@ -144,6 +144,8 @@ jobs:
             .t3/self-test/*/authenticated.png
             .t3/self-test/*/pairing-recovery.png
             .t3/self-test/*/pairing-reload.webm
+            .t3/self-test/*/raw/*.webm
+            .t3/self-test/*/diagnostics.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14

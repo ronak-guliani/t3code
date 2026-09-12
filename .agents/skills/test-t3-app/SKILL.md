@@ -24,10 +24,18 @@ delivered. Do not retry a timed-out upload blindly; inspect GitHub for an ambigu
 The runner serializes worktree-local runs. If interrupted, inspect `.t3/self-test/lock/owner.json`
 and confirm its PID is no longer running before removing only that stale lock directory.
 
-Publish applicable evidence with `github-pr-media` before claiming PR delivery is complete.
+Publish baseline evidence with the repository-owned `pnpm test:self -- publish <PR URL>`.
+For additional feature-specific media, use a publisher available in the current environment;
+if none is available, report publication as blocked rather than invoking an unavailable skill.
 Check the uploaded images and sample the recording, not just file existence. If publication is
 blocked, retain the files and report the blocker explicitly. CI artifacts are downloadable,
 expiring evidence, not permanent inline PR media.
+
+Failed runs retain unverified recordings in the run's `raw/` directory and counters in
+`diagnostics.json`; CI uploads both. These are debugging artifacts, not passed evidence.
+Unexpected console errors block verification, including during pairing. The intentional
+consumed-token bootstrap 401 and native unauthenticated WebSocket rejection during pairing
+are counted separately, not silently ignored; application `console.error` calls still fail.
 
 Use this skill for the web client. This checkout does not install a `test-t3-mobile` skill. For mobile testing, use the existing app-specific tooling and an isolated backend, or state clearly that mobile validation is unavailable rather than following a missing workflow.
 

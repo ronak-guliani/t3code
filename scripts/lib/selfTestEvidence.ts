@@ -20,10 +20,13 @@ export const SelfTestMedia = Schema.Struct({
 });
 export type SelfTestMedia = typeof SelfTestMedia.Type;
 
-const SelfTestDiagnostics = Schema.Struct({
+export const SelfTestDiagnostics = Schema.Struct({
   pageErrors: Schema.Int,
   failedRequests: Schema.Int,
+  consoleErrors: Schema.Int,
+  expectedConsoleErrors: Schema.Int,
 });
+export type SelfTestDiagnostics = typeof SelfTestDiagnostics.Type;
 
 export const SelfTestCapture = Schema.Struct({
   scenarios: Schema.Array(Schema.String),
@@ -69,6 +72,7 @@ export function selfTestBlockers(
   if (manifest.scenarios.length === 0) blockers.push("No observable scenarios were recorded.");
   if (
     !manifest.diagnostics ||
+    manifest.diagnostics.consoleErrors !== 0 ||
     manifest.diagnostics.pageErrors !== 0 ||
     manifest.diagnostics.failedRequests !== 0
   ) {

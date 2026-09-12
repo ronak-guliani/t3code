@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
-import {
-  replaceSelfTestSection,
-  selfTestBlockers,
-  type SelfTestManifest,
-} from "./selfTestEvidence.ts";
+import { Schema } from "effect";
+import { replaceSelfTestSection, selfTestBlockers, SelfTestManifest } from "./selfTestEvidence.ts";
 
 const revision = { commit: "abc", contentHash: "def" };
+const decodeManifest = Schema.decodeUnknownSync(SelfTestManifest);
 const manifest: SelfTestManifest = {
   version: 1,
   runId: "run",
@@ -16,7 +14,7 @@ const manifest: SelfTestManifest = {
   command: "pnpm test:direct-connect-smoke",
   exitCode: 0,
   scenarios: ["One-time pairing survives reload"],
-  diagnostics: { pageErrors: 0, failedRequests: 0 },
+  diagnostics: { pageErrors: 0, failedRequests: 0, consoleErrors: 0, expectedConsoleErrors: 1 },
   media: [
     {
       kind: "screenshot",
@@ -86,12 +84,29 @@ describe("self-test readiness", () => {
       selfTestBlockers(
         {
           ...manifest,
-          diagnostics: { pageErrors: 1, failedRequests: 0 },
+          diagnostics: { ...manifest.diagnostics!, pageErrors: 1 },
         },
         revision,
         false,
       ),
     ).toContain("Browser diagnostics are missing or contain unexpected failures.");
+  });
+  it("blocks console errors even when page and network checks pass", () => {
+    expect(
+      selfTestBlockers(
+        { ...manifest, diagnostics: { ...manifest.diagnostics!, consoleErrors: 1 } },
+        revision,
+        true,
+      ),
+    ).toContain("Browser diagnostics are missing or contain unexpected failures.");
+  });
+  it("does not interpret legacy diagnostics without console counts as zero", () => {
+    expect(() =>
+      decodeManifest({
+        ...manifest,
+        diagnostics: { pageErrors: 0, failedRequests: 0 },
+      }),
+    ).toThrow();
   });
   it("updates only the managed PR section without duplicate attachments", () => {
     const body = replaceSelfTestSection("Human description", "first");

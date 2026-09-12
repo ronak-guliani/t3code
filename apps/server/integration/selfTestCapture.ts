@@ -1,9 +1,60 @@
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import type { Browser, Page } from "playwright";
-import type { SelfTestMedia } from "../../../scripts/lib/selfTestEvidence.ts";
+import type { SelfTestDiagnostics, SelfTestMedia } from "../../../scripts/lib/selfTestEvidence.ts";
+
+export function createSelfTestContext(
+  browser: Browser,
+  output: string | undefined,
+  diagnostics: SelfTestDiagnostics,
+) {
+  return Effect.acquireRelease(
+    Effect.promise(async () => {
+      if (output) await mkdir(output, { recursive: true });
+      return browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        ...(output
+          ? { recordVideo: { dir: join(output, "raw"), size: { width: 1280, height: 800 } } }
+          : {}),
+      });
+    }),
+    (context) =>
+      Effect.promise(async () => {
+        await context.close();
+        if (output) {
+          await writeFile(join(output, "diagnostics.json"), JSON.stringify(diagnostics), {
+            mode: 0o600,
+          });
+        }
+      }),
+  );
+}
+
+export function trackSelfTestConsole(
+  page: Page,
+  origin: string,
+  diagnostics: { consoleErrors: number; expectedConsoleErrors: number },
+  phase: () => "pairing" | "rejected-token" | "authenticated",
+) {
+  const websocketUrl = new URL("/ws", origin);
+  websocketUrl.protocol = websocketUrl.protocol === "https:" ? "wss:" : "ws:";
+  page.on("console", (message) => {
+    if (message.type() !== "error") return;
+    const expected =
+      message.args().length === 0 &&
+      ((phase() === "rejected-token" &&
+        message.location().url === `${origin}/api/auth/bootstrap` &&
+        message.text() ===
+          "Failed to load resource: the server responded with a status of 401 (Unauthorized)") ||
+        (phase() !== "authenticated" &&
+          message.text() ===
+            `WebSocket connection to '${websocketUrl}' failed: HTTP Authentication failed; no valid credentials available`));
+    if (expected) diagnostics.expectedConsoleErrors += 1;
+    else diagnostics.consoleErrors += 1;
+  });
+}
 
 const CaptureProbe = Schema.Struct({
   width: Schema.Int,
@@ -108,7 +159,7 @@ export async function finishSelfTestCapture(
   videoPath: string,
   screenshots: ReadonlyArray<SelfTestMedia>,
   scenarios: ReadonlyArray<string>,
-  diagnostics: { readonly pageErrors: number; readonly failedRequests: number },
+  diagnostics: SelfTestDiagnostics,
 ): Promise<void> {
   const file = "pairing-reload.webm";
   await copyFile(videoPath, join(output, file));
