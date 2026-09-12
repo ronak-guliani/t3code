@@ -71,7 +71,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
         ownedMobileProtocolVersion: 1,
         repositoryIdentity: true,
         connectionProbe: true,
-        pullRequests: false,
+        pullRequests: true,
         threadSettlement: true,
         threadSnooze: true,
         threadPinning: true,
