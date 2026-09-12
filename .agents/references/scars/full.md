@@ -30,6 +30,7 @@
 - SQLite migration IDs are globally append-only, including divergent historical ledgers. New migrations must be idempotent repairs: ensure prerequisite tables exist before `ALTER` and append missing-column/table fixes above every historical ID rather than rewriting skipped IDs.
 - Backfill projection keys from event JSON in one grouped pass, then join by indexed IDs; a correlated event-history lookup per projection row makes startup work quadratic.
 - Materialize FTS5 `rank` before windowing; compute snippets only for selected rows.
+- Transcript search limits apply to thread winners, not raw messages: even a large message cap can hide a thread. Preserve score, timestamp, thread-ID, and message-ID tie-breaks before truncating; cover a dominant thread beyond the cap and equal-score hits across more than 20 threads.
 - Bound thread activity reads before decoding payloads; page legacy `NULL` sequences by timestamp and ID.
 - Fast-append projected thread activity only when the current array is comparator-sorted, its ID is new, and it belongs at or after the tail; restart-loaded, duplicate, and out-of-order activity must retain the filter/sort fallback and 500-item cap.
 - History pagination availability must follow the rendered turn, not total thread activity; during live caps, mark history only when an activity from that turn is actually evicted.
@@ -213,6 +214,9 @@
 
 - Migrations that `ALTER` a table created by an earlier ID must first ensure that table exists: a divergent ledger high-water mark can skip the CREATE (e.g. 033 `projection_queued_turns`) and leave later migrations such as 056 failing with `no such table`, blocking CLI/server startup. Prefer reusing the earlier migration's idempotent `CREATE IF NOT EXISTS` before adding columns.
 - Divergent ledgers can also skip mid-range column migrations while still advancing past them (e.g. 29-34 reused for unrelated names). Later startup then fails with `no such column` on shell/thread projection (`parent_thread_id`, `pending_runtime_mode`, `resume_cursor_json`, turn-file checkpoint columns). Append an idempotent repair migration above every historical ledger ID rather than rewriting the skipped IDs.
+- Generated columns are hidden from `PRAGMA table_info` (use `table_xinfo`): a `table_info` idempotency guard re-runs `ADD COLUMN` and fails with a duplicate column error, and migration tests asserting via `table_info` pass vacuously. Guard and assert generated columns with `table_xinfo`.
+- Generated column expressions must be total over real rows: `json_extract` throws `malformed JSON` on invalid payloads, which fails the INSERT (snapshot capping happens before decode, so invalid rows legitimately exist). Guard extractions with `json_valid`.
+- `NodeSqliteClient` decides reader vs writer via `statement.columns().length`: preparing `ALTER ... ADD COLUMN ... STORED` reports a `raise(ABORT, 'cannot add a STORED column')` pseudo-column, so a pure-write DDL takes the `.all()` reader path. It still applies today, but DDL behavior depends on statement-shape sniffing rather than intent — prefer metadata-only changes such as VIRTUAL generated columns, and assert the resulting schema in the migration test, not just a clean run.
 
 ## Client state and completion
 
