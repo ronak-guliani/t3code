@@ -22,6 +22,25 @@ const failedShutdown: RemoteAccessStatus = {
   checkedAt: null,
 };
 
+it("shows one copyable setup command", async () => {
+  const copy = vi.fn(async () => undefined);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json(failedShutdown)),
+  );
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: copy } });
+
+  await render(<RemoteAccessSettings />);
+
+  await expect.element(page.getByText("t3 remote setup", { exact: true })).toBeVisible();
+  await expect
+    .element(page.getByText("t3 service install", { exact: true }))
+    .not.toBeInTheDocument();
+  await page.getByRole("button", { name: "Copy Command", exact: true }).click();
+  expect(copy).toHaveBeenCalledWith("t3 remote setup");
+  await expect.element(page.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
+});
+
 for (const initiallyFailed of [false, true]) {
   it(`retries shutdown without re-enabling after ${initiallyFailed ? "loading a failed shutdown" : "Disable fails"}`, async () => {
     let status: RemoteAccessStatus = initiallyFailed

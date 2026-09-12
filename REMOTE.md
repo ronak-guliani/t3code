@@ -41,6 +41,17 @@ That gives you:
 - transport security at the network layer
 - less exposure than opening the server to the public internet
 
+For an owned Cloudflare Tunnel, run one setup command on the host:
+
+```bash
+t3 remote setup
+```
+
+The command uses a running desktop or foreground host when available. If no process owns the
+environment, it installs or repairs the supported per-user background service, waits for the server
+to become responsive, and then configures Remote Access. It never replaces a running desktop or
+foreground owner. Use `--base-dir` to target a non-default local environment explicitly.
+
 ## Enabling Network Access
 
 There are two ways to expose your server for remote connections: from the desktop app or from the CLI.

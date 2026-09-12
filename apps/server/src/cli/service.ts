@@ -169,6 +169,61 @@ export const restartHealthyCurrentService = (
   return Effect.succeed(false);
 };
 
+const installPreservingServiceSettings = (
+  status: BootService.ServiceStatus,
+  input?: { readonly cwd?: string },
+) =>
+  Effect.gen(function* () {
+    const service = yield* BootService.BootService;
+    const previous = status.installed ? yield* readInstalledInvocation(status) : undefined;
+    const hostValue = process.env.T3CODE_HOST ?? previous?.host;
+    const portValue =
+      process.env.T3CODE_PORT === undefined
+        ? previous?.port
+        : yield* decodePort(Number(process.env.T3CODE_PORT));
+    yield* service.install({
+      cwd: resolve(input?.cwd ?? previous?.cwd ?? process.cwd()),
+      ...(hostValue === undefined ? {} : { host: hostValue }),
+      ...(portValue === undefined ? {} : { port: portValue }),
+    });
+  });
+
+export const ensureBackgroundService = (input?: {
+  readonly cwd?: string;
+  readonly restartRequired?: boolean;
+}) =>
+  Effect.gen(function* () {
+    const service = yield* BootService.BootService;
+    const status = yield* service.status;
+    if (!status.supported) {
+      return yield* new BootService.BootServiceUnsupportedError({ platform: status.platform });
+    }
+    if (
+      status.installed &&
+      status.enabled &&
+      status.current &&
+      status.processAlive &&
+      status.responsive
+    ) {
+      if (input?.restartRequired) {
+        yield* service.restart;
+        return "restarted" as const;
+      }
+      return "ready" as const;
+    }
+    if (status.installed && status.current && status.processAlive) {
+      yield* service.restart;
+      return "restarted" as const;
+    }
+    yield* installPreservingServiceSettings(status, input);
+    return status.installed ? ("repaired" as const) : ("installed" as const);
+  });
+
+export const ensureBackgroundServiceForBaseDir = (
+  baseDirValue: string,
+  input?: { readonly cwd?: string; readonly restartRequired?: boolean },
+) => withService(baseDirValue, ensureBackgroundService(input));
+
 const status = Command.make("status", { baseDir, json: Flag.boolean("json") }).pipe(
   Command.withDescription("Show installed, enabled, process, health, and version state."),
   Command.withHandler((flags) =>
@@ -273,16 +328,7 @@ export const offerServiceDuringOnboarding = (input?: {
       }),
     );
     if (!accepted) return false;
-    const previous = status.installed ? yield* readInstalledInvocation(status) : undefined;
-    const hostValue = process.env.T3CODE_HOST ?? previous?.host;
-    const portValue = process.env.T3CODE_PORT;
-    const parsedPort =
-      portValue === undefined ? previous?.port : yield* decodePort(Number(portValue));
-    yield* service.install({
-      cwd: resolve(input?.cwd ?? previous?.cwd ?? process.cwd()),
-      ...(hostValue === undefined ? {} : { host: hostValue }),
-      ...(parsedPort === undefined ? {} : { port: parsedPort }),
-    });
+    yield* installPreservingServiceSettings(status, input);
     return true;
   });
 
