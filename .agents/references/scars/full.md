@@ -128,6 +128,10 @@
 
 ## Release builds and mobile integration
 
+- Root build commands must name real package tasks, not self-pruned recursive aliases. Stamp web inputs before compilation, compare after compilation and before server packaging, and reject missing/stale clients rather than shipping a successful headless-only artifact.
+- Resumed host setup must not restart an already-current healthy service merely to check readiness. Preserve installed bind/cwd settings on updates, and reuse one revocable CLI session across bounded provisioning polls.
+- Fork release CLI packages need their own executable name and GitHub release assets. Do not copy pnpm selector-style overrides into npm manifests: selectors such as `parent>child` are invalid npm package names.
+
 - Keep mobile chat virtual-cell geometry synchronous: interrupted Reanimated layout transitions can finish at stale positions after text resizing or scroll-anchor corrections. Preserve opacity/chevron animations, and inspect native frames visually; LegendList's reported positions can remain correct while UIKit draws gaps or overlaps.
 - Installer path checks may ascend missing ancestors only after `ENOENT` and an absent `lstat` entry; permission/I/O errors and dangling or looping symlinks must not become accepted lexical paths.
 - Desktop browser tests must mock Electron mode before module evaluation and supply the real query provider; installing a bridge fixture later cannot change `env.ts`'s captured desktop flag.
