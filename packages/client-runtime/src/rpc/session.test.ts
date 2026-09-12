@@ -18,6 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import * as Socket from "effect/unstable/socket/Socket";
+import { RpcClientError, RpcClientDefect } from "effect/unstable/rpc/RpcClientError";
 
 import {
   ConnectionBlockedError,
@@ -227,6 +228,19 @@ const completeInitialConfig = Effect.fn("TestRpcSessionFactory.completeInitialCo
 });
 
 describe("RpcSessionFactory", () => {
+  it("keeps non-schema RPC protocol defects retryable", () => {
+    const error = new RpcClientError({
+      reason: new RpcClientDefect({
+        message: "Unknown socket error",
+        cause: new Error("Temporary transport failure"),
+      }),
+    });
+    expect(RpcSession.mapSessionRpcError(error)).toMatchObject({
+      _tag: "ConnectionTransientError",
+      reason: "transport",
+      detail: error.message,
+    });
+  });
   it.effect(
     "classifies malformed initial configuration as incompatible rather than retryable transport failure",
     () =>

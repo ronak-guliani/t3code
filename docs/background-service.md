@@ -143,6 +143,8 @@ that another device connected based solely on a local health probe.
 
 Desktop and web expose **Settings > Connections > Manage / Deregister environments**, which
 opens the hosted account page. Mobile has **Deregister** on T3 Connect environment rows.
+The hosted account page needs Clerk and secure relay configuration, not a CLI OAuth client ID;
+that ID remains required only for terminal sign-in.
 These actions use the account relay, so the host can be offline. CLI equivalents are:
 
 ```sh

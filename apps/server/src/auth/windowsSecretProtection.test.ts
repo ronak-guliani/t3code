@@ -44,9 +44,21 @@ describe("Windows secret protection", () => {
           ],
           { env: { ...process.env, T3_SECRET_DIRECTORY: directory }, windowsHide: true },
         );
+      // Elevated CI can create administrator-owned files; model the supported per-user store.
+      const setFixtureOwners = () =>
+        powershell(`
+        $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+        $items = @((Get-Item -LiteralPath $env:T3_SECRET_DIRECTORY)) + @(Get-ChildItem -LiteralPath $env:T3_SECRET_DIRECTORY)
+        foreach ($item in $items) {
+          $acl = Get-Acl -LiteralPath $item.FullName
+          $acl.SetOwner($sid)
+          Set-Acl -LiteralPath $item.FullName -AclObject $acl
+        }
+      `);
       try {
         const existing = join(directory, "existing.bin");
         await writeFile(existing, "test-only");
+        await setFixtureOwners();
         await powershell(`
         $acl = Get-Acl -LiteralPath $env:T3_SECRET_DIRECTORY
         $everyone = New-Object System.Security.Principal.SecurityIdentifier('S-1-1-0')
@@ -58,6 +70,7 @@ describe("Windows secret protection", () => {
         await protectWindowsSecretDirectory(directory);
         const created = join(directory, "created.bin");
         await writeFile(created, "new-test-only");
+        await setFixtureOwners();
         expect(await readFile(existing, "utf8")).toBe("test-only");
         expect(await readFile(created, "utf8")).toBe("new-test-only");
         const verified = await powershell(`

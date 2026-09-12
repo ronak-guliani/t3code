@@ -60,13 +60,6 @@ export function mapSessionRpcError(error: InitialConfigError | ProbeError): Conn
         detail: error.message,
       });
     case "RpcClientError":
-      if (error.reason._tag === "RpcClientDefect") {
-        return new ConnectionBlockedError({
-          reason: "unsupported",
-          detail:
-            "The server configuration or RPC response is incompatible with this app. Install compatible releases, then reconnect.",
-        });
-      }
       return new ConnectionTransientErrorClass({
         reason: "transport",
         detail: error.message,
