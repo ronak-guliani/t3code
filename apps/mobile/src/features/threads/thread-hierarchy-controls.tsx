@@ -82,8 +82,9 @@ export function useMarkRootThreadCompletionRead(thread: MobileThreadShell | null
   const result = useAtomValue(mobilePreferencesAtom);
   const save = useAtomSet(updateMobilePreferencesAtom);
   // Defined once and shared by the immediate pass and the foreground
-  // subscription below; useEffectEvent keeps it stable while always reading
-  // the latest focused/thread/preferences.
+  // subscription below; useEffectEvent always reads the latest
+  // focused/thread/preferences, so it is called inside the effect but omitted
+  // from dependencies (advanced-effect-event-deps).
   const markRead = useEffectEvent(() => {
     if (!focused || thread === null || thread.parentThreadId != null) return;
     if (AppState.currentState !== "active" || !AsyncResult.isSuccess(result)) return;
@@ -93,7 +94,7 @@ export function useMarkRootThreadCompletionRead(thread: MobileThreadShell | null
   });
   useEffect(() => {
     markRead();
-  }, [focused, result, save, thread, markRead]);
+  }, [focused, result, save, thread]);
   // Shared foreground subscription: all mark-read hooks reuse one global
   // AppState listener instead of registering their own (client-event-listeners).
   useOnAppStateChange(() => {
@@ -114,7 +115,7 @@ export function useMarkNestedThreadRead(thread: MobileThreadShell | null) {
   });
   useEffect(() => {
     markRead();
-  }, [focused, result, save, thread, markRead]);
+  }, [focused, result, save, thread]);
   useOnAppStateChange(() => {
     markRead();
   });
@@ -176,7 +177,7 @@ function useMarkNotificationsRead(stamps: readonly NotificationStamp[]) {
   });
   useEffect(() => {
     markRead();
-  }, [focused, stamps, result, save, markRead]);
+  }, [focused, stamps, result, save]);
   useOnAppStateChange(() => {
     markRead();
   });
