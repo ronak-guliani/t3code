@@ -1131,6 +1131,22 @@ describe("child nudging", () => {
     expect(readModel.threads[0]!.queuedTurns).toEqual([]);
   });
 
+  it("keeps checkpoints diagnostic while a minted dispatch is unbound", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-2",
+        dispatchSequence: 2,
+        dispatchTurnId: null,
+      },
+    };
+    const { readModel, events } = await apply(model(child), finish("child"));
+    expect(events.map((event) => event.type)).toEqual(["thread.turn-diff-completed"]);
+    expect(readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+    expect(readModel.threads[0]!.queuedTurns).toEqual([]);
+  });
+
   it("does not terminate the delegation on a delayed runtime failure", async () => {
     const child = thread("child", true);
     child.nudging = {
@@ -1158,6 +1174,37 @@ describe("child nudging", () => {
     };
     const { readModel, events } = await apply(model(child), failed);
     expect(events.some((event) => event.type === "thread.child-lifecycle-notified")).toBe(true);
+    expect(readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+    expect(readModel.threads[0]!.queuedTurns).toEqual([]);
+  });
+
+  it("keeps lifecycle failures diagnostic while a minted dispatch is unbound", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-2",
+        dispatchSequence: 2,
+        dispatchTurnId: null,
+      },
+    };
+    const failed: OrchestrationCommand = {
+      type: "thread.activity.append",
+      commandId: CommandId.make("unbound-failure"),
+      threadId: child.id,
+      createdAt: finished,
+      activity: {
+        id: EventId.make("unbound-failure"),
+        kind: "runtime.error",
+        tone: "error",
+        summary: "Delayed failure during replacement",
+        payload: {},
+        turnId: TurnId.make("turn-a"),
+        createdAt: finished,
+      },
+    };
+    const { readModel, events } = await apply(model(child), failed);
+    expect(events.map((event) => event.type)).toEqual(["thread.activity-appended"]);
     expect(readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
     expect(readModel.threads[0]!.queuedTurns).toEqual([]);
   });
@@ -1194,6 +1241,28 @@ describe("child nudging", () => {
     expect(delegation.dispatchSequence).toBe(2);
     expect(delegation.dispatchTurnId).toBeNull();
     expect(delegation.assignmentId).toBe("assignment-child");
+  });
+
+  it("counts an existing unsequenced execution before replacement", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-legacy",
+        dispatchTurnId: null,
+      },
+    };
+    const { readModel } = await apply(model(child), {
+      type: "thread.dispatch.replace",
+      commandId: CommandId.make("replace-unsequenced"),
+      threadId: child.id,
+      expectedDispatchId: "dispatch-legacy",
+      createdAt: finished,
+    });
+    expect(readModel.threads[1]!.nudging?.delegation).toMatchObject({
+      dispatchSequence: 2,
+      dispatchTurnId: null,
+    });
   });
 
   it("keeps exact legacy keys for pre-fence reports", async () => {

@@ -117,6 +117,7 @@ type AppendChildLifecycleNotificationInput = {
    * carry parent authority) and pre-fence callers.
    */
   readonly originTurnId?: string | null;
+  readonly authority?: "execution" | "parent";
 } & (
   | {
       readonly lifecycle: Exclude<ChildThreadLifecycle, "pr-created">;
@@ -146,8 +147,9 @@ function appendChildLifecycleNotification(
   const dedupeKey = childLifecycleDedupeKey(input.childThread.id, input.lifecycle, input.sourceKey);
   const delegation = input.childThread.nudging?.delegation;
   const authorizedTurn = (delegation?.dispatchTurnId as string | null | undefined) ?? null;
+  const executionFenced = delegation?.completedAt === null && delegation.dispatchId !== undefined;
   const superseded =
-    delegation?.completedAt === null &&
+    executionFenced &&
     authorizedTurn !== null &&
     input.originTurnId !== null &&
     input.originTurnId !== undefined &&
@@ -165,13 +167,13 @@ function appendChildLifecycleNotification(
   // Unfenced (pre-dispatch) work keeps the legacy behavior.
   const wouldMutate =
     terminalFailure || (input.report !== undefined && input.report.kind !== "progress");
-  const fencedWithoutProvenance =
+  const fencedWithoutAuthority =
+    input.authority !== "parent" &&
     !superseded &&
-    delegation?.completedAt === null &&
-    authorizedTurn !== null &&
+    executionFenced &&
     wouldMutate &&
-    (input.originTurnId === null || input.originTurnId === undefined);
-  if (fencedWithoutProvenance) {
+    (authorizedTurn === null || input.originTurnId === null || input.originTurnId === undefined);
+  if (fencedWithoutAuthority) {
     return sourceResult;
   }
   const terminalReportId = delegation
@@ -1598,6 +1600,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         lifecycle: "started",
         sourceKey: command.message.messageId,
         createdAt: command.createdAt,
+        authority: "parent",
       });
     }
 
@@ -1804,6 +1807,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           lifecycle: "blocked",
           sourceKey: `cancel-assignment:${delegation.assignmentId}`,
           createdAt: command.deletedAt,
+          authority: "parent",
         });
       }
       return deleted;
@@ -1987,6 +1991,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         lifecycle: "started",
         sourceKey: queuedTurn.message.messageId,
         createdAt: command.dispatchedAt,
+        authority: "parent",
       });
     }
 
@@ -2297,7 +2302,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             "The active execution changed since this replacement was prepared; refresh and retry with the current dispatch.",
         });
       }
-      const [dispatchId, dispatchSequence] = mintDispatch(delegation.dispatchSequence);
+      const [dispatchId, dispatchSequence] = mintDispatch(delegation.dispatchSequence ?? 1);
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -2451,6 +2456,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.status === "speculative" ||
         !delegation ||
         delegation.completedAt !== null ||
+        (delegation.dispatchId !== undefined && authorizedTurn === null) ||
         (authorizedTurn !== null && command.turnId !== authorizedTurn) ||
         (delegation.assignedAt !== undefined &&
           (!thread.latestTurn || thread.latestTurn.requestedAt < delegation.assignedAt)) ||

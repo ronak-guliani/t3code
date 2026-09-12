@@ -49,13 +49,6 @@ export interface McpServeOptions {
   readonly cliBaseDir?: string;
   readonly runtimeMode?: RuntimeMode;
   readonly providerInstanceId?: ProviderInstanceId;
-  /**
-   * Execution-scoped provenance: the provider turn running in the session
-   * this server was created for. Evaluated at report time against the
-   * session's own context — never against live thread state — so a late
-   * report from a superseded execution still presents its own turn.
-   */
-  readonly getCurrentTurnId?: () => string | undefined;
 }
 
 export interface McpHttpServer {
@@ -1679,16 +1672,10 @@ async function reportToParentTool(
       "report_to_parent requires reportId (1-200 characters), summary (1-4000 characters), and a valid kind",
     );
   }
-  // Execution provenance comes from this session's own context, never from
-  // live thread state: a late report from a superseded execution still
-  // presents its own turn and is fenced as stale. Prefer per-request
-  // provenance when the caller binds it (per-turn MCP context); otherwise
-  // fall back to the session's current turn. Note: the session fallback
-  // reads mutable session state, so a report whose HTTP delivery is delayed
-  // past the next turn can still be stamped with the successor turn. Callers
-  // with per-turn context must pass originTurnId/turnId to avoid this race.
-  const requestedTurnId = asString(args.originTurnId) ?? asString(args.turnId);
-  const originTurnId = requestedTurnId?.trim() || options.getCurrentTurnId?.();
+  const originTurnId = asString(args.originTurnId)?.trim();
+  if (!originTurnId) {
+    throw new Error("report_to_parent requires originTurnId from the current T3 execution context");
+  }
   const result = await runCommand(options.cwd, options.cliCommand, [
     ...(options.cliArgsPrefix ?? []),
     "chat",
@@ -1702,7 +1689,8 @@ async function reportToParentTool(
     ...(assignmentId ? ["--assignment-id", assignmentId] : []),
     ...(decision ? ["--decision", JSON.stringify(decision)] : []),
     ...(args.canContinue !== undefined ? ["--can-continue", String(args.canContinue)] : []),
-    ...(originTurnId ? ["--turn-id", originTurnId] : []),
+    "--turn-id",
+    originTurnId,
     ...(asString(args.supersedesReportId)
       ? ["--supersedes-report", String(args.supersedesReportId)]
       : []),
@@ -1956,8 +1944,13 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
           type: "string",
           description: "Exact ID of the unresolved decision being replaced.",
         },
+        originTurnId: {
+          type: "string",
+          description:
+            "The immutable T3 execution turn ID provided in the current prompt. Pass it exactly; never infer it from current thread state.",
+        },
       },
-      required: ["reportId", "kind", "summary"],
+      required: ["reportId", "kind", "summary", "originTurnId"],
     },
   },
   {

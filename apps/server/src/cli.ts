@@ -2629,20 +2629,18 @@ const chatCommand = Command.make("chat").pipe(
               : undefined;
             const presentedDispatchId = Option.getOrUndefined(flags.dispatchId);
             const originTurnId = Option.getOrUndefined(flags.originTurnId);
+            const dispatchId =
+              presentedDispatchId ?? thread.nudging?.delegation?.dispatchId ?? undefined;
             const assignmentId =
               Option.getOrUndefined(flags.assignmentId) ??
               thread.nudging?.delegation?.assignmentId ??
               "";
-            // Idempotency scoping uses the active generation when the reporter
-            // presents no dispatch, so a current-generation report never replays
-            // a prior generation's receipt. Provenance (`dispatchId`,
-            // `originTurnId`) stays exactly as presented: the classifier never
-            // treats this live-state fallback as execution proof, and the
-            // origin turn keeps stale/current reports on distinct keys.
-            const keyDispatchId =
-              presentedDispatchId ?? thread.nudging?.delegation?.dispatchId ?? undefined;
-            const keyBase = keyDispatchId
-              ? `child-report:${thread.id}:${keyDispatchId}:${assignmentId}:${flags.reportId}`
+            // Older report_to_parent clients omit the dispatch. Resolve the
+            // active generation before receipt lookup so a new execution cannot
+            // replay a prior generation's command receipt. The immutable turn
+            // still proves which execution issued the report.
+            const keyBase = dispatchId
+              ? `child-report:${thread.id}:${dispatchId}:${assignmentId}:${flags.reportId}`
               : `child-report:${thread.id}:${assignmentId}:${flags.reportId}`;
             return yield* dispatch({
               type: "thread.child.report",
@@ -2654,7 +2652,7 @@ const chatCommand = Command.make("chat").pipe(
               ...(Option.isSome(flags.assignmentId)
                 ? { assignmentId: MessageId.make(flags.assignmentId.value) }
                 : {}),
-              ...(presentedDispatchId ? { dispatchId: presentedDispatchId } : {}),
+              ...(dispatchId ? { dispatchId } : {}),
               ...(originTurnId ? { originTurnId: TurnId.make(originTurnId) } : {}),
               ...(decision ? { decision } : {}),
               ...(Option.isSome(flags.canContinue)

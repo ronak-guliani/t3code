@@ -1009,6 +1009,21 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       assert.include(methods, "session/new");
       assert.include(methods, "session/set_mode");
       assert.include(methods, "session/prompt");
+      const promptRequest = requests.find((request) => request.method === "session/prompt");
+      const prompt = (
+        promptRequest?.params as { readonly prompt?: ReadonlyArray<unknown> } | undefined
+      )?.prompt;
+      assert.isTrue(
+        prompt?.some(
+          (part) =>
+            typeof part === "object" &&
+            part !== null &&
+            "text" in part &&
+            typeof part.text === "string" &&
+            part.text.includes("when calling report_to_parent during this turn") &&
+            part.text.includes('originTurnId="'),
+        ) ?? false,
+      );
 
       const setModePayloads = requests
         .filter((request) => request.method === "session/set_mode")

@@ -113,12 +113,6 @@ type CopilotAcpRuntimeBaseInput = Omit<
   readonly customInstructionsDir?: string;
   /** When present, a matching warmed process is adopted instead of spawning. */
   readonly prewarmPool?: CopilotPrewarmPoolShape;
-  /**
-   * Execution-scoped provenance for report_to_parent: the turn running in
-   * this session. Read from the session's own context so late reports from
-   * superseded executions present their own turn.
-   */
-  readonly getCurrentTurnId?: () => string | undefined;
 };
 export type CopilotAcpRuntimeInput =
   | (CopilotAcpRuntimeBaseInput & {
@@ -203,7 +197,6 @@ export function buildCopilotMcpServerOptions(
     readonly execPath: string;
     readonly entryPath: string | undefined;
   } = { execPath: process.execPath, entryPath: process.argv[1] },
-  getCurrentTurnId?: () => string | undefined,
 ): McpServeOptions {
   const configuredCommand =
     env.T3_COPILOT_ACP_MCP_COMMAND?.trim() || env.HERMES_COPILOT_ACP_MCP_COMMAND?.trim();
@@ -238,7 +231,6 @@ export function buildCopilotMcpServerOptions(
     ...(runtimeMode ? { runtimeMode } : {}),
     ...(commandArgsPrefix.length > 0 ? { cliArgsPrefix: commandArgsPrefix } : {}),
     ...(cliBaseDir ? { cliBaseDir } : {}),
-    ...(getCurrentTurnId ? { getCurrentTurnId } : {}),
   };
 }
 
@@ -385,7 +377,6 @@ export const makeCopilotAcpRuntime = (
               input.runtimeMode,
               process.env,
               { execPath: process.execPath, entryPath: process.argv[1] },
-              input.getCurrentTurnId,
             ),
           ),
         catch: (cause) =>

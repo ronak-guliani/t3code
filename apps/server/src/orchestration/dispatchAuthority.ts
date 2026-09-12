@@ -42,14 +42,9 @@ export function classifyChildReport(input: {
   const activeTurn = activeDispatchTurnId(input.delegation);
   if (activeTurn === null) {
     const activeDispatch = activeDispatchId(input.delegation);
-    // Unbound generation (e.g. after `thread.dispatch.replace` clears the
-    // bound turn): a superseded execution must not slip a state-changing
-    // report through the window before the replacement turn binds. Dispatch
-    // mismatch is checked before any turn acceptance, and turn-only reports
-    // without dispatch proof stay diagnostic-only for anything beyond
-    // progress once a replacement generation exists (sequence > 1). The
-    // first generation keeps the legacy accept so pre-fence history and the
-    // initial bind are not rejected.
+    // A minted dispatch with no bound turn cannot authorize state changes.
+    // This covers both the initial startup window and replacement windows:
+    // only session binding can establish the execution's authoritative pair.
     if (
       input.claimedDispatchId !== null &&
       input.claimedDispatchId !== undefined &&
@@ -57,25 +52,8 @@ export function classifyChildReport(input: {
     ) {
       return "stale";
     }
-    const isReplacementGeneration = (input.delegation.dispatchSequence ?? 0) > 1;
-    const hasDispatchProof =
-      input.claimedDispatchId !== null &&
-      input.claimedDispatchId !== undefined &&
-      activeDispatch !== null &&
-      input.claimedDispatchId === activeDispatch;
-    if (
-      isReplacementGeneration &&
-      activeDispatch !== null &&
-      !hasDispatchProof &&
-      input.kind !== "progress"
-    ) {
-      return "stale";
-    }
-    if (input.claimedTurnId !== null && input.claimedTurnId !== undefined) {
-      return "accepted";
-    }
-    if (input.claimedDispatchId !== null && input.claimedDispatchId !== undefined) {
-      return "stale";
+    if (activeDispatch !== null) {
+      return input.kind === "progress" ? "accepted" : "stale";
     }
     return "accepted";
   }

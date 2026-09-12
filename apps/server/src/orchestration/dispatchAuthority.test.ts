@@ -55,13 +55,22 @@ describe("dispatchAuthority", () => {
     ).toBe("accepted");
   });
 
-  it("accepts a turn running before its first binding", () => {
+  it("keeps state-changing reports diagnostic until the first turn is bound", () => {
     expect(
       classifyChildReport({
-        delegation: delegation({ dispatchId: "d1" }),
+        delegation: delegation({ dispatchId: "d1", dispatchSequence: 1 }),
         claimedDispatchId: undefined,
         claimedTurnId: TurnId.make("turn-a"),
         kind: "important-update",
+        hasReceipt: noReceipt,
+      }),
+    ).toBe("stale");
+    expect(
+      classifyChildReport({
+        delegation: delegation({ dispatchId: "d1", dispatchSequence: 1 }),
+        claimedDispatchId: "d1",
+        claimedTurnId: TurnId.make("turn-a"),
+        kind: "progress",
         hasReceipt: noReceipt,
       }),
     ).toBe("accepted");
@@ -113,7 +122,7 @@ describe("dispatchAuthority", () => {
         kind: "important-update",
         hasReceipt: noReceipt,
       }),
-    ).toBe("accepted");
+    ).toBe("stale");
   });
 
   it("rejects an unminted dispatch claim on legacy work", () => {
