@@ -183,6 +183,48 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     return activity ? reportVerdictFromActivity(activity) : undefined;
   };
 
+  // Durable fallback when the receipt activity has aged out of the capped
+  // read model: the event log retains every `thread.activity-appended` row
+  // indexed by command ID, so a valid retry still recovers its verdict.
+  const reportVerdictFromDurableEvents = (
+    commandId: string,
+  ): Effect.Effect<DispatchReportVerdict | undefined> =>
+    sql<{ readonly payload_json: string }>`
+      SELECT payload_json
+      FROM orchestration_events
+      WHERE command_id = ${commandId} AND event_type = 'thread.activity-appended'
+      LIMIT 5
+    `.pipe(
+      Effect.mapError(toPersistenceSqlError("OrchestrationEngine.reportVerdict:query")),
+      Effect.map((rows) => {
+        for (const row of rows) {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(row.payload_json) as unknown;
+          } catch {
+            continue;
+          }
+          const verdict = reportVerdictFromActivity(
+            (parsed as { readonly activity?: unknown }).activity as {
+              readonly id?: unknown;
+              readonly kind?: unknown;
+              readonly payload?: unknown;
+            },
+          );
+          if (verdict !== undefined) {
+            return verdict;
+          }
+        }
+        return undefined;
+      }),
+      Effect.catch((error) =>
+        Effect.logWarning("orchestration report verdict durable lookup failed", {
+          commandId,
+          error,
+        }).pipe(Effect.as(undefined)),
+      ),
+    );
+
   const commandWorktreePath = (command: OrchestrationCommand): string | null => {
     switch (command.type) {
       case "thread.create":
@@ -288,15 +330,17 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         if (Option.isSome(existingReceipt)) {
           if (existingReceipt.value.status === "accepted") {
             // Durable verdict replay: a retried report returns its recorded
-            // outcome from receipt activities without re-mutating.
+            // outcome without re-mutating. The in-memory read model caps
+            // activities (projector retains 500), so fall back to the durable
+            // event log by command ID when the receipt activity has aged out.
             const completedCommand = envelope.command;
             const replayedVerdict =
               completedCommand.type === "thread.child.report"
-                ? reportVerdictFromActivities(
+                ? (reportVerdictFromActivities(
                     completedCommand.commandId,
                     readModel.threads.find((thread) => thread.id === completedCommand.threadId)
                       ?.activities ?? [],
-                  )
+                  ) ?? (yield* reportVerdictFromDurableEvents(completedCommand.commandId)))
                 : undefined;
             return dispatchResult(command, existingReceipt.value.resultSequence, replayedVerdict);
           }

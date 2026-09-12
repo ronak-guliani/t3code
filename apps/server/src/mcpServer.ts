@@ -1680,9 +1680,15 @@ async function reportToParentTool(
     );
   }
   // Execution provenance comes from this session's own context, never from
-  // tool arguments or live thread state: a late report from a superseded
-  // execution still presents its own turn and is fenced as stale.
-  const originTurnId = options.getCurrentTurnId?.();
+  // live thread state: a late report from a superseded execution still
+  // presents its own turn and is fenced as stale. Prefer per-request
+  // provenance when the caller binds it (per-turn MCP context); otherwise
+  // fall back to the session's current turn. Note: the session fallback
+  // reads mutable session state, so a report whose HTTP delivery is delayed
+  // past the next turn can still be stamped with the successor turn. Callers
+  // with per-turn context must pass originTurnId/turnId to avoid this race.
+  const requestedTurnId = asString(args.originTurnId) ?? asString(args.turnId);
+  const originTurnId = requestedTurnId?.trim() || options.getCurrentTurnId?.();
   const result = await runCommand(options.cwd, options.cliCommand, [
     ...(options.cliArgsPrefix ?? []),
     "chat",

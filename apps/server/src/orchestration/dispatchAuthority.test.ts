@@ -67,6 +67,55 @@ describe("dispatchAuthority", () => {
     ).toBe("accepted");
   });
 
+  it("fences the unbound replacement window by dispatch before turn", () => {
+    // After `thread.dispatch.replace` the new generation is unbound
+    // (dispatchTurnId null, sequence 2). The superseded execution's old
+    // dispatch must be stale even though it presents a turn.
+    const replacement = delegation({
+      dispatchId: "d2",
+      dispatchSequence: 2,
+      dispatchTurnId: null,
+    });
+    expect(
+      classifyChildReport({
+        delegation: replacement,
+        claimedDispatchId: "d1",
+        claimedTurnId: TurnId.make("turn-a"),
+        kind: "important-update",
+        hasReceipt: noReceipt,
+      }),
+    ).toBe("stale");
+    // Turn-only state-changing reports stay diagnostic-only until the
+    // replacement turn binds; progress history remains allowed.
+    expect(
+      classifyChildReport({
+        delegation: replacement,
+        claimedDispatchId: undefined,
+        claimedTurnId: TurnId.make("turn-a"),
+        kind: "important-update",
+        hasReceipt: noReceipt,
+      }),
+    ).toBe("stale");
+    expect(
+      classifyChildReport({
+        delegation: replacement,
+        claimedDispatchId: undefined,
+        claimedTurnId: TurnId.make("turn-a"),
+        kind: "progress",
+        hasReceipt: noReceipt,
+      }),
+    ).toBe("accepted");
+    expect(
+      classifyChildReport({
+        delegation: replacement,
+        claimedDispatchId: "d2",
+        claimedTurnId: TurnId.make("turn-b"),
+        kind: "important-update",
+        hasReceipt: noReceipt,
+      }),
+    ).toBe("accepted");
+  });
+
   it("rejects an unminted dispatch claim on legacy work", () => {
     expect(
       classifyChildReport({

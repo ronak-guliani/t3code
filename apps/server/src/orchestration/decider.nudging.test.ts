@@ -823,6 +823,103 @@ describe("child nudging", () => {
     });
   });
 
+  it("fences stale decisions before decision-conflict validation", async () => {
+    // The active execution established a decision; a superseded execution
+    // then reports a conflicting decision. It must receive a `stale` verdict
+    // and audit activity, never a decision-conflict rejection.
+    const child = thread("child", true);
+    const current = {
+      ...report("child", "decision-needed"),
+      commandId: CommandId.make("report-current"),
+      reportId: "current",
+      originTurnId: TurnId.make("turn-b"),
+      dispatchId: "dispatch-2",
+      decision: { question: "Current?" },
+    };
+    let state = model({
+      ...child,
+      nudging: {
+        delegation: {
+          ...child.nudging!.delegation!,
+          dispatchId: "dispatch-2",
+          dispatchSequence: 2,
+          dispatchTurnId: TurnId.make("turn-b"),
+        },
+      },
+    });
+    state = (await apply(state, current)).readModel;
+    expect(state.threads[1]!.nudging?.delegation?.decision).toBeDefined();
+    const { events } = await apply(state, {
+      ...report("child", "decision-needed"),
+      commandId: CommandId.make("report-stale-decision"),
+      reportId: "stale-decision",
+      originTurnId: TurnId.make("turn-a"),
+      dispatchId: "dispatch-1",
+      decision: { question: "Stale?" },
+    });
+    expect(events.map((event) => event.type)).toEqual(["thread.activity-appended"]);
+    expect(events[0]).toMatchObject({
+      payload: { activity: { payload: { dispatchVerdict: "stale" } } },
+    });
+  });
+
+  it("attributes the report audit to the reporting execution turn", async () => {
+    const child = thread("child", true);
+    child.session = {
+      status: "running",
+      activeTurnId: TurnId.make("turn-b"),
+      updatedAt: finished,
+    } as OrchestrationThread["session"];
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-2",
+        dispatchSequence: 2,
+        dispatchTurnId: TurnId.make("turn-b"),
+      },
+    };
+    const { events } = await apply(model(child), {
+      ...report("child", "progress"),
+      commandId: CommandId.make("report-audit-turn"),
+      reportId: "audit-turn",
+      originTurnId: TurnId.make("turn-b"),
+      dispatchId: "dispatch-2",
+    });
+    expect(events[0]).toMatchObject({
+      payload: { activity: { turnId: "turn-b" } },
+    });
+  });
+
+  it("keeps turn-absent failures diagnostic-only on fenced work", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-1",
+        dispatchSequence: 1,
+        dispatchTurnId: TurnId.make("turn-a"),
+      },
+    };
+    const { readModel, events } = await apply(model(child), {
+      type: "thread.activity.append",
+      commandId: CommandId.make("unscoped-runtime-error"),
+      threadId: ThreadId.make("child"),
+      activity: {
+        id: EventId.make("runtime-error-1"),
+        kind: "runtime.error",
+        tone: "info",
+        summary: "boom",
+        payload: {},
+        turnId: null,
+        createdAt: finished,
+      },
+      createdAt: finished,
+    });
+    expect(events.map((event) => event.type)).toEqual(["thread.activity-appended"]);
+    expect(readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+    expect(readModel.threads[0]!.queuedTurns).toEqual([]);
+  });
+
   it("keeps progress history but requires proof for state-changing reports", async () => {
     const child = thread("child", true);
     child.nudging = {

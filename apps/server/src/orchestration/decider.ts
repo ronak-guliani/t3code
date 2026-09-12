@@ -157,12 +157,34 @@ function appendChildLifecycleNotification(
     delegation?.completedAt === null &&
     (delegation.assignedAt === undefined || input.createdAt >= delegation.assignedAt) &&
     (input.lifecycle === "failed" || input.lifecycle === "blocked");
+  // A fenced delegation requires execution proof before anything
+  // state-changing: a turn-absent signal (e.g. an unscoped provider runtime
+  // error) cannot prove it comes from the authorized execution, so terminal
+  // failure/completion stays diagnostic-only and never completes the
+  // delegation or wakes the parent. Plain progress history remains allowed.
+  // Unfenced (pre-dispatch) work keeps the legacy behavior.
+  const wouldMutate =
+    terminalFailure || (input.report !== undefined && input.report.kind !== "progress");
+  const fencedWithoutProvenance =
+    !superseded &&
+    delegation?.completedAt === null &&
+    authorizedTurn !== null &&
+    wouldMutate &&
+    (input.originTurnId === null || input.originTurnId === undefined);
+  if (fencedWithoutProvenance) {
+    return sourceResult;
+  }
+  const terminalReportId = delegation
+    ? delegation.dispatchId
+      ? `assignment:${input.childThread.id}:${delegation.dispatchId}:${delegation.assignmentId}`
+      : `assignment:${input.childThread.id}:${delegation.assignmentId}`
+    : null;
   const report = superseded
     ? undefined
     : (input.report ??
-      (terminalFailure
+      (terminalFailure && terminalReportId
         ? {
-            id: `assignment:${input.childThread.id}:${delegation.assignmentId}`,
+            id: terminalReportId,
             assignmentId: delegation.assignmentId,
             ...(delegation.dispatchId ? { dispatchId: delegation.dispatchId } : {}),
             childThreadId: input.childThread.id,
@@ -2466,7 +2488,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? "The delegated execution failed. Inspect the child for details."
             : "Delegated completion is unconfirmed or interrupted. Inspect the child before continuing.";
       const report = {
-        id: `assignment:${thread.id}:${delegation.assignmentId}`,
+        id: delegation.dispatchId
+          ? `assignment:${thread.id}:${delegation.dispatchId}:${delegation.assignmentId}`
+          : `assignment:${thread.id}:${delegation.assignmentId}`,
         assignmentId: delegation.assignmentId,
         ...(delegation.dispatchId ? { dispatchId: delegation.dispatchId } : {}),
         childThreadId: thread.id,
@@ -2530,37 +2554,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         assignmentId: delegation.assignmentId,
         reportId: command.reportId,
       });
-      // Supersede references may predate execution generations; accept the
-      // legacy rendering alongside the canonical id.
-      const supersedesCurrentDecision =
-        command.supersedesReportId !== undefined &&
-        delegation.decision &&
-        (command.supersedesReportId === delegation.decision.id ||
-          command.supersedesReportId ===
-            legacyUpdateId({
-              id: delegation.decision.id,
-              childThreadId: child.id,
-              dispatchId: delegation.decision.dispatchId,
-              assignmentId: delegation.decision.assignmentId,
-            }));
-      if (
-        (command.decision !== undefined && command.kind !== "decision-needed") ||
-        (command.assignmentId !== undefined &&
-          command.kind === "decision-needed" &&
-          !command.decision) ||
-        (command.kind === "decision-needed" &&
-          delegation.decision &&
-          !supersedesCurrentDecision &&
-          delegation.decision.id !== expectedDecisionId) ||
-        (command.supersedesReportId !== undefined &&
-          (command.kind !== "decision-needed" || !supersedesCurrentDecision))
-      ) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail:
-            "A decision requires a question; resolve or explicitly supersede the current decision.",
-        });
-      }
       const verdict = classifyChildReport({
         delegation,
         claimedDispatchId: command.dispatchId,
@@ -2594,7 +2587,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               ...(command.originTurnId ? { originTurnId: command.originTurnId } : {}),
               dispatchVerdict: verdict,
             },
-            turnId: child.session?.activeTurnId ?? null,
+            // Attribute the audit record to the reporting execution's turn,
+            // not the child's current session turn, so a late report from a
+            // superseded turn is not misattributed to the active execution.
+            turnId: command.originTurnId ?? child.session?.activeTurnId ?? null,
             createdAt: command.createdAt,
           },
         },
@@ -2605,6 +2601,40 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? `Duplicate report '${command.reportId}' acknowledged without a second wake: the assignment already completed.`
             : `Stale report '${command.reportId}' recorded without waking the parent: it comes from a superseded execution or closed work.`,
         );
+      }
+      // Decision-conflict validation applies only to fenced-accepted reports:
+      // a stale execution must receive a `stale` verdict and audit activity,
+      // never a decision-conflict rejection that hides the fence outcome.
+      // Supersede references may predate execution generations; accept the
+      // legacy rendering alongside the canonical id.
+      const supersedesCurrentDecision =
+        command.supersedesReportId !== undefined &&
+        delegation.decision &&
+        (command.supersedesReportId === delegation.decision.id ||
+          command.supersedesReportId ===
+            legacyUpdateId({
+              id: delegation.decision.id,
+              childThreadId: child.id,
+              dispatchId: delegation.decision.dispatchId,
+              assignmentId: delegation.decision.assignmentId,
+            }));
+      if (
+        (command.decision !== undefined && command.kind !== "decision-needed") ||
+        (command.assignmentId !== undefined &&
+          command.kind === "decision-needed" &&
+          !command.decision) ||
+        (command.kind === "decision-needed" &&
+          delegation.decision &&
+          !supersedesCurrentDecision &&
+          delegation.decision.id !== expectedDecisionId) ||
+        (command.supersedesReportId !== undefined &&
+          (command.kind !== "decision-needed" || !supersedesCurrentDecision))
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "A decision requires a question; resolve or explicitly supersede the current decision.",
+        });
       }
       const source = verdictActivity(command.summary);
       const report = {

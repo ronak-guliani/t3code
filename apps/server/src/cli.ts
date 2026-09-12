@@ -2633,13 +2633,20 @@ const chatCommand = Command.make("chat").pipe(
               Option.getOrUndefined(flags.assignmentId) ??
               thread.nudging?.delegation?.assignmentId ??
               "";
+            // Idempotency scoping uses the active generation when the reporter
+            // presents no dispatch, so a current-generation report never replays
+            // a prior generation's receipt. Provenance (`dispatchId`,
+            // `originTurnId`) stays exactly as presented: the classifier never
+            // treats this live-state fallback as execution proof, and the
+            // origin turn keeps stale/current reports on distinct keys.
+            const keyDispatchId =
+              presentedDispatchId ?? thread.nudging?.delegation?.dispatchId ?? undefined;
+            const keyBase = keyDispatchId
+              ? `child-report:${thread.id}:${keyDispatchId}:${assignmentId}:${flags.reportId}`
+              : `child-report:${thread.id}:${assignmentId}:${flags.reportId}`;
             return yield* dispatch({
               type: "thread.child.report",
-              commandId: CommandId.make(
-                presentedDispatchId
-                  ? `child-report:${thread.id}:${presentedDispatchId}:${assignmentId}:${flags.reportId}`
-                  : `child-report:${thread.id}:${assignmentId}:${flags.reportId}`,
-              ),
+              commandId: CommandId.make(originTurnId ? `${keyBase}:${originTurnId}` : keyBase),
               threadId: thread.id,
               reportId: flags.reportId,
               kind: flags.kind,
