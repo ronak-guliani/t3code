@@ -7,11 +7,20 @@ import { render } from "vitest-browser-react";
 
 import { RemoteAccessSettings } from "./RemoteAccessSettings";
 
+const toastAddSpy = vi.hoisted(() => vi.fn());
+
 vi.mock("../../environments/primary", () => ({
   resolvePrimaryEnvironmentHttpUrl: (path: string) => path,
 }));
 
-afterEach(() => vi.unstubAllGlobals());
+vi.mock("../ui/toast", () => ({
+  toastManager: { add: toastAddSpy },
+}));
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  toastAddSpy.mockClear();
+});
 
 const failedShutdown: RemoteAccessStatus = {
   enabled: false,
@@ -39,6 +48,27 @@ it("shows one copyable setup command", async () => {
   await page.getByRole("button", { name: "Copy Command", exact: true }).click();
   expect(copy).toHaveBeenCalledWith("t3 remote setup");
   await expect.element(page.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
+});
+
+it("shows clipboard rejection details", async () => {
+  const copyError = new Error("Clipboard permission denied.");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json(failedShutdown)),
+  );
+  vi.stubGlobal("navigator", {
+    ...navigator,
+    clipboard: { writeText: vi.fn(async () => Promise.reject(copyError)) },
+  });
+
+  await render(<RemoteAccessSettings />);
+  await page.getByRole("button", { name: "Copy Command", exact: true }).click();
+
+  expect(toastAddSpy).toHaveBeenCalledWith({
+    type: "error",
+    title: "Could not copy setup command",
+    description: copyError.message,
+  });
 });
 
 for (const initiallyFailed of [false, true]) {

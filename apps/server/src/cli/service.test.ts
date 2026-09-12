@@ -1,7 +1,11 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 import * as BootService from "../cloud/bootService.ts";
+import { serializeServiceInstallation } from "../cloud/serviceInstallation.ts";
 import {
   ensureBackgroundService,
   formatServiceStatus,
@@ -175,6 +179,98 @@ it.effect("installs a missing service during one-command remote setup", () =>
     );
     assert.deepStrictEqual(installations, [{ cwd: "/workspace" }]);
   }),
+);
+
+it.effect("preserves installed service settings and applies explicit environment overrides", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(() => mkdtemp(join(tmpdir(), "t3-service-settings-"))),
+    (root) =>
+      Effect.gen(function* () {
+        const savedInvocation = {
+          cwd: "/saved/workspace",
+          host: "127.0.0.2",
+          port: 4555,
+        };
+        const installedPaths = BootService.servicePaths({
+          homeDir: root,
+          canonicalBaseDir: join(root, "data"),
+          userId: 501,
+        });
+        yield* Effect.promise(async () => {
+          await mkdir(dirname(installedPaths.versionPath), { recursive: true });
+          await writeFile(
+            installedPaths.versionPath,
+            serializeServiceInstallation(savedInvocation),
+            "utf8",
+          );
+        });
+
+        const installations: BootService.ServiceInvocation[] = [];
+        const service = BootService.BootService.of({
+          install: (invocation) =>
+            Effect.sync(() => {
+              installations.push(invocation);
+              return {
+                ...installedPaths,
+                baseDir: join(root, "data"),
+                runtimePath: "/runtime",
+                arguments: [],
+                environment: {},
+              };
+            }),
+          status: Effect.succeed({
+            ...installedPaths,
+            supported: true,
+            platform: "darwin",
+            installed: true,
+            enabled: false,
+            loaded: false,
+            processAlive: false,
+            responsive: false,
+            current: true,
+          }),
+          start: Effect.die("unexpected start"),
+          restart: Effect.die("unexpected restart"),
+          stop: Effect.die("unexpected stop"),
+          enable: Effect.die("unexpected enable"),
+          disable: Effect.die("unexpected disable"),
+          uninstall: Effect.die("unexpected uninstall"),
+        });
+
+        const previousHost = process.env.T3CODE_HOST;
+        const previousPort = process.env.T3CODE_PORT;
+        try {
+          delete process.env.T3CODE_HOST;
+          delete process.env.T3CODE_PORT;
+          assert.strictEqual(
+            yield* ensureBackgroundService().pipe(
+              Effect.provideService(BootService.BootService, service),
+            ),
+            "repaired",
+          );
+
+          process.env.T3CODE_HOST = "0.0.0.0";
+          process.env.T3CODE_PORT = "4666";
+          assert.strictEqual(
+            yield* ensureBackgroundService().pipe(
+              Effect.provideService(BootService.BootService, service),
+            ),
+            "repaired",
+          );
+        } finally {
+          if (previousHost === undefined) delete process.env.T3CODE_HOST;
+          else process.env.T3CODE_HOST = previousHost;
+          if (previousPort === undefined) delete process.env.T3CODE_PORT;
+          else process.env.T3CODE_PORT = previousPort;
+        }
+
+        assert.deepStrictEqual(installations, [
+          savedInvocation,
+          { ...savedInvocation, host: "0.0.0.0", port: 4666 },
+        ]);
+      }),
+    (root) => Effect.promise(() => rm(root, { recursive: true, force: true })),
+  ),
 );
 
 it.effect("restarts an unresponsive current service during remote setup", () =>
