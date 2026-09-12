@@ -420,4 +420,68 @@ describe("child nudging", () => {
     });
     expect((await apply(result.readModel, finish("child"))).events).toHaveLength(1);
   });
+
+  it("accepts a report from the active execution and propagates its dispatch", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: { ...child.nudging!.delegation!, dispatchId: "dispatch-1" },
+    };
+    const { readModel, events } = await apply(model(child), {
+      ...report("child", "decision-needed"),
+      dispatchId: "dispatch-1",
+    });
+    expect(events.some((event) => event.type === "thread.child-lifecycle-notified")).toBe(true);
+    expect(readModel.threads[0]!.queuedTurns).toHaveLength(1);
+    expect(readModel.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
+      kind: "child-nudge",
+      updates: [{ assignmentId: "assignment-child", dispatchId: "dispatch-1" }],
+    });
+  });
+
+  it("records a superseded execution report as stale without waking the parent", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: { ...child.nudging!.delegation!, dispatchId: "dispatch-2" },
+    };
+    const { readModel, events } = await apply(model(child), {
+      ...report("child", "decision-needed"),
+      dispatchId: "dispatch-1",
+    });
+    expect(events.map((event) => event.type)).toEqual(["thread.activity-appended"]);
+    expect(events[0]).toMatchObject({
+      payload: {
+        activity: { payload: { dispatchVerdict: "stale", dispatchId: "dispatch-1" } },
+      },
+    });
+    expect(readModel.threads[0]!.queuedTurns).toEqual([]);
+    expect(readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+  });
+
+  it("records an unfenced-proof report on a fenced delegation as stale", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: { ...child.nudging!.delegation!, dispatchId: "dispatch-1" },
+    };
+    const { readModel, events } = await apply(model(child), report("child", "important-update"));
+    expect(events.map((event) => event.type)).toEqual(["thread.activity-appended"]);
+    expect(events[0]).toMatchObject({
+      payload: { activity: { payload: { dispatchVerdict: "stale" } } },
+    });
+    expect(readModel.threads[0]!.queuedTurns).toEqual([]);
+  });
+
+  it("acknowledges reports on completed assignments without a second wake", async () => {
+    let state = (await apply(model(thread("child", true)), finish("child"))).readModel;
+    expect(state.threads[0]!.queuedTurns).toHaveLength(1);
+    const { readModel, events } = await apply(state, {
+      ...report("child", "important-update"),
+      commandId: CommandId.make("report-after-complete"),
+      reportId: "after-complete",
+    });
+    expect(events.map((event) => event.type)).toEqual(["thread.activity-appended"]);
+    expect(events[0]).toMatchObject({
+      payload: { activity: { payload: { dispatchVerdict: "already-recorded" } } },
+    });
+    expect(readModel.threads[0]!.queuedTurns).toHaveLength(1);
+  });
 });

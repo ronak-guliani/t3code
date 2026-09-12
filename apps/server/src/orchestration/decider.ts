@@ -34,6 +34,7 @@ import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
 import { assistantTurnCount } from "./Utils.ts";
 import { findCanonicalActiveWorktreeOwner } from "./worktreeOwnership.ts";
 import { isAutomaticChildNudgeBlocked, queueChildNudge } from "./childNudging.ts";
+import { childReportDedupeKey, classifyChildReport } from "./dispatchAuthority.ts";
 
 const FORK_TITLE_PREFIX = "Forked: ";
 /**
@@ -137,6 +138,7 @@ function appendChildLifecycleNotification(
       ? {
           id: `assignment:${input.childThread.id}:${delegation.assignmentId}`,
           assignmentId: delegation.assignmentId,
+          ...(delegation.dispatchId ? { dispatchId: delegation.dispatchId } : {}),
           childThreadId: input.childThread.id,
           childTitle: input.childThread.title,
           kind: input.lifecycle,
@@ -2084,6 +2086,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const report = {
         id: `assignment:${thread.id}:${delegation.assignmentId}`,
         assignmentId: delegation.assignmentId,
+        ...(delegation.dispatchId ? { dispatchId: delegation.dispatchId } : {}),
         childThreadId: thread.id,
         childTitle: thread.title,
         kind,
@@ -2115,12 +2118,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       const delegation = child.nudging?.delegation;
-      if (
-        !child.parentThreadId ||
-        !delegation ||
-        child.deletedAt !== null ||
-        delegation.completedAt !== null
-      ) {
+      if (!child.parentThreadId || !delegation || child.deletedAt !== null) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "Reporting requires an active delegated assignment.",
@@ -2133,7 +2131,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "The parent thread has been deleted.",
         });
       }
-      const source = {
+      const verdict = classifyChildReport({
+        delegation,
+        dispatchId: command.dispatchId,
+      });
+      const verdictActivity = (summary: string): PlannedOrchestrationEvent => ({
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: child.id,
@@ -2147,16 +2149,35 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             id: command.commandId,
             kind: "delegation.reported",
             tone: "info",
-            summary: command.summary,
-            payload: { reportId: command.reportId },
+            summary,
+            payload: {
+              reportId: command.reportId,
+              dispatchVerdict: verdict,
+              ...(command.dispatchId ? { dispatchId: command.dispatchId } : {}),
+            },
             turnId: child.session?.activeTurnId ?? null,
             createdAt: command.createdAt,
           },
         },
-      };
+      });
+      if (verdict !== "accepted") {
+        return verdictActivity(
+          verdict === "already-recorded"
+            ? `Duplicate report '${command.reportId}' acknowledged without a second wake: the assignment already completed.`
+            : `Stale report '${command.reportId}' recorded without waking the parent: it comes from a superseded execution.`,
+        );
+      }
+      const source = verdictActivity(command.summary);
+      const dispatchId = command.dispatchId ?? delegation.dispatchId ?? undefined;
       const report = {
-        id: `report:${child.id}:${delegation.assignmentId}:${command.reportId}`,
+        id: childReportDedupeKey({
+          childThreadId: child.id,
+          dispatchId,
+          assignmentId: delegation.assignmentId,
+          reportId: command.reportId,
+        }),
         assignmentId: delegation.assignmentId,
+        ...(dispatchId ? { dispatchId } : {}),
         childThreadId: child.id,
         childTitle: child.title,
         kind: command.kind,

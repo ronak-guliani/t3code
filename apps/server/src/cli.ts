@@ -2191,6 +2191,7 @@ const chatNewCommand = Command.make("new", {
                 ? {
                     delegation: {
                       assignmentId: firstMessageId,
+                      dispatchId: crypto.randomUUID(),
                       followUp: flags.followUp.value,
                       completedAt: null,
                     },
@@ -2509,12 +2510,15 @@ const chatCommand = Command.make("chat").pipe(
           dispatch({
             type: "thread.child.report",
             commandId: CommandId.make(
-              `child-report:${thread.id}:${thread.nudging?.delegation ? `${thread.nudging.delegation.assignmentId}:` : ""}${flags.reportId}`,
+              `child-report:${thread.id}:${thread.nudging?.delegation ? `${thread.nudging.delegation.assignmentId}:${thread.nudging.delegation.dispatchId ?? "legacy"}:` : ""}${flags.reportId}`,
             ),
             threadId: thread.id,
             reportId: flags.reportId,
             kind: flags.kind,
             summary: flags.summary,
+            ...(thread.nudging?.delegation?.dispatchId
+              ? { dispatchId: thread.nudging.delegation.dispatchId }
+              : {}),
             crossThreadDispatchCapability: flags.crossThreadCapability,
             createdAt: new Date().toISOString(),
           }).pipe(Effect.flatMap(printJson)),

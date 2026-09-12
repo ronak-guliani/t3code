@@ -272,6 +272,8 @@ export const ChildNudgeUpdate = Schema.Struct({
   childThreadId: ThreadId,
   childTitle: TrimmedNonEmptyString,
   assignmentId: MessageId,
+  /** Execution generation that produced this update. Absent on pre-fence history. */
+  dispatchId: Schema.optional(TrimmedNonEmptyString),
   kind: Schema.Literals([
     "progress",
     "decision-needed",
@@ -292,9 +294,17 @@ export const ChildNudgeOrigin = Schema.Struct({
 
 export const ThreadDelegation = Schema.Struct({
   assignmentId: MessageId,
+  /**
+   * Execution generation authorized to report on this assignment.
+   * The logical assignment survives retries; the dispatch identifies one
+   * execution attempt. Absent on pre-fence delegations, which are treated
+   * as legacy (unfenced) rather than rejected.
+   */
+  dispatchId: Schema.optional(TrimmedNonEmptyString),
   followUp: Schema.Literals(["automatic", "notify-only"]),
   completedAt: Schema.NullOr(IsoDateTime),
 });
+export type ThreadDelegation = typeof ThreadDelegation.Type;
 export const ThreadNudging = Schema.Struct({
   paused: Schema.optional(Schema.Boolean),
   delegation: Schema.optional(ThreadDelegation),
@@ -1162,6 +1172,12 @@ const ThreadChildReportCommand = Schema.Struct({
   reportId: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
   kind: ChildReportKind,
   summary: TrimmedNonEmptyString.check(Schema.isMaxLength(4000)),
+  /**
+   * Execution generation the reporter claims. The server binds this to the
+   * child's active dispatch: a mismatch means a superseded execution is
+   * reporting late and must not mutate task state.
+   */
+  dispatchId: Schema.optional(TrimmedNonEmptyString),
   crossThreadDispatchCapability: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
 });
