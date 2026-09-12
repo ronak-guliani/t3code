@@ -3,6 +3,7 @@ import path from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, FileSystem, Layer, Option, PlatformError, Scope } from "effect";
+import { TestClock } from "effect/testing";
 import { describe, expect } from "vitest";
 
 import { checkpointBaselineRefForThreadTurn, checkpointRefForThreadTurn } from "../Utils.ts";
@@ -495,7 +496,7 @@ describe("CheckpointStoreLive range resolution", () => {
 
 describe("CheckpointStoreLive diff cache", () => {
   function makeDiffCacheTestLayer(options?: {
-    readonly diffResult?: string;
+    readonly diffResult?: string | ((input: ExecuteGitInput) => string);
     readonly missingFromCheckpoint?: boolean;
   }) {
     let diffCalls = 0;
@@ -517,7 +518,12 @@ describe("CheckpointStoreLive diff cache", () => {
           }
           if (input.args[0] === "diff") {
             diffCalls += 1;
-            return executeGitResult(0, options?.diffResult ?? `diff-${diffCalls}\n`);
+            return executeGitResult(
+              0,
+              typeof options?.diffResult === "function"
+                ? options.diffResult(input)
+                : (options?.diffResult ?? `diff-${diffCalls}\n`),
+            );
           }
           throw new Error(`Unexpected Git command: ${input.args.join(" ")}`);
         }),
@@ -616,6 +622,56 @@ describe("CheckpointStoreLive diff cache", () => {
       }).pipe(Effect.provide(test.layer));
 
       expect(test.getDiffCalls()).toBe(2);
+    }),
+  );
+
+  it.effect("evicts oversized results without displacing retained small diffs", () =>
+    Effect.gen(function* () {
+      const largeDiff = "x".repeat(128 * 1024 + 1);
+      const test = makeDiffCacheTestLayer({
+        diffResult: (input) => (input.cwd === "/tmp/small" ? "small\n" : largeDiff),
+      });
+      const input = {
+        cwd: "/tmp/small",
+        fromCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/from"),
+        toCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/to"),
+      };
+
+      yield* Effect.gen(function* () {
+        const checkpointStore = yield* CheckpointStore;
+        expect(yield* checkpointStore.diffCheckpoints(input)).toBe("small\n");
+        for (let index = 0; index < 128; index += 1) {
+          expect(
+            yield* checkpointStore.diffCheckpoints({ ...input, cwd: `/tmp/large-${index}` }),
+          ).toBe(largeDiff);
+        }
+        expect(yield* checkpointStore.diffCheckpoints(input)).toBe("small\n");
+      }).pipe(Effect.provide(test.layer));
+
+      expect(test.getDiffCalls()).toBe(129);
+    }),
+  );
+
+  it.effect("retains the byte-budget boundary only until the 30-second TTL", () =>
+    Effect.gen(function* () {
+      const diff = "x".repeat(128 * 1024);
+      const test = makeDiffCacheTestLayer({ diffResult: diff });
+      const input = {
+        cwd: "/tmp/workspace",
+        fromCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/from"),
+        toCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/to"),
+      };
+
+      yield* Effect.gen(function* () {
+        const checkpointStore = yield* CheckpointStore;
+        expect(yield* checkpointStore.diffCheckpoints(input)).toBe(diff);
+        yield* TestClock.adjust("29 seconds");
+        expect(yield* checkpointStore.diffCheckpoints(input)).toBe(diff);
+        expect(test.getDiffCalls()).toBe(1);
+        yield* TestClock.adjust("1 second");
+        expect(yield* checkpointStore.diffCheckpoints(input)).toBe(diff);
+        expect(test.getDiffCalls()).toBe(2);
+      }).pipe(Effect.provide(test.layer));
     }),
   );
 });

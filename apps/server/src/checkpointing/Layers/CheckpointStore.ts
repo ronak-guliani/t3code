@@ -807,7 +807,18 @@ const makeCheckpointStore = Effect.gen(function* () {
       if (!resolvedCommits.fromCheckpointExists) {
         return yield* executeCheckpointDiff(cacheKey);
       }
-      return yield* Cache.get(checkpointDiffCache, cacheKey);
+      return yield* Cache.get(checkpointDiffCache, cacheKey).pipe(
+        Effect.onExit((exit) =>
+          Exit.isSuccess(exit) &&
+          exit.value.length * 2 > CHECKPOINT_DIFF_CACHE_MAX_ENTRY_STRING_BYTES
+            ? Cache.invalidateWhen(
+                checkpointDiffCache,
+                cacheKey,
+                (value) => value.length * 2 > CHECKPOINT_DIFF_CACHE_MAX_ENTRY_STRING_BYTES,
+              )
+            : Effect.void,
+        ),
+      );
     },
   );
 
