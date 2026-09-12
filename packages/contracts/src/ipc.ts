@@ -231,6 +231,7 @@ export interface DesktopLocalRebuildResult {
 
 export interface DesktopEnvironmentBootstrap {
   label: string;
+  ownership?: "desktop" | "external";
   httpBaseUrl: string | null;
   wsBaseUrl: string | null;
   bootstrapToken?: string;
@@ -885,6 +886,24 @@ export interface DesktopPreviewBridge {
 }
 
 export interface DesktopBridge {
+  getLocalEnvironments?: () => Promise<{
+    readonly selectionError?: string | null;
+    readonly currentBaseDir: string;
+    readonly canChooseDefault: boolean;
+    readonly ownership: "desktop" | "external";
+    readonly environments: readonly {
+      readonly baseDir: string;
+      readonly environmentId: string;
+      readonly label: string;
+      readonly status: "online" | "offline" | "unavailable";
+      readonly origin: string | null;
+      readonly pid: number | null;
+      readonly startedAt: string | null;
+      readonly serverVersion: string | null;
+      readonly error: string | null;
+    }[];
+  }>;
+  selectLocalEnvironment?: (baseDir: string) => Promise<boolean>;
   getAppBranding: () => DesktopAppBranding | null;
   getLocalEnvironmentBootstrap?: () => DesktopEnvironmentBootstrap | null;
   preview?: DesktopPreviewBridge;

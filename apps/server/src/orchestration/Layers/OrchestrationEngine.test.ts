@@ -130,8 +130,11 @@ describe("OrchestrationEngine", () => {
       commandId: CommandId.make("report-original"),
       threadId: childId,
       reportId: "decision-1",
+      assignmentId: MessageId.make("assignment"),
       kind: "decision-needed" as const,
       summary: "Choose the migration approach.",
+      decision: { question: "Which migration approach?", options: ["Expand", "Replace"] },
+      canContinue: false,
       createdAt: at,
     };
     try {
@@ -183,6 +186,17 @@ describe("OrchestrationEngine", () => {
       );
       await system.run(
         system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("wait-parent"),
+          threadId: parentId,
+          childWait: {
+            mode: "all",
+            assignments: [{ childThreadId: childId, assignmentId: MessageId.make("assignment") }],
+          },
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
           type: "thread.session.stop",
           commandId: CommandId.make("stop-parent"),
           threadId: parentId,
@@ -194,6 +208,11 @@ describe("OrchestrationEngine", () => {
       state = await system.run(system.engine.getReadModel());
       const parent = state.threads.find((entry) => entry.id === parentId)!;
       expect(parent.nudging?.paused).toBe(true);
+      expect(parent.nudging?.wait?.mode).toBe("all");
+      expect(
+        state.threads.find((entry) => entry.id === childId)?.nudging?.delegation?.decision?.decision
+          ?.question,
+      ).toBe("Which migration approach?");
       expect(parent.queuedTurns).toHaveLength(1);
       expect(
         (await system.run(system.snapshots.getShellSnapshot())).threads.find(
@@ -234,6 +253,7 @@ describe("OrchestrationEngine", () => {
         system.engine.dispatch({
           ...report,
           reportId: "decision-2",
+          supersedesReportId: `report:${childId}:assignment:decision-1`,
           commandId: CommandId.make("second-report"),
         }),
       );

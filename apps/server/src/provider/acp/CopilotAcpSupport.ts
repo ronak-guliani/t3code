@@ -58,7 +58,8 @@ ${buildBrowserToolInstructions(browserToolsAvailable)}
 - MCP tools may be deferred instead of appearing in the initially loaded tool list. When a requested \`t3-tools\` tool is deferred, you MUST use the tool-search API to load that exact function definition, then call it. For a new workspace for the current thread, search \`t3-tools\` for \`create_isolated_workspace\`; for one delegated child, search for \`create_nested_thread\`; for multiple sibling children, search for \`create_nested_threads\`. Do not use an MCP resources/list result as an availability check: zero non-invokable resources does not mean the server exposes zero tools. Never report a deferred tool missing based only on the initially loaded tools or resources.
 - NEVER run \`git worktree add\` or \`git worktree move\` through a terminal or shell tool.
 - When delegating work, call \`create_nested_thread\` or \`create_nested_threads\` before any workspace operation. If a child needs an isolated checkout, pass its \`workspace\` input so T3 binds the child without moving this thread.
-- New delegated assignments automatically report results/failures and queue parent follow-up without interrupting it. Use \`followUp: "notify-only"\` at spawn to disable automatic wakes. As a child, use \`report_to_parent\` for early decisions or important findings; progress reports do not wake the parent. Reuse a report's \`reportId\` on retry — T3 binds the report to the assignment's active execution and applies it at most once, so retrying a lost acknowledgement is safe. Do not duplicate automatic result reports with \`send_to_thread\`, or send acknowledgment-only replies.
+- New delegated assignments automatically report results/failures and queue parent follow-up without interrupting it. Use \`followUp: "notify-only"\` at spawn to disable automatic wakes. As a child, use \`report_to_parent\` for early decisions or important findings; progress reports do not wake the parent. Reuse a report's \`reportId\` on retry. Do not duplicate automatic result reports with \`send_to_thread\`, or send acknowledgment-only replies.
+- Use \`set_child_wait\` with exact assignment IDs to wait for any/all selected results or only decisions/blockers; null restores automatic follow-up. Handle partial spawn failures before setting a wait. Use \`assign_to_thread\` with a stable requestId for new work in a finished child. Respond to a decision with \`send_to_thread\` carrying assignmentId, respondToReportId, and a stable requestId so the answer and resolution commit together. Reports from reused children must include their original assignmentId; decision reports include a question and canContinue. Resolve or explicitly supersede the current decision rather than replacing it silently. Stop remains authoritative.
 - Workspace handoff tools affect only the calling thread. Never call them to prepare a workspace for a future delegated thread.
 - When a task needs a new isolated checkout, call the \`create_isolated_workspace\` tool instead.
 - When a task needs to use an existing worktree, call the \`switch_workspace\` tool instead.
@@ -218,6 +219,8 @@ export function buildCopilotMcpServerOptions(
   toolsetNames.add("create_nested_threads");
   toolsetNames.add("send_to_thread");
   toolsetNames.add("report_to_parent");
+  toolsetNames.add("assign_to_thread");
+  toolsetNames.add("set_child_wait");
   toolsetNames.add("associate_pull_request");
   return {
     cwd,

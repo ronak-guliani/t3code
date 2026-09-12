@@ -348,6 +348,12 @@ const T3_MCP_TOOL_LABELS: Record<
   string,
   readonly [action: string, running: string, completed: string, detail: string]
 > = {
+  create_nested_thread: ["Delegate", "Delegating", "Delegated", "a child assignment"],
+  create_nested_threads: ["Delegate", "Delegating", "Delegated", "child assignments"],
+  assign_to_thread: ["Assign", "Assigning", "Assigned", "follow-up work"],
+  set_child_wait: ["Set", "Setting", "Set", "child follow-up policy"],
+  report_to_parent: ["Report", "Reporting", "Reported", "to the parent"],
+  send_to_thread: ["Send", "Sending", "Sent", "a thread message"],
   orchestrator_capabilities: ["Get", "Getting", "Got", "orchestration capabilities"],
   delegate_task: ["Delegate", "Delegating", "Delegated", "a child task"],
   task_status: ["Get", "Getting", "Got", "delegated task status"],

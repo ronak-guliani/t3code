@@ -651,10 +651,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
     pullRequestsEqual(left.pullRequest, right.pullRequest) &&
-    left.nudging?.paused === right.nudging?.paused &&
-    left.nudging?.delegation?.assignmentId === right.nudging?.delegation?.assignmentId &&
-    left.nudging?.delegation?.followUp === right.nudging?.delegation?.followUp &&
-    left.nudging?.delegation?.completedAt === right.nudging?.delegation?.completedAt
+    resumeCursorsEqual(left.nudging, right.nudging)
   );
 }
 

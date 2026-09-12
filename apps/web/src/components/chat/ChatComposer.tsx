@@ -75,6 +75,7 @@ import { ComposerPreviewAnnotationCards } from "./ComposerPreviewAnnotationCards
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { CopilotCompletionWarning } from "./CopilotCompletionWarning";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
+import { ChildFollowUpPanel } from "./ChildFollowUpPanel";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
 import {
@@ -432,7 +433,6 @@ export interface ChatComposerProps {
   ) => Promise<void>;
   onUpdateQueuedTurn: (queuedTurnId: QueuedTurnId, text: string) => void;
   onDeleteQueuedTurn: (queuedTurnId: QueuedTurnId) => void;
-  onSetChildFollowUpPaused?: (paused: boolean) => void;
   onSelectActivePendingUserInputOption: (questionId: string, optionLabel: string) => void;
   onAdvanceActivePendingUserInput: () => void;
   onPreviousActivePendingUserInputQuestion: () => void;
@@ -512,7 +512,6 @@ export const ChatComposer = memo(
       onRespondToApproval,
       onUpdateQueuedTurn,
       onDeleteQueuedTurn,
-      onSetChildFollowUpPaused,
       onSelectActivePendingUserInputOption,
       onAdvanceActivePendingUserInput,
       onPreviousActivePendingUserInputQuestion,
@@ -607,6 +606,10 @@ export const ChatComposer = memo(
       settings.providerInstances,
       settings.copilotAutomaticPrFeedback,
     ]);
+    const messageQueue = useMemo(
+      () => queuedTurns.filter((turn) => turn.origin?.kind !== "child-nudge"),
+      [queuedTurns],
+    );
     const explicitSelectedInstanceId = selectedProviderByThreadId ?? threadProvider;
 
     const unlockedSelectedProvider =
@@ -2127,13 +2130,20 @@ export const ChatComposer = memo(
             onBlurCapture={scheduleComposerCollapseCheck}
           >
             <CopilotCompletionWarning activities={activeThread?.activities} />
+            {activeThread ? (
+              <ChildFollowUpPanel
+                key={activeThread.id}
+                thread={activeThread}
+                queuedTurns={queuedTurns}
+                isWorking={phase === "running"}
+                blockedByInteraction={!!activePendingApproval || pendingUserInputs.length > 0}
+                onError={setThreadError}
+              />
+            ) : null}
             {activePendingApproval || pendingUserInputs.length > 0 ? null : (
               <QueuedMessagesPanel
-                childFollowUpPaused={activeThread?.nudging?.paused === true}
-                onSetChildFollowUpPaused={onSetChildFollowUpPaused}
-                onRetryQueuedTurn={(turn) => onUpdateQueuedTurn(turn.id, turn.message.text)}
                 policyBlocks={queuedPolicyBlocks}
-                queuedTurns={queuedTurns}
+                queuedTurns={messageQueue}
                 editingQueuedTurnId={editingQueuedTurn?.id ?? null}
                 editingText={editingQueuedTurn?.text ?? ""}
                 onStartEditingQueuedTurn={startEditingQueuedTurn}

@@ -22,6 +22,7 @@ import {
 } from "./ThreadStatusIndicators";
 import { ThreadDetailsTooltip, ThreadDetailsTooltipProvider } from "./SidebarV2ThreadTooltip";
 import { ProjectFavicon } from "./ProjectFavicon";
+import { EnvironmentIdentity } from "./EnvironmentIdentity";
 import { formatWorktreePathForDisplay } from "../worktreeCleanup";
 import { autoAnimate } from "@formkit/auto-animate";
 import React, {
@@ -310,7 +311,7 @@ function formatProjectMemberActionLabel(
     return member.name;
   }
 
-  return member.environmentLabel ? `${member.environmentLabel} — ${member.cwd}` : member.cwd;
+  return `${member.environmentLabel ?? "Environment"} · ${member.environmentId.slice(0, 6)} — ${member.cwd}`;
 }
 
 function buildThreadJumpLabelMap(input: {
@@ -436,7 +437,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     sortable,
     thread,
     threadStatus,
-    isRemoteThread,
     threadEnvironmentLabel,
     threadProjectCwd,
     threadProjectName,
@@ -862,7 +862,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 {/* Project, worktree, PR and last-active moved off the row and
                     into this tooltip — the row keeps title and status only. */}
                 <ThreadDetailsTooltip
-                  environmentLabel={isRemoteThread ? (threadEnvironmentLabel ?? "Remote") : null}
+                  environmentLabel={`${threadEnvironmentLabel ?? "Local"} · ${thread.environmentId.slice(0, 6)}`}
                   projectCwd={threadProjectCwd ?? props.projectCwd ?? null}
                   projectName={projectName ?? "Unknown project"}
                   providerEntry={null}
@@ -870,6 +870,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   thread={thread}
                 />
               </Tooltip>
+              <EnvironmentIdentity environmentId={thread.environmentId} compact />
               {composerDraftPreview ? (
                 <span
                   className="min-w-0 flex-1 truncate text-muted-foreground/50"

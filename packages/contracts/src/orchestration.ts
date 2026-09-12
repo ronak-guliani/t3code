@@ -267,13 +267,21 @@ export const CrossThreadOrigin = Schema.Struct({
 export type CrossThreadOrigin = typeof CrossThreadOrigin.Type;
 
 export const ChildReportKind = Schema.Literals(["progress", "decision-needed", "important-update"]);
+export const ChildDecision = Schema.Struct({
+  question: TrimmedNonEmptyString.check(Schema.isMaxLength(2000)),
+  options: Schema.optional(
+    Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(500))).check(
+      Schema.isMaxLength(8),
+      Schema.makeFilter((options) => new Set(options).size === options.length),
+    ),
+  ),
+  recommendation: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(1000))),
+});
 export const ChildNudgeUpdate = Schema.Struct({
   id: TrimmedNonEmptyString,
   childThreadId: ThreadId,
   childTitle: TrimmedNonEmptyString,
   assignmentId: MessageId,
-  /** Execution generation that produced this update. Absent on pre-fence history. */
-  dispatchId: Schema.optional(TrimmedNonEmptyString),
   kind: Schema.Literals([
     "progress",
     "decision-needed",
@@ -284,30 +292,51 @@ export const ChildNudgeUpdate = Schema.Struct({
   ]),
   summary: TrimmedNonEmptyString.check(Schema.isMaxLength(4000)),
   sourceMessageId: Schema.optional(MessageId),
+  decision: Schema.optional(ChildDecision),
+  canContinue: Schema.optional(Schema.Boolean),
+  supersedesReportId: Schema.optional(TrimmedNonEmptyString),
 });
 export type ChildNudgeUpdate = typeof ChildNudgeUpdate.Type;
 
 export const ChildNudgeOrigin = Schema.Struct({
   kind: Schema.Literal("child-nudge"),
   updates: Schema.Array(ChildNudgeUpdate).check(Schema.isMinLength(1), Schema.isMaxLength(32)),
+  collectUntil: Schema.optional(IsoDateTime),
 });
+
+export const ChildWaitCondition = Schema.Struct({
+  mode: Schema.Literals(["any", "all", "decisions-only"]),
+  assignments: Schema.Array(
+    Schema.Struct({
+      childThreadId: ThreadId,
+      assignmentId: MessageId,
+      outcome: Schema.optional(Schema.Literals(["result-available", "failed", "blocked"])),
+    }),
+  ).check(Schema.isMaxLength(32)),
+  satisfiedAt: Schema.optional(IsoDateTime),
+});
+export type ChildWaitCondition = typeof ChildWaitCondition.Type;
 
 export const ThreadDelegation = Schema.Struct({
   assignmentId: MessageId,
-  /**
-   * Execution generation authorized to report on this assignment.
-   * The logical assignment survives retries; the dispatch identifies one
-   * execution attempt. Absent on pre-fence delegations, which are treated
-   * as legacy (unfenced) rather than rejected.
-   */
-  dispatchId: Schema.optional(TrimmedNonEmptyString),
   followUp: Schema.Literals(["automatic", "notify-only"]),
   completedAt: Schema.NullOr(IsoDateTime),
+  assignedAt: Schema.optional(IsoDateTime),
+  outcome: Schema.optional(Schema.Literals(["result-available", "failed", "blocked"])),
+  decision: Schema.optional(Schema.NullOr(ChildNudgeUpdate)),
+  pendingResponse: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        queuedTurnId: QueuedTurnId,
+        report: ChildNudgeUpdate,
+      }),
+    ),
+  ),
 });
-export type ThreadDelegation = typeof ThreadDelegation.Type;
 export const ThreadNudging = Schema.Struct({
   paused: Schema.optional(Schema.Boolean),
   delegation: Schema.optional(ThreadDelegation),
+  wait: Schema.optional(Schema.NullOr(ChildWaitCondition)),
 });
 export type ThreadNudging = typeof ThreadNudging.Type;
 
@@ -859,6 +888,7 @@ const ThreadDecoupleCommand = Schema.Struct({
 });
 
 const ThreadMetaUpdateCommand = Schema.Struct({
+  childWait: Schema.optional(Schema.NullOr(ChildWaitCondition)),
   childFollowUpPaused: Schema.optional(Schema.Boolean),
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
@@ -997,6 +1027,13 @@ const ClientThreadTurnStartCommand = Schema.Struct({
 });
 
 const ThreadQueuedTurnCreateCommand = Schema.Struct({
+  assignment: Schema.optional(
+    Schema.Struct({
+      followUp: Schema.Literals(["automatic", "notify-only"]),
+    }),
+  ),
+  respondToReportId: Schema.optional(TrimmedNonEmptyString),
+  assignmentId: Schema.optional(MessageId),
   type: Schema.Literal("thread.queued-turn.create"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1013,6 +1050,13 @@ const ThreadQueuedTurnCreateCommand = Schema.Struct({
 });
 
 const ClientThreadQueuedTurnCreateCommand = Schema.Struct({
+  assignment: Schema.optional(
+    Schema.Struct({
+      followUp: Schema.Literals(["automatic", "notify-only"]),
+    }),
+  ),
+  respondToReportId: Schema.optional(TrimmedNonEmptyString),
+  assignmentId: Schema.optional(MessageId),
   type: Schema.Literal("thread.queued-turn.create"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1170,14 +1214,12 @@ const ThreadChildReportCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   reportId: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  assignmentId: Schema.optional(MessageId),
   kind: ChildReportKind,
   summary: TrimmedNonEmptyString.check(Schema.isMaxLength(4000)),
-  /**
-   * Execution generation the reporter claims. The server binds this to the
-   * child's active dispatch: a mismatch means a superseded execution is
-   * reporting late and must not mutate task state.
-   */
-  dispatchId: Schema.optional(TrimmedNonEmptyString),
+  decision: Schema.optional(ChildDecision),
+  canContinue: Schema.optional(Schema.Boolean),
+  supersedesReportId: Schema.optional(TrimmedNonEmptyString),
   crossThreadDispatchCapability: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
 });
@@ -1273,6 +1315,7 @@ const ThreadSessionSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   session: OrchestrationSession,
+  expectedActiveTurnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
 

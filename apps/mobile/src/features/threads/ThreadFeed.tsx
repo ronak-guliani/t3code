@@ -1426,6 +1426,66 @@ function renderFeedEntry(
 
   if (entry.type === "message") {
     const { message } = entry;
+    if (message.origin?.kind === "child-nudge") {
+      const updates = message.origin.updates;
+      const expanded = props.expandedWorkRows[entry.id] === true;
+      return (
+        <View className="mb-3">
+          <ThreadWorkGroupToggle
+            environmentId={props.environmentId}
+            rowSizing={props.workRowSizing}
+            expanded={expanded}
+            hiddenCount={updates.length}
+            activeCount={0}
+            entryLabel={updates.length === 1 ? "child update" : "child updates"}
+            iconSubtleColor={iconSubtleColor}
+            summary={`Continued with ${updates.length} child ${updates.length === 1 ? "update" : "updates"}`}
+            summaryKind="mixed"
+            themeAppearance={props.themeAppearance}
+            hasFailure={updates.some(
+              (report) => report.kind === "failed" || report.kind === "blocked",
+            )}
+            shimmer={false}
+            onToggle={() => props.onToggleWorkRow(entry.id, entry.id)}
+          />
+          {expanded ? (
+            <View className="ml-3 gap-2 border-l border-adaptive-neutral-200-a80-white-a8 pl-3">
+              {updates.map((report) => (
+                <View key={report.id} className="gap-1">
+                  <Text className="font-t3-medium text-xs text-foreground">
+                    {report.childTitle}
+                  </Text>
+                  <Text selectable className="text-xs text-foreground-muted">
+                    {report.summary}
+                  </Text>
+                  {report.decision ? (
+                    <Text selectable className="text-xs text-foreground">
+                      {report.decision.question}
+                      {report.decision.options
+                        ?.map((option, index) => `\n${index + 1}. ${option}`)
+                        .join("")}
+                      {report.decision.recommendation
+                        ? `\nRecommended: ${report.decision.recommendation}`
+                        : ""}
+                    </Text>
+                  ) : null}
+                  {report.canContinue !== undefined ? (
+                    <Text selectable className="text-xs text-foreground-muted">
+                      {report.canContinue
+                        ? "Child can continue without an answer."
+                        : "Child is waiting for an answer."}
+                    </Text>
+                  ) : null}
+                </View>
+              ))}
+              <Text className="text-xs text-foreground-muted">
+                Delivered to the parent. Results and decisions still require review.
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      );
+    }
     const isUser = message.role === "user";
     const renderedText = renderAssistantCitationsAsText(message.text);
     const styles = isUser ? markdownStyles.user : markdownStyles.assistant;

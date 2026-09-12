@@ -88,6 +88,7 @@ import Migration0083 from "./Migrations/083_ProjectionThreadMessageSequence.ts";
 import Migration0084 from "./Migrations/084_RepairDivergentProjectAndMessageSchema.ts";
 import Migration0085 from "./Migrations/085_WorktreeCleanupReconciliation.ts";
 import Migration0086 from "./Migrations/086_ThreadNudging.ts";
+import Migration0087 from "./Migrations/087_ProjectionThreadActivityJsonIndexes.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -175,6 +176,7 @@ export const migrationEntries = [
   [84, "RepairDivergentProjectAndMessageSchema", Migration0084],
   [85, "WorktreeCleanupReconciliation", Migration0085],
   [86, "ThreadNudging", Migration0086],
+  [87, "ProjectionThreadActivityJsonIndexes", Migration0087],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
