@@ -111,7 +111,7 @@ export async function makeWindowsService(input: {
     runtimeStatePath: join(instanceDir, "server-runtime.json"),
   };
   const description = `T3 Code managed host: ${baseDir}`;
-  const connect = `$scheduler=New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); $folder=$scheduler.GetFolder('\\'); $task=$null; try {$task=$folder.GetTask(${powershellLiteral(label)})} catch {if ($_.Exception.GetBaseException().HResult -ne -2147024894) {throw}}; if ($task -and ($task.Definition.Principal.UserId -ne ${powershellLiteral(sid)} -or $task.Definition.Principal.LogonType -ne 3 -or $task.Definition.RegistrationInfo.Description -ne ${powershellLiteral(description)})) {throw 'Refusing to modify a scheduled task not owned by this T3 environment.'};`;
+  const connect = `$scheduler=New-Object -ComObject 'Schedule.Service'; $scheduler.Connect(); $folder=$scheduler.GetFolder('\\'); $task=$null; try {$task=$folder.GetTask(${powershellLiteral(label)})} catch {if ($_.Exception.GetBaseException().HResult -ne -2147024894) {throw}}; if ($task) { $taskSid=$task.Definition.Principal.UserId; if ($taskSid -notmatch '^S-1-') {$taskSid=([System.Security.Principal.NTAccount]::new($taskSid)).Translate([System.Security.Principal.SecurityIdentifier]).Value}; if ($taskSid -ne ${powershellLiteral(sid)}) {throw 'Refusing a scheduled task owned by another user.'}; if ($task.Definition.Principal.LogonType -ne 3) {throw 'Refusing a scheduled task without interactive user logon.'}; if ($task.Definition.RegistrationInfo.Description -ne ${powershellLiteral(description)}) {throw 'Refusing a scheduled task belonging to another T3 environment.'} };`;
   const state = async () =>
     decodeState(
       await run(
@@ -131,7 +131,10 @@ export async function makeWindowsService(input: {
   const runtimePid = () => host.activeRuntimePid(paths.runtimeStatePath);
   const stop = async () => {
     const before = await state();
-    if (before.installed) await run(`${connect} $task.Stop(0)`);
+    if (before.running)
+      await run(
+        `${connect} if ($task) {try {$task.Stop(0)} catch {if ($_.Exception.GetBaseException().HResult -ne -2147216629) {throw}}}`,
+      );
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline) {
       if (!(await state()).running && (await runtimePid()) === undefined) return;

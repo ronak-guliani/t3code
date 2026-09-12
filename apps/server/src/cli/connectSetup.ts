@@ -1,4 +1,34 @@
 import { Console, Effect } from "effect";
+import { discoverLocalEnvironments } from "@t3tools/shared/localEnvironment";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { resolveBaseDir } from "../os-jank.ts";
+
+export const hostSetupLocation = (explicitBaseDir: string | undefined, home = homedir()) =>
+  Effect.gen(function* () {
+    if (explicitBaseDir?.trim())
+      return {
+        kind: "explicit" as const,
+        baseDir: yield* resolveBaseDir(explicitBaseDir),
+      };
+    const proposedBaseDir = join(home, ".t3");
+    const discovered = yield* Effect.tryPromise(() =>
+      discoverLocalEnvironments([proposedBaseDir], home),
+    );
+    return {
+      kind: "choose" as const,
+      selectionError: discovered.selectionError,
+      choices: [
+        ...discovered.environments.map((environment) => ({
+          title: `${environment.label} - ${environment.baseDir} (${environment.status})`,
+          value: environment.baseDir,
+        })),
+        ...(discovered.environments.some((environment) => environment.baseDir === proposedBaseDir)
+          ? []
+          : [{ title: `New host - ${proposedBaseDir}`, value: proposedBaseDir }]),
+      ],
+    };
+  });
 
 export type SetupStage = "preflight" | "account" | "relay-client" | "server" | "provisioning";
 

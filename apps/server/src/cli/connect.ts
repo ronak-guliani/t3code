@@ -51,10 +51,8 @@ import {
 } from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import { installationPreflight, installationIdentity } from "./installation.ts";
-import { runConnectSetup, setupStage } from "./connectSetup.ts";
-import { resolveBaseDir } from "../os-jank.ts";
+import { hostSetupLocation, runConnectSetup, setupStage } from "./connectSetup.ts";
 import { hostedAppUrlConfig } from "../cloud/publicConfig.ts";
-import { discoverLocalEnvironments } from "@t3tools/shared/localEnvironment";
 
 const jsonFlag = Flag.boolean("json").pipe(
   Flag.withDescription("Emit JSON instead of human-readable output."),
@@ -861,27 +859,20 @@ const connectSetupCommand = Command.make("connect", {
           );
         }),
         host: Effect.gen(function* () {
-          let baseDir = yield* resolveBaseDir(
+          const location = yield* hostSetupLocation(
             Option.getOrUndefined(flags.baseDir) ?? process.env.T3CODE_HOME,
           );
-          if (Option.isNone(flags.baseDir) && !process.env.T3CODE_HOME) {
-            const discovered = yield* Effect.tryPromise(() => discoverLocalEnvironments([baseDir]));
-            if (discovered.selectionError) yield* Console.warn(discovered.selectionError);
-            baseDir = yield* Prompt.run(
-              Prompt.select({
-                message: "Which local environment should this host use?",
-                choices: [
-                  ...discovered.environments.map((environment) => ({
-                    title: `${environment.label} - ${environment.baseDir} (${environment.status})`,
-                    value: environment.baseDir,
-                  })),
-                  ...(discovered.environments.some((environment) => environment.baseDir === baseDir)
-                    ? []
-                    : [{ title: `New host - ${baseDir}`, value: baseDir }]),
-                ],
-              }),
-            );
-          }
+          if (location.kind === "choose" && location.selectionError)
+            yield* Console.warn(location.selectionError);
+          const baseDir =
+            location.kind === "explicit"
+              ? location.baseDir
+              : yield* Prompt.run(
+                  Prompt.select({
+                    message: "Which local environment should this host use?",
+                    choices: location.choices,
+                  }),
+                );
           const identity = installationIdentity();
           yield* Console.log(
             `${identity.distribution} ${identity.version} (${identity.channel})\nExecutable: ${identity.executable}\nEntrypoint: ${identity.entrypoint}\nHost data: ${baseDir}`,

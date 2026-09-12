@@ -159,9 +159,11 @@ credentials stay in place. Do not hand off while turns are active.
 ### Build contract
 
 Root `pnpm build` explicitly builds `@t3tools/web` followed by `t3`; it cannot succeed by scheduling
-zero workspace tasks. Web builds stamp their source fingerprint. Server packaging refuses missing
-or changed web inputs and rechecks after bundling, rather than accepting a warning or stale
-client directory. Run the root build after changing web/shared/contracts sources. Standalone
+zero workspace tasks. Web builds stamp source fingerprints plus a normalized hash of effective
+public Vite/Connect configuration from process environment and root env files; no environment
+values are stored in the stamp. Server packaging refuses missing or changed web inputs and
+rechecks after bundling, rather than accepting a warning or stale client directory.
+Run the root build after changing web/shared/contracts/client-runtime sources or public configuration. Standalone
 `pnpm --filter t3 build` requires a matching web build.
 
 ### Multiple desktop and CLI environments

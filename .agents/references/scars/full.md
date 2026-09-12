@@ -129,6 +129,7 @@
 ## Release builds and mobile integration
 
 - Root build commands must name real package tasks, not self-pruned recursive aliases. Stamp web inputs before compilation, compare after compilation and before server packaging, and reject missing/stale clients rather than shipping a successful headless-only artifact.
+- Web freshness includes every directly imported workspace package and the normalized effective public build configuration, not only tracked web files. Hash configuration rather than recording values, and keep ordinary strict default-directory resolution out of an explicit discovery picker.
 - Resumed host setup must not restart an already-current healthy service merely to check readiness. Preserve installed bind/cwd settings on updates, and reuse one revocable CLI session across bounded provisioning polls.
 - Fork release CLI packages need their own executable name and GitHub release assets. Do not copy pnpm selector-style overrides into npm manifests: selectors such as `parent>child` are invalid npm package names.
 

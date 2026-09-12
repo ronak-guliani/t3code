@@ -6,11 +6,16 @@ import { defineConfig } from "vite";
 import pkg from "./package.json" with { type: "json" };
 
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
-import { clientSourceFingerprint } from "../../scripts/lib/client-build.ts";
+import {
+  clientConfigurationFingerprint,
+  clientSourceFingerprint,
+} from "../../scripts/lib/client-build.ts";
 import { fileURLToPath } from "node:url";
 
 const repoEnv = loadRepoEnv();
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+const buildEnvironment = { ...process.env };
+const configurationFingerprint = clientConfigurationFingerprint(repoRoot, buildEnvironment);
 let sourceFingerprint: string;
 Object.assign(process.env, repoEnv);
 
@@ -62,13 +67,22 @@ export default defineConfig({
         sourceFingerprint = clientSourceFingerprint(repoRoot);
       },
       generateBundle() {
-        if (clientSourceFingerprint(repoRoot) !== sourceFingerprint) {
-          throw new Error("Web sources changed during the build. Rerun pnpm build.");
+        if (
+          clientSourceFingerprint(repoRoot) !== sourceFingerprint ||
+          clientConfigurationFingerprint(repoRoot, buildEnvironment) !== configurationFingerprint
+        ) {
+          throw new Error(
+            "Web sources or configuration changed during the build. Rerun pnpm build.",
+          );
         }
         this.emitFile({
           type: "asset",
           fileName: ".t3-build.json",
-          source: JSON.stringify({ version: 1, fingerprint: sourceFingerprint }),
+          source: JSON.stringify({
+            version: 2,
+            fingerprint: sourceFingerprint,
+            configuration: configurationFingerprint,
+          }),
         });
       },
     },

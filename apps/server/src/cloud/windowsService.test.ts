@@ -80,8 +80,10 @@ function fixture() {
         enabled = true;
         definition =
           /RegisterTask\('[^']+', '([\s\S]*)', 6,/.exec(script)?.[1]?.replaceAll("''", "'") ?? "";
-      } else if (script.includes("$task.Stop(0)")) running = false;
-      else if (script.includes("$task.Run($null)")) running = true;
+      } else if (script.includes("$task.Stop(0)")) {
+        if (!running) throw new Error("SCHED_E_TASK_NOT_RUNNING");
+        running = false;
+      } else if (script.includes("$task.Run($null)")) running = true;
       else if (script.includes("$task.Enabled=$false")) enabled = false;
       else if (script.includes("$task.Enabled=$true")) enabled = true;
       else if (script.includes("$folder.DeleteTask")) {
@@ -149,8 +151,10 @@ describe("Windows managed hosting", () => {
     expect(plan.environment).not.toHaveProperty("SECRET_TOKEN");
     expect(renderWindowsLauncher(plan)).toContain("process.argv = ");
     await Effect.runPromise(service.stop);
+    await Effect.runPromise(service.stop);
     expect(await Effect.runPromise(service.status)).toMatchObject({ processAlive: false });
     await Effect.runPromise(service.start);
+    await Effect.runPromise(service.disable);
     await Effect.runPromise(service.disable);
     await expect(Effect.runPromise(service.start)).rejects.toThrow("enable");
     await Effect.runPromise(service.enable);
@@ -168,6 +172,25 @@ describe("Windows managed hosting", () => {
     );
     expect(fake.files.size).toBe(0);
     expect(fake.commands.some((command) => command.includes("$task.Stop(0)"))).toBe(false);
+  });
+  it("stops, disables, updates and uninstalls an already stopped task", async () => {
+    const fake = fixture(),
+      service = await fake.service();
+    await Effect.runPromise(service.install({ cwd: "/project" }));
+    await Effect.runPromise(service.stop);
+    const stoppedCalls = fake.commands.filter((command) =>
+      command.includes("$task.Stop(0)"),
+    ).length;
+    await Effect.runPromise(service.stop);
+    await Effect.runPromise(service.disable);
+    await Effect.runPromise(service.disable);
+    expect(fake.commands.filter((command) => command.includes("$task.Stop(0)"))).toHaveLength(
+      stoppedCalls,
+    );
+    await Effect.runPromise(service.install({ cwd: "/project" }));
+    await Effect.runPromise(service.stop);
+    expect(await Effect.runPromise(service.uninstall)).toBe(true);
+    expect(await Effect.runPromise(service.uninstall)).toBe(false);
   });
   for (const failure of ["failCopy", "failPreflight", "failProbe"] as const) {
     it(`preserves the previous host when ${failure} occurs`, async () => {
@@ -251,6 +274,7 @@ it.skipIf(process.platform !== "win32")(
       environment: process.env,
     });
     let stopped = false;
+    const failures: unknown[] = [];
     try {
       await Effect.runPromise(service.install({ cwd: root }));
       expect(await Effect.runPromise(service.status)).toMatchObject({
@@ -258,10 +282,12 @@ it.skipIf(process.platform !== "win32")(
         enabled: true,
       });
       await Effect.runPromise(service.stop);
+      await Effect.runPromise(service.stop);
       expect(await Effect.runPromise(service.status)).toMatchObject({ processAlive: false });
       await Effect.runPromise(service.start);
       await Effect.runPromise(service.install({ cwd: root }));
       expect(await Effect.runPromise(service.status)).toMatchObject({ responsive: true });
+      await Effect.runPromise(service.disable);
       await Effect.runPromise(service.disable);
       expect(await Effect.runPromise(service.status)).toMatchObject({
         enabled: false,
@@ -269,14 +295,22 @@ it.skipIf(process.platform !== "win32")(
       });
       await Effect.runPromise(service.enable);
       expect(await Effect.runPromise(service.status)).toMatchObject({ responsive: true });
+    } catch (cause) {
+      failures.push(cause);
     } finally {
       try {
         await Effect.runPromise(service.uninstall);
         stopped = true;
+      } catch (cause) {
+        failures.push(cause);
       } finally {
         if (stopped) await rm(root, { recursive: true, force: true });
       }
     }
+    if (failures.length > 0)
+      throw new AggregateError(failures, "Native Windows lifecycle or cleanup failed.", {
+        cause: failures[0],
+      });
   },
   120_000,
 );
