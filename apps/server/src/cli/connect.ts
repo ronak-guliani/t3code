@@ -53,6 +53,11 @@ import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import { installationPreflight, installationIdentity } from "./installation.ts";
 import { hostSetupLocation, runConnectSetup, setupStage } from "./connectSetup.ts";
 import { hostedAppUrlConfig } from "../cloud/publicConfig.ts";
+import { discoverAccountEnvironments, deregisterAccountEnvironment } from "./accountEnvironment.ts";
+import {
+  CONNECT_CAPACITY_UNAVAILABLE,
+  DEREGISTER_ENVIRONMENT_CONSEQUENCES,
+} from "@t3tools/shared/connectManagement";
 
 const jsonFlag = Flag.boolean("json").pipe(
   Flag.withDescription("Emit JSON instead of human-readable output."),
@@ -814,9 +819,109 @@ const connectStatusCommand = Command.make("status", {
 const connectUnlinkCommand = Command.make("unlink", {
   ...projectLocationFlags,
 }).pipe(
-  Command.withDescription("Disable T3 Connect while retaining the stored authorization."),
+  Command.withDescription(
+    "Disable this host and deregister it, retaining stored sign-in. Use deregister for another or offline host.",
+  ),
   Command.withHandler((flags) =>
     runCloudCommand(flags, disconnectCloud({ clearAuthorization: false })),
+  ),
+);
+
+const connectEnvironmentsCommand = Command.make("environments", {
+  ...projectLocationFlags,
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription(
+    "List account registrations, including offline hosts, without probing each host.",
+  ),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const config = yield* resolveCliAuthConfig(flags, Option.none());
+      const { session, environments } = yield* discoverAccountEnvironments(config.baseDir);
+      yield* Console.log(
+        flags.json
+          ? JSON.stringify(
+              { accountId: session.accountId, environments, tunnelQuota: null },
+              null,
+              2,
+            )
+          : [
+              `Account: ${session.accountId}`,
+              ...environments.map(
+                (environment) =>
+                  `${environment.label}\n  ID: ${environment.environmentId}\n  Registered: ${environment.linkedAt}\n  Endpoint: ${environment.endpoint.httpBaseUrl}`,
+              ),
+              CONNECT_CAPACITY_UNAVAILABLE,
+              "Last-seen time, installation type, and build are not reported by this relay. Registration age does not prove a host is stale.",
+              "Remove a confirmed stale host with: t3 connect deregister --environment <ID>",
+            ].join("\n"),
+      );
+    }),
+  ),
+);
+
+const connectDeregisterCommand = Command.make("deregister", {
+  ...projectLocationFlags,
+  environment: Flag.string("environment"),
+  yes: Flag.boolean("yes").pipe(Flag.withDefault(false)),
+}).pipe(
+  Command.withDescription(
+    "Deregister an exact environment ID from the account, including an offline host.",
+  ),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const config = yield* resolveCliAuthConfig(flags, Option.none());
+      const { session, environments } = yield* discoverAccountEnvironments(config.baseDir);
+      const environment = environments.find((entry) => entry.environmentId === flags.environment);
+      if (!environment)
+        return yield* Effect.fail(
+          new Error(
+            "That environment ID is not registered to the current account. Run `t3 connect environments`.",
+          ),
+        );
+      yield* Console.log(
+        `${environment.label} (${environment.environmentId})\nAccount: ${session.accountId}\n${DEREGISTER_ENVIRONMENT_CONSEQUENCES}`,
+      );
+      if (
+        !flags.yes &&
+        !(yield* Prompt.run(
+          Prompt.confirm({ message: "Deregister this environment?", initial: false }),
+        ))
+      ) {
+        yield* Console.log("Deregistration cancelled.");
+        return;
+      }
+      yield* deregisterAccountEnvironment(config.baseDir, {
+        accountId: session.accountId,
+        environmentId: environment.environmentId,
+      });
+      yield* Console.log("Environment deregistered from the account.");
+    }),
+  ),
+);
+
+const connectDisableCommand = Command.make("disable", { ...projectLocationFlags }).pipe(
+  Command.withDescription(
+    "Disable this host's exposure without deleting its account registration or stored sign-in.",
+  ),
+  Command.withHandler((flags) =>
+    runCloudCommand(
+      flags,
+      Effect.gen(function* () {
+        yield* CliState.setCliDesiredCloudLink(false);
+        const live = yield* runLiveCloudUnlink();
+        if (live.status === "failed")
+          return yield* Effect.fail(
+            new Error(
+              "Exposure is disabled for future starts, but the running tunnel could not be stopped. Restart this host to stop its connector.",
+            ),
+          );
+        yield* CliState.clearPersistedCloudLink;
+        yield* Console.log(
+          "Host exposure disabled. The account registration and stored sign-in were retained. Use `connect link` to enable again, or `connect deregister` to remove the registration.",
+        );
+      }),
+    ),
   ),
 );
 
@@ -988,6 +1093,9 @@ export const connectCommand = connectSetupCommand.pipe(
     connectLoginCommand,
     connectLinkCommand,
     connectStatusCommand,
+    connectEnvironmentsCommand,
+    connectDeregisterCommand,
+    connectDisableCommand,
     connectUnlinkCommand,
     connectLogoutCommand,
   ]),

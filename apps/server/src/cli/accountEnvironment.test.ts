@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, AuthStandardClientScopes } from "@t3tools/contracts";
+import { RelayWebClientId } from "@t3tools/contracts/relay";
 import { assert, it } from "@effect/vitest";
 import { verifyDpopProof } from "@t3tools/shared/dpop";
 import * as Effect from "effect/Effect";
@@ -24,6 +25,8 @@ import {
 } from "./accountEnvironment.ts";
 
 const token = {
+  clientId: RelayWebClientId,
+  authorizationScope: [...AuthStandardClientScopes].sort().join(" "),
   accountId: "account-a",
   environmentId: EnvironmentId.make("environment-1"),
   relayUrl: "https://relay-a.example.test",

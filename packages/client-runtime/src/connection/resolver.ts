@@ -149,6 +149,7 @@ const makeRelayBroker = Effect.fn("clientRuntime.connection.broker.makeRelay")(f
     function* (target: RelayConnectionTarget) {
       const authorized = yield* remote.authorizeDpop({
         expectedEnvironmentId: target.environmentId,
+        relayUrl: relay.relayUrl,
         obtainBootstrap: Effect.gen(function* () {
           const clerkToken = yield* session.clerkToken.pipe(
             Effect.withSpan("relay.connection.cloudSessionToken.resolve"),

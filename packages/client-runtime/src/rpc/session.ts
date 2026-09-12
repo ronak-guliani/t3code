@@ -5,6 +5,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as RpcClient from "effect/unstable/rpc/RpcClient";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
@@ -45,7 +46,7 @@ type InitialConfigError = Effect.Error<
 >;
 type ProbeError = Effect.Error<ReturnType<WsRpcProtocolClient[typeof WS_METHODS.serverProbe]>>;
 
-function mapSessionRpcError(error: InitialConfigError | ProbeError): ConnectionAttemptError {
+export function mapSessionRpcError(error: InitialConfigError | ProbeError): ConnectionAttemptError {
   switch (error._tag) {
     case "EnvironmentAuthorizationError":
       return new ConnectionBlockedError({
@@ -54,8 +55,8 @@ function mapSessionRpcError(error: InitialConfigError | ProbeError): ConnectionA
       });
     case "KeybindingsConfigParseError":
     case "ServerSettingsError":
-      return new ConnectionTransientErrorClass({
-        reason: "remote-unavailable",
+      return new ConnectionBlockedError({
+        reason: "configuration",
         detail: error.message,
       });
     case "RpcClientError":
@@ -118,6 +119,17 @@ export const make = Effect.gen(function* () {
     const initialConfig = yield* Effect.cached(
       client[WS_METHODS.serverGetConfig]({}).pipe(
         Effect.mapError(mapSessionRpcError),
+        Effect.catchDefect((cause) =>
+          Schema.isSchemaError(cause)
+            ? Effect.fail(
+                new ConnectionBlockedError({
+                  reason: "unsupported",
+                  detail:
+                    "The server configuration is incompatible with this app. Install compatible releases, then reconnect.",
+                }),
+              )
+            : Effect.die(cause),
+        ),
         Effect.withSpan("environment.initialSync"),
       ),
     );

@@ -14,6 +14,7 @@ import { syncDocumentWindowControlsOverlayClass } from "./lib/windowControlsOver
 import { syncDocumentAppZoomVariable } from "./lib/titlebar";
 import {
   isConnectCliAuthEnabled,
+  isConnectAccountManagementEnabled,
   resolveConnectCliAuthPublishableKey,
 } from "./cloud/connectCliAuth";
 
@@ -58,7 +59,7 @@ const clerkPublishableKey = resolveConnectCliAuthPublishableKey();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {clerkPublishableKey && isConnectCliAuthEnabled() ? (
+    {clerkPublishableKey && (isConnectCliAuthEnabled() || isConnectAccountManagementEnabled()) ? (
       <ClerkProvider publishableKey={clerkPublishableKey}>{app}</ClerkProvider>
     ) : (
       app

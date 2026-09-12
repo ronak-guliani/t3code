@@ -156,6 +156,7 @@
 - T3 Connect credentials are DPoP-bound end to end: persist the relay-minted proof-key thumbprint through pairing and session issuance, return `token_type=DPoP`, consume each proof `jti` once, verify its key, URL, method, and token hash, and permit proof-bound sessions to mint only single-use `wsTicket` credentials.
 - CLI environment selection must preserve explicit `--base-dir` as the authoritative same-environment agent binding, apply persisted account/manual selection only to otherwise untargeted user commands, and fail closed instead of falling back to local when a selected remote target is unavailable.
 - Windows Smoke must keep the broad package suite but use a curated server seam; the full server suite contains POSIX service, path, permission, and descriptor contracts that belong on the Linux quality runner.
+- Windows ACL tests must explicitly assign current-user ownership to disposable fixtures: elevated runners can default to Administrators ownership. Preserve production's foreign-owner rejection and test DACL inheritance separately from fixture ownership.
 - Background-service health must use an instance-private PID-owned state file while the server also maintains shared CLI discovery state; a shared health file lets unrelated foreground servers satisfy or erase service health.
 - LaunchAgent bootstrap already starts `RunAtLoad` jobs: never immediately kill that process with `kickstart -k`. Wait for asynchronous bootout to fully unload before restarting, then wait boundedly for a running PID before probing it. Copy installed production dependencies with the CLI; a relocated `dist` alone cannot resolve external packages.
 - Connect origins must use the actual TCP listener address and port, mapping wildcard IPv4/IPv6 to their matching loopback addresses. Preserve IPv6 in the Node adapter patch (with URL brackets), and test through `NodeHttpServer.layer`, not fabricated addresses: upstream normalizes `::` to IPv4. `localhost` can reach another environment on the same port in the other family; a registered tunnel is not proof that the public endpoint identifies the intended host.
@@ -209,6 +210,11 @@
 - Local trace files rotate within minutes under normal load, so spans are useless for post-hoc incident analysis; only `server.log` survives. Keep WebSocket connection open/close and RPC stream start/end at `Info` in the log sink, tagged with a per-connection `connectionId` — a session outlives its sockets, so `sessionId` alone cannot distinguish a client that resubscribed from one whose streams silently died.
 
 ## Mobile protocol compatibility
+
+- Browser DPoP requires `dpop` in the actual CORS allow-list; test a real preflight and a proof-bound authenticated request, including replay rejection, rather than only a header helper.
+- Resolve single-use CLI tickets inside WebSocket acquisition, not once before constructing a reconnecting transport. Recheck account and endpoint identity before sending cached credentials.
+- Initial RPC schema failures can arrive as defects rather than `RpcClientError`; normalize only schema defects into blocked compatibility errors and test a malformed wire response.
+- Share HTTP renewals in the runtime scope, not the initiating request's scope, and bind cached credentials to account/session identity, relay, key, environment, and scopes. Renewal must not tear down healthy sockets or clear drafts/outbox.
 
 - Favicon caches may key by workspace and icon revision locally, but keep `projectId` in the asset request; replacing it with required `cwd` breaks both old-client/new-server and new-client/old-server pairings.
 - Official mobile compatibility is an additive protocol boundary: retain legacy bootstrap and `wsToken` routes while serving scoped OAuth access tokens and `wsTicket`; persist granted scopes because role-derived authorization cannot represent restricted upstream tokens.

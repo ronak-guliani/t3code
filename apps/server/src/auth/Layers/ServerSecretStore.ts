@@ -4,6 +4,7 @@ import { Effect, FileSystem, Layer, Path, Predicate } from "effect";
 import * as PlatformError from "effect/PlatformError";
 
 import { ServerConfig } from "../../config.ts";
+import { protectWindowsSecretDirectory } from "../windowsSecretProtection.ts";
 import {
   SecretStoreError,
   ServerSecretStore,
@@ -16,6 +17,16 @@ export const makeServerSecretStore = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;
 
   yield* fileSystem.makeDirectory(serverConfig.secretsDir, { recursive: true });
+  if (process.platform === "win32") {
+    yield* Effect.tryPromise({
+      try: () => protectWindowsSecretDirectory(serverConfig.secretsDir),
+      catch: (cause) =>
+        new SecretStoreError({
+          message: "Could not secure Windows secret storage for the current account.",
+          cause,
+        }),
+    });
+  }
   yield* fileSystem.chmod(serverConfig.secretsDir, 0o700).pipe(
     Effect.mapError(
       (cause) =>

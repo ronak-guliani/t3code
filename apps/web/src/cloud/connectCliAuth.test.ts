@@ -4,6 +4,7 @@ import {
   buildConnectCliAuthorizeUrl,
   connectCliSignInRedirectUrl,
   isConnectCliAuthEnabled,
+  isConnectAccountManagementEnabled,
   prepareConnectCliSignIn,
   storeConnectCliCallbackState,
 } from "./connectCliAuth";
@@ -11,6 +12,41 @@ import {
 const TEST_PUBLISHABLE_KEY = `pk_test_${btoa("clerk.example.test$")}`;
 
 describe("connectCliAuth", () => {
+  it("enables hosted account management without a CLI OAuth client", () => {
+    vi.stubEnv("VITE_HTTP_URL", "");
+    vi.stubEnv("VITE_HOSTED_APP_URL", "https://hosted.example.test");
+    vi.stubEnv("VITE_CLERK_PUBLISHABLE_KEY", TEST_PUBLISHABLE_KEY);
+    vi.stubEnv("VITE_T3CODE_RELAY_URL", "https://relay.example.test");
+    vi.stubEnv("VITE_CLERK_CLI_OAUTH_CLIENT_ID", "");
+    vi.stubGlobal("window", {
+      location: { href: "https://hosted.example.test/connect/environments" },
+    });
+    expect(isConnectAccountManagementEnabled()).toBe(true);
+    expect(isConnectCliAuthEnabled()).toBe(false);
+
+    vi.stubEnv("VITE_HTTP_URL", "http://127.0.0.1:13773");
+    expect(isConnectAccountManagementEnabled()).toBe(false);
+    vi.stubEnv("VITE_HTTP_URL", "");
+    vi.stubGlobal("window", { location: { href: "http://127.0.0.1:5733/connect/environments" } });
+    expect(isConnectAccountManagementEnabled()).toBe(false);
+  });
+
+  it.each(["", "http://relay.example.test", "https://user:password@relay.example.test"])(
+    "keeps account management disabled without a secure relay: %s",
+    (relayUrl) => {
+      vi.stubEnv("VITE_HTTP_URL", "");
+      vi.stubEnv("VITE_HOSTED_APP_URL", "https://hosted.example.test");
+      vi.stubEnv("VITE_CLERK_PUBLISHABLE_KEY", TEST_PUBLISHABLE_KEY);
+      vi.stubEnv("VITE_T3CODE_RELAY_URL", relayUrl);
+      vi.stubEnv("VITE_CLERK_CLI_OAUTH_CLIENT_ID", "oauth-client");
+      vi.stubGlobal("window", {
+        location: { href: "https://hosted.example.test/connect/environments" },
+      });
+      expect(isConnectAccountManagementEnabled()).toBe(false);
+      expect(isConnectCliAuthEnabled()).toBe(true);
+    },
+  );
+
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();

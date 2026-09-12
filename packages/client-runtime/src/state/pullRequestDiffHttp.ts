@@ -18,7 +18,7 @@ import {
   makeEnvironmentHttpApiUrlBuilder,
   type RemoteEnvironmentRequestError,
 } from "../rpc/http.ts";
-import { buildEnvironmentAuthHeaders, withEnvironmentCredentials } from "./environmentHttpAuth.ts";
+import { requestEnvironmentRead } from "./environmentHttpAuth.ts";
 
 const DEFAULT_PULL_REQUEST_DIFF_TIMEOUT_MS = 60_000;
 
@@ -52,19 +52,17 @@ export const fetchEnvironmentPullRequestDiff = Effect.fn(
     input.prepared.httpBaseUrl,
   ).pullRequests.diff();
   const client = yield* makeEnvironmentHttpApiClient(input.prepared.httpBaseUrl);
-  const headers = yield* buildEnvironmentAuthHeaders(
+  return yield* requestEnvironmentRead(
     input.prepared.httpAuthorization,
-    "POST",
     requestUrl,
     input.signer,
-  );
-  return yield* executeEnvironmentHttpRequest(
-    requestUrl,
-    input.timeoutMs ?? DEFAULT_PULL_REQUEST_DIFF_TIMEOUT_MS,
-    withEnvironmentCredentials(
-      input.prepared.httpAuthorization,
-      client.pullRequests.diff({ payload: input.diff, headers }),
-    ),
+    (headers) =>
+      executeEnvironmentHttpRequest(
+        requestUrl,
+        input.timeoutMs ?? DEFAULT_PULL_REQUEST_DIFF_TIMEOUT_MS,
+        client.pullRequests.diff({ payload: input.diff, headers }),
+      ),
+    "POST",
   ).pipe(
     Effect.mapError((error) =>
       error._tag === "EnvironmentAuthInvalidError" && error.reason === "invalid_credential"

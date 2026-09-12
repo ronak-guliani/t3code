@@ -18,6 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import * as Socket from "effect/unstable/socket/Socket";
+import { RpcClientError, RpcClientDefect } from "effect/unstable/rpc/RpcClientError";
 
 import {
   ConnectionBlockedError,
@@ -227,6 +228,40 @@ const completeInitialConfig = Effect.fn("TestRpcSessionFactory.completeInitialCo
 });
 
 describe("RpcSessionFactory", () => {
+  it("keeps non-schema RPC protocol defects retryable", () => {
+    const error = new RpcClientError({
+      reason: new RpcClientDefect({
+        message: "Unknown socket error",
+        cause: new Error("Temporary transport failure"),
+      }),
+    });
+    expect(RpcSession.mapSessionRpcError(error)).toMatchObject({
+      _tag: "ConnectionTransientError",
+      reason: "transport",
+      detail: error.message,
+    });
+  });
+  it.effect(
+    "classifies malformed initial configuration as incompatible rather than retryable transport failure",
+    () =>
+      Effect.gen(function* () {
+        const { factory, sockets } = yield* makeFactory();
+        const session = yield* factory.connect(PREPARED);
+        const ready = yield* session.ready.pipe(Effect.flip, Effect.forkChild);
+        const socket = yield* awaitSocket(sockets);
+        socket.open();
+        const request = yield* awaitRequest(socket);
+        socket.serverMessage(
+          encodeJson({
+            _tag: "Exit",
+            requestId: request.id,
+            exit: { _tag: "Success", value: { environment: "incompatible" } },
+          }),
+        );
+        const error = yield* Fiber.join(ready);
+        expect(error).toMatchObject({ _tag: "ConnectionBlockedError", reason: "unsupported" });
+      }),
+  );
   it.effect("rejects incompatible config before the driver exposes a connected session", () =>
     Effect.gen(function* () {
       const { factory, sockets } = yield* makeFactory();

@@ -139,6 +139,56 @@ Preflight does not start providers or authenticate accounts.
 verification pending: sign in on the other device and open this environment. It never claims
 that another device connected based solely on a local health probe.
 
+### Manage account registrations from any client
+
+Desktop and web expose **Settings > Connections > Manage / Deregister environments**, which
+opens the hosted account page. Mobile has **Deregister** on T3 Connect environment rows.
+The hosted account page needs Clerk and secure relay configuration, not a CLI OAuth client ID;
+that ID remains required only for terminal sign-in.
+These actions use the account relay, so the host can be offline. CLI equivalents are:
+
+```sh
+t3 connect environments --base-dir /path/to/existing/home
+t3 connect environments --json --base-dir /path/to/existing/home
+t3 connect deregister --environment EXACT_ENVIRONMENT_ID --base-dir /path/to/existing/home
+```
+
+Confirm the stable environment ID, not only its display name. Deregistration defaults to
+cancel; automation must pass `--yes`. It removes the account registration for all devices,
+not projects, history, or drafts. It does **not** revoke already-issued sessions. Disable an
+enabled host first so it cannot automatically register again.
+
+| Action                                    | Effect                                                                               |
+| ----------------------------------------- | ------------------------------------------------------------------------------------ |
+| Disconnect/remove on this client          | Removes this device's connection; local removal may clear its drafts and outbox.     |
+| `t3 connect disable --base-dir ...`       | Stops this host's Connect exposure while retaining account sign-in and registration. |
+| `t3 connect deregister --environment ...` | Removes the account registration, including an offline host.                         |
+| `t3 connect unlink --base-dir ...`        | Disables this host and removes its account registration.                             |
+
+The current relay lists stable IDs, labels, endpoints, and registration dates. It does not
+expose actual tunnel quota usage/limits, last-seen time, installation type, or build. Clients
+report that absence explicitly (`tunnelQuota: null` in CLI JSON). Registration count is not
+tunnel usage, and registration age does not establish staleness. Cleanup is always explicit;
+no registration is automatically deleted. Capacity failures retain the relay's actual limit
+and trace ID when provided.
+
+Account-bound credentials are isolated by account, relay, key, environment, and authorization
+scope. Shared-runtime HTTP reads renew expiring DPoP tokens once per environment without
+closing a healthy WebSocket; a rejected read retries once with a fresh proof. Permission
+failures and mutations are not automatically replayed. CLI reconnects obtain a new single-use
+ticket and verify endpoint identity before sending cached credentials. Legacy bearer
+connections remain supported.
+
+Incompatible initial configuration is a blocked compatibility error rather than a transport
+retry loop. Pairing verifies the authenticated cookie and reinitializes the browser router
+without requiring a manual reload. Transient authorization recovery does not remove saved
+connections, drafts, pending sends, or active work.
+
+Both Windows file-backed secret stores enforce a current-user-only protected directory ACL,
+with inherited permissions on existing and future secret files. Unexpected owners, reparse
+points, or ACL failures stop initialization explicitly. This is access control, not encryption
+or protection from an administrator. macOS keychain and POSIX secret handling remain unchanged.
+
 ### Runtime ownership and deliberate handoff
 
 Runtime discovery records `desktop`, `foreground`, or `background`; older files report `unknown`.
