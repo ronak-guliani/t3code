@@ -149,3 +149,10 @@ Each rule file contains:
 ## Full Compiled Document
 
 For the complete guide with all rules expanded: `AGENTS.md`
+
+## License
+
+Vendored from
+[vercel-labs/agent-skills](https://github.com/vercel-labs/agent-skills/tree/main/skills/react-best-practices)
+under MIT (upstream `SKILL.md` frontmatter declares `license: MIT`, author
+`vercel`). See `NOTICE.md` for the reproduced upstream permission notice.

@@ -7,61 +7,34 @@
 
 A structured repository for creating and maintaining React Best Practices optimized for agents and LLMs.
 
-## Structure
+## Structure (vendored)
 
 - `rules/` - Individual rule files (one per rule)
   - `_sections.md` - Section metadata (titles, impacts, descriptions)
   - `_template.md` - Template for creating new rules
   - `area-description.md` - Individual rule files
-- `src/` - Build scripts and utilities
 - `metadata.json` - Document metadata (version, organization, abstract)
-- **`AGENTS.md`** - Compiled output (generated)
-- **`test-cases.json`** - Test cases for LLM evaluation (generated)
+- **`AGENTS.md`** - Compiled output (vendored copy of the upstream generated file)
+- `SKILL.md` - Skill definition (upstream `license: MIT`, author `vercel`; see `NOTICE.md`)
+- `NOTICE.md` - Upstream license attribution for this vendored copy
 
-## Getting Started
+Not vendored: upstream `src/` build scripts and generated `test-cases.json`.
+Do not run `pnpm build`, `pnpm validate`, `pnpm extract-tests`, or `pnpm dev`
+in this directory; this checkout has no package manifest providing them.
 
-1. Install dependencies:
+## Updating from upstream
 
-   ```bash
-   pnpm install
-   ```
-
-2. Build AGENTS.md from rules:
-
-   ```bash
-   pnpm build
-   ```
-
-3. Validate rule files:
-
-   ```bash
-   pnpm validate
-   ```
-
-4. Extract test cases:
-   ```bash
-   pnpm extract-tests
-   ```
-
-## Creating a New Rule
-
-1. Copy `rules/_template.md` to `rules/area-description.md`
-2. Choose the appropriate area prefix:
-   - `async-` for Eliminating Waterfalls (Section 1)
-   - `bundle-` for Bundle Size Optimization (Section 2)
-   - `server-` for Server-Side Performance (Section 3)
-   - `client-` for Client-Side Data Fetching (Section 4)
-   - `rerender-` for Re-render Optimization (Section 5)
-   - `rendering-` for Rendering Performance (Section 6)
-   - `js-` for JavaScript Performance (Section 7)
-   - `advanced-` for Advanced Patterns (Section 8)
-3. Fill in the frontmatter and content
-4. Ensure you have clear examples with explanations
-5. Run `pnpm build` to regenerate AGENTS.md and test-cases.json
+1. In an upstream checkout of
+   [vercel-labs/agent-skills](https://github.com/vercel-labs/agent-skills/tree/main/skills/react-best-practices),
+   run `pnpm install`, `pnpm build`, `pnpm validate`, and `pnpm extract-tests`.
+2. Re-vendor the resulting `rules/`, `SKILL.md`, `AGENTS.md`, and
+   `metadata.json` into this directory.
+3. If upstream adds a license file or copyright notice, re-vendor it into
+   `NOTICE.md` alongside the skill files.
 
 ## Rule File Structure
 
-Each rule file should follow this structure:
+Each upstream rule file follows this structure:
 
 ````markdown
 ---
@@ -92,13 +65,13 @@ Optional explanatory text after examples.
 
 Reference: [Link](https://example.com)
 
-## File Naming Convention
+## File Naming Convention (upstream)
 
 - Files starting with `_` are special (excluded from build)
 - Rule files: `area-description.md` (e.g., `async-parallel.md`)
 - Section is automatically inferred from filename prefix
 - Rules are sorted alphabetically by title within each section
-- IDs (e.g., 1.1, 1.2) are auto-generated during build
+- IDs (e.g., 1.1, 1.2) are auto-generated during the upstream build
 
 ## Impact Levels
 
@@ -109,24 +82,13 @@ Reference: [Link](https://example.com)
 - `LOW-MEDIUM` - Low-medium gains
 - `LOW` - Incremental improvements
 
-## Scripts
+## Contributing (upstream)
 
-- `pnpm build` - Compile rules into AGENTS.md
-- `pnpm validate` - Validate all rule files
-- `pnpm extract-tests` - Extract test cases for LLM evaluation
-- `pnpm dev` - Build and validate
-
-## Contributing
-
-When adding or modifying rules:
-
-1. Use the correct filename prefix for your section
-2. Follow the `_template.md` structure
-3. Include clear bad/good examples with explanations
-4. Add appropriate tags
-5. Run `pnpm build` to regenerate AGENTS.md and test-cases.json
-6. Rules are automatically sorted by title - no need to manage numbers!
+Propose or modify rules in the upstream repository, following its
+`_template.md` structure and filename prefixes. Then re-vendor the results
+here per "Updating from upstream" above.
 
 ## Acknowledgments
 
 Originally created by [@shuding](https://x.com/shuding) at [Vercel](https://vercel.com).
+See `NOTICE.md` for the upstream license attribution.
