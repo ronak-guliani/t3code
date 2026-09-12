@@ -92,6 +92,11 @@ function WorkflowRunCard({
         </span>
         <WorkflowStatus status={entry.run.status} />
       </div>
+      {entry.run.status === "completed" ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Execution finished. Validation and published evidence must be checked separately.
+        </p>
+      ) : null}
       <div className="mt-2 space-y-1.5">
         {entry.run.nodes.map((node) => {
           const nodeTitle =
@@ -192,7 +197,7 @@ function WorkflowStatus({
   return (
     <span className="inline-flex shrink-0 items-center gap-1 text-[11px] capitalize text-muted-foreground">
       {Icon ? <Icon className="size-3" aria-hidden="true" /> : null}
-      {status}
+      {isComplete ? "Finished" : status}
     </span>
   );
 }

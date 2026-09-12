@@ -18,6 +18,9 @@ interface DelegationPromptTemplate {
   };
   readonly validation?: {
     readonly commands: ReadonlyArray<string>;
+    readonly scenarios?: ReadonlyArray<string>;
+    readonly evidence?: ReadonlyArray<"screenshot" | "recording">;
+    readonly owner?: "child" | "parent";
   };
   readonly commit?: {
     readonly requirements?: ReadonlyArray<string>;
@@ -50,7 +53,7 @@ const STANDARD_BLOCKS: Readonly<Record<DelegationPromptBlock, string>> = {
   implementation:
     "Implementation is permitted. Make only the focused changes required for the task, preserve unrelated work, and follow repository conventions.",
   validation:
-    "Run every listed validation command before reporting success. If a command fails, investigate it and report the unresolved failure rather than claiming completion.",
+    "Run every listed validation command before reporting success. Record the tested revision and each command/scenario outcome. A completed turn is not verification. If validation or evidence publication fails, report the blocker rather than claiming completion. Recheck affected results after further edits.",
   commit:
     "After required validation succeeds, create one focused commit containing only task-related changes. Follow repository commit-message and trailer requirements, and do not amend unrelated commits.",
   "push-and-create-pr":
@@ -221,14 +224,49 @@ export function parseDelegationPromptTemplate(value: unknown): DelegationPromptT
     );
   }
   if (validationInput) {
-    rejectUnknownKeys(validationInput, new Set(["commands"]), "promptTemplate.validation");
+    rejectUnknownKeys(
+      validationInput,
+      new Set(["commands", "scenarios", "evidence", "owner"]),
+      "promptTemplate.validation",
+    );
   }
-  const validation = validationInput
+  const scenarios = validationInput
+    ? optionalTextList(validationInput.scenarios, "promptTemplate.validation.scenarios")
+    : undefined;
+  const evidenceInput = validationInput
+    ? optionalTextList(validationInput.evidence, "promptTemplate.validation.evidence")
+    : undefined;
+  const evidence = evidenceInput?.map((item) => {
+    if (item !== "screenshot" && item !== "recording") {
+      throw new DelegationPromptValidationError(
+        "validation.evidence accepts screenshot or recording",
+      );
+    }
+    return item;
+  });
+  if (evidence && (!scenarios || new Set(evidence).size !== evidence.length)) {
+    throw new DelegationPromptValidationError(
+      "validation.evidence requires scenarios and must not contain duplicates",
+    );
+  }
+  const owner = validationInput?.owner;
+  if (owner !== undefined && owner !== "parent" && owner !== "child") {
+    throw new DelegationPromptValidationError("validation.owner must be parent or child");
+  }
+  if ((scenarios || evidence) && owner === undefined) {
+    throw new DelegationPromptValidationError(
+      "validation.owner is required when scenarios or evidence are supplied",
+    );
+  }
+  const validation: DelegationPromptTemplate["validation"] = validationInput
     ? {
         commands:
           optionalTextList(validationInput.commands, "promptTemplate.validation.commands", {
             singleLine: true,
           }) ?? [],
+        ...(scenarios ? { scenarios } : {}),
+        ...(evidence ? { evidence } : {}),
+        ...(owner ? { owner } : {}),
       }
     : undefined;
   if (validation && validation.commands.length === 0) {
@@ -318,7 +356,22 @@ function blockDetails(block: DelegationPromptBlock, template: DelegationPromptTe
         .join("\n\n");
     }
     case "validation":
-      return `Commands:\n${bullets(template.validation?.commands.map((command) => `\`${command}\``))}`;
+      return [
+        `Commands:\n${bullets(template.validation?.commands.map((command) => `\`${command}\``))}`,
+        template.validation?.scenarios
+          ? `Observable acceptance scenarios:\n${bullets(template.validation.scenarios)}`
+          : "",
+        template.validation?.evidence
+          ? `Required published evidence:\n${bullets(template.validation.evidence)}\nInspect media content, publish through an approved destination, and verify the PR links. Local paths are not published evidence.`
+          : "",
+        template.validation?.owner === "parent"
+          ? "The parent owns integrated browser validation. Do not launch a competing dev server. Run command checks and return scenario instructions and blockers; report integrated validation as pending, not passed."
+          : template.validation?.owner === "child" && template.validation.scenarios
+            ? "You own integrated browser validation in your isolated workspace. Reuse healthy test state and report the environment, tested revision, observable results, and published evidence links."
+            : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
     case "commit":
       return bullets(template.commit?.requirements);
     case "push-and-create-pr":

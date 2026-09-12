@@ -8,6 +8,7 @@ import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import { McpSchema, McpServer, Tool } from "effect/unstable/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { PNG } from "pngjs";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -132,7 +133,7 @@ const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
   }).pipe(Effect.as(result));
 };
 
-const encodePreviewSnapshotResult = (encodedResult: unknown) => {
+export const encodePreviewSnapshotResult = async (encodedResult: unknown) => {
   const snapshot = encodedResult as {
     readonly screenshot: {
       readonly mimeType: "image/png";
@@ -143,6 +144,34 @@ const encodePreviewSnapshotResult = (encodedResult: unknown) => {
     readonly [key: string]: unknown;
   };
   const { screenshot, ...page } = snapshot;
+  const bytes = Buffer.from(screenshot.data, "base64");
+  const boundedPng =
+    screenshot.width > 0 &&
+    screenshot.height > 0 &&
+    screenshot.width <= 3840 &&
+    screenshot.height <= 3840 &&
+    bytes.length >= 45 &&
+    bytes.length <= 64 * 1024 * 1024 &&
+    bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) &&
+    bytes.readUInt32BE(8) === 13 &&
+    bytes.toString("ascii", 12, 16) === "IHDR" &&
+    bytes.readUInt32BE(16) === screenshot.width &&
+    bytes.readUInt32BE(20) === screenshot.height &&
+    bytes.subarray(-12).equals(Buffer.from([0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]));
+  const decoded = boundedPng
+    ? await new Promise<PNG | null>((resolve) => {
+        const decoder = new PNG({ checkCRC: true });
+        decoder.on("metadata", (image) => {
+          if (image.width !== screenshot.width || image.height !== screenshot.height) {
+            decoder.destroy();
+            resolve(null);
+          }
+        });
+        decoder.parse(bytes, (error, image) => {
+          resolve(error ? null : image);
+        });
+      })
+    : null;
   const metadata = {
     ...page,
     screenshot: {
@@ -151,6 +180,35 @@ const encodePreviewSnapshotResult = (encodedResult: unknown) => {
       height: screenshot.height,
     },
   };
+  if (
+    !decoded ||
+    decoded.width !== screenshot.width ||
+    decoded.height !== screenshot.height ||
+    decoded.data.length !== screenshot.width * screenshot.height * 4
+  ) {
+    return new McpSchema.CallToolResult({
+      isError: true,
+      structuredContent: {
+        ...metadata,
+        error: {
+          _tag: "PreviewScreenshotInvalid",
+          operation: "snapshot",
+          message:
+            "The browser returned an empty, oversized, or undecodable screenshot. Page text is diagnostic only; visual validation did not pass. Reveal the browser, wait for rendering, and retry the snapshot.",
+        },
+      },
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            ...metadata,
+            error:
+              "Visual capture failed. Reveal the browser and retry; do not publish this capture as evidence.",
+          }),
+        },
+      ],
+    });
+  }
   return new McpSchema.CallToolResult({
     isError: false,
     structuredContent: metadata,
@@ -158,7 +216,7 @@ const encodePreviewSnapshotResult = (encodedResult: unknown) => {
       { type: "text", text: JSON.stringify(metadata) },
       {
         type: "image",
-        data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
+        data: new Uint8Array(bytes),
         mimeType: screenshot.mimeType,
       },
     ],
@@ -205,7 +263,7 @@ const registerPreviewSnapshotTool = Effect.fn("McpHttpServer.registerPreviewSnap
             Effect.matchCauseEffect({
               onFailure: previewSnapshotFailure,
               onSuccess: ({ encodedResult }) =>
-                Effect.succeed(encodePreviewSnapshotResult(encodedResult)),
+                Effect.promise(() => encodePreviewSnapshotResult(encodedResult)),
             }),
           );
         }),

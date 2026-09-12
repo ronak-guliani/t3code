@@ -1767,8 +1767,31 @@ const NESTED_THREAD_PROMPT_TEMPLATE_INPUT_SCHEMA = {
           minItems: 1,
           items: { type: "string", minLength: 1 },
         },
+        scenarios: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+          description: "Observable acceptance criteria, not just pages to visit.",
+        },
+        evidence: {
+          type: "array",
+          minItems: 1,
+          uniqueItems: true,
+          items: { type: "string", enum: ["screenshot", "recording"] },
+          description: "Required published media. Requires scenarios.",
+        },
+        owner: {
+          type: "string",
+          enum: ["child", "parent"],
+          description:
+            "Required with scenarios or evidence. Who owns integrated browser validation; parent prevents competing child dev servers.",
+        },
       },
       required: ["commands"],
+      dependentRequired: {
+        scenarios: ["owner"],
+        evidence: ["scenarios", "owner"],
+      },
       additionalProperties: false,
     },
     commit: {
