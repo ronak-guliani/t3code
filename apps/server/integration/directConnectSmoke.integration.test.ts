@@ -37,6 +37,7 @@ import { ClientPresentation } from "../../../packages/client-runtime/src/platfor
 import { remoteHttpClientLayer } from "../../../packages/client-runtime/src/rpc/http.ts";
 import { resolveRemoteWebSocketConnectionUrl } from "../../../packages/client-runtime/src/remote.ts";
 import { WsTransport } from "../../../packages/client-runtime/src/wsTransport.ts";
+import { captureSelfTestScreenshot, finishSelfTestCapture } from "./selfTestCapture.ts";
 
 const desktopBootstrapToken = "direct-connect-smoke-owner";
 const projectId = ProjectId.make("project-direct-connect-smoke");
@@ -497,16 +498,32 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(liveProjectSequences).toEqual([1]);
 
         const browserCredential = yield* createPairingCredential;
+        const captureOutput = process.env.T3_SELF_TEST_OUTPUT;
         const browser = yield* Effect.acquireRelease(
           Effect.promise(() => chromium.launch({ headless: true })),
           (instance) => Effect.promise(() => instance.close()),
         );
         const context = yield* Effect.acquireRelease(
-          Effect.promise(() => browser.newContext()),
+          Effect.promise(() =>
+            browser.newContext({
+              viewport: { width: 1280, height: 800 },
+              ...(captureOutput
+                ? {
+                    recordVideo: {
+                      dir: path.join(baseDir, "videos"),
+                      size: { width: 1280, height: 800 },
+                    },
+                  }
+                : {}),
+            }),
+          ),
           (browserContext) => Effect.promise(() => browserContext.close()),
         );
         const page = yield* Effect.promise(() => context.newPage());
         const browserDiagnostics: string[] = [];
+        const pageErrors: string[] = [];
+        const failedRequests: string[] = [];
+        let checkingAuthenticatedRequests = false;
         page.on("console", (message) => {
           if (message.type() === "error" || message.type() === "warning") {
             browserDiagnostics.push(`${message.type()}: ${message.text()}`);
@@ -514,6 +531,20 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         });
         page.on("pageerror", (error) => {
           browserDiagnostics.push(`pageerror: ${error.message}`);
+          pageErrors.push(error.name);
+        });
+        page.on("requestfailed", (request) => {
+          if (
+            checkingAuthenticatedRequests &&
+            request.failure()?.errorText !== "net::ERR_ABORTED"
+          ) {
+            failedRequests.push(new URL(request.url()).pathname);
+          }
+        });
+        page.on("response", (response) => {
+          if (checkingAuthenticatedRequests && response.status() >= 400) {
+            failedRequests.push(`${response.status()} ${new URL(response.url()).pathname}`);
+          }
         });
         let browserWebSocketCount = 0;
         page.on("websocket", (socket) => {
@@ -537,7 +568,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
               .catch(() => "<unavailable>");
             throw new Error(
               [
-                `Browser pairing did not expose the connected environment at ${page.url()}.`,
+                `Browser pairing did not expose the connected environment at ${new URL(page.url()).origin}.`,
                 `Body: ${body}`,
                 `Diagnostics: ${browserDiagnostics.join("\n") || "<none>"}`,
               ].join("\n"),
@@ -550,6 +581,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(cookies.some((cookie) => cookie.name.startsWith("t3_session"))).toBe(true);
         expect(browserWebSocketCount).toBeGreaterThan(0);
 
+        checkingAuthenticatedRequests = true;
         yield* Effect.promise(() => page.reload());
         yield* Effect.promise(() =>
           page.getByText("Direct Connect Project", { exact: true }).waitFor({
@@ -565,6 +597,53 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           readonly authenticated: boolean;
         };
         expect(sessionState).toMatchObject({ authenticated: true });
+
+        // Exercise the manual recovery path with the real server, not a mocked bootstrap.
+        checkingAuthenticatedRequests = false;
+        yield* Effect.promise(() => context.clearCookies());
+        yield* Effect.promise(() => page.goto(`${origin}/pair`));
+        yield* Effect.promise(() => page.getByLabel("Pairing token").waitFor({ state: "visible" }));
+        yield* Effect.promise(() =>
+          page.getByLabel("Pairing token").fill(`${origin}/pair#token=${browserCredential}`),
+        );
+        yield* Effect.promise(() =>
+          page.getByRole("button", { name: "Continue", exact: true }).click(),
+        );
+        yield* Effect.promise(() => page.getByRole("alert").waitFor({ state: "visible" }));
+        expect(yield* Effect.promise(() => page.getByLabel("Pairing token").inputValue())).toBe("");
+        const recoveryScreenshot = captureOutput
+          ? yield* Effect.promise(() =>
+              captureSelfTestScreenshot(page, captureOutput, "pairing-recovery.png"),
+            )
+          : undefined;
+        const replacementCredential = yield* createPairingCredential;
+        yield* Effect.promise(() =>
+          page.getByLabel("Pairing token").fill(`${origin}/pair#token=${replacementCredential}`),
+        );
+        yield* Effect.promise(() =>
+          page.getByRole("button", { name: "Continue", exact: true }).click(),
+        );
+        yield* Effect.promise(() =>
+          page.getByText("Direct Connect Project", { exact: true }).waitFor({ state: "visible" }),
+        );
+        checkingAuthenticatedRequests = true;
+        yield* Effect.promise(() => page.reload());
+        yield* Effect.promise(() =>
+          page.getByText("Direct Connect Project", { exact: true }).waitFor({ state: "visible" }),
+        );
+        if (captureOutput) {
+          yield* Effect.promise(() =>
+            page
+              .getByText("Direct Connect Project", { exact: true })
+              .screenshot({ animations: "disabled" }),
+          );
+        }
+        const screenshot = captureOutput
+          ? yield* Effect.promise(() => captureSelfTestScreenshot(page, captureOutput))
+          : undefined;
+        expect(pageErrors).toEqual([]);
+        expect(failedRequests).toEqual([]);
+        checkingAuthenticatedRequests = false;
 
         unsubscribeShell();
         unsubscribeLifecycle();
@@ -604,6 +683,25 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
 
         yield* Effect.promise(() => transport.dispose()).pipe(Effect.timeout("10 seconds"));
         yield* Effect.promise(() => context.close());
+        if (captureOutput && screenshot) {
+          const videoPath = yield* Effect.promise(() => page.video()!.path());
+          yield* Effect.promise(() =>
+            finishSelfTestCapture(
+              browser,
+              captureOutput,
+              videoPath,
+              recoveryScreenshot ? [recoveryScreenshot, screenshot] : [screenshot],
+              [
+                "One-time URL pairing establishes an authenticated browser session.",
+                "Consumed credentials fail visibly and are cleared.",
+                "A fresh same-origin pairing link can be pasted into the recovery form.",
+                "The authenticated project remains visible after reload.",
+                "Live synchronization and involuntary reconnect preserve project state.",
+              ],
+              { pageErrors: pageErrors.length, failedRequests: failedRequests.length },
+            ),
+          );
+        }
         yield* Effect.promise(() => browser.close());
         yield* Scope.close(serverScope, Exit.void);
         yield* retryUntil(

@@ -92,4 +92,35 @@ Report the outcome, material findings or changes, validation results, commit SHA
   ])("rejects invalid or ambiguous composition: $message", ({ input, message }) => {
     expect(() => parseDelegationPromptTemplate(input)).toThrow(message);
   });
+
+  it("keeps structured acceptance requirements even with an overridden validation block", () => {
+    const prompt = composeDelegationPrompt("Fix pairing.", {
+      blocks: ["implementation", "validation"],
+      validation: {
+        commands: ["pnpm test"],
+        scenarios: ["An expired token shows an actionable error."],
+        evidence: ["screenshot", "recording"],
+        owner: "parent",
+      },
+      overrides: { validation: "Run targeted checks." },
+    });
+    expect(prompt).toContain("An expired token shows an actionable error.");
+    expect(prompt).toContain("Local paths are not published evidence.");
+    expect(prompt).toContain("Do not launch a competing dev server.");
+    expect(prompt).toContain("pending, not passed");
+  });
+
+  it.each([
+    { evidence: ["screenshot"] },
+    { scenarios: ["Pair"], evidence: ["video"] },
+    { scenarios: ["Pair"], evidence: ["screenshot", "screenshot"] },
+    { owner: "anyone" },
+  ])("rejects an incomplete acceptance contract", (validation) => {
+    expect(() =>
+      parseDelegationPromptTemplate({
+        blocks: ["validation"],
+        validation: { commands: ["pnpm test"], ...validation },
+      }),
+    ).toThrow(/validation/);
+  });
 });

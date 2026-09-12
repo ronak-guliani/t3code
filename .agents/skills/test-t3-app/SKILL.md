@@ -5,6 +5,30 @@ description: Launch, retain, and test the T3 Code web app in isolated developmen
 
 # Test T3 App
 
+## Required outcomes
+
+Before implementation, identify the observable scenarios the change must satisfy. Before PR
+delivery, record the tested revision, scenario results, console errors, failed requests, and
+published evidence links. A completed assistant turn, passing unit tests, or a video file alone
+does not establish verification. Recheck affected scenarios after further edits.
+
+Use `pnpm test:self` for the production web pairing/reconnect baseline and its screenshot,
+recording, and revision manifest. This does not replace the collaborative-browser pass for the
+specific change or native Electron validation for desktop rendering/capture changes.
+
+`pnpm test:self -- status` checks the current revision and media hashes. After committing and
+rerunning, use `pnpm test:self -- publish <PR URL>` to upload and attach verified baseline media.
+Publication is restartable: successful upload URLs are retained before updating the PR.
+`pnpm test:self -- status --require-published` must pass before claiming baseline evidence was
+delivered. Do not retry a timed-out upload blindly; inspect GitHub for an ambiguous outcome.
+The runner serializes worktree-local runs. If interrupted, inspect `.t3/self-test/lock/owner.json`
+and confirm its PID is no longer running before removing only that stale lock directory.
+
+Publish applicable evidence with `github-pr-media` before claiming PR delivery is complete.
+Check the uploaded images and sample the recording, not just file existence. If publication is
+blocked, retain the files and report the blocker explicitly. CI artifacts are downloadable,
+expiring evidence, not permanent inline PR media.
+
 Use this skill for the web client. This checkout does not install a `test-t3-mobile` skill. For mobile testing, use the existing app-specific tooling and an isolated backend, or state clearly that mobile validation is unavailable rather than following a missing workflow.
 
 ## Start an isolated web environment
@@ -81,6 +105,7 @@ If completion is uncertain, keep the environment alive and mention that it is re
 ## Troubleshoot predictably
 
 - If the browser shows an unauthenticated pairing screen, issue a new token instead of retrying the consumed URL.
+- The pairing input accepts a raw token or a complete same-origin pairing URL. Use the "Pairing token" label, not a textbox role (the input is masked). Never paste a token for another environment. Clear failed credentials before capturing evidence.
 - If the pairing URL is no longer visible, rerun `pair --base-dir <absolute-base-dir>`; do not pass `--dev-url` or `--base-url` to `pair`.
 - If the replacement token is rejected, verify that the CLI and server use the identical absolute base directory and web URL.
 - If the UI shows unexpected data, verify that every command uses the identical explicit base directory before editing anything.

@@ -22,6 +22,10 @@ const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
 const tabId = PreviewTabId.make("tab-mcp-test");
 const alternateTabId = PreviewTabId.make("tab-mcp-alternate");
+const png = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1cAAAAASUVORK5CYII=",
+  "base64",
+);
 const invocation = {
   environmentId,
   threadId,
@@ -54,6 +58,24 @@ it("normalizes empty successful notification responses to accepted", () => {
     HttpServerResponse.jsonUnsafe({ jsonrpc: "2.0", id: 1, result: {} }),
   );
   expect(resultResponse.status).toBe(200);
+});
+
+it.each([
+  { data: "", width: 0, height: 0 },
+  { data: Buffer.from("not a png").toString("base64"), width: 1280, height: 800 },
+  { data: png.toString("base64"), width: 1280, height: 800 },
+  { data: png.subarray(0, 33).toString("base64"), width: 1, height: 1 },
+])("reports invalid screenshot pixels as failure while retaining diagnostics", (screenshot) => {
+  const result = McpHttpServer.encodePreviewSnapshotResult({
+    visibleText: "Pair with this environment",
+    screenshot: { mimeType: "image/png", ...screenshot },
+  });
+  expect(result.isError).toBe(true);
+  expect(result.content.some((item) => item.type === "image")).toBe(false);
+  expect(result.structuredContent).toMatchObject({
+    visibleText: "Pair with this environment",
+    error: { _tag: "PreviewScreenshotInvalid" },
+  });
 });
 
 it("returns an actionable expired-session response with a Bearer challenge", () => {
@@ -200,9 +222,9 @@ it.effect("registers annotated tools and preserves authenticated request context
                   actionTimeline: [],
                   screenshot: {
                     mimeType: "image/png",
-                    data: Buffer.from("png").toString("base64"),
-                    width: 10,
-                    height: 5,
+                    data: png.toString("base64"),
+                    width: 1,
+                    height: 1,
                   },
                 }
               : event.request.operation === "press"
@@ -267,7 +289,7 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(snapshot.isError).toBe(false);
       expect(snapshot.content.some((content) => content.type === "image")).toBe(true);
       expect(snapshot.structuredContent).toMatchObject({
-        screenshot: { mimeType: "image/png", width: 10, height: 5 },
+        screenshot: { mimeType: "image/png", width: 1, height: 1 },
       });
       expect(routedRequests.find(({ operation }) => operation === "snapshot")?.tabId).toBe(
         alternateTabId,

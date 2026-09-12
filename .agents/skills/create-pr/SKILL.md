@@ -38,14 +38,18 @@ Create a reviewable PR that accurately describes the branch's changes. Use `gh` 
 
    ## Testing
 
-   - <commands run, or `Not run (not requested)`>
+   - <commands actually run and their outcomes; identify failures and blockers>
+
+   ## Evidence
+
+   - <tested revision, observable scenario results, and published screenshot/recording links>
 
    ## Breaking changes
 
    - <migration impact, if any>
    ```
 
-   Add issue-closing keywords, screenshots, rollout notes, or reviewer context only when supported by the changes or supplied by the user. Describe the why and externally observable behavior, not a file-by-file diff.
+   Follow repository validation requirements even when the user only says "create PR". For user-visible changes, load `test-t3-app`, exercise the changed behavior in a real client, and capture a final screenshot. Record motion/timing changes. A baseline smoke test is not proof of the specific feature. Publish applicable media using `github-pr-media`; local file paths are not PR evidence. Inspect the published PR and links before reporting success. If validation or publication is blocked, explicitly report the blocker and do not claim the PR is verified. Documentation-only changes may say "Not applicable" with the reason. Describe the why and externally observable behavior, not a file-by-file diff.
 
 5. Treat "create PR" as authorization to create a focused branch if needed, commit the task's changes, push, and create the PR. Do not ask for confirmation of the title, body, base, or these routine steps. Infer sensible defaults from repository context; ask only when a genuine blocker cannot be resolved safely.
 

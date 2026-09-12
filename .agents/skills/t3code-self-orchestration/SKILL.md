@@ -71,6 +71,10 @@ Helper prompts must be self-contained:
 - Whether the helper may edit code or should only investigate.
 - Required validation and whether it may commit, push, or update a PR.
 - A concise reporting format.
+- Structured validation commands, observable scenarios, applicable evidence, and one integrated
+  validation owner (`promptTemplate.validation`). Parent-owned browser validation must remain
+  pending in child reports; it is not a waiver. Verify the integrated revision and published
+  evidence before describing the overall task as verified.
 
 The child cannot see the parent conversation; include every required decision and constraint.
 

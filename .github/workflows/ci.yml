@@ -96,10 +96,6 @@ jobs:
       - name: Browser test
         run: pnpm --dir apps/web test:browser
 
-      - name: Direct Connect smoke test
-        timeout-minutes: 8
-        run: pnpm test:direct-connect-smoke
-
       - name: Build desktop pipeline
         run: pnpm build:desktop
 
@@ -107,6 +103,58 @@ jobs:
         run: |
           test -f apps/desktop/dist-electron/preload.cjs
           grep -nE "desktopBridge|getLocalEnvironmentBootstrap|PICK_FOLDER_CHANNEL|wsUrl" apps/desktop/dist-electron/preload.cjs
+
+  self_test:
+    name: Self-test Evidence
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Vite Plus
+        uses: voidzero-dev/setup-vp@v1
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install browser runtime
+        run: pnpm --filter t3 exec playwright install --with-deps chromium
+
+      - name: Self-test with visual evidence
+        id: self-test
+        timeout-minutes: 8
+        run: pnpm test:self
+
+      - name: Upload self-test evidence
+        id: self-test-evidence
+        if: always() && steps.self-test.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: self-test-${{ github.sha }}
+          path: |
+            .t3/self-test/*/manifest.json
+            .t3/self-test/*/authenticated.png
+            .t3/self-test/*/pairing-recovery.png
+            .t3/self-test/*/pairing-reload.webm
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Link self-test evidence
+        if: always() && steps.self-test-evidence.outputs.artifact-url != ''
+        env:
+          ARTIFACT_URL: ${{ steps.self-test-evidence.outputs.artifact-url }}
+          SELF_TEST_OUTCOME: ${{ steps.self-test.outcome }}
+        run: |
+          printf '### Production web self-test\n\nResult: %s\n\n[Download screenshot, recording, and revision manifest](%s)\n\nScope: pairing/reconnect baseline, not feature-specific or native Electron validation. Artifacts require repository access and expire after 14 days.\n' "$SELF_TEST_OUTCOME" "$ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
 
   release_smoke:
     name: Release Smoke

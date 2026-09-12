@@ -161,6 +161,10 @@
 
 ## Pairing and environment recovery
 
+- Pairing input must accept raw credentials and same-origin `/pair` links without sending a URL as a token; reject cross-environment links before exchange, mask input, and clear rejected credentials before evidence capture.
+- Self-test success is scoped to the tested revision and scenarios. Hash media, decode pixels and sampled video frames, retain publication receipts, and invalidate changed-checkout evidence; a finished worker turn or a local recording path is not verified PR delivery.
+- A browser snapshot with DOM text but a zero-size or mismatched PNG must return an explicit MCP capture error, not a successful image result. Retain sanitized page diagnostics for recovery without presenting them as visual proof.
+
 - Owned tunnels are independent of account-linked Connect. Persist disabled intent before stopping, stop on unreadable configuration, and verify the public endpoint's environment ID before minting pairing links. Keep client revocation available even when the origin listens only on loopback.
 - Owner role does not override explicit session scopes; enforce operation scopes on every management route. Connector crash backoff must gate polling reconciliation as well as exit supervision.
 - Pairing QR payloads must use the shared canonical `/pair#token=...` URL; desktop-only deep-link shapes can silently parse as tokenless hosts in the RN client.

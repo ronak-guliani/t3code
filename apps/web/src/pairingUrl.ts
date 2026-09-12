@@ -31,3 +31,32 @@ export function setPairingTokenOnUrl(url: URL, credential: string): URL {
   next.hash = new URLSearchParams([[PAIRING_TOKEN_PARAM, credential]]).toString();
   return next;
 }
+
+export function parsePairingCredential(value: string, origin: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("Enter a pairing token or a pairing link.");
+  }
+  if (!/^https?:\/\//i.test(trimmed)) {
+    if (/\s/.test(trimmed) || trimmed.includes("://") || trimmed.startsWith("/")) {
+      throw new Error("Enter a token or a complete http(s) pairing link.");
+    }
+    return trimmed;
+  }
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error("This pairing link is not a valid URL.");
+  }
+  if (url.origin !== origin || url.username || url.password) {
+    throw new Error(
+      "This pairing link belongs to a different environment. Open that link instead.",
+    );
+  }
+  const token = getPairingTokenFromUrl(url);
+  if (url.pathname !== "/pair" || !token) {
+    throw new Error("This pairing link must contain /pair#token= and a one-time token.");
+  }
+  return token;
+}

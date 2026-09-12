@@ -21,6 +21,7 @@
 - A video is evidence, not the assertion. Validate observable behavior with snapshots, page state, console output, and network failures; record a short video when motion or timing is part of the change.
 - Capture a final screenshot for visual changes. Keep pairing tokens, credentials, and other secrets out of screenshots, recordings, committed files, and durable logs.
 - Include relevant screenshot or recording artifacts in the final handoff and pull request. Do not commit PR-only evidence to the repository.
+- For user-visible web PRs, run `pnpm test:self` for the isolated pairing/reconnect baseline. After committing, rerun it and use `pnpm test:self -- publish <PR URL>` followed by `pnpm test:self -- status --require-published`. Report publication blockers explicitly; baseline evidence does not replace feature-specific or native Electron validation.
 - Preserve the isolated dev process, authenticated browser tab, selected ports, and test state while the implementation loop is still active. Tear them down only after the task is complete.
 
 ## Core Priorities

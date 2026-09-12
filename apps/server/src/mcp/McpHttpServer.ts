@@ -132,7 +132,7 @@ const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
   }).pipe(Effect.as(result));
 };
 
-const encodePreviewSnapshotResult = (encodedResult: unknown) => {
+export const encodePreviewSnapshotResult = (encodedResult: unknown) => {
   const snapshot = encodedResult as {
     readonly screenshot: {
       readonly mimeType: "image/png";
@@ -143,6 +143,16 @@ const encodePreviewSnapshotResult = (encodedResult: unknown) => {
     readonly [key: string]: unknown;
   };
   const { screenshot, ...page } = snapshot;
+  const bytes = Buffer.from(screenshot.data, "base64");
+  const validPng =
+    screenshot.width > 0 &&
+    screenshot.height > 0 &&
+    bytes.length >= 45 &&
+    bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) &&
+    bytes.toString("ascii", 12, 16) === "IHDR" &&
+    bytes.readUInt32BE(16) === screenshot.width &&
+    bytes.readUInt32BE(20) === screenshot.height &&
+    bytes.subarray(-12).equals(Buffer.from([0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]));
   const metadata = {
     ...page,
     screenshot: {
@@ -151,6 +161,30 @@ const encodePreviewSnapshotResult = (encodedResult: unknown) => {
       height: screenshot.height,
     },
   };
+  if (!validPng) {
+    return new McpSchema.CallToolResult({
+      isError: true,
+      structuredContent: {
+        ...metadata,
+        error: {
+          _tag: "PreviewScreenshotInvalid",
+          operation: "snapshot",
+          message:
+            "The browser returned an empty or invalid screenshot. Page text is diagnostic only; visual validation did not pass. Reveal the browser, wait for rendering, and retry the snapshot.",
+        },
+      },
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            ...metadata,
+            error:
+              "Visual capture failed. Reveal the browser and retry; do not publish this capture as evidence.",
+          }),
+        },
+      ],
+    });
+  }
   return new McpSchema.CallToolResult({
     isError: false,
     structuredContent: metadata,
@@ -158,7 +192,7 @@ const encodePreviewSnapshotResult = (encodedResult: unknown) => {
       { type: "text", text: JSON.stringify(metadata) },
       {
         type: "image",
-        data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
+        data: new Uint8Array(bytes),
         mimeType: screenshot.mimeType,
       },
     ],
