@@ -13,7 +13,7 @@
     "start:desktop": "vp run --filter @t3tools/desktop start",
     "start:marketing": "vp run --filter @t3tools/marketing preview",
     "start:mock-update-server": "node scripts/mock-update-server.ts",
-    "build": "vp run build",
+    "build": "pnpm --filter @t3tools/web build && pnpm --filter t3 build",
     "build:marketing": "vp run --filter @t3tools/marketing build",
     "build:desktop": "vp run --filter @t3tools/web --filter @t3tools/desktop build && pnpm --filter t3 build",
     "typecheck": "vp run -r --concurrency-limit 2 typecheck",

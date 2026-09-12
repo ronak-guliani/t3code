@@ -8,6 +8,9 @@ import { resolve } from "node:path";
 
 import * as BootService from "../cloud/bootService.ts";
 import { resolveBaseDir } from "../os-jank.ts";
+import { inspectRuntimeOwnership, installationIdentity } from "./installation.ts";
+import { readFile } from "node:fs/promises";
+import { decodeServiceInstallation } from "../cloud/serviceInstallation.ts";
 
 const baseDir = Flag.string("base-dir").pipe(Flag.optional);
 const cwd = Flag.string("cwd").pipe(Flag.optional);
@@ -30,30 +33,50 @@ const withService = <A, E, R>(
 const resolveServiceBaseDir = (value: Option.Option<string>) =>
   resolveBaseDir(Option.getOrUndefined(value) ?? process.env.T3CODE_HOME);
 
-const install = Command.make("install", lifecycleFlags).pipe(
-  Command.withDescription("Install or repair the per-user background service and start it."),
-  Command.withHandler((flags) =>
-    Effect.gen(function* () {
-      const resolvedBaseDir = yield* resolveServiceBaseDir(flags.baseDir);
-      return yield* withService(
-        resolvedBaseDir,
-        Effect.gen(function* () {
-          const service = yield* BootService.BootService;
-          const hostValue = Option.getOrUndefined(flags.host);
-          const portValue = Option.getOrUndefined(flags.port);
-          const plan = yield* service.install({
-            cwd: resolve(Option.getOrElse(flags.cwd, () => process.cwd())),
-            ...(hostValue === undefined ? {} : { host: hostValue }),
-            ...(portValue === undefined ? {} : { port: portValue }),
-          });
-          yield* Console.log(
-            `Background service installed and running.\nDefinition: ${plan.definitionPath}\nLogs: ${plan.logPath}`,
-          );
-        }),
-      );
-    }),
-  ),
-);
+const readInstalledInvocation = (status: BootService.ServiceStatus) =>
+  Effect.tryPromise({
+    try: async () => {
+      if (!status.installed) throw new Error("No service is installed. Use service install first.");
+      try {
+        return decodeServiceInstallation(await readFile(status.versionPath, "utf8")).invocation;
+      } catch (cause) {
+        throw new Error(
+          "This older service has no saved startup settings. Use service install with its existing --cwd, --host and --port once; subsequent updates preserve them.",
+          { cause },
+        );
+      }
+    },
+    catch: (cause) =>
+      new BootService.BootServiceError({ operation: "reading saved startup settings", cause }),
+  });
+
+const install = (name: "install" | "update") =>
+  Command.make(name, lifecycleFlags).pipe(
+    Command.withDescription("Install or repair the per-user background service and start it."),
+    Command.withHandler((flags) =>
+      Effect.gen(function* () {
+        const resolvedBaseDir = yield* resolveServiceBaseDir(flags.baseDir);
+        return yield* withService(
+          resolvedBaseDir,
+          Effect.gen(function* () {
+            const service = yield* BootService.BootService;
+            const previous =
+              name === "update" ? yield* readInstalledInvocation(yield* service.status) : undefined;
+            const hostValue = Option.getOrUndefined(flags.host) ?? previous?.host;
+            const portValue = Option.getOrUndefined(flags.port) ?? previous?.port;
+            const plan = yield* service.install({
+              cwd: resolve(Option.getOrElse(flags.cwd, () => previous?.cwd ?? process.cwd())),
+              ...(hostValue === undefined ? {} : { host: hostValue }),
+              ...(portValue === undefined ? {} : { port: portValue }),
+            });
+            yield* Console.log(
+              `Background service installed and running.\nDefinition: ${plan.definitionPath}\nLogs: ${plan.logPath}`,
+            );
+          }),
+        );
+      }),
+    ),
+  );
 
 const action = (name: "start" | "restart" | "stop") =>
   Command.make(name, { baseDir }).pipe(
@@ -109,7 +132,7 @@ const disable = Command.make("disable", { baseDir }).pipe(
 
 export function formatServiceStatus(status: BootService.ServiceStatus): string {
   if (!status.supported) {
-    return `T3 Code background service\n  Status: unsupported on ${status.platform}\n  Supported: macOS launchd`;
+    return `T3 Code background service\n  Status: unsupported on ${status.platform}\n  Supported: macOS launchd and Windows Task Scheduler`;
   }
   return [
     "T3 Code background service",
@@ -132,6 +155,7 @@ export const restartHealthyCurrentService = (
     >;
   },
   status: BootService.ServiceStatus,
+  restartRequired = false,
 ) => {
   if (
     status.installed &&
@@ -140,12 +164,12 @@ export const restartHealthyCurrentService = (
     status.processAlive &&
     status.responsive
   ) {
-    return service.restart.pipe(Effect.as(true));
+    return restartRequired ? service.restart.pipe(Effect.as(true)) : Effect.succeed(true);
   }
   return Effect.succeed(false);
 };
 
-const status = Command.make("status", { baseDir }).pipe(
+const status = Command.make("status", { baseDir, json: Flag.boolean("json") }).pipe(
   Command.withDescription("Show installed, enabled, process, health, and version state."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
@@ -154,7 +178,13 @@ const status = Command.make("status", { baseDir }).pipe(
         resolvedBaseDir,
         Effect.gen(function* () {
           const service = yield* BootService.BootService;
-          yield* Console.log(formatServiceStatus(yield* service.status));
+          const status = yield* service.status;
+          const runtime = yield* Effect.tryPromise(() => inspectRuntimeOwnership(resolvedBaseDir));
+          yield* Console.log(
+            flags.json
+              ? JSON.stringify({ ...status, runtime })
+              : `${formatServiceStatus(status)}\n  Runtime owner: ${runtime.owner} (${runtime.state})`,
+          );
         }),
       );
     }),
@@ -181,15 +211,61 @@ const uninstall = Command.make("uninstall", { baseDir }).pipe(
   ),
 );
 
+const handoff = Command.make("handoff", {
+  baseDir,
+  to: Flag.choice("to", ["foreground", "desktop"]),
+}).pipe(
+  Command.withDescription(
+    "Stop and disable the managed host before explicitly starting a different owner.",
+  ),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const baseDir = yield* resolveServiceBaseDir(flags.baseDir);
+      yield* withService(
+        baseDir,
+        Effect.gen(function* () {
+          const service = yield* BootService.BootService;
+          yield* service.disable;
+          const runtime = yield* Effect.tryPromise(() => inspectRuntimeOwnership(baseDir));
+          if (runtime.state === "running")
+            return yield* Effect.fail(
+              new Error(
+                `A ${runtime.owner} process still owns this environment (pid ${runtime.pid}). Stop it through its own application; no takeover was performed.`,
+              ),
+            );
+          const identity = installationIdentity();
+          const quote = (value: string) =>
+            process.platform === "win32"
+              ? `'${value.replaceAll("'", "''")}'`
+              : `'${value.replaceAll("'", "'\\''")}'`;
+          const command = [identity.executable, identity.entrypoint, "serve", "--base-dir", baseDir]
+            .map(quote)
+            .join(" ");
+          yield* Console.log(
+            flags.to === "desktop"
+              ? `Background startup is disabled. Select ${baseDir} in desktop's local environment settings and restart desktop. No databases were moved or merged.`
+              : `Background startup is disabled. Start the foreground owner with:\n${process.platform === "win32" ? "& " : ""}${command}`,
+          );
+        }),
+      );
+    }),
+  ),
+);
+
 export const offerServiceDuringOnboarding = (input?: {
   readonly baseDir?: string;
   readonly cwd?: string;
+  readonly restartRequired?: boolean;
 }) =>
   Effect.gen(function* () {
     const service = yield* BootService.BootService;
     const status = yield* service.status;
     if (!status.supported) return false;
-    if (yield* restartHealthyCurrentService(service, status)) return true;
+    if (yield* restartHealthyCurrentService(service, status, input?.restartRequired)) return true;
+    if (status.installed && status.current) {
+      yield* service.enable;
+      return true;
+    }
     const accepted = yield* Prompt.run(
       Prompt.confirm({
         message: "Keep T3 reachable in the background after this terminal closes?",
@@ -197,11 +273,13 @@ export const offerServiceDuringOnboarding = (input?: {
       }),
     );
     if (!accepted) return false;
-    const hostValue = process.env.T3CODE_HOST;
+    const previous = status.installed ? yield* readInstalledInvocation(status) : undefined;
+    const hostValue = process.env.T3CODE_HOST ?? previous?.host;
     const portValue = process.env.T3CODE_PORT;
-    const parsedPort = portValue === undefined ? undefined : yield* decodePort(Number(portValue));
+    const parsedPort =
+      portValue === undefined ? previous?.port : yield* decodePort(Number(portValue));
     yield* service.install({
-      cwd: resolve(input?.cwd ?? process.cwd()),
+      cwd: resolve(input?.cwd ?? previous?.cwd ?? process.cwd()),
       ...(hostValue === undefined ? {} : { host: hostValue }),
       ...(parsedPort === undefined ? {} : { port: parsedPort }),
     });
@@ -224,7 +302,8 @@ export const recoverServiceOnboardingOffer = <R>(offer: Effect.Effect<boolean, u
 export const serviceCommand = Command.make("service").pipe(
   Command.withDescription("Manage the durable T3 Code background service."),
   Command.withSubcommands([
-    install,
+    install("install"),
+    install("update"),
     enable,
     action("start"),
     action("restart"),
@@ -232,5 +311,6 @@ export const serviceCommand = Command.make("service").pipe(
     disable,
     status,
     uninstall,
+    handoff,
   ]),
 );

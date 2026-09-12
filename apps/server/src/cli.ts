@@ -155,6 +155,7 @@ import {
 } from "./cli/liveContext.ts";
 import { connectCommand } from "./cli/connect.ts";
 import { serviceCommand } from "./cli/service.ts";
+import { installationCommand } from "./cli/installation.ts";
 import { pairCommand } from "./cli/pair.ts";
 import { remoteCommand } from "./cli/remote.ts";
 
@@ -5419,5 +5420,6 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
       orchestrationCommand,
       connectCommand,
       serviceCommand,
+      installationCommand,
     ]),
   );

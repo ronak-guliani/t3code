@@ -2,6 +2,48 @@
 
 ## Install or update the CLI from this fork
 
+### Packaged releases (no repository checkout)
+
+Fork releases produced by this workflow include `install-t3-cli.mjs`, `t3code-cli.tgz`, and
+`t3code-cli.sha256`. Download the installer from the desired
+[fork release](https://github.com/ronak-guliani/t3code/releases), then run it with that exact version:
+
+```sh
+node install-t3-cli.mjs 0.0.XX
+```
+
+Replace `0.0.XX` with the downloaded release's version; older releases do not have these assets.
+Install Node **24.13.1 or newer within Node 24** and Git first. The installer checks Node,
+architecture, npm, Git, and destination writability before fetching the archive. It downloads
+only from this fork, checks the release's SHA-256, installs production dependencies into an
+immutable version directory, verifies executable identity, and atomically selects the result.
+The checksum detects corruption; it is not an independent signature of a compromised release.
+Package dependencies may run their normal native installation scripts.
+
+The command is `~/.t3-cli/bin/t3-rg` on macOS/Linux or
+`%USERPROFILE%\.t3-cli\bin\t3-rg.cmd` on Windows. Add that directory to your **user** PATH, or use
+the full path printed by the installer. It does not overwrite another `t3` command, change your
+desktop installation, or update a running service implicitly. Old CLI snapshots remain available
+for rollback; reinstalling a prior released version selects it without touching server data.
+Concurrent installs are refused; a crash can leave `~/.t3-cli/install.lock`. Inspect its owner
+record and confirm that installer exited before removing that specific lock directory.
+
+```sh
+t3-rg installation identity --json
+t3-rg installation preflight --role host --base-dir /path/to/existing/home
+t3-rg connect --role host --base-dir /path/to/existing/home
+t3-rg service update --base-dir /path/to/existing/home
+```
+
+Identity reports distribution, version, release channel, commit, Node executable, and CLI
+entrypoint. `service update` preserves saved cwd, host, and port; optional flags explicitly
+override them. Legacy services without saved invocation metadata require one explicit
+`service install` with their original flags before updates can preserve those settings.
+Service snapshots include dependencies but use the installed Node executable; keep that Node
+installation available and rerun `service install` after moving it.
+
+### Source installation
+
 Pulling source changes does not rebuild an existing `t3` executable. If another Mac still prints
 `Start T3 to provision this environment.` after accepting background setup, update its CLI rather
 than repeatedly running the old installer. From an up-to-date checkout with dependencies installed:
@@ -26,7 +68,7 @@ installed binaries.
 
 `t3 service install` installs the exact packaged CLI and its installed production dependencies as a per-user service and starts it immediately. The private snapshot includes native assets, does not depend on the original checkout's `node_modules`, and is checked before replacing a working service. Re-running install repairs the definition and replaces the runtime, so run it again from the newly installed packaged CLI after an upgrade.
 
-For T3 Connect, start with `t3 connect`: sign in and accept the background-service prompt. You do
+For T3 Connect, start with `t3 connect --role host`: sign in and accept the background-service prompt. You do
 not need to start `t3 serve` first or configure a domain, VPN, or a second connector. Once
 `t3 connect status` says **linked and online**, sign into the same account on each client and
 select the host in its T3 Connect environments.
@@ -49,7 +91,19 @@ t3 service uninstall
 
 On macOS this creates a per-base-directory LaunchAgent. It starts when that user's GUI session logs in, survives terminal logout, restarts after crashes, and returns after reboot only after the user logs in. macOS may require approval in **System Settings > General > Login Items & Extensions**.
 
-Linux and Windows are currently reported as unsupported and no supervisor state is changed. Linux support is intentionally deferred until systemd user-manager and linger behavior can be production-tested across supported distributions.
+Windows uses a separate named Task Scheduler task per user and data directory. It runs as that
+user with `InteractiveToken` and least privilege, without storing a Windows password. It starts
+after sign-in, retains that user's provider credentials/workspace access, allows battery operation,
+has no execution time limit, and retries crashes up to three times at one-minute intervals.
+It does not keep a sleeping laptop reachable. Start/stop/enable/disable/status/update/uninstall
+use the same CLI commands as macOS. Managed Windows state must be inside the user's profile;
+untrusted ownership or writable-by-other-user ACLs are refused. A failed candidate restores the
+previous task; if shutdown/rollback cannot be confirmed, snapshots remain for recovery.
+Use `service status --json` to inspect the supervisor and observed runtime owner separately.
+
+Linux service support is intentionally deferred until systemd user-manager and linger behavior
+can be production-tested across supported distributions. Packaged CLI and foreground hosting
+remain available there; guided managed-host setup is for macOS and Windows.
 
 The instance-specific definition path and rotating server log are shown by `t3 service status`. The log is the normal bounded `userdata/logs/server.log`; launchd stdout and stderr are discarded instead of appending a second unbounded log. Each service instance writes health discovery state inside its private runtime directory, so a foreground server using the same base directory cannot satisfy or lose the service health record. Status reports launchd loaded state, process state/PID, and HTTP responsiveness rather than treating a definition file as proof of availability. Uninstall stops and disables that base-directory instance and removes only that instance's definition and runtime artifacts.
 
@@ -58,6 +112,59 @@ Restart waits for the previous job to unload before bootstrapping its replacemen
 kill the process that `RunAtLoad` has just started. A failed candidate restores the previous
 service when shutdown succeeds. If launchd cannot confirm shutdown, the installer reports that
 failure and retains the runtime rather than deleting files a process might still be using.
+
+### Guided setup and resumable failures
+
+`connect` without a role asks whether to **host here** or **connect to another computer**.
+`connect --role client` prints the hosted app/desktop connection instructions without creating
+an environment, running migrations, authorizing a host, downloading a connector, or installing
+a service. Client sign-in happens in the client app; `connect login` remains the explicit
+CLI-account authorization command and does not enable exposure.
+
+Host setup selects an existing local environment or shows the proposed new directory. Supplying
+`--base-dir` pins the choice and skips this prompt. The stages are preflight, account authorization,
+relay-client installation, server startup, and relay readiness. Failures identify the stage and
+retain completed work. Retry **the same executable, role, and base directory**: stored credentials
+and relay binaries are reused, and an already-current healthy host is not restarted unless
+authorization/exposure changed or live state shows it still needs provisioning. Readiness polling
+is bounded to 60 seconds and reuses one temporary CLI session, revoked afterward.
+
+Preflight checks the supported Node/architecture, embedded Connect config, writable state path,
+packaged web client, native terminal module, Git, package manager, provider executables, and proxy
+environment presence. Proxy values are redacted. Missing optional provider binaries are warnings;
+provider authentication and external network accessibility must still be confirmed separately.
+Preflight does not start providers or authenticate accounts.
+
+**Host ready is not client verified.** After relay readiness, setup explicitly leaves client
+verification pending: sign in on the other device and open this environment. It never claims
+that another device connected based solely on a local health probe.
+
+### Runtime ownership and deliberate handoff
+
+Runtime discovery records `desktop`, `foreground`, or `background`; older files report `unknown`.
+This is diagnostic metadata, not a replacement for the lifetime startup claim.
+To move a managed environment to another owner:
+
+```sh
+t3-rg service handoff --to foreground --base-dir /path/to/home
+t3-rg service handoff --to desktop --base-dir /path/to/home
+```
+
+Handoff stops and disables the managed instance, checks for any remaining live runtime, and prints
+the exact next action. It does not kill unrelated processes or launch a replacement implicitly.
+For the reverse direction, quit desktop or stop the foreground terminal first, then run
+`connect --role host` or `service install` with the same base directory. Data and provider
+credentials stay in place. Do not hand off while turns are active.
+
+### Build contract
+
+Root `pnpm build` explicitly builds `@t3tools/web` followed by `t3`; it cannot succeed by scheduling
+zero workspace tasks. Web builds stamp source fingerprints plus a normalized hash of effective
+public Vite/Connect configuration from process environment and root env files; no environment
+values are stored in the stamp. Server packaging refuses missing or changed web inputs and
+rechecks after bundling, rather than accepting a warning or stale client directory.
+Run the root build after changing web/shared/contracts/client-runtime sources or public configuration. Standalone
+`pnpm --filter t3 build` requires a matching web build.
 
 ### Multiple desktop and CLI environments
 
