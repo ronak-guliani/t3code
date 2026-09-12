@@ -40,6 +40,8 @@ import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts"
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
+import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
 import {
   latestCapturedCheckpointTurnCount,
   resolveThreadWorkspaceCwd,
@@ -733,6 +735,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
   const serverSettingsService = yield* ServerSettingsService;
   const processedEventReceipts = yield* SynchronizedRef.make<ProcessedEventReceiptState>({
     completed: new Set(),
@@ -1709,8 +1712,16 @@ const make = Effect.gen(function* () {
         lifecycleTurnId !== undefined &&
         thread.latestTurn?.state === "interrupted" &&
         sameId(thread.latestTurn.turnId, lifecycleTurnId);
+      const wasTurnAborted =
+        event.type === "turn.completed" && lifecycleTurnId !== undefined
+          ? yield* projectionThreadActivityRepository.hasKindForTurn({
+              threadId: thread.id,
+              turnId: lifecycleTurnId,
+              kind: "insights.turn.aborted",
+            })
+          : false;
       const isDuplicateCompletionAfterInterruption =
-        event.type === "turn.completed" && activeTurnId === null && matchesExpectedInterruptedTurn;
+        event.type === "turn.completed" && wasTurnAborted;
 
       const shouldApplyThreadLifecycle = (() => {
         if (!STRICT_PROVIDER_LIFECYCLE_GUARD) {
@@ -2338,4 +2349,8 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive), Layer.provideMerge(CheckoutCoordinatorLive));
+).pipe(
+  Layer.provide(ProjectionTurnRepositoryLive),
+  Layer.provide(ProjectionThreadActivityRepositoryLive),
+  Layer.provideMerge(CheckoutCoordinatorLive),
+);
