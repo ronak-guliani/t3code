@@ -104,6 +104,7 @@
 - PR base distance is telemetry, not remediation; wake owners for merge conflicts or concrete failures, never routine commit drift.
 - Nested-thread MCP schemas must not allowlist Copilot model slugs; provider catalogs and custom models evolve independently. Keep `model` open-ended and `reasoning` optional for models that do not expose it.
 - Delegation prompt policy belongs in one server-side composer exposed through structured MCP input; keep blocks opt-in, reject contradictory permissions and orphaned overrides, and leave repository-specific context in call arguments rather than canonical template text.
+- Scenario/evidence delegation must name its validation owner in both the MCP schema and parser; absence is not permission for a child to start an integrated browser environment.
 - Canonical worktree selectors may be shared by multiple threads; resolve all distinct active project owners and reject cross-project ambiguity instead of choosing by snapshot order.
 - Nested-thread creation outcomes must distinguish definitive rejection from ambiguous commit state and report cleanup explicitly; preflight branch/path collisions for clear guidance, but keep `git worktree add` as the transactional authority.
 - Nested-thread creation must validate CLI context and canonical Git ownership/collisions before mutation, revalidate at the commit edge, return one stable typed outcome for every phase, and compensate only side effects known not to belong to a committed child.
@@ -191,6 +192,7 @@
 
 - Pairing input must accept raw credentials and same-origin `/pair` links without sending a URL as a token; reject cross-environment links before exchange, mask input, and clear rejected credentials before evidence capture.
 - Self-test success is scoped to the tested revision and scenarios. Hash media, decode pixels and sampled video frames, retain publication receipts, and invalidate changed-checkout evidence; a finished worker turn or a local recording path is not verified PR delivery.
+- Recheck PR head and attachment references after media downloads, not just before them. A browser reconnect claim needs an actual browser socket drop and live state recovery without navigation; a Node transport reconnect or page reload is not equivalent.
 - A browser snapshot with DOM text but a zero-size or mismatched PNG must return an explicit MCP capture error, not a successful image result. Retain sanitized page diagnostics for recovery without presenting them as visual proof.
 - PNG sentinels are not decoding: bound dimensions before actual CRC-checked decoding. Record browser videos outside disposable server state, flush diagnostics on release, and count unexpected console errors even during pairing; failed artifacts must never become verified evidence.
 - GitHub uploads become downloadable after a PR/comment references them, and signed attachment redirects may reject HEAD while GET succeeds. Persist upload URLs, attach first, then GET and hash the bytes before recording verified publication. Retry post-attachment 404 propagation briefly without re-uploading; retain a hard failure when access or hash verification fails.

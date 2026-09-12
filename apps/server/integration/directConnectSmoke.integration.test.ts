@@ -8,7 +8,7 @@ import {
   ProviderInstanceId,
   WS_METHODS,
 } from "@t3tools/contracts";
-import { chromium } from "playwright";
+import { chromium, type WebSocketRoute } from "playwright";
 import {
   Cause,
   Deferred,
@@ -517,6 +517,10 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         };
         const context = yield* createSelfTestContext(browser, captureOutput, diagnostics);
         const page = yield* Effect.promise(() => context.newPage());
+        let browserNavigationCount = 0;
+        page.on("framenavigated", (frame) => {
+          if (frame === page.mainFrame()) browserNavigationCount += 1;
+        });
         const browserDiagnostics: string[] = [];
         const pageErrors: string[] = [];
         const failedRequests: string[] = [];
@@ -585,6 +589,16 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
 
         checkingAuthenticatedRequests = true;
         consolePhase = "authenticated";
+        const browserSockets: WebSocketRoute[] = [];
+        yield* Effect.promise(() =>
+          page.routeWebSocket(
+            (url) => url.pathname === "/ws",
+            (socket) => {
+              socket.connectToServer();
+              browserSockets.push(socket);
+            },
+          ),
+        );
         yield* Effect.promise(() => page.reload());
         yield* Effect.promise(() =>
           page.getByText("Direct Connect Project", { exact: true }).waitFor({
@@ -600,6 +614,44 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           readonly authenticated: boolean;
         };
         expect(sessionState).toMatchObject({ authenticated: true });
+
+        const socketBeforeDrop = browserSockets.at(-1);
+        expect(socketBeforeDrop).toBeDefined();
+        const socketCountBeforeDrop = browserSockets.length;
+        const navigationCountBeforeDrop = browserNavigationCount;
+        yield* Effect.promise(() =>
+          socketBeforeDrop!.close({ code: 1012, reason: "self-test forced disconnect" }),
+        );
+        yield* retryUntil(
+          Effect.sync(() => browserSockets.length),
+          (count) => count > socketCountBeforeDrop,
+          "the authenticated browser WebSocket to reconnect",
+        );
+        yield* Effect.promise(() =>
+          page.getByText("Direct Connect Project", { exact: true }).waitFor({ state: "visible" }),
+        );
+        for (const [index, title] of [
+          "Browser Reconnected Project",
+          "Direct Connect Project",
+        ].entries()) {
+          yield* fetchJson(`${origin}/api/orchestration/dispatch`, {
+            method: "POST",
+            headers: {
+              authorization: ["Bearer", ownerToken].join(" "),
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              type: "project.meta.update",
+              commandId: CommandId.make(`cmd-browser-reconnect-title-${index}`),
+              projectId,
+              title,
+            }),
+          });
+          yield* Effect.promise(() =>
+            page.getByText(title, { exact: true }).waitFor({ state: "visible", timeout: 10_000 }),
+          );
+        }
+        expect(browserNavigationCount).toBe(navigationCountBeforeDrop);
 
         // Exercise the manual recovery path with the real server, not a mocked bootstrap.
         checkingAuthenticatedRequests = false;
@@ -704,7 +756,8 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
                 "Consumed credentials fail visibly and are cleared.",
                 "A fresh same-origin pairing link can be pasted into the recovery form.",
                 "The authenticated project remains visible after reload.",
-                "Live synchronization and involuntary reconnect preserve project state.",
+                "The browser recovers from a forced WebSocket disconnect without reloading and receives live project updates.",
+                "Node client live synchronization and involuntary reconnect preserve project state.",
               ],
               diagnostics,
             ),

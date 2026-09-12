@@ -253,6 +253,11 @@ export function parseDelegationPromptTemplate(value: unknown): DelegationPromptT
   if (owner !== undefined && owner !== "parent" && owner !== "child") {
     throw new DelegationPromptValidationError("validation.owner must be parent or child");
   }
+  if ((scenarios || evidence) && owner === undefined) {
+    throw new DelegationPromptValidationError(
+      "validation.owner is required when scenarios or evidence are supplied",
+    );
+  }
   const validation: DelegationPromptTemplate["validation"] = validationInput
     ? {
         commands:
@@ -361,7 +366,7 @@ function blockDetails(block: DelegationPromptBlock, template: DelegationPromptTe
           : "",
         template.validation?.owner === "parent"
           ? "The parent owns integrated browser validation. Do not launch a competing dev server. Run command checks and return scenario instructions and blockers; report integrated validation as pending, not passed."
-          : template.validation?.scenarios
+          : template.validation?.owner === "child" && template.validation.scenarios
             ? "You own integrated browser validation in your isolated workspace. Reuse healthy test state and report the environment, tested revision, observable results, and published evidence links."
             : "",
       ]

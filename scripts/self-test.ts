@@ -14,7 +14,7 @@ import {
   type SelfTestMedia,
 } from "./lib/selfTestEvidence.ts";
 import { readSelfTestRevision } from "./lib/selfTestRevision.ts";
-import { verifySelfTestMedia } from "./lib/selfTestPublication.ts";
+import { verifySelfTestPublication } from "./lib/selfTestPublication.ts";
 
 const exec = promisify(execFile);
 const decodeManifest = Schema.decodeUnknownSync(SelfTestManifest);
@@ -46,23 +46,6 @@ function pullRequestSelector(prUrl: string | undefined) {
 
 async function readPullRequest(prUrl: string | undefined) {
   return decodePullRequest(JSON.parse(await command("gh", ["api", pullRequestSelector(prUrl)])));
-}
-
-async function verifyPublication(manifest: SelfTestManifest): Promise<void> {
-  if (!manifest.publication) throw new Error("Evidence has not been attached to a PR.");
-  const pr = await readPullRequest(manifest.publication.pullRequestUrl);
-  if (pr.head.sha !== manifest.revision.commit) {
-    throw new Error("Published evidence is stale: the PR head changed.");
-  }
-  for (const media of manifest.media) {
-    if (
-      !media.url?.startsWith("https://github.com/user-attachments/assets/") ||
-      !pr.body?.includes(media.url)
-    ) {
-      throw new Error("A published artifact is missing from the PR.");
-    }
-    await verifySelfTestMedia(media);
-  }
 }
 
 async function save(manifest: SelfTestManifest): Promise<void> {
@@ -228,7 +211,7 @@ async function publish(prUrl: string | undefined): Promise<void> {
   await writeFile(bodyPath, body, { mode: 0o600 });
   await command("gh", ["pr", "edit", prUrl!, "--body-file", bodyPath]);
   const published = { ...manifest, publication: { pullRequestUrl: prUrl! } };
-  await verifyPublication(published);
+  await verifySelfTestPublication(published, readPullRequest);
   await save(published);
   console.log(`Published verified web baseline evidence to ${prUrl}`);
 }
@@ -265,7 +248,7 @@ async function main(): Promise<void> {
           args.includes("--require-published"),
         );
         if (blockers.length === 0 && args.includes("--require-published")) {
-          await verifyPublication(manifest);
+          await verifySelfTestPublication(manifest, readPullRequest);
         }
         console.log(JSON.stringify({ ...manifest, blockers }, null, 2));
         if (blockers.length) process.exitCode = 1;

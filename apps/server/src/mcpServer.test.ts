@@ -404,6 +404,13 @@ describe("create_nested_thread MCP tool", () => {
               type: "object",
               required: ["blocks"],
               properties: expect.objectContaining({
+                validation: expect.objectContaining({
+                  required: ["commands"],
+                  dependentRequired: {
+                    scenarios: ["owner"],
+                    evidence: ["scenarios", "owner"],
+                  },
+                }),
                 blocks: expect.objectContaining({
                   uniqueItems: true,
                   items: expect.objectContaining({

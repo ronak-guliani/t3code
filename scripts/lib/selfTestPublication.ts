@@ -1,5 +1,34 @@
 import { createHash } from "node:crypto";
-import type { SelfTestMedia } from "./selfTestEvidence.ts";
+import type { SelfTestManifest, SelfTestMedia } from "./selfTestEvidence.ts";
+
+interface PublicationSnapshot {
+  readonly head: { readonly sha: string };
+  readonly body: string | null;
+}
+
+export async function verifySelfTestPublication(
+  manifest: SelfTestManifest,
+  readPullRequest: (url: string) => Promise<PublicationSnapshot>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  if (!manifest.publication) throw new Error("Evidence has not been attached to a PR.");
+  const verifySnapshot = (pr: PublicationSnapshot) => {
+    if (pr.head.sha !== manifest.revision.commit) {
+      throw new Error("Published evidence is stale: the PR head changed.");
+    }
+    for (const media of manifest.media) {
+      if (
+        !media.url?.startsWith("https://github.com/user-attachments/assets/") ||
+        !pr.body?.includes(media.url)
+      ) {
+        throw new Error("A published artifact is missing from the PR.");
+      }
+    }
+  };
+  verifySnapshot(await readPullRequest(manifest.publication.pullRequestUrl));
+  for (const media of manifest.media) await verifySelfTestMedia(media, fetchImpl);
+  verifySnapshot(await readPullRequest(manifest.publication.pullRequestUrl));
+}
 
 export async function verifySelfTestMedia(
   media: SelfTestMedia,

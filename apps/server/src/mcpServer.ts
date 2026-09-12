@@ -1784,10 +1784,14 @@ const NESTED_THREAD_PROMPT_TEMPLATE_INPUT_SCHEMA = {
           type: "string",
           enum: ["child", "parent"],
           description:
-            "Who owns integrated browser validation; parent prevents competing child dev servers.",
+            "Required with scenarios or evidence. Who owns integrated browser validation; parent prevents competing child dev servers.",
         },
       },
       required: ["commands"],
+      dependentRequired: {
+        scenarios: ["owner"],
+        evidence: ["scenarios", "owner"],
+      },
       additionalProperties: false,
     },
     commit: {

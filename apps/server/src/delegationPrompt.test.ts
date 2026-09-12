@@ -112,6 +112,8 @@ Report the outcome, material findings or changes, validation results, commit SHA
 
   it.each([
     { evidence: ["screenshot"] },
+    { scenarios: ["Pair"] },
+    { scenarios: ["Pair"], evidence: ["screenshot"] },
     { scenarios: ["Pair"], evidence: ["video"] },
     { scenarios: ["Pair"], evidence: ["screenshot", "screenshot"] },
     { owner: "anyone" },
@@ -122,5 +124,17 @@ Report the outcome, material findings or changes, validation results, commit SHA
         validation: { commands: ["pnpm test"], ...validation },
       }),
     ).toThrow(/validation/);
+  });
+
+  it.each(["parent", "child"] as const)("requires an explicit %s owner for scenarios", (owner) => {
+    const prompt = composeDelegationPrompt("Test pairing.", {
+      blocks: ["validation"],
+      validation: { commands: ["pnpm test"], scenarios: ["Pair"], owner },
+    });
+    expect(prompt).toContain(
+      owner === "parent"
+        ? "Do not launch a competing dev server."
+        : "You own integrated browser validation",
+    );
   });
 });
