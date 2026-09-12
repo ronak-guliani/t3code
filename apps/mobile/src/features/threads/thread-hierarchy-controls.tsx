@@ -1,6 +1,6 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef } from "react";
 import { AppState } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -81,25 +81,23 @@ export function useMarkRootThreadCompletionRead(thread: MobileThreadShell | null
   const focused = useIsFocused();
   const result = useAtomValue(mobilePreferencesAtom);
   const save = useAtomSet(updateMobilePreferencesAtom);
-  useEffect(() => {
+  // Defined once and shared by the immediate pass and the foreground
+  // subscription below; useEffectEvent keeps it stable while always reading
+  // the latest focused/thread/preferences.
+  const markRead = useEffectEvent(() => {
     if (!focused || thread === null || thread.parentThreadId != null) return;
     if (AppState.currentState !== "active" || !AsyncResult.isSuccess(result)) return;
     const current = appAtomRegistry.get(mobilePreferencesAtom);
     if (!AsyncResult.isSuccess(current)) return;
     markRootThreadCompletionRead(thread, current.value, save);
-  }, [focused, result, save, thread]);
+  });
+  useEffect(() => {
+    markRead();
+  }, [focused, result, save, thread, markRead]);
   // Shared foreground subscription: all mark-read hooks reuse one global
   // AppState listener instead of registering their own (client-event-listeners).
-  // Reads AppState.currentState like the immediate pass above so behavior is
-  // identical on mount and on resume.
   useOnAppStateChange(() => {
-    if (!focused || thread === null || thread.parentThreadId != null) {
-      return;
-    }
-    if (AppState.currentState !== "active" || !AsyncResult.isSuccess(result)) return;
-    const current = appAtomRegistry.get(mobilePreferencesAtom);
-    if (!AsyncResult.isSuccess(current)) return;
-    markRootThreadCompletionRead(thread, current.value, save);
+    markRead();
   });
 }
 
@@ -107,21 +105,18 @@ export function useMarkNestedThreadRead(thread: MobileThreadShell | null) {
   const focused = useIsFocused();
   const result = useAtomValue(mobilePreferencesAtom);
   const save = useAtomSet(updateMobilePreferencesAtom);
-  useEffect(() => {
+  const markRead = useEffectEvent(() => {
     if (!focused || thread === null || thread.parentThreadId == null) return;
     if (AppState.currentState !== "active" || !AsyncResult.isSuccess(result)) return;
     const current = appAtomRegistry.get(mobilePreferencesAtom);
     if (!AsyncResult.isSuccess(current)) return;
     markNestedThreadRead(thread, current.value, save);
-  }, [focused, result, save, thread]);
+  });
+  useEffect(() => {
+    markRead();
+  }, [focused, result, save, thread, markRead]);
   useOnAppStateChange(() => {
-    if (!focused || thread === null || thread.parentThreadId == null) {
-      return;
-    }
-    if (AppState.currentState !== "active" || !AsyncResult.isSuccess(result)) return;
-    const current = appAtomRegistry.get(mobilePreferencesAtom);
-    if (!AsyncResult.isSuccess(current)) return;
-    markNestedThreadRead(thread, current.value, save);
+    markRead();
   });
 }
 
@@ -158,7 +153,7 @@ function useMarkNotificationsRead(stamps: readonly NotificationStamp[]) {
   const focused = useIsFocused();
   const result = useAtomValue(mobilePreferencesAtom);
   const save = useAtomSet(updateMobilePreferencesAtom);
-  useEffect(() => {
+  const markRead = useEffectEvent(() => {
     if (!focused || stamps.length === 0 || !AsyncResult.isSuccess(result)) return;
     if (AppState.currentState !== "active") return;
     const current = appAtomRegistry.get(mobilePreferencesAtom);
@@ -178,29 +173,12 @@ function useMarkNotificationsRead(stamps: readonly NotificationStamp[]) {
       }
     }
     if (readAt) save({ threadChildNotificationReadAt: readAt });
-  }, [focused, stamps, result, save]);
+  });
+  useEffect(() => {
+    markRead();
+  }, [focused, stamps, result, save, markRead]);
   useOnAppStateChange(() => {
-    if (!focused || stamps.length === 0 || !AsyncResult.isSuccess(result)) {
-      return;
-    }
-    if (AppState.currentState !== "active") return;
-    const current = appAtomRegistry.get(mobilePreferencesAtom);
-    if (!AsyncResult.isSuccess(current)) return;
-    let readAt: Record<string, string> | undefined;
-    for (const { threadKey, notificationAt } of stamps) {
-      if (
-        notificationAt &&
-        hasUnseenChildNotification({
-          latestChildNotificationAt: notificationAt,
-          lastVisitedAt:
-            readAt?.[threadKey] ?? current.value.threadChildNotificationReadAt?.[threadKey],
-        })
-      ) {
-        readAt ??= { ...current.value.threadChildNotificationReadAt };
-        readAt[threadKey] = notificationAt;
-      }
-    }
-    if (readAt) save({ threadChildNotificationReadAt: readAt });
+    markRead();
   });
 }
 

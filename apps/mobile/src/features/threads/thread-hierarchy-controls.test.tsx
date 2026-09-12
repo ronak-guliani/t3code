@@ -37,6 +37,11 @@ vi.mock("react", async (importOriginal) => ({
   useEffect: (effect: () => void | (() => void)) => {
     harness.effects.push(effect);
   },
+  // The harness runs collected effects synchronously inside
+  // renderToStaticMarkup (i.e. during rendering), where real useEffectEvent
+  // wrappers throw. Identity keeps the shared-callback structure testable;
+  // production uses the real stable wrapper.
+  useEffectEvent: <T extends (...args: never[]) => unknown>(callback: T): T => callback,
 }));
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: () =>

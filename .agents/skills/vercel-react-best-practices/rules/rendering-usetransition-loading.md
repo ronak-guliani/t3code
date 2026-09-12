@@ -49,7 +49,10 @@ function SearchResults() {
     setQuery(value); // Update input immediately
 
     startTransition(async () => {
-      // Fetch and update results
+      // Fetch and update results. Note: the transition does NOT cancel this
+      // request — guard against stale results (e.g. AbortController or a
+      // request id check) or an older fetch resolving later will overwrite
+      // newer results.
       const data = await fetchResults(value);
       setResults(data);
     });
@@ -70,6 +73,6 @@ function SearchResults() {
 - **Automatic pending state**: No need to manually manage `setIsLoading(true/false)`
 - **Error resilience**: Pending state correctly resets even if the transition throws
 - **Better responsiveness**: Keeps the UI responsive during updates
-- **Interrupt handling**: New transitions automatically cancel pending ones
+- **Interrupt handling**: New transitions interrupt pending _rendering_, but they do not cancel async work. Requests started inside a transition need explicit cancellation (or a stale-response guard), otherwise an older fetch resolving later overwrites newer results.
 
 Reference: [useTransition](https://react.dev/reference/react/useTransition)

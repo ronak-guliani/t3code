@@ -1481,15 +1481,16 @@ export async function clearComposerDraftsEnvironment(environmentId: EnvironmentI
     persistTimer = null;
   }
   appAtomRegistry.set(composerDraftsAtom, next);
-  // The persisted snapshot and the orphaned-attachment cleanup are
-  // independent (attachments were computed from the pre-write state), so run
-  // them concurrently instead of sequentially (async-parallel).
-  await Promise.all([
-    persistenceQueue.run(() =>
-      writePersistedComposerState(next, appAtomRegistry.get(stickyComposerModelSelectionAtom)),
-    ),
-    releaseUnusedComposerAttachmentFiles(removedAttachments),
-  ]);
+  // Sequential on purpose, not async-parallel: SerializedAsyncQueue keeps
+  // going after a rejected write, and the in-memory atom is already cleared
+  // here. If the snapshot write fails, the persisted drafts still reference
+  // these files, so cleanup must not run — deleting then would orphan
+  // on-disk drafts. Skipping cleanup on write failure keeps disk and
+  // memory consistent; the next successful sweep retries.
+  await persistenceQueue.run(() =>
+    writePersistedComposerState(next, appAtomRegistry.get(stickyComposerModelSelectionAtom)),
+  );
+  await releaseUnusedComposerAttachmentFiles(removedAttachments);
 }
 
 export function useComposerDraft(draftKey: string | null): ComposerDraft {

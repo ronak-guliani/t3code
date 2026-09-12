@@ -34,4 +34,4 @@ function AnimationPlayer({
 }
 ```
 
-The `typeof window !== 'undefined'` check prevents bundling this module for SSR, optimizing server bundle size and build speed.
+The `typeof window !== 'undefined'` check prevents executing this import on the server. It does not by itself exclude the module from the server bundle or file trace: a statically referenced dynamic import is still traced by the bundler. Bundle exclusion depends on the framework and bundler configuration (e.g. `ssr: false` dynamic imports), so do not rely on the guard alone for bundle-size reduction.

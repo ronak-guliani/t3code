@@ -1,5 +1,10 @@
 # React Best Practices
 
+> Vendored subset of [vercel-labs/agent-skills](https://github.com/vercel-labs/agent-skills/tree/main/skills/react-best-practices).
+> This directory carries the rule files, `SKILL.md`, `AGENTS.md`, and metadata only. The upstream build tooling (`src/`),
+> generated `test-cases.json`, and package scripts are not vendored: run `pnpm build`, `pnpm validate`, and
+> `pnpm extract-tests` in the upstream repository, then re-vendor the results here.
+
 A structured repository for creating and maintaining React Best Practices optimized for agents and LLMs.
 
 ## Structure
