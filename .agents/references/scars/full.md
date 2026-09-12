@@ -44,6 +44,7 @@
 
 ## Desktop packaging and React state
 
+- Chat thread URLs can outlive a desktop backend port. Resolve stale loopback links by their explicitly registered environment ID, while preserving exact-origin environment bindings and keeping arbitrary website URLs external.
 - Work-log display paths must use verbatim provider candidates, not Git-normalized changed paths: absolute patch paths are rejected without a cwd. Prefer raw input/ACP locations over shortened previews, and never treat JSON output as a filename.
 - Keep visited work-log bodies local to their virtual timeline row, lazy before first expansion, and hidden after collapse. Preserve mounted details through closing/reversal so output parsing and DOM reconstruction do not interrupt the animation.
 - Command labels must come from input metadata, never a tool's output/detail fallback. Repeated completed work may be folded for display, but preserve every call and keep distinct commands, paths, turns, active calls, and failures separate.
