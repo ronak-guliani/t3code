@@ -626,45 +626,50 @@ export async function convertPastedImagesToAttachments(input: {
 }): Promise<ReadonlyArray<DraftComposerImageAttachment>> {
   const { File } = await import("expo-file-system");
   const remainingSlots = PROVIDER_SEND_TURN_MAX_ATTACHMENTS - input.existingCount;
-  const results: DraftComposerImageAttachment[] = [];
 
-  for (const [index, uri] of input.uris.entries()) {
-    const ownedTemporaryFile = isOwnedPastedImageUri(uri);
-    try {
-      if (index >= Math.max(0, remainingSlots)) {
-        continue;
-      }
-      const file = new File(uri);
-      const base64 = await file.base64();
-      const sizeBytes = estimateBase64ByteSize(base64);
-      if (sizeBytes <= 0 || sizeBytes > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
-        continue;
-      }
-      const mimeType = mimeTypeFromUri(uri);
-      results.push({
-        id: uuidv4(),
-        type: "image",
-        name: `pasted-image.${mimeType.split("/")[1] ?? "png"}`,
-        mimeType,
-        sizeBytes,
-        dataUrl: `data:${mimeType};base64,${base64}`,
-        previewUri: ownedTemporaryFile ? `data:${mimeType};base64,${base64}` : uri,
-      });
-    } catch (error) {
-      reportClientWarning("Failed to read pasted image", uri, error);
-    } finally {
-      if (ownedTemporaryFile) {
-        try {
-          const file = new File(uri);
-          if (file.exists) {
-            file.delete();
+  // Read independent image files concurrently instead of awaiting each
+  // file.base64() sequentially (async-parallel). Order and slot-cap
+  // semantics match the previous sequential loop.
+  const converted = await Promise.all(
+    input.uris.map(async (uri, index) => {
+      const ownedTemporaryFile = isOwnedPastedImageUri(uri);
+      try {
+        if (index >= Math.max(0, remainingSlots)) {
+          return null;
+        }
+        const file = new File(uri);
+        const base64 = await file.base64();
+        const sizeBytes = estimateBase64ByteSize(base64);
+        if (sizeBytes <= 0 || sizeBytes > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+          return null;
+        }
+        const mimeType = mimeTypeFromUri(uri);
+        return {
+          id: uuidv4(),
+          type: "image",
+          name: `pasted-image.${mimeType.split("/")[1] ?? "png"}`,
+          mimeType,
+          sizeBytes,
+          dataUrl: `data:${mimeType};base64,${base64}`,
+          previewUri: ownedTemporaryFile ? `data:${mimeType};base64,${base64}` : uri,
+        } satisfies DraftComposerImageAttachment;
+      } catch (error) {
+        reportClientWarning("Failed to read pasted image", uri, error);
+        return null;
+      } finally {
+        if (ownedTemporaryFile) {
+          try {
+            const file = new File(uri);
+            if (file.exists) {
+              file.delete();
+            }
+          } catch (error) {
+            reportClientWarning("Failed to remove temporary pasted image", uri, error);
           }
-        } catch (error) {
-          reportClientWarning("Failed to remove temporary pasted image", uri, error);
         }
       }
-    }
-  }
+    }),
+  );
 
-  return results;
+  return converted.filter((attachment) => attachment !== null);
 }

@@ -258,6 +258,7 @@
 - Keep a mobile workflow launch's idempotency key until its returned child thread is routable. An RPC success followed by projection timeout is still an ambiguous navigation outcome; retrying with a new key creates a duplicate child.
 - Use `Schema.is` rather than `instanceof` for Effect Schema types; the patched Windows TypeScript runner treats `instanceof` diagnostics as fatal.
 - Cross-platform subprocess fixtures must use the guaranteed Node runtime (`process.execPath`), not an undeclared Bun dependency; Windows resolves missing commands through `cmd.exe` and obscures the startup failure as exit code 1.
+- When adapting web perf rules to mobile, share one native `AppState` subscription with a module-level fan-out (`subscribeToAppStateChange`) instead of one listener per hook instance, and version persisted mobile documents in-payload with legacy-tolerant readers rather than renaming keys; key renames orphan existing installs while missing-version reads stay backward compatible.
 
 ## UI discovery and browser capture
 

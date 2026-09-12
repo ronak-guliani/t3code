@@ -1481,10 +1481,15 @@ export async function clearComposerDraftsEnvironment(environmentId: EnvironmentI
     persistTimer = null;
   }
   appAtomRegistry.set(composerDraftsAtom, next);
-  await persistenceQueue.run(() =>
-    writePersistedComposerState(next, appAtomRegistry.get(stickyComposerModelSelectionAtom)),
-  );
-  await releaseUnusedComposerAttachmentFiles(removedAttachments);
+  // The persisted snapshot and the orphaned-attachment cleanup are
+  // independent (attachments were computed from the pre-write state), so run
+  // them concurrently instead of sequentially (async-parallel).
+  await Promise.all([
+    persistenceQueue.run(() =>
+      writePersistedComposerState(next, appAtomRegistry.get(stickyComposerModelSelectionAtom)),
+    ),
+    releaseUnusedComposerAttachmentFiles(removedAttachments),
+  ]);
 }
 
 export function useComposerDraft(draftKey: string | null): ComposerDraft {

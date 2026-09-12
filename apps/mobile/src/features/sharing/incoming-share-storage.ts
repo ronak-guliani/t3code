@@ -38,19 +38,37 @@ export async function loadIncomingShareDrafts(options?: {
 }): Promise<ReadonlyArray<IncomingShareDraft>> {
   try {
     const { File } = await import("expo-file-system");
-    const drafts: IncomingShareDraft[] = [];
-    for (const entry of (await getDirectory()).list()) {
-      if (!(entry instanceof File) || !entry.name.endsWith(".json")) {
-        continue;
-      }
-      try {
-        drafts.push(decodeIncomingShareDraft(JSON.parse(await entry.text()) as unknown));
-      } catch (cause) {
-        const error = new IncomingShareStorageError({ operation: "load", shareId: null, cause });
-        if (options?.strict) {
-          throw error;
+    const entries = (await getDirectory())
+      .list()
+      .filter(
+        (entry): entry is InstanceType<typeof File> =>
+          entry instanceof File && entry.name.endsWith(".json"),
+      );
+    // Read independent share files concurrently instead of awaiting each
+    // entry.text() sequentially in the loop (async-parallel).
+    const decoded = await Promise.all(
+      entries.map(async (entry) => {
+        try {
+          return {
+            ok: true as const,
+            draft: decodeIncomingShareDraft(JSON.parse(await entry.text()) as unknown),
+          };
+        } catch (cause) {
+          return {
+            ok: false as const,
+            error: new IncomingShareStorageError({ operation: "load", shareId: null, cause }),
+          };
         }
-        console.warn("[incoming-share] ignored invalid persisted share", error);
+      }),
+    );
+    const drafts: IncomingShareDraft[] = [];
+    for (const result of decoded) {
+      if (result.ok) {
+        drafts.push(result.draft);
+      } else if (options?.strict) {
+        throw result.error;
+      } else {
+        console.warn("[incoming-share] ignored invalid persisted share", result.error);
       }
     }
     return drafts.sort((left, right) => right.createdAt.localeCompare(left.createdAt));

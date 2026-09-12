@@ -126,4 +126,18 @@ describe("mobile remote connection records", () => {
 
     expect(toStableSavedRemoteConnection(connection)).not.toHaveProperty("dpopAccessToken");
   });
+
+  it("redacts one-time pairing credentials in stable records", () => {
+    const connection = {
+      environmentId: EnvironmentId.make("environment-1"),
+      environmentLabel: "Desktop",
+      pairingUrl: "https://desktop.example/#token=bootstrap-token",
+      displayUrl: "https://desktop.example/",
+      httpBaseUrl: "https://desktop.example/",
+      wsBaseUrl: "wss://desktop.example/",
+      bearerToken: "bearer-token",
+    } as const;
+
+    expect(toStableSavedRemoteConnection(connection).pairingUrl).toBe("https://desktop.example/");
+  });
 });

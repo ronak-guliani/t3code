@@ -27,7 +27,25 @@ const DpopPrivateJwkSchema = Schema.Struct({
 
 const DpopPrivateJwkJson = Schema.fromJsonString(DpopPrivateJwkSchema);
 const decodeDpopPrivateJwkJson = Schema.decodeUnknownEffect(DpopPrivateJwkJson);
-const encodeDpopPrivateJwkJson = Schema.encodeEffect(DpopPrivateJwkJson);
+
+// Versioned storage envelope (client-localstorage-schema). Payloads written
+// before versioning are raw private-JWK JSON; readers accept both.
+const DPOP_PROOF_KEY_STORAGE_VERSION = 1;
+const DpopProofKeyEnvelopeJson = Schema.fromJsonString(
+  Schema.Struct({
+    version: Schema.Literal(DPOP_PROOF_KEY_STORAGE_VERSION),
+    privateJwk: DpopPrivateJwkSchema,
+  }),
+);
+const decodeDpopProofKeyEnvelopeJson = Schema.decodeUnknownEffect(DpopProofKeyEnvelopeJson);
+const encodeDpopProofKeyEnvelopeJson = Schema.encodeEffect(DpopProofKeyEnvelopeJson);
+
+function decodeStoredDpopPrivateJwk(stored: string): Effect.Effect<DpopPrivateJwk, unknown> {
+  return decodeDpopProofKeyEnvelopeJson(stored).pipe(
+    Effect.map((envelope) => envelope.privateJwk),
+    Effect.catch(() => decodeDpopPrivateJwkJson(stored)),
+  );
+}
 
 const DpopJwtHeaderJson = Schema.fromJsonString(
   Schema.Struct({
@@ -202,7 +220,7 @@ export function loadOrCreateDpopProofKeyPair(): Effect.Effect<
       catch: cloudDpopError("Could not read the DPoP proof key."),
     });
     if (stored) {
-      const storedPrivateJwk = yield* decodeDpopPrivateJwkJson(stored).pipe(
+      const storedPrivateJwk = yield* decodeStoredDpopPrivateJwk(stored).pipe(
         Effect.mapError(cloudDpopError("Stored DPoP proof key is invalid.")),
       );
       const restored = yield* Effect.try({
@@ -225,9 +243,10 @@ export function loadOrCreateDpopProofKeyPair(): Effect.Effect<
       };
     }
     const generated = yield* generateDpopProofKeyPair();
-    const encodedPrivateJwk = yield* encodeDpopPrivateJwkJson(generated.privateJwk).pipe(
-      Effect.mapError(cloudDpopError("Could not encode the DPoP proof key.")),
-    );
+    const encodedPrivateJwk = yield* encodeDpopProofKeyEnvelopeJson({
+      version: DPOP_PROOF_KEY_STORAGE_VERSION,
+      privateJwk: generated.privateJwk,
+    }).pipe(Effect.mapError(cloudDpopError("Could not encode the DPoP proof key.")));
     yield* Effect.tryPromise({
       try: () => SecureStore.setItemAsync(DPOP_PROOF_KEY_STORAGE_KEY, encodedPrivateJwk),
       catch: cloudDpopError("Could not store the DPoP proof key."),
