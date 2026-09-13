@@ -1,5 +1,6 @@
 import type {
   PullRequestActor,
+  PullRequestCheckStatus,
   PullRequestMergeability,
   PullRequestState,
 } from "@t3tools/contracts";
@@ -111,8 +112,21 @@ function decodeHtmlEntities(value: string): string {
  * (`<details>`, `<summary>`, `<a href>`, `<br>`). `ChatMarkdown` renders
  * Markdown without raw HTML, so without this the page shows literal tags.
  * Convert the common shapes to Markdown and strip anything else.
+ *
+ * Fenced code blocks and inline code spans are passed through untouched so
+ * HTML-like samples inside them are never rewritten.
  */
 export function toRenderablePullRequestMarkdown(body: string): string {
+  // Odd segments are fenced blocks (```...```, unterminated included) or
+  // inline code (`...`); even segments are prose to transform.
+  const segments = body.split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/g);
+  return segments
+    .map((segment, index) => (index % 2 === 1 ? segment : transformPullRequestMarkdown(segment)))
+    .join("")
+    .trim();
+}
+
+function transformPullRequestMarkdown(body: string): string {
   let text = body;
   text = text.replace(/<details\b[^>]*>([\s\S]*?)<\/details>/gi, (_match, inner: string) => {
     const summary = inner.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/i)?.[1] ?? "";
@@ -134,10 +148,7 @@ export function toRenderablePullRequestMarkdown(body: string): string {
           .replaceAll("\\", "\\\\")
           .replaceAll("[", "\\[")
           .replaceAll("]", "\\]") || href;
-      const cleanHref = href
-        .replaceAll("\\", "\\\\")
-        .replaceAll("(", "\\(")
-        .replaceAll(")", "\\)");
+      const cleanHref = href.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
       return `[${cleanLabel}](${cleanHref})`;
     },
   );
@@ -145,12 +156,63 @@ export function toRenderablePullRequestMarkdown(body: string): string {
   text = text.replace(/<\/?(summary|div|span|p|table|thead|tbody|tr|td|th)[^>]*>/gi, "\n");
   text = text.replace(/<[^>]+>/g, "");
   text = decodeHtmlEntities(text);
-  text = text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
-  return text.trim();
+  // No trailing trim here: segments are joined before trimming so whitespace
+  // adjacent to preserved code spans survives.
+  return text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
 }
 
 export function humanizeMonitorToken(value: string): string {
   return value.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+export interface PullRequestCheckSummary {
+  readonly passing: number;
+  readonly failing: number;
+  readonly pending: number;
+  readonly cancelled: number;
+  readonly total: number;
+}
+
+/**
+ * Bucket check statuses with the same semantics as the server readiness
+ * computation (`readiness.ts`): `neutral`/`skipped` pass, `pending` waits,
+ * `cancelled` blocks separately from `failure`.
+ */
+export function summarizePullRequestChecks(
+  checks: readonly { readonly status: PullRequestCheckStatus }[],
+): PullRequestCheckSummary {
+  const summary = { passing: 0, failing: 0, pending: 0, cancelled: 0, total: checks.length };
+  for (const check of checks) {
+    if (check.status === "success" || check.status === "neutral" || check.status === "skipped") {
+      summary.passing += 1;
+    } else if (check.status === "pending") {
+      summary.pending += 1;
+    } else if (check.status === "cancelled") {
+      summary.cancelled += 1;
+    } else {
+      summary.failing += 1;
+    }
+  }
+  return summary;
+}
+
+export function pullRequestCheckSummaryLabel(summary: PullRequestCheckSummary): string {
+  if (summary.total === 0) return "No checks";
+  const parts = [`${summary.passing} passing`];
+  if (summary.failing > 0) parts.push(`${summary.failing} failing`);
+  if (summary.cancelled > 0) parts.push(`${summary.cancelled} cancelled`);
+  if (summary.pending > 0) parts.push(`${summary.pending} pending`);
+  return parts.join(" · ");
+}
+
+export function pullRequestCheckDotClassName(status: PullRequestCheckStatus): string {
+  if (status === "success" || status === "neutral" || status === "skipped") {
+    return "text-emerald-500";
+  }
+  if (status === "failure" || status === "cancelled") {
+    return "text-destructive";
+  }
+  return "text-muted-foreground";
 }
 
 export function pullRequestActionLabel(

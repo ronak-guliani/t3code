@@ -142,6 +142,7 @@ export function PullRequestMonitorStrip(props: {
   const active = monitor?.enabled === true;
   const showFallback = active && monitor?.ownerThreadId === null;
   // Exactly one chat may modify a monitored PR; show its human title, never a raw id.
+  // The tooltip intentionally repeats the visible label instead of thread ids.
   const ownership = useMemo(() => {
     if (!monitor) return null;
     const ownerTitle = monitor.ownerThreadId
@@ -150,14 +151,6 @@ export function PullRequestMonitorStrip(props: {
       : "No owner chat";
     return monitor.linkedReviewThreadId ? `${ownerTitle} · review linked` : ownerTitle;
   }, [monitor, ownerCandidates]);
-  const ownershipTitle = useMemo(() => {
-    if (!monitor) return undefined;
-    const owner = monitor.ownerThreadId ? `Owner chat: ${monitor.ownerThreadId}` : "No owner chat";
-    const review = monitor.linkedReviewThreadId
-      ? `\nReview chat: ${monitor.linkedReviewThreadId}`
-      : "";
-    return `${owner}${review}`;
-  }, [monitor]);
   const summary = useMemo(() => blockersSummary(monitor), [monitor]);
   const feedbackSummary = useMemo(() => {
     if (openFeedback.length === 0) return null;
@@ -338,7 +331,7 @@ export function PullRequestMonitorStrip(props: {
       {ownership ? (
         <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
           <UserRoundIcon className="mt-0.5 size-3 shrink-0" />
-          <span className="min-w-0 break-words" title={ownershipTitle}>
+          <span className="min-w-0 break-words" title={ownership}>
             {ownership}
           </span>
         </div>

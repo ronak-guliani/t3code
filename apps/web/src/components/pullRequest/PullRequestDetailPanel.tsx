@@ -62,6 +62,9 @@ import {
   PullRequestDiffStat,
   PullRequestStateGlyph,
   pullRequestActionLabel,
+  pullRequestCheckDotClassName,
+  pullRequestCheckSummaryLabel,
+  summarizePullRequestChecks,
   toRenderablePullRequestMarkdown,
 } from "./pullRequestPresentation";
 import { PullRequestMonitorStrip } from "./PullRequestMonitorStrip";
@@ -719,18 +722,14 @@ export function PullRequestDetailPanel({
   const availableActions = detail.capabilities.actions.filter((action) =>
     isAvailableAction(detail, action),
   );
-  const checkSummary = { success: 0, failure: 0, pending: 0 };
-  for (const check of detail.checks) {
-    if (check.status === "success") checkSummary.success += 1;
-    else if (check.status === "failure") checkSummary.failure += 1;
-    else checkSummary.pending += 1;
-  }
+  const checkSummary = summarizePullRequestChecks(detail.checks);
   const checkIndicatorClassName =
-    checkSummary.failure > 0
+    checkSummary.failing > 0 || checkSummary.cancelled > 0
       ? "text-destructive"
       : checkSummary.pending > 0
         ? "text-muted-foreground"
         : "text-emerald-500";
+  const conversationCount = detail.comments.filter((item) => item.kind !== "review-comment").length;
   const tabs = detail.capabilities.diff ? TABS : TABS.filter((tab) => tab.value !== "code");
   const activeTab = tabs.some((item) => item.value === tab) ? tab : "summary";
   const reviewKey = pullRequestReviewKey(reference);
@@ -806,11 +805,11 @@ export function PullRequestDetailPanel({
           <PullRequestDiffStat additions={detail.additions} deletions={detail.deletions} />
           <span
             className="inline-flex items-center gap-1"
-            title={`${checkSummary.success} passing · ${checkSummary.failure} failing · ${checkSummary.pending} pending`}
+            title={pullRequestCheckSummaryLabel(checkSummary)}
           >
             {detail.checks.length > 0 ? <span className={checkIndicatorClassName}>●</span> : null}
             {detail.checks.length > 0
-              ? `${checkSummary.success}/${detail.checks.length} checks`
+              ? `${checkSummary.passing}/${detail.checks.length} checks`
               : "No checks"}
           </span>
           <a
@@ -888,13 +887,14 @@ export function PullRequestDetailPanel({
           {tabs.map((item) => {
             const count =
               item.value === "conversation"
-                ? detail.commentCount
+                ? conversationCount
                 : item.value === "code"
                   ? detail.commits.length
                   : null;
             const selected = activeTab === item.value;
             return (
               <button
+                aria-controls={`pr-panel-${item.value}`}
                 aria-selected={selected}
                 className={cn(
                   "rounded px-2 py-1 text-xs font-medium tabular-nums",
@@ -902,6 +902,7 @@ export function PullRequestDetailPanel({
                     ? "bg-accent text-foreground ring-1 ring-border"
                     : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
                 )}
+                id={`pr-tab-${item.value}`}
                 key={item.value}
                 role="tab"
                 type="button"
@@ -919,7 +920,12 @@ export function PullRequestDetailPanel({
       <div className="border-b border-border px-4 py-2">
         <PullRequestMonitorStrip environmentId={environmentId} reference={reference} />
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        aria-labelledby={`pr-tab-${activeTab}`}
+        className="min-h-0 flex-1 overflow-y-auto"
+        id={`pr-panel-${activeTab}`}
+        role="tabpanel"
+      >
         {activeTab === "summary" ? (
           <div className="space-y-5 p-4">
             <ChatMarkdown
@@ -947,17 +953,7 @@ export function PullRequestDetailPanel({
               <ul className="mt-2 space-y-1 text-sm">
                 {detail.checks.map((check) => (
                   <li className="flex items-center gap-2" key={check.name}>
-                    <span
-                      className={
-                        check.status === "success"
-                          ? "text-emerald-500"
-                          : check.status === "failure"
-                            ? "text-destructive"
-                            : "text-muted-foreground"
-                      }
-                    >
-                      ●
-                    </span>
+                    <span className={pullRequestCheckDotClassName(check.status)}>●</span>
                     {check.url ? (
                       <a
                         className="hover:underline"
