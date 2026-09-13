@@ -35,8 +35,20 @@ import { NetService } from "@t3tools/shared/Net";
 import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 
 const OPENCODE_SERVER_READY_PREFIX = "opencode server listening";
-const DEFAULT_OPENCODE_SERVER_TIMEOUT_MS = 5_000;
+const DEFAULT_OPENCODE_SERVER_TIMEOUT_MS = 30_000;
 const DEFAULT_HOSTNAME = "127.0.0.1";
+const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
+
+export function resolveOpenCodeConfigContent(
+  inputEnvironment: Readonly<Record<string, string | undefined>> | undefined,
+  inheritedEnvironment: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  return (
+    inputEnvironment?.OPENCODE_CONFIG_CONTENT ??
+    inheritedEnvironment.OPENCODE_CONFIG_CONTENT ??
+    OPENCODE_EMPTY_CONFIG_CONTENT
+  );
+}
 export interface OpenCodeServerProcess {
   readonly url: string;
   readonly exitCode: Effect.Effect<number, never>;
@@ -212,10 +224,14 @@ export function buildOpenCodePermissionRules(runtimeMode: RuntimeMode): Permissi
     return [{ permission: "*", pattern: "*", action: "allow" }];
   }
 
+  // "Auto-accept edits" is documented as "auto-approve edits, ask before other
+  // actions", so prompting for every edit ignores the mode the user picked.
+  const editAction = runtimeMode === "auto-accept-edits" ? "allow" : "ask";
+
   return [
     { permission: "*", pattern: "*", action: "ask" },
     { permission: "bash", pattern: "*", action: "ask" },
-    { permission: "edit", pattern: "*", action: "ask" },
+    { permission: "edit", pattern: "*", action: editAction },
     { permission: "webfetch", pattern: "*", action: "ask" },
     { permission: "websearch", pattern: "*", action: "ask" },
     { permission: "codesearch", pattern: "*", action: "ask" },
@@ -337,7 +353,11 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 
       const serverEnv = {
         ...(input.environment ?? process.env),
-        OPENCODE_CONFIG_CONTENT: JSON.stringify({}),
+        // Respect an OPENCODE_CONFIG_CONTENT provided by the caller or the
+        // inherited process environment, only falling back to the empty config
+        // when neither is set. Setting it unconditionally previously clobbered
+        // the user's opencode config, hiding their providers/models.
+        OPENCODE_CONFIG_CONTENT: resolveOpenCodeConfigContent(input.environment),
       };
       const { command: serverTarget, shell: serverShell } = resolveWindowsSpawn(input.binaryPath, {
         env: serverEnv,
