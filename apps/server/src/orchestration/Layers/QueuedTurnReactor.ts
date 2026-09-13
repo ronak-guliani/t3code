@@ -237,6 +237,9 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
                   prNumber: origin.number,
                   repository: origin.repository,
                   deliveryId: origin.deliveryId,
+                  ...(origin.findingContext === undefined
+                    ? {}
+                    : { findingContext: origin.findingContext }),
                   events: actionableEvents,
                   ...((origin.events === undefined || origin.events.length === 0) &&
                   origin.revisionSummaries !== undefined

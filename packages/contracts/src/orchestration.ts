@@ -366,6 +366,7 @@ export const PullRequestMonitorOrigin = Schema.Struct({
   events: Schema.optional(Schema.Array(PullRequestMonitorActionableEvent)),
   deliveryId: Schema.optional(TrimmedNonEmptyString),
   revisionSummaries: Schema.optional(Schema.Array(Schema.String.check(Schema.isMaxLength(500)))),
+  findingContext: Schema.optional(Schema.String),
   availableTools: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   revalidationAttemptCount: Schema.optional(NonNegativeInt),
   nextRevalidationAt: Schema.optional(IsoDateTime),

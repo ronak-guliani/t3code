@@ -149,7 +149,13 @@ export function handoffToSubmitInput(
       return {
         key: `review-${key}`,
         title: truncate(finding.title, 200),
-        detail: truncate(finding.body, 2_000),
+        detail: finding.body,
+        provenance: {
+          findingId: finding.id,
+          reviewedHeadSha: review.headSha,
+          diffHash: review.diffHash,
+          ...finding.location,
+        },
         severity: SEVERITY_BY_PRIORITY[finding.priority],
         path: truncate(finding.location.path, 500),
         line: finding.location.startLine,
