@@ -9,6 +9,7 @@ import {
   useMarkThreadGroupNotificationsRead,
   useSeedRootThreadCompletionReadAt,
 } from "./thread-hierarchy-controls";
+import { resetAppStateSubscriptionForTests } from "../../lib/appForeground";
 import type { MobileThreadShell } from "./mobile-thread-hierarchy";
 import { markRootThreadCompletionRead, seedRootThreadCompletionReadAt } from "./nested-thread-read";
 import { resolveThreadListV2Status } from "./threadListV2";
@@ -28,6 +29,7 @@ const harness = vi.hoisted(() => ({
   ]),
   effects: [] as Array<() => void | (() => void)>,
   foreground: undefined as (() => void) | undefined,
+  subscribeCalls: 0,
   save: vi.fn(),
 }));
 vi.mock("react", async (importOriginal) => ({
@@ -35,6 +37,11 @@ vi.mock("react", async (importOriginal) => ({
   useEffect: (effect: () => void | (() => void)) => {
     harness.effects.push(effect);
   },
+  // The harness runs collected effects synchronously inside
+  // renderToStaticMarkup (i.e. during rendering), where real useEffectEvent
+  // wrappers throw. Identity keeps the shared-callback structure testable;
+  // production uses the real stable wrapper.
+  useEffectEvent: <T extends (...args: never[]) => unknown>(callback: T): T => callback,
 }));
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: () =>
@@ -48,6 +55,7 @@ vi.mock("react-native", () => ({
       return harness.active ? "active" : "background";
     },
     addEventListener: (_event: string, callback: () => void) => {
+      harness.subscribeCalls += 1;
       harness.foreground = callback;
       return {
         remove: () => {
@@ -112,6 +120,7 @@ function mount() {
   return harness.effects.splice(0).map((effect) => effect());
 }
 beforeEach(() => {
+  resetAppStateSubscriptionForTests();
   harness.focused = true;
   harness.active = true;
   harness.loaded = true;
@@ -123,6 +132,7 @@ beforeEach(() => {
   harness.shellStatuses = new Map([["local" as EnvironmentId, "live"]]);
   harness.effects.length = 0;
   harness.foreground = undefined;
+  harness.subscribeCalls = 0;
   harness.save.mockReset().mockImplementation((patch: typeof harness.preferences) => {
     harness.preferences = patch;
   });
@@ -130,15 +140,18 @@ beforeEach(() => {
 
 describe("related group notification acknowledgement", () => {
   it("acknowledges every displayed group in one write and does not rewrite it", () => {
-    const cleanup = mount();
+    const firstCleanup = mount();
     expect(harness.save).toHaveBeenCalledExactlyOnceWith({
       threadChildNotificationReadAt: { "local:parent": NOW, "local:child": NOW },
     });
 
     harness.foreground?.();
-    mount();
+    const secondCleanup = mount();
     expect(harness.save).toHaveBeenCalledOnce();
-    cleanup.forEach((dispose) => dispose?.());
+    // Every mounted hook shares one native AppState listener.
+    expect(harness.subscribeCalls).toBe(1);
+    firstCleanup.forEach((dispose) => dispose?.());
+    secondCleanup.forEach((dispose) => dispose?.());
     expect(harness.foreground).toBeUndefined();
   });
 
@@ -257,6 +270,8 @@ describe("related group notification acknowledgement", () => {
     harness[key] = false;
     mount();
     expect(harness.save).not.toHaveBeenCalled();
-    expect(harness.foreground).toBeUndefined();
+    // The shared foreground listener stays mounted but its guard refuses.
+    harness.foreground?.();
+    expect(harness.save).not.toHaveBeenCalled();
   });
 });
