@@ -44,31 +44,19 @@ export async function loadIncomingShareDrafts(options?: {
         (entry): entry is InstanceType<typeof File> =>
           entry instanceof File && entry.name.endsWith(".json"),
       );
-    // Read independent share files concurrently instead of awaiting each
-    // entry.text() sequentially in the loop (async-parallel).
-    const decoded = await Promise.all(
-      entries.map(async (entry) => {
-        try {
-          return {
-            ok: true as const,
-            draft: decodeIncomingShareDraft(JSON.parse(await entry.text()) as unknown),
-          };
-        } catch (cause) {
-          return {
-            ok: false as const,
-            error: new IncomingShareStorageError({ operation: "load", shareId: null, cause }),
-          };
-        }
-      }),
-    );
+    // Sequential on purpose, not async-parallel: share files are small JSON
+    // and the inbox count stays low, so unbounded Promise.all adds IO/memory
+    // spikes for negligible gain on mobile.
     const drafts: IncomingShareDraft[] = [];
-    for (const result of decoded) {
-      if (result.ok) {
-        drafts.push(result.draft);
-      } else if (options?.strict) {
-        throw result.error;
-      } else {
-        console.warn("[incoming-share] ignored invalid persisted share", result.error);
+    for (const entry of entries) {
+      try {
+        drafts.push(decodeIncomingShareDraft(JSON.parse(await entry.text()) as unknown));
+      } catch (cause) {
+        const error = new IncomingShareStorageError({ operation: "load", shareId: null, cause });
+        if (options?.strict) {
+          throw error;
+        }
+        console.warn("[incoming-share] ignored invalid persisted share", error);
       }
     }
     return drafts.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
