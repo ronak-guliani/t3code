@@ -4,7 +4,6 @@ import type {
   OrchestrationEvent,
   OrchestrationReadModel,
   OrchestrationThread,
-  DispatchResult,
   ProjectId,
   ThreadId,
   WorkflowRunId,
@@ -209,7 +208,6 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     } satisfies OrchestrationReadModel;
   });
 
-  const dispatchResult = (command: OrchestrationCommand, sequence: number): DispatchResult => ({
   const dispatchResult = (
     command: OrchestrationCommand,
     sequence: number,
