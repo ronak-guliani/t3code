@@ -281,6 +281,7 @@ describe("send_to_thread MCP tool", () => {
         kind: "decision-needed",
         summary: "Choose the migration approach.",
         thread: "untrusted-target",
+        originTurnId: "turn-a",
       }),
     );
     expect(output).toEqual([
@@ -292,6 +293,8 @@ describe("send_to_thread MCP tool", () => {
       "decision-needed",
       "--report-id",
       "decision-1",
+      "--turn-id",
+      "turn-a",
       "--cross-thread-capability",
       expect.any(String),
       "--base-dir",
@@ -302,6 +305,7 @@ describe("send_to_thread MCP tool", () => {
         reportId: "bad",
         kind: "completion",
         summary: "Done",
+        originTurnId: "turn-a",
       }),
     ).rejects.toThrow("valid kind");
     await expect(
@@ -311,9 +315,17 @@ describe("send_to_thread MCP tool", () => {
           reportId: "no-source",
           kind: "progress",
           summary: "Working",
+          originTurnId: "turn-a",
         },
       ),
     ).rejects.toThrow("requires a T3 provider session");
+    await expect(
+      __testing.reportToParentTool(options, {
+        reportId: "missing-turn",
+        kind: "progress",
+        summary: "Working",
+      }),
+    ).rejects.toThrow("requires originTurnId");
   });
 
   it("queues through the authenticated source thread", async () => {
@@ -404,6 +416,13 @@ describe("create_nested_thread MCP tool", () => {
               type: "object",
               required: ["blocks"],
               properties: expect.objectContaining({
+                validation: expect.objectContaining({
+                  required: ["commands"],
+                  dependentRequired: {
+                    scenarios: ["owner"],
+                    evidence: ["scenarios", "owner"],
+                  },
+                }),
                 blocks: expect.objectContaining({
                   uniqueItems: true,
                   items: expect.objectContaining({
@@ -561,7 +580,7 @@ Implement the parser.
 Implementation is permitted. Make only the focused changes required for the task, preserve unrelated work, and follow repository conventions.
 
 ## Validation
-Run every listed validation command before reporting success. If a command fails, investigate it and report the unresolved failure rather than claiming completion.
+Run every listed validation command before reporting success. Record the tested revision and each command/scenario outcome. A completed turn is not verification. If validation or evidence publication fails, report the blocker rather than claiming completion. Recheck affected results after further edits.
 
 Commands:
 - \`pnpm test parser\`

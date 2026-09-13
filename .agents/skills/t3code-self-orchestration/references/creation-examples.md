@@ -39,7 +39,10 @@ The following fields supplement the creation request; they are not a complete re
       "instructionFiles": ["AGENTS.md", "scars.md"]
     },
     "validation": {
-      "commands": ["pnpm fmt:check", "pnpm lint", "pnpm typecheck", "pnpm test"]
+      "commands": ["pnpm fmt:check", "pnpm lint", "pnpm typecheck", "pnpm test"],
+      "scenarios": ["A saved change survives reload and reconnect."],
+      "evidence": ["screenshot", "recording"],
+      "owner": "parent"
     },
     "commit": {
       "requirements": ["Include the repository's required co-author trailer."]
@@ -53,6 +56,12 @@ Select only needed blocks. `investigation-only` conflicts with `implementation`,
 duplicates, unknown fields, and missing validation commands. Use `overrides` to replace one
 selected block and `additions` to append its requirements. Keep repository context, validation
 commands, and delivery requirements in their structured fields.
+
+For user-visible work, include observable `scenarios` and the applicable `evidence` kinds.
+Use `owner: "parent"` when children share one integration environment; children must return
+browser validation as pending instead of starting competing servers. Use `owner: "child"` only
+for independently isolated validation. The parent must check results against the integrated
+revision, not promote an assistant's completed turn to verified work.
 
 ## Multiple independent helpers
 

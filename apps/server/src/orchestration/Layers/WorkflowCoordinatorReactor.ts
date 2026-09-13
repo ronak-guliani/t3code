@@ -275,7 +275,9 @@ const makeWorkflowCoordinatorReactor = Effect.gen(function* () {
       payload: {
         kind: "final-result",
         summary: result.summary,
-        body: compactBody(result.body),
+        body: compactBody(
+          `Execution finished; validation and published evidence are not independently verified by the workflow coordinator.\n\n${result.body}`,
+        ),
         evidence: result.evidence,
       },
       createdAt,

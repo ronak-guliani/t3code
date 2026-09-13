@@ -368,7 +368,7 @@ describe("resolveInitialServerAuthGateState", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(submitServerAuthCredential("bad-token")).rejects.toThrow(
-      "Invalid pairing token. Check the token and try again.",
+      "Invalid pairing token. Create a fresh pairing link for this environment and try again.",
     );
     expect(fetchMock).toHaveBeenCalledWith("http://localhost/api/auth/bootstrap", {
       body: JSON.stringify({ credential: "bad-token" }),
