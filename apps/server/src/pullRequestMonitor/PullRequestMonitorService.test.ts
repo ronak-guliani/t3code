@@ -1661,6 +1661,23 @@ layer("PullRequestMonitorService", (it) => {
     }),
   );
 
+  it.effect("rejects oversized internal handoffs before creating a monitor", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const reference = { projectId, repository: "acme/app", number: 9067 };
+      const result = yield* Effect.result(
+        monitors.submitFindings({
+          reference,
+          reviewThreadId: ThreadId.make("oversized-review"),
+          findings: [{ title: "Oversized", detail: "a".repeat(64 * 1024), severity: "major" }],
+        }),
+      );
+      assert.strictEqual(result._tag, "Failure");
+      const context = yield* monitors.context({ reference });
+      assert.isNull(context.monitor);
+    }),
+  );
+
   it.effect("submits structured findings as individually addressable feedback", () =>
     Effect.gen(function* () {
       const monitors = yield* PullRequestMonitorService;

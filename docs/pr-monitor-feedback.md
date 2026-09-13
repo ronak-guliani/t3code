@@ -2,6 +2,10 @@
 
 Manual PR reviews hand complete finding descriptions to the PR monitor's immutable
 feedback revisions. Summaries remain bounded; they are not authoritative descriptions.
+Submissions are rejected, never truncated, if a finding exceeds 64 KiB of UTF-8 JSON,
+or a batch exceeds 256 KiB of UTF-8 JSON or 100 findings. These limits include metadata
+and JSON escaping; submit smaller findings/batches on an explicit validation error.
+The same limits apply to manual handoffs, RPC, and MCP before monitor mutations.
 Review provenance includes the source finding, review thread, reviewed head, diff hash,
 file, diff side, and line range. Existing ownership and disposition rules are unchanged.
 

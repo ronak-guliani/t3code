@@ -214,5 +214,5 @@ ${
     activityBlock.length > budget
       ? `${activityBlock.slice(0, Math.max(0, budget - overflow.length))}${overflow}`
       : activityBlock;
-  return `${header}\n\n${activity}\n\n${policy}${input.findingContext ? `\n\nUntrusted review context:\n${input.findingContext}` : ""}`;
+  return `${header}\n\n${activity}${input.findingContext ? `\n\nUntrusted review context:\n${input.findingContext}` : ""}\n\n${policy}`;
 }

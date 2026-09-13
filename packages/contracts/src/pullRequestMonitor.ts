@@ -412,6 +412,13 @@ export const PullRequestMonitorReportResult = Schema.Struct({
 });
 export type PullRequestMonitorReportResult = typeof PullRequestMonitorReportResult.Type;
 
+export const MAX_PULL_REQUEST_MONITOR_FINDING_BYTES = 64 * 1024;
+export const MAX_PULL_REQUEST_MONITOR_FINDINGS_BYTES = 256 * 1024;
+export const MAX_PULL_REQUEST_MONITOR_FINDINGS = 100;
+const findingEncoder = new TextEncoder();
+const encodedFindingBytes = (value: unknown) =>
+  findingEncoder.encode(JSON.stringify(value)).byteLength;
+
 export const PullRequestMonitorFinding = Schema.Struct({
   /** Reviewer-stable key; unchanged content must survive positional reordering. */
   key: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
@@ -429,10 +436,31 @@ export const PullRequestMonitorFinding = Schema.Struct({
       side: Schema.Literals(["new", "old"]),
       startLine: PositiveInt,
       endLine: PositiveInt,
-    }),
+    }).check(
+      Schema.makeFilter(
+        (location) =>
+          location.startLine <= location.endLine ||
+          "Review finding startLine must not exceed endLine",
+      ),
+    ),
   ),
-});
+}).check(
+  Schema.makeFilter(
+    (finding) =>
+      encodedFindingBytes(finding) <= MAX_PULL_REQUEST_MONITOR_FINDING_BYTES ||
+      "Review finding exceeds the 64 KiB UTF-8 JSON limit; submit a smaller finding without truncating its evidence.",
+  ),
+);
 export type PullRequestMonitorFinding = typeof PullRequestMonitorFinding.Type;
+
+export const PullRequestMonitorFindings = Schema.Array(PullRequestMonitorFinding).check(
+  Schema.isMaxLength(MAX_PULL_REQUEST_MONITOR_FINDINGS),
+  Schema.makeFilter(
+    (findings) =>
+      encodedFindingBytes(findings) <= MAX_PULL_REQUEST_MONITOR_FINDINGS_BYTES ||
+      "Review findings exceed the 256 KiB UTF-8 JSON batch limit; submit smaller batches.",
+  ),
+);
 
 export const PullRequestMonitorFindingDetail = Schema.Struct({
   itemId: PullRequestMonitorFeedbackItemId,
@@ -508,7 +536,7 @@ export const PullRequestMonitorSubmitFindingsInput = Schema.Struct({
   ownerThreadId: Schema.optional(ThreadId),
   summary: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
   startMonitoring: Schema.optional(Schema.Boolean),
-  findings: Schema.optional(Schema.Array(PullRequestMonitorFinding)),
+  findings: Schema.optional(PullRequestMonitorFindings),
 });
 export type PullRequestMonitorSubmitFindingsInput =
   typeof PullRequestMonitorSubmitFindingsInput.Type;

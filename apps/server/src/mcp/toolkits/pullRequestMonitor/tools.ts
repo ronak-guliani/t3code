@@ -4,7 +4,7 @@ import {
   PullRequestMonitorError,
   PullRequestMonitorFeedbackItemId,
   PullRequestMonitorFeedbackReportDisposition,
-  PullRequestMonitorFinding,
+  PullRequestMonitorFindings,
   PullRequestMonitorId,
   PullRequestMonitorReportResult,
   PullRequestMonitorSubmitFindingsResult,
@@ -53,7 +53,7 @@ export type PullRequestMonitorReportToolInput = typeof PullRequestMonitorReportT
 export const PullRequestMonitorSubmitFindingsToolInput = Schema.Struct({
   repository: Schema.String,
   number: Schema.Int,
-  findings: Schema.Array(PullRequestMonitorFinding),
+  findings: PullRequestMonitorFindings,
   summary: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
   startMonitoring: Schema.optional(Schema.Boolean),
 });
