@@ -135,6 +135,7 @@ describe("OrchestrationEngine", () => {
       summary: "Choose the migration approach.",
       decision: { question: "Which migration approach?", options: ["Expand", "Replace"] },
       canContinue: false,
+      originTurnId: TurnId.make("turn-child"),
       createdAt: at,
     };
     try {
@@ -175,6 +176,24 @@ describe("OrchestrationEngine", () => {
           }),
         );
       }
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("bind-child-turn"),
+          threadId: childId,
+          session: {
+            threadId: childId,
+            status: "running",
+            providerName: "copilot",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+            runtimeMode: "approval-required",
+            activeTurnId: TurnId.make("turn-child"),
+            lastError: null,
+            updatedAt: at,
+          },
+          createdAt: at,
+        }),
+      );
       rejectQueue = true;
       await expect(system.run(system.engine.dispatch(report))).rejects.toThrow();
       let state = await system.run(system.engine.getReadModel());

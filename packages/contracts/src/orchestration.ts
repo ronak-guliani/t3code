@@ -295,6 +295,8 @@ export const ChildNudgeUpdate = Schema.Struct({
   decision: Schema.optional(ChildDecision),
   canContinue: Schema.optional(Schema.Boolean),
   supersedesReportId: Schema.optional(TrimmedNonEmptyString),
+  /** Execution generation that produced this update. Absent on pre-fence history. */
+  dispatchId: Schema.optional(TrimmedNonEmptyString),
 });
 export type ChildNudgeUpdate = typeof ChildNudgeUpdate.Type;
 
@@ -319,6 +321,17 @@ export type ChildWaitCondition = typeof ChildWaitCondition.Type;
 
 export const ThreadDelegation = Schema.Struct({
   assignmentId: MessageId,
+  /**
+   * Active execution generation for this assignment. The logical assignment
+   * survives retries; the dispatch identifies one authorized execution.
+   * Absent on pre-fence delegations, which follow legacy (unfenced) rules
+   * until the first post-upgrade execution binds.
+   */
+  dispatchId: Schema.optional(TrimmedNonEmptyString),
+  /** Monotonic generation counter, informational and audit-ordered. */
+  dispatchSequence: Schema.optional(NonNegativeInt),
+  /** Provider turn authorized for the active dispatch. Null until bound. */
+  dispatchTurnId: Schema.optional(Schema.NullOr(TurnId)),
   followUp: Schema.Literals(["automatic", "notify-only"]),
   completedAt: Schema.NullOr(IsoDateTime),
   assignedAt: Schema.optional(IsoDateTime),
@@ -333,6 +346,7 @@ export const ThreadDelegation = Schema.Struct({
     ),
   ),
 });
+export type ThreadDelegation = typeof ThreadDelegation.Type;
 export const ThreadNudging = Schema.Struct({
   paused: Schema.optional(Schema.Boolean),
   delegation: Schema.optional(ThreadDelegation),
@@ -1220,7 +1234,40 @@ const ThreadChildReportCommand = Schema.Struct({
   decision: Schema.optional(ChildDecision),
   canContinue: Schema.optional(Schema.Boolean),
   supersedesReportId: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Execution dispatch presenting this report. Must arrive with the report
+   * from the reporting execution's context; the server never substitutes
+   * live thread state for provenance.
+   */
+  dispatchId: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Provider turn that produced this report, sourced from the reporting
+   * execution's session context. Validated against the dispatch's authorized
+   * turn; absent only on pre-fence callers.
+   */
+  originTurnId: Schema.optional(TurnId),
   crossThreadDispatchCapability: Schema.optional(Schema.String),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Outcome of fencing an attempt-scoped child report against the delegation's
+ * active execution generation. Returned to the reporter through
+ * DispatchResult.reportVerdict and recorded on the receipt activity.
+ */
+export const DispatchReportVerdict = Schema.Literals(["accepted", "already-recorded", "stale"]);
+export type DispatchReportVerdict = typeof DispatchReportVerdict.Type;
+
+const ThreadDispatchReplaceCommand = Schema.Struct({
+  type: Schema.Literal("thread.dispatch.replace"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  /**
+   * Compare-and-swap guard: the replacement applies only when the active
+   * dispatch equals this value. Absent expects a legacy (undispatched)
+   * delegation. Mismatches are rejected, never silently applied.
+   */
+  expectedDispatchId: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 
@@ -1398,6 +1445,7 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
 
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
+  ThreadDispatchReplaceCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadReviewResultSetCommand,
@@ -2314,6 +2362,8 @@ export type ProjectionPendingApprovalDecision = typeof ProjectionPendingApproval
 export const DispatchResult = Schema.Struct({
   sequence: NonNegativeInt,
   threadUrl: Schema.optionalKey(ThreadUrl),
+  /** Fencing outcome for thread.child.report commands; absent otherwise. */
+  reportVerdict: Schema.optionalKey(DispatchReportVerdict),
 });
 export type DispatchResult = typeof DispatchResult.Type;
 
