@@ -7,7 +7,7 @@ import {
 import type { EnvironmentId, EnvironmentMachineKind } from "@t3tools/contracts";
 import { resolveEnvironmentMachineKind } from "@t3tools/shared/environmentMachine";
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Alert } from "react-native";
 import { managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
 import {
@@ -91,6 +91,10 @@ function CloudEnvironmentRowsContent(
 ) {
   const controller = useConnectionController();
   const identity = useAtomValue(managedRelaySessionAtom);
+  const accountEnvironmentIds = useMemo(
+    () => new Set(controller.relayEnvironments.map((entry) => entry.environment.environmentId)),
+    [controller.relayEnvironments],
+  );
   const deregister = useAtomCommand(deregisterEnvironment, "Deregister account environment");
   const confirmDeregister = (environmentId: EnvironmentId, label: string) => {
     if (!identity) return;
@@ -176,7 +180,9 @@ function CloudEnvironmentRowsContent(
               errorExpanded={expandedErrorId === environment.environmentId}
               onToggleError={() => handleToggleCloudError(environment.environmentId)}
               onDeregister={
-                discoveryAvailable && identity
+                discoveryAvailable &&
+                identity &&
+                accountEnvironmentIds.has(environment.environmentId)
                   ? () => confirmDeregister(environment.environmentId, environment.environmentLabel)
                   : undefined
               }
