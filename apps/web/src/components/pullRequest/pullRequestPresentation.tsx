@@ -92,3 +92,80 @@ export function PullRequestDiffStat({
     </span>
   );
 }
+
+const HTML_ENTITY_PATTERN = /&(amp|lt|gt|quot|#39);/g;
+const HTML_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  "#39": "'",
+};
+
+function decodeHtmlEntities(value: string): string {
+  return value.replace(HTML_ENTITY_PATTERN, (match) => HTML_ENTITIES[match.slice(1, -1)] ?? match);
+}
+
+/**
+ * Copilot and GitHub review bodies arrive as Markdown mixed with HTML
+ * (`<details>`, `<summary>`, `<a href>`, `<br>`). `ChatMarkdown` renders
+ * Markdown without raw HTML, so without this the page shows literal tags.
+ * Convert the common shapes to Markdown and strip anything else.
+ */
+export function toRenderablePullRequestMarkdown(body: string): string {
+  let text = body;
+  text = text.replace(/<details\b[^>]*>([\s\S]*?)<\/details>/gi, (_match, inner: string) => {
+    const summary = inner.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/i)?.[1] ?? "";
+    const rest = inner.replace(/<summary\b[^>]*>[\s\S]*?<\/summary>/i, "");
+    const heading = summary
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return `\n\n${heading ? `### ${heading}\n\n` : ""}${rest}\n\n`;
+  });
+  text = text.replace(
+    /<a\s[^>]*href\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi,
+    (_match, _quote: string, href: string, label: string) => {
+      const cleanLabel =
+        label
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .replaceAll("\\", "\\\\")
+          .replaceAll("[", "\\[")
+          .replaceAll("]", "\\]") || href;
+      const cleanHref = href
+        .replaceAll("\\", "\\\\")
+        .replaceAll("(", "\\(")
+        .replaceAll(")", "\\)");
+      return `[${cleanLabel}](${cleanHref})`;
+    },
+  );
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+  text = text.replace(/<\/?(summary|div|span|p|table|thead|tbody|tr|td|th)[^>]*>/gi, "\n");
+  text = text.replace(/<[^>]+>/g, "");
+  text = decodeHtmlEntities(text);
+  text = text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
+  return text.trim();
+}
+
+export function humanizeMonitorToken(value: string): string {
+  return value.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+export function pullRequestActionLabel(
+  action: "merge" | "ready" | "draft" | "close" | "reopen",
+): string {
+  switch (action) {
+    case "merge":
+      return "Merge";
+    case "ready":
+      return "Mark ready";
+    case "draft":
+      return "Convert to draft";
+    case "close":
+      return "Close";
+    case "reopen":
+      return "Reopen";
+  }
+}

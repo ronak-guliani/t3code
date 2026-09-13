@@ -1,7 +1,13 @@
 import type { ProjectId, PullRequestInvolvement, PullRequestListState } from "@t3tools/contracts";
 import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { GitPullRequestIcon, LoaderCircleIcon, RefreshCwIcon, SearchIcon } from "lucide-react";
+import {
+  GitPullRequestIcon,
+  LoaderCircleIcon,
+  RefreshCwIcon,
+  SearchIcon,
+  XIcon,
+} from "lucide-react";
 import { type ReactNode, useDeferredValue, useEffect, useMemo } from "react";
 
 import { PullRequestDetailPanel } from "../components/pullRequest/PullRequestDetailPanel";
@@ -35,6 +41,17 @@ type PullRequestsSearchPatch = {
 
 const LIST_STATES = ["all", "open", "closed", "merged"] as const;
 const INVOLVEMENTS = ["all", "reviewing", "authored"] as const;
+const LIST_STATE_LABELS: Record<(typeof LIST_STATES)[number], string> = {
+  all: "All states",
+  open: "Open",
+  closed: "Closed",
+  merged: "Merged",
+};
+const INVOLVEMENT_LABELS: Record<(typeof INVOLVEMENTS)[number], string> = {
+  all: "All involvement",
+  reviewing: "Reviewing",
+  authored: "Authored",
+};
 const PAGE_SIZE = 50;
 const STATS_BATCH_SIZE = 500;
 const EMPTY_PROJECTS: readonly Project[] = [];
@@ -252,13 +269,23 @@ function PullRequestsRoute() {
                 <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
                 <input
                   aria-label="Search pull requests"
-                  className="h-8 w-full rounded border border-input bg-background py-1 pr-2 pl-8 text-sm"
+                  className="h-8 w-full rounded border border-input bg-background py-1 pr-8 pl-8 text-sm"
                   placeholder="Search pull requests"
                   value={search.q ?? ""}
                   onChange={(event) =>
                     updateSearch({ q: event.currentTarget.value || undefined }, true)
                   }
                 />
+                {search.q ? (
+                  <button
+                    aria-label="Clear search"
+                    className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
+                    type="button"
+                    onClick={() => updateSearch({ q: undefined }, true)}
+                  >
+                    <XIcon className="size-3.5" />
+                  </button>
+                ) : null}
               </label>
               <div className="flex flex-wrap gap-2">
                 <select
@@ -271,7 +298,7 @@ function PullRequestsRoute() {
                 >
                   {LIST_STATES.map((state) => (
                     <option key={state} value={state}>
-                      {state}
+                      {LIST_STATE_LABELS[state]}
                     </option>
                   ))}
                 </select>
@@ -288,7 +315,7 @@ function PullRequestsRoute() {
                 >
                   {INVOLVEMENTS.map((involvement) => (
                     <option key={involvement} value={involvement}>
-                      {involvement}
+                      {INVOLVEMENT_LABELS[involvement]}
                     </option>
                   ))}
                 </select>
@@ -315,6 +342,13 @@ function PullRequestsRoute() {
                   ))}
                 </select>
               </div>
+              {!listQuery.isPending && !listQuery.error ? (
+                <p aria-live="polite" className="text-xs text-muted-foreground">
+                  {entriesWithStats.length} pull request{entriesWithStats.length === 1 ? "" : "s"}
+                  {listQuery.hasNextPage ? " (more available)" : ""}
+                  {listQuery.isFetching && !listQuery.isFetchingNextPage ? " · Updating…" : ""}
+                </p>
+              ) : null}
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-2">
               {listQuery.isPending ? (
@@ -387,9 +421,14 @@ function PullRequestsRoute() {
                 </div>
               ) : null}
               {errors.length > 0 ? (
-                <p className="p-3 text-xs text-muted-foreground">
-                  {errors.map((error) => `${error.projectTitle}: ${error.message}`).join(" · ")}
-                </p>
+                <ul className="space-y-1 p-3 text-xs text-muted-foreground">
+                  {errors.map((error) => (
+                    <li key={error.projectId} className="break-words">
+                      <span className="font-medium text-foreground">{error.projectTitle}:</span>{" "}
+                      {error.message}
+                    </li>
+                  ))}
+                </ul>
               ) : null}
             </div>
           </section>
