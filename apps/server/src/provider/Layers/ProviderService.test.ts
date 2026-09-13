@@ -30,15 +30,14 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
-  ProviderUnsupportedError,
   ProviderValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import {
-  ProviderAdapterRegistry,
-  type ProviderAdapterRegistryShape,
-} from "../Services/ProviderAdapterRegistry.ts";
+  ProviderInstanceRegistry,
+  type ProviderInstanceRegistryShape,
+} from "../Services/ProviderInstanceRegistry.ts";
 import { CopilotAdapter } from "../Services/CopilotAdapter.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 import {
@@ -59,7 +58,11 @@ import {
 } from "../../persistence/Layers/Sqlite.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
-import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
+import {
+  makeInstanceRegistryMock,
+  makeProviderInstance,
+  makeProviderInstanceRegistry,
+} from "../testUtils/providerInstanceRegistryMock.ts";
 
 const defaultServerSettingsLayer = ServerSettingsService.layerTest();
 
@@ -140,11 +143,11 @@ function makeCopilotProviderServiceLayer(wrapperPath: string) {
     Layer.provideMerge(configLayer),
     Layer.provideMerge(NodeServices.layer),
   );
-  const providerAdapterLayer = Layer.effect(
-    ProviderAdapterRegistry,
+  const providerInstanceLayer = Layer.effect(
+    ProviderInstanceRegistry,
     Effect.gen(function* () {
       const adapter = yield* CopilotAdapter;
-      return makeAdapterRegistryMock({
+      return makeInstanceRegistryMock({
         [COPILOT_DRIVER]: adapter,
       });
     }),
@@ -156,7 +159,7 @@ function makeCopilotProviderServiceLayer(wrapperPath: string) {
 
   return Layer.mergeAll(
     makeProviderServiceLive().pipe(
-      Layer.provide(providerAdapterLayer),
+      Layer.provide(providerInstanceLayer),
       Layer.provide(directoryLayer),
       Layer.provide(settingsLayer),
       Layer.provide(AnalyticsService.layerTest),
@@ -381,13 +384,13 @@ function makeProviderServiceLayer() {
   const codex = makeFakeCodexAdapter();
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
   const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
-  const registry = makeAdapterRegistryMock({
+  const registry = makeInstanceRegistryMock({
     [ProviderDriverKind.make("codex")]: codex.adapter,
     [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
     [ProviderDriverKind.make("cursor")]: cursor.adapter,
   });
 
-  const providerAdapterLayer = Layer.succeed(ProviderAdapterRegistry, registry);
+  const providerInstanceLayer = Layer.succeed(ProviderInstanceRegistry, registry);
   const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
     Layer.provide(SqlitePersistenceMemory),
   );
@@ -396,7 +399,7 @@ function makeProviderServiceLayer() {
   const layer = it.layer(
     Layer.mergeAll(
       makeProviderServiceLive().pipe(
-        Layer.provide(providerAdapterLayer),
+        Layer.provide(providerInstanceLayer),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
         Layer.provideMerge(AnalyticsService.layerTest),
@@ -429,17 +432,17 @@ it.effect("ProviderServiceLive catches stopAll failures during shutdown", () =>
         }),
       ),
     );
-    const registry = makeAdapterRegistryMock({
+    const registry = makeInstanceRegistryMock({
       [CODEX_DRIVER]: codex.adapter,
     });
-    const providerAdapterLayer = Layer.succeed(ProviderAdapterRegistry, registry);
+    const providerInstanceLayer = Layer.succeed(ProviderInstanceRegistry, registry);
     const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
       Layer.provide(SqlitePersistenceMemory),
     );
     const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
     const providerLayer = Layer.mergeAll(
       makeProviderServiceLive().pipe(
-        Layer.provide(providerAdapterLayer),
+        Layer.provide(providerInstanceLayer),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
         Layer.provideMerge(AnalyticsService.layerTest),
@@ -495,8 +498,8 @@ it.effect("ProviderServiceLive lists persisted bindings with one directory read"
     const providerLayer = makeProviderServiceLive().pipe(
       Layer.provide(
         Layer.succeed(
-          ProviderAdapterRegistry,
-          makeAdapterRegistryMock({
+          ProviderInstanceRegistry,
+          makeInstanceRegistryMock({
             [CODEX_DRIVER]: codex.adapter,
           }),
         ),
@@ -522,33 +525,24 @@ it.effect("ProviderServiceLive rejects new sessions for disabled providers", () 
   Effect.gen(function* () {
     const codex = makeFakeCodexAdapter();
     const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
-    const registryBase = makeAdapterRegistryMock({
+    const registryBase = makeInstanceRegistryMock({
       [CODEX_DRIVER]: codex.adapter,
       [CLAUDE_AGENT_DRIVER]: claude.adapter,
     });
-    const registry: ProviderAdapterRegistryShape = {
+    const registry: ProviderInstanceRegistryShape = {
       ...registryBase,
-      getInstanceInfo: (instanceId) =>
+      getInstance: (instanceId) =>
         instanceId === claudeAgentInstanceId
-          ? Effect.succeed({
-              instanceId,
-              driverKind: CLAUDE_AGENT_DRIVER,
-              displayName: undefined,
-              enabled: false,
-              continuationIdentity: {
-                driverKind: CLAUDE_AGENT_DRIVER,
-                continuationKey: "claudeAgent:instance:claudeAgent",
-              },
-            })
-          : registryBase.getInstanceInfo(instanceId),
+          ? Effect.succeed(makeProviderInstance({ adapter: claude.adapter, enabled: false }))
+          : registryBase.getInstance(instanceId),
     };
-    const providerAdapterLayer = Layer.succeed(ProviderAdapterRegistry, registry);
+    const providerInstanceLayer = Layer.succeed(ProviderInstanceRegistry, registry);
     const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
       Layer.provide(SqlitePersistenceMemory),
     );
     const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
     const providerLayer = makeProviderServiceLive().pipe(
-      Layer.provide(providerAdapterLayer),
+      Layer.provide(providerInstanceLayer),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
       Layer.provide(AnalyticsService.layerTest),
@@ -580,36 +574,14 @@ it.effect(
       const instanceId = ProviderInstanceId.make("codex_personal");
       const driverKind = CODEX_DRIVER;
       const codex = makeFakeCodexAdapter();
-      const unsupported = () =>
-        new ProviderUnsupportedError({
-          provider: driverKind,
-        });
-      const registry: ProviderAdapterRegistryShape = {
-        getByInstance: (requestedInstanceId) =>
-          requestedInstanceId === instanceId
-            ? Effect.succeed(codex.adapter)
-            : Effect.fail(unsupported()),
-        getInstanceInfo: (requestedInstanceId) =>
-          requestedInstanceId === instanceId
-            ? Effect.succeed({
-                instanceId,
-                driverKind,
-                displayName: "Codex Personal",
-                enabled: true,
-                continuationIdentity: {
-                  driverKind,
-                  continuationKey: "codex:/Users/example/.codex",
-                },
-              })
-            : Effect.fail(unsupported()),
-        listInstances: () => Effect.succeed([instanceId]),
-        listProviders: () => Effect.succeed([driverKind] as const),
-        streamChanges: Stream.empty,
-        subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
-          PubSub.subscribe(pubsub),
-        ),
-      };
-      const providerAdapterLayer = Layer.succeed(ProviderAdapterRegistry, registry);
+      const registry = makeProviderInstanceRegistry([
+        makeProviderInstance({
+          adapter: codex.adapter,
+          instanceId,
+          displayName: "Codex Personal",
+        }),
+      ]);
+      const providerInstanceLayer = Layer.succeed(ProviderInstanceRegistry, registry);
       const serverSettingsLayer = ServerSettingsService.layerTest({
         providers: {
           codex: {
@@ -624,7 +596,7 @@ it.effect(
         Layer.provide(runtimeRepositoryLayer),
       );
       const providerLayer = makeProviderServiceLive().pipe(
-        Layer.provide(providerAdapterLayer),
+        Layer.provide(providerInstanceLayer),
         Layer.provide(directoryLayer),
         Layer.provide(serverSettingsLayer),
         Layer.provide(AnalyticsService.layerTest),
@@ -649,44 +621,22 @@ it.effect(
 it.effect("ProviderServiceLive rejects new sessions for disabled custom instances", () =>
   Effect.gen(function* () {
     const instanceId = ProviderInstanceId.make("codex_personal");
-    const driverKind = ProviderDriverKind.make("codex");
     const codex = makeFakeCodexAdapter();
-    const unsupported = () =>
-      new ProviderUnsupportedError({
-        provider: ProviderDriverKind.make("codex"),
-      });
-    const registry: ProviderAdapterRegistryShape = {
-      getByInstance: (requestedInstanceId) =>
-        requestedInstanceId === instanceId
-          ? Effect.succeed(codex.adapter)
-          : Effect.fail(unsupported()),
-      getInstanceInfo: (requestedInstanceId) =>
-        requestedInstanceId === instanceId
-          ? Effect.succeed({
-              instanceId,
-              driverKind,
-              displayName: "Codex Personal",
-              enabled: false,
-              continuationIdentity: {
-                driverKind,
-                continuationKey: "codex:/Users/example/.codex",
-              },
-            })
-          : Effect.fail(unsupported()),
-      listInstances: () => Effect.succeed([instanceId]),
-      listProviders: () => Effect.succeed([CODEX_DRIVER] as const),
-      streamChanges: Stream.empty,
-      subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
-        PubSub.subscribe(pubsub),
-      ),
-    };
-    const providerAdapterLayer = Layer.succeed(ProviderAdapterRegistry, registry);
+    const registry = makeProviderInstanceRegistry([
+      makeProviderInstance({
+        adapter: codex.adapter,
+        instanceId,
+        displayName: "Codex Personal",
+        enabled: false,
+      }),
+    ]);
+    const providerInstanceLayer = Layer.succeed(ProviderInstanceRegistry, registry);
     const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
       Layer.provide(SqlitePersistenceMemory),
     );
     const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
     const providerLayer = makeProviderServiceLive().pipe(
-      Layer.provide(providerAdapterLayer),
+      Layer.provide(providerInstanceLayer),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
       Layer.provide(AnalyticsService.layerTest),
@@ -718,7 +668,7 @@ it.effect("ProviderServiceLive writes canonical events to the emitting thread se
     const codex = makeFakeCodexAdapter();
     const canonicalEvents: ProviderRuntimeEvent[] = [];
     const canonicalThreadIds: Array<string | null> = [];
-    const registry = makeAdapterRegistryMock({
+    const registry = makeInstanceRegistryMock({
       [ProviderDriverKind.make("codex")]: codex.adapter,
     });
     const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
@@ -736,7 +686,7 @@ it.effect("ProviderServiceLive writes canonical events to the emitting thread se
         close: () => Effect.void,
       },
     }).pipe(
-      Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+      Layer.provide(Layer.succeed(ProviderInstanceRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
       Layer.provide(AnalyticsService.layerTest),
@@ -771,7 +721,7 @@ it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", (
     const dbPath = path.join(tempDir, "orchestration.sqlite");
 
     const codex = makeFakeCodexAdapter();
-    const registry = makeAdapterRegistryMock({
+    const registry = makeInstanceRegistryMock({
       [ProviderDriverKind.make("codex")]: codex.adapter,
     });
 
@@ -791,7 +741,7 @@ it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", (
     }).pipe(Effect.provide(directoryLayer));
 
     const providerLayer = makeProviderServiceLive().pipe(
-      Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+      Layer.provide(Layer.succeed(ProviderInstanceRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
       Layer.provide(AnalyticsService.layerTest),
@@ -842,7 +792,7 @@ it.effect(
       );
 
       const firstCodex = makeFakeCodexAdapter();
-      const firstRegistry = makeAdapterRegistryMock({
+      const firstRegistry = makeInstanceRegistryMock({
         [ProviderDriverKind.make("codex")]: firstCodex.adapter,
       });
 
@@ -850,7 +800,7 @@ it.effect(
         Layer.provide(runtimeRepositoryLayer),
       );
       const firstProviderLayer = makeProviderServiceLive().pipe(
-        Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
+        Layer.provide(Layer.succeed(ProviderInstanceRegistry, firstRegistry)),
         Layer.provide(firstDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
         Layer.provide(AnalyticsService.layerTest),
@@ -895,14 +845,14 @@ it.effect(
       }
 
       const secondCodex = makeFakeCodexAdapter();
-      const secondRegistry = makeAdapterRegistryMock({
+      const secondRegistry = makeInstanceRegistryMock({
         [ProviderDriverKind.make("codex")]: secondCodex.adapter,
       });
       const secondDirectoryLayer = ProviderSessionDirectoryLive.pipe(
         Layer.provide(runtimeRepositoryLayer),
       );
       const secondProviderLayer = makeProviderServiceLive().pipe(
-        Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
+        Layer.provide(Layer.succeed(ProviderInstanceRegistry, secondRegistry)),
         Layer.provide(secondDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
         Layer.provide(AnalyticsService.layerTest),
@@ -1494,14 +1444,14 @@ routing.layer("ProviderServiceLive routing", (it) => {
       );
 
       const firstClaude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
-      const firstRegistry = makeAdapterRegistryMock({
+      const firstRegistry = makeInstanceRegistryMock({
         [ProviderDriverKind.make("claudeAgent")]: firstClaude.adapter,
       });
       const firstDirectoryLayer = ProviderSessionDirectoryLive.pipe(
         Layer.provide(runtimeRepositoryLayer),
       );
       const firstProviderLayer = makeProviderServiceLive().pipe(
-        Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
+        Layer.provide(Layer.succeed(ProviderInstanceRegistry, firstRegistry)),
         Layer.provide(firstDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
         Layer.provide(AnalyticsService.layerTest),
@@ -1525,14 +1475,14 @@ routing.layer("ProviderServiceLive routing", (it) => {
       }).pipe(Effect.provide(firstProviderLayer));
 
       const secondClaude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
-      const secondRegistry = makeAdapterRegistryMock({
+      const secondRegistry = makeInstanceRegistryMock({
         [ProviderDriverKind.make("claudeAgent")]: secondClaude.adapter,
       });
       const secondDirectoryLayer = ProviderSessionDirectoryLive.pipe(
         Layer.provide(runtimeRepositoryLayer),
       );
       const secondProviderLayer = makeProviderServiceLive().pipe(
-        Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
+        Layer.provide(Layer.succeed(ProviderInstanceRegistry, secondRegistry)),
         Layer.provide(secondDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
         Layer.provide(AnalyticsService.layerTest),
@@ -1584,14 +1534,14 @@ routing.layer("ProviderServiceLive routing", (it) => {
         );
 
         const firstClaude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
-        const firstRegistry = makeAdapterRegistryMock({
+        const firstRegistry = makeInstanceRegistryMock({
           [ProviderDriverKind.make("claudeAgent")]: firstClaude.adapter,
         });
         const firstDirectoryLayer = ProviderSessionDirectoryLive.pipe(
           Layer.provide(runtimeRepositoryLayer),
         );
         const firstProviderLayer = makeProviderServiceLive().pipe(
-          Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
+          Layer.provide(Layer.succeed(ProviderInstanceRegistry, firstRegistry)),
           Layer.provide(firstDirectoryLayer),
           Layer.provide(defaultServerSettingsLayer),
           Layer.provide(AnalyticsService.layerTest),
@@ -1610,14 +1560,14 @@ routing.layer("ProviderServiceLive routing", (it) => {
         }).pipe(Effect.provide(firstProviderLayer));
 
         const secondClaude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
-        const secondRegistry = makeAdapterRegistryMock({
+        const secondRegistry = makeInstanceRegistryMock({
           [ProviderDriverKind.make("claudeAgent")]: secondClaude.adapter,
         });
         const secondDirectoryLayer = ProviderSessionDirectoryLive.pipe(
           Layer.provide(runtimeRepositoryLayer),
         );
         const secondProviderLayer = makeProviderServiceLive().pipe(
-          Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
+          Layer.provide(Layer.succeed(ProviderInstanceRegistry, secondRegistry)),
           Layer.provide(secondDirectoryLayer),
           Layer.provide(defaultServerSettingsLayer),
           Layer.provide(AnalyticsService.layerTest),
@@ -1659,6 +1609,99 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
 const fanout = makeProviderServiceLayer();
 fanout.layer("ProviderServiceLive fanout", (it) => {
+  it.effect("subscribes replacement adapters from registry snapshots after hot reload", () =>
+    Effect.gen(function* () {
+      const original = makeFakeCodexAdapter();
+      const replacement = makeFakeCodexAdapter();
+      let replacementSubscribed = false;
+      const replacementAdapter = {
+        ...replacement.adapter,
+        streamEvents: Stream.fromEffect(
+          Effect.sync(() => {
+            replacementSubscribed = true;
+          }),
+        ).pipe(Stream.drain, Stream.concat(replacement.adapter.streamEvents)),
+      } satisfies ProviderAdapterShape<ProviderAdapterError>;
+      let currentInstances = [makeProviderInstance({ adapter: original.adapter })];
+      let snapshotReads = 0;
+      const registryChanges = yield* PubSub.unbounded<void>();
+      const getInstance = vi.fn(() =>
+        Effect.die("snapshot reconciliation must not perform per-instance lookups"),
+      );
+      const registry: ProviderInstanceRegistryShape = {
+        getInstance,
+        listInstances: Effect.sync(() => {
+          snapshotReads += 1;
+          return currentInstances;
+        }),
+        listUnavailable: Effect.succeed([]),
+        streamChanges: Stream.fromPubSub(registryChanges),
+        subscribeChanges: PubSub.subscribe(registryChanges),
+      };
+      const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const providerLayer = makeProviderServiceLive().pipe(
+        Layer.provide(Layer.succeed(ProviderInstanceRegistry, registry)),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(AnalyticsService.layerTest),
+        Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+      );
+      const expectedEventId = asEventId("evt-hot-reloaded-adapter");
+      const received: ProviderRuntimeEvent[] = [];
+      const waitForCondition = (predicate: () => boolean, description: string) =>
+        Effect.promise(async () => {
+          const deadline = Date.now() + 1_000;
+          while (!predicate()) {
+            if (Date.now() >= deadline) {
+              throw new Error(`Timed out waiting for ${description}`);
+            }
+            await new Promise<void>((resolve) => setTimeout(resolve, 5));
+          }
+        });
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const consumer = yield* Stream.runForEach(provider.streamEvents, (event) =>
+          Effect.sync(() => {
+            received.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* sleep(10);
+
+        currentInstances = [makeProviderInstance({ adapter: replacementAdapter })];
+        yield* PubSub.publish(registryChanges, undefined);
+        yield* waitForCondition(() => replacementSubscribed, "replacement adapter subscription");
+
+        replacement.emit({
+          type: "turn.completed",
+          eventId: expectedEventId,
+          provider: CODEX_DRIVER,
+          createdAt: new Date().toISOString(),
+          threadId: asThreadId("thread-hot-reloaded-adapter"),
+          turnId: asTurnId("turn-hot-reloaded-adapter"),
+          status: "completed",
+        });
+
+        yield* waitForCondition(
+          () => received.some((event) => event.eventId === expectedEventId),
+          "replacement adapter event",
+        );
+        yield* Fiber.interrupt(consumer);
+
+        const event = received.find((candidate) => candidate.eventId === expectedEventId);
+        assert.isDefined(event);
+        assert.equal(event.providerInstanceId, codexInstanceId);
+        assert.equal(snapshotReads, 2);
+        assert.equal(getInstance.mock.calls.length, 0);
+      }).pipe(Effect.provide(providerLayer));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("fans out adapter turn completion events", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
@@ -2087,8 +2130,8 @@ describe("agent browser access", () => {
       }).pipe(
         Layer.provide(
           Layer.succeed(
-            ProviderAdapterRegistry,
-            makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter }),
+            ProviderInstanceRegistry,
+            makeInstanceRegistryMock({ [CODEX_DRIVER]: codex.adapter }),
           ),
         ),
         Layer.provide(directoryLayer),
@@ -2149,8 +2192,8 @@ describe("agent browser access", () => {
       }).pipe(
         Layer.provide(
           Layer.succeed(
-            ProviderAdapterRegistry,
-            makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter }),
+            ProviderInstanceRegistry,
+            makeInstanceRegistryMock({ [CODEX_DRIVER]: codex.adapter }),
           ),
         ),
         Layer.provide(directoryLayer),
@@ -2220,8 +2263,8 @@ describe("agent browser access", () => {
       }).pipe(
         Layer.provide(
           Layer.succeed(
-            ProviderAdapterRegistry,
-            makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter }),
+            ProviderInstanceRegistry,
+            makeInstanceRegistryMock({ [CODEX_DRIVER]: codex.adapter }),
           ),
         ),
         Layer.provide(directoryLayer),

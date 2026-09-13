@@ -5,8 +5,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, assert } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Path, Queue, Stream } from "effect";
 
-import { ProviderAdapterRegistry } from "../src/provider/Services/ProviderAdapterRegistry.ts";
-import { makeAdapterRegistryMock } from "../src/provider/testUtils/providerAdapterRegistryMock.ts";
+import { ProviderInstanceRegistry } from "../src/provider/Services/ProviderInstanceRegistry.ts";
+import { makeInstanceRegistryMock } from "../src/provider/testUtils/providerInstanceRegistryMock.ts";
 import { ProviderSessionDirectoryLive } from "../src/provider/Layers/ProviderSessionDirectory.ts";
 import {
   NoOpProviderEventLoggers,
@@ -53,7 +53,7 @@ const makeIntegrationFixture = Effect.gen(function* () {
   const cwd = yield* makeWorkspaceDirectory;
   const harness = yield* makeTestProviderAdapterHarness();
 
-  const registry = makeAdapterRegistryMock({
+  const registry = makeInstanceRegistryMock({
     [ProviderDriverKind.make("codex")]: harness.adapter,
   });
 
@@ -63,7 +63,7 @@ const makeIntegrationFixture = Effect.gen(function* () {
 
   const shared = Layer.mergeAll(
     directoryLayer,
-    Layer.succeed(ProviderAdapterRegistry, registry),
+    Layer.succeed(ProviderInstanceRegistry, registry),
     ServerSettingsService.layerTest(DEFAULT_SERVER_SETTINGS),
     AnalyticsService.layerTest,
     Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers),
