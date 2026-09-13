@@ -1,5 +1,5 @@
 import type { AuthSessionState } from "@t3tools/contracts";
-import React, { startTransition, useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 
 import { APP_DISPLAY_NAME } from "../../branding";
 import { parsePairingCredential } from "../../pairingUrl";
@@ -42,7 +42,7 @@ export function PairingRouteSurface({
 }: {
   auth: AuthSessionState["auth"];
   initialErrorMessage?: string;
-  onAuthenticated: () => void;
+  onAuthenticated: () => void | Promise<void>;
 }) {
   const [autoPairToken] = useState(peekPairingTokenFromUrl);
   const [credential, setCredential] = useState(() => autoPairToken ?? "");
@@ -63,10 +63,12 @@ export function PairingRouteSurface({
       setIsSubmitting(true);
       setErrorMessage("");
 
-      const submitError = await submitServerAuthCredential(token).then(
-        () => null,
-        (error) => errorMessageFromUnknown(error),
-      );
+      const submitError = await submitServerAuthCredential(token)
+        .then(onAuthenticated)
+        .then(
+          () => null,
+          (error) => errorMessageFromUnknown(error),
+        );
 
       setIsSubmitting(false);
 
@@ -77,9 +79,6 @@ export function PairingRouteSurface({
       }
 
       setCredential("");
-      startTransition(() => {
-        onAuthenticated();
-      });
     },
     [onAuthenticated],
   );

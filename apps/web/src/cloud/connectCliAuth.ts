@@ -7,6 +7,7 @@ import {
   type ConnectAuthorizeRequest,
 } from "@t3tools/shared/connectAuth";
 import { clerkFrontendApiUrlFromPublishableKey } from "@t3tools/shared/relayAuth";
+import { isSecureRelayUrl } from "@t3tools/shared/relayUrl";
 
 const stateStorageKey = "t3code-connect-cli-auth-state";
 
@@ -17,14 +18,24 @@ function trimNonEmpty(value: string | undefined): string | null {
   return value?.trim() || null;
 }
 
-export function isConnectCliAuthEnabled(): boolean {
+function isHostedConnectEnabled(): boolean {
   const hostedUrl = new URL(configuredHostedAppUrl());
   return Boolean(
     !trimNonEmpty(import.meta.env.VITE_HTTP_URL) &&
     new URL(window.location.href).origin === hostedUrl.origin &&
-    resolveConnectCliAuthPublishableKey() &&
-    trimNonEmpty(import.meta.env.VITE_CLERK_CLI_OAUTH_CLIENT_ID),
+    resolveConnectCliAuthPublishableKey(),
   );
+}
+
+export function isConnectCliAuthEnabled(): boolean {
+  return (
+    isHostedConnectEnabled() &&
+    Boolean(trimNonEmpty(import.meta.env.VITE_CLERK_CLI_OAUTH_CLIENT_ID))
+  );
+}
+
+export function isConnectAccountManagementEnabled(): boolean {
+  return isHostedConnectEnabled() && isSecureRelayUrl(import.meta.env.VITE_T3CODE_RELAY_URL ?? "");
 }
 
 export function resolveConnectCliAuthPublishableKey(): string | null {
@@ -33,6 +44,10 @@ export function resolveConnectCliAuthPublishableKey(): string | null {
 
 function configuredHostedAppUrl(): string {
   return trimNonEmpty(import.meta.env.VITE_HOSTED_APP_URL) ?? DEFAULT_HOSTED_APP_URL;
+}
+
+export function connectAccountManagementUrl(): string {
+  return new URL("/connect/environments", configuredHostedAppUrl()).href;
 }
 
 export function buildConnectCliAuthorizeUrl(request: ConnectAuthorizeRequest): string | null {

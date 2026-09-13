@@ -14,7 +14,7 @@ import {
   makeEnvironmentHttpApiUrlBuilder,
   type RemoteEnvironmentRequestError,
 } from "../rpc/http.ts";
-import { buildEnvironmentAuthHeaders, withEnvironmentCredentials } from "./environmentHttpAuth.ts";
+import { requestEnvironmentRead } from "./environmentHttpAuth.ts";
 
 // Bounded so a pathologically slow endpoint cannot block the (cheaper) socket
 // fallback for long. The cached thread renders while this runs, so the wait only
@@ -51,28 +51,25 @@ export const fetchEnvironmentThreadSnapshot = Effect.fn(
     input.prepared.httpBaseUrl,
   ).orchestration.threadSnapshot({ params });
   const client = yield* makeEnvironmentHttpApiClient(input.prepared.httpBaseUrl);
-  const headers = yield* buildEnvironmentAuthHeaders(
+  return yield* requestEnvironmentRead(
     input.prepared.httpAuthorization,
-    "GET",
     requestUrl,
     input.signer,
-  );
-  return yield* executeEnvironmentHttpRequest(
-    requestUrl,
-    input.timeoutMs ?? DEFAULT_THREAD_SNAPSHOT_TIMEOUT_MS,
-    withEnvironmentCredentials(
-      input.prepared.httpAuthorization,
-      client.orchestration.threadSnapshot({
-        params,
-        payload: {
-          ...(input.window !== undefined ? { turnLimit: input.window.turnLimit } : {}),
-          ...(input.window?.beforeCursor !== undefined
-            ? { beforeCursor: input.window.beforeCursor }
-            : {}),
-        },
-        headers,
-      }),
-    ),
+    (headers) =>
+      executeEnvironmentHttpRequest(
+        requestUrl,
+        input.timeoutMs ?? DEFAULT_THREAD_SNAPSHOT_TIMEOUT_MS,
+        client.orchestration.threadSnapshot({
+          params,
+          payload: {
+            ...(input.window !== undefined ? { turnLimit: input.window.turnLimit } : {}),
+            ...(input.window?.beforeCursor !== undefined
+              ? { beforeCursor: input.window.beforeCursor }
+              : {}),
+          },
+          headers,
+        }),
+      ),
   );
 });
 

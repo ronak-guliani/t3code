@@ -267,8 +267,11 @@ export async function submitServerAuthCredential(credential: string): Promise<vo
   }
 
   resolvedAuthenticatedGateState = null;
-  await exchangeBootstrapCredential(trimmedCredential);
   bootstrapPromise = null;
+  await exchangeBootstrapCredential(trimmedCredential);
+  await waitForAuthenticatedSessionAfterBootstrap();
+  bootstrapPromise = null;
+  resolvedAuthenticatedGateState = { status: "authenticated" };
   stripPairingTokenFromUrl();
 }
 

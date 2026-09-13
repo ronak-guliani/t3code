@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./connectManagement": {
+      "types": "./src/connectManagement.ts",
+      "import": "./src/connectManagement.ts"
+    },
     "./childFollowUp": {
       "types": "./src/childFollowUp.ts",
       "import": "./src/childFollowUp.ts"
