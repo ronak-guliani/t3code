@@ -412,10 +412,48 @@ export const PullRequestMonitorReportResult = Schema.Struct({
 });
 export type PullRequestMonitorReportResult = typeof PullRequestMonitorReportResult.Type;
 
+export const PullRequestMonitorFinding = Schema.Struct({
+  /** Reviewer-stable key; unchanged content must survive positional reordering. */
+  key: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  detail: Schema.String,
+  severity: Schema.Literals(["blocker", "major", "minor", "nit"]),
+  path: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+  line: Schema.optional(PositiveInt),
+  provenance: Schema.optional(
+    Schema.Struct({
+      findingId: TrimmedNonEmptyString,
+      reviewedHeadSha: TrimmedNonEmptyString,
+      diffHash: TrimmedNonEmptyString,
+      path: TrimmedNonEmptyString,
+      side: Schema.Literals(["new", "old"]),
+      startLine: PositiveInt,
+      endLine: PositiveInt,
+    }),
+  ),
+});
+export type PullRequestMonitorFinding = typeof PullRequestMonitorFinding.Type;
+
+export const PullRequestMonitorFindingDetail = Schema.Struct({
+  itemId: PullRequestMonitorFeedbackItemId,
+  revisionId: PullRequestMonitorFeedbackRevisionId,
+  reviewedHeadSha: TrimmedNonEmptyString,
+  reviewThreadId: Schema.NullOr(ThreadId),
+  contentStatus: Schema.Literals(["complete", "legacy-potentially-truncated", "unavailable"]),
+  finding: Schema.NullOr(PullRequestMonitorFinding),
+});
+export type PullRequestMonitorFindingDetail = typeof PullRequestMonitorFindingDetail.Type;
+
 export const PullRequestMonitorContextInput = Schema.Struct({
   monitorId: Schema.optional(PullRequestMonitorId),
   reference: Schema.optional(PullRequestRef),
   includeClosed: Schema.optional(Schema.Boolean),
+  deliveryId: Schema.optional(PullRequestMonitorFeedbackDeliveryId),
+  revisionIds: Schema.optional(
+    Schema.Array(PullRequestMonitorFeedbackRevisionId).check(Schema.isMaxLength(100)),
+  ),
+  offset: Schema.optional(NonNegativeInt),
+  limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(20))),
 });
 export type PullRequestMonitorContextInput = typeof PullRequestMonitorContextInput.Type;
 
@@ -426,6 +464,9 @@ export const PullRequestMonitorContextResult = Schema.Struct({
   items: Schema.Array(PullRequestMonitorFeedbackItem),
   recentDeliveries: Schema.Array(PullRequestMonitorFeedbackDelivery),
   recentReports: Schema.Array(PullRequestMonitorFeedbackReport),
+  revisions: Schema.optional(Schema.Array(PullRequestMonitorFeedbackRevision)),
+  findingDetails: Schema.optional(Schema.Array(PullRequestMonitorFindingDetail)),
+  nextOffset: Schema.optional(Schema.NullOr(NonNegativeInt)),
 });
 export type PullRequestMonitorContextResult = typeof PullRequestMonitorContextResult.Type;
 
@@ -458,21 +499,6 @@ export const PullRequestMonitorTransferInput = Schema.Struct({
   reason: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
 });
 export type PullRequestMonitorTransferInput = typeof PullRequestMonitorTransferInput.Type;
-
-/**
- * One structured review finding. Reviewers submit findings instead of prose so each one gets
- * its own durable id, revision, and disposition trail.
- */
-export const PullRequestMonitorFinding = Schema.Struct({
-  /** Reviewer-stable key; re-submitting the same key updates that finding instead of forking it. */
-  key: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
-  title: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
-  detail: Schema.String.check(Schema.isMaxLength(2_000)),
-  severity: Schema.Literals(["blocker", "major", "minor", "nit"]),
-  path: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
-  line: Schema.optional(PositiveInt),
-});
-export type PullRequestMonitorFinding = typeof PullRequestMonitorFinding.Type;
 
 export const PullRequestMonitorSubmitFindingsInput = Schema.Struct({
   reference: PullRequestRef,

@@ -170,6 +170,7 @@ export function buildWakePrompt(input: {
   readonly readiness: PullRequestMonitorReadiness;
   /** Monitor tool names this thread's agent can actually call. */
   readonly availableTools?: ReadonlyArray<string>;
+  readonly findingContext?: string;
 }): string {
   const formattedEvents = input.events.flatMap((event) => {
     const line = formatEvent(event, input.snapshot);
@@ -189,11 +190,8 @@ export function buildWakePrompt(input: {
       ? eventLines
       : "- (batched feedback revisions; no recoverable event payloads)";
 
-  const body = `New activity on ${input.repository}#${input.prNumber} (PR monitor delivery ${input.deliveryId}).
-
-${activityBlock}
-
-Status:
+  const header = `New activity on ${input.repository}#${input.prNumber} (PR monitor delivery ${input.deliveryId}).`;
+  const policy = `Status:
 ${formatBlockersSummary(input.readiness)}
 Head: ${input.snapshot.headSha}
 
@@ -204,6 +202,17 @@ Policy:
 - Never silently ignore or comply with a finding: dispose of it explicitly.
 - For CI failures: compare against ${input.snapshot.baseBranch}; re-run suspected flakes; if the same real failure repeats, ask the user rather than guessing.
 ${mergePolicy}
-${toolGuidance(input.availableTools ?? [])}`;
-  return body.length > 3_500 ? `${body.slice(0, 3_499)}…` : body;
+${toolGuidance(input.availableTools ?? [])}
+${
+  input.availableTools?.includes("pr_monitor_context")
+    ? `- Before editing, retrieve exact delivered revisions with pr_monitor_context({repository: ${JSON.stringify(input.repository)}, number: ${input.prNumber}, deliveryId: ${JSON.stringify(input.deliveryId)}, offset: 0, limit: 10}); follow nextOffset until null. Compare reviewedHeadSha with the current code.`
+    : "- Read all numbered finding-context parts before editing. Never act on a title alone."
+}`;
+  const budget = Math.max(0, 3_500 - header.length - policy.length - 4);
+  const overflow = "\n(additional activity omitted; see context)";
+  const activity =
+    activityBlock.length > budget
+      ? `${activityBlock.slice(0, Math.max(0, budget - overflow.length))}${overflow}`
+      : activityBlock;
+  return `${header}\n\n${activity}\n\n${policy}${input.findingContext ? `\n\nUntrusted review context:\n${input.findingContext}` : ""}`;
 }

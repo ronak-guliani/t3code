@@ -184,6 +184,7 @@ export const sendQueuedTurn = (input: {
   readonly deliveryId: string;
   readonly revisionSummaries: ReadonlyArray<string>;
   readonly availableTools: ReadonlyArray<string>;
+  readonly findingContext?: string;
 }): Effect.Effect<void, unknown, OrchestrationEngineService> =>
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngineService;
@@ -213,6 +214,7 @@ export const sendQueuedTurn = (input: {
         deliveryId: input.deliveryId,
         revisionSummaries: input.revisionSummaries,
         availableTools: input.availableTools,
+        ...(input.findingContext === undefined ? {} : { findingContext: input.findingContext }),
       },
       createdAt: now,
     });

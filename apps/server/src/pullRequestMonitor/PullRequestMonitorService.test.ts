@@ -50,6 +50,7 @@ import { emptyCursor } from "./monitorDiff.ts";
 import { LEASE_TTL_MS } from "./pollSchedule.ts";
 import { emptyFeedbackReadiness } from "./readiness.ts";
 import { PullRequestMonitorStore } from "./PullRequestMonitorStore.ts";
+import { handoffToSubmitInput } from "./PullRequestReviewHandoffReactor.ts";
 
 const projectId = ProjectId.make("proj_monitor_1");
 
@@ -203,6 +204,7 @@ function seedThread(
 
 const abandonedThreadIds: ThreadId[] = [];
 const dispatchedCommands: Array<{ type: string; threadId?: ThreadId }> = [];
+const queuedMessages: string[] = [];
 const launchedFallbackIds: ThreadId[] = [];
 const preparedPrReferences: string[] = [];
 let preparePrWorktreePath: string | null = "/tmp/pr-head";
@@ -261,11 +263,15 @@ const fakeEngine = {
     threadId?: ThreadId;
     worktreePath?: string | null;
     bootstrap?: unknown;
+    message?: { text: string };
   }) =>
     Effect.sync(() => {
       const entry: { type: string; threadId?: ThreadId } = { type: command.type };
       if (command.threadId !== undefined) entry.threadId = command.threadId;
       dispatchedCommands.push(entry);
+      if (command.type === "thread.queued-turn.create" && command.message) {
+        queuedMessages.push(command.message.text);
+      }
       if (command.type === "thread.archive" && command.threadId) {
         abandonedThreadIds.push(command.threadId);
       }
@@ -1679,7 +1685,7 @@ layer("PullRequestMonitorService", (it) => {
           {
             key: "finding-a",
             title: "Unbounded query",
-            detail: "Add a limit.",
+            detail: "Add a limit.\n".repeat(500),
             severity: "major",
             path: "src/a.ts",
             line: 12,
@@ -1704,6 +1710,22 @@ layer("PullRequestMonitorService", (it) => {
         includeClosed: true,
       });
       assert.strictEqual(context.items.filter((item) => item.kind === "review-finding").length, 2);
+      const exact = yield* monitors.context({
+        monitorId: submitted.monitor.id,
+        revisionIds: [submitted.findings[0]!.revisionId],
+      });
+      assert.strictEqual(exact.findingDetails?.[0]?.finding?.detail, "Add a limit.\n".repeat(500));
+      assert.strictEqual(exact.findingDetails?.[0]?.contentStatus, "complete");
+      const page = yield* monitors.context({ monitorId: submitted.monitor.id, limit: 1 });
+      assert.strictEqual(page.revisions?.length, 1);
+      assert.strictEqual(page.nextOffset, 1);
+      const next = yield* monitors.context({
+        monitorId: submitted.monitor.id,
+        limit: 1,
+        offset: 1,
+      });
+      assert.strictEqual(next.nextOffset, null);
+      assert.notStrictEqual(page.revisions?.[0]?.id, next.revisions?.[0]?.id);
 
       // Re-submitting the same findings is idempotent per source revision.
       const again = yield* monitors.submitFindings({
@@ -1713,7 +1735,7 @@ layer("PullRequestMonitorService", (it) => {
           {
             key: "finding-a",
             title: "Unbounded query",
-            detail: "Add a limit.",
+            detail: "Add a limit.\n".repeat(500),
             severity: "major",
             path: "src/a.ts",
             line: 12,
@@ -1721,7 +1743,91 @@ layer("PullRequestMonitorService", (it) => {
         ],
       });
       assert.isFalse(again.findings[0]!.created);
+      const other = yield* monitors.start({
+        projectId,
+        repository: "acme/app",
+        number: 9065,
+        ownerThreadId: owner,
+      });
+      const forbidden = yield* Effect.result(
+        monitors.context({
+          monitorId: other.monitor.id,
+          revisionIds: [submitted.findings[0]!.revisionId],
+        }),
+      );
+      assert.strictEqual(forbidden._tag, "Failure");
     }),
+  );
+
+  it.effect(
+    "delivers a manual review body intact and retrieves its immutable delivered revision",
+    () =>
+      Effect.gen(function* () {
+        const monitors = yield* PullRequestMonitorService;
+        const feedback = yield* PullRequestMonitorFeedbackService;
+        const store = yield* PullRequestMonitorFeedbackStore.make;
+        const owner = ThreadId.make("full-context-owner");
+        const reviewer = ThreadId.make("full-context-reviewer");
+        seedThread(owner);
+        seedThread(reviewer);
+        yield* monitors.start({
+          projectId,
+          repository: "acme/app",
+          number: 9066,
+          ownerThreadId: owner,
+        });
+        const body = "Full review evidence beyond the old limit.\n".repeat(100);
+        const input = handoffToSubmitInput({
+          projectId,
+          reviewThreadId: reviewer,
+          repository: "acme/app",
+          number: 9066,
+          headSha: "deadbeef",
+          diffHash: "diff-full-context",
+          summary: "Manual review",
+          findings: [
+            {
+              id: "finding-1",
+              title: "Preserve context",
+              body,
+              priority: "high",
+              location: { path: "a.ts", side: "new", startLine: 1, endLine: 3 },
+            },
+          ],
+        });
+        const submitted = yield* monitors.submitFindings(input);
+        const state = yield* store.getState(submitted.monitor.id);
+        yield* store.appendPendingRevisionIds({
+          monitorId: submitted.monitor.id,
+          revisionIds: state.pendingRevisionIds,
+          debounceUntil: "1970-01-01T00:00:00.000Z",
+          updatedAt: "1970-01-01T00:00:00.000Z",
+        });
+        const before = queuedMessages.length;
+        yield* feedback.flushDueDeliveries;
+        assert.isTrue(queuedMessages.slice(before).some((text) => text.includes(body)));
+        const [delivery] = yield* store.listDeliveries({ monitorId: submitted.monitor.id });
+        assert.isDefined(delivery);
+        const updated = yield* monitors.submitFindings({
+          ...input,
+          findings: input.findings!.map((finding) => ({
+            ...finding,
+            detail: "New review evidence.",
+          })),
+        });
+        const exact = yield* monitors.context({
+          monitorId: submitted.monitor.id,
+          deliveryId: delivery!.id,
+        });
+        assert.strictEqual(exact.findingDetails?.[0]?.finding?.detail, body);
+        assert.strictEqual(
+          exact.findingDetails?.[0]?.finding?.provenance?.diffHash,
+          "diff-full-context",
+        );
+        assert.strictEqual(exact.revisions?.[0]?.id, submitted.findings[0]?.revisionId);
+        assert.strictEqual(exact.items[0]?.currentRevisionId, updated.findings[0]?.revisionId);
+        assert.notStrictEqual(exact.revisions?.[0]?.id, exact.items[0]?.currentRevisionId);
+      }),
   );
 
   it.effect("ignores findings reviewed against a stale pull request head", () =>

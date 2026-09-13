@@ -6,6 +6,7 @@ import {
   PullRequestMonitorId,
   ThreadId,
   type PullRequestMonitorRecord,
+  type PullRequestMonitorContextInput,
   type PullRequestMonitorReportInput,
   type PullRequestMonitorSubmitFindingsInput,
 } from "@t3tools/contracts";
@@ -75,6 +76,7 @@ const fakeProjections = {
 } as unknown as ProjectionSnapshotQuery["Service"];
 
 const makeLayer = (input: {
+  readonly onContext?: (input: PullRequestMonitorContextInput) => void;
   readonly monitorRecord?: PullRequestMonitorRecord;
   readonly onReport?: (input: PullRequestMonitorReportInput) => void;
   readonly onSubmitFindings?: (input: PullRequestMonitorSubmitFindingsInput) => void;
@@ -87,13 +89,16 @@ const makeLayer = (input: {
     list: () => Effect.die("unused"),
     subscribeList: () => Stream.empty,
     pollOnce: Effect.void,
-    context: () =>
-      Effect.succeed({
-        monitor: record,
-        latestSnapshot: null,
-        items: [],
-        recentDeliveries: [],
-        recentReports: [],
+    context: (contextInput) =>
+      Effect.sync(() => {
+        input.onContext?.(contextInput);
+        return {
+          monitor: record,
+          latestSnapshot: null,
+          items: [],
+          recentDeliveries: [],
+          recentReports: [],
+        };
       }),
     report: (reportInput) =>
       Effect.sync(() => {
@@ -205,10 +210,27 @@ it.effect("allows the linked review chat to read monitor context", () =>
         }),
       ),
     );
+
     assert.isDefined(context);
   }),
 );
 
+it.effect("forwards exact delivery pagination with server-derived project identity", () =>
+  Effect.gen(function* () {
+    const seen: PullRequestMonitorContextInput[] = [];
+    yield* callTool("pr_monitor_context", {
+      repository: "acme/app",
+      number: 12,
+      deliveryId: "delivery-1",
+      offset: 10,
+      limit: 5,
+    }).pipe(Effect.provide(makeLayer({ onContext: (input) => seen.push(input) })));
+    assert.strictEqual(seen[0]?.deliveryId, "delivery-1");
+    assert.strictEqual(seen[0]?.offset, 10);
+    assert.strictEqual(seen[0]?.limit, 5);
+    assert.strictEqual(seen[0]?.reference?.projectId, projectId);
+  }),
+);
 it.effect("submits findings as the authenticated review chat", () =>
   Effect.gen(function* () {
     const seen: PullRequestMonitorSubmitFindingsInput[] = [];

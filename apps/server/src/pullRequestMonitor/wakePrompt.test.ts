@@ -44,6 +44,25 @@ const readiness: PullRequestMonitorReadiness = {
 };
 
 describe("wakePrompt", () => {
+  it("preserves retrieval instructions and policy when activity exceeds the budget", () => {
+    const prompt = buildWakePrompt({
+      prNumber: 12,
+      repository: "acme/app",
+      deliveryId: "del_large",
+      events: Array.from({ length: 100 }, () => ({
+        kind: "review-finding" as const,
+        detail: "x".repeat(500),
+      })),
+      snapshot,
+      readiness,
+      availableTools: ["pr_monitor_context"],
+    });
+    expect(prompt).toContain('deliveryId: "del_large"');
+    expect(prompt).toContain("follow nextOffset until null");
+    expect(prompt).toContain("requires explicit human approval");
+    expect(prompt.length).toBeLessThanOrEqual(3_500);
+  });
+
   it("formats blockers and bounds the wake prompt", () => {
     expect(formatBlockersSummary(readiness)).toContain("check-failed");
     const prompt = buildWakePrompt({
