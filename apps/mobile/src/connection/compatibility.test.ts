@@ -54,4 +54,23 @@ describe("owned mobile compatibility", () => {
       }).status,
     ).toBe("unsupported");
   });
+
+  it("surfaces an actionable upgrade error for a v1 client", () => {
+    const v1Config = {
+      ...config,
+      environment: {
+        ...config.environment,
+        capabilities: {
+          ...config.environment.capabilities,
+          ownedMobileProtocolVersion: 1,
+        },
+      },
+    };
+
+    expect(mobileCompatibility(v1Config)).toEqual({
+      status: "unsupported",
+      message:
+        "This server uses owned mobile protocol 1; this app supports version 2. Install a matching app/server release.",
+    });
+  });
 });

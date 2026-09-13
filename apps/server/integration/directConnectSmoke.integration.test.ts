@@ -1,3 +1,5 @@
+import * as NodeCrypto from "node:crypto";
+import { createServer } from "node:http";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
@@ -8,9 +10,15 @@ import {
   ProviderInstanceId,
   WS_METHODS,
 } from "@t3tools/contracts";
+import {
+  computeDpopAccessTokenHash,
+  computeDpopJwkThumbprint,
+  type DpopPublicJwk,
+} from "@t3tools/shared/dpop";
 import { chromium, type WebSocketRoute } from "playwright";
 import {
   Cause,
+  Context,
   Deferred,
   Data,
   DateTime,
@@ -31,6 +39,7 @@ import {
   ServerConfig,
   type ServerConfigShape,
 } from "../src/config.ts";
+import { AuthControlPlane } from "../src/auth/Services/AuthControlPlane.ts";
 import { makeServerLayer } from "../src/server.ts";
 import { readPersistedServerRuntimeState } from "../src/serverRuntimeState.ts";
 import { preparePairingRegistration } from "../../../packages/client-runtime/src/connection/onboarding.ts";
@@ -146,9 +155,10 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
 
         const serverScope = yield* Scope.make();
         yield* Effect.addFinalizer(() => Scope.close(serverScope, Exit.void));
-        yield* Layer.build(
-          productionServerLayer.pipe(Layer.provide(Layer.succeed(ServerConfig, config))),
+        const serverContext = yield* Layer.build(
+          makeServerLayer.pipe(Layer.provide(Layer.succeed(ServerConfig, config))),
         ).pipe(Scope.provide(serverScope));
+        const authControlPlane = Context.get(serverContext, AuthControlPlane);
 
         const runtimeState = yield* retryUntil(
           readPersistedServerRuntimeState(config.serverRuntimeStatePath),
@@ -517,6 +527,137 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           expectedConsoleErrors: 0,
         };
         const context = yield* createSelfTestContext(browser, captureOutput, diagnostics);
+        const { privateKey, publicKey } = NodeCrypto.generateKeyPairSync("ec", {
+          namedCurve: "P-256",
+        });
+        const publicJwk = publicKey.export({ format: "jwk" }) as DpopPublicJwk;
+        const dpopCredential = yield* authControlPlane
+          .createPairingLink({
+            label: "Browser CORS DPoP smoke",
+            proofKeyThumbprint: computeDpopJwkThumbprint(publicJwk),
+          })
+          .pipe(Effect.map(({ credential }) => credential));
+        const createDpopProof = (url: string, accessToken?: string) => {
+          const header = Buffer.from(
+            JSON.stringify({ typ: "dpop+jwt", alg: "ES256", jwk: publicJwk }),
+          ).toString("base64url");
+          const payload = Buffer.from(
+            JSON.stringify({
+              htm: "POST",
+              htu: url,
+              iat: Math.floor(Date.now() / 1_000),
+              jti: NodeCrypto.randomUUID(),
+              ...(accessToken ? { ath: computeDpopAccessTokenHash(accessToken) } : {}),
+            }),
+          ).toString("base64url");
+          const signature = NodeCrypto.sign("sha256", Buffer.from(`${header}.${payload}`), {
+            key: privateKey,
+            dsaEncoding: "ieee-p1363",
+          }).toString("base64url");
+          return `${header}.${payload}.${signature}`;
+        };
+        const corsPage = yield* Effect.promise(() => context.newPage());
+        const browserPreflights: Array<{
+          readonly url: string;
+          readonly requestedHeaders: string;
+        }> = [];
+        const corsDevtools = yield* Effect.promise(() => context.newCDPSession(corsPage));
+        yield* Effect.promise(() => corsDevtools.send("Network.enable"));
+        corsDevtools.on("Network.requestWillBeSent", ({ request }) => {
+          if (request.method !== "OPTIONS") return;
+          browserPreflights.push({
+            url: request.url,
+            requestedHeaders: String(request.headers["Access-Control-Request-Headers"] ?? ""),
+          });
+        });
+        const corsClientServer = yield* Effect.acquireRelease(
+          Effect.promise(
+            () =>
+              new Promise<ReturnType<typeof createServer>>((resolve, reject) => {
+                const server = createServer((_request, response) => {
+                  response.writeHead(200, { "content-type": "text/html" });
+                  response.end("<!doctype html><title>Browser CORS client</title>");
+                });
+                server.once("error", reject);
+                server.listen(0, "127.0.0.1", () => resolve(server));
+              }),
+          ),
+          (server) =>
+            Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
+        );
+        const corsClientAddress = corsClientServer.address();
+        if (corsClientAddress === null || typeof corsClientAddress === "string") {
+          return yield* new DirectConnectSmokeError({
+            message: "Browser CORS fixture did not bind a TCP address.",
+          });
+        }
+        yield* Effect.promise(() =>
+          corsPage.goto(`http://127.0.0.1:${corsClientAddress.port}/cors-client`),
+        );
+        const tokenUrl = `${origin}/oauth/token`;
+        const ticketUrl = `${origin}/api/auth/websocket-ticket`;
+        const tokenResult = yield* Effect.promise(() =>
+          corsPage.evaluate(
+            async ({ credential, proof, url }) => {
+              const response = await fetch(url, {
+                method: "POST",
+                headers: {
+                  "content-type": "application/x-www-form-urlencoded",
+                  dpop: proof,
+                },
+                body: new URLSearchParams({
+                  grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+                  subject_token: credential,
+                  subject_token_type: "urn:t3:params:oauth:token-type:environment-bootstrap",
+                  requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
+                  scope: "orchestration:read",
+                }),
+              });
+              return {
+                status: response.status,
+                body: (await response.json()) as { access_token?: string },
+              };
+            },
+            {
+              credential: dpopCredential,
+              proof: createDpopProof(tokenUrl),
+              url: tokenUrl,
+            },
+          ),
+        );
+        expect(tokenResult.status).toBe(200);
+        expect(tokenResult.body.access_token).toBeDefined();
+        const dpopAccessToken = tokenResult.body.access_token!;
+        const ticketProof = createDpopProof(ticketUrl, dpopAccessToken);
+        const ticketRequest = (proof: string) =>
+          corsPage.evaluate(
+            async ({ accessToken, proof, url }) => {
+              const response = await fetch(url, {
+                method: "POST",
+                headers: {
+                  authorization: `DPoP ${accessToken}`,
+                  dpop: proof,
+                },
+              });
+              return response.status;
+            },
+            { accessToken: dpopAccessToken, proof, url: ticketUrl },
+          );
+        const ticketResult = yield* Effect.promise(() => ticketRequest(ticketProof));
+        expect(ticketResult).toBe(200);
+        expect(yield* Effect.promise(() => ticketRequest(ticketProof))).toBe(401);
+        expect(yield* Effect.promise(() => ticketRequest(`${ticketProof}x`))).toBe(401);
+        const preflightIncludes = (pathname: string, header: string) =>
+          browserPreflights.some(({ url, requestedHeaders }) => {
+            const headers = requestedHeaders.split(",").map((value) => value.trim().toLowerCase());
+            return new URL(url).pathname === pathname && headers.includes(header);
+          });
+        expect(preflightIncludes("/oauth/token", "dpop")).toBe(true);
+        expect(
+          preflightIncludes("/api/auth/websocket-ticket", "authorization") &&
+            preflightIncludes("/api/auth/websocket-ticket", "dpop"),
+        ).toBe(true);
+        yield* Effect.promise(() => corsPage.close());
         const page = yield* Effect.promise(() => context.newPage());
         let browserNavigationCount = 0;
         page.on("framenavigated", (frame) => {
