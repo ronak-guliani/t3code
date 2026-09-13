@@ -8,8 +8,9 @@ import {
   ProviderInstanceId,
   WS_METHODS,
 } from "@t3tools/contracts";
-import { chromium } from "playwright";
+import { chromium, type WebSocketRoute } from "playwright";
 import {
+  Cause,
   Deferred,
   Data,
   DateTime,
@@ -37,6 +38,13 @@ import { ClientPresentation } from "../../../packages/client-runtime/src/platfor
 import { remoteHttpClientLayer } from "../../../packages/client-runtime/src/rpc/http.ts";
 import { resolveRemoteWebSocketConnectionUrl } from "../../../packages/client-runtime/src/remote.ts";
 import { WsTransport } from "../../../packages/client-runtime/src/wsTransport.ts";
+import {
+  captureSelfTestScreenshot,
+  createSelfTestContext,
+  finishSelfTestCapture,
+  trackSelfTestConsole,
+  trackSelfTestRequests,
+} from "./selfTestCapture.ts";
 
 const desktopBootstrapToken = "direct-connect-smoke-owner";
 const projectId = ProjectId.make("project-direct-connect-smoke");
@@ -497,16 +505,33 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(liveProjectSequences).toEqual([1]);
 
         const browserCredential = yield* createPairingCredential;
+        const captureOutput = process.env.T3_SELF_TEST_OUTPUT;
         const browser = yield* Effect.acquireRelease(
           Effect.promise(() => chromium.launch({ headless: true })),
           (instance) => Effect.promise(() => instance.close()),
         );
-        const context = yield* Effect.acquireRelease(
-          Effect.promise(() => browser.newContext()),
-          (browserContext) => Effect.promise(() => browserContext.close()),
-        );
+        const diagnostics = {
+          pageErrors: 0,
+          failedRequests: 0,
+          consoleErrors: 0,
+          expectedConsoleErrors: 0,
+        };
+        const context = yield* createSelfTestContext(browser, captureOutput, diagnostics);
         const page = yield* Effect.promise(() => context.newPage());
+        let browserNavigationCount = 0;
+        page.on("framenavigated", (frame) => {
+          if (frame === page.mainFrame()) browserNavigationCount += 1;
+        });
         const browserDiagnostics: string[] = [];
+        const pageErrors: string[] = [];
+        let consolePhase: "pairing" | "rejected-token" | "authenticated" = "pairing";
+        const { failures: failedRequests, navigate } = trackSelfTestRequests(
+          page,
+          origin,
+          diagnostics,
+          () => consolePhase === "rejected-token",
+        );
+        trackSelfTestConsole(page, origin, diagnostics, () => consolePhase);
         page.on("console", (message) => {
           if (message.type() === "error" || message.type() === "warning") {
             browserDiagnostics.push(`${message.type()}: ${message.text()}`);
@@ -514,6 +539,8 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         });
         page.on("pageerror", (error) => {
           browserDiagnostics.push(`pageerror: ${error.message}`);
+          pageErrors.push(error.name);
+          diagnostics.pageErrors += 1;
         });
         let browserWebSocketCount = 0;
         page.on("websocket", (socket) => {
@@ -522,7 +549,9 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           }
         });
         yield* Effect.promise(() =>
-          page.goto(`${origin}/pair#token=${encodeURIComponent(browserCredential)}`),
+          navigate(() =>
+            page.goto(`${origin}/pair#token=${encodeURIComponent(browserCredential)}`),
+          ),
         );
         yield* Effect.promise(async () => {
           try {
@@ -537,7 +566,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
               .catch(() => "<unavailable>");
             throw new Error(
               [
-                `Browser pairing did not expose the connected environment at ${page.url()}.`,
+                `Browser pairing did not expose the connected environment at ${new URL(page.url()).origin}.`,
                 `Body: ${body}`,
                 `Diagnostics: ${browserDiagnostics.join("\n") || "<none>"}`,
               ].join("\n"),
@@ -550,7 +579,18 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(cookies.some((cookie) => cookie.name.startsWith("t3_session"))).toBe(true);
         expect(browserWebSocketCount).toBeGreaterThan(0);
 
-        yield* Effect.promise(() => page.reload());
+        consolePhase = "authenticated";
+        const browserSockets: WebSocketRoute[] = [];
+        yield* Effect.promise(() =>
+          page.routeWebSocket(
+            (url) => url.pathname === "/ws",
+            (socket) => {
+              socket.connectToServer();
+              browserSockets.push(socket);
+            },
+          ),
+        );
+        yield* Effect.promise(() => navigate(() => page.reload()));
         yield* Effect.promise(() =>
           page.getByText("Direct Connect Project", { exact: true }).waitFor({
             state: "visible",
@@ -565,6 +605,106 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           readonly authenticated: boolean;
         };
         expect(sessionState).toMatchObject({ authenticated: true });
+
+        const socketBeforeDrop = browserSockets.at(-1);
+        expect(socketBeforeDrop).toBeDefined();
+        const socketCountBeforeDrop = browserSockets.length;
+        const navigationCountBeforeDrop = browserNavigationCount;
+        yield* Effect.promise(() =>
+          socketBeforeDrop!.close({ code: 1012, reason: "self-test forced disconnect" }),
+        );
+        yield* retryUntil(
+          Effect.sync(() => browserSockets.length),
+          (count) => count > socketCountBeforeDrop,
+          "the authenticated browser WebSocket to reconnect",
+        );
+        yield* Effect.promise(() =>
+          page.getByText("Direct Connect Project", { exact: true }).waitFor({ state: "visible" }),
+        );
+        for (const [index, title] of [
+          "Browser Reconnected Project",
+          "Direct Connect Project",
+        ].entries()) {
+          yield* fetchJson(`${origin}/api/orchestration/dispatch`, {
+            method: "POST",
+            headers: {
+              authorization: ["Bearer", ownerToken].join(" "),
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              type: "project.meta.update",
+              commandId: CommandId.make(`cmd-browser-reconnect-title-${index}`),
+              projectId,
+              title,
+            }),
+          });
+          yield* Effect.promise(() =>
+            page.getByText(title, { exact: true }).waitFor({ state: "visible", timeout: 10_000 }),
+          );
+        }
+        expect(browserNavigationCount).toBe(navigationCountBeforeDrop);
+
+        // Exercise the manual recovery path with the real server, not a mocked bootstrap.
+        consolePhase = "pairing";
+        yield* Effect.promise(() => context.clearCookies());
+        yield* Effect.promise(() => navigate(() => page.goto(`${origin}/pair`)));
+        yield* Effect.promise(() => page.getByLabel("Pairing token").waitFor({ state: "visible" }));
+        yield* Effect.promise(() => page.getByLabel("Pairing token").fill(`${origin}/pair?token=`));
+        yield* Effect.promise(() =>
+          page.getByRole("button", { name: "Continue", exact: true }).click(),
+        );
+        yield* Effect.promise(() => page.getByRole("alert").waitFor({ state: "visible" }));
+        expect(yield* Effect.promise(() => page.getByRole("alert").innerText())).toBe(
+          "This pairing link must use the /pair path and contain a one-time token.",
+        );
+        const invalidLinkScreenshot = captureOutput
+          ? yield* Effect.promise(() =>
+              captureSelfTestScreenshot(page, captureOutput, "pairing-invalid-link.png"),
+            )
+          : undefined;
+        yield* Effect.promise(() =>
+          page.getByLabel("Pairing token").fill(`${origin}/pair#token=${browserCredential}`),
+        );
+        consolePhase = "rejected-token";
+        yield* Effect.promise(() =>
+          page.getByRole("button", { name: "Continue", exact: true }).click(),
+        );
+        yield* Effect.promise(() => page.getByRole("alert").waitFor({ state: "visible" }));
+        expect(yield* Effect.promise(() => page.getByLabel("Pairing token").inputValue())).toBe("");
+        consolePhase = "pairing";
+        const recoveryScreenshot = captureOutput
+          ? yield* Effect.promise(() =>
+              captureSelfTestScreenshot(page, captureOutput, "pairing-recovery.png"),
+            )
+          : undefined;
+        const replacementCredential = yield* createPairingCredential;
+        yield* Effect.promise(() =>
+          page.getByLabel("Pairing token").fill(`${origin}/pair#token=${replacementCredential}`),
+        );
+        yield* Effect.promise(() =>
+          page.getByRole("button", { name: "Continue", exact: true }).click(),
+        );
+        yield* Effect.promise(() =>
+          page.getByText("Direct Connect Project", { exact: true }).waitFor({ state: "visible" }),
+        );
+        consolePhase = "authenticated";
+        yield* Effect.promise(() => navigate(() => page.reload()));
+        yield* Effect.promise(() =>
+          page.getByText("Direct Connect Project", { exact: true }).waitFor({ state: "visible" }),
+        );
+        if (captureOutput) {
+          yield* Effect.promise(() =>
+            page
+              .getByText("Direct Connect Project", { exact: true })
+              .screenshot({ animations: "disabled" }),
+          );
+        }
+        const screenshot = captureOutput
+          ? yield* Effect.promise(() => captureSelfTestScreenshot(page, captureOutput))
+          : undefined;
+        expect(pageErrors).toEqual([]);
+        expect(failedRequests).toEqual([]);
+        expect(diagnostics.consoleErrors, browserDiagnostics.join("\n")).toBe(0);
 
         unsubscribeShell();
         unsubscribeLifecycle();
@@ -603,7 +743,30 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(revokedSnapshot.status).toBe(401);
 
         yield* Effect.promise(() => transport.dispose()).pipe(Effect.timeout("10 seconds"));
-        yield* Effect.promise(() => context.close());
+        yield* Effect.promise(() => navigate(() => context.close()));
+        if (captureOutput && screenshot) {
+          const videoPath = yield* Effect.promise(() => page.video()!.path());
+          yield* Effect.promise(() =>
+            finishSelfTestCapture(
+              browser,
+              captureOutput,
+              videoPath,
+              [invalidLinkScreenshot, recoveryScreenshot, screenshot].filter(
+                (item) => item !== undefined,
+              ),
+              [
+                "One-time URL pairing establishes an authenticated browser session.",
+                "Consumed credentials fail visibly and are cleared.",
+                "Malformed pairing links show format-neutral guidance for query and fragment tokens.",
+                "A fresh same-origin pairing link can be pasted into the recovery form.",
+                "The authenticated project remains visible after reload.",
+                "The browser recovers from a forced WebSocket disconnect without reloading and receives live project updates.",
+                "Node client live synchronization and involuntary reconnect preserve project state.",
+              ],
+              diagnostics,
+            ),
+          );
+        }
         yield* Effect.promise(() => browser.close());
         yield* Scope.close(serverScope, Exit.void);
         yield* retryUntil(
@@ -673,3 +836,110 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 }, 120_000);
+
+it("retains unverified video and console diagnostics after a browser assertion fails", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const output = yield* fs.makeTempDirectoryScoped();
+        const browser = yield* Effect.acquireRelease(
+          Effect.promise(() => chromium.launch({ headless: true })),
+          (instance) => Effect.promise(() => instance.close()),
+        );
+        const diagnostics = {
+          pageErrors: 0,
+          failedRequests: 0,
+          consoleErrors: 0,
+          expectedConsoleErrors: 0,
+        };
+        const failure = yield* Effect.exit(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const context = yield* createSelfTestContext(browser, output, diagnostics);
+              const page = yield* Effect.promise(() => context.newPage());
+              trackSelfTestConsole(page, "http://localhost", diagnostics, () => "rejected-token");
+              yield* Effect.promise(async () => {
+                await page.setContent("<h1>Deliberate failure capture</h1>");
+                await page.evaluate(`console.error("deliberate console failure")`);
+                await page.evaluate(
+                  `console.error("Failed to load resource: the server responded with a status of 401 (Unauthorized)")`,
+                );
+                await page.evaluate(
+                  `console.error("WebSocket connection to 'ws://localhost/ws' failed: HTTP Authentication failed; no valid credentials available")`,
+                );
+                await page.getByRole("heading").screenshot();
+                expect(await page.getByRole("heading").innerText()).toBe(
+                  "deliberately wrong heading",
+                );
+              });
+            }),
+          ),
+        );
+        if (Exit.isSuccess(failure))
+          throw new Error("The deliberate browser assertion did not fail.");
+        expect(Cause.pretty(failure.cause)).toContain("deliberately wrong heading");
+        expect(diagnostics.consoleErrors).toBe(3);
+        expect(diagnostics.expectedConsoleErrors).toBe(0);
+        const videos = yield* fs.readDirectory(path.join(output, "raw"));
+        expect(videos).toHaveLength(1);
+        expect(videos[0]).toMatch(/\.webm$/);
+        expect((yield* fs.readFile(path.join(output, "raw", videos[0]!))).length).toBeGreaterThan(
+          0,
+        );
+        expect(JSON.parse(yield* fs.readFileString(path.join(output, "diagnostics.json")))).toEqual(
+          diagnostics,
+        );
+        expect(yield* fs.exists(path.join(output, "capture.json"))).toBe(false);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+}, 30_000);
+
+it("counts unexpected network failures throughout pairing and recovery", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const origin = "http://self-test.invalid";
+    await page.route(`${origin}/**`, async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/") {
+        await route.fulfill({ contentType: "text/html", body: "<h1>Network accounting</h1>" });
+      } else if (path === "/aborted") {
+        await route.abort("aborted");
+      } else {
+        await route.fulfill({ status: path === "/api/auth/bootstrap" ? 401 : 503, body: "" });
+      }
+    });
+    const diagnostics = { failedRequests: 0 };
+    let rejectedToken = false;
+    const { failures } = trackSelfTestRequests(page, origin, diagnostics, () => rejectedToken);
+    await page.goto(origin);
+    await page.evaluate(`fetch("/initial-asset").then(response => response.text())`);
+    await expect.poll(() => diagnostics.failedRequests).toBe(1);
+    rejectedToken = true;
+    await page.evaluate(
+      `fetch("/api/auth/bootstrap", {method: "POST"}).then(response => response.text())`,
+    );
+    await page.evaluate(`fetch("/recovery-api").then(response => response.text())`);
+    await expect.poll(() => diagnostics.failedRequests).toBe(2);
+    rejectedToken = false;
+    await page.evaluate(
+      `fetch("/api/auth/bootstrap", {method: "POST"}).then(response => response.text())`,
+    );
+    await expect.poll(() => diagnostics.failedRequests).toBe(3);
+    await page.evaluate(
+      `fetch("/aborted").then(() => { throw new Error("Expected request failure"); }, () => undefined)`,
+    );
+    await expect.poll(() => diagnostics.failedRequests).toBe(4);
+    expect(failures).toEqual([
+      "503 /initial-asset",
+      "503 /recovery-api",
+      "401 /api/auth/bootstrap",
+      "net::ERR_ABORTED /aborted",
+    ]);
+  } finally {
+    await browser.close();
+  }
+}, 30_000);

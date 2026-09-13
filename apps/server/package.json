@@ -38,7 +38,8 @@
     "@t3tools/client-runtime": "workspace:*",
     "effect": "catalog:",
     "node-pty": "^1.1.0",
-    "open": "^10.1.0"
+    "open": "^10.1.0",
+    "pngjs": "7.0.0"
   },
   "devDependencies": {
     "@effect/language-service": "catalog:",
@@ -48,6 +49,7 @@
     "@t3tools/tailscale": "workspace:*",
     "@t3tools/web": "workspace:*",
     "@types/node": "catalog:",
+    "@types/pngjs": "6.0.5",
     "effect-acp": "workspace:*",
     "effect-codex-app-server": "workspace:*",
     "playwright": "^1.58.2",
