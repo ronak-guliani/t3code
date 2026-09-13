@@ -304,6 +304,7 @@
 
 ## UI discovery and browser capture
 
+- Sidebar device markers belong in trailing metadata, not title text: omit primary-machine markers and raw IDs, keep remote names in tooltips, and cover hosted clients with no primary environment in both sidebar layouts.
 - Diff route search is thread-local UI state: clear it when sidebar navigation changes threads, but preserve it for the active thread so the split-layout store can restore each chat independently.
 - Composer skill discovery must map shared `~/.agents/skills` installations to every provider that reads them; otherwise live project skills appear while global skills silently disappear from `$` suggestions.
 - Electron native preview recording serializes only the display-media grant, not the recording lifetime; keep hidden guests composited and unthrottled until their activity lease ends, and pin each attached debugger wrapper until its control scope closes.
