@@ -68,7 +68,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
 
       expect(first.environmentId).toBe(second.environmentId);
       expect(second.capabilities).toEqual({
-        ownedMobileProtocolVersion: 1,
+        ownedMobileProtocolVersion: 2,
         repositoryIdentity: true,
         connectionProbe: true,
         pullRequests: true,

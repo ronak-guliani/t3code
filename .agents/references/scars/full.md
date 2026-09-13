@@ -221,6 +221,7 @@
 
 ## Mobile protocol compatibility
 
+- Increment the owned mobile protocol whenever a server snapshot or event adds a required union variant. Negotiation happens before subscriptions, so reject an old shipped decoder before one incompatible thread can kill its stream while cached data masks the failure.
 - Browser DPoP requires `dpop` in the actual CORS allow-list; test a real preflight and a proof-bound authenticated request, including replay rejection, rather than only a header helper.
 - Resolve single-use CLI tickets inside WebSocket acquisition, not once before constructing a reconnecting transport. Recheck account and endpoint identity before sending cached credentials.
 - Initial RPC schema failures can arrive as defects rather than `RpcClientError`; normalize only schema defects into blocked compatibility errors and test a malformed wire response.

@@ -351,7 +351,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           transport.request((client) => client[WS_METHODS.serverGetConfig]({})),
         );
         expect(serverConfig.environment.capabilities).toMatchObject({
-          ownedMobileProtocolVersion: 1,
+          ownedMobileProtocolVersion: 2,
           connectionProbe: true,
           pullRequests: true,
           threadSettlement: true,

@@ -23,7 +23,7 @@ describe("owned mobile compatibility", () => {
     });
   });
 
-  it("accepts owned wire version 1 and rejects unknown versions", () => {
+  it("accepts owned wire version 2 and rejects older or unknown versions", () => {
     for (const version of [1, 2, 99]) {
       expect(
         mobileCompatibility({
@@ -36,7 +36,7 @@ describe("owned mobile compatibility", () => {
             },
           },
         }).status,
-      ).toBe(version === 1 ? "supported" : "unsupported");
+      ).toBe(version === 2 ? "supported" : "unsupported");
     }
   });
 

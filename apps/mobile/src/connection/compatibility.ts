@@ -2,10 +2,10 @@ import { ConnectionBlockedError } from "@t3tools/client-runtime/connection";
 import type { ServerConfig } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
-export const OWNED_MOBILE_PROTOCOL_VERSION = 1;
+export const OWNED_MOBILE_PROTOCOL_VERSION = 2;
 
 export type MobileCompatibility =
-  | { readonly status: "supported"; readonly protocol: "owned-v1" | "legacy-capabilities" }
+  | { readonly status: "supported"; readonly protocol: "owned-v2" | "legacy-capabilities" }
   | { readonly status: "unsupported"; readonly message: string };
 
 export function mobileCompatibility(
@@ -34,7 +34,7 @@ export function mobileCompatibility(
   }
   return {
     status: "supported",
-    protocol: protocolVersion === undefined ? "legacy-capabilities" : "owned-v1",
+    protocol: protocolVersion === undefined ? "legacy-capabilities" : "owned-v2",
   };
 }
 

@@ -94,7 +94,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
     },
     serverVersion: packageJson.version,
     capabilities: {
-      ownedMobileProtocolVersion: 1,
+      ownedMobileProtocolVersion: 2,
       repositoryIdentity: true,
       connectionProbe: true,
       pullRequests: true,
