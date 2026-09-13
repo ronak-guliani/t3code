@@ -1609,6 +1609,99 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
 const fanout = makeProviderServiceLayer();
 fanout.layer("ProviderServiceLive fanout", (it) => {
+  it.effect("subscribes replacement adapters from registry snapshots after hot reload", () =>
+    Effect.gen(function* () {
+      const original = makeFakeCodexAdapter();
+      const replacement = makeFakeCodexAdapter();
+      let replacementSubscribed = false;
+      const replacementAdapter = {
+        ...replacement.adapter,
+        streamEvents: Stream.fromEffect(
+          Effect.sync(() => {
+            replacementSubscribed = true;
+          }),
+        ).pipe(Stream.drain, Stream.concat(replacement.adapter.streamEvents)),
+      } satisfies ProviderAdapterShape<ProviderAdapterError>;
+      let currentInstances = [makeProviderInstance({ adapter: original.adapter })];
+      let snapshotReads = 0;
+      const registryChanges = yield* PubSub.unbounded<void>();
+      const getInstance = vi.fn(() =>
+        Effect.die("snapshot reconciliation must not perform per-instance lookups"),
+      );
+      const registry: ProviderInstanceRegistryShape = {
+        getInstance,
+        listInstances: Effect.sync(() => {
+          snapshotReads += 1;
+          return currentInstances;
+        }),
+        listUnavailable: Effect.succeed([]),
+        streamChanges: Stream.fromPubSub(registryChanges),
+        subscribeChanges: PubSub.subscribe(registryChanges),
+      };
+      const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const providerLayer = makeProviderServiceLive().pipe(
+        Layer.provide(Layer.succeed(ProviderInstanceRegistry, registry)),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(AnalyticsService.layerTest),
+        Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+      );
+      const expectedEventId = asEventId("evt-hot-reloaded-adapter");
+      const received: ProviderRuntimeEvent[] = [];
+      const waitForCondition = (predicate: () => boolean, description: string) =>
+        Effect.promise(async () => {
+          const deadline = Date.now() + 1_000;
+          while (!predicate()) {
+            if (Date.now() >= deadline) {
+              throw new Error(`Timed out waiting for ${description}`);
+            }
+            await new Promise<void>((resolve) => setTimeout(resolve, 5));
+          }
+        });
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const consumer = yield* Stream.runForEach(provider.streamEvents, (event) =>
+          Effect.sync(() => {
+            received.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* sleep(10);
+
+        currentInstances = [makeProviderInstance({ adapter: replacementAdapter })];
+        yield* PubSub.publish(registryChanges, undefined);
+        yield* waitForCondition(() => replacementSubscribed, "replacement adapter subscription");
+
+        replacement.emit({
+          type: "turn.completed",
+          eventId: expectedEventId,
+          provider: CODEX_DRIVER,
+          createdAt: new Date().toISOString(),
+          threadId: asThreadId("thread-hot-reloaded-adapter"),
+          turnId: asTurnId("turn-hot-reloaded-adapter"),
+          status: "completed",
+        });
+
+        yield* waitForCondition(
+          () => received.some((event) => event.eventId === expectedEventId),
+          "replacement adapter event",
+        );
+        yield* Fiber.interrupt(consumer);
+
+        const event = received.find((candidate) => candidate.eventId === expectedEventId);
+        assert.isDefined(event);
+        assert.equal(event.providerInstanceId, codexInstanceId);
+        assert.equal(snapshotReads, 2);
+        assert.equal(getInstance.mock.calls.length, 0);
+      }).pipe(Effect.provide(providerLayer));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("fans out adapter turn completion events", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
