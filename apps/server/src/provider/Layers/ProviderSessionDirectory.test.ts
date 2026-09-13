@@ -42,8 +42,6 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
         threadId: initialThreadId,
       });
 
-      const provider = yield* directory.getProvider(initialThreadId);
-      assert.equal(provider, "codex");
       const resolvedBinding = yield* directory.getBinding(initialThreadId);
       assertSome(resolvedBinding, {
         threadId: initialThreadId,
@@ -72,9 +70,6 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
         assert.equal(runtime.value.status, "running");
         assert.equal(runtime.value.providerName, "codex");
       }
-
-      const threadIds = yield* directory.listThreadIds();
-      assert.deepEqual(threadIds, [nextThreadId]);
     }));
 
   it("persists runtime fields and merges payload updates", () =>
@@ -321,9 +316,6 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
       yield* Effect.gen(function* () {
         const directory = yield* ProviderSessionDirectory;
         const sql = yield* SqlClient.SqlClient;
-        const provider = yield* directory.getProvider(threadId);
-        assert.equal(provider, "codex");
-
         const resolvedBinding = yield* directory.getBinding(threadId);
         assertSome(resolvedBinding, {
           threadId,

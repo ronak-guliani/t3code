@@ -152,28 +152,6 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:upsert")));
   });
 
-  const getProvider: ProviderSessionDirectoryShape["getProvider"] = (threadId) =>
-    getBinding(threadId).pipe(
-      Effect.flatMap((binding) =>
-        Option.match(binding, {
-          onSome: (value) => Effect.succeed(value.provider),
-          onNone: () =>
-            Effect.fail(
-              new ProviderSessionDirectoryPersistenceError({
-                operation: "ProviderSessionDirectory.getProvider",
-                detail: `No persisted provider binding found for thread '${threadId}'.`,
-              }),
-            ),
-        }),
-      ),
-    );
-
-  const listThreadIds: ProviderSessionDirectoryShape["listThreadIds"] = () =>
-    repository.list().pipe(
-      Effect.mapError(toPersistenceError("ProviderSessionDirectory.listThreadIds:list")),
-      Effect.map((rows) => rows.map((row) => row.threadId)),
-    );
-
   const listBindings: ProviderSessionDirectoryShape["listBindings"] = () =>
     repository.list().pipe(
       Effect.mapError(toPersistenceError("ProviderSessionDirectory.listBindings:list")),
@@ -195,9 +173,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
 
   return {
     upsert,
-    getProvider,
     getBinding,
-    listThreadIds,
     listBindings,
   } satisfies ProviderSessionDirectoryShape;
 });
