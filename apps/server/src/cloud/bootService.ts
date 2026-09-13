@@ -31,6 +31,10 @@ import packageJson from "../../package.json" with { type: "json" };
 import { runProcess, type ProcessRunResult } from "../processRunner.ts";
 import { runtimePidIsAlive } from "../serverRuntimeState.ts";
 import { copyCliRuntime } from "@t3tools/shared/cliRuntime";
+import {
+  isCurrentServiceInstallation,
+  serializeServiceInstallation,
+} from "./serviceInstallation.ts";
 
 const LABEL_PREFIX = "com.t3tools.t3code.server";
 const COMMAND_TIMEOUT_MS = 15_000;
@@ -83,7 +87,7 @@ export class BootServiceUnsupportedError extends Schema.TaggedErrorClass<BootSer
   { platform: Schema.String },
 ) {
   override get message(): string {
-    return `Background services currently support macOS launchd; '${this.platform}' is unsupported.`;
+    return `Background services support macOS launchd and Windows Task Scheduler; '${this.platform}' is unsupported.`;
   }
 }
 
@@ -218,6 +222,25 @@ const processIsAlive = (pid: number): boolean => {
 };
 
 const processStartIdentity = async (pid: number): Promise<string | undefined> => {
+  if (process.platform === "win32") {
+    const result = await runProcess(
+      join(
+        process.env.SystemRoot ?? "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      ),
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$ErrorActionPreference='Stop'; $p=[System.Diagnostics.Process]::GetProcessById(${pid}); $p.StartTime.ToUniversalTime().Ticks`,
+      ],
+      { allowNonZeroExit: true, timeoutMs: 5_000, maxBufferBytes: 8 * 1024 },
+    );
+    return result.code === 0 && !result.timedOut ? result.stdout.trim() || undefined : undefined;
+  }
   const result = await runProcess("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
     allowNonZeroExit: true,
     timeoutMs: 2_000,
@@ -383,7 +406,16 @@ export const liveServiceHost: ServiceHost = {
         };
       } catch (cause) {
         const code = errorCode(cause);
-        if (code !== "EEXIST" && code !== "ENOTEMPTY") throw cause;
+        if (
+          code !== "EEXIST" &&
+          code !== "ENOTEMPTY" &&
+          !(
+            process.platform === "win32" &&
+            code === "EPERM" &&
+            (await liveServiceHost.exists(path))
+          )
+        )
+          throw cause;
       }
 
       const currentOwner = await readOwner(ownerPath);
@@ -604,10 +636,11 @@ const attempt = <A>(operation: string, run: () => Promise<A>) =>
 export const resolvePackagedDist = (entryPath: string, host: ServiceHost) =>
   attempt("resolving the packaged CLI", async () => {
     const resolvedEntry = await host.canonicalize(entryPath);
-    if (resolvedEntry.includes("/_npx/") || resolvedEntry.includes("/.bun/install/cache/")) {
+    const normalizedEntry = resolvedEntry.replaceAll("\\", "/");
+    if (normalizedEntry.includes("/_npx/") || normalizedEntry.includes("/.bun/install/cache/")) {
       throw new Error("Transient package-manager cache entrypoints cannot own a durable service.");
     }
-    if (!resolvedEntry.endsWith("/dist/bin.mjs")) {
+    if (!normalizedEntry.endsWith("/dist/bin.mjs")) {
       throw new Error(`Expected a packaged dist/bin.mjs entrypoint, received ${resolvedEntry}.`);
     }
     const distDir = dirname(resolvedEntry);
@@ -659,6 +692,19 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
   const canonicalBaseDir = yield* attempt("canonicalizing the base directory", () =>
     host.canonicalize(input.baseDir),
   );
+  if (platform === "win32") {
+    return yield* attempt("initializing Windows service", async () => {
+      const { makeWindowsService } = await import("./windowsService.ts");
+      return makeWindowsService({
+        host,
+        baseDir: canonicalBaseDir,
+        homeDir,
+        executablePath,
+        cliEntryPath,
+        environment: processEnvironment,
+      });
+    });
+  }
   const paths = userId === null ? null : servicePaths({ homeDir, canonicalBaseDir, userId });
 
   const requireSupported = Effect.gen(function* () {
@@ -881,7 +927,7 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
       responsive,
       ...(state.pid === undefined ? {} : { pid: state.pid }),
       current:
-        installedVersion.trim() === packageJson.version &&
+        isCurrentServiceInstallation(installedVersion) &&
         definition.includes(fallbackPaths.instanceId),
     } satisfies ServiceStatus;
   });
@@ -989,7 +1035,11 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
             yield* stopLoaded;
             yield* startAndProbe;
             yield* attempt("recording the active service version", () =>
-              host.writeAtomic(activePaths.versionPath, `${packageJson.version}\n`, 0o600),
+              host.writeAtomic(
+                activePaths.versionPath,
+                serializeServiceInstallation(invocation),
+                0o600,
+              ),
             );
           });
           const committed = yield* commit.pipe(Effect.exit);

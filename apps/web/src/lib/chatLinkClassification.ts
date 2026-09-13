@@ -1,6 +1,8 @@
 import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 import { buildThreadPath } from "@t3tools/shared/threadUrl";
 
+import { isLoopbackHostname } from "../environments/primary/target";
+
 const THREAD_ID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const THREAD_ID_PATTERN = new RegExp(`^${THREAD_ID_SOURCE}$`, "i");
 
@@ -40,7 +42,8 @@ export function buildGitHubIssueReferenceUrl(
 
 function normalizeOrigin(value: string): string | null {
   try {
-    return new URL(value).origin.toLowerCase();
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.origin.toLowerCase() : null;
   } catch {
     return null;
   }
@@ -103,6 +106,11 @@ export function resolveExplicitThreadLink(
   } catch {
     return null;
   }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (url.username || url.password || url.search || url.hash) return null;
+
+  const ref = parseCanonicalThreadPath(url.pathname, input.trustedEnvironmentIds);
+  if (!ref) return null;
 
   const trustedOrigins = new Map<string, { unconstrained: boolean; ids: Set<EnvironmentId> }>();
   for (const entry of input.trustedOrigins) {
@@ -121,12 +129,24 @@ export function resolveExplicitThreadLink(
   }
   const origin = url.origin.toLowerCase();
   const trustedOrigin = trustedOrigins.get(origin);
-  if (!trustedOrigin) return null;
-  if (url.search || url.hash) return null;
-
-  const ref = parseCanonicalThreadPath(url.pathname, input.trustedEnvironmentIds);
-  if (!ref) return null;
-  if (!trustedOrigin.unconstrained && !trustedOrigin.ids.has(ref.environmentId)) return null;
+  if (trustedOrigin) {
+    if (!trustedOrigin.unconstrained && !trustedOrigin.ids.has(ref.environmentId)) return null;
+  } else {
+    // Desktop ports can change after restart; the registered environment ID,
+    // not a stale loopback address, identifies the internal destination.
+    const localEnvironmentOrigin = isLoopbackHostname(url.hostname)
+      ? input.trustedOrigins.some((entry) => {
+          if (entry.environmentId !== ref.environmentId) return false;
+          const normalizedOrigin = normalizeOrigin(entry.origin);
+          if (!normalizedOrigin) return false;
+          const registeredUrl = new URL(normalizedOrigin);
+          return (
+            registeredUrl.protocol === url.protocol && isLoopbackHostname(registeredUrl.hostname)
+          );
+        })
+      : false;
+    if (!localEnvironmentOrigin) return null;
+  }
 
   return {
     ref,

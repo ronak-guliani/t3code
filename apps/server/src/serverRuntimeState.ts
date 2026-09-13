@@ -14,6 +14,7 @@ export const PersistedServerRuntimeState = Schema.Struct({
   origin: Schema.String,
   devUrl: Schema.optional(Schema.String),
   startedAt: Schema.String,
+  owner: Schema.optional(Schema.Literals(["desktop", "foreground", "background"])),
 });
 export type PersistedServerRuntimeState = typeof PersistedServerRuntimeState.Type;
 
@@ -34,7 +35,8 @@ const runtimeOriginForConfig = (
 };
 
 export const makePersistedServerRuntimeState = (input: {
-  readonly config: Pick<ServerConfigShape, "host" | "devUrl">;
+  readonly config: Pick<ServerConfigShape, "host" | "devUrl"> &
+    Partial<Pick<ServerConfigShape, "mode">>;
   readonly port: number;
 }): PersistedServerRuntimeState => ({
   version: 1,
@@ -44,6 +46,12 @@ export const makePersistedServerRuntimeState = (input: {
   origin: runtimeOriginForConfig(input.config, input.port),
   ...(input.config.devUrl ? { devUrl: input.config.devUrl.toString() } : {}),
   startedAt: new Date().toISOString(),
+  owner:
+    process.env.T3CODE_BACKGROUND_SERVICE === "true"
+      ? "background"
+      : input.config.mode === "desktop"
+        ? "desktop"
+        : "foreground",
 });
 
 export const persistServerRuntimeState = (input: {

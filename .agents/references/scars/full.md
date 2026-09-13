@@ -21,6 +21,7 @@
 
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
 - Session startup/resume and turn lifecycle require predictable recovery: terminal reconciliation must settle the matching projected turn and clear `session.activeTurnId`; preserve a pre-acknowledgement start failure's `messageId`; and preserve terminal provider-event ordering during normal adapter shutdown.
+- Provider `turn.aborted` events may arrive after interrupt handling clears `session.activeTurnId`: use durable per-turn abort activity to reject later completion signals, condition session writes on the expected active turn at command application, project resolved turn IDs into activity, and clear tool-update fingerprints.
 - `TurnLifecycleRuntime` owns provider-session reconciliation, provider intent execution, runtime-event ingestion, and completion checkpoint ordering behind one `start`/`drain` interface; reconcile sessions before starting workers, and keep explicit thread-title regeneration outside this module.
 - Projection rows, projector cursors, and durable reconciliation intent must commit together; run shell-summary and attachment reconciliation only after commit, keep it idempotent, and resume pending work during bootstrap.
 - Attachment reconciliation must retain every persisted `ChatAttachment` variant through `attachmentRelativePath`, not just images; file attachments use `.bin`.
@@ -29,6 +30,7 @@
 - SQLite migration IDs are globally append-only, including divergent historical ledgers. New migrations must be idempotent repairs: ensure prerequisite tables exist before `ALTER` and append missing-column/table fixes above every historical ID rather than rewriting skipped IDs.
 - Backfill projection keys from event JSON in one grouped pass, then join by indexed IDs; a correlated event-history lookup per projection row makes startup work quadratic.
 - Materialize FTS5 `rank` before windowing; compute snippets only for selected rows.
+- Transcript search limits apply to thread winners, not raw messages: even a large message cap can hide a thread. Preserve score, timestamp, thread-ID, and message-ID tie-breaks before truncating; cover a dominant thread beyond the cap and equal-score hits across more than 20 threads.
 - Bound thread activity reads before decoding payloads; page legacy `NULL` sequences by timestamp and ID.
 - Fast-append projected thread activity only when the current array is comparator-sorted, its ID is new, and it belongs at or after the tail; restart-loaded, duplicate, and out-of-order activity must retain the filter/sort fallback and 500-item cap.
 - History pagination availability must follow the rendered turn, not total thread activity; during live caps, mark history only when an activity from that turn is actually evicted.
@@ -42,6 +44,7 @@
 
 ## Desktop packaging and React state
 
+- Chat thread URLs can outlive a desktop backend port. Resolve stale loopback links by their explicitly registered environment ID, while preserving exact-origin environment bindings and keeping arbitrary website URLs external.
 - Work-log display paths must use verbatim provider candidates, not Git-normalized changed paths: absolute patch paths are rejected without a cwd. Prefer raw input/ACP locations over shortened previews, and never treat JSON output as a filename.
 - Keep visited work-log bodies local to their virtual timeline row, lazy before first expansion, and hidden after collapse. Preserve mounted details through closing/reversal so output parsing and DOM reconstruction do not interrupt the animation.
 - Command labels must come from input metadata, never a tool's output/detail fallback. Repeated completed work may be folded for display, but preserve every call and keep distinct commands, paths, turns, active calls, and failures separate.
@@ -90,6 +93,7 @@
 ## Delegation and handoff transactions
 
 - Reused children need explicit assignment identity on reports and a checkpoint generation fence; never infer a late report's assignment from the child's current metadata. Queue an assignment or decision response in the same transaction as its lifecycle change.
+- Execution authority is a (dispatch, turn) pair minted and bound server-side: mint the dispatch at delegation creation, bind/rotate it at session-turn transitions, and require reports to present the reporting execution's own turn from immutable per-prompt context. Never stamp MCP reports from a mutable session-wide active turn. Fence every attempt-scoped mutation path (explicit reports, checkpoint completions, runtime failures), including minted-but-unbound windows, before delegation, decision, wait, or queue mutation; return explicit accepted/already-recorded/stale verdicts through the dispatch result and keep pre-fence key formats byte-identical for upgrade replays.
 - Keep an undelivered decision response correlated with its original report until dispatch. Deleting it restores the question; deleting a queued assignment must terminate that assignment rather than strand it.
 - Persist collection deadlines and reconstruct scoped timers on restart. A delayed nudge must not block explicit user work, and a decision's delivery or dismissal must not resolve the decision. Keep only current assignment/decision state in thread metadata; historical reports belong to the existing event/activity log.
 - Coalesce drain requests received while a thread is already draining; dropping a deadline wake defers ready work to the recovery sweep. Failed automatic nudges must remain retryable without blocking explicit queued turns.
@@ -127,6 +131,12 @@
 - Resolve preferred/fallback checkpoint refs once inside the diff operation and reuse their commit OIDs for projection and Git diff; separate existence preflights duplicate Git work and can race ref updates.
 
 ## Release builds and mobile integration
+
+- Root build commands must name real package tasks, not self-pruned recursive aliases. Stamp web inputs before compilation, compare after compilation and before server packaging, and reject missing/stale clients rather than shipping a successful headless-only artifact.
+- Web freshness includes every directly imported workspace package and the normalized effective public build configuration, not only tracked web files. Hash configuration rather than recording values, and keep ordinary strict default-directory resolution out of an explicit discovery picker.
+- Resumed host setup must not restart an already-current healthy service merely to check readiness. Preserve installed bind/cwd settings on updates, and reuse one revocable CLI session across bounded provisioning polls.
+- Remote setup must resolve a concrete local base directory and never replace a live desktop or foreground owner. A background owner remains under managed-service health recovery; preserve saved bind/cwd settings and fail closed on unreadable ownership state.
+- Fork release CLI packages need their own executable name and GitHub release assets. Do not copy pnpm selector-style overrides into npm manifests: selectors such as `parent>child` are invalid npm package names.
 
 - Keep mobile chat virtual-cell geometry synchronous: interrupted Reanimated layout transitions can finish at stale positions after text resizing or scroll-anchor corrections. Preserve opacity/chevron animations, and inspect native frames visually; LegendList's reported positions can remain correct while UIKit draws gaps or overlaps.
 - Installer path checks may ascend missing ancestors only after `ENOENT` and an absent `lstat` entry; permission/I/O errors and dangling or looping symlinks must not become accepted lexical paths.
@@ -212,6 +222,9 @@
 
 - Migrations that `ALTER` a table created by an earlier ID must first ensure that table exists: a divergent ledger high-water mark can skip the CREATE (e.g. 033 `projection_queued_turns`) and leave later migrations such as 056 failing with `no such table`, blocking CLI/server startup. Prefer reusing the earlier migration's idempotent `CREATE IF NOT EXISTS` before adding columns.
 - Divergent ledgers can also skip mid-range column migrations while still advancing past them (e.g. 29-34 reused for unrelated names). Later startup then fails with `no such column` on shell/thread projection (`parent_thread_id`, `pending_runtime_mode`, `resume_cursor_json`, turn-file checkpoint columns). Append an idempotent repair migration above every historical ledger ID rather than rewriting the skipped IDs.
+- Generated columns are hidden from `PRAGMA table_info` (use `table_xinfo`): a `table_info` idempotency guard re-runs `ADD COLUMN` and fails with a duplicate column error, and migration tests asserting via `table_info` pass vacuously. Guard and assert generated columns with `table_xinfo`.
+- Generated column expressions must be total over real rows: `json_extract` throws `malformed JSON` on invalid payloads, which fails the INSERT (snapshot capping happens before decode, so invalid rows legitimately exist). Guard extractions with `json_valid`.
+- `NodeSqliteClient` decides reader vs writer via `statement.columns().length`: preparing `ALTER ... ADD COLUMN ... STORED` reports a `raise(ABORT, 'cannot add a STORED column')` pseudo-column, so a pure-write DDL takes the `.all()` reader path. It still applies today, but DDL behavior depends on statement-shape sniffing rather than intent — prefer metadata-only changes such as VIRTUAL generated columns, and assert the resulting schema in the migration test, not just a clean run.
 
 ## Client state and completion
 

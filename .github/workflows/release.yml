@@ -456,8 +456,23 @@ jobs:
 
       - name: Build CLI package
         run: pnpm --filter=t3 build
+        env:
+          T3CODE_RELEASE_CHANNEL: ${{ needs.preflight.outputs.release_channel }}
+
+      - name: Package fork CLI release
+        if: github.repository == 'ronak-guliani/t3code'
+        run: node scripts/package-cli-release.ts
+
+      - name: Upload fork CLI release
+        if: github.repository == 'ronak-guliani/t3code'
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-release
+          path: release-cli/*
+          if-no-files-found: error
 
       - name: Publish CLI package
+        if: github.repository != 'ronak-guliani/t3code'
         run: node apps/server/scripts/cli.ts publish --tag "${{ needs.preflight.outputs.cli_dist_tag }}" --app-version "${{ needs.preflight.outputs.version }}" --verbose
 
   release:
@@ -496,6 +511,13 @@ jobs:
         with:
           pattern: desktop-*
           merge-multiple: true
+          path: release-assets
+
+      - name: Download fork CLI artifacts
+        if: github.repository == 'ronak-guliani/t3code'
+        uses: actions/download-artifact@v8
+        with:
+          name: cli-release
           path: release-assets
 
       - name: Merge macOS updater manifests
@@ -578,6 +600,13 @@ jobs:
             release-assets/*.yml
           fail_on_unmatched_files: true
           token: ${{ steps.app_token.outputs.token }}
+
+      - name: Attach fork CLI assets
+        if: github.repository == 'ronak-guliani/t3code'
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${{ needs.preflight.outputs.tag }}" release-assets/t3code-cli.tgz release-assets/t3code-cli.sha256 release-assets/install-t3-cli.mjs
 
   finalize:
     name: Finalize release

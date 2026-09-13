@@ -6,8 +6,17 @@ import { defineConfig } from "vite";
 import pkg from "./package.json" with { type: "json" };
 
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import {
+  clientConfigurationFingerprint,
+  clientSourceFingerprint,
+} from "../../scripts/lib/client-build.ts";
+import { fileURLToPath } from "node:url";
 
 const repoEnv = loadRepoEnv();
+const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+const buildEnvironment = { ...process.env };
+const configurationFingerprint = clientConfigurationFingerprint(repoRoot, buildEnvironment);
+let sourceFingerprint: string;
 Object.assign(process.env, repoEnv);
 
 const port = Number(process.env.PORT ?? 5733);
@@ -51,6 +60,32 @@ const devProxyTarget = resolveDevProxyTarget(configuredWsUrl);
 
 export default defineConfig({
   plugins: [
+    {
+      name: "t3-client-build-stamp",
+      apply: "build",
+      buildStart() {
+        sourceFingerprint = clientSourceFingerprint(repoRoot);
+      },
+      generateBundle() {
+        if (
+          clientSourceFingerprint(repoRoot) !== sourceFingerprint ||
+          clientConfigurationFingerprint(repoRoot, buildEnvironment) !== configurationFingerprint
+        ) {
+          throw new Error(
+            "Web sources or configuration changed during the build. Rerun pnpm build.",
+          );
+        }
+        this.emitFile({
+          type: "asset",
+          fileName: ".t3-build.json",
+          source: JSON.stringify({
+            version: 2,
+            fingerprint: sourceFingerprint,
+            configuration: configurationFingerprint,
+          }),
+        });
+      },
+    },
     tanstackRouter(),
     react(),
     babel({

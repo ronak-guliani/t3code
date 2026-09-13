@@ -435,6 +435,37 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it.each(["http://127.0.0.1:3773", "http://localhost:4773", "http://[::1]:4773"])(
+    "navigates local thread links from %s inside the app",
+    async (origin) => {
+      const linkedThreadId = ThreadId.make("bc880b45-fd48-42db-98fa-f211bae7cc0a");
+      addThreadSummary(linkedThreadId, "Replacement thread");
+      const screen = await render(
+        <ChatMarkdown
+          text={`[replacement thread](${origin}/${threadRef.environmentId}/${linkedThreadId})`}
+          cwd="/repo/project"
+          threadRef={threadRef}
+        />,
+      );
+
+      try {
+        const link = page.getByRole("link", { name: "Open thread replacement thread" });
+        await expect
+          .element(link)
+          .toHaveAttribute("href", `/${threadRef.environmentId}/${linkedThreadId}`);
+        await expect.element(link).not.toHaveAttribute("target");
+        await link.click();
+        expect(navigateMock).toHaveBeenCalledWith({
+          to: "/$environmentId/$threadId",
+          params: { environmentId: threadRef.environmentId, threadId: linkedThreadId },
+        });
+        expect(openPreviewMock).not.toHaveBeenCalled();
+      } finally {
+        await screen.unmount();
+      }
+    },
+  );
+
   it("routes reference-style pull request links through internal navigation", async () => {
     const eventHandler = vi.fn();
     window.addEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, eventHandler);

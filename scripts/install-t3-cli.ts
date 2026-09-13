@@ -280,7 +280,7 @@ async function main() {
     const baseDir = resolve(values["base-dir"] ?? process.env.T3CODE_HOME ?? join(home, ".t3"));
     // Run setup with the same normalized build environment so deployments
     // configured only in repo env files resolve identically at setup time.
-    execFileSync(process.execPath, [entry, "connect", "--base-dir", baseDir], {
+    execFileSync(process.execPath, [entry, "connect", "--role", "host", "--base-dir", baseDir], {
       cwd: repoRoot,
       env,
       stdio: "inherit",

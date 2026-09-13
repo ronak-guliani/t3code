@@ -49,6 +49,14 @@ export const ListProjectionThreadUserInputActivitiesInput = Schema.Struct({
 export type ListProjectionThreadUserInputActivitiesInput =
   typeof ListProjectionThreadUserInputActivitiesInput.Type;
 
+export const HasProjectionThreadActivityKindForTurnInput = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  kind: Schema.String,
+});
+export type HasProjectionThreadActivityKindForTurnInput =
+  typeof HasProjectionThreadActivityKindForTurnInput.Type;
+
 /**
  * Narrow activity row for user-input lifecycle derivation: kind plus
  * payload only, without tone or summary columns.
@@ -98,6 +106,13 @@ export interface ProjectionThreadActivityRepositoryShape {
   readonly listUserInputLifecycleByThreadId: (
     input: ListProjectionThreadUserInputActivitiesInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadUserInputActivity>, ProjectionRepositoryError>;
+
+  /**
+   * Checks whether a concrete turn has a projected activity of the requested kind.
+   */
+  readonly hasKindForTurn: (
+    input: HasProjectionThreadActivityKindForTurnInput,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
 
   /**
    * Delete projected thread activity rows by thread.

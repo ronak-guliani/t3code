@@ -1824,10 +1824,22 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           reasoning: getModelSelectionStringOptionValue(turnModelSelection, "reasoning"),
         });
 
+        if (!input.input?.trim() && (!input.attachments || input.attachments.length === 0)) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "sendTurn",
+            issue: "Turn requires non-empty text or attachments.",
+          });
+        }
+
         const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
         if (input.input?.trim()) {
           promptParts.push({ type: "text", text: input.input.trim() });
         }
+        promptParts.push({
+          type: "text",
+          text: `T3 execution context: when calling report_to_parent during this turn, pass originTurnId="${turnId}" exactly. This value identifies this execution and must not be replaced with a later turn ID.`,
+        });
         if (input.attachments && input.attachments.length > 0) {
           for (const attachment of input.attachments) {
             const attachmentPath = resolveAttachmentPath({
@@ -1858,14 +1870,6 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
               mimeType: attachment.mimeType,
             });
           }
-        }
-
-        if (promptParts.length === 0) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "sendTurn",
-            issue: "Turn requires non-empty text or attachments.",
-          });
         }
 
         ctx.activeTurnId = turnId;

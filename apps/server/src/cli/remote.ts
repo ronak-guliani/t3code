@@ -7,9 +7,42 @@ import {
   HttpClientRequest,
   HttpClientResponse,
 } from "effect/unstable/http";
+import { resolveBaseDir } from "../os-jank.ts";
 import { withBorrowedBearerToken, printJson } from "./client.ts";
+import { inspectRuntimeOwnership } from "./installation.ts";
+import { ensureBackgroundServiceForBaseDir } from "./service.ts";
 
 const baseDir = Flag.string("base-dir").pipe(Flag.optional);
+
+export const makeEnsureRemoteSetupHost =
+  (dependencies: {
+    readonly inspectRuntimeOwnership: typeof inspectRuntimeOwnership;
+    readonly ensureBackgroundServiceForBaseDir: typeof ensureBackgroundServiceForBaseDir;
+  }) =>
+  (resolvedBaseDir: string) =>
+    Effect.gen(function* () {
+      const runtime = yield* Effect.tryPromise(() =>
+        dependencies.inspectRuntimeOwnership(resolvedBaseDir),
+      );
+      if (runtime.state === "running" && runtime.owner !== "background") return;
+      const outcome = yield* dependencies.ensureBackgroundServiceForBaseDir(resolvedBaseDir, {
+        restartRequired: runtime.state === "stopped",
+      });
+      if (outcome !== "ready") {
+        yield* Console.log(
+          outcome === "installed"
+            ? "No T3 host was running, so the background service was installed and started."
+            : outcome === "repaired"
+              ? "The background service was repaired and started."
+              : "The background service was restarted.",
+        );
+      }
+    });
+
+const ensureRemoteSetupHost = makeEnsureRemoteSetupHost({
+  inspectRuntimeOwnership,
+  ensureBackgroundServiceForBaseDir,
+});
 
 export const remoteRequest = (baseDir: Option.Option<string>, body?: object) =>
   withBorrowedBearerToken(
@@ -39,21 +72,28 @@ export const remoteRequest = (baseDir: Option.Option<string>, body?: object) =>
   ).pipe(Effect.provide(FetchHttpClient.layer));
 
 const setup = Command.make("setup", { baseDir }).pipe(
-  Command.withDescription("Configure a permanent Cloudflare Tunnel for this running host."),
+  Command.withDescription(
+    "Start this host if needed and configure its permanent Cloudflare Tunnel.",
+  ),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      yield* remoteRequest(flags.baseDir);
+      const resolvedBaseDir = yield* resolveBaseDir(
+        Option.getOrUndefined(flags.baseDir) ?? process.env.T3CODE_HOME,
+      );
+      yield* ensureRemoteSetupHost(resolvedBaseDir);
+      const targetBaseDir = Option.some(resolvedBaseDir);
+      yield* remoteRequest(targetBaseDir);
       yield* Console.log(
         [
           "Create a named Cloudflare Tunnel and public HTTPS hostname in your own account.",
           "Route it to this T3 server's fixed loopback HTTP port. Do not run a second connector.",
           "T3 will store the token host-side and supervise the connector. Cloudflare carries your app traffic.",
-          "Only paired devices can access T3. Keep the host awake and run it as a background service.",
+          "Only paired devices can access T3. Keep this host awake; setup starts the background service when no other T3 process owns it.",
         ].join("\n"),
       );
       const publicUrl = yield* Prompt.run(Prompt.text({ message: "Permanent HTTPS URL" }));
       const token = yield* Prompt.run(Prompt.password({ message: "Tunnel token (hidden)" }));
-      const result = yield* remoteRequest(flags.baseDir, {
+      const result = yield* remoteRequest(targetBaseDir, {
         action: "setup",
         publicUrl,
         connectorToken: Redacted.value(token),
