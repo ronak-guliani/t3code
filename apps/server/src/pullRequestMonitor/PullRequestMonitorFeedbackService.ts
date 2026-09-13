@@ -49,7 +49,7 @@ import { sendQueuedTurn } from "./threadDelivery.ts";
 import { buildWakePrompt } from "./wakePrompt.ts";
 import {
   resolveFindingDetail,
-  findingContextParts,
+  findingContextTurns,
   formatFindingDetail,
 } from "./findingContext.ts";
 
@@ -690,6 +690,10 @@ export const layer = Layer.effect(
 
         // Bounded events reconstructed from durable revision payloads.
         const events: Array<PullRequestMonitorActionableEvent> = [];
+        const eventsByRevision = new Map<
+          PullRequestMonitorFeedbackRevisionId,
+          PullRequestMonitorActionableEvent
+        >();
         const revisionSummaries: string[] = [];
         for (const revision of revisions) {
           revisionSummaries.push(revision.summary);
@@ -704,6 +708,7 @@ export const layer = Layer.effect(
             typeof (payload.event as { kind: unknown }).kind === "string"
           ) {
             events.push(payload.event as PullRequestMonitorActionableEvent);
+            eventsByRevision.set(revision.id, payload.event as PullRequestMonitorActionableEvent);
           }
         }
 
@@ -716,22 +721,27 @@ export const layer = Layer.effect(
             .join("\n\n");
         // Choose the layout from the immutable batch, so partial retries never renumber parts.
         const inlineBatch = findingText(batchRevisions).length <= 12_000;
-        const parts = inlineBatch
+        const parts: ReadonlyArray<{
+          key: string;
+          text: string;
+          revisionId?: PullRequestMonitorFeedbackRevisionId;
+        }> = inlineBatch
           ? [{ key: "", text: findingText(revisions) }]
-          : [
-              {
-                key: "",
-                text: `${revisions.length} delivered revisions:\n${revisions
-                  .slice(0, 20)
-                  .map(
-                    (revision) => `${revision.id} (item ${revision.itemId}): ${revision.summary}`,
-                  )
-                  .join(
-                    "\n",
-                  )}${revisions.length > 20 ? "\nMore revisions: retrieve this delivery and follow nextOffset." : ""}`,
-              },
-              ...(canRetrieve ? [] : findingContextParts(revisions, false)),
-            ];
+          : canRetrieve
+            ? [
+                {
+                  key: "",
+                  text: `${revisions.length} delivered revisions:\n${revisions
+                    .slice(0, 20)
+                    .map(
+                      (revision) => `${revision.id} (item ${revision.itemId}): ${revision.summary}`,
+                    )
+                    .join(
+                      "\n",
+                    )}${revisions.length > 20 ? "\nMore revisions: retrieve this delivery and follow nextOffset." : ""}`,
+                },
+              ]
+            : findingContextTurns(revisions);
         const promptInput = {
           prNumber: monitor.number,
           repository: monitor.repository,
@@ -750,12 +760,28 @@ export const layer = Layer.effect(
             (part) => {
               const findingContext = part.text.length === 0 ? undefined : part.text;
               const suffix = part.key.length === 0 ? "" : `:${part.key}`;
+              const revisionEvent =
+                part.revisionId === undefined ? undefined : eventsByRevision.get(part.revisionId);
+              const turnEvents =
+                part.revisionId === undefined
+                  ? events
+                  : revisionEvent === undefined
+                    ? []
+                    : [revisionEvent];
+              const turnSummaries =
+                part.revisionId === undefined
+                  ? revisionSummaries
+                  : revisions
+                      .filter((revision) => revision.id === part.revisionId)
+                      .map((revision) => revision.summary);
               return sendQueuedTurn({
                 threadId: ownerThreadId,
                 commandId: CommandId.make(`${delivery.commandId}${suffix}`),
                 messageId: MessageId.make(`${delivery.messageId}${suffix}`),
                 text: buildWakePrompt({
                   ...promptInput,
+                  events: turnEvents,
+                  revisionSummaries: turnSummaries,
                   ...(findingContext === undefined ? {} : { findingContext }),
                 }),
                 ...(findingContext === undefined ? {} : { findingContext }),
@@ -763,9 +789,9 @@ export const layer = Layer.effect(
                 pullRequestNumber: monitor.number,
                 headSha: snapshot.headSha,
                 sourceRevision: snapshot.sourceRevision,
-                events,
+                events: turnEvents,
                 deliveryId: delivery.id,
-                revisionSummaries,
+                revisionSummaries: turnSummaries,
                 availableTools,
               });
             },

@@ -184,6 +184,7 @@ const knownThreads = new Map<
     archivedAt: string | null;
     busy: boolean;
     copilotSession?: boolean;
+    instanceId?: string;
     pullRequest: { number: number; url: string } | null;
   }
 >();
@@ -220,7 +221,7 @@ const fakeProjections = {
         projectId: row.projectId,
         worktreePath: row.worktreePath,
         archivedAt: row.archivedAt,
-        modelSelection: { instanceId: "copilot", model: "gpt-test" },
+        modelSelection: { instanceId: row.instanceId ?? "copilot", model: "gpt-test" },
         latestTurn: row.busy ? { state: "running" } : null,
         session:
           row.busy || row.copilotSession
@@ -1845,6 +1846,55 @@ layer("PullRequestMonitorService", (it) => {
         assert.strictEqual(exact.items[0]?.currentRevisionId, updated.findings[0]?.revisionId);
         assert.notStrictEqual(exact.revisions?.[0]?.id, exact.items[0]?.currentRevisionId);
       }),
+  );
+
+  it.effect("queues complete scoped evidence before a no-tool owner can start remediation", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const feedback = yield* PullRequestMonitorFeedbackService;
+      const store = yield* PullRequestMonitorFeedbackStore.make;
+      const owner = ThreadId.make("no-tool-context-owner");
+      const reviewer = ThreadId.make("no-tool-context-reviewer");
+      seedThread(owner);
+      seedThread(reviewer);
+      knownThreads.set(owner, { ...knownThreads.get(owner)!, instanceId: "codex" });
+      const reference = { projectId, repository: "acme/app", number: 9068 };
+      yield* monitors.start({ ...reference, ownerThreadId: owner });
+      const bodies = [
+        "First finding evidence.\n".repeat(800),
+        "Second finding evidence.\n".repeat(800),
+      ];
+      const submitted = yield* monitors.submitFindings({
+        reference,
+        reviewThreadId: reviewer,
+        findings: bodies.map((detail, index) => ({
+          key: `complete-${index}`,
+          title: `Complete finding ${index}`,
+          severity: "major",
+          detail,
+        })),
+      });
+      const state = yield* store.getState(submitted.monitor.id);
+      yield* store.appendPendingRevisionIds({
+        monitorId: submitted.monitor.id,
+        revisionIds: state.pendingRevisionIds,
+        debounceUntil: "1970-01-01T00:00:00.000Z",
+        updatedAt: "1970-01-01T00:00:00.000Z",
+      });
+      const before = queuedMessages.length;
+      yield* feedback.flushDueDeliveries;
+      const messages = queuedMessages.slice(before);
+      assert.strictEqual(messages.length, 2);
+      for (const [index, body] of bodies.entries()) {
+        const message = messages.find((text) => text.includes(body));
+        assert.isDefined(message);
+        assert.isFalse(message!.includes(`Complete finding ${1 - index}`));
+        assert.isFalse(message!.includes("Wait for all parts"));
+        assert.isFalse(message!.includes("pr_monitor_context"));
+      }
+      yield* feedback.flushDueDeliveries;
+      assert.strictEqual(queuedMessages.length - before, 2);
+    }),
   );
 
   it.effect("ignores findings reviewed against a stale pull request head", () =>

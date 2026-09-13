@@ -102,7 +102,7 @@ function toolGuidance(availableTools: ReadonlyArray<string>): string {
   }
   if (lines.length === 0) {
     lines.push(
-      "- No monitor tools are mounted in this session; work from the durable summaries above.",
+      "- No monitor tools are mounted in this session; use the complete evidence supplied here. Request original context when evidence is missing.",
     );
   }
   return lines.join("\n");
@@ -206,7 +206,7 @@ ${toolGuidance(input.availableTools ?? [])}
 ${
   input.availableTools?.includes("pr_monitor_context")
     ? `- Before editing, retrieve exact delivered revisions with pr_monitor_context({repository: ${JSON.stringify(input.repository)}, number: ${input.prNumber}, deliveryId: ${JSON.stringify(input.deliveryId)}, offset: 0, limit: 10}); follow nextOffset until null. Compare reviewedHeadSha with the current code.`
-    : "- Read all numbered finding-context parts before editing. Never act on a title alone."
+    : "- Remediate only the findings whose complete evidence is included in this turn. Never act on a title alone."
 }`;
   const budget = Math.max(0, 3_500 - header.length - policy.length - 4);
   const overflow = "\n(additional activity omitted; see context)";

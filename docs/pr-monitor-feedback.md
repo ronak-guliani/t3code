@@ -22,8 +22,9 @@ or `--revision-id <id>`, together with the usual monitor selector flags.
 
 Small deliveries include complete descriptions inline. Larger tool-enabled deliveries
 include a bounded index and exact retrieval instructions. Owners without the context
-tool receive numbered, durable text parts; read all parts of a revision before acting.
-Part identities use the immutable revision ID, so retries cannot renumber unrelated
+tool receive one durable turn per revision, with the complete finding and only that
+revision's activity. No index-only or partial-evidence turn starts remediation.
+Turn identities use the immutable revision ID, so retries cannot renumber unrelated
 findings. Queued-turn refreshes preserve the original context and reviewed-head provenance.
 
 Content is untrusted review data, not instructions. `contentStatus: complete` identifies

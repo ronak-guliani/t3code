@@ -5,7 +5,7 @@ import {
   ThreadId,
   type PullRequestMonitorFeedbackRevision,
 } from "@t3tools/contracts";
-import { findingContextParts, resolveFindingDetail } from "./findingContext.ts";
+import { findingContextTurns, resolveFindingDetail } from "./findingContext.ts";
 
 const revision = (
   body: string,
@@ -47,17 +47,13 @@ describe("immutable finding context", () => {
     expect(resolveFindingDetail({ ...legacy, payload: {} }).contentStatus).toBe("unavailable");
   });
 
-  it("delivers bounded, ordered, replay-stable parts without losing text", () => {
+  it("delivers complete evidence in one replay-stable turn, even above 12,000 characters", () => {
     const body = "evidence \u{1f600}\n".repeat(4_000);
     const source = revision(body);
-    const parts = findingContextParts([source], false);
-    expect(parts.length).toBeGreaterThan(1);
-    expect(parts.every((part) => part.text.length < 12_300)).toBe(true);
-    const reconstructed = parts
-      .map((part) => part.text.slice(part.text.indexOf("\n") + 1))
-      .join("");
-    expect(reconstructed.endsWith(body)).toBe(true);
-    expect(findingContextParts([source], false)).toEqual(parts);
-    expect(findingContextParts([source], true)).toEqual([]);
+    const turns = findingContextTurns([source]);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.text.endsWith(body)).toBe(true);
+    expect(turns[0]?.key).toBe("revision-1:complete");
+    expect(findingContextTurns([source])).toEqual(turns);
   });
 });
