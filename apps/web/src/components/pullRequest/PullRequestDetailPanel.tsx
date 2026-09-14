@@ -59,22 +59,23 @@ import {
 } from "./pullRequestReviewStore";
 import {
   PullRequestActorLabel,
+  PullRequestCheckStatusIcon,
   PullRequestDiffStat,
   PullRequestStateGlyph,
   pullRequestActionLabel,
-  pullRequestCheckDotClassName,
+  pullRequestCheckStatusLabel,
   pullRequestCheckSummaryLabel,
+  pullRequestLabelColor,
   summarizePullRequestChecks,
   toRenderablePullRequestMarkdown,
 } from "./pullRequestPresentation";
-import { PullRequestMonitorStrip } from "./PullRequestMonitorStrip";
 
-type DetailTab = "summary" | "conversation" | "code";
+type DetailTab = "summary" | "timeline" | "code";
 type PullRequestDetailView = PullRequestDetail & PullRequestActivity;
 
 const TABS: readonly { readonly value: DetailTab; readonly label: string }[] = [
   { value: "summary", label: "Summary" },
-  { value: "conversation", label: "Conversation" },
+  { value: "timeline", label: "Timeline" },
   { value: "code", label: "Code" },
 ];
 
@@ -730,7 +731,7 @@ export function PullRequestDetailPanel({
         ? "text-muted-foreground"
         : "text-emerald-500";
   const conversationItems = detail.comments.filter((item) => item.kind !== "review-comment");
-  const conversationCount = conversationItems.length;
+  const timelineCount = conversationItems.length + detail.commits.length;
   const tabs = detail.capabilities.diff ? TABS : TABS.filter((tab) => tab.value !== "code");
   const activeTab = tabs.some((item) => item.value === tab) ? tab : "summary";
   const reviewKey = pullRequestReviewKey(reference);
@@ -887,8 +888,8 @@ export function PullRequestDetailPanel({
         <div aria-label="Pull request detail tabs" className="mt-3 flex gap-1" role="tablist">
           {tabs.map((item) => {
             const count =
-              item.value === "conversation"
-                ? conversationCount
+              item.value === "timeline"
+                ? timelineCount
                 : item.value === "code"
                   ? detail.commits.length
                   : null;
@@ -918,9 +919,6 @@ export function PullRequestDetailPanel({
           })}
         </div>
       </header>
-      <div className="border-b border-border px-4 py-2">
-        <PullRequestMonitorStrip environmentId={environmentId} reference={reference} />
-      </div>
       <div
         aria-labelledby={`pr-tab-${activeTab}`}
         className="min-h-0 flex-1 overflow-y-auto"
@@ -937,15 +935,22 @@ export function PullRequestDetailPanel({
               <section>
                 <h2 className="text-sm font-medium">Labels</h2>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {detail.labels.map((label) => (
-                    <span
-                      className="rounded border border-border/70 px-2 py-0.5 text-xs"
-                      key={label.name}
-                      style={label.color ? { borderColor: `#${label.color}` } : undefined}
-                    >
-                      {label.name}
-                    </span>
-                  ))}
+                  {detail.labels.map((label) => {
+                    const dot = pullRequestLabelColor(label.color);
+                    return (
+                      <span
+                        className="inline-flex max-w-40 min-w-0 items-center gap-1 rounded-full border border-border/70 bg-muted/40 py-0 pr-1.5 pl-1 text-[10px] leading-3.5 text-muted-foreground"
+                        key={label.name}
+                      >
+                        <span
+                          aria-hidden
+                          className="size-2 shrink-0 rounded-full bg-muted-foreground"
+                          {...(dot ? { style: { backgroundColor: dot } } : {})}
+                        />
+                        <span className="truncate">{label.name}</span>
+                      </span>
+                    );
+                  })}
                 </div>
               </section>
             ) : null}
@@ -954,7 +959,7 @@ export function PullRequestDetailPanel({
               <ul className="mt-2 space-y-1 text-sm">
                 {detail.checks.map((check) => (
                   <li className="flex items-center gap-2" key={check.name}>
-                    <span className={pullRequestCheckDotClassName(check.status)}>●</span>
+                    <PullRequestCheckStatusIcon status={check.status} />
                     {check.url ? (
                       <a
                         className="hover:underline"
@@ -967,7 +972,9 @@ export function PullRequestDetailPanel({
                     ) : (
                       check.name
                     )}
-                    <span className="text-xs text-muted-foreground">{check.status}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {pullRequestCheckStatusLabel(check.status)}
+                    </span>
                   </li>
                 ))}
                 {detail.checks.length === 0 ? (
@@ -1064,15 +1071,15 @@ export function PullRequestDetailPanel({
             ) : null}
           </div>
         ) : null}
-        {activeTab === "conversation" ? (
+        {activeTab === "timeline" ? (
           <div className="space-y-4 p-4">
             {activityQuery.isPending ? (
-              <p className="text-sm text-muted-foreground">Loading conversation…</p>
+              <p className="text-sm text-muted-foreground">Loading timeline…</p>
             ) : null}
             {activityQuery.error ? (
               <div className="flex items-center gap-3 rounded border border-destructive/40 p-3 text-sm text-destructive">
                 <span className="min-w-0 flex-1">
-                  Could not load the full conversation: {errorMessage(activityQuery.error)}
+                  Could not load the full timeline: {errorMessage(activityQuery.error)}
                 </span>
                 <Button size="xs" variant="outline" onClick={() => void activityQuery.refetch()}>
                   Retry
