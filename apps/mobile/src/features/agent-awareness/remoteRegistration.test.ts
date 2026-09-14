@@ -312,28 +312,41 @@ describe("makeRelayDeviceRegistrationRequest", () => {
     expect(resolveApsEnvironment(undefined)).toBe("production");
   });
 
-  it.each([{ iosPersonalTeamBuild: true }, { agentAwarenessPushEnabled: false }])(
-    "disables push features when the build opts out: %o",
-    (extra) => {
-      Constants.expoConfig!.extra = extra;
-
-      expect(
-        makeRelayDeviceRegistrationRequest({
-          deviceId: "device-1",
-          label: "Julius's iPhone",
-          iosMajorVersion: 18,
-          appVersion: "1.0.0",
-          pushToken: "apns-token",
-          pushToStartToken: "push-to-start-token",
-          notificationsEnabled: true,
-          preferences: {},
-        }).preferences,
-      ).toMatchObject({
-        liveActivitiesEnabled: false,
-        notificationsEnabled: false,
-      });
+  it.each([
+    {
+      extra: { iosPersonalTeamBuild: true },
+      expected: { liveActivitiesEnabled: false, notificationsEnabled: false },
     },
-  );
+    {
+      extra: {
+        agentAwarenessLiveActivitiesEnabled: false,
+        agentAwarenessPushEnabled: false,
+      },
+      expected: { liveActivitiesEnabled: false, notificationsEnabled: false },
+    },
+    {
+      extra: {
+        agentAwarenessLiveActivitiesEnabled: true,
+        agentAwarenessPushEnabled: false,
+      },
+      expected: { liveActivitiesEnabled: true, notificationsEnabled: false },
+    },
+  ])("reports independently available awareness features: $extra", ({ extra, expected }) => {
+    Constants.expoConfig!.extra = extra;
+
+    expect(
+      makeRelayDeviceRegistrationRequest({
+        deviceId: "device-1",
+        label: "Julius's iPhone",
+        iosMajorVersion: 18,
+        appVersion: "1.0.0",
+        pushToken: "apns-token",
+        pushToStartToken: "push-to-start-token",
+        notificationsEnabled: true,
+        preferences: {},
+      }).preferences,
+    ).toMatchObject(expected);
+  });
 
   it("marks notification delivery disabled when APNs permission is unavailable", () => {
     expect(

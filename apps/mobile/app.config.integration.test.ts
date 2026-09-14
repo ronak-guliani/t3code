@@ -41,6 +41,7 @@ describe("resolved Expo native configuration", () => {
     expect(config).toHaveProperty("extra.eas.projectId", "01272cd5-225c-47d4-978e-a7eb97c9e457");
     expect(config).toHaveProperty("ios.appleTeamId", "235XX73T5A");
     expect(config).toHaveProperty("_internal.modResults.ios.entitlements", {
+      "aps-environment": expect.any(String),
       "com.apple.security.application-groups": [`group.${id}`],
       "com.apple.developer.applesignin": ["Default"],
       "keychain-access-groups": [`$(AppIdentifierPrefix)${id}`],
@@ -52,6 +53,7 @@ describe("resolved Expo native configuration", () => {
       "com.t3tools.t3code://callback",
     );
     expect(config).toHaveProperty("extra.agentAwarenessPushEnabled", false);
+    expect(config).toHaveProperty("extra.agentAwarenessLiveActivitiesEnabled", true);
     expect(config).toHaveProperty("extra.clerk.publishableKey", expect.stringMatching(/^pk_/));
     expect(config).toHaveProperty("extra.clerk.jwtTemplate", expect.any(String));
     expect(config).toHaveProperty("extra.relay.url", expect.stringMatching(/^https:\/\//));
