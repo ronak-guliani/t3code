@@ -729,7 +729,8 @@ export function PullRequestDetailPanel({
       : checkSummary.pending > 0
         ? "text-muted-foreground"
         : "text-emerald-500";
-  const conversationCount = detail.comments.filter((item) => item.kind !== "review-comment").length;
+  const conversationItems = detail.comments.filter((item) => item.kind !== "review-comment");
+  const conversationCount = conversationItems.length;
   const tabs = detail.capabilities.diff ? TABS : TABS.filter((tab) => tab.value !== "code");
   const activeTab = tabs.some((item) => item.value === tab) ? tab : "summary";
   const reviewKey = pullRequestReviewKey(reference);
@@ -1078,26 +1079,24 @@ export function PullRequestDetailPanel({
                 </Button>
               </div>
             ) : null}
-            {detail.comments
-              .filter((item) => item.kind !== "review-comment")
-              .map((item) => (
-                <article className="border-b border-border/60 pb-4" key={item.id}>
-                  <div className="flex gap-2 text-xs text-muted-foreground">
-                    <PullRequestActorLabel actor={item.author} className="text-foreground" />
-                    <span>{formatRelativeTimeLabel(item.createdAt)}</span>
-                  </div>
-                  <div className="mt-2 text-sm">
-                    <ChatMarkdown
-                      cwd={detail.workspaceRoot}
-                      text={toRenderablePullRequestMarkdown(item.body)}
-                    />
-                  </div>
-                </article>
-              ))}
+            {conversationItems.map((item) => (
+              <article className="border-b border-border/60 pb-4" key={item.id}>
+                <div className="flex gap-2 text-xs text-muted-foreground">
+                  <PullRequestActorLabel actor={item.author} className="text-foreground" />
+                  <span>{formatRelativeTimeLabel(item.createdAt)}</span>
+                </div>
+                <div className="mt-2 text-sm">
+                  <ChatMarkdown
+                    cwd={detail.workspaceRoot}
+                    text={toRenderablePullRequestMarkdown(item.body)}
+                  />
+                </div>
+              </article>
+            ))}
             {detail.commentsTruncated ? (
               <p className="text-xs text-muted-foreground">
                 GitHub returned the most recent {detail.comments.length} of {detail.commentCount}{" "}
-                conversation items.
+                items; some line-level review comments may be missing.
               </p>
             ) : null}
             {detail.commits.length > 0 ? (
@@ -1115,7 +1114,7 @@ export function PullRequestDetailPanel({
                 </ul>
               </section>
             ) : null}
-            {detail.comments.every((item) => item.kind === "review-comment") ? (
+            {conversationItems.length === 0 ? (
               <p className="text-sm text-muted-foreground">No conversation yet.</p>
             ) : null}
           </div>

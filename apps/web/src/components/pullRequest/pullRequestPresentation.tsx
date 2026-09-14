@@ -119,13 +119,14 @@ function decodeHtmlEntities(value: string): string {
  */
 export function toRenderablePullRequestMarkdown(body: string): string {
   // Odd segments are fenced blocks (including unterminated blocks); even
-  // segments are prose, where inline code spans must remain untouched too.
+  // segments are prose, where inline code spans (single or multi-backtick)
+  // must remain untouched too.
   return splitFencedCodeBlocks(body)
     .map((segment, index) =>
       index % 2 === 1
         ? segment
         : segment
-            .split(/(`[^`\n]*`)/g)
+            .split(/(`+[^`\n]*?`+)/g)
             .map((inlineSegment, inlineIndex) =>
               inlineIndex % 2 === 1 ? inlineSegment : transformPullRequestMarkdown(inlineSegment),
             )

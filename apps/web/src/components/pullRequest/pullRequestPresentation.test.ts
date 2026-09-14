@@ -69,6 +69,12 @@ describe("toRenderablePullRequestMarkdown", () => {
   it("leaves inline code spans untouched", () => {
     expect(toRenderablePullRequestMarkdown("Use `<details>` here")).toBe("Use `<details>` here");
   });
+
+  it("leaves multi-backtick code spans untouched", () => {
+    expect(toRenderablePullRequestMarkdown("See `` <details> `` done")).toBe(
+      "See `` <details> `` done",
+    );
+  });
 });
 
 describe("summarizePullRequestChecks", () => {
