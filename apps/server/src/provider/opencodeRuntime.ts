@@ -144,6 +144,7 @@ export interface OpenCodeRuntimeShape {
   readonly runOpenCodeCommand: (input: {
     readonly binaryPath: string;
     readonly args: ReadonlyArray<string>;
+    readonly cwd?: string;
     readonly environment?: NodeJS.ProcessEnv;
   }) => Effect.Effect<OpenCodeCommandResult, OpenCodeRuntimeError>;
   readonly createOpenCodeSdkClient: (input: {
@@ -156,6 +157,7 @@ export interface OpenCodeRuntimeShape {
   ) => Effect.Effect<OpenCodeInventory, OpenCodeRuntimeError>;
   readonly loadInventoryFromCli: (input: {
     readonly binaryPath: string;
+    readonly cwd: string;
     readonly environment?: NodeJS.ProcessEnv;
   }) => Effect.Effect<OpenCodeInventory, OpenCodeRuntimeError>;
 }
@@ -411,6 +413,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         ChildProcess.make(spawnTarget, [...input.args], {
           shell,
           env: spawnEnv,
+          ...(input.cwd ? { cwd: input.cwd } : {}),
         }),
       );
       const [stdout, stderr, code] = yield* Effect.all(
@@ -673,17 +676,20 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
   const loadInventoryFromCli: OpenCodeRuntimeShape["loadInventoryFromCli"] = (input) =>
     Effect.gen(function* () {
       const env = input.environment !== undefined ? { environment: input.environment } : ({} as {});
+      const commandContext = { cwd: input.cwd, ...env };
 
       const runModelsCli = () =>
         runOpenCodeCommand({
           binaryPath: input.binaryPath,
           args: ["models", "--verbose"],
-          ...env,
+          ...commandContext,
         }).pipe(Effect.exit);
       const runAgentsCli = () =>
-        runOpenCodeCommand({ binaryPath: input.binaryPath, args: ["agent", "list"], ...env }).pipe(
-          Effect.exit,
-        );
+        runOpenCodeCommand({
+          binaryPath: input.binaryPath,
+          args: ["agent", "list"],
+          ...commandContext,
+        }).pipe(Effect.exit);
 
       // OpenCode CLI commands share SQLite state, so serialize them.
       let [modelsResult, agentsResult] = yield* Effect.all([runModelsCli(), runAgentsCli()], {

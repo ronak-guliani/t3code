@@ -33,6 +33,7 @@ const runtimeMock = {
     runVersionError: null as Error | null,
     versionStdout: DEFAULT_VERSION_STDOUT,
     inventoryError: null as Error | null,
+    inventoryCwds: [] as string[],
     closeCalls: 0,
     inventory: {
       providerList: { connected: [] as string[], all: [] as unknown[], default: {} },
@@ -43,6 +44,7 @@ const runtimeMock = {
     this.state.runVersionError = null;
     this.state.versionStdout = DEFAULT_VERSION_STDOUT;
     this.state.inventoryError = null;
+    this.state.inventoryCwds = [];
     this.state.closeCalls = 0;
     this.state.inventory = {
       providerList: { connected: [], all: [] as unknown[], default: {} },
@@ -94,13 +96,15 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           }),
         )
       : Effect.succeed(runtimeMock.state.inventory as OpenCodeInventory),
-  loadInventoryFromCli: () =>
-    runtimeMock.state.inventoryError
+  loadInventoryFromCli: (input) => {
+    runtimeMock.state.inventoryCwds.push(input.cwd);
+    return runtimeMock.state.inventoryError
       ? Effect.succeed({
           providerList: { all: [], default: {}, connected: [] as string[] },
           agents: [],
         } as OpenCodeInventory)
-      : Effect.succeed(runtimeMock.state.inventory as OpenCodeInventory),
+      : Effect.succeed(runtimeMock.state.inventory as OpenCodeInventory);
+  },
 };
 
 beforeEach(() => {
@@ -205,6 +209,14 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
       yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
 
       assert.equal(runtimeMock.state.closeCalls, 0);
+    }),
+  );
+
+  it.effect("runs local inventory commands in the target project directory", () =>
+    Effect.gen(function* () {
+      yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), "/tmp/opencode-project");
+
+      assert.deepEqual(runtimeMock.state.inventoryCwds, ["/tmp/opencode-project"]);
     }),
   );
 
