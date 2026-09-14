@@ -288,45 +288,63 @@ export function PullRequestReviewSheet(_props: PullRequestReviewSheetProps) {
     [prewarmPullRequest, startReview, startingPullRequestNumber],
   );
 
+  // Fixed-detent iOS sheets size their scroll view natively, not its flex ancestors.
+  const list = (
+    <FlatList
+      className="flex-1 bg-sheet"
+      data={rows}
+      keyExtractor={(pullRequest) => String(pullRequest.number)}
+      renderItem={renderPullRequest}
+      contentInset={{ bottom: Math.max(insets.bottom, 18) }}
+      contentContainerStyle={{
+        flexGrow: 1,
+        paddingTop: 12,
+        paddingBottom: Math.max(insets.bottom, 18),
+      }}
+      ListHeaderComponent={
+        Platform.OS === "ios" ? (
+          <Text
+            accessibilityRole="header"
+            className="px-5 pb-4 text-lg font-t3-bold text-foreground"
+          >
+            Review pull request
+          </Text>
+        ) : null
+      }
+      refreshControl={
+        disabledReason === null ? (
+          <RefreshControl refreshing={pullRequests.isPending} onRefresh={pullRequests.refresh} />
+        ) : undefined
+      }
+      ListEmptyComponent={
+        <View className="flex-1 items-center justify-center gap-3 px-8 py-12">
+          {pullRequests.isPending ? <ActivityIndicator /> : null}
+          {emptyMessage ? (
+            <>
+              <SymbolView
+                name="arrow.triangle.pull"
+                size={28}
+                tintColorClassName="accent-icon-subtle"
+                type="monochrome"
+              />
+              <Text className="text-center text-sm leading-normal text-foreground-muted">
+                {emptyMessage}
+              </Text>
+            </>
+          ) : null}
+        </View>
+      }
+    />
+  );
+
+  if (Platform.OS !== "android") {
+    return list;
+  }
+
   return (
     <View className="flex-1 bg-sheet">
-      {Platform.OS === "android" ? (
-        <AndroidSheetHeader title="Review pull request" onBack={() => navigation.goBack()} />
-      ) : null}
-      <FlatList
-        data={rows}
-        keyExtractor={(pullRequest) => String(pullRequest.number)}
-        renderItem={renderPullRequest}
-        contentInset={{ bottom: Math.max(insets.bottom, 18) }}
-        contentContainerStyle={{
-          flexGrow: 1,
-          paddingTop: 12,
-          paddingBottom: Math.max(insets.bottom, 18),
-        }}
-        refreshControl={
-          disabledReason === null ? (
-            <RefreshControl refreshing={pullRequests.isPending} onRefresh={pullRequests.refresh} />
-          ) : undefined
-        }
-        ListEmptyComponent={
-          <View className="flex-1 items-center justify-center gap-3 px-8 py-12">
-            {pullRequests.isPending ? <ActivityIndicator /> : null}
-            {emptyMessage ? (
-              <>
-                <SymbolView
-                  name="arrow.triangle.pull"
-                  size={28}
-                  tintColorClassName="accent-icon-subtle"
-                  type="monochrome"
-                />
-                <Text className="text-center text-sm leading-normal text-foreground-muted">
-                  {emptyMessage}
-                </Text>
-              </>
-            ) : null}
-          </View>
-        }
-      />
+      <AndroidSheetHeader title="Review pull request" onBack={() => navigation.goBack()} />
+      {list}
     </View>
   );
 }
