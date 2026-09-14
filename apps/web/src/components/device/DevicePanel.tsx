@@ -14,7 +14,7 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useRightPanelStore, type RightPanelSurface } from "~/rightPanelStore";
 import { Button } from "~/components/ui/button";
@@ -59,6 +59,8 @@ export function DevicePanel(props: {
   const [handle, setHandle] = useState<DeviceStreamHandle | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [axOverlay, setAxOverlay] = useState(false);
+  const [recovering, setRecovering] = useState(false);
+  const recoveryTargetRef = useRef<string | null>(null);
   const { access } = useDeviceHubAccess(environmentId, "local", props.visible);
 
   const hostDisabled = state.hostStatus === "disabled";
@@ -85,6 +87,64 @@ export function DevicePanel(props: {
         (device) => device.hostId === activeSession.hostId && device.id === activeSession.deviceId,
       )
     : undefined;
+
+  useEffect(() => {
+    const target = props.surface.target;
+    if (!props.visible || !loaded || hostDisabled || !target) {
+      recoveryTargetRef.current = null;
+      setRecovering(false);
+      return;
+    }
+    if (activeSession && activeDevice) {
+      recoveryTargetRef.current = null;
+      setRecovering(false);
+      return;
+    }
+    const recoveryKey = `${target.hostId}\u0000${target.deviceId}`;
+    if (recoveryTargetRef.current === recoveryKey) return;
+    recoveryTargetRef.current = recoveryKey;
+    setRecovering(true);
+    setOperationError(null);
+    void (async () => {
+      const listed = await list({ environmentId, input: { hostId: target.hostId } });
+      if (listed._tag === "Failure") {
+        setOperationError(formatEnvironmentQueryError(listed.cause));
+        return;
+      }
+      const device = listed.value.devices.find(
+        (candidate) => candidate.hostId === target.hostId && candidate.id === target.deviceId,
+      );
+      if (!device) {
+        setOperationError(
+          `${target.name ?? "The retained device"} is not currently available. Refresh devices to retry.`,
+        );
+        return;
+      }
+      const reopened = await open({
+        environmentId,
+        input: {
+          threadId,
+          hostId: device.hostId,
+          deviceId: device.id,
+          platform: device.platform,
+        },
+      });
+      if (reopened._tag === "Failure") {
+        setOperationError(formatEnvironmentQueryError(reopened.cause));
+      }
+    })().finally(() => setRecovering(false));
+  }, [
+    activeDevice,
+    activeSession,
+    environmentId,
+    hostDisabled,
+    list,
+    loaded,
+    open,
+    props.surface.target,
+    props.visible,
+    threadId,
+  ]);
 
   const grouped = useMemo(() => groupDevices(state), [state]);
 
@@ -286,9 +346,9 @@ export function DevicePanel(props: {
               />
             ) : null}
           </>
-        ) : pendingDevice || hostBusy || !loaded ? (
+        ) : pendingDevice || recovering || hostBusy || !loaded ? (
           <DeviceLoadingView
-            name={pendingDevice?.name ?? "Devices"}
+            name={pendingDevice?.name ?? props.surface.target?.name ?? "Devices"}
             description={
               pendingDevice
                 ? `${state.hosts.find((host) => host.id === pendingDevice.hostId)?.label ?? "Device host"} · ${pendingDevice.version}`
@@ -300,9 +360,11 @@ export function DevicePanel(props: {
                 ? pendingDevice.booted
                   ? "Opening device…"
                   : "Starting device…"
-                : state.hostStatus === "installing"
-                  ? "Installing device support…"
-                  : "Finding devices…"
+                : recovering
+                  ? "Reconnecting device…"
+                  : state.hostStatus === "installing"
+                    ? "Installing device support…"
+                    : "Finding devices…"
             }
           />
         ) : (
@@ -374,7 +436,10 @@ export function DevicePanel(props: {
                   className="self-start"
                   variant={grouped.length > 0 ? "ghost" : "outline"}
                   size="sm"
-                  onClick={() => void list({ environmentId, input: {} })}
+                  onClick={() => {
+                    recoveryTargetRef.current = null;
+                    void list({ environmentId, input: {} });
+                  }}
                 >
                   Refresh devices
                 </Button>
