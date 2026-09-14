@@ -8,17 +8,18 @@ export type MobileCompatibility =
   | { readonly status: "supported"; readonly protocol: "owned-v2" | "legacy-capabilities" }
   | { readonly status: "unsupported"; readonly message: string };
 
-export function mobileCompatibility(
+export function mobileCompatibilityForVersion(
   config: Pick<
     ServerConfig,
     "environment" | "shellResumeCompletionMarker" | "threadResumeCompletionMarker"
   >,
+  supportedProtocolVersion: number,
 ): MobileCompatibility {
   const protocolVersion = config.environment.capabilities.ownedMobileProtocolVersion;
-  if (protocolVersion !== undefined && protocolVersion !== OWNED_MOBILE_PROTOCOL_VERSION) {
+  if (protocolVersion !== undefined && protocolVersion !== supportedProtocolVersion) {
     return {
       status: "unsupported",
-      message: `This server uses owned mobile protocol ${protocolVersion}; this app supports version ${OWNED_MOBILE_PROTOCOL_VERSION}. Install a matching app/server release.`,
+      message: `This server uses owned mobile protocol ${protocolVersion}; this app supports version ${supportedProtocolVersion}. Install a matching app/server release.`,
     };
   }
   if (
@@ -36,6 +37,15 @@ export function mobileCompatibility(
     status: "supported",
     protocol: protocolVersion === undefined ? "legacy-capabilities" : "owned-v2",
   };
+}
+
+export function mobileCompatibility(
+  config: Pick<
+    ServerConfig,
+    "environment" | "shellResumeCompletionMarker" | "threadResumeCompletionMarker"
+  >,
+): MobileCompatibility {
+  return mobileCompatibilityForVersion(config, OWNED_MOBILE_PROTOCOL_VERSION);
 }
 
 export function validateMobileCompatibility(config: ServerConfig) {
