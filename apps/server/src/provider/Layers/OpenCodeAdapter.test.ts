@@ -63,6 +63,7 @@ const runtimeMock = {
     sessionParents: new Map<string, string | undefined>(),
     sessionGetCalls: [] as string[],
     permissionReplies: [] as Array<{ requestID: string; reply: string }>,
+    permissionReplyError: null as Error | null,
     questionReplies: [] as Array<{ requestID: string; answers: string[][] }>,
     sessionGetIds: [] as string[],
     missingSessionIds: new Set<string>(),
@@ -88,6 +89,7 @@ const runtimeMock = {
     this.state.sessionParents.clear();
     this.state.sessionGetCalls = [];
     this.state.permissionReplies = [];
+    this.state.permissionReplyError = null;
     this.state.questionReplies = [];
     this.state.sessionGetIds.length = 0;
     this.state.missingSessionIds.clear();
@@ -235,6 +237,9 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       permission: {
         reply: async (input: { requestID: string; reply: string }) => {
           runtimeMock.state.permissionReplies.push(input);
+          if (runtimeMock.state.permissionReplyError) {
+            throw runtimeMock.state.permissionReplyError;
+          }
         },
       },
       question: {
@@ -466,6 +471,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         Stream.runCollect,
         Effect.forkChild,
       );
+
       yield* adapter.startSession({
         provider: ProviderDriverKind.make("opencode"),
         threadId,
@@ -482,6 +488,101 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         true,
       );
       assert.equal(yield* adapter.hasSession(threadId), false);
+    }),
+  );
+
+  it.effect("surfaces a full-access permission when its automatic reply fails", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("full-access-auto-reply-failure");
+      const root = "http://127.0.0.1:9999/session";
+      runtimeMock.state.permissionReplyError = new Error("reply failed");
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "permission.asked",
+          properties: {
+            sessionID: root,
+            id: "doom-loop",
+            permission: "doom_loop",
+            patterns: ["bash"],
+            always: [],
+            metadata: {},
+          },
+        },
+      ];
+      const requestFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "request.opened"),
+        Stream.take(1),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const request = Option.getOrUndefined(
+        yield* Fiber.join(requestFiber).pipe(Effect.timeout("1 second")),
+      );
+      assert.equal(request?.requestId, "doom-loop");
+      assert.deepEqual(runtimeMock.state.permissionReplies, [
+        { requestID: "doom-loop", reply: "once" },
+      ]);
+      runtimeMock.state.permissionReplyError = null;
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("does not reopen or resolve an auto-replied full-access permission", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("full-access-auto-reply-deduplication");
+      const root = "http://127.0.0.1:9999/session";
+      const permission = {
+        sessionID: root,
+        id: "duplicate-doom-loop",
+        permission: "doom_loop",
+        patterns: ["bash"],
+        always: [],
+        metadata: {},
+      };
+      runtimeMock.state.subscribedEvents = [
+        { type: "permission.asked", properties: permission },
+        { type: "permission.asked", properties: permission },
+        {
+          type: "permission.replied",
+          properties: { sessionID: root, requestID: permission.id, reply: "once" },
+        },
+        { type: "question.asked", properties: { sessionID: root, id: "barrier", questions: [] } },
+      ];
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil(
+          (event) => event.type === "user-input.requested" && event.requestId === "barrier",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+
+      assert.deepEqual(runtimeMock.state.permissionReplies, [
+        { requestID: permission.id, reply: "once" },
+      ]);
+      assert.equal(
+        events.some(
+          (event) => event.type === "request.opened" || event.type === "request.resolved",
+        ),
+        false,
+      );
+      yield* adapter.stopSession(threadId);
     }),
   );
 
