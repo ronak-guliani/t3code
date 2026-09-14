@@ -468,19 +468,20 @@ export const DeviceToolkitRegistrationLive = Layer.mergeAll(
   DeviceScreenshotRegistrationLive,
 );
 
-const McpTransportLive = McpServer.layerHttp({
-  name: "T3 Code",
-  version: packageJson.version,
-  path: "/mcp",
-}).pipe(Layer.provide(McpAuthMiddlewareLive));
+const mcpTransport = (path: "/mcp" | "/mcp-device") =>
+  McpServer.layerHttp({
+    name: "T3 Code",
+    version: packageJson.version,
+    path,
+  }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
 export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestMonitorToolkitRegistrationLive,
-).pipe(Layer.provideMerge(McpTransportLive));
+).pipe(Layer.provideMerge(mcpTransport("/mcp")));
 
 export const layerWithDevice = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestMonitorToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
-).pipe(Layer.provideMerge(McpTransportLive));
+).pipe(Layer.provideMerge(mcpTransport("/mcp-device")));

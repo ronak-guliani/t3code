@@ -458,6 +458,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   staticAndDevRouteLayer,
   websocketRpcRouteLayer.pipe(Layer.provide(DeviceLayerLive)),
   deviceHubProxyRouteLayer.pipe(Layer.provide(DeviceLayerLive)),
+  McpHttpServer.layer,
   McpHttpServer.layerWithDevice.pipe(Layer.provide(DeviceLayerLive)),
 ).pipe(Layer.provideMerge(environmentAuthenticatedAuthLayer), Layer.provide(browserApiCorsLayer));
 

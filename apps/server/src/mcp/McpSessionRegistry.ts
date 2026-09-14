@@ -109,10 +109,10 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   });
   const currentTimeMillis = options.now ? Effect.sync(options.now) : Clock.currentTimeMillis;
   const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_LIVENESS_WINDOW_MS;
-  const endpoint =
+  const endpointBase =
     httpServer.address._tag === "TcpAddress"
-      ? `http://${getHttpMcpEndpointHost(httpServer.address.hostname)}:${httpServer.address.port}/mcp`
-      : "http://127.0.0.1/mcp";
+      ? `http://${getHttpMcpEndpointHost(httpServer.address.hostname)}:${httpServer.address.port}`
+      : "http://127.0.0.1";
 
   const hashToken = (token: string) =>
     crypto
@@ -210,7 +210,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         threadId: scope.threadId,
         providerSessionId,
         providerInstanceId: scope.providerInstanceId,
-        endpoint,
+        endpoint: `${endpointBase}${scope.capabilities.has("device") ? "/mcp-device" : "/mcp"}`,
         capabilities: scope.capabilities,
         authorizationHeader: `Bearer ${rawToken}`,
       };
