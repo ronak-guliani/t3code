@@ -49,4 +49,46 @@ layer("ProjectionThreadProposedPlanRepository", (it) => {
       assert.strictEqual(summaries[1]?.implementedAt, null);
     }),
   );
+
+  it.effect("lists turn ids and deletes only the listed turns", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadProposedPlanRepository;
+      const threadId = ThreadId.make("thread-trim-plans");
+      const retainedTurnId = TurnId.make("turn-trim-plans-kept");
+      const trimmedTurnId = TurnId.make("turn-trim-plans-trimmed");
+
+      const seed = (suffix: string, turnId: TurnId | null, createdAt: string) =>
+        repository.upsert({
+          planId: `plan-trim-${suffix}`,
+          threadId,
+          turnId,
+          planMarkdown: `${suffix} plan body`,
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt,
+          updatedAt: createdAt,
+        });
+
+      yield* seed("turnless", null, "2026-03-02T00:00:01.000Z");
+      yield* seed("kept", retainedTurnId, "2026-03-02T00:00:02.000Z");
+      yield* seed("trimmed", trimmedTurnId, "2026-03-02T00:00:03.000Z");
+
+      assert.deepStrictEqual(yield* repository.listTurnIdsByThreadId({ threadId }), [
+        retainedTurnId,
+        trimmedTurnId,
+      ]);
+
+      yield* repository.deleteByTurnIds({ threadId, turnIds: [] });
+      assert.strictEqual((yield* repository.listByThreadId({ threadId })).length, 3);
+
+      yield* repository.deleteByTurnIds({ threadId, turnIds: [trimmedTurnId] });
+
+      const rows = yield* repository.listByThreadId({ threadId });
+      assert.deepStrictEqual(
+        rows.map((row) => row.planId),
+        ["plan-trim-turnless", "plan-trim-kept"],
+      );
+      assert.strictEqual(rows[1]?.planMarkdown, "kept plan body");
+    }),
+  );
 });

@@ -52,10 +52,43 @@ export const DeleteProjectionThreadMessagesInput = Schema.Struct({
 });
 export type DeleteProjectionThreadMessagesInput = typeof DeleteProjectionThreadMessagesInput.Type;
 
+export const DeleteProjectionThreadMessagesByIdsInput = Schema.Struct({
+  threadId: ThreadId,
+  messageIds: Schema.Array(MessageId),
+});
+export type DeleteProjectionThreadMessagesByIdsInput =
+  typeof DeleteProjectionThreadMessagesByIdsInput.Type;
+
 export const GetLatestUserMessageAtInput = Schema.Struct({
   threadId: ThreadId,
 });
 export type GetLatestUserMessageAtInput = typeof GetLatestUserMessageAtInput.Type;
+
+/**
+ * Narrow message key for revert trimming: everything the retain logic needs
+ * without message text, attachments, or origins.
+ *
+ * Returned in ascending creation order.
+ */
+export const ProjectionThreadMessageRevertKey = Schema.Struct({
+  messageId: MessageId,
+  turnId: Schema.NullOr(TurnId),
+  role: OrchestrationMessageRole,
+  createdAt: IsoDateTime,
+});
+export type ProjectionThreadMessageRevertKey = typeof ProjectionThreadMessageRevertKey.Type;
+
+/**
+ * Narrow message row for attachment reconciliation: only the attachment
+ * references, without message text or origins.
+ *
+ * Returned in ascending creation order.
+ */
+export const ProjectionThreadMessageAttachmentRef = Schema.Struct({
+  messageId: MessageId,
+  attachments: Schema.NullOr(Schema.Array(ChatAttachment)),
+});
+export type ProjectionThreadMessageAttachmentRef = typeof ProjectionThreadMessageAttachmentRef.Type;
 
 /**
  * ProjectionThreadMessageRepositoryShape - Service API for projected thread messages.
@@ -87,10 +120,42 @@ export interface ProjectionThreadMessageRepositoryShape {
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadMessage>, ProjectionRepositoryError>;
 
   /**
+   * List revert keys for a thread without fetching text, attachments, or origins.
+   *
+   * Cheaper than `listByThreadId` for revert trimming: only the columns the
+   * retain logic inspects are read or decoded.
+   */
+  readonly listRevertKeysByThreadId: (
+    input: ListProjectionThreadMessagesInput,
+  ) => Effect.Effect<ReadonlyArray<ProjectionThreadMessageRevertKey>, ProjectionRepositoryError>;
+
+  /**
+   * List attachment references for a thread without fetching text or origins.
+   *
+   * Cheaper than `listByThreadId` for attachment reconciliation.
+   */
+  readonly listAttachmentRefsByThreadId: (
+    input: ListProjectionThreadMessagesInput,
+  ) => Effect.Effect<
+    ReadonlyArray<ProjectionThreadMessageAttachmentRef>,
+    ProjectionRepositoryError
+  >;
+
+  /**
    * Delete projected thread messages by thread.
    */
   readonly deleteByThreadId: (
     input: DeleteProjectionThreadMessagesInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Delete only the listed messages of a thread, leaving the rest untouched.
+   *
+   * Unlike `deleteByThreadId` + re-upserting kept rows, this never rewrites
+   * retained rows. An empty `messageIds` list deletes nothing.
+   */
+  readonly deleteByMessageIds: (
+    input: DeleteProjectionThreadMessagesByIdsInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**

@@ -1,9 +1,11 @@
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
+import { TurnId } from "@t3tools/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
+  DeleteProjectionThreadProposedPlansByTurnIdsInput,
   DeleteProjectionThreadProposedPlansInput,
   ListProjectionThreadProposedPlansInput,
   ProjectionThreadProposedPlan,
@@ -94,6 +96,31 @@ const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
     `,
   });
 
+  const deleteProjectionThreadProposedPlanRowsByTurnIds = SqlSchema.void({
+    Request: DeleteProjectionThreadProposedPlansByTurnIdsInput,
+    execute: ({ threadId, turnIds }) =>
+      turnIds.length === 0
+        ? sql`DELETE FROM projection_thread_proposed_plans WHERE 1 = 0`
+        : sql`
+          DELETE FROM projection_thread_proposed_plans
+          WHERE thread_id = ${threadId}
+            AND turn_id IN ${sql.in(turnIds)}
+        `,
+  });
+
+  const listProjectionThreadProposedPlanTurnIds = SqlSchema.findAll({
+    Request: ListProjectionThreadProposedPlansInput,
+    Result: Schema.Struct({ turnId: TurnId }),
+    execute: ({ threadId }) =>
+      sql`
+        SELECT DISTINCT turn_id AS "turnId"
+        FROM projection_thread_proposed_plans
+        WHERE thread_id = ${threadId}
+          AND turn_id IS NOT NULL
+        ORDER BY turn_id ASC
+      `,
+  });
+
   const upsert: ProjectionThreadProposedPlanRepositoryShape["upsert"] = (row) =>
     upsertProjectionThreadProposedPlanRow(row).pipe(
       Effect.mapError(toPersistenceSqlError("ProjectionThreadProposedPlanRepository.upsert:query")),
@@ -115,6 +142,24 @@ const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
       ),
     );
 
+  const deleteByTurnIds: ProjectionThreadProposedPlanRepositoryShape["deleteByTurnIds"] = (input) =>
+    deleteProjectionThreadProposedPlanRowsByTurnIds(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadProposedPlanRepository.deleteByTurnIds:query"),
+      ),
+    );
+
+  const listTurnIdsByThreadId: ProjectionThreadProposedPlanRepositoryShape["listTurnIdsByThreadId"] =
+    (input) =>
+      listProjectionThreadProposedPlanTurnIds(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlError(
+            "ProjectionThreadProposedPlanRepository.listTurnIdsByThreadId:query",
+          ),
+        ),
+        Effect.map((rows) => rows.map((row) => row.turnId)),
+      );
+
   const listSummariesByThreadId: ProjectionThreadProposedPlanRepositoryShape["listSummariesByThreadId"] =
     (input) =>
       listProjectionThreadProposedPlanSummaryRows(input).pipe(
@@ -128,7 +173,9 @@ const makeProjectionThreadProposedPlanRepository = Effect.gen(function* () {
   return {
     upsert,
     listByThreadId,
+    listTurnIdsByThreadId,
     deleteByThreadId,
+    deleteByTurnIds,
     listSummariesByThreadId,
   } satisfies ProjectionThreadProposedPlanRepositoryShape;
 });
