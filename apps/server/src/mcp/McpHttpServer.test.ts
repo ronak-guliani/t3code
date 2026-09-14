@@ -61,6 +61,31 @@ it("normalizes empty successful notification responses to accepted", () => {
   expect(resultResponse.status).toBe(200);
 });
 
+it("omits device tools from tools/list unless the credential has device capability", async () => {
+  const response = HttpServerResponse.jsonUnsafe({
+    jsonrpc: "2.0",
+    id: 1,
+    result: {
+      tools: [{ name: "preview_open" }, { name: "device_list" }, { name: "device_close" }],
+    },
+  });
+  const disabled = McpHttpServer.filterAdvertisedToolsForTest(response, new Set(["preview"]));
+  const enabled = McpHttpServer.filterAdvertisedToolsForTest(
+    response,
+    new Set(["preview", "device"]),
+  );
+  const decode = (value: typeof response) =>
+    JSON.parse(new TextDecoder().decode((value.body as { body: Uint8Array }).body)) as {
+      readonly result: { readonly tools: ReadonlyArray<{ readonly name: string }> };
+    };
+  expect(decode(disabled).result.tools.map((tool) => tool.name)).toEqual(["preview_open"]);
+  expect(decode(enabled).result.tools.map((tool) => tool.name)).toEqual([
+    "preview_open",
+    "device_list",
+    "device_close",
+  ]);
+});
+
 it.each([
   { data: "", width: 0, height: 0 },
   { data: Buffer.from("not a png").toString("base64"), width: 1280, height: 800 },

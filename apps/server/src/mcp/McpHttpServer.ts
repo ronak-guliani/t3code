@@ -82,6 +82,33 @@ export const normalizeMcpHttpResponse = (
     : response;
 };
 
+const filterAdvertisedTools = (
+  response: HttpServerResponse.HttpServerResponse,
+  capabilities: ReadonlySet<McpInvocationContext.McpCapability>,
+): HttpServerResponse.HttpServerResponse => {
+  if (capabilities.has("device") || response.body._tag !== "Uint8Array") return response;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(response.body.body)) as {
+      readonly result?: { readonly tools?: ReadonlyArray<{ readonly name?: string }> };
+    };
+    if (!payload.result?.tools) return response;
+    return HttpServerResponse.jsonUnsafe(
+      {
+        ...payload,
+        result: {
+          ...payload.result,
+          tools: payload.result.tools.filter((tool) => !tool.name?.startsWith("device_")),
+        },
+      },
+      { status: response.status, headers: response.headers },
+    );
+  } catch {
+    return response;
+  }
+};
+
+export const filterAdvertisedToolsForTest = filterAdvertisedTools;
+
 const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
   Effect.map(
     (registry): McpAuthMiddleware =>
@@ -101,6 +128,7 @@ const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
         }
         return yield* httpEffect.pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.map((response) => filterAdvertisedTools(response, invocation.capabilities)),
           Effect.map(normalizeMcpHttpResponse),
         );
       }),
