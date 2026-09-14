@@ -278,6 +278,7 @@ export function projectEvent(
           const existing = nextBase.projects.find((entry) => entry.id === payload.projectId);
           const nextProject = {
             id: payload.projectId,
+            ...(payload.kind === "chat-import" ? { kind: payload.kind } : {}),
             title: payload.title,
             workspaceRoot: payload.workspaceRoot,
             defaultModelSelection: payload.defaultModelSelection,

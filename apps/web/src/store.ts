@@ -298,6 +298,7 @@ function mapProject(
 ): Project {
   return {
     id: project.id,
+    kind: project.kind ?? "workspace",
     environmentId,
     name: project.title,
     cwd: project.workspaceRoot,
@@ -1825,6 +1826,7 @@ function applyEnvironmentOrchestrationEvent(
       const nextProject = mapProject(
         {
           id: event.payload.projectId,
+          kind: event.payload.kind ?? "workspace",
           title: event.payload.title,
           workspaceRoot: event.payload.workspaceRoot,
           repositoryIdentity: event.payload.repositoryIdentity ?? null,

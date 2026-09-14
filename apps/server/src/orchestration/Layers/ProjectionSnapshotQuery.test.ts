@@ -35,6 +35,40 @@ const projectionSnapshotLayer = it.layer(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+  it.effect("exposes imported project kind without changing workspace project snapshots", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, kind, scripts_json, created_at, updated_at)
+        VALUES
+          ('workspace-project', 'Workspace', '/tmp/workspace-project', 'workspace', '[]',
+            '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z'),
+          ('import-project', 'Imported chats', '/tmp/import-project', 'chat-import', '[]',
+            '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')
+      `;
+
+      const full = yield* query.getSnapshot();
+      const shell = yield* query.getShellSnapshot();
+
+      for (const snapshot of [full, shell]) {
+        assert.deepStrictEqual(
+          snapshot.projects.find((project) => project.id === "workspace-project")?.kind,
+          undefined,
+        );
+        assert.equal(
+          snapshot.projects.find((project) => project.id === "import-project")?.kind,
+          "chat-import",
+        );
+      }
+
+      yield* sql`
+        DELETE FROM projection_projects
+        WHERE project_id IN ('workspace-project', 'import-project')
+      `;
+    }),
+  );
   it.effect("hydrates auto-pull through full, shell, and targeted project reads", () =>
     Effect.gen(function* () {
       const query = yield* ProjectionSnapshotQuery;

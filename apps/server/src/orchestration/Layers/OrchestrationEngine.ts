@@ -72,6 +72,7 @@ function commandToAggregateRef(command: OrchestrationCommand): {
 } {
   switch (command.type) {
     case "project.create":
+    case "chat-archive.import":
     case "project.meta.update":
     case "project.delete":
       return {

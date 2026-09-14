@@ -1188,6 +1188,7 @@ function ChatViewBody(
       [activeProjectEnvironmentId, activeProjectProjectId],
     ),
   );
+  const isImportedChat = activeProject?.kind === "chat-import";
 
   useEffect(() => {
     if (routeKind !== "server") {
@@ -4479,7 +4480,9 @@ function ChatViewBody(
     const projectUnavailableReason =
       activeProject === undefined
         ? "Workflow actions are unavailable until this thread has an active project."
-        : null;
+        : activeProject.kind === "chat-import"
+          ? "Imported chats are reference-only."
+          : null;
     const reviewDisabledReason =
       projectUnavailableReason ??
       (!isGitRepo
@@ -4870,103 +4873,114 @@ function ChatViewBody(
                     : "pb-[calc(env(safe-area-inset-bottom)+--spacing(3))] sm:pb-[calc(env(safe-area-inset-bottom)+--spacing(4))]",
                 )}
               >
-                <ChatComposer
-                  ref={composerRef}
-                  composerDraftTarget={composerDraftTarget}
-                  environmentId={environmentId}
-                  routeKind={routeKind}
-                  routeThreadRef={routeThreadRef}
-                  draftId={draftId}
-                  activeThreadId={activeThreadId}
-                  activeThreadEnvironmentId={activeThread?.environmentId}
-                  activeThread={activeThread}
-                  isServerThread={isServerThread}
-                  isLocalDraftThread={isLocalDraftThread}
-                  phase={phase}
-                  isConnecting={isConnecting}
-                  isSendBusy={isSendBusy}
-                  isPreparingWorktree={isPreparingWorktree}
-                  activePendingApproval={activePendingApproval}
-                  pendingApprovals={pendingApprovals}
-                  pendingUserInputs={pendingUserInputs}
-                  queuedTurns={activeThread.queuedTurns ?? []}
-                  activePendingProgress={activePendingProgress}
-                  activePendingResolvedAnswers={activePendingResolvedAnswers}
-                  activePendingIsResponding={activePendingIsResponding}
-                  activePendingDraftAnswers={activePendingDraftAnswers}
-                  activePendingQuestionIndex={activePendingQuestionIndex}
-                  respondingRequestIds={respondingRequestIds}
-                  showPlanFollowUpPrompt={showPlanFollowUpPrompt}
-                  activeProposedPlan={activeProposedPlan}
-                  activePlan={activePlan as { turnId?: TurnId } | null}
-                  sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
-                  planSidebarLabel={planSidebarLabel}
-                  planSidebarOpen={planSidebarOpen}
-                  runtimeMode={runtimeMode}
-                  lockedProvider={lockedProvider}
-                  providerStatuses={providerStatuses as ServerProvider[]}
-                  gitCwd={gitCwd ?? undefined}
-                  activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
-                  activeThreadModelSelection={activeThread?.modelSelection}
-                  resolvedTheme={resolvedTheme}
-                  settings={settings}
-                  keybindings={keybindings}
-                  terminalOpen={Boolean(terminalState.terminalOpen)}
-                  promptRef={promptRef}
-                  composerImagesRef={composerImagesRef}
-                  composerTerminalContextsRef={composerTerminalContextsRef}
-                  shouldAutoScrollRef={isAtEndRef}
-                  scheduleStickToBottom={scrollToEnd}
-                  onSend={onSend}
-                  onComposerIntent={prewarmComposerProviderSession}
-                  onInterrupt={onInterrupt}
-                  onImplementPlanInNewThread={onImplementPlanInNewThread}
-                  onRespondToApproval={onRespondToApproval}
-                  onUpdateQueuedTurn={onUpdateQueuedTurn}
-                  onDeleteQueuedTurn={onDeleteQueuedTurn}
-                  onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
-                  onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
-                  onPreviousActivePendingUserInputQuestion={
-                    onPreviousActivePendingUserInputQuestion
-                  }
-                  onChangeActivePendingUserInputCustomAnswer={
-                    onChangeActivePendingUserInputCustomAnswer
-                  }
-                  onProviderModelSelect={onProviderModelSelect}
-                  handleRuntimeModeChange={handleRuntimeModeChange}
-                  togglePlanSidebar={togglePlanSidebar}
-                  focusComposer={focusComposer}
-                  scheduleComposerFocus={scheduleComposerFocus}
-                  setThreadError={setThreadError}
-                  onExpandImage={onExpandTimelineImage}
-                />
-                <BranchToolbar
-                  environmentId={activeThread.environmentId}
-                  threadId={activeThread.id}
-                  {...(routeKind === "draft" && draftId ? { draftId } : {})}
-                  onEnvModeChange={onEnvModeChange}
-                  {...(canOverrideServerThreadEnvMode ? { effectiveEnvModeOverride: envMode } : {})}
-                  {...(canOverrideServerThreadEnvMode
-                    ? {
-                        activeThreadBranchOverride: activeThreadBranch,
-                        onActiveThreadBranchOverrideChange: setPendingServerThreadBranch,
-                      }
-                    : {})}
-                  envLocked={envLocked}
-                  onComposerFocusRequest={scheduleComposerFocus}
-                  {...(canCheckoutPullRequestIntoThread
-                    ? { onCheckoutPullRequestRequest: openPullRequestDialog }
-                    : {})}
-                  {...(hasMultipleEnvironments
-                    ? {
-                        availableEnvironments: logicalProjectEnvironments,
-                        onEnvironmentChange,
-                      }
-                    : {})}
-                  activeContextWindow={activeContextWindow}
-                  activeThreadProviderDisplayName={activeThreadProviderDisplayName}
-                  showGitControls={isGitRepo}
-                />
+                {isImportedChat ? (
+                  <div className="rounded-xl border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+                    Imported chats are reference-only. Exported attachments and agent sessions are
+                    not included.
+                  </div>
+                ) : (
+                  <ChatComposer
+                    ref={composerRef}
+                    composerDraftTarget={composerDraftTarget}
+                    environmentId={environmentId}
+                    routeKind={routeKind}
+                    routeThreadRef={routeThreadRef}
+                    draftId={draftId}
+                    activeThreadId={activeThreadId}
+                    activeThreadEnvironmentId={activeThread?.environmentId}
+                    activeThread={activeThread}
+                    isServerThread={isServerThread}
+                    isLocalDraftThread={isLocalDraftThread}
+                    phase={phase}
+                    isConnecting={isConnecting}
+                    isSendBusy={isSendBusy}
+                    isPreparingWorktree={isPreparingWorktree}
+                    activePendingApproval={activePendingApproval}
+                    pendingApprovals={pendingApprovals}
+                    pendingUserInputs={pendingUserInputs}
+                    queuedTurns={activeThread.queuedTurns ?? []}
+                    activePendingProgress={activePendingProgress}
+                    activePendingResolvedAnswers={activePendingResolvedAnswers}
+                    activePendingIsResponding={activePendingIsResponding}
+                    activePendingDraftAnswers={activePendingDraftAnswers}
+                    activePendingQuestionIndex={activePendingQuestionIndex}
+                    respondingRequestIds={respondingRequestIds}
+                    showPlanFollowUpPrompt={showPlanFollowUpPrompt}
+                    activeProposedPlan={activeProposedPlan}
+                    activePlan={activePlan as { turnId?: TurnId } | null}
+                    sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
+                    planSidebarLabel={planSidebarLabel}
+                    planSidebarOpen={planSidebarOpen}
+                    runtimeMode={runtimeMode}
+                    lockedProvider={lockedProvider}
+                    providerStatuses={providerStatuses as ServerProvider[]}
+                    gitCwd={gitCwd ?? undefined}
+                    activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
+                    activeThreadModelSelection={activeThread?.modelSelection}
+                    resolvedTheme={resolvedTheme}
+                    settings={settings}
+                    keybindings={keybindings}
+                    terminalOpen={Boolean(terminalState.terminalOpen)}
+                    promptRef={promptRef}
+                    composerImagesRef={composerImagesRef}
+                    composerTerminalContextsRef={composerTerminalContextsRef}
+                    shouldAutoScrollRef={isAtEndRef}
+                    scheduleStickToBottom={scrollToEnd}
+                    onSend={onSend}
+                    onComposerIntent={prewarmComposerProviderSession}
+                    onInterrupt={onInterrupt}
+                    onImplementPlanInNewThread={onImplementPlanInNewThread}
+                    onRespondToApproval={onRespondToApproval}
+                    onUpdateQueuedTurn={onUpdateQueuedTurn}
+                    onDeleteQueuedTurn={onDeleteQueuedTurn}
+                    onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
+                    onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
+                    onPreviousActivePendingUserInputQuestion={
+                      onPreviousActivePendingUserInputQuestion
+                    }
+                    onChangeActivePendingUserInputCustomAnswer={
+                      onChangeActivePendingUserInputCustomAnswer
+                    }
+                    onProviderModelSelect={onProviderModelSelect}
+                    handleRuntimeModeChange={handleRuntimeModeChange}
+                    togglePlanSidebar={togglePlanSidebar}
+                    focusComposer={focusComposer}
+                    scheduleComposerFocus={scheduleComposerFocus}
+                    setThreadError={setThreadError}
+                    onExpandImage={onExpandTimelineImage}
+                  />
+                )}
+                {isImportedChat ? null : (
+                  <BranchToolbar
+                    environmentId={activeThread.environmentId}
+                    threadId={activeThread.id}
+                    {...(routeKind === "draft" && draftId ? { draftId } : {})}
+                    onEnvModeChange={onEnvModeChange}
+                    {...(canOverrideServerThreadEnvMode
+                      ? { effectiveEnvModeOverride: envMode }
+                      : {})}
+                    {...(canOverrideServerThreadEnvMode
+                      ? {
+                          activeThreadBranchOverride: activeThreadBranch,
+                          onActiveThreadBranchOverrideChange: setPendingServerThreadBranch,
+                        }
+                      : {})}
+                    envLocked={envLocked}
+                    onComposerFocusRequest={scheduleComposerFocus}
+                    {...(canCheckoutPullRequestIntoThread
+                      ? { onCheckoutPullRequestRequest: openPullRequestDialog }
+                      : {})}
+                    {...(hasMultipleEnvironments
+                      ? {
+                          availableEnvironments: logicalProjectEnvironments,
+                          onEnvironmentChange,
+                        }
+                      : {})}
+                    activeContextWindow={activeContextWindow}
+                    activeThreadProviderDisplayName={activeThreadProviderDisplayName}
+                    showGitControls={isGitRepo}
+                  />
+                )}
               </div>
 
               {pullRequestDialogState ? (

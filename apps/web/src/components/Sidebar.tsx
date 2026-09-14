@@ -2708,26 +2708,28 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
               </TooltipPopup>
             </Tooltip>
           )}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <div className="pointer-events-none absolute top-1 right-1.5 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
-                  <button
-                    type="button"
-                    aria-label={`Create new thread in ${project.displayName}`}
-                    data-testid="new-thread-button"
-                    className="inline-flex size-5 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-                    onClick={handleCreateThreadClick}
-                  >
-                    <SquarePenIcon className="size-3.5" />
-                  </button>
-                </div>
-              }
-            />
-            <TooltipPopup side="top">
-              {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
-            </TooltipPopup>
-          </Tooltip>
+          {project.kind !== "chat-import" ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <div className="pointer-events-none absolute top-1 right-1.5 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
+                    <button
+                      type="button"
+                      aria-label={`Create new thread in ${project.displayName}`}
+                      data-testid="new-thread-button"
+                      className="inline-flex size-5 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                      onClick={handleCreateThreadClick}
+                    >
+                      <SquarePenIcon className="size-3.5" />
+                    </button>
+                  </div>
+                }
+              />
+              <TooltipPopup side="top">
+                {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
+              </TooltipPopup>
+            </Tooltip>
+          ) : null}
         </div>
       )}
 
@@ -3446,7 +3448,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
               </TooltipTrigger>
               <TooltipPopup side="right">Add project</TooltipPopup>
             </Tooltip>
-            {activeFilterProject ? (
+            {activeFilterProject && activeFilterProject.kind !== "chat-import" ? (
               <Tooltip>
                 <TooltipTrigger
                   render={

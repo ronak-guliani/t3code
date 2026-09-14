@@ -142,7 +142,7 @@ function mapThreadActivityRow(row: ProjectionThreadActivityDbRow): Orchestration
   return {
     id: row.activityId,
     tone: row.tone,
-    kind: row.kind,
+    kind: row.kind ?? "workspace",
     summary: row.summary,
     payload: row.payload,
     turnId: row.turnId,
@@ -451,6 +451,7 @@ function mapProjectShellRow(
 ): OrchestrationProjectShell {
   return {
     id: row.projectId,
+    ...(row.kind === "chat-import" ? { kind: row.kind } : {}),
     title: row.title,
     workspaceRoot: row.workspaceRoot,
     repositoryIdentity,
@@ -479,6 +480,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   // never drift apart when a projection column is added.
   const projectRowColumns = sql`
     project_id AS "projectId",
+    kind,
     title,
     workspace_root AS "workspaceRoot",
     auto_pull AS "autoPull",
@@ -998,6 +1000,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           project_id AS "projectId",
+          kind,
           title,
           workspace_root AS "workspaceRoot",
           auto_pull AS "autoPull",
@@ -1021,6 +1024,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           project_id AS "projectId",
+          kind,
           title,
           workspace_root AS "workspaceRoot",
           auto_pull AS "autoPull",
@@ -1873,6 +1877,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
               const projects: ReadonlyArray<OrchestrationProject> = projectRows.map((row) => ({
                 id: row.projectId,
+                ...(row.kind === "chat-import" ? { kind: row.kind } : {}),
                 title: row.title,
                 workspaceRoot: row.workspaceRoot,
                 repositoryIdentity: repositoryIdentities.get(row.projectId) ?? null,
