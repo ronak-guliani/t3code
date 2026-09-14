@@ -2,6 +2,7 @@ import {
   CommandId,
   MessageId,
   PullRequestMonitorError,
+  PullRequestMonitorFindings,
   PullRequestMonitorId,
   type PullRequestMonitorListInput,
   type PullRequestMonitorListResult,
@@ -32,6 +33,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -800,6 +802,11 @@ export const layer = Layer.effect(
 
     const submitFindings = (input: PullRequestMonitorSubmitFindingsInput) =>
       Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(PullRequestMonitorFindings)(input.findings ?? []).pipe(
+          Effect.mapError((cause) =>
+            monitorError("Invalid review findings submission.", { cause }),
+          ),
+        );
         const startMonitoring = input.startMonitoring !== false;
         // Start without mutating ownership so handoff audit sees the true previous owner.
         let monitorRecord: PullRequestMonitorRecord;

@@ -38,11 +38,17 @@ export async function loadIncomingShareDrafts(options?: {
 }): Promise<ReadonlyArray<IncomingShareDraft>> {
   try {
     const { File } = await import("expo-file-system");
+    const entries = (await getDirectory())
+      .list()
+      .filter(
+        (entry): entry is InstanceType<typeof File> =>
+          entry instanceof File && entry.name.endsWith(".json"),
+      );
+    // Sequential on purpose, not async-parallel: share files are small JSON
+    // and the inbox count stays low, so unbounded Promise.all adds IO/memory
+    // spikes for negligible gain on mobile.
     const drafts: IncomingShareDraft[] = [];
-    for (const entry of (await getDirectory()).list()) {
-      if (!(entry instanceof File) || !entry.name.endsWith(".json")) {
-        continue;
-      }
+    for (const entry of entries) {
       try {
         drafts.push(decodeIncomingShareDraft(JSON.parse(await entry.text()) as unknown));
       } catch (cause) {

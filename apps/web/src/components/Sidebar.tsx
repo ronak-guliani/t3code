@@ -22,7 +22,7 @@ import {
 } from "./ThreadStatusIndicators";
 import { ThreadDetailsTooltip, ThreadDetailsTooltipProvider } from "./SidebarV2ThreadTooltip";
 import { ProjectFavicon } from "./ProjectFavicon";
-import { EnvironmentIdentity } from "./EnvironmentIdentity";
+import { SidebarThreadEnvironmentIcon } from "./SidebarThreadEnvironmentIcon";
 import { formatWorktreePathForDisplay } from "../worktreeCleanup";
 import { autoAnimate } from "@formkit/auto-animate";
 import React, {
@@ -437,6 +437,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     sortable,
     thread,
     threadStatus,
+    isRemoteThread,
     threadEnvironmentLabel,
     threadProjectCwd,
     threadProjectName,
@@ -862,7 +863,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 {/* Project, worktree, PR and last-active moved off the row and
                     into this tooltip — the row keeps title and status only. */}
                 <ThreadDetailsTooltip
-                  environmentLabel={`${threadEnvironmentLabel ?? "Local"} · ${thread.environmentId.slice(0, 6)}`}
+                  environmentLabel={isRemoteThread ? (threadEnvironmentLabel ?? "Remote") : null}
                   projectCwd={threadProjectCwd ?? props.projectCwd ?? null}
                   projectName={projectName ?? "Unknown project"}
                   providerEntry={null}
@@ -870,7 +871,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   thread={thread}
                 />
               </Tooltip>
-              <EnvironmentIdentity environmentId={thread.environmentId} compact />
               {composerDraftPreview ? (
                 <span
                   className="min-w-0 flex-1 truncate text-muted-foreground/50"
@@ -932,6 +932,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               </TooltipPopup>
             </Tooltip>
           ) : null}
+          <SidebarThreadEnvironmentIcon
+            environmentLabel={isRemoteThread ? (threadEnvironmentLabel ?? "Remote") : null}
+          />
           <ThreadBrowserOpenStatus environmentId={thread.environmentId} threadId={thread.id} />
           {props.hasChildren ? (
             <button
@@ -1182,8 +1185,7 @@ const VisibleSidebarProjectThreadList = memo(function VisibleSidebarProjectThrea
       const rowProps: SidebarThreadRowProps = {
         thread,
         threadStatus: row.status,
-        isRemoteThread:
-          primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId,
+        isRemoteThread: thread.environmentId !== primaryEnvironmentId,
         threadEnvironmentLabel: threadProject?.environmentLabel ?? null,
         depth: row.depth,
         hasChildren: row.hasChildren,

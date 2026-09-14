@@ -736,6 +736,7 @@ describe("QueuedTurnReactor", () => {
   });
 
   it("filters resolved findings and refreshes the prompt before dispatch", async () => {
+    const findingContext = "Complete immutable review evidence.\n".repeat(100);
     const commands = await runReactor(
       queuedReadModel({
         message: {
@@ -751,6 +752,7 @@ describe("QueuedTurnReactor", () => {
           headSha: "head-current",
           sourceRevision: "revision-old",
           deliveryId: "delivery-1",
+          findingContext,
           availableTools: ["pr_monitor_context"],
           events: [
             { kind: "behind-base" },
@@ -794,6 +796,9 @@ describe("QueuedTurnReactor", () => {
     });
     expect(commands[0]?.type === "thread.queued-turn.update" ? commands[0].text : "").toContain(
       "Comment from reviewer",
+    );
+    expect(commands[0]?.type === "thread.queued-turn.update" ? commands[0].text : "").toContain(
+      findingContext,
     );
     expect(commands[0]?.type === "thread.queued-turn.update" ? commands[0].text : "").not.toContain(
       "PR is behind",

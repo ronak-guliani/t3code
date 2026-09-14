@@ -19,6 +19,10 @@ const AGENT_AWARENESS_DEVICE_ID_KEY = "t3code.agent-awareness.device-id";
 const AGENT_AWARENESS_REGISTRATION_KEY = "t3code.agent-awareness.registration";
 const RECENT_THREAD_SHORTCUTS_KEY = "t3code.recent-thread-shortcuts";
 
+// Schema version stamped on every persisted document (client-localstorage-schema).
+// Readers tolerate missing versions (v0 payloads written before versioning).
+export const MOBILE_STORAGE_SCHEMA_VERSION = 1;
+
 export class MobileStorageDecodeError extends Schema.TaggedErrorClass<MobileStorageDecodeError>()(
   "MobileStorageDecodeError",
   {
@@ -148,6 +152,7 @@ export const make = Effect.fn("MobileStorage.make")(function* () {
   });
 
   const loadSavedConnections = readJson<{
+    readonly version?: number;
     readonly connections?: ReadonlyArray<SavedRemoteConnection>;
   }>(CONNECTIONS_KEY).pipe(
     Effect.map((parsed) =>
@@ -175,7 +180,10 @@ export const make = Effect.fn("MobileStorage.make")(function* () {
           ),
         )
       : pipe(current, Arr.append(stableConnection));
-    yield* writeJson(CONNECTIONS_KEY, { connections: next });
+    yield* writeJson(CONNECTIONS_KEY, {
+      version: MOBILE_STORAGE_SCHEMA_VERSION,
+      connections: next,
+    });
   });
 
   const clearSavedConnection = Effect.fn("MobileStorage.clearSavedConnection")(function* (
@@ -186,7 +194,10 @@ export const make = Effect.fn("MobileStorage.make")(function* () {
       current,
       Arr.filter((entry) => entry.environmentId !== environmentId),
     );
-    yield* writeJson(CONNECTIONS_KEY, { connections: next });
+    yield* writeJson(CONNECTIONS_KEY, {
+      version: MOBILE_STORAGE_SCHEMA_VERSION,
+      connections: next,
+    });
   });
 
   const loadOrCreateAgentAwarenessDeviceId = Effect.gen(function* () {
@@ -229,6 +240,7 @@ export const make = Effect.fn("MobileStorage.make")(function* () {
   // Threads most recently opened on this device, newest first — the source
   // for the launcher's dynamic "recent thread" app shortcuts.
   const loadRecentThreadShortcuts = readJson<{
+    readonly version?: number;
     readonly threads?: ReadonlyArray<RecentThreadShortcut>;
   }>(RECENT_THREAD_SHORTCUTS_KEY).pipe(
     Effect.map((parsed) =>
@@ -254,13 +266,20 @@ export const make = Effect.fn("MobileStorage.make")(function* () {
     loadAgentAwarenessDeviceId,
     loadAgentAwarenessRegistrationRecord,
     saveAgentAwarenessRegistrationRecord: (record) =>
-      writeJson(AGENT_AWARENESS_REGISTRATION_KEY, record),
+      writeJson(AGENT_AWARENESS_REGISTRATION_KEY, {
+        ...record,
+        version: MOBILE_STORAGE_SCHEMA_VERSION,
+      }),
     clearAgentAwarenessRegistrationRecord: secureStorage.setItem(
       AGENT_AWARENESS_REGISTRATION_KEY,
       "",
     ),
     loadRecentThreadShortcuts,
-    saveRecentThreadShortcuts: (threads) => writeJson(RECENT_THREAD_SHORTCUTS_KEY, { threads }),
+    saveRecentThreadShortcuts: (threads) =>
+      writeJson(RECENT_THREAD_SHORTCUTS_KEY, {
+        version: MOBILE_STORAGE_SCHEMA_VERSION,
+        threads,
+      }),
   });
 });
 

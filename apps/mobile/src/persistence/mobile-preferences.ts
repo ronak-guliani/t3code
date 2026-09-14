@@ -12,12 +12,21 @@ import { ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION } from "../state/thread-c
 
 import * as MobileDatabase from "./mobile-database";
 import * as MobileSecureStorage from "./mobile-secure-storage";
-import { MobileStorageDecodeError, MobileStorageEncodeError } from "./mobile-storage";
+import {
+  MOBILE_STORAGE_SCHEMA_VERSION,
+  MobileStorageDecodeError,
+  MobileStorageEncodeError,
+} from "./mobile-storage";
 
 const PREFERENCES_KEY = "t3code.preferences";
 const PREFERENCES_FALLBACK_KEY = "t3code.preferences.fallback";
 
 export interface Preferences {
+  /**
+   * Storage schema version stamped on write (client-localstorage-schema).
+   * Missing on payloads written before versioning; readers treat absence as v0.
+   */
+  readonly storageVersion?: number;
   readonly liveActivitiesEnabled?: boolean;
   readonly themeId?: MobileThemeId;
   readonly lightThemeId?: MobileThemeId;
@@ -93,6 +102,7 @@ export class MobilePreferencesStore extends Context.Service<
 
 function sanitizePreferences(parsed: Preferences): Preferences {
   const preferences: {
+    storageVersion?: number;
     liveActivitiesEnabled?: boolean;
     themeId?: MobileThemeId;
     lightThemeId?: MobileThemeId;
@@ -175,6 +185,13 @@ function sanitizePreferences(parsed: Preferences): Preferences {
         ([, value]) => typeof value === "boolean",
       ),
     );
+  }
+  if (
+    typeof parsed.storageVersion === "number" &&
+    Number.isInteger(parsed.storageVersion) &&
+    parsed.storageVersion >= 0
+  ) {
+    preferences.storageVersion = parsed.storageVersion;
   }
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
     preferences.liveActivitiesEnabled = parsed.liveActivitiesEnabled;
@@ -430,7 +447,11 @@ export const make = Effect.fn("MobilePreferencesStore.make")(function* () {
             try: () => transform(current),
             catch: (cause) => new MobilePreferencesSaveError({ cause }),
           });
-          const next: Preferences = { ...current, ...patch };
+          const next: Preferences = {
+            ...current,
+            ...patch,
+            storageVersion: MOBILE_STORAGE_SCHEMA_VERSION,
+          };
           const payload = yield* encode(PREFERENCES_KEY, next);
           yield* saveJson(payload);
           return next;
