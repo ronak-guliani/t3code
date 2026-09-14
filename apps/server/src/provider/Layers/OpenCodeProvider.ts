@@ -424,6 +424,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
         )
       : openCodeRuntime.loadInventoryFromCli({
           binaryPath: openCodeSettings.binaryPath,
+          cwd,
           environment,
         })
     ).pipe(
