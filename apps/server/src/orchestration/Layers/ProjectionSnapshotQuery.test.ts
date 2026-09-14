@@ -22,6 +22,8 @@ import {
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
+const asThreadId = (value: string): ThreadId => ThreadId.make(value);
+const asProviderInstanceId = (value: string): ProviderInstanceId => ProviderInstanceId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
@@ -35,6 +37,78 @@ const projectionSnapshotLayer = it.layer(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+  it.effect("loads active chat archive rows in one consistent query surface", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES ('archive-project', 'Archive project', '/tmp/archive-project', '[]',
+          '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          created_at, updated_at, archived_at
+        ) VALUES
+          ('archive-active', 'archive-project', 'Active chat',
+            '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default',
+            '2026-09-14T00:00:00.000Z', '2026-09-14T00:01:00.000Z', NULL),
+          ('archive-hidden', 'archive-project', 'Archived chat',
+            '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default',
+            '2026-09-14T00:02:00.000Z', '2026-09-14T00:03:00.000Z',
+            '2026-09-14T00:04:00.000Z')
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, role, text, attachments_json, is_streaming, created_at, updated_at
+        ) VALUES
+          ('archive-message-active', 'archive-active', 'user', 'Export me', '[]', 0,
+            '2026-09-14T00:00:30.000Z', '2026-09-14T00:00:30.000Z'),
+          ('archive-message-hidden', 'archive-hidden', 'user', 'Do not export', '[]', 0,
+            '2026-09-14T00:02:30.000Z', '2026-09-14T00:02:30.000Z')
+      `;
+
+      const entries = yield* query.getActiveChatArchiveEntries();
+
+      assert.deepStrictEqual(entries, [
+        {
+          thread: {
+            id: asThreadId("archive-active"),
+            parentThreadId: null,
+            title: "Active chat",
+            modelSelection: {
+              instanceId: asProviderInstanceId("codex"),
+              model: "gpt-5.4",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: "2026-09-14T00:00:00.000Z",
+            updatedAt: "2026-09-14T00:01:00.000Z",
+            messages: [
+              {
+                role: "user",
+                text: "Export me",
+                turnId: null,
+                createdAt: "2026-09-14T00:00:30.000Z",
+                updatedAt: "2026-09-14T00:00:30.000Z",
+                attachments: [],
+              },
+            ],
+          },
+          project: {
+            title: "Archive project",
+            workspaceRoot: "/tmp/archive-project",
+          },
+        },
+      ]);
+
+      yield* sql`DELETE FROM projection_thread_messages WHERE thread_id LIKE 'archive-%'`;
+      yield* sql`DELETE FROM projection_threads WHERE project_id = 'archive-project'`;
+      yield* sql`DELETE FROM projection_projects WHERE project_id = 'archive-project'`;
+    }),
+  );
   it.effect("exposes imported project kind without changing workspace project snapshots", () =>
     Effect.gen(function* () {
       const query = yield* ProjectionSnapshotQuery;

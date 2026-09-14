@@ -2900,7 +2900,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "workflow.run.request": {
-      const parentThread = yield* requireThread({
+      const parentThread = yield* requireWritableProjectForThread({
         readModel,
         command,
         threadId: command.parentThreadId,

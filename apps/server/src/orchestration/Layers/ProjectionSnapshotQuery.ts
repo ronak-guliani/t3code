@@ -11,7 +11,9 @@ import {
   OrchestrationQueuedTurn,
   OrchestrationShellSnapshot,
   OrchestrationThread,
+  ProviderInteractionMode,
   ProjectScript,
+  RuntimeMode,
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationBackgroundAgentRunShell,
@@ -60,6 +62,7 @@ import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "../projector.ts";
 const MAX_BACKGROUND_AGENT_RUNS_PER_THREAD = 100;
 import {
   ProjectionSnapshotQuery,
+  type ProjectionChatArchiveMessage,
   type ProjectionSnapshotCounts,
   type ProjectionThreadCheckpointContext,
   type ProjectionThreadShellProjectContext,
@@ -120,6 +123,18 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     reviewResult: Schema.fromJsonString(Schema.NullOr(ReviewResult)),
   }),
 );
+const ProjectionChatArchiveThreadDbRowSchema = Schema.Struct({
+  threadId: ThreadId,
+  parentThreadId: Schema.NullOr(ThreadId),
+  title: TrimmedNonEmptyString,
+  modelSelection: Schema.fromJsonString(ModelSelection),
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  projectTitle: TrimmedNonEmptyString,
+  projectWorkspaceRoot: TrimmedNonEmptyString,
+});
 const ProjectionThreadWithProjectTitleDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     nudging: Schema.fromJsonString(ThreadNudging),
@@ -580,6 +595,57 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads
         WHERE deleted_at IS NULL
         ORDER BY created_at ASC, thread_id ASC
+      `,
+  });
+
+  const listActiveChatArchiveThreadRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionChatArchiveThreadDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          threads.thread_id AS "threadId",
+          threads.parent_thread_id AS "parentThreadId",
+          threads.title,
+          threads.model_selection_json AS "modelSelection",
+          threads.runtime_mode AS "runtimeMode",
+          threads.interaction_mode AS "interactionMode",
+          threads.created_at AS "createdAt",
+          threads.updated_at AS "updatedAt",
+          projects.title AS "projectTitle",
+          projects.workspace_root AS "projectWorkspaceRoot"
+        FROM projection_threads AS threads
+        INNER JOIN projection_projects AS projects
+          ON projects.project_id = threads.project_id
+          AND projects.deleted_at IS NULL
+        WHERE threads.deleted_at IS NULL
+          AND threads.archived_at IS NULL
+        ORDER BY threads.created_at ASC, threads.thread_id ASC
+      `,
+  });
+
+  const listActiveChatArchiveMessageRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          messages.message_id AS "messageId",
+          messages.thread_id AS "threadId",
+          messages.turn_id AS "turnId",
+          messages.role,
+          messages.text,
+          messages.attachments_json AS "attachments",
+          messages.origin_json AS "origin",
+          messages.is_streaming AS "isStreaming",
+          messages.created_at AS "createdAt",
+          messages.updated_at AS "updatedAt"
+        FROM projection_thread_messages AS messages
+        INNER JOIN projection_threads AS threads
+          ON threads.thread_id = messages.thread_id
+          AND threads.deleted_at IS NULL
+          AND threads.archived_at IS NULL
+        ORDER BY messages.thread_id ASC, messages.created_at ASC, messages.message_id ASC
       `,
   });
 
@@ -2181,6 +2247,76 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         }),
       );
 
+  const getActiveChatArchiveEntries: ProjectionSnapshotQueryShape["getActiveChatArchiveEntries"] =
+    () =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const [threadRows, messageRows] = yield* Effect.all([
+              listActiveChatArchiveThreadRows(undefined).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionSnapshotQuery.getActiveChatArchiveEntries:listThreads:query",
+                    "ProjectionSnapshotQuery.getActiveChatArchiveEntries:listThreads:decodeRows",
+                  ),
+                ),
+              ),
+              listActiveChatArchiveMessageRows(undefined).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionSnapshotQuery.getActiveChatArchiveEntries:listMessages:query",
+                    "ProjectionSnapshotQuery.getActiveChatArchiveEntries:listMessages:decodeRows",
+                  ),
+                ),
+              ),
+            ]);
+            const messagesByThreadId = new Map<ThreadId, ProjectionChatArchiveMessage[]>();
+            for (const row of messageRows) {
+              const message = {
+                role: row.role,
+                text: row.text,
+                turnId: row.turnId,
+                createdAt: row.createdAt,
+                updatedAt: row.updatedAt,
+                ...(row.attachments !== null ? { attachments: row.attachments } : {}),
+              };
+              const existing = messagesByThreadId.get(row.threadId);
+              if (existing) {
+                existing.push(message);
+              } else {
+                messagesByThreadId.set(row.threadId, [message]);
+              }
+            }
+            return threadRows.map((row) => ({
+              thread: {
+                id: row.threadId,
+                parentThreadId: row.parentThreadId,
+                title: row.title,
+                modelSelection: row.modelSelection,
+                runtimeMode: row.runtimeMode,
+                interactionMode: row.interactionMode,
+                createdAt: row.createdAt,
+                updatedAt: row.updatedAt,
+                messages: messagesByThreadId.get(row.threadId) ?? [],
+              },
+              project: {
+                title: row.projectTitle,
+                workspaceRoot: row.projectWorkspaceRoot,
+              },
+            }));
+          }),
+        )
+        .pipe(
+          Effect.mapError((error) => {
+            if (isPersistenceError(error)) {
+              return error;
+            }
+            return toPersistenceSqlError(
+              "ProjectionSnapshotQuery.getActiveChatArchiveEntries:query",
+            )(error);
+          }),
+        );
+
   const getSnapshotSequence: ProjectionSnapshotQueryShape["getSnapshotSequence"] = () =>
     listProjectionStateRows(undefined).pipe(
       Effect.map(computeSnapshotSequence),
@@ -2803,6 +2939,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   return {
     getSnapshot,
     getShellSnapshot,
+    getActiveChatArchiveEntries,
     getSnapshotSequence,
     getCounts,
     getActiveProjectByWorkspaceRoot,

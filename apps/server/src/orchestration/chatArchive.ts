@@ -7,14 +7,13 @@ import {
   OrchestrationMessageRole,
   ProviderInteractionMode,
   RuntimeMode,
-  type OrchestrationProjectShell,
-  type OrchestrationThread,
 } from "@t3tools/contracts";
 import { Schema } from "effect";
+import type { ProjectionChatArchiveEntry } from "./Services/ProjectionSnapshotQuery.ts";
 
-const MAX_ARCHIVE_BYTES = 250 * 1024 * 1024;
-const MAX_ARCHIVE_THREADS = 10_000;
-const MAX_ARCHIVE_MESSAGES = 1_000_000;
+const MAX_ARCHIVE_BYTES = 20 * 1024 * 1024;
+const MAX_ARCHIVE_THREADS = 1_000;
+const MAX_ARCHIVE_MESSAGES = 25_000;
 
 const ArchivedAttachment = Schema.Struct({
   name: Schema.String,
@@ -65,10 +64,7 @@ function archiveTimestamp(date: Date): string {
 }
 
 export function createChatArchiveManifest(input: {
-  readonly threads: ReadonlyArray<{
-    readonly thread: OrchestrationThread;
-    readonly project: OrchestrationProjectShell;
-  }>;
+  readonly threads: ReadonlyArray<ProjectionChatArchiveEntry>;
   readonly exportedAt: Date;
 }): ChatArchiveManifest {
   return {
@@ -108,13 +104,15 @@ export async function writeChatArchive(
   exportDirectory: string,
   manifest: ChatArchiveManifest,
 ): Promise<string> {
+  const serialized = JSON.stringify(manifest);
+  validateArchiveLimits(manifest, Buffer.byteLength(serialized));
   const root = await realpath(exportDirectory);
   const name = `t3-chats-${archiveTimestamp(new Date(manifest.exportedAt))}-${manifest.archiveId.slice(0, 8)}`;
   const target = join(root, name);
   const stage = `${target}.partial`;
   await mkdir(stage, { mode: 0o700 });
   try {
-    await writeFile(join(stage, "manifest.json"), JSON.stringify(manifest), {
+    await writeFile(join(stage, "manifest.json"), serialized, {
       encoding: "utf8",
       mode: 0o600,
       flag: "wx",
@@ -142,6 +140,14 @@ export async function readChatArchive(path: string): Promise<ChatArchiveManifest
     throw new Error("Chat archive is too large to import.");
   }
   const manifest = decodeManifest(await readFile(manifestPath, "utf8"));
+  validateArchiveLimits(manifest, info.size);
+  return manifest;
+}
+
+function validateArchiveLimits(manifest: ChatArchiveManifest, sizeBytes: number): void {
+  if (sizeBytes > MAX_ARCHIVE_BYTES) {
+    throw new Error("Chat archive is too large to import.");
+  }
   if (manifest.threads.length === 0) {
     throw new Error("Chat archive contains no chats.");
   }
@@ -181,7 +187,6 @@ export async function readChatArchive(path: string): Promise<ChatArchiveManifest
       parentId = parentByThreadId.get(parentId) ?? null;
     }
   }
-  return manifest;
 }
 
 export function importedMessageText(

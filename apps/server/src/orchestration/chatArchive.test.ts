@@ -108,6 +108,24 @@ describe("chat archives", () => {
     await expect(readChatArchive(path)).rejects.toThrow("cyclic chat hierarchy");
   });
 
+  it("rejects archives that exceed the bounded message workload", async () => {
+    const root = await mkdtemp(join(tmpdir(), "t3-chat-archive-messages-"));
+    createdPaths.push(root);
+    const oversized = manifest();
+    const message = oversized.threads[0]!.messages[0]!;
+    const archive: ChatArchiveManifest = {
+      ...oversized,
+      threads: [
+        {
+          ...oversized.threads[0]!,
+          messages: Array.from({ length: 25_001 }, () => message),
+        },
+      ],
+    };
+
+    await expect(writeChatArchive(root, archive)).rejects.toThrow("25000 message limit");
+  });
+
   it("renders omitted attachment metadata into the imported transcript", () => {
     expect(
       importedMessageText({

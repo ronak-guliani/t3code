@@ -1553,7 +1553,7 @@ const makeWsRpcLayer = (
                   message: "Set a chat export directory in Settings before exporting.",
                 });
               }
-              const shell = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
+              const threads = yield* projectionSnapshotQuery.getActiveChatArchiveEntries().pipe(
                 Effect.mapError(
                   (cause) =>
                     new ServerChatArchiveError({
@@ -1561,40 +1561,6 @@ const makeWsRpcLayer = (
                       cause,
                     }),
                 ),
-              );
-              const projectsById = new Map(shell.projects.map((project) => [project.id, project]));
-              const activeThreadShells = shell.threads.filter(
-                (thread) => thread.archivedAt === null,
-              );
-              const threads = yield* Effect.forEach(
-                activeThreadShells,
-                (threadShell) =>
-                  Effect.gen(function* () {
-                    const project = projectsById.get(threadShell.projectId);
-                    if (!project) {
-                      return yield* new ServerChatArchiveError({
-                        message: `Project metadata is missing for chat '${threadShell.title}'.`,
-                      });
-                    }
-                    const detail = yield* projectionSnapshotQuery
-                      .getThreadDetailById(threadShell.id, { unboundedMessages: true })
-                      .pipe(
-                        Effect.mapError(
-                          (cause) =>
-                            new ServerChatArchiveError({
-                              message: `Unable to load chat '${threadShell.title}'.`,
-                              cause,
-                            }),
-                        ),
-                      );
-                    if (Option.isNone(detail) || detail.value.archivedAt !== null) {
-                      return yield* new ServerChatArchiveError({
-                        message: "Active chats changed during export. Retry the export.",
-                      });
-                    }
-                    return { thread: detail.value, project };
-                  }),
-                { concurrency: 1 },
               );
               if (threads.length === 0) {
                 return yield* new ServerChatArchiveError({

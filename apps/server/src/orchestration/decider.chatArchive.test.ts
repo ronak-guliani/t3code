@@ -1,10 +1,14 @@
 import {
   CommandId,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
   MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   TurnId,
+  WorkflowArtifactId,
+  WorkflowNodeId,
+  WorkflowRunId,
   type OrchestrationCommand,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
@@ -146,5 +150,76 @@ describe("chat archive import decider", () => {
         }),
       ),
     ).rejects.toThrow("cannot create new chats");
+  });
+
+  it("rejects workflow runs on imported chats", async () => {
+    const importedEvents = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: importCommand(),
+        readModel: createEmptyReadModel(now),
+      }),
+    );
+    let readModel = createEmptyReadModel(now);
+    let sequence = 0;
+    for (const event of Array.isArray(importedEvents) ? importedEvents : [importedEvents]) {
+      sequence += 1;
+      readModel = await Effect.runPromise(projectEvent(readModel, { ...event, sequence }));
+    }
+
+    const runId = WorkflowRunId.make("import-workflow");
+    const nodeId = WorkflowNodeId.make("worker");
+    const inputArtifactId = WorkflowArtifactId.make("import-workflow-input");
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          readModel,
+          command: {
+            type: "workflow.run.request",
+            commandId: CommandId.make("workflow-command"),
+            runId,
+            parentThreadId: ThreadId.make("import-thread"),
+            definition: {
+              id: "generic-worker",
+              name: "Generic worker",
+              nodes: [
+                {
+                  id: nodeId,
+                  title: "Investigate",
+                  prompt: "Investigate the scoped task.",
+                  contextPolicy: "summary",
+                },
+              ],
+            },
+            workerConfig: {
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-5.4",
+              },
+              runtimeMode: "full-access",
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              branch: null,
+              worktreePath: null,
+              pullRequest: null,
+            },
+            inputArtifact: {
+              id: inputArtifactId,
+              runId,
+              nodeId,
+              producerThreadId: ThreadId.make("import-thread"),
+              payload: {
+                kind: "input-context",
+                contextPolicy: "summary",
+                parentThreadId: ThreadId.make("import-thread"),
+                messages: [],
+                summary: "Imported chat context.",
+                truncated: false,
+              },
+              createdAt: now,
+            },
+            createdAt: now,
+          },
+        }),
+      ),
+    ).rejects.toThrow("reference-only");
   });
 });

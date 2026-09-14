@@ -4829,7 +4829,7 @@ function ChatViewBody(
                   onLoadOlder={loadOlderActivities}
                   onOpenTurnDiff={onOpenTurnDiff}
                   onRevertToTurnCount={onRevertToTurnCount}
-                  onForkAssistantMessage={onForkAssistantMessage}
+                  {...(isImportedChat ? {} : { onForkAssistantMessage })}
                   onImageExpand={onExpandTimelineImage}
                   onIsAtEndChange={onIsAtEndChange}
                 />
