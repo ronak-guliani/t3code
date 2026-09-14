@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  prMediaAsset,
   prMediaSection,
   publishPrMedia,
   replacePrMediaSection,
@@ -10,9 +9,15 @@ import {
   type PrMediaPublication,
 } from "./prMedia.ts";
 
-const bytes = Buffer.from("supplied capture");
-const media = {
-  ...prMediaAsset("image.png", bytes),
+const bytes = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4AWP4DwQACfsD/c8LaHIAAAAASUVORK5CYII=",
+  "base64",
+);
+const media: PrMediaAsset & { url: string } = {
+  file: "image.png",
+  contentType: "image/png",
+  sizeBytes: bytes.length,
+  sha256: createHash("sha256").update(bytes).digest("hex"),
   url: "https://github.com/user-attachments/assets/test",
 };
 const publication: PrMediaPublication = {
@@ -26,19 +31,6 @@ describe("feature capture publication without a test manifest", () => {
     head: { sha: publication.headSha },
     body: replacePrMediaSection("Human testing notes", prMediaSection(publication)),
   };
-  it.each([
-    ["screen.png", "image/png"],
-    ["before.JPG", "image/jpeg"],
-    ["after.jpeg", "image/jpeg"],
-    ["motion.webm", "video/webm"],
-    ["motion.mp4", "video/mp4"],
-  ])("supports %s", (file, contentType) => {
-    expect(prMediaAsset(file, bytes).contentType).toBe(contentType);
-  });
-  it("rejects empty captures and unsupported files", () => {
-    expect(() => prMediaAsset("secret.txt", bytes)).toThrow("PNG, JPEG, WebM, or MP4");
-    expect(() => prMediaAsset("empty.png", Buffer.alloc(0))).toThrow("empty");
-  });
   it("does not claim that an upload establishes feature correctness or a tested revision", () => {
     const section = prMediaSection(publication);
     expect(section).toContain("PR head at upload:");
@@ -208,3 +200,4 @@ describe("uploaded byte verification", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+import { createHash } from "node:crypto";

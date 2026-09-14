@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Schema } from "effect";
+import { chromium } from "playwright";
 import {
   PrMediaPublication,
   prMediaAsset,
@@ -65,12 +66,17 @@ async function main(): Promise<void> {
   }
   const readPullRequest = async () =>
     decodePullRequest(JSON.parse(await command(["api", `repos/${match[1]}/pulls/${match[2]}`])));
-  const files = await Promise.all(
-    paths.map(async (path) => {
+  const files: Array<{ bytes: Buffer; media: PrMediaAsset }> = [];
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    for (const path of paths) {
       const bytes = await readFile(resolve(path));
-      return { bytes, media: prMediaAsset(basename(path), bytes) };
-    }),
-  );
+      files.push({ bytes, media: await prMediaAsset(page, basename(path), bytes) });
+    }
+  } finally {
+    await browser.close();
+  }
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await mkdir(lockPath).catch((error: unknown) => {
     if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {

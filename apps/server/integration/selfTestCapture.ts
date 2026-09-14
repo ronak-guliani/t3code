@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 import type { Browser, BrowserContext, Page, Request } from "playwright";
 import type { SelfTestDiagnostics, SelfTestMedia } from "../../../scripts/lib/selfTestEvidence.ts";
+import { inspectMediaIntegrity } from "../../../scripts/lib/mediaIntegrity.ts";
 
 export function createSelfTestContext(
   browser: Browser,
@@ -139,60 +140,8 @@ export function trackSelfTestConsole(
   });
 }
 
-const CaptureProbe = Schema.Struct({
-  width: Schema.Int,
-  height: Schema.Int,
-  durationSeconds: Schema.optional(Schema.Finite),
-});
-const decodeProbe = Schema.decodeUnknownSync(CaptureProbe);
-
 export async function inspectSelfTestMedia(page: Page, bytes: Buffer, recording: boolean) {
-  // Decode the file, not its meaning: white/loading or static frames are valid media.
-  const result: unknown = await page.evaluate(`(async () => {
-    const bytes = Uint8Array.from(atob(${JSON.stringify(bytes.toString("base64"))}), c => c.charCodeAt(0));
-    const url = URL.createObjectURL(new Blob([bytes], { type: "${recording ? "video/webm" : "image/png"}" }));
-    const media = document.createElement("${recording ? "video" : "img"}");
-    const ready = new Promise((resolve, reject) => {
-      media.addEventListener("${recording ? "loadeddata" : "load"}", resolve, { once: true });
-      media.addEventListener("error", () => reject(new Error("Media could not be decoded")), { once: true });
-    });
-    let timeoutId;
-    const deadline = new Promise((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error("Media decoding timed out")), 15000);
-    });
-    try {
-      media.src = url;
-      await Promise.race([ready, deadline]);
-      const width = ${recording ? "media.videoWidth" : "media.naturalWidth"};
-      const height = ${recording ? "media.videoHeight" : "media.naturalHeight"};
-      if (!width || !height) throw new Error("Capture has no pixels");
-      ${
-        recording
-          ? `
-      if (!Number.isFinite(media.duration)) {
-        await Promise.race([new Promise(resolve => {
-          media.addEventListener("seeked", resolve, { once: true });
-          media.currentTime = 1e9;
-        }), deadline]);
-      }
-      const durationSeconds = media.duration;
-      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw new Error("Recording has no finite duration");
-      for (const fraction of [0.15, 0.3, 0.45, 0.6, 0.75, 0.9]) {
-        await Promise.race([new Promise(resolve => {
-          media.addEventListener("seeked", resolve, { once: true });
-          media.currentTime = durationSeconds * fraction;
-        }), deadline]);
-      }
-      return { width, height, durationSeconds };`
-          : `return { width, height };`
-      }
-    } finally {
-      clearTimeout(timeoutId);
-      media.removeAttribute("src");
-      URL.revokeObjectURL(url);
-    }
-  })()`);
-  return decodeProbe(result);
+  return inspectMediaIntegrity(page, bytes, recording ? "video/webm" : "image/png");
 }
 
 export async function captureSelfTestScreenshot(

@@ -25,7 +25,10 @@ what you actually exercised, the tested revision, observations, and limitations 
 testing notes. There is no required feature-report JSON or automated visual-content verdict.
 
 Publish with `pnpm pr:media -- <PR URL> <capture files...>`. It accepts PNG/JPEG images and
-WebM/MP4 recordings, updates only its managed PR media section, and verifies the downloaded bytes.
+WebM/MP4 recordings, verifies each declared format and decodes all captures before any upload,
+updates only its managed PR media section, and verifies the downloaded bytes. It reuses the smoke
+check's Chromium decoder; install that runtime if missing with
+`pnpm --filter @t3tools/scripts exec playwright install chromium` (no smoke run is required).
 It does not run tests or prove the captures depict correct behavior. Its PR-head label identifies
 the upload target, not when the media was captured. Supply the actual tested revision in your notes.
 Remove obsolete pairing-only PR evidence rather than retaining it beside feature captures.

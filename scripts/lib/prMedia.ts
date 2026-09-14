@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { extname } from "node:path";
 import { Schema } from "effect";
+import type { Page } from "playwright";
+import { inspectMediaIntegrity, MediaContentType } from "./mediaIntegrity.ts";
 
 export const PrMediaAsset = Schema.Struct({
   file: Schema.String,
-  contentType: Schema.Literals(["image/png", "image/jpeg", "video/webm", "video/mp4"]),
+  contentType: MediaContentType,
   sha256: Schema.String,
   sizeBytes: Schema.Int,
   url: Schema.optional(Schema.String),
@@ -18,7 +20,7 @@ export const PrMediaPublication = Schema.Struct({
 });
 export type PrMediaPublication = typeof PrMediaPublication.Type;
 
-export function prMediaAsset(file: string, bytes: Buffer): PrMediaAsset {
+export async function prMediaAsset(page: Page, file: string, bytes: Buffer): Promise<PrMediaAsset> {
   const extension = extname(file).toLowerCase();
   const contentType =
     extension === ".png"
@@ -32,6 +34,7 @@ export function prMediaAsset(file: string, bytes: Buffer): PrMediaAsset {
             : undefined;
   if (!contentType) throw new Error("PR captures must be PNG, JPEG, WebM, or MP4 files.");
   if (bytes.length === 0) throw new Error("Cannot publish an empty capture.");
+  await inspectMediaIntegrity(page, bytes, contentType);
   return {
     file,
     contentType,
