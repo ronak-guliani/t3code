@@ -138,13 +138,16 @@ export function toRenderablePullRequestMarkdown(body: string): string {
 
 function splitFencedCodeBlocks(body: string): string[] {
   const segments: string[] = [];
-  const openingFence = /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)/gm;
+  const openingFence = /^ {0,3}(`{3,}|~{3,})[^\r\n]*(?:\r?\n|$)/gm;
   let proseStart = 0;
 
   for (const opening of body.matchAll(openingFence)) {
     if (opening.index === undefined || opening.index < proseStart) continue;
     const fence = opening[1]!;
-    const closingFence = new RegExp(`^ {0,3}${fence[0]}{${fence.length},}[ \\t]*(?:\\n|$)`, "gm");
+    const closingFence = new RegExp(
+      `^ {0,3}${fence[0]}{${fence.length},}[ \\t]*(?:\\r?\\n|$)`,
+      "gm",
+    );
     closingFence.lastIndex = opening.index + opening[0].length;
     const closing = closingFence.exec(body);
     const fenceEnd = closing ? closingFence.lastIndex : body.length;
@@ -189,10 +192,10 @@ function transformPullRequestMarkdown(body: string): string {
   // `<user@example.com>`) by converting them to explicit links before the
   // generic tag strip below would otherwise delete them entirely.
   text = text.replace(
-    /<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^<>\s]*|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})>/g,
-    (_match, target: string) => {
-      const href =
-        target.includes("@") && !/^(https?:|mailto:)/i.test(target) ? `mailto:${target}` : target;
+    /<(?:([A-Za-z][A-Za-z0-9+.-]{1,31}:[^<>\s]*)|([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}))>/g,
+    (_match, uri: string | undefined, email: string | undefined) => {
+      const target = uri ?? email!;
+      const href = uri ?? `mailto:${email}`;
       const cleanLabel = target
         .replaceAll("\\", "\\\\")
         .replaceAll("[", "\\[")

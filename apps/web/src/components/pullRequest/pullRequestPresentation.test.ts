@@ -52,6 +52,14 @@ describe("toRenderablePullRequestMarkdown", () => {
     );
   });
 
+  it("preserves CRLF fenced code blocks", () => {
+    const body =
+      '```html\r\n<details><summary>Hi</summary></details>\r\n```\r\n<a href="https://example.com">Done</a>';
+    expect(toRenderablePullRequestMarkdown(body)).toBe(
+      "```html\r\n<details><summary>Hi</summary></details>\r\n```\r\n[Done](https://example.com)",
+    );
+  });
+
   it("preserves Markdown autolinks instead of stripping them", () => {
     expect(toRenderablePullRequestMarkdown("See <https://example.com> for details")).toBe(
       "See [https://example.com](https://example.com) for details",
@@ -60,9 +68,9 @@ describe("toRenderablePullRequestMarkdown", () => {
       "Contact [user@example.com](mailto:user@example.com)",
     );
     expect(
-      toRenderablePullRequestMarkdown("See <HTTPS://example.com> and <ftp://example.com>"),
+      toRenderablePullRequestMarkdown("See <HTTPS://example.com> and <ftp://user@example.com>"),
     ).toBe(
-      "See [HTTPS://example.com](HTTPS://example.com) and [ftp://example.com](ftp://example.com)",
+      "See [HTTPS://example.com](HTTPS://example.com) and [ftp://user@example.com](ftp://user@example.com)",
     );
   });
 
