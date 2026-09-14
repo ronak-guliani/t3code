@@ -70,6 +70,8 @@ const runtimeMock = {
     sessionDirectoryById: new Map<string, string>(),
     sessionUpdateCalls: [] as Array<{ sessionID: string; permission: unknown }>,
     forkCalls: [] as Array<{ sessionID: string; directory?: string }>,
+    sessionChildren: new Map<string, Array<{ id: string }>>(),
+    sessionChildrenCalls: [] as string[],
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -93,6 +95,8 @@ const runtimeMock = {
     this.state.sessionDirectoryById.clear();
     this.state.sessionUpdateCalls.length = 0;
     this.state.forkCalls.length = 0;
+    this.state.sessionChildren.clear();
+    this.state.sessionChildrenCalls.length = 0;
   },
 };
 
@@ -188,6 +192,10 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         },
         abort: async ({ sessionID }: { sessionID: string }) => {
           runtimeMock.state.abortCalls.push(sessionID);
+        },
+        children: async ({ sessionID }: { sessionID: string }) => {
+          runtimeMock.state.sessionChildrenCalls.push(sessionID);
+          return { data: runtimeMock.state.sessionChildren.get(sessionID) ?? [] };
         },
         promptAsync: async (input: unknown) => {
           runtimeMock.state.promptCalls.push(input);
@@ -763,6 +771,44 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         runtimeMock.state.abortCalls.includes("http://127.0.0.1:9999/session"),
         true,
       );
+    }),
+  );
+
+  it.effect("aborts descendant sessions when interrupting a turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-child-stop");
+      const rootSessionId = "http://127.0.0.1:9999/session";
+      runtimeMock.state.sessionChildren.set(rootSessionId, [{ id: "ses_child" }]);
+      runtimeMock.state.sessionChildren.set("ses_child", [{ id: "ses_grandchild" }]);
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "delegate work",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "anthropic/sonnet",
+        ),
+      });
+
+      yield* adapter.interruptTurn(threadId, turn.turnId);
+
+      assert.deepEqual(runtimeMock.state.abortCalls, [
+        rootSessionId,
+        "ses_child",
+        "ses_grandchild",
+      ]);
+      assert.deepEqual(runtimeMock.state.sessionChildrenCalls, [
+        rootSessionId,
+        "ses_child",
+        "ses_grandchild",
+      ]);
+      yield* adapter.stopSession(threadId);
     }),
   );
 
