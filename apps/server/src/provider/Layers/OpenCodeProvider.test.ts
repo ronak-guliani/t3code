@@ -94,6 +94,13 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           }),
         )
       : Effect.succeed(runtimeMock.state.inventory as OpenCodeInventory),
+  loadInventoryFromCli: () =>
+    runtimeMock.state.inventoryError
+      ? Effect.succeed({
+          providerList: { all: [], default: {}, connected: [] as string[] },
+          agents: [],
+        } as OpenCodeInventory)
+      : Effect.succeed(runtimeMock.state.inventory as OpenCodeInventory),
 };
 
 beforeEach(() => {
@@ -193,11 +200,22 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
     }),
   );
 
-  it.effect("closes the local OpenCode server scope after provider refresh", () =>
+  it.effect("does not spawn a local server for health check (uses CLI instead)", () =>
     Effect.gen(function* () {
       yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
 
-      assert.equal(runtimeMock.state.closeCalls, 1);
+      assert.equal(runtimeMock.state.closeCalls, 0);
+    }),
+  );
+
+  it.effect("degrades gracefully on CLI failure for local installs", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.inventoryError = new Error("opencode models failed");
+      const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
+
+      assert.equal(snapshot.status, "warning");
+      assert.equal(snapshot.installed, true);
+      assert.equal(snapshot.models.length, 0);
     }),
   );
 });
