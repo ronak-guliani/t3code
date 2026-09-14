@@ -43,6 +43,13 @@ export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
 export type DeleteProjectionThreadActivitiesInput =
   typeof DeleteProjectionThreadActivitiesInput.Type;
 
+export const DeleteTrimmedProjectionThreadActivitiesInput = Schema.Struct({
+  threadId: ThreadId,
+  retainedTurnIds: Schema.Array(TurnId),
+});
+export type DeleteTrimmedProjectionThreadActivitiesInput =
+  typeof DeleteTrimmedProjectionThreadActivitiesInput.Type;
+
 export const ListProjectionThreadUserInputActivitiesInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -119,6 +126,18 @@ export interface ProjectionThreadActivityRepositoryShape {
    */
   readonly deleteByThreadId: (
     input: DeleteProjectionThreadActivitiesInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Delete only activities of turns outside `retainedTurnIds`.
+   *
+   * Turn-less activities are always kept. Unlike `deleteByThreadId` +
+   * re-upserting kept rows, this never reads payloads and never rewrites
+   * retained rows. An empty `retainedTurnIds` list deletes every activity
+   * attached to a turn.
+   */
+  readonly deleteTrimmedByThreadId: (
+    input: DeleteTrimmedProjectionThreadActivitiesInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 

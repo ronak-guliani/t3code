@@ -7,6 +7,7 @@ import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
 
 import {
   DeleteProjectionThreadActivitiesInput,
+  DeleteTrimmedProjectionThreadActivitiesInput,
   HasProjectionThreadActivityKindForTurnInput,
   ListProjectionThreadActivitiesInput,
   ListProjectionThreadUserInputActivitiesInput,
@@ -133,6 +134,23 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  const deleteTrimmedProjectionThreadActivityRows = SqlSchema.void({
+    Request: DeleteTrimmedProjectionThreadActivitiesInput,
+    execute: ({ threadId, retainedTurnIds }) =>
+      retainedTurnIds.length === 0
+        ? sql`
+          DELETE FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+            AND turn_id IS NOT NULL
+        `
+        : sql`
+          DELETE FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+            AND turn_id IS NOT NULL
+            AND turn_id NOT IN ${sql.in(retainedTurnIds)}
+        `,
+  });
+
   const hasProjectionThreadActivityKindForTurn = SqlSchema.findOne({
     Request: HasProjectionThreadActivityKindForTurnInput,
     Result: Schema.Struct({ found: Schema.Number }),
@@ -188,6 +206,14 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       ),
     );
 
+  const deleteTrimmedByThreadId: ProjectionThreadActivityRepositoryShape["deleteTrimmedByThreadId"] =
+    (input) =>
+      deleteTrimmedProjectionThreadActivityRows(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionThreadActivityRepository.deleteTrimmedByThreadId:query"),
+        ),
+      );
+
   const listUserInputLifecycleByThreadId: ProjectionThreadActivityRepositoryShape["listUserInputLifecycleByThreadId"] =
     (input) =>
       listProjectionThreadUserInputActivityRows(input).pipe(
@@ -214,6 +240,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
     upsert,
     listByThreadId,
     deleteByThreadId,
+    deleteTrimmedByThreadId,
     listUserInputLifecycleByThreadId,
     hasKindForTurn,
   } satisfies ProjectionThreadActivityRepositoryShape;

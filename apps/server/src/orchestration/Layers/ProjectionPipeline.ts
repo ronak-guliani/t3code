@@ -16,15 +16,11 @@ import { ProjectionStateRepository } from "../../persistence/Services/Projection
 import { ProjectionReconciliationJobRepository } from "../../persistence/Services/ProjectionReconciliationJobs.ts";
 import { REVIEW_HANDOFF_PROJECTOR } from "../../pullRequestMonitor/PullRequestReviewHandoffReactor.ts";
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
-import { type ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import {
-  type ProjectionThreadMessage,
+  type ProjectionThreadMessageRevertKey,
   ProjectionThreadMessageRepository,
 } from "../../persistence/Services/ProjectionThreadMessages.ts";
-import {
-  type ProjectionThreadProposedPlan,
-  ProjectionThreadProposedPlanRepository,
-} from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
+import { ProjectionThreadProposedPlanRepository } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
 import { ProjectionQueuedTurnRepository } from "../../persistence/Services/ProjectionQueuedTurns.ts";
 import { ProjectionThreadSessionRepository } from "../../persistence/Services/ProjectionThreadSessions.ts";
 import {
@@ -113,11 +109,11 @@ function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
   );
 }
 
-function retainProjectionMessagesAfterRevert(
-  messages: ReadonlyArray<ProjectionThreadMessage>,
+function retainProjectionMessageIdsAfterRevert(
+  messages: ReadonlyArray<ProjectionThreadMessageRevertKey>,
   turns: ReadonlyArray<ProjectionTurn>,
   turnCount: number,
-): ReadonlyArray<ProjectionThreadMessage> {
+): Set<string> {
   const retainedMessageIds = new Set<string>();
   const retainedTurnIds = new Set<string>();
   const keptTurns = turns.filter(
@@ -194,47 +190,40 @@ function retainProjectionMessagesAfterRevert(
     }
   }
 
-  return messages.filter((message) => retainedMessageIds.has(message.messageId));
+  return retainedMessageIds;
 }
 
-function retainProjectionActivitiesAfterRevert(
-  activities: ReadonlyArray<ProjectionThreadActivity>,
+function retainedTurnIdsAfterRevert(
   turns: ReadonlyArray<ProjectionTurn>,
   turnCount: number,
-): ReadonlyArray<ProjectionThreadActivity> {
-  const retainedTurnIds = new Set<string>(
-    turns
-      .filter(
-        (turn) =>
-          turn.turnId !== null &&
-          turn.checkpointTurnCount !== null &&
-          turn.checkpointTurnCount <= turnCount,
-      )
-      .flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
-  );
-  return activities.filter(
-    (activity) => activity.turnId === null || retainedTurnIds.has(activity.turnId),
-  );
+): Array<string> {
+  return [
+    ...new Set(
+      turns.flatMap((turn) =>
+        turn.turnId !== null &&
+        turn.checkpointTurnCount !== null &&
+        turn.checkpointTurnCount <= turnCount
+          ? [turn.turnId]
+          : [],
+      ),
+    ),
+  ];
 }
 
-function retainProjectionProposedPlansAfterRevert(
-  proposedPlans: ReadonlyArray<ProjectionThreadProposedPlan>,
-  turns: ReadonlyArray<ProjectionTurn>,
-  turnCount: number,
-): ReadonlyArray<ProjectionThreadProposedPlan> {
-  const retainedTurnIds = new Set<string>(
-    turns
-      .filter(
-        (turn) =>
-          turn.turnId !== null &&
-          turn.checkpointTurnCount !== null &&
-          turn.checkpointTurnCount <= turnCount,
-      )
-      .flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
-  );
-  return proposedPlans.filter(
-    (proposedPlan) => proposedPlan.turnId === null || retainedTurnIds.has(proposedPlan.turnId),
-  );
+// Trimmed-id deletes use IN lists, which cannot be split across statements
+// the way keep-lists can: chunk the trimmed ids so a pathological thread
+// cannot exceed the SQLite variable limit in one statement.
+const REVERT_TRIM_DELETE_BATCH_SIZE = 500;
+
+function chunkRevertTrimIds(
+  messageIds: ReadonlyArray<string>,
+  batchSize: number = REVERT_TRIM_DELETE_BATCH_SIZE,
+): Array<Array<string>> {
+  const chunks: Array<Array<string>> = [];
+  for (let index = 0; index < messageIds.length; index += batchSize) {
+    chunks.push(messageIds.slice(index, index + batchSize));
+  }
+  return chunks;
 }
 
 const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjectionPipeline")(
@@ -834,31 +823,38 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.reverted": {
-          const existingRows = yield* projectionThreadMessageRepository.listByThreadId({
+          // Narrow key read: revert trimming never inspects text, attachments,
+          // or origins, so full message rows are never decoded. Trimmed rows
+          // are deleted by id; retained rows are left untouched instead of
+          // being deleted and re-upserted one by one.
+          const existingKeys = yield* projectionThreadMessageRepository.listRevertKeysByThreadId({
             threadId: event.payload.threadId,
           });
-          if (existingRows.length === 0) {
+          if (existingKeys.length === 0) {
             return;
           }
 
           const existingTurns = yield* projectionTurnRepository.listByThreadId({
             threadId: event.payload.threadId,
           });
-          const keptRows = retainProjectionMessagesAfterRevert(
-            existingRows,
+          const retainedMessageIds = retainProjectionMessageIdsAfterRevert(
+            existingKeys,
             existingTurns,
             event.payload.turnCount,
           );
-          if (keptRows.length === existingRows.length) {
+          const trimmedMessageIds = existingKeys
+            .map((key) => key.messageId)
+            .filter((messageId) => !retainedMessageIds.has(messageId));
+          if (trimmedMessageIds.length === 0) {
             return;
           }
 
-          yield* projectionThreadMessageRepository.deleteByThreadId({
-            threadId: event.payload.threadId,
-          });
-          yield* Effect.forEach(keptRows, projectionThreadMessageRepository.upsert, {
-            concurrency: 1,
-          }).pipe(Effect.asVoid);
+          for (const chunk of chunkRevertTrimIds(trimmedMessageIds)) {
+            yield* projectionThreadMessageRepository.deleteByMessageIds({
+              threadId: event.payload.threadId,
+              messageIds: chunk,
+            });
+          }
           return;
         }
 
@@ -885,31 +881,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
 
         case "thread.reverted": {
-          const existingRows = yield* projectionThreadProposedPlanRepository.listByThreadId({
-            threadId: event.payload.threadId,
-          });
-          if (existingRows.length === 0) {
-            return;
-          }
-
+          // Pure-SQL trim: plan retention is turn-based, so trimmed rows are
+          // deleted by turn without reading plan markdown or rewriting
+          // retained rows.
           const existingTurns = yield* projectionTurnRepository.listByThreadId({
             threadId: event.payload.threadId,
           });
-          const keptRows = retainProjectionProposedPlansAfterRevert(
-            existingRows,
-            existingTurns,
-            event.payload.turnCount,
-          );
-          if (keptRows.length === existingRows.length) {
-            return;
-          }
-
-          yield* projectionThreadProposedPlanRepository.deleteByThreadId({
+          yield* projectionThreadProposedPlanRepository.deleteTrimmedByThreadId({
             threadId: event.payload.threadId,
+            retainedTurnIds: retainedTurnIdsAfterRevert(existingTurns, event.payload.turnCount),
           });
-          yield* Effect.forEach(keptRows, projectionThreadProposedPlanRepository.upsert, {
-            concurrency: 1,
-          }).pipe(Effect.asVoid);
           return;
         }
 
@@ -958,29 +939,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.reverted": {
-          const existingRows = yield* projectionThreadActivityRepository.listByThreadId({
-            threadId: event.payload.threadId,
-          });
-          if (existingRows.length === 0) {
-            return;
-          }
+          // Pure-SQL trim: activity retention is turn-based, so trimmed rows
+          // are deleted by turn without decoding payload JSON or rewriting
+          // retained rows.
           const existingTurns = yield* projectionTurnRepository.listByThreadId({
             threadId: event.payload.threadId,
           });
-          const keptRows = retainProjectionActivitiesAfterRevert(
-            existingRows,
-            existingTurns,
-            event.payload.turnCount,
-          );
-          if (keptRows.length === existingRows.length) {
-            return;
-          }
-          yield* projectionThreadActivityRepository.deleteByThreadId({
+          yield* projectionThreadActivityRepository.deleteTrimmedByThreadId({
             threadId: event.payload.threadId,
+            retainedTurnIds: retainedTurnIdsAfterRevert(existingTurns, event.payload.turnCount),
           });
-          yield* Effect.forEach(keptRows, projectionThreadActivityRepository.upsert, {
-            concurrency: 1,
-          }).pipe(Effect.asVoid);
           return;
         }
 

@@ -174,7 +174,9 @@ const makeProjectionReconciler = Effect.gen(function* () {
     const thread = yield* threads.getById({ threadId });
     const keptRelativePaths = new Set<string>();
     if (Option.isSome(thread) && thread.value.deletedAt === null) {
-      const threadMessages = yield* messages.listByThreadId({ threadId });
+      // Narrow attachment-only read: reconciliation never inspects message
+      // text or origins, so full message rows are never decoded.
+      const threadMessages = yield* messages.listAttachmentRefsByThreadId({ threadId });
       for (const message of threadMessages) {
         for (const attachment of message.attachments ?? []) {
           if (parseThreadSegmentFromAttachmentId(attachment.id) === threadSegment) {

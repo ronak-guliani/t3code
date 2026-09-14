@@ -1,4 +1,4 @@
-import { MessageId, ThreadId } from "@t3tools/contracts";
+import { MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
@@ -196,6 +196,108 @@ layer("ProjectionThreadMessageRepository", (it) => {
       if (message._tag === "Some") {
         assert.deepEqual(message.value.origin, origin);
       }
+    }),
+  );
+
+  it.effect("lists revert keys and attachment refs without message payloads", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-revert-keys");
+      const turnId = TurnId.make("turn-revert-keys");
+      const attachments = [
+        {
+          type: "image" as const,
+          id: "thread-revert-keys-att-1",
+          name: "example.png",
+          mimeType: "image/png",
+          sizeBytes: 5,
+        },
+      ];
+
+      yield* repository.upsert({
+        messageId: MessageId.make("message-revert-keys-1"),
+        threadId,
+        turnId,
+        role: "user",
+        text: "first",
+        attachments,
+        isStreaming: false,
+        createdAt: "2026-03-03T00:00:01.000Z",
+        updatedAt: "2026-03-03T00:00:01.000Z",
+      });
+      yield* repository.upsert({
+        messageId: MessageId.make("message-revert-keys-2"),
+        threadId,
+        turnId: null,
+        role: "assistant",
+        text: "second",
+        isStreaming: false,
+        createdAt: "2026-03-03T00:00:02.000Z",
+        updatedAt: "2026-03-03T00:00:02.000Z",
+      });
+
+      const keys = yield* repository.listRevertKeysByThreadId({ threadId });
+      assert.deepStrictEqual(
+        keys.map((key) => key.messageId),
+        ["message-revert-keys-1", "message-revert-keys-2"],
+      );
+      assert.strictEqual(keys[0]?.turnId, turnId);
+      assert.strictEqual(keys[0]?.role, "user");
+      for (const key of keys) {
+        assert.notProperty(key, "text");
+        assert.notProperty(key, "attachments");
+        assert.notProperty(key, "origin");
+      }
+
+      const refs = yield* repository.listAttachmentRefsByThreadId({ threadId });
+      assert.strictEqual(refs.length, 2);
+      assert.deepEqual(refs[0]?.attachments, attachments);
+      assert.strictEqual(refs[1]?.attachments, null);
+      for (const ref of refs) {
+        assert.notProperty(ref, "text");
+        assert.notProperty(ref, "origin");
+      }
+    }),
+  );
+
+  it.effect("deletes only the listed messages by id", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-delete-by-ids");
+      const keptId = MessageId.make("message-delete-by-ids-kept");
+      const trimmedId = MessageId.make("message-delete-by-ids-trimmed");
+
+      yield* repository.upsert({
+        messageId: keptId,
+        threadId,
+        turnId: null,
+        role: "user",
+        text: "kept",
+        isStreaming: false,
+        createdAt: "2026-03-04T00:00:01.000Z",
+        updatedAt: "2026-03-04T00:00:01.000Z",
+      });
+      yield* repository.upsert({
+        messageId: trimmedId,
+        threadId,
+        turnId: null,
+        role: "assistant",
+        text: "trimmed",
+        isStreaming: false,
+        createdAt: "2026-03-04T00:00:02.000Z",
+        updatedAt: "2026-03-04T00:00:02.000Z",
+      });
+
+      yield* repository.deleteByMessageIds({ threadId, messageIds: [] });
+      assert.strictEqual((yield* repository.listByThreadId({ threadId })).length, 2);
+
+      yield* repository.deleteByMessageIds({ threadId, messageIds: [trimmedId] });
+      const rows = yield* repository.listByThreadId({ threadId });
+      assert.deepStrictEqual(
+        rows.map((row) => row.messageId),
+        [keptId],
+      );
+      assert.strictEqual(rows[0]?.text, "kept");
     }),
   );
 });
