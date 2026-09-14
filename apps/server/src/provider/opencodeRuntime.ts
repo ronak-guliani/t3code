@@ -457,7 +457,6 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           shell,
           ...(input.cwd ? { cwd: input.cwd } : {}),
           env: spawnEnv,
-          ...(input.cwd ? { cwd: input.cwd } : {}),
         }),
       );
       const [stdout, stderr, code] = yield* Effect.all(
