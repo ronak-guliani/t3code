@@ -44,12 +44,25 @@ describe("toRenderablePullRequestMarkdown", () => {
     );
   });
 
+  it("does not close a long tilde fence with a shorter run", () => {
+    const body =
+      '~~~~html\n<details><summary>Hi</summary></details>\n~~~\n<a href="https://example.com">Still code</a>\n~~~~\n<a href="https://example.com">Done</a>';
+    expect(toRenderablePullRequestMarkdown(body)).toBe(
+      '~~~~html\n<details><summary>Hi</summary></details>\n~~~\n<a href="https://example.com">Still code</a>\n~~~~\n[Done](https://example.com)',
+    );
+  });
+
   it("preserves Markdown autolinks instead of stripping them", () => {
     expect(toRenderablePullRequestMarkdown("See <https://example.com> for details")).toBe(
       "See [https://example.com](https://example.com) for details",
     );
     expect(toRenderablePullRequestMarkdown("Contact <user@example.com>")).toBe(
       "Contact [user@example.com](mailto:user@example.com)",
+    );
+    expect(
+      toRenderablePullRequestMarkdown("See <HTTPS://example.com> and <ftp://example.com>"),
+    ).toBe(
+      "See [HTTPS://example.com](HTTPS://example.com) and [ftp://example.com](ftp://example.com)",
     );
   });
 
