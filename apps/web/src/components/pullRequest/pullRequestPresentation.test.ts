@@ -36,6 +36,23 @@ describe("toRenderablePullRequestMarkdown", () => {
     );
   });
 
+  it("leaves tilde fenced code blocks untouched", () => {
+    const body =
+      'See:\n~~~html\n<details><summary>Hi</summary></details>\n~~~\n<a href="https://example.com">Done</a>';
+    expect(toRenderablePullRequestMarkdown(body)).toBe(
+      "See:\n~~~html\n<details><summary>Hi</summary></details>\n~~~\n[Done](https://example.com)",
+    );
+  });
+
+  it("preserves Markdown autolinks instead of stripping them", () => {
+    expect(toRenderablePullRequestMarkdown("See <https://example.com> for details")).toBe(
+      "See [https://example.com](https://example.com) for details",
+    );
+    expect(toRenderablePullRequestMarkdown("Contact <user@example.com>")).toBe(
+      "Contact [user@example.com](mailto:user@example.com)",
+    );
+  });
+
   it("leaves inline code spans untouched", () => {
     expect(toRenderablePullRequestMarkdown("Use `<details>` here")).toBe("Use `<details>` here");
   });

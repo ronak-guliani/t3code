@@ -894,7 +894,7 @@ export function PullRequestDetailPanel({
             const selected = activeTab === item.value;
             return (
               <button
-                aria-controls={`pr-panel-${item.value}`}
+                aria-controls={selected ? "pr-panel" : undefined}
                 aria-selected={selected}
                 className={cn(
                   "rounded px-2 py-1 text-xs font-medium tabular-nums",
@@ -923,7 +923,7 @@ export function PullRequestDetailPanel({
       <div
         aria-labelledby={`pr-tab-${activeTab}`}
         className="min-h-0 flex-1 overflow-y-auto"
-        id={`pr-panel-${activeTab}`}
+        id="pr-panel"
         role="tabpanel"
       >
         {activeTab === "summary" ? (

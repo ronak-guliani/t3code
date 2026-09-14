@@ -265,7 +265,7 @@ function PullRequestsRoute() {
         <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(22rem,0.9fr)_minmax(28rem,1.1fr)]">
           <section className="flex min-h-0 flex-col border-r border-border">
             <div className="space-y-2 border-b border-border p-3">
-              <label className="relative block">
+              <div className="relative">
                 <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
                 <input
                   aria-label="Search pull requests"
@@ -286,7 +286,7 @@ function PullRequestsRoute() {
                     <XIcon className="size-3.5" />
                   </button>
                 ) : null}
-              </label>
+              </div>
               <div className="flex flex-wrap gap-2">
                 <select
                   aria-label="Pull request state"

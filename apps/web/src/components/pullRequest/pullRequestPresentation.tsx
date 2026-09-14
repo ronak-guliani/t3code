@@ -113,13 +113,14 @@ function decodeHtmlEntities(value: string): string {
  * Markdown without raw HTML, so without this the page shows literal tags.
  * Convert the common shapes to Markdown and strip anything else.
  *
- * Fenced code blocks and inline code spans are passed through untouched so
- * HTML-like samples inside them are never rewritten.
+ * Fenced code blocks (``` or ~~~, including longer runs) and inline code
+ * spans are passed through untouched so HTML-like samples inside them are
+ * never rewritten.
  */
 export function toRenderablePullRequestMarkdown(body: string): string {
-  // Odd segments are fenced blocks (```...```, unterminated included) or
-  // inline code (`...`); even segments are prose to transform.
-  const segments = body.split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/g);
+  // Odd segments are fenced blocks (```...``` or ~~~...~~~, unterminated
+  // included) or inline code (`...`); even segments are prose to transform.
+  const segments = body.split(/(```+[\s\S]*?(?:```+|$)|~~~+[\s\S]*?(?:~~~+|$)|`[^`\n]*`)/g);
   return segments
     .map((segment, index) => (index % 2 === 1 ? segment : transformPullRequestMarkdown(segment)))
     .join("")
@@ -154,6 +155,22 @@ function transformPullRequestMarkdown(body: string): string {
   );
   text = text.replace(/<br\s*\/?>/gi, "\n");
   text = text.replace(/<\/?(summary|div|span|p|table|thead|tbody|tr|td|th)[^>]*>/gi, "\n");
+  // Preserve Markdown autolinks (`<https://example.com>`, `<mailto:…>`,
+  // `<user@example.com>`) by converting them to explicit links before the
+  // generic tag strip below would otherwise delete them entirely.
+  text = text.replace(
+    /<(https?:\/\/[^<>\s]+|mailto:[^<>\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})>/g,
+    (_match, target: string) => {
+      const href =
+        target.includes("@") && !/^(https?:|mailto:)/i.test(target) ? `mailto:${target}` : target;
+      const cleanLabel = target
+        .replaceAll("\\", "\\\\")
+        .replaceAll("[", "\\[")
+        .replaceAll("]", "\\]");
+      const cleanHref = href.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
+      return `[${cleanLabel}](${cleanHref})`;
+    },
+  );
   text = text.replace(/<[^>]+>/g, "");
   text = decodeHtmlEntities(text);
   // No trailing trim here: segments are joined before trimming so whitespace
