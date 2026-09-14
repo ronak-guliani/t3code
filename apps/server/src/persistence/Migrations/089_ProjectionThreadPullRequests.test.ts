@@ -7,7 +7,7 @@ import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
-layer("088_ProjectionThreadPullRequests", (it) => {
+layer("089_ProjectionThreadPullRequests", (it) => {
   it.effect("backfills a real GitPullRequestAssociation payload", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -48,7 +48,7 @@ layer("088_ProjectionThreadPullRequests", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 88 });
+      yield* runMigrations({ toMigrationInclusive: 89 });
 
       const rows = yield* sql<{
         readonly thread_id: string;

@@ -56,6 +56,26 @@ export function requireProject(input: {
   );
 }
 
+export function requireWritableProjectForThread(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly threadId: ThreadId;
+}): Effect.Effect<OrchestrationThread, OrchestrationCommandInvariantError> {
+  return requireThread(input).pipe(
+    Effect.flatMap((thread) => {
+      const project = findProjectById(input.readModel, thread.projectId);
+      return project?.kind === "chat-import"
+        ? Effect.fail(
+            invariantError(
+              input.command.type,
+              `Imported chat '${input.threadId}' is reference-only and cannot start agent work.`,
+            ),
+          )
+        : Effect.succeed(thread);
+    }),
+  );
+}
+
 export function requireProjectAbsent(input: {
   readonly readModel: OrchestrationReadModel;
   readonly command: OrchestrationCommand;

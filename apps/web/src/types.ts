@@ -94,6 +94,7 @@ export interface TurnDiffSummary {
 
 export interface Project {
   autoPull?: boolean;
+  kind?: "workspace" | "chat-import";
   id: ProjectId;
   environmentId: EnvironmentId;
   name: string;

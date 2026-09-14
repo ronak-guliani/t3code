@@ -5,6 +5,7 @@ export * from "./agentWorkflows.ts";
 export * from "./environmentHttp.ts";
 export * from "./relayClient.ts";
 export * from "./desktopBootstrap.ts";
+export * from "./device.ts";
 export * from "./environment.ts";
 export * from "./remoteAccess.ts";
 export * from "./ipc.ts";

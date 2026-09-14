@@ -19,6 +19,7 @@ import {
   listThreadsByProjectId,
   requireProject,
   requireProjectAbsent,
+  requireWritableProjectForThread,
   requireThread,
   requireThreadAbsent,
   requireThreadNotArchived,
@@ -516,6 +517,109 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   readonly readModel: OrchestrationReadModel;
 }): Effect.fn.Return<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
   switch (command.type) {
+    case "chat-archive.import": {
+      yield* requireProjectAbsent({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
+      if (command.threads.length === 0) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A chat archive import requires at least one chat.",
+        });
+      }
+      const threadIds = new Set(command.threads.map((thread) => thread.threadId));
+      if (threadIds.size !== command.threads.length) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A chat archive import cannot contain duplicate chat identifiers.",
+        });
+      }
+      for (const thread of command.threads) {
+        yield* requireThreadAbsent({
+          readModel,
+          command,
+          threadId: thread.threadId,
+        });
+        if (thread.parentThreadId !== null && !threadIds.has(thread.parentThreadId)) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Imported parent '${thread.parentThreadId}' is missing.`,
+          });
+        }
+      }
+
+      const events: PlannedOrchestrationEvent[] = [
+        {
+          ...withEventBase({
+            aggregateKind: "project",
+            aggregateId: command.projectId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "project.created",
+          payload: {
+            projectId: command.projectId,
+            kind: "chat-import",
+            title: command.title,
+            workspaceRoot: command.workspaceRoot,
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: command.createdAt,
+            updatedAt: command.createdAt,
+          },
+        },
+      ];
+      for (const thread of command.threads) {
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.threadId,
+            occurredAt: thread.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.created",
+          payload: {
+            threadId: thread.threadId,
+            projectId: command.projectId,
+            parentThreadId: thread.parentThreadId,
+            title: thread.title,
+            modelSelection: thread.modelSelection,
+            runtimeMode: thread.runtimeMode,
+            pendingRuntimeMode: null,
+            interactionMode: thread.interactionMode,
+            branch: null,
+            worktreePath: null,
+            createdAt: thread.createdAt,
+            updatedAt: thread.updatedAt,
+          },
+        });
+        for (const message of thread.messages) {
+          events.push({
+            ...withEventBase({
+              aggregateKind: "thread",
+              aggregateId: thread.threadId,
+              occurredAt: message.createdAt,
+              commandId: command.commandId,
+            }),
+            type: "thread.message-sent",
+            payload: {
+              threadId: thread.threadId,
+              messageId: message.messageId,
+              role: message.role,
+              text: message.text,
+              turnId: message.turnId,
+              streaming: false,
+              createdAt: message.createdAt,
+              updatedAt: message.updatedAt,
+            },
+          });
+        }
+      }
+      return events;
+    }
+
     case "project.create": {
       yield* requireProjectAbsent({
         readModel,
@@ -533,6 +637,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "project.created",
         payload: {
           projectId: command.projectId,
+          kind: "workspace",
           title: command.title,
           workspaceRoot: command.workspaceRoot,
           defaultModelSelection: command.defaultModelSelection ?? null,
@@ -642,11 +747,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ? command.delegation
           : { ...command.delegation, ...mintDispatchRecord(command.delegation.dispatchSequence) }
         : undefined;
-      yield* requireProject({
+      const project = yield* requireProject({
         readModel,
         command,
         projectId: command.projectId,
       });
+      if (project.kind === "chat-import") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Imported chat folders are reference-only and cannot create new chats.",
+        });
+      }
       yield* requireThreadAbsent({
         readModel,
         command,
@@ -702,7 +813,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.fork": {
-      const sourceThread = yield* requireThread({
+      const sourceThread = yield* requireWritableProjectForThread({
         readModel,
         command,
         threadId: command.sourceThreadId,
@@ -1558,6 +1669,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.start": {
+      yield* requireWritableProjectForThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
       const targetThread = yield* requireThreadReadyForTurnStart({
         readModel,
         command,
@@ -1660,6 +1776,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.queued-turn.create": {
+      yield* requireWritableProjectForThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
       const thread = yield* requireThread({
         readModel,
         command,
@@ -1869,6 +1990,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.queued-turn.dispatch": {
+      yield* requireWritableProjectForThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
       const { thread: targetThread, queuedTurn } = yield* requireQueuedTurn({
         readModel,
         command,
@@ -2829,7 +2955,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "workflow.run.request": {
-      const parentThread = yield* requireThread({
+      const parentThread = yield* requireWritableProjectForThread({
         readModel,
         command,
         threadId: command.parentThreadId,

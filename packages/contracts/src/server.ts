@@ -315,8 +315,36 @@ export const ServerExportThreadMarkdownResult = Schema.Struct({
 });
 export type ServerExportThreadMarkdownResult = typeof ServerExportThreadMarkdownResult.Type;
 
+export const ServerExportActiveChatsInput = Schema.Struct({});
+export type ServerExportActiveChatsInput = typeof ServerExportActiveChatsInput.Type;
+
+export const ServerExportActiveChatsResult = Schema.Struct({
+  path: TrimmedNonEmptyString,
+  threadCount: NonNegativeInt,
+});
+export type ServerExportActiveChatsResult = typeof ServerExportActiveChatsResult.Type;
+
+export const ServerImportChatArchiveInput = Schema.Struct({
+  path: TrimmedNonEmptyString,
+});
+export type ServerImportChatArchiveInput = typeof ServerImportChatArchiveInput.Type;
+
+export const ServerImportChatArchiveResult = Schema.Struct({
+  projectId: ProjectId,
+  threadCount: NonNegativeInt,
+});
+export type ServerImportChatArchiveResult = typeof ServerImportChatArchiveResult.Type;
+
 export class ServerExportThreadMarkdownError extends Schema.TaggedErrorClass<ServerExportThreadMarkdownError>()(
   "ServerExportThreadMarkdownError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Unknown),
+  },
+) {}
+
+export class ServerChatArchiveError extends Schema.TaggedErrorClass<ServerChatArchiveError>()(
+  "ServerChatArchiveError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Unknown),
