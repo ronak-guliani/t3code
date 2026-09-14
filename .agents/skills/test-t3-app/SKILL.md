@@ -12,24 +12,42 @@ delivery, record the tested revision, scenario results, console errors, failed r
 published evidence links. A completed assistant turn, passing unit tests, or a video file alone
 does not establish verification. Recheck affected scenarios after further edits.
 
-Use `pnpm test:self` for the production web pairing/reconnect baseline and its screenshot,
-recording, and revision manifest. This does not replace the collaborative-browser pass for the
-specific change or native Electron validation for desktop rendering/capture changes.
+## Test and capture the changed feature
 
-`pnpm test:self -- status` checks the current revision and media hashes. After committing and
-rerunning, use `pnpm test:self -- publish <PR URL>` to upload and attach verified baseline media.
-Publication is restartable: successful upload URLs are retained before updating the PR.
-`pnpm test:self -- status --require-published` must pass before claiming baseline evidence was
-delivered. Do not retry a timed-out upload blindly; inspect GitHub for an ambiguous outcome.
+Use focused tests and one integrated real-client pass after integrating the change. Authenticate
+first, then exercise the relevant actions with meaningful test data. Check observable state,
+snapshots, console errors, and failed requests. A generic empty app or pairing form does not
+demonstrate a feature. Native behavior requires native validation, not just the web client.
+
+Capture before/after screenshots for UI changes. Record the action and outcome when motion,
+timing, or reconnect behavior matters. Review the captures for relevance and secrets. Describe
+what you actually exercised, the tested revision, observations, and limitations in the PR's
+testing notes. There is no required feature-report JSON or automated visual-content verdict.
+
+Publish with `pnpm pr:media -- <PR URL> <capture files...>`. It accepts PNG/JPEG images and
+WebM/MP4 recordings, updates only its managed PR media section, and verifies the downloaded bytes.
+It does not run tests or prove the captures depict correct behavior. Its PR-head label identifies
+the upload target, not when the media was captured. Supply the actual tested revision in your notes.
+Remove obsolete pairing-only PR evidence rather than retaining it beside feature captures.
+
+The publisher retains upload URLs in ignored `.t3/pr-media/` receipts. Repeating the same command
+for the same PR head and files reuses completed uploads. Inspect GitHub before retrying an
+ambiguous timed-out upload. Check the published images and sample the recording before reporting
+delivery; local paths and CI artifacts are not permanent inline PR media. Report blockers plainly.
+
+## Separate pairing/reconnect smoke check
+
+Run `pnpm test:self` when changing pairing/reconnect flows or when a separate baseline check is
+needed. It runs production web assertions and retains diagnostic captures and a revision manifest.
+`pnpm test:self -- status` checks that baseline revision and file integrity only; neither command
+establishes feature readiness. The old `feature`, `publish`, and publication-status flags are retired.
+
+Baseline media stays in `.t3/self-test/` and CI diagnostics, not PR feature evidence. Decoding and
+file hashes detect broken captures, not functional failures. White/navigation frames or a static
+video are not themselves test failures; assertions against actual app behavior determine success.
 The runner serializes worktree-local runs. If interrupted, inspect `.t3/self-test/lock/owner.json`
-and confirm its PID is no longer running before removing only that stale lock directory.
-
-Publish baseline evidence with the repository-owned `pnpm test:self -- publish <PR URL>`.
-For additional feature-specific media, use a publisher available in the current environment;
-if none is available, report publication as blocked rather than invoking an unavailable skill.
-Check the uploaded images and sample the recording, not just file existence. If publication is
-blocked, retain the files and report the blocker explicitly. CI artifacts are downloadable,
-expiring evidence, not permanent inline PR media.
+and confirm its PID is no longer running before removing only that stale lock directory. The media
+publisher uses the same ownership pattern at `.t3/pr-media/lock/owner.json`.
 
 Failed runs retain unverified recordings in the run's `raw/` directory and counters in
 `diagnostics.json`; CI uploads both. These are debugging artifacts, not passed evidence.

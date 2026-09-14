@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
-import { replaceSelfTestSection, selfTestBlockers, SelfTestManifest } from "./selfTestEvidence.ts";
+import { parseSelfTestCommand, selfTestBlockers, SelfTestManifest } from "./selfTestEvidence.ts";
 
 const revision = { commit: "abc", contentHash: "def" };
 const decodeManifest = Schema.decodeUnknownSync(SelfTestManifest);
@@ -16,16 +16,7 @@ const manifest: SelfTestManifest = {
   scenarios: ["One-time pairing survives reload"],
   diagnostics: { pageErrors: 0, failedRequests: 0, consoleErrors: 0, expectedConsoleErrors: 1 },
   media: [
-    {
-      kind: "screenshot",
-      file: "page.png",
-      sha256: "a",
-      sizeBytes: 100,
-      width: 1200,
-      height: 800,
-      sampledFrames: 1,
-      distinctFrames: 1,
-    },
+    { kind: "screenshot", file: "page.png", sha256: "a", sizeBytes: 100, width: 1200, height: 800 },
     {
       kind: "recording",
       file: "page.webm",
@@ -33,74 +24,59 @@ const manifest: SelfTestManifest = {
       sizeBytes: 1000,
       width: 1200,
       height: 800,
-      sampledFrames: 3,
-      distinctFrames: 3,
       durationSeconds: 4,
     },
   ],
 };
 
-describe("self-test readiness", () => {
-  it("separates a passed local run from published evidence", () => {
-    expect(selfTestBlockers(manifest, revision, false)).toEqual([]);
-    expect(selfTestBlockers(manifest, revision, true)).toHaveLength(3);
+describe("pairing/reconnect baseline", () => {
+  it("requires smoke assertions and diagnostics, not feature reports or publication", () => {
+    expect(selfTestBlockers(manifest, revision)).toEqual([]);
   });
-  it("invalidates changed commits and dirty content", () => {
-    expect(selfTestBlockers(manifest, { ...revision, commit: "new" }, false)).toContainEqual(
-      expect.stringContaining("stale"),
-    );
-    expect(selfTestBlockers(manifest, { ...revision, contentHash: "new" }, false)).toContainEqual(
+  it.each(["commit", "contentHash"] as const)("invalidates changed %s", (field) => {
+    expect(selfTestBlockers(manifest, { ...revision, [field]: "new" })).toContainEqual(
       expect.stringContaining("stale"),
     );
   });
   it.each(["running", "failed"] as const)("never treats %s as verified", (status) => {
-    expect(selfTestBlockers({ ...manifest, status }, revision, false)).not.toEqual([]);
+    expect(selfTestBlockers({ ...manifest, status }, revision)).not.toEqual([]);
   });
-  it("rejects missing, empty, and unsampled media", () => {
-    expect(selfTestBlockers({ ...manifest, media: [] }, revision, false)).toHaveLength(2);
+  it("rejects missing or undecodable media", () => {
+    expect(selfTestBlockers({ ...manifest, media: [] }, revision)).toHaveLength(2);
     expect(
       selfTestBlockers(
         {
           ...manifest,
-          media: manifest.media.map((item) => ({ ...item, width: 0, sampledFrames: 0 })),
+          media: manifest.media.map((item) => ({ ...item, width: 0 })),
         },
         revision,
-        false,
       ),
     ).toHaveLength(2);
-  });
-  it("rejects static recordings and unexpected browser failures", () => {
     expect(
       selfTestBlockers(
         {
           ...manifest,
-          media: manifest.media.map((media) => ({ ...media, distinctFrames: 1 })),
+          media: manifest.media.map((item) => ({ ...item, durationSeconds: 0 })),
         },
         revision,
-        false,
       ),
-    ).toContain("Invalid recording capture.");
-    expect(
-      selfTestBlockers(
-        {
-          ...manifest,
-          diagnostics: { ...manifest.diagnostics!, pageErrors: 1 },
-        },
-        revision,
-        false,
-      ),
-    ).toContain("Browser diagnostics are missing or contain unexpected failures.");
+    ).toContain("Invalid baseline recording.");
   });
-  it("blocks console errors even when page and network checks pass", () => {
-    expect(
-      selfTestBlockers(
-        { ...manifest, diagnostics: { ...manifest.diagnostics!, consoleErrors: 1 } },
-        revision,
-        true,
-      ),
-    ).toContain("Browser diagnostics are missing or contain unexpected failures.");
-  });
-  it("does not interpret legacy diagnostics without console counts as zero", () => {
+  it.each(["consoleErrors", "pageErrors", "failedRequests"] as const)(
+    "blocks unexpected %s",
+    (field) => {
+      expect(
+        selfTestBlockers(
+          {
+            ...manifest,
+            diagnostics: { ...manifest.diagnostics!, [field]: 1 },
+          },
+          revision,
+        ),
+      ).toContain("Browser diagnostics are missing or contain unexpected failures.");
+    },
+  );
+  it("does not interpret missing console counts as zero", () => {
     expect(() =>
       decodeManifest({
         ...manifest,
@@ -108,16 +84,32 @@ describe("self-test readiness", () => {
       }),
     ).toThrow();
   });
-  it("updates only the managed PR section without duplicate attachments", () => {
-    const body = replaceSelfTestSection("Human description", "first");
-    const updated = replaceSelfTestSection(body, "second");
-    expect(updated).toContain("Human description");
-    expect(updated).not.toContain("first");
-    expect(replaceSelfTestSection(updated, "second")).toBe(updated);
+  it("reads legacy captures without using frame diversity as a test result", () => {
+    const legacy = decodeManifest({
+      ...manifest,
+      media: manifest.media.map((media) => ({ ...media, sampledFrames: 6, distinctFrames: 1 })),
+      feature: { result: "passed" },
+      publication: { pullRequestUrl: "https://github.com/owner/repo/pull/1" },
+    });
+    expect(selfTestBlockers(legacy, revision)).toEqual([]);
+    expect(legacy).not.toHaveProperty("feature");
+    expect(legacy).not.toHaveProperty("publication");
   });
-  it("rejects an incomplete PR section instead of overwriting prose", () => {
-    expect(() => replaceSelfTestSection("Human <!-- t3-self-test:start -->", "new")).toThrow(
-      "ambiguous",
-    );
+});
+
+describe("baseline-only CLI", () => {
+  it("supports running and inspecting the baseline", () => {
+    expect(parseSelfTestCommand([])).toBe("run");
+    expect(parseSelfTestCommand(["run"])).toBe("run");
+    expect(parseSelfTestCommand(["status"])).toBe("status");
+  });
+  it.each([
+    ["feature", "report.json"],
+    ["publish", "https://github.com/owner/repo/pull/1"],
+    ["status", "--require-feature"],
+    ["status", "--require-published"],
+    ["status", "--unknown"],
+  ])("rejects retired or unknown arguments %s %s", (...args) => {
+    expect(() => parseSelfTestCommand(args)).toThrow("only tests pairing/reconnect");
   });
 });
