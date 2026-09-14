@@ -142,10 +142,12 @@ import {
   useRightPanelStore,
 } from "~/rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { DevicePanel } from "./device/DevicePanel";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { useThreadPreviewState } from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
+import { useDeviceState } from "~/state/device";
 import { useAtomCommand } from "~/state/use-atom-command";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
@@ -1941,6 +1943,35 @@ function ChatViewBody(
     );
   }, [activeThreadKey]);
   const previewState = useThreadPreviewState(activeThreadRef);
+  const { state: deviceState } = useDeviceState(environmentId);
+  const reconciledDeviceSessionsRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (!activeThreadRef) return;
+    const sessions = deviceState.sessions.filter(
+      (session) => session.threadId === activeThreadRef.threadId,
+    );
+    const currentKeys = new Set(
+      sessions.map(
+        (session) => `${session.threadId}\u0000${session.hostId}\u0000${session.deviceId}`,
+      ),
+    );
+    for (const session of sessions) {
+      const key = `${session.threadId}\u0000${session.hostId}\u0000${session.deviceId}`;
+      if (reconciledDeviceSessionsRef.current.has(key)) continue;
+      const device = deviceState.devices.find(
+        (candidate) => candidate.hostId === session.hostId && candidate.id === session.deviceId,
+      );
+      if (!device) continue;
+      useRightPanelStore.getState().openDevice(activeThreadRef, {
+        hostId: session.hostId,
+        deviceId: session.deviceId,
+        platform: session.platform,
+        name: device.name,
+        ...(deviceState.serverEpoch ? { serverEpoch: deviceState.serverEpoch } : {}),
+      });
+    }
+    reconciledDeviceSessionsRef.current = currentKeys;
+  }, [activeThreadRef, deviceState.devices, deviceState.serverEpoch, deviceState.sessions]);
   const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
     activeThreadRef ? selectThreadPreviewMiniPlayer(state.byThreadKey, activeThreadRef) : null,
   );
@@ -2193,6 +2224,9 @@ function ChatViewBody(
   }, [activeThreadRef, diffOpen, updateDiffSearch]);
   const addInsightsSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "insights");
+  }, [activeThreadRef]);
+  const addDeviceSurface = useCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "device");
   }, [activeThreadRef]);
   const runProjectScript = useCallback(
     async (
@@ -4697,6 +4731,20 @@ function ChatViewBody(
               onTerminalClosed={handleRightPanelTerminalClosed}
             />
           ) : null;
+        case "device":
+          return activeThreadRef ? (
+            <DevicePanel
+              key={surface.id}
+              mode="embedded"
+              threadRef={activeThreadRef}
+              surface={surface}
+              visible={visible}
+              onDismissSetup={() => {
+                closeRightPanelSurface(surface);
+                useRightPanelStore.getState().show(activeThreadRef);
+              }}
+            />
+          ) : null;
         case "files":
         case "file":
           return activeThreadRef ? (
@@ -5016,6 +5064,7 @@ function ChatViewBody(
                 onAddFiles={addFilesSurface}
                 onAddDiff={addDiffSurface}
                 onAddInsights={addInsightsSurface}
+                onAddDevice={addDeviceSurface}
                 maximized={rightPanelMaximized}
                 onToggleMaximize={toggleRightPanelMaximized}
               >
@@ -5074,6 +5123,7 @@ function ChatViewBody(
             onAddFiles={addFilesSurface}
             onAddDiff={addDiffSurface}
             onAddInsights={addInsightsSurface}
+            onAddDevice={addDeviceSurface}
           >
             {renderRightPanelSurfaces()}
           </RightPanelTabs>

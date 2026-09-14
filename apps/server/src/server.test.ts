@@ -125,6 +125,7 @@ import { TerminalManager, type TerminalManagerShape } from "./terminal/Services/
 import { PreviewManager } from "./preview/Manager.ts";
 import { PortDiscovery } from "./preview/PortScanner.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
+import * as DeviceService from "./device/DeviceService.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import {
   BrowserTraceCollector,
@@ -543,16 +544,47 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(PreviewManager)({
-          open: () => Effect.die("Not implemented in server test."),
-          navigate: () => Effect.die("Not implemented in server test."),
-          reportStatus: () => Effect.void,
-          resize: () => Effect.die("Not implemented in server test."),
-          refresh: () => Effect.void,
-          close: () => Effect.void,
-          list: () => Effect.succeed({ sessions: [], serverEpoch: "test-epoch", revision: 0 }),
-          events: Stream.empty,
-        }),
+        Layer.merge(
+          Layer.mock(PreviewManager)({
+            open: () => Effect.die("Not implemented in server test."),
+            navigate: () => Effect.die("Not implemented in server test."),
+            reportStatus: () => Effect.void,
+            resize: () => Effect.die("Not implemented in server test."),
+            refresh: () => Effect.void,
+            close: () => Effect.void,
+            list: () => Effect.succeed({ sessions: [], serverEpoch: "test-epoch", revision: 0 }),
+            events: Stream.empty,
+          }),
+          Layer.mock(DeviceService.DeviceService)({
+            agentCli: Effect.die("Not implemented in server test."),
+            agentTarget: () => Effect.die("Not implemented in server test."),
+            state: Effect.succeed({
+              hosts: [],
+              hostStatus: "disabled",
+              hostStatuses: {},
+              devices: [],
+              sessions: [],
+              onboardingCompleted: false,
+              agentAccessEnabled: false,
+              hubBasePath: DeviceService.DEVICE_HUB_ROUTE_PREFIX,
+              revision: 0,
+            }),
+            subscribe: Effect.die("Not implemented in server test."),
+            configure: () => Effect.die("Not implemented in server test."),
+            list: Effect.die("Not implemented in server test."),
+            open: () => Effect.die("Not implemented in server test."),
+            close: () => Effect.void,
+            shutdown: () => Effect.void,
+            detail: () => Effect.die("Not implemented in server test."),
+            action: () => Effect.die("Not implemented in server test."),
+            screenshot: () => Effect.die("Not implemented in server test."),
+            readiness: () => Effect.die("Not implemented in server test."),
+            readinessIfSupported: () => Effect.succeed(null),
+            agentReadinessIfSupported: () => Effect.succeed(null),
+            currentReadiness: () => Effect.succeed(null),
+            sessionsForThread: () => Effect.succeed([]),
+          }),
+        ),
       ),
       Layer.provide(PreviewAutomationBroker.layer),
       Layer.provide(

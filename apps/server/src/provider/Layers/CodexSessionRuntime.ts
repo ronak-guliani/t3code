@@ -60,6 +60,16 @@ export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | un
   return appServerArgs?.some((argument) => argument.includes("mcp_servers.")) === true;
 }
 
+export function configuredMcpToolAvailability(
+  appServerArgs: ReadonlyArray<string> | undefined,
+  mcpCapabilities: ReadonlySet<string> | undefined,
+): T3CodeToolAvailability {
+  if (!hasConfiguredMcpServer(appServerArgs)) return { browser: false, device: false };
+  // Callers predating the capability set attached the browser toolkit only.
+  if (mcpCapabilities === undefined) return { browser: true, device: false };
+  return { browser: mcpCapabilities.has("preview"), device: mcpCapabilities.has("device") };
+}
+
 export const CodexResumeCursorSchema = Schema.Struct({
   threadId: Schema.String,
 });
@@ -97,6 +107,7 @@ export interface CodexSessionRuntimeOptions {
   readonly homePath?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly appServerArgs?: ReadonlyArray<string>;
+  readonly mcpCapabilities?: ReadonlySet<string>;
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
   readonly model?: string;
@@ -339,7 +350,7 @@ function buildCodexCollaborationMode(input: {
   readonly interactionMode?: ProviderInteractionMode;
   readonly model?: string;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
-  readonly browserToolsAvailable?: boolean;
+  readonly browserToolsAvailable?: boolean | T3CodeToolAvailability;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -1313,7 +1324,10 @@ export const makeCodexSessionRuntime = (
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
-            browserToolsAvailable: hasConfiguredMcpServer(options.appServerArgs),
+            browserToolsAvailable: configuredMcpToolAvailability(
+              options.appServerArgs,
+              options.mcpCapabilities,
+            ).browser,
           });
           const rawResponse = yield* client.raw.request("turn/start", params);
           const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(

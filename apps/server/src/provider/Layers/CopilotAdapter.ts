@@ -885,7 +885,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           (yield* McpSessionRegistry.readActiveMcpProviderSession(
             input.threadId,
             input.providerInstanceId,
-          )) !== undefined;
+          ))?.capabilities.has("preview") === true;
 
         const acp = yield* makeCopilotAcpRuntime({
           copilotSettings: input.copilotSettings.binaryPath

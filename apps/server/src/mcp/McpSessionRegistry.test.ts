@@ -53,6 +53,14 @@ it.effect("advertises explicit bound hosts and normalizes wildcard and IPv6 host
     expect((yield* ipv6.issue({ threadId, providerInstanceId })).config.endpoint).toBe(
       "http://[2001:db8::1]:43123/mcp",
     );
+
+    expect(
+      (yield* explicit.issue({
+        threadId,
+        providerInstanceId,
+        capabilities: new Set(["preview", "device"]),
+      })).config.endpoint,
+    ).toBe("http://10.20.30.40:43123/mcp-device");
   }),
 );
 

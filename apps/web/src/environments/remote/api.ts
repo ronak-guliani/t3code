@@ -1,6 +1,7 @@
 import type {
   AuthBearerBootstrapResult,
   AuthSessionState,
+  AuthWebSocketTicketResult,
   AuthWebSocketTokenResult,
   ExecutionEnvironmentDescriptor,
 } from "@t3tools/contracts";
@@ -123,6 +124,18 @@ export async function issueRemoteWebSocketToken(input: {
   return fetchRemoteJson<AuthWebSocketTokenResult>({
     httpBaseUrl: input.httpBaseUrl,
     pathname: "/api/auth/ws-token",
+    method: "POST",
+    bearerToken: input.bearerToken,
+  });
+}
+
+export async function issueRemoteWebSocketTicket(input: {
+  readonly httpBaseUrl: string;
+  readonly bearerToken: string;
+}): Promise<AuthWebSocketTicketResult> {
+  return fetchRemoteJson<AuthWebSocketTicketResult>({
+    httpBaseUrl: input.httpBaseUrl,
+    pathname: "/api/auth/websocket-ticket",
     method: "POST",
     bearerToken: input.bearerToken,
   });

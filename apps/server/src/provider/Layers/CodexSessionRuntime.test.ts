@@ -16,6 +16,7 @@ import {
 import {
   buildUnsupportedDynamicToolCallResponse,
   buildTurnStartParams,
+  configuredMcpToolAvailability,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
   openCodexThread,
@@ -197,6 +198,18 @@ describe("hasConfiguredMcpServer", () => {
       hasConfiguredMcpServer(["-c", "mcp_servers.t3-code.url=http://127.0.0.1:3000/mcp"]),
       true,
     );
+  });
+
+  describe("configuredMcpToolAvailability", () => {
+    it("does not infer browser access from a device-only MCP session", () => {
+      assert.deepEqual(
+        configuredMcpToolAvailability(
+          ["-c", "mcp_servers.t3-code.url=http://127.0.0.1:3000/mcp-device"],
+          new Set(["device"]),
+        ),
+        { browser: false, device: true },
+      );
+    });
   });
 });
 
