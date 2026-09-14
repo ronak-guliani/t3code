@@ -997,6 +997,7 @@ export interface LocalApi {
      */
     refreshProviders: (input?: {
       readonly instanceId?: ProviderInstanceId;
+      readonly cwd?: string;
     }) => Promise<ServerProviderUpdatedPayload>;
     listProviderCommands: (
       input: ServerProviderListCommandsInput,

@@ -46,6 +46,7 @@ import type { ProviderInstance } from "../ProviderDriver.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
 
 const BOOT_PROVIDER_REFRESH_DELAY = "1 second";
+const MAX_WORKSPACE_SNAPSHOTS = 16;
 
 const loadProviders = (
   providerSources: ReadonlyArray<ProviderSnapshotSource>,
@@ -96,6 +97,10 @@ export const mergeProviderSnapshot = (
     : {
         ...nextProvider,
         models: mergeProviderModels(previousProvider.models, nextProvider.models),
+        ...(nextProvider.workspaceSnapshots === undefined &&
+        previousProvider.workspaceSnapshots !== undefined
+          ? { workspaceSnapshots: previousProvider.workspaceSnapshots }
+          : {}),
       };
 
 export const haveProvidersChanged = (
@@ -229,6 +234,10 @@ export const ProviderRegistryLive = Layer.effect(
       ),
     );
     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(cachedProviders);
+    const workspaceRefreshesRef = yield* Ref.make(
+      new Map<string, Effect.Effect<ReadonlyArray<ServerProvider>>>(),
+    );
+    const workspaceRefreshesSemaphore = yield* Semaphore.make(1);
 
     // Live-source registry — the dynamic counterpart to the boot-time
     // `bootSources`. Keyed by `instanceId`; the stored `ProviderInstance`
@@ -366,6 +375,80 @@ export const ProviderRegistryLive = Layer.effect(
       }
       return yield* refreshOneSource(providerSource);
     });
+
+    const refreshWorkspaceSnapshotBase = Effect.fn("refreshWorkspaceSnapshotBase")(
+      function* (input: { readonly instanceId: ProviderInstanceId; readonly cwd: string }) {
+        const instances = yield* instanceRegistry.listInstances;
+        const instance = instances.find((candidate) => candidate.instanceId === input.instanceId);
+        if (instance?.snapshotForCwd === undefined) {
+          return yield* Ref.get(providersRef);
+        }
+
+        const workspaceProvider = yield* instance.snapshotForCwd(input.cwd);
+        const currentProviders = yield* Ref.get(providersRef);
+        const currentProvider = currentProviders.find(
+          (provider) => provider.instanceId === input.instanceId,
+        );
+        const previousSnapshots = currentProvider?.workspaceSnapshots ?? [];
+        const nextSnapshot = {
+          cwd: input.cwd,
+          checkedAt: workspaceProvider.checkedAt,
+          skills: workspaceProvider.skills,
+          slashCommands: workspaceProvider.slashCommands,
+        };
+        const workspaceSnapshots = [
+          ...previousSnapshots.filter((snapshot) => snapshot.cwd !== input.cwd),
+          nextSnapshot,
+        ].slice(-MAX_WORKSPACE_SNAPSHOTS);
+
+        return yield* upsertProviders(
+          [
+            {
+              ...workspaceProvider,
+              workspaceSnapshots,
+            },
+          ],
+          { persist: false },
+        );
+      },
+    );
+
+    const refreshWorkspaceSnapshot = (input: {
+      readonly instanceId: ProviderInstanceId;
+      readonly cwd: string;
+    }) => {
+      const key = `${input.instanceId}\u0000${input.cwd}`;
+      return Effect.gen(function* () {
+        const refresh = yield* workspaceRefreshesSemaphore.withPermits(1)(
+          Effect.gen(function* () {
+            const existing = yield* Ref.get(workspaceRefreshesRef).pipe(
+              Effect.map((refreshes) => refreshes.get(key)),
+            );
+            if (existing !== undefined) {
+              return existing;
+            }
+            const created = yield* refreshWorkspaceSnapshotBase(input).pipe(
+              Effect.catchCause(recoverRefreshFailure),
+              Effect.ensuring(
+                Ref.update(workspaceRefreshesRef, (refreshes) => {
+                  const next = new Map(refreshes);
+                  next.delete(key);
+                  return next;
+                }),
+              ),
+              Effect.cached,
+            );
+            yield* Ref.update(workspaceRefreshesRef, (refreshes) => {
+              const next = new Map(refreshes);
+              next.set(key, created);
+              return next;
+            });
+            return created;
+          }),
+        );
+        return yield* refresh;
+      });
+    };
 
     const syncLiveSourcesBase = Effect.fn("syncLiveSources")(function* (options: {
       readonly waitForRefresh: boolean;
@@ -565,6 +648,7 @@ export const ProviderRegistryLive = Layer.effect(
         refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+      refreshWorkspaceSnapshot,
       get streamChanges() {
         return Stream.fromPubSub(changesPubSub);
       },
