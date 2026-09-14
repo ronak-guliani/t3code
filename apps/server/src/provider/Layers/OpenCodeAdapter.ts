@@ -187,6 +187,7 @@ interface OpenCodeSessionContext {
   readonly resolvedRequestIds: Set<string>;
   readonly autoRepliedRequestIds: Set<string>;
   interruptedTurnId: TurnId | undefined;
+  awaitingBusyAfterInterruption: boolean;
   readonly messageRoleById: Map<string, "user" | "assistant">;
   readonly partById: Map<string, Part>;
   readonly emittedTextByPartId: Map<string, string>;
@@ -759,6 +760,7 @@ export function makeOpenCodeAdapter(
       yield* runOpenCodeSdk("session.abort", () =>
         context.client.session.abort({ sessionID: context.openCodeSessionId }),
       ).pipe(Effect.ignore({ log: true }));
+      yield* abortOpenCodeDescendants(context).pipe(Effect.ignore({ log: true }));
       yield* Scope.close(context.sessionScope, Exit.void);
     });
 
@@ -1156,6 +1158,7 @@ export function makeOpenCodeAdapter(
 
         case "session.status": {
           if (event.properties.status.type === "busy") {
+            context.awaitingBusyAfterInterruption = false;
             updateProviderSession(context, {
               status: "running",
               activeTurnId: turnId,
@@ -1178,7 +1181,11 @@ export function makeOpenCodeAdapter(
             break;
           }
 
-          if (event.properties.status.type === "idle" && turnId) {
+          if (
+            event.properties.status.type === "idle" &&
+            turnId &&
+            !context.awaitingBusyAfterInterruption
+          ) {
             context.activeTurnId = undefined;
             context.interruptedTurnId = undefined;
             updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
@@ -1317,29 +1324,32 @@ export function makeOpenCodeAdapter(
     const recoverPendingRequests = Effect.fn("recoverPendingRequests")(function* (
       context: OpenCodeSessionContext,
     ) {
-      const pending = yield* Effect.all(
-        {
-          permissions: runOpenCodeSdk("permission.list", () => context.client.permission.list()),
-          questions: runOpenCodeSdk("question.list", () => context.client.question.list()),
-        },
-        { concurrency: 2 },
-      ).pipe(
-        Effect.timeout("10 seconds"),
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Failed to recover pending OpenCode requests", {
-            threadId: context.session.threadId,
-            cause: Cause.pretty(cause),
-          }).pipe(
-            Effect.as({
-              permissions: { data: [] as PermissionRequest[] },
-              questions: { data: [] as QuestionRequest[] },
-            }),
+      const recover = <T>(operation: string, effect: Effect.Effect<T, OpenCodeRuntimeError>) =>
+        effect.pipe(
+          Effect.timeout("10 seconds"),
+          Effect.catchCause((cause) =>
+            Effect.logWarning(`Failed to recover pending OpenCode ${operation}`, {
+              threadId: context.session.threadId,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as(null)),
           ),
-        ),
+        );
+      const [permissions, questions] = yield* Effect.all(
+        [
+          recover(
+            "permissions",
+            runOpenCodeSdk("permission.list", () => context.client.permission.list()),
+          ),
+          recover(
+            "questions",
+            runOpenCodeSdk("question.list", () => context.client.question.list()),
+          ),
+        ],
+        { concurrency: 2 },
       );
 
       yield* Effect.forEach(
-        pending.permissions.data ?? [],
+        permissions?.data ?? [],
         (request) =>
           handleSubscribedEvent(context, {
             type: "permission.asked",
@@ -1355,7 +1365,7 @@ export function makeOpenCodeAdapter(
         ),
       );
       yield* Effect.forEach(
-        pending.questions.data ?? [],
+        questions?.data ?? [],
         (request) =>
           handleSubscribedEvent(context, {
             type: "question.asked",
@@ -1581,6 +1591,7 @@ export function makeOpenCodeAdapter(
           resolvedRequestIds: new Set(),
           autoRepliedRequestIds: new Set(),
           interruptedTurnId: undefined,
+          awaitingBusyAfterInterruption: false,
           partById: new Map(),
           emittedTextByPartId: new Map(),
           messageRoleById: new Map(),
@@ -1660,7 +1671,6 @@ export function makeOpenCodeAdapter(
       const variant = getModelSelectionStringOptionValue(modelSelection, "variant");
 
       context.activeTurnId = turnId;
-      context.interruptedTurnId = undefined;
       context.activeAgent = agent ?? (input.interactionMode === "plan" ? "plan" : undefined);
       context.activeVariant = variant;
       updateProviderSession(
@@ -1738,11 +1748,22 @@ export function makeOpenCodeAdapter(
     const interruptTurn: OpenCodeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
       function* (threadId, turnId) {
         const context = ensureSessionContext(sessions, threadId);
+        const interruptedTurnId = turnId ?? context.activeTurnId;
+        const previousInterruptedTurnId = context.interruptedTurnId;
+        context.interruptedTurnId = interruptedTurnId;
+        context.awaitingBusyAfterInterruption = true;
         yield* runOpenCodeSdk("session.abort", () =>
           context.client.session.abort({ sessionID: context.openCodeSessionId }),
-        ).pipe(Effect.mapError(toRequestError));
+        ).pipe(
+          Effect.mapError(toRequestError),
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              context.interruptedTurnId = previousInterruptedTurnId;
+              context.awaitingBusyAfterInterruption = false;
+            }),
+          ),
+        );
         yield* abortOpenCodeDescendants(context).pipe(Effect.mapError(toRequestError));
-        const interruptedTurnId = turnId ?? context.activeTurnId;
         context.activeTurnId = undefined;
         context.interruptedTurnId = interruptedTurnId;
         updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
@@ -1780,16 +1801,17 @@ export function makeOpenCodeAdapter(
           reply: toOpenCodePermissionReply(decision),
         }),
       ).pipe(Effect.mapError(toRequestError));
-      context.pendingPermissions.delete(requestId);
+      const shouldEmitResolution = context.pendingPermissions.delete(requestId);
       context.resolvedRequestIds.add(requestId);
-      yield* emit({
-        ...(yield* buildEventBase({ threadId, requestId })),
-        type: "request.resolved",
-        payload: {
-          requestType: mapPermissionToRequestType(request.permission),
-          decision,
-        },
-      });
+      if (shouldEmitResolution)
+        yield* emit({
+          ...(yield* buildEventBase({ threadId, requestId })),
+          type: "request.resolved",
+          payload: {
+            requestType: mapPermissionToRequestType(request.permission),
+            decision,
+          },
+        });
     });
 
     const respondToUserInput: OpenCodeAdapterShape["respondToUserInput"] = Effect.fn(
@@ -1811,13 +1833,14 @@ export function makeOpenCodeAdapter(
           answers: toOpenCodeQuestionAnswers(request, answers),
         }),
       ).pipe(Effect.mapError(toRequestError));
-      context.pendingQuestions.delete(requestId);
+      const shouldEmitResolution = context.pendingQuestions.delete(requestId);
       context.resolvedRequestIds.add(requestId);
-      yield* emit({
-        ...(yield* buildEventBase({ threadId, requestId })),
-        type: "user-input.resolved",
-        payload: { answers },
-      });
+      if (shouldEmitResolution)
+        yield* emit({
+          ...(yield* buildEventBase({ threadId, requestId })),
+          type: "user-input.resolved",
+          payload: { answers },
+        });
     });
 
     const stopSession: OpenCodeAdapterShape["stopSession"] = Effect.fn("stopSession")(
