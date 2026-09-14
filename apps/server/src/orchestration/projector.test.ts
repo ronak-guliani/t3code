@@ -144,6 +144,7 @@ describe("orchestration projector", () => {
           instanceId: "codex",
           model: "gpt-5-codex",
         },
+        nudging: undefined,
         runtimeMode: "full-access",
         pendingRuntimeMode: null,
         interactionMode: "default",
@@ -164,7 +165,6 @@ describe("orchestration projector", () => {
         messages: [],
         queuedTurns: [],
         proposedPlans: [],
-        pullRequests: [],
         activities: [],
         checkpoints: [],
         session: null,
@@ -390,6 +390,13 @@ describe("orchestration projector", () => {
       headBranch: "feature/pr-146",
       state: null,
     });
+    expect(projected.threads[0]?.pullRequests).toEqual([
+      {
+        pullRequest: projected.threads[0]?.pullRequest,
+        source: "recovered",
+        linkedAt: now,
+      },
+    ]);
   });
 
   it("fast-appends ordered activities while preserving the 500-item cap", async () => {

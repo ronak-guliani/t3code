@@ -354,6 +354,8 @@ export function projectEvent(
           "payload",
         );
         const legacyReviewPullRequest = pullRequestFromReviewSnapshot(payload.reviewSnapshot);
+        const initialPullRequest =
+          payload.pullRequest !== undefined ? payload.pullRequest : legacyReviewPullRequest;
         const thread: OrchestrationThread = yield* decodeForEvent(
           OrchestrationThread,
           {
@@ -370,21 +372,21 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
-            ...(payload.pullRequest !== undefined
-              ? { pullRequest: payload.pullRequest }
-              : legacyReviewPullRequest !== undefined
-                ? { pullRequest: legacyReviewPullRequest }
-                : {}),
-            pullRequests:
-              payload.pullRequest !== undefined && payload.pullRequest !== null
-                ? [
+            ...(initialPullRequest !== undefined ? { pullRequest: initialPullRequest } : {}),
+            ...(initialPullRequest !== undefined && initialPullRequest !== null
+              ? {
+                  pullRequests: [
                     {
-                      pullRequest: payload.pullRequest,
-                      source: "created" as const,
+                      pullRequest: initialPullRequest,
+                      source:
+                        payload.pullRequest !== undefined
+                          ? ("created" as const)
+                          : ("recovered" as const),
                       linkedAt: payload.createdAt,
                     },
-                  ]
-                : [],
+                  ],
+                }
+              : {}),
             ...(payload.reviewSnapshot !== undefined
               ? { reviewSnapshot: payload.reviewSnapshot }
               : {}),

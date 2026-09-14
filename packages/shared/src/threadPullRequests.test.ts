@@ -16,4 +16,13 @@ describe("thread pull request identity", () => {
       }),
     ).toBe(true);
   });
+
+  it("uses the final pull-request marker in repository paths", () => {
+    expect(
+      threadPullRequestKey({
+        ...pullRequest,
+        url: "https://github.com/acme/pull/pull/42",
+      }),
+    ).toBe("github.com/acme/pull#42");
+  });
 });

@@ -3,6 +3,7 @@ import { LinkIcon, PlusIcon, UnlinkIcon } from "lucide-react";
 import { useState } from "react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { stackedThreadToast, toastManager } from "../ui/toast";
 
 interface ThreadPullRequestsPanelProps {
   readonly pullRequests: ReadonlyArray<ThreadPullRequestLink>;
@@ -31,6 +32,29 @@ export function ThreadPullRequestsPanel({
     try {
       await onLink(value);
       setReference("");
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Failed to link pull request",
+          description: error instanceof Error ? error.message : "An unexpected error occurred.",
+        }),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  const unlink = async (pullRequest: GitPullRequestAssociation) => {
+    try {
+      await onUnlink(pullRequest);
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Failed to unlink pull request",
+          description: error instanceof Error ? error.message : "An unexpected error occurred.",
+        }),
+      );
     } finally {
       setBusy(false);
     }
@@ -75,7 +99,7 @@ export function ThreadPullRequestsPanel({
                   disabled={busy}
                   onClick={() => {
                     setBusy(true);
-                    void onUnlink(link.pullRequest).finally(() => setBusy(false));
+                    void unlink(link.pullRequest);
                   }}
                 >
                   <UnlinkIcon className="size-3" />
@@ -103,6 +127,7 @@ export function ThreadPullRequestsPanel({
               type="submit"
               size="icon-xs"
               variant="outline"
+              aria-label="Link pull request"
               disabled={busy || !reference.trim()}
             >
               <PlusIcon className="size-3" />

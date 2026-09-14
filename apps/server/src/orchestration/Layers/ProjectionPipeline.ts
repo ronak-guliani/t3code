@@ -329,6 +329,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     )(function* (event) {
       switch (event.type) {
         case "thread.created":
+          const legacyReviewPullRequest = pullRequestFromReviewSnapshot(
+            event.payload.reviewSnapshot,
+          );
+          const initialPullRequest =
+            event.payload.pullRequest !== undefined
+              ? event.payload.pullRequest
+              : legacyReviewPullRequest;
           yield* projectionThreadPullRequestRepository.deleteByThreadId({
             threadId: event.payload.threadId,
           });
@@ -344,10 +351,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
-            pullRequest:
-              event.payload.pullRequest !== undefined
-                ? event.payload.pullRequest
-                : (pullRequestFromReviewSnapshot(event.payload.reviewSnapshot) ?? null),
+            pullRequest: initialPullRequest ?? null,
             reviewSnapshot: event.payload.reviewSnapshot ?? null,
             reviewResult: null,
             latestTurnId: null,
@@ -369,11 +373,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             hasActionableProposedPlan: 0,
             deletedAt: null,
           });
-          if (event.payload.pullRequest !== undefined && event.payload.pullRequest !== null) {
+          if (initialPullRequest !== undefined && initialPullRequest !== null) {
             yield* projectionThreadPullRequestRepository.upsert({
               threadId: event.payload.threadId,
-              pullRequest: event.payload.pullRequest,
-              source: "created",
+              pullRequest: initialPullRequest,
+              source: event.payload.pullRequest !== undefined ? "created" : "recovered",
               linkedAt: event.payload.createdAt,
             });
           }

@@ -855,6 +855,27 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           }),
         },
       ]);
+
+      const links = yield* sql<{
+        readonly threadId: string;
+        readonly source: string;
+        readonly number: number;
+      }>`
+        SELECT
+          thread_id AS "threadId",
+          source,
+          number
+        FROM projection_thread_pull_requests
+        WHERE thread_id IN ('thread-explicit-null', 'thread-legacy-review')
+        ORDER BY thread_id
+      `;
+      assert.deepStrictEqual(links, [
+        {
+          threadId: "thread-legacy-review",
+          source: "recovered",
+          number: 146,
+        },
+      ]);
     }),
   );
 });

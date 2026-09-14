@@ -12,7 +12,7 @@ export function threadPullRequestIdentity(
   try {
     const url = new URL(pullRequest.url);
     const parts = url.pathname.split("/").filter(Boolean);
-    const markerIndex = parts.findIndex((part) =>
+    const markerIndex = parts.findLastIndex((part) =>
       ["pull", "pulls", "merge_requests", "pull-requests"].includes(part.toLowerCase()),
     );
     const repository = markerIndex > 0 ? parts.slice(0, markerIndex).join("/") : "";
