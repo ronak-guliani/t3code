@@ -17,6 +17,7 @@ import {
 // vary only the descriptor shape per scenario.
 
 const PROVIDER: ProviderDriverKind = ProviderDriverKind.make("codex");
+const OPENCODE_PROVIDER: ProviderDriverKind = ProviderDriverKind.make("opencode");
 const MODEL = "test-model";
 
 function selectDescriptor(
@@ -163,6 +164,39 @@ describe("getComposerProviderState", () => {
     expect(state.modelOptionsForDispatch).toEqual(
       selections(["effort", "high"], ["contextWindow", "200k"], ["agent", "plan"]),
     );
+  });
+
+  it("drops OpenCode's retired plan agent from dispatch", () => {
+    const state = getComposerProviderState({
+      provider: OPENCODE_PROVIDER,
+      model: MODEL,
+      models: modelWith([
+        selectDescriptor("agent", [
+          { id: "build", label: "Build", isDefault: true },
+          { id: "plan", label: "Plan" },
+        ]),
+      ]),
+      modelOptions: selections(["agent", "plan"]),
+    });
+
+    expect(state.modelOptionsForDispatch).toEqual(selections(["agent", "build"]));
+  });
+
+  it("drops OpenCode's agent descriptor when plan is its only option", () => {
+    const state = getComposerProviderState({
+      provider: OPENCODE_PROVIDER,
+      model: MODEL,
+      models: modelWith([
+        selectDescriptor("agent", [{ id: "plan", label: "Plan", isDefault: true }]),
+      ]),
+      modelOptions: selections(["agent", "plan"]),
+    });
+
+    expect(state).toEqual({
+      provider: OPENCODE_PROVIDER,
+      promptEffort: null,
+      modelOptionsForDispatch: undefined,
+    });
   });
 
   it("returns undefined dispatch options when the model declares no descriptors", () => {

@@ -215,6 +215,7 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
         (descriptor) => descriptor.id === "variant" && descriptor.type === "select",
       );
       assert.ok(variantDescriptor && variantDescriptor.type === "select");
+      assert.equal(variantDescriptor.label, "Reasoning");
       assert.equal(
         variantDescriptor.options.find((option) => option.isDefault === true)?.id,
         "medium",
@@ -227,6 +228,43 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
         agentDescriptor.options.find((option) => option.isDefault === true)?.id,
         "build",
       );
+    }),
+  );
+
+  it.effect("synthesizes standard reasoning levels when OpenCode omits variants", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.inventory = {
+        providerList: {
+          connected: ["openai"],
+          all: [
+            {
+              id: "openai",
+              name: "OpenAI",
+              models: {
+                "gpt-5.4": {
+                  id: "gpt-5.4",
+                  name: "GPT-5.4",
+                },
+              },
+            },
+          ],
+          default: {},
+        },
+        agents: [{ name: "build", hidden: false, mode: "primary" }],
+      };
+
+      const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
+      const model = snapshot.models.find((entry) => entry.slug === "openai/gpt-5.4");
+      const variantDescriptor = model?.capabilities?.optionDescriptors?.find(
+        (descriptor) => descriptor.id === "variant" && descriptor.type === "select",
+      );
+
+      assert.ok(variantDescriptor && variantDescriptor.type === "select");
+      assert.deepEqual(
+        variantDescriptor.options.map((option) => option.id),
+        ["low", "medium", "high", "xhigh"],
+      );
+      assert.equal(variantDescriptor.currentValue, "medium");
     }),
   );
 
