@@ -9,6 +9,7 @@ import type {
   TerminalEvent,
 } from "@t3tools/contracts";
 import type { KnownEnvironment } from "@t3tools/client-runtime";
+import type { DeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAccess";
 
 import type { WsRpcClient } from "~/rpc/wsRpcClient";
 import { registerSidebarStateClient } from "~/sidebarStateSync";
@@ -20,6 +21,10 @@ export interface EnvironmentConnection {
   readonly client: WsRpcClient;
   readonly ensureBootstrapped: () => Promise<void>;
   readonly refreshShellSnapshot: () => Promise<void>;
+  readonly resolveDeviceHubAccess: (
+    hubBasePath: string,
+    hostId: string,
+  ) => Promise<DeviceHubAccess>;
   readonly reconnect: () => Promise<void>;
   readonly dispose: () => Promise<void>;
 }
@@ -46,6 +51,7 @@ interface EnvironmentConnectionInput extends OrchestrationHandlers {
   readonly kind: "primary" | "saved";
   readonly knownEnvironment: KnownEnvironment;
   readonly client: WsRpcClient;
+  readonly resolveDeviceHubAccess?: EnvironmentConnection["resolveDeviceHubAccess"];
   readonly refreshMetadata?: () => Promise<void>;
   readonly onConfigSnapshot?: (config: ServerConfig) => void;
   readonly onWelcome?: (payload: ServerLifecycleWelcomePayload) => void;
@@ -233,6 +239,9 @@ export function createEnvironmentConnection(
     environmentId,
     knownEnvironment: input.knownEnvironment,
     client: input.client,
+    resolveDeviceHubAccess:
+      input.resolveDeviceHubAccess ??
+      (() => Promise.reject(new Error("Device Hub access is not configured."))),
     ensureBootstrapped: () => (fatalError ? Promise.reject(fatalError) : bootstrapGate.wait()),
     refreshShellSnapshot: async () => {
       if (fatalError) {

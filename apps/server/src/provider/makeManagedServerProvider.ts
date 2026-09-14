@@ -26,6 +26,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   }) => Effect.Effect<void>;
   readonly startInitialRefresh?: boolean;
   readonly refreshInterval?: Duration.Input;
+  readonly refreshOnInterval?: boolean;
 }): Effect.fn.Return<ServerProviderShape, ServerSettingsError, Scope.Scope> {
   const refreshSemaphore = yield* Semaphore.make(1);
   const changesPubSub = yield* Effect.acquireRelease(
@@ -131,12 +132,14 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     Effect.asVoid(applySnapshot(nextSettings)),
   ).pipe(Effect.forkScoped);
 
-  yield* Effect.forever(
-    Effect.sleep(input.refreshInterval ?? "60 seconds").pipe(
-      Effect.flatMap(() => refreshSnapshot()),
-      Effect.ignoreCause({ log: true }),
-    ),
-  ).pipe(Effect.forkScoped);
+  if (input.refreshOnInterval !== false) {
+    yield* Effect.forever(
+      Effect.sleep(input.refreshInterval ?? "60 seconds").pipe(
+        Effect.flatMap(() => refreshSnapshot()),
+        Effect.ignoreCause({ log: true }),
+      ),
+    ).pipe(Effect.forkScoped);
+  }
 
   if (input.startInitialRefresh !== false) {
     yield* applySnapshot(initialSettings, { forceRefresh: true }).pipe(

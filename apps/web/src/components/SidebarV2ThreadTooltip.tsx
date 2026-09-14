@@ -131,14 +131,14 @@ export function terminalProcessLabel(count: number): string {
   return `${count} terminal ${count === 1 ? "process" : "processes"} running`;
 }
 
-/** Remote rows name their environment; primary-environment rows stay unlabelled
-    so the common case spends no space on it. */
+/** Primary-environment rows need no marker. With no primary environment
+    (the hosted client), every row identifies its remote machine. */
 export function useThreadEnvironmentLabel(thread: SidebarThreadSummary): {
   readonly isRemote: boolean;
   readonly environmentLabel: string | null;
 } {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const isRemote = primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId;
+  const isRemote = thread.environmentId !== primaryEnvironmentId;
   const remoteRuntimeLabel = useSavedEnvironmentRuntimeStore(
     (state) => state.byId[thread.environmentId]?.descriptor?.label ?? null,
   );

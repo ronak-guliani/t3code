@@ -13,7 +13,7 @@ import {
   makeEnvironmentHttpApiClient,
   makeEnvironmentHttpApiUrlBuilder,
 } from "../rpc/http.ts";
-import { buildEnvironmentAuthHeaders, withEnvironmentCredentials } from "./environmentHttpAuth.ts";
+import { requestEnvironmentRead } from "./environmentHttpAuth.ts";
 
 // Bounded so a pathologically slow endpoint cannot block the (cheaper) socket
 // fallback for long. The cached shell renders while this runs.
@@ -36,19 +36,16 @@ export const fetchEnvironmentShellSnapshot = Effect.fn(
     input.prepared.httpBaseUrl,
   ).orchestration.shellSnapshot();
   const client = yield* makeEnvironmentHttpApiClient(input.prepared.httpBaseUrl);
-  const headers = yield* buildEnvironmentAuthHeaders(
+  return yield* requestEnvironmentRead(
     input.prepared.httpAuthorization,
-    "GET",
     requestUrl,
     input.signer,
-  );
-  return yield* executeEnvironmentHttpRequest(
-    requestUrl,
-    input.timeoutMs ?? DEFAULT_SHELL_SNAPSHOT_TIMEOUT_MS,
-    withEnvironmentCredentials(
-      input.prepared.httpAuthorization,
-      client.orchestration.shellSnapshot({ headers }),
-    ),
+    (headers) =>
+      executeEnvironmentHttpRequest(
+        requestUrl,
+        input.timeoutMs ?? DEFAULT_SHELL_SNAPSHOT_TIMEOUT_MS,
+        client.orchestration.shellSnapshot({ headers }),
+      ),
   );
 });
 

@@ -1,6 +1,14 @@
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeCrypto from "node:crypto";
+import {
+  computeDpopAccessTokenHash,
+  computeDpopJwkThumbprint,
+  type DpopPublicJwk,
+} from "@t3tools/shared/dpop";
+import { ServerAuth, type ServerAuthShape } from "./auth/Services/ServerAuth.ts";
+import * as Context from "effect/Context";
 
 import {
   CommandId,
@@ -117,6 +125,7 @@ import { TerminalManager, type TerminalManagerShape } from "./terminal/Services/
 import { PreviewManager } from "./preview/Manager.ts";
 import { PortDiscovery } from "./preview/PortScanner.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
+import * as DeviceService from "./device/DeviceService.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import {
   BrowserTraceCollector,
@@ -359,6 +368,7 @@ const makeBrowserOtlpPayload = (spanName: string) =>
   });
 
 const buildAppUnderTest = (options?: {
+  onAuthReady?: (auth: ServerAuthShape) => Effect.Effect<void>;
   config?: Partial<ServerConfigShape>;
   layers?: {
     keybindings?: Partial<KeybindingsShape>;
@@ -534,16 +544,47 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(PreviewManager)({
-          open: () => Effect.die("Not implemented in server test."),
-          navigate: () => Effect.die("Not implemented in server test."),
-          reportStatus: () => Effect.void,
-          resize: () => Effect.die("Not implemented in server test."),
-          refresh: () => Effect.void,
-          close: () => Effect.void,
-          list: () => Effect.succeed({ sessions: [], serverEpoch: "test-epoch", revision: 0 }),
-          events: Stream.empty,
-        }),
+        Layer.merge(
+          Layer.mock(PreviewManager)({
+            open: () => Effect.die("Not implemented in server test."),
+            navigate: () => Effect.die("Not implemented in server test."),
+            reportStatus: () => Effect.void,
+            resize: () => Effect.die("Not implemented in server test."),
+            refresh: () => Effect.void,
+            close: () => Effect.void,
+            list: () => Effect.succeed({ sessions: [], serverEpoch: "test-epoch", revision: 0 }),
+            events: Stream.empty,
+          }),
+          Layer.mock(DeviceService.DeviceService)({
+            agentCli: Effect.die("Not implemented in server test."),
+            agentTarget: () => Effect.die("Not implemented in server test."),
+            state: Effect.succeed({
+              hosts: [],
+              hostStatus: "disabled",
+              hostStatuses: {},
+              devices: [],
+              sessions: [],
+              onboardingCompleted: false,
+              agentAccessEnabled: false,
+              hubBasePath: DeviceService.DEVICE_HUB_ROUTE_PREFIX,
+              revision: 0,
+            }),
+            subscribe: Effect.die("Not implemented in server test."),
+            configure: () => Effect.die("Not implemented in server test."),
+            list: Effect.die("Not implemented in server test."),
+            open: () => Effect.die("Not implemented in server test."),
+            close: () => Effect.void,
+            shutdown: () => Effect.void,
+            detail: () => Effect.die("Not implemented in server test."),
+            action: () => Effect.die("Not implemented in server test."),
+            screenshot: () => Effect.die("Not implemented in server test."),
+            readiness: () => Effect.die("Not implemented in server test."),
+            readinessIfSupported: () => Effect.succeed(null),
+            agentReadinessIfSupported: () => Effect.succeed(null),
+            currentReadiness: () => Effect.succeed(null),
+            sessionsForThread: () => Effect.succeed([]),
+          }),
+        ),
       ),
       Layer.provide(PreviewAutomationBroker.layer),
       Layer.provide(
@@ -766,7 +807,10 @@ const buildAppUnderTest = (options?: {
         )
       : appLayer;
 
-    yield* Layer.build(appLayerWithProvider.pipe(Layer.provideMerge(CheckoutCoordinatorLive)));
+    const context = yield* Layer.build(
+      appLayerWithProvider.pipe(Layer.provideMerge(CheckoutCoordinatorLive)),
+    );
+    if (options?.onAuthReady) yield* options.onAuthReady(Context.get(context, ServerAuth));
     return config;
   });
 
@@ -927,6 +971,7 @@ const getAuthenticatedBearerSessionToken = (credential = defaultDesktopBootstrap
 const exchangeAccessToken = (
   scopes: ReadonlyArray<string>,
   credential = defaultDesktopBootstrapToken,
+  dpop?: string,
 ) =>
   Effect.gen(function* () {
     const tokenUrl = yield* getHttpServerUrl("/oauth/token");
@@ -935,6 +980,7 @@ const exchangeAccessToken = (
         method: "POST",
         headers: {
           "content-type": "application/x-www-form-urlencoded",
+          ...(dpop ? { dpop } : {}),
         },
         body: new URLSearchParams({
           grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -1012,6 +1058,7 @@ const assertBrowserApiCorsHeaders = (headers: Headers) => {
     "authorization",
     "b3",
     "content-type",
+    "dpop",
     "traceparent",
   ]);
 };
@@ -1085,6 +1132,90 @@ const decodeWebSocketTicket = Schema.decodeUnknownSync(
 const makeMobileSourceRpcClient = RpcClient.make(WsClientRpcGroup);
 
 it.layer(NodeServices.layer)("server router seam", (it) => {
+  it.effect("allows real DPoP preflight and an authenticated cross-origin ticket request", () =>
+    Effect.gen(function* () {
+      const { privateKey, publicKey } = NodeCrypto.generateKeyPairSync("ec", {
+        namedCurve: "P-256",
+      });
+      let credential = "";
+      yield* buildAppUnderTest({
+        onAuthReady: (auth) =>
+          auth
+            .issuePairingCredential({
+              label: "Cross-origin DPoP test",
+              proofKeyThumbprint: computeDpopJwkThumbprint(
+                publicKey.export({ format: "jwk" }) as DpopPublicJwk,
+              ),
+            })
+            .pipe(
+              Effect.tap((issued) =>
+                Effect.sync(() => {
+                  credential = issued.credential;
+                }),
+              ),
+              Effect.orDie,
+              Effect.asVoid,
+            ),
+      });
+      const tokenUrl = yield* getHttpServerUrl("/oauth/token");
+      const ticketUrl = yield* getHttpServerUrl("/api/auth/websocket-ticket");
+      for (const url of [tokenUrl, ticketUrl]) {
+        const preflight = yield* Effect.promise(() =>
+          fetch(url, {
+            method: "OPTIONS",
+            headers: {
+              origin: crossOriginClientOrigin,
+              "access-control-request-method": "POST",
+              "access-control-request-headers": "authorization,content-type,dpop",
+            },
+          }),
+        );
+        assert.equal(preflight.status, 204);
+        assertBrowserApiCorsHeaders(preflight.headers);
+      }
+      const proof = (url: string, accessToken?: string) => {
+        const header = Buffer.from(
+          JSON.stringify({
+            typ: "dpop+jwt",
+            alg: "ES256",
+            jwk: publicKey.export({ format: "jwk" }),
+          }),
+        ).toString("base64url");
+        const payload = Buffer.from(
+          JSON.stringify({
+            htm: "POST",
+            htu: url,
+            iat: Math.floor(Date.now() / 1_000),
+            jti: NodeCrypto.randomUUID(),
+            ...(accessToken ? { ath: computeDpopAccessTokenHash(accessToken) } : {}),
+          }),
+        ).toString("base64url");
+        const signature = NodeCrypto.sign("sha256", Buffer.from(`${header}.${payload}`), {
+          key: privateKey,
+          dsaEncoding: "ieee-p1363",
+        }).toString("base64url");
+        return `${header}.${payload}.${signature}`;
+      };
+      const accessToken = yield* exchangeAccessToken(
+        ["orchestration:read"],
+        credential,
+        proof(tokenUrl),
+      );
+      const headers = {
+        origin: crossOriginClientOrigin,
+        authorization: `DPoP ${accessToken}`,
+        dpop: proof(ticketUrl, accessToken),
+      };
+      const response = yield* Effect.promise(() => fetch(ticketUrl, { method: "POST", headers }));
+      assert.equal(response.status, 200);
+      assertBrowserApiCorsHeaders(response.headers);
+      const issued = decodeWebSocketTicket(yield* Effect.promise(() => response.json()));
+      assert.isTrue(issued.ticket.length > 0);
+      const replay = yield* Effect.promise(() => fetch(ticketUrl, { method: "POST", headers }));
+      assert.equal(replay.status, 401);
+      assertBrowserApiCorsHeaders(replay.headers);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
   it.effect(
     "pairs the current mobile protocol, persists inline images, and reconnects with a new ticket",
     () =>
@@ -1675,7 +1806,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             headers: {
               origin: crossOriginClientOrigin,
               "access-control-request-method": "POST",
-              "access-control-request-headers": "authorization",
+              "access-control-request-headers": "authorization,dpop",
             },
           }),
         );
@@ -3697,6 +3828,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         "authorization",
         "b3",
         "content-type",
+        "dpop",
         "traceparent",
       ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),

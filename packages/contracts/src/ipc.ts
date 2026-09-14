@@ -65,8 +65,11 @@ import {
 import type { ProviderInstanceId } from "./providerInstance.ts";
 import type {
   ServerConfig,
+  ServerExportActiveChatsResult,
   ServerExportThreadMarkdownInput,
   ServerExportThreadMarkdownResult,
+  ServerImportChatArchiveInput,
+  ServerImportChatArchiveResult,
   ServerListSkillsResult,
   ServerProviderListCommandsInput,
   ServerProviderPrewarmSessionInput,
@@ -997,6 +1000,7 @@ export interface LocalApi {
      */
     refreshProviders: (input?: {
       readonly instanceId?: ProviderInstanceId;
+      readonly cwd?: string;
     }) => Promise<ServerProviderUpdatedPayload>;
     listProviderCommands: (
       input: ServerProviderListCommandsInput,
@@ -1006,6 +1010,10 @@ export interface LocalApi {
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
+    exportActiveChats: () => Promise<ServerExportActiveChatsResult>;
+    importChatArchive: (
+      input: ServerImportChatArchiveInput,
+    ) => Promise<ServerImportChatArchiveResult>;
     exportThreadMarkdown: (
       input: ServerExportThreadMarkdownInput,
     ) => Promise<ServerExportThreadMarkdownResult>;
@@ -1127,6 +1135,14 @@ export interface EnvironmentApi {
     ) => Promise<PullRequestMonitorLaunchFallbackResult>;
   };
   server: {
+    exportActiveChats: () => Promise<ServerExportActiveChatsResult>;
+    importChatArchive: (
+      input: ServerImportChatArchiveInput,
+    ) => Promise<ServerImportChatArchiveResult>;
+    refreshProviders: (input?: {
+      readonly instanceId?: ProviderInstanceId;
+      readonly cwd?: string;
+    }) => Promise<ServerProviderUpdatedPayload>;
     exportThreadMarkdown: (
       input: ServerExportThreadMarkdownInput,
     ) => Promise<ServerExportThreadMarkdownResult>;

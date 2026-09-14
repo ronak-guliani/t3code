@@ -270,6 +270,9 @@ function createMockEnvironmentApi(input: {
       }) as EnvironmentApi["workflow"]["run"],
     },
     server: {
+      exportActiveChats: async () => ({ path: "/tmp/t3-chats", threadCount: 1 }),
+      importChatArchive: async () => ({ projectId: "imported" as ProjectId, threadCount: 1 }),
+      refreshProviders: async () => ({ providers: [] }),
       exportThreadMarkdown: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["server"]["exportThreadMarkdown"],

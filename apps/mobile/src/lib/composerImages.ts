@@ -626,8 +626,12 @@ export async function convertPastedImagesToAttachments(input: {
 }): Promise<ReadonlyArray<DraftComposerImageAttachment>> {
   const { File } = await import("expo-file-system");
   const remainingSlots = PROVIDER_SEND_TURN_MAX_ATTACHMENTS - input.existingCount;
-  const results: DraftComposerImageAttachment[] = [];
 
+  // Sequential on purpose, not async-parallel: each pasted image can be up
+  // to PROVIDER_SEND_TURN_MAX_IMAGE_BYTES, so decoding all of them
+  // concurrently spikes memory on mobile. Order and slot-cap semantics match
+  // the previous loop.
+  const results: DraftComposerImageAttachment[] = [];
   for (const [index, uri] of input.uris.entries()) {
     const ownedTemporaryFile = isOwnedPastedImageUri(uri);
     try {

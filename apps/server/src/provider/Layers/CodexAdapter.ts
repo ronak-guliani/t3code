@@ -1411,6 +1411,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             : {}),
           ...(mcpSession
             ? {
+                mcpCapabilities: mcpSession.capabilities,
                 appServerArgs: [
                   "-c",
                   `mcp_servers.t3-code.url=${mcpSession.endpoint}`,

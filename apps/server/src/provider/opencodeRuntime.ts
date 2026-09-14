@@ -5,6 +5,7 @@ import {
   createOpencodeClient,
   type Agent,
   type FilePartInput,
+  type Model,
   type OpencodeClient,
   type PermissionRuleset,
   type ProviderListResponse,
@@ -30,13 +31,24 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { isWindowsCommandNotFound } from "../processRunner.ts";
-import { collectStreamAsString } from "./providerSnapshot.ts";
 import { NetService } from "@t3tools/shared/Net";
 import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 
 const OPENCODE_SERVER_READY_PREFIX = "opencode server listening";
-const DEFAULT_OPENCODE_SERVER_TIMEOUT_MS = 5_000;
+const DEFAULT_OPENCODE_SERVER_TIMEOUT_MS = 30_000;
 const DEFAULT_HOSTNAME = "127.0.0.1";
+const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
+
+export function resolveOpenCodeConfigContent(
+  inputEnvironment: Readonly<Record<string, string | undefined>> | undefined,
+  inheritedEnvironment: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  return (
+    inputEnvironment?.OPENCODE_CONFIG_CONTENT ??
+    inheritedEnvironment.OPENCODE_CONFIG_CONTENT ??
+    OPENCODE_EMPTY_CONFIG_CONTENT
+  );
+}
 export interface OpenCodeServerProcess {
   readonly url: string;
   readonly exitCode: Effect.Effect<number, never>;
@@ -58,9 +70,25 @@ export class OpenCodeRuntimeError extends Data.TaggedError(OPENCODE_RUNTIME_ERRO
     P.isTagged(u, OPENCODE_RUNTIME_ERROR_TAG);
 }
 
+function nestedErrorCause(cause: unknown): unknown {
+  if (!cause || typeof cause !== "object" || !("cause" in cause)) {
+    return undefined;
+  }
+  return (cause as { readonly cause?: unknown }).cause;
+}
+
 export function openCodeRuntimeErrorDetail(cause: unknown): string {
   if (OpenCodeRuntimeError.is(cause)) return cause.detail;
-  if (cause instanceof Error && cause.message.trim().length > 0) return cause.message.trim();
+  if (cause instanceof Error && cause.message.trim().length > 0) {
+    const message = cause.message.trim();
+    if (message.includes("ChildProcess.exitCode")) {
+      const nestedCause = nestedErrorCause(cause);
+      if (nestedCause !== undefined && nestedCause !== cause) {
+        return openCodeRuntimeErrorDetail(nestedCause);
+      }
+    }
+    return message;
+  }
   if (cause && typeof cause === "object") {
     // SDK v2 throws { response, request, error? } shapes — extract what's useful
     const anyCause = cause as Record<string, unknown>;
@@ -74,6 +102,27 @@ export function openCodeRuntimeErrorDetail(cause: unknown): string {
   }
   return String(cause);
 }
+
+const collectStreamAsStringBounded = <E>(
+  stream: Stream.Stream<Uint8Array, E>,
+  maxChars: number,
+): Effect.Effect<string, E> =>
+  stream.pipe(
+    Stream.decodeText(),
+    Stream.runFold(
+      () => ({ chunks: [] as string[], length: 0 }),
+      (state, chunk) => {
+        if (state.length >= maxChars) {
+          return state;
+        }
+        const remaining = maxChars - state.length;
+        const retained = chunk.slice(0, remaining);
+        state.chunks.push(retained);
+        return { chunks: state.chunks, length: state.length + retained.length };
+      },
+    ),
+    Effect.map((state) => state.chunks.join("")),
+  );
 
 export const runOpenCodeSdk = <A>(
   operation: string,
@@ -94,12 +143,22 @@ export interface OpenCodeCommandResult {
 export interface OpenCodeInventory {
   readonly providerList: ProviderListResponse;
   readonly agents: ReadonlyArray<Agent>;
+  readonly skills: ReadonlyArray<OpenCodeSkill>;
 }
 
 export interface ParsedOpenCodeModelSlug {
   readonly providerID: string;
   readonly modelID: string;
 }
+
+export interface OpenCodeSkill {
+  readonly name?: string | null;
+  readonly description?: string | null;
+  readonly location?: string | null;
+}
+
+const MAX_OPENCODE_COMMAND_OUTPUT_CHARS = 8 * 1024 * 1024;
+const MAX_OPENCODE_SKILLS = 512;
 
 export interface OpenCodeRuntimeShape {
   /**
@@ -111,6 +170,7 @@ export interface OpenCodeRuntimeShape {
   readonly startOpenCodeServerProcess: (input: {
     readonly binaryPath: string;
     readonly environment?: NodeJS.ProcessEnv;
+    readonly directory?: string;
     readonly port?: number;
     readonly hostname?: string;
     readonly timeoutMs?: number;
@@ -124,6 +184,8 @@ export interface OpenCodeRuntimeShape {
     readonly binaryPath: string;
     readonly serverUrl?: string | null;
     readonly environment?: NodeJS.ProcessEnv;
+    readonly directory?: string;
+    readonly serverPassword?: string;
     readonly port?: number;
     readonly hostname?: string;
     readonly timeoutMs?: number;
@@ -131,6 +193,7 @@ export interface OpenCodeRuntimeShape {
   readonly runOpenCodeCommand: (input: {
     readonly binaryPath: string;
     readonly args: ReadonlyArray<string>;
+    readonly cwd?: string;
     readonly environment?: NodeJS.ProcessEnv;
   }) => Effect.Effect<OpenCodeCommandResult, OpenCodeRuntimeError>;
   readonly createOpenCodeSdkClient: (input: {
@@ -141,6 +204,21 @@ export interface OpenCodeRuntimeShape {
   readonly loadOpenCodeInventory: (
     client: OpencodeClient,
   ) => Effect.Effect<OpenCodeInventory, OpenCodeRuntimeError>;
+  readonly loadOpenCodeSkills: (
+    client: OpencodeClient,
+  ) => Effect.Effect<ReadonlyArray<OpenCodeSkill>, OpenCodeRuntimeError>;
+  readonly loadOpenCodeSkillsForCwd: (input: {
+    readonly binaryPath: string;
+    readonly cwd: string;
+    readonly serverUrl?: string | null;
+    readonly serverPassword?: string;
+    readonly environment?: NodeJS.ProcessEnv;
+  }) => Effect.Effect<ReadonlyArray<OpenCodeSkill>, OpenCodeRuntimeError>;
+  readonly loadInventoryFromCli: (input: {
+    readonly binaryPath: string;
+    readonly cwd: string;
+    readonly environment?: NodeJS.ProcessEnv;
+  }) => Effect.Effect<OpenCodeInventory, OpenCodeRuntimeError>;
 }
 
 function parseServerUrlFromOutput(output: string): string | null {
@@ -152,6 +230,113 @@ function parseServerUrlFromOutput(output: string): string | null {
     return match?.[1] ?? null;
   }
   return null;
+}
+
+const SLUG_LINE_RE = /^(\S+\/\S+)\s*$/;
+const AGENT_HEADER_RE = /^(.+)\s+\((\S+)\)\s*$/;
+
+// Agents that are always hidden in OpenCode but the CLI "agent list" command
+// does not expose the hidden flag. Keep in sync with OpenCode agent
+// definitions (in the OpenCode repo: packages/opencode/src/agent/agent.ts).
+const KNOWN_HIDDEN_AGENTS = new Set(["compaction", "summary", "title"]);
+
+/** @internal */
+export function parseModelsCliOutput(stdout: string): {
+  readonly providers: ReadonlyMap<
+    string,
+    { readonly id: string; readonly name: string; readonly models: { [key: string]: Model } }
+  >;
+  readonly connected: ReadonlyArray<string>;
+} {
+  const providers = new Map<
+    string,
+    { id: string; name: string; models: { [key: string]: Model } }
+  >();
+  const lines = stdout.split("\n");
+  let currentSlug: string | null = null;
+  const jsonLines: Array<string> = [];
+
+  const flushModel = () => {
+    if (currentSlug !== null && jsonLines.length > 0) {
+      const jsonStr = jsonLines.join("\n").trim();
+      if (jsonStr.length > 0) {
+        try {
+          const model = JSON.parse(jsonStr) as Model;
+          const separator = currentSlug.indexOf("/");
+          if (separator > 0) {
+            const providerID = currentSlug.slice(0, separator);
+            const modelID = currentSlug.slice(separator + 1);
+            let provider = providers.get(providerID);
+            if (!provider) {
+              provider = { id: providerID, name: providerID, models: {} };
+              providers.set(providerID, provider);
+            }
+            provider.models[modelID] = model;
+          }
+        } catch {
+          // Skip unparseable model JSON
+        }
+      }
+    }
+    currentSlug = null;
+    jsonLines.length = 0;
+  };
+
+  for (const line of lines) {
+    const slugMatch = line.trimStart().startsWith("{") ? null : SLUG_LINE_RE.exec(line);
+    if (slugMatch) {
+      flushModel();
+      currentSlug = slugMatch[1]!;
+    } else if (currentSlug !== null) {
+      jsonLines.push(line);
+    }
+  }
+  flushModel();
+
+  return { providers, connected: [...providers.keys()] };
+}
+
+/** @internal */
+export function parseAgentListCliOutput(stdout: string): ReadonlyArray<Agent> {
+  const agents: Array<Agent> = [];
+  const lines = stdout.split("\n");
+  let currentHeader: { name: string; mode: string } | null = null;
+  const blockLines: Array<string> = [];
+
+  const flushAgent = () => {
+    if (currentHeader !== null) {
+      const jsonStr = blockLines.join("\n").trim();
+      if (jsonStr.length > 0) {
+        try {
+          const permission = JSON.parse(jsonStr);
+          agents.push({
+            name: currentHeader.name,
+            mode: currentHeader.mode as Agent["mode"],
+            hidden: KNOWN_HIDDEN_AGENTS.has(currentHeader.name),
+            permission,
+            options: {},
+          });
+        } catch {
+          // Skip unparseable agent
+        }
+      }
+    }
+    currentHeader = null;
+    blockLines.length = 0;
+  };
+
+  for (const line of lines) {
+    const match = AGENT_HEADER_RE.exec(line);
+    if (match) {
+      flushAgent();
+      currentHeader = { name: match[1]!, mode: match[2]! };
+    } else if (currentHeader !== null) {
+      blockLines.push(line);
+    }
+  }
+  flushAgent();
+
+  return agents;
 }
 
 export function parseOpenCodeModelSlug(
@@ -212,10 +397,14 @@ export function buildOpenCodePermissionRules(runtimeMode: RuntimeMode): Permissi
     return [{ permission: "*", pattern: "*", action: "allow" }];
   }
 
+  // "Auto-accept edits" is documented as "auto-approve edits, ask before other
+  // actions", so prompting for every edit ignores the mode the user picked.
+  const editAction = runtimeMode === "auto-accept-edits" ? "allow" : "ask";
+
   return [
     { permission: "*", pattern: "*", action: "ask" },
     { permission: "bash", pattern: "*", action: "ask" },
-    { permission: "edit", pattern: "*", action: "ask" },
+    { permission: "edit", pattern: "*", action: editAction },
     { permission: "webfetch", pattern: "*", action: "ask" },
     { permission: "websearch", pattern: "*", action: "ask" },
     { permission: "codesearch", pattern: "*", action: "ask" },
@@ -282,11 +471,16 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       const child = yield* spawner.spawn(
         ChildProcess.make(spawnTarget, [...input.args], {
           shell,
+          ...(input.cwd ? { cwd: input.cwd } : {}),
           env: spawnEnv,
         }),
       );
       const [stdout, stderr, code] = yield* Effect.all(
-        [collectStreamAsString(child.stdout), collectStreamAsString(child.stderr), child.exitCode],
+        [
+          collectStreamAsStringBounded(child.stdout, MAX_OPENCODE_COMMAND_OUTPUT_CHARS),
+          collectStreamAsStringBounded(child.stderr, MAX_OPENCODE_COMMAND_OUTPUT_CHARS),
+          child.exitCode,
+        ],
         { concurrency: "unbounded" },
       );
       const exitCode = Number(code);
@@ -333,11 +527,20 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ),
         ));
       const timeoutMs = input.timeoutMs ?? DEFAULT_OPENCODE_SERVER_TIMEOUT_MS;
-      const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
+      const args = [
+        "serve",
+        `--hostname=${hostname}`,
+        `--port=${port}`,
+        ...(input.directory ? [`--dir=${input.directory}`] : []),
+      ];
 
       const serverEnv = {
         ...(input.environment ?? process.env),
-        OPENCODE_CONFIG_CONTENT: JSON.stringify({}),
+        // Respect an OPENCODE_CONFIG_CONTENT provided by the caller or the
+        // inherited process environment, only falling back to the empty config
+        // when neither is set. Setting it unconditionally previously clobbered
+        // the user's opencode config, hiding their providers/models.
+        OPENCODE_CONFIG_CONTENT: resolveOpenCodeConfigContent(input.environment),
       };
       const { command: serverTarget, shell: serverShell } = resolveWindowsSpawn(input.binaryPath, {
         env: serverEnv,
@@ -486,6 +689,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     return startOpenCodeServerProcess({
       binaryPath: input.binaryPath,
       ...(input.environment !== undefined ? { environment: input.environment } : {}),
+      ...(input.directory !== undefined ? { directory: input.directory } : {}),
       ...(input.port !== undefined ? { port: input.port } : {}),
       ...(input.hostname !== undefined ? { hostname: input.hostname } : {}),
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
@@ -533,10 +737,121 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       Effect.map((result) => result.data ?? []),
     );
 
-  const loadOpenCodeInventory: OpenCodeRuntimeShape["loadOpenCodeInventory"] = (client) =>
-    Effect.all([loadProviders(client), loadAgents(client)], { concurrency: "unbounded" }).pipe(
-      Effect.map(([providerList, agents]) => ({ providerList, agents })),
+  const loadOpenCodeSkills: OpenCodeRuntimeShape["loadOpenCodeSkills"] = (client) =>
+    runOpenCodeSdk("app.skills", () => client.app.skills()).pipe(
+      Effect.map((result) =>
+        (result.data ?? []).slice(0, MAX_OPENCODE_SKILLS).map((skill) => ({
+          name: skill.name,
+          ...(skill.description === undefined ? {} : { description: skill.description }),
+          location: skill.location,
+        })),
+      ),
     );
+
+  const loadOpenCodeInventory: OpenCodeRuntimeShape["loadOpenCodeInventory"] = (client) =>
+    Effect.all(
+      [
+        loadProviders(client),
+        loadAgents(client),
+        loadOpenCodeSkills(client).pipe(
+          Effect.tapError((cause) =>
+            Effect.logWarning("OpenCode skill discovery failed", {
+              cause: openCodeRuntimeErrorDetail(cause),
+            }),
+          ),
+          Effect.orElseSucceed(() => []),
+        ),
+      ],
+      { concurrency: "unbounded" },
+    ).pipe(Effect.map(([providerList, agents, skills]) => ({ providerList, agents, skills })));
+
+  const loadOpenCodeSkillsForCwd: OpenCodeRuntimeShape["loadOpenCodeSkillsForCwd"] = (input) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* connectToOpenCodeServer({
+          binaryPath: input.binaryPath,
+          ...(input.serverUrl !== undefined ? { serverUrl: input.serverUrl } : {}),
+          ...(input.serverPassword !== undefined ? { serverPassword: input.serverPassword } : {}),
+          ...(input.environment !== undefined ? { environment: input.environment } : {}),
+          directory: input.cwd,
+        });
+        const client = createOpenCodeSdkClient({
+          baseUrl: server.url,
+          directory: input.cwd,
+          ...(input.serverPassword !== undefined ? { serverPassword: input.serverPassword } : {}),
+        });
+        return yield* loadOpenCodeSkills(client);
+      }),
+    );
+
+  const loadInventoryFromCli: OpenCodeRuntimeShape["loadInventoryFromCli"] = (input) =>
+    Effect.gen(function* () {
+      const commandContext = {
+        cwd: input.cwd,
+        ...(input.environment !== undefined ? { environment: input.environment } : {}),
+      };
+
+      const runModelsCli = () =>
+        runOpenCodeCommand({
+          binaryPath: input.binaryPath,
+          args: ["models", "--verbose"],
+          ...commandContext,
+        }).pipe(Effect.timeout("20 seconds"), Effect.exit);
+      const runAgentsCli = () =>
+        runOpenCodeCommand({
+          binaryPath: input.binaryPath,
+          args: ["agent", "list"],
+          ...commandContext,
+        }).pipe(Effect.timeout("20 seconds"), Effect.exit);
+
+      // OpenCode CLI commands share SQLite state, so serialize them.
+      let [modelsResult, agentsResult] = yield* Effect.all([runModelsCli(), runAgentsCli()], {
+        concurrency: 1,
+      });
+
+      // Retry once after 1s on transient failures (e.g. SQLite "database is locked")
+      const needsModelsRetry = modelsResult._tag === "Failure" || modelsResult.value.code !== 0;
+      const needsAgentsRetry = agentsResult._tag === "Failure" || agentsResult.value.code !== 0;
+      if (needsModelsRetry || needsAgentsRetry) {
+        yield* Effect.sleep("1 second");
+        const [m2, a2] = yield* Effect.all(
+          [
+            needsModelsRetry ? runModelsCli() : Effect.succeed(modelsResult),
+            needsAgentsRetry ? runAgentsCli() : Effect.succeed(agentsResult),
+          ],
+          { concurrency: 1 },
+        );
+        modelsResult = m2;
+        agentsResult = a2;
+      }
+
+      // Degrade gracefully on failure — return empty inventory (warning status, not error)
+      let connected: string[] = [];
+      let allProviders: ProviderListResponse["all"] = [];
+      if (modelsResult._tag === "Success" && modelsResult.value.code === 0) {
+        const parsed = parseModelsCliOutput(modelsResult.value.stdout);
+        connected = [...parsed.connected];
+        allProviders = [...parsed.providers.values()].map((p) => ({
+          id: p.id,
+          name: p.name,
+          source: "config" as const,
+          env: [],
+          options: {},
+          models: p.models,
+        }));
+      }
+
+      let agents: ReadonlyArray<Agent> = [];
+      if (agentsResult._tag === "Success" && agentsResult.value.code === 0) {
+        agents = parseAgentListCliOutput(agentsResult.value.stdout);
+      }
+
+      return {
+        providerList: { all: allProviders, default: {}, connected },
+        agents,
+        skills: [],
+      };
+    });
 
   return {
     startOpenCodeServerProcess,
@@ -544,6 +859,9 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     runOpenCodeCommand,
     createOpenCodeSdkClient,
     loadOpenCodeInventory,
+    loadOpenCodeSkills,
+    loadOpenCodeSkillsForCwd,
+    loadInventoryFromCli,
   } satisfies OpenCodeRuntimeShape;
 });
 

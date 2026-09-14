@@ -170,7 +170,7 @@ describe("handoffToSubmitInput", () => {
     expect([...reordered].sort()).toEqual([...first].sort());
   });
 
-  it("truncates fields beyond contract limits instead of rejecting the submit", () => {
+  it("bounds summaries but preserves the authoritative description and location", () => {
     const long = "x".repeat(3_000);
     const input = handoffToSubmitInput({
       ...review,
@@ -188,7 +188,16 @@ describe("handoffToSubmitInput", () => {
     const [finding] = input.findings ?? [];
     expect(input.summary!.length).toBeLessThanOrEqual(2_000);
     expect(finding!.title.length).toBeLessThanOrEqual(200);
-    expect(finding!.detail.length).toBeLessThanOrEqual(2_000);
+    expect(finding!.detail).toBe(long);
+    expect(finding!.provenance).toEqual({
+      findingId: "f",
+      reviewedHeadSha: review.headSha,
+      diffHash: review.diffHash,
+      path: long,
+      side: "new",
+      startLine: 1,
+      endLine: 1,
+    });
     expect(finding!.path!.length).toBeLessThanOrEqual(500);
   });
 

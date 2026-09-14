@@ -87,7 +87,7 @@ interface ChatTimelineSectionProps {
   onLoadOlder: () => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string, scope?: TurnDiffScope) => void;
   onRevertToTurnCount: (turnCount: number) => void | Promise<void>;
-  onForkAssistantMessage: (messageId: MessageId) => void;
+  onForkAssistantMessage?: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onIsAtEndChange: (isAtEnd: boolean) => void;
 }
@@ -629,7 +629,7 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
           onOpenTurnDiff={onOpenTurnDiff}
           revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
           onRevertUserMessage={onRevertUserMessage}
-          onForkAssistantMessage={onForkAssistantMessage}
+          {...(onForkAssistantMessage ? { onForkAssistantMessage } : {})}
           isRevertingCheckpoint={isRevertingCheckpoint}
           onImageExpand={onImageExpand}
           markdownCwd={gitCwd}

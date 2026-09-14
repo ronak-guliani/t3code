@@ -49,6 +49,30 @@ export interface ProjectionThreadDetailSnapshot {
   readonly thread: OrchestrationThread;
 }
 
+export type ProjectionChatArchiveMessage = Pick<
+  OrchestrationThread["messages"][number],
+  "role" | "text" | "attachments" | "turnId" | "createdAt" | "updatedAt"
+>;
+
+export type ProjectionChatArchiveThread = Pick<
+  OrchestrationThread,
+  | "id"
+  | "parentThreadId"
+  | "title"
+  | "modelSelection"
+  | "runtimeMode"
+  | "interactionMode"
+  | "createdAt"
+  | "updatedAt"
+> & {
+  readonly messages: ReadonlyArray<ProjectionChatArchiveMessage>;
+};
+
+export interface ProjectionChatArchiveEntry {
+  readonly thread: ProjectionChatArchiveThread;
+  readonly project: Pick<OrchestrationProjectShell, "title" | "workspaceRoot">;
+}
+
 /**
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
@@ -82,6 +106,15 @@ export interface ProjectionSnapshotQueryShape {
   >;
   readonly getArchivedShellSnapshot?: () => Effect.Effect<
     OrchestrationShellSnapshot,
+    ProjectionRepositoryError
+  >;
+
+  /**
+   * Read all active chats and their complete message history in one consistent
+   * transaction for portable archive export.
+   */
+  readonly getActiveChatArchiveEntries: () => Effect.Effect<
+    ReadonlyArray<ProjectionChatArchiveEntry>,
     ProjectionRepositoryError
   >;
 

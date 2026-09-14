@@ -83,7 +83,29 @@ export function getProviderModelCapabilities(
   provider: ProviderDriverKind,
 ): ModelCapabilities {
   const slug = normalizeModelSlug(model, provider);
-  return models.find((candidate) => candidate.slug === slug)?.capabilities ?? EMPTY_CAPABILITIES;
+  const capabilities =
+    models.find((candidate) => candidate.slug === slug)?.capabilities ?? EMPTY_CAPABILITIES;
+  return provider === "opencode" ? withoutOpenCodePlanAgentOption(capabilities) : capabilities;
+}
+
+function withoutOpenCodePlanAgentOption(capabilities: ModelCapabilities): ModelCapabilities {
+  return {
+    ...capabilities,
+    optionDescriptors: (capabilities.optionDescriptors ?? []).flatMap((descriptor) => {
+      if (descriptor.type !== "select" || descriptor.id !== "agent") {
+        return [descriptor];
+      }
+      const options = descriptor.options.filter((option) => option.id !== "plan");
+      if (options.length === 0) {
+        return [];
+      }
+      const currentValue =
+        descriptor.currentValue && options.some((option) => option.id === descriptor.currentValue)
+          ? descriptor.currentValue
+          : (options.find((option) => option.isDefault)?.id ?? options[0]?.id);
+      return [{ ...descriptor, options, ...(currentValue ? { currentValue } : {}) }];
+    }),
+  };
 }
 
 export function getDefaultServerModel(

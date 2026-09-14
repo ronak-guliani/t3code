@@ -142,10 +142,12 @@ import {
   useRightPanelStore,
 } from "~/rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { DevicePanel } from "./device/DevicePanel";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { useThreadPreviewState } from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
+import { useDeviceState } from "~/state/device";
 import { useAtomCommand } from "~/state/use-atom-command";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
@@ -1188,6 +1190,7 @@ function ChatViewBody(
       [activeProjectEnvironmentId, activeProjectProjectId],
     ),
   );
+  const isImportedChat = activeProject?.kind === "chat-import";
 
   useEffect(() => {
     if (routeKind !== "server") {
@@ -1941,6 +1944,35 @@ function ChatViewBody(
     );
   }, [activeThreadKey]);
   const previewState = useThreadPreviewState(activeThreadRef);
+  const { state: deviceState } = useDeviceState(environmentId);
+  const reconciledDeviceSessionsRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (!activeThreadRef) return;
+    const sessions = deviceState.sessions.filter(
+      (session) => session.threadId === activeThreadRef.threadId,
+    );
+    const currentKeys = new Set(
+      sessions.map(
+        (session) => `${session.threadId}\u0000${session.hostId}\u0000${session.deviceId}`,
+      ),
+    );
+    for (const session of sessions) {
+      const key = `${session.threadId}\u0000${session.hostId}\u0000${session.deviceId}`;
+      if (reconciledDeviceSessionsRef.current.has(key)) continue;
+      const device = deviceState.devices.find(
+        (candidate) => candidate.hostId === session.hostId && candidate.id === session.deviceId,
+      );
+      if (!device) continue;
+      useRightPanelStore.getState().openDevice(activeThreadRef, {
+        hostId: session.hostId,
+        deviceId: session.deviceId,
+        platform: session.platform,
+        name: device.name,
+        ...(deviceState.serverEpoch ? { serverEpoch: deviceState.serverEpoch } : {}),
+      });
+    }
+    reconciledDeviceSessionsRef.current = currentKeys;
+  }, [activeThreadRef, deviceState.devices, deviceState.serverEpoch, deviceState.sessions]);
   const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
     activeThreadRef ? selectThreadPreviewMiniPlayer(state.byThreadKey, activeThreadRef) : null,
   );
@@ -2193,6 +2225,9 @@ function ChatViewBody(
   }, [activeThreadRef, diffOpen, updateDiffSearch]);
   const addInsightsSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "insights");
+  }, [activeThreadRef]);
+  const addDeviceSurface = useCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "device");
   }, [activeThreadRef]);
   const runProjectScript = useCallback(
     async (
@@ -4479,7 +4514,9 @@ function ChatViewBody(
     const projectUnavailableReason =
       activeProject === undefined
         ? "Workflow actions are unavailable until this thread has an active project."
-        : null;
+        : activeProject.kind === "chat-import"
+          ? "Imported chats are reference-only."
+          : null;
     const reviewDisabledReason =
       projectUnavailableReason ??
       (!isGitRepo
@@ -4697,6 +4734,20 @@ function ChatViewBody(
               onTerminalClosed={handleRightPanelTerminalClosed}
             />
           ) : null;
+        case "device":
+          return activeThreadRef ? (
+            <DevicePanel
+              key={surface.id}
+              mode="embedded"
+              threadRef={activeThreadRef}
+              surface={surface}
+              visible={visible}
+              onDismissSetup={() => {
+                closeRightPanelSurface(surface);
+                useRightPanelStore.getState().show(activeThreadRef);
+              }}
+            />
+          ) : null;
         case "files":
         case "file":
           return activeThreadRef ? (
@@ -4826,7 +4877,7 @@ function ChatViewBody(
                   onLoadOlder={loadOlderActivities}
                   onOpenTurnDiff={onOpenTurnDiff}
                   onRevertToTurnCount={onRevertToTurnCount}
-                  onForkAssistantMessage={onForkAssistantMessage}
+                  {...(isImportedChat ? {} : { onForkAssistantMessage })}
                   onImageExpand={onExpandTimelineImage}
                   onIsAtEndChange={onIsAtEndChange}
                 />
@@ -4870,102 +4921,114 @@ function ChatViewBody(
                     : "pb-[calc(env(safe-area-inset-bottom)+--spacing(3))] sm:pb-[calc(env(safe-area-inset-bottom)+--spacing(4))]",
                 )}
               >
-                <ChatComposer
-                  ref={composerRef}
-                  composerDraftTarget={composerDraftTarget}
-                  environmentId={environmentId}
-                  routeKind={routeKind}
-                  routeThreadRef={routeThreadRef}
-                  draftId={draftId}
-                  activeThreadId={activeThreadId}
-                  activeThreadEnvironmentId={activeThread?.environmentId}
-                  activeThread={activeThread}
-                  isServerThread={isServerThread}
-                  isLocalDraftThread={isLocalDraftThread}
-                  phase={phase}
-                  isConnecting={isConnecting}
-                  isSendBusy={isSendBusy}
-                  isPreparingWorktree={isPreparingWorktree}
-                  activePendingApproval={activePendingApproval}
-                  pendingApprovals={pendingApprovals}
-                  pendingUserInputs={pendingUserInputs}
-                  queuedTurns={activeThread.queuedTurns ?? []}
-                  activePendingProgress={activePendingProgress}
-                  activePendingResolvedAnswers={activePendingResolvedAnswers}
-                  activePendingIsResponding={activePendingIsResponding}
-                  activePendingDraftAnswers={activePendingDraftAnswers}
-                  activePendingQuestionIndex={activePendingQuestionIndex}
-                  respondingRequestIds={respondingRequestIds}
-                  showPlanFollowUpPrompt={showPlanFollowUpPrompt}
-                  activeProposedPlan={activeProposedPlan}
-                  activePlan={activePlan as { turnId?: TurnId } | null}
-                  sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
-                  planSidebarLabel={planSidebarLabel}
-                  planSidebarOpen={planSidebarOpen}
-                  runtimeMode={runtimeMode}
-                  lockedProvider={lockedProvider}
-                  providerStatuses={providerStatuses as ServerProvider[]}
-                  activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
-                  activeThreadModelSelection={activeThread?.modelSelection}
-                  resolvedTheme={resolvedTheme}
-                  settings={settings}
-                  keybindings={keybindings}
-                  terminalOpen={Boolean(terminalState.terminalOpen)}
-                  promptRef={promptRef}
-                  composerImagesRef={composerImagesRef}
-                  composerTerminalContextsRef={composerTerminalContextsRef}
-                  shouldAutoScrollRef={isAtEndRef}
-                  scheduleStickToBottom={scrollToEnd}
-                  onSend={onSend}
-                  onComposerIntent={prewarmComposerProviderSession}
-                  onInterrupt={onInterrupt}
-                  onImplementPlanInNewThread={onImplementPlanInNewThread}
-                  onRespondToApproval={onRespondToApproval}
-                  onUpdateQueuedTurn={onUpdateQueuedTurn}
-                  onDeleteQueuedTurn={onDeleteQueuedTurn}
-                  onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
-                  onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
-                  onPreviousActivePendingUserInputQuestion={
-                    onPreviousActivePendingUserInputQuestion
-                  }
-                  onChangeActivePendingUserInputCustomAnswer={
-                    onChangeActivePendingUserInputCustomAnswer
-                  }
-                  onProviderModelSelect={onProviderModelSelect}
-                  handleRuntimeModeChange={handleRuntimeModeChange}
-                  togglePlanSidebar={togglePlanSidebar}
-                  focusComposer={focusComposer}
-                  scheduleComposerFocus={scheduleComposerFocus}
-                  setThreadError={setThreadError}
-                  onExpandImage={onExpandTimelineImage}
-                />
-                <BranchToolbar
-                  environmentId={activeThread.environmentId}
-                  threadId={activeThread.id}
-                  {...(routeKind === "draft" && draftId ? { draftId } : {})}
-                  onEnvModeChange={onEnvModeChange}
-                  {...(canOverrideServerThreadEnvMode ? { effectiveEnvModeOverride: envMode } : {})}
-                  {...(canOverrideServerThreadEnvMode
-                    ? {
-                        activeThreadBranchOverride: activeThreadBranch,
-                        onActiveThreadBranchOverrideChange: setPendingServerThreadBranch,
-                      }
-                    : {})}
-                  envLocked={envLocked}
-                  onComposerFocusRequest={scheduleComposerFocus}
-                  {...(canCheckoutPullRequestIntoThread
-                    ? { onCheckoutPullRequestRequest: openPullRequestDialog }
-                    : {})}
-                  {...(hasMultipleEnvironments
-                    ? {
-                        availableEnvironments: logicalProjectEnvironments,
-                        onEnvironmentChange,
-                      }
-                    : {})}
-                  activeContextWindow={activeContextWindow}
-                  activeThreadProviderDisplayName={activeThreadProviderDisplayName}
-                  showGitControls={isGitRepo}
-                />
+                {isImportedChat ? (
+                  <div className="rounded-xl border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+                    Imported chats are reference-only. Exported attachments and agent sessions are
+                    not included.
+                  </div>
+                ) : (
+                  <ChatComposer
+                    ref={composerRef}
+                    composerDraftTarget={composerDraftTarget}
+                    environmentId={environmentId}
+                    routeKind={routeKind}
+                    routeThreadRef={routeThreadRef}
+                    draftId={draftId}
+                    activeThreadId={activeThreadId}
+                    activeThreadEnvironmentId={activeThread?.environmentId}
+                    activeThread={activeThread}
+                    isServerThread={isServerThread}
+                    isLocalDraftThread={isLocalDraftThread}
+                    phase={phase}
+                    isConnecting={isConnecting}
+                    isSendBusy={isSendBusy}
+                    isPreparingWorktree={isPreparingWorktree}
+                    activePendingApproval={activePendingApproval}
+                    pendingApprovals={pendingApprovals}
+                    pendingUserInputs={pendingUserInputs}
+                    queuedTurns={activeThread.queuedTurns ?? []}
+                    activePendingProgress={activePendingProgress}
+                    activePendingResolvedAnswers={activePendingResolvedAnswers}
+                    activePendingIsResponding={activePendingIsResponding}
+                    activePendingDraftAnswers={activePendingDraftAnswers}
+                    activePendingQuestionIndex={activePendingQuestionIndex}
+                    respondingRequestIds={respondingRequestIds}
+                    showPlanFollowUpPrompt={showPlanFollowUpPrompt}
+                    activeProposedPlan={activeProposedPlan}
+                    activePlan={activePlan as { turnId?: TurnId } | null}
+                    sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
+                    planSidebarLabel={planSidebarLabel}
+                    planSidebarOpen={planSidebarOpen}
+                    runtimeMode={runtimeMode}
+                    lockedProvider={lockedProvider}
+                    providerStatuses={providerStatuses as ServerProvider[]}
+                    gitCwd={gitCwd ?? undefined}
+                    activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
+                    activeThreadModelSelection={activeThread?.modelSelection}
+                    resolvedTheme={resolvedTheme}
+                    settings={settings}
+                    keybindings={keybindings}
+                    terminalOpen={Boolean(terminalState.terminalOpen)}
+                    promptRef={promptRef}
+                    composerImagesRef={composerImagesRef}
+                    composerTerminalContextsRef={composerTerminalContextsRef}
+                    shouldAutoScrollRef={isAtEndRef}
+                    scheduleStickToBottom={scrollToEnd}
+                    onSend={onSend}
+                    onComposerIntent={prewarmComposerProviderSession}
+                    onInterrupt={onInterrupt}
+                    onImplementPlanInNewThread={onImplementPlanInNewThread}
+                    onRespondToApproval={onRespondToApproval}
+                    onUpdateQueuedTurn={onUpdateQueuedTurn}
+                    onDeleteQueuedTurn={onDeleteQueuedTurn}
+                    onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
+                    onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
+                    onPreviousActivePendingUserInputQuestion={
+                      onPreviousActivePendingUserInputQuestion
+                    }
+                    onChangeActivePendingUserInputCustomAnswer={
+                      onChangeActivePendingUserInputCustomAnswer
+                    }
+                    onProviderModelSelect={onProviderModelSelect}
+                    handleRuntimeModeChange={handleRuntimeModeChange}
+                    togglePlanSidebar={togglePlanSidebar}
+                    focusComposer={focusComposer}
+                    scheduleComposerFocus={scheduleComposerFocus}
+                    setThreadError={setThreadError}
+                    onExpandImage={onExpandTimelineImage}
+                  />
+                )}
+                {isImportedChat ? null : (
+                  <BranchToolbar
+                    environmentId={activeThread.environmentId}
+                    threadId={activeThread.id}
+                    {...(routeKind === "draft" && draftId ? { draftId } : {})}
+                    onEnvModeChange={onEnvModeChange}
+                    {...(canOverrideServerThreadEnvMode
+                      ? { effectiveEnvModeOverride: envMode }
+                      : {})}
+                    {...(canOverrideServerThreadEnvMode
+                      ? {
+                          activeThreadBranchOverride: activeThreadBranch,
+                          onActiveThreadBranchOverrideChange: setPendingServerThreadBranch,
+                        }
+                      : {})}
+                    envLocked={envLocked}
+                    onComposerFocusRequest={scheduleComposerFocus}
+                    {...(canCheckoutPullRequestIntoThread
+                      ? { onCheckoutPullRequestRequest: openPullRequestDialog }
+                      : {})}
+                    {...(hasMultipleEnvironments
+                      ? {
+                          availableEnvironments: logicalProjectEnvironments,
+                          onEnvironmentChange,
+                        }
+                      : {})}
+                    activeContextWindow={activeContextWindow}
+                    activeThreadProviderDisplayName={activeThreadProviderDisplayName}
+                    showGitControls={isGitRepo}
+                  />
+                )}
               </div>
 
               {pullRequestDialogState ? (
@@ -5015,6 +5078,7 @@ function ChatViewBody(
                 onAddFiles={addFilesSurface}
                 onAddDiff={addDiffSurface}
                 onAddInsights={addInsightsSurface}
+                onAddDevice={addDeviceSurface}
                 maximized={rightPanelMaximized}
                 onToggleMaximize={toggleRightPanelMaximized}
               >
@@ -5073,6 +5137,7 @@ function ChatViewBody(
             onAddFiles={addFilesSurface}
             onAddDiff={addDiffSurface}
             onAddInsights={addInsightsSurface}
+            onAddDevice={addDeviceSurface}
           >
             {renderRightPanelSurfaces()}
           </RightPanelTabs>

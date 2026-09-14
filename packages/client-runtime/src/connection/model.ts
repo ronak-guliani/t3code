@@ -1,5 +1,6 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import type * as Effect from "effect/Effect";
 
 const ConnectionTargetBase = {
   environmentId: EnvironmentId,
@@ -111,6 +112,9 @@ export type PreparedHttpAuthorization =
   | {
       readonly _tag: "Dpop";
       readonly accessToken: string;
+      readonly renewAccessToken?: (
+        rejectedAccessToken?: string,
+      ) => Effect.Effect<string, ConnectionAttemptError>;
     };
 
 export interface PreparedConnection {

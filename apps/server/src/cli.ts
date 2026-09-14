@@ -22,6 +22,7 @@ import {
   ProviderInstanceId,
   PullRequestMonitorFeedbackItemId,
   PullRequestMonitorFeedbackReportDisposition,
+  PullRequestMonitorContextInput,
   PullRequestMonitorFinding,
   PullRequestMonitorId,
   QueuedTurnId,
@@ -3890,15 +3891,34 @@ const prMonitorContextCommand = Command.make("context", {
   ...prMonitorReferenceFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
   includeClosed: Flag.boolean("include-closed").pipe(Flag.withDefault(false)),
+  deliveryId: Flag.string("delivery-id").pipe(Flag.optional),
+  revisionId: Flag.string("revision-id").pipe(Flag.optional),
+  offset: Flag.integer("offset").pipe(Flag.withDefault(0)),
+  limit: Flag.integer("limit").pipe(Flag.withDefault(10)),
 }).pipe(
   Command.withDescription("Read the durable monitor feedback ledger for a chat."),
   Command.withHandler((flags) =>
     withThreadRpc(flags, flags.chat, ({ thread, client }) =>
       Effect.gen(function* () {
-        const result = yield* client[WS_METHODS.pullRequestMonitorsContext]({
-          ...prMonitorSelector(thread.projectId, flags),
-          includeClosed: flags.includeClosed,
-        });
+        const input = yield* decodeCliPayload(
+          PullRequestMonitorContextInput,
+          {
+            ...prMonitorSelector(thread.projectId, flags),
+            includeClosed: flags.includeClosed,
+            ...Option.match(flags.deliveryId, {
+              onNone: () => ({}),
+              onSome: (deliveryId) => ({ deliveryId }),
+            }),
+            ...Option.match(flags.revisionId, {
+              onNone: () => ({}),
+              onSome: (revisionId) => ({ revisionIds: [revisionId] }),
+            }),
+            offset: flags.offset,
+            limit: flags.limit,
+          },
+          "monitor context",
+        );
+        const result = yield* client[WS_METHODS.pullRequestMonitorsContext](input);
         yield* printJson(result);
       }),
     ),

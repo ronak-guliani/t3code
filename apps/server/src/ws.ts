@@ -49,9 +49,12 @@ import {
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
   MessageId,
+  ProjectId,
+  ServerChatArchiveError,
   ServerProviderListCommandsError,
   ServerExportThreadMarkdownError,
   ThreadId,
+  TurnId,
   type TerminalEvent,
   type TerminalError,
   type TerminalAttachStreamEvent,
@@ -134,6 +137,12 @@ import {
 import { isThreadDetailEvent } from "./orchestration/threadDetailEvents.ts";
 import { collectActiveThreadSubtree } from "./orchestration/threadHierarchy.ts";
 import {
+  createChatArchiveManifest,
+  importedMessageText,
+  readChatArchive,
+  writeChatArchive,
+} from "./orchestration/chatArchive.ts";
+import {
   createThreadMarkdownExportFilename,
   formatThreadMarkdownExport,
 } from "./orchestration/threadMarkdownExport.ts";
@@ -163,6 +172,7 @@ import { ServerAuth, type AuthenticatedSession } from "./auth/Services/ServerAut
 import { rpcAuthorizationLayer } from "./auth/RpcAuthorization.ts";
 import { PreviewManager } from "./preview/Manager.ts";
 import { PortDiscovery } from "./preview/PortScanner.ts";
+import * as DeviceService from "./device/DeviceService.ts";
 import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
 import {
   BootstrapCredentialService,
@@ -303,6 +313,7 @@ const makeWsRpcLayer = (
       const sessions = yield* SessionCredentialService;
       const previewManager = yield* PreviewManager;
       const portDiscovery = yield* PortDiscovery;
+      const deviceService = yield* DeviceService.DeviceService;
       const previewAutomationBroker = yield* PreviewAutomationBroker;
       const pullRequests = yield* Effect.serviceOption(PullRequestService.PullRequestService);
       const pullRequestMonitors = yield* Effect.serviceOption(
@@ -1452,9 +1463,14 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverRefreshProviders]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverRefreshProviders,
-            (input.instanceId !== undefined
-              ? providerRegistry.refreshInstance(input.instanceId)
-              : providerRegistry.refresh()
+            (input.instanceId !== undefined && input.cwd !== undefined
+              ? providerRegistry.refreshWorkspaceSnapshot({
+                  instanceId: input.instanceId,
+                  cwd: input.cwd,
+                })
+              : input.instanceId !== undefined
+                ? providerRegistry.refreshInstance(input.instanceId)
+                : providerRegistry.refresh()
             ).pipe(Effect.map((providers) => ({ providers }))),
             { "rpc.aggregate": "server" },
           ),
@@ -1527,6 +1543,138 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.sidebarUpdateState, sidebarState.update(input), {
             "rpc.aggregate": "sidebar",
           }),
+        [WS_METHODS.serverExportActiveChats]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverExportActiveChats,
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerChatArchiveError({
+                      message: cause.message,
+                      cause,
+                    }),
+                ),
+              );
+              const exportDirectory = settings.chatExportDirectory.trim();
+              if (exportDirectory.length === 0) {
+                return yield* new ServerChatArchiveError({
+                  message: "Set a chat export directory in Settings before exporting.",
+                });
+              }
+              const threads = yield* projectionSnapshotQuery.getActiveChatArchiveEntries().pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerChatArchiveError({
+                      message: "Unable to load active chats for export.",
+                      cause,
+                    }),
+                ),
+              );
+              if (threads.length === 0) {
+                return yield* new ServerChatArchiveError({
+                  message: "There are no active chats to export.",
+                });
+              }
+              const manifest = createChatArchiveManifest({
+                threads,
+                exportedAt: new Date(),
+              });
+              const path = yield* Effect.tryPromise({
+                try: () => writeChatArchive(exportDirectory, manifest),
+                catch: (cause) =>
+                  new ServerChatArchiveError({
+                    message: "Unable to write the chat archive.",
+                    cause,
+                  }),
+              });
+              return { path, threadCount: threads.length };
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverImportChatArchive]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverImportChatArchive,
+            Effect.gen(function* () {
+              const manifest = yield* Effect.tryPromise({
+                try: () => readChatArchive(input.path),
+                catch: (cause) =>
+                  new ServerChatArchiveError({
+                    message:
+                      cause instanceof Error ? cause.message : "Unable to read the chat archive.",
+                    cause,
+                  }),
+              });
+              const sourceProjectTitles = new Set(
+                manifest.threads.map((thread) => thread.sourceProjectTitle),
+              );
+              const projectId = ProjectId.make(crypto.randomUUID());
+              const threadIdBySourceId = new Map(
+                manifest.threads.map(
+                  (thread) => [thread.sourceThreadId, ThreadId.make(crypto.randomUUID())] as const,
+                ),
+              );
+              const threads = manifest.threads.map((thread) => {
+                const turnIdBySourceId = new Map<string, TurnId>();
+                return {
+                  threadId: threadIdBySourceId.get(thread.sourceThreadId)!,
+                  parentThreadId:
+                    thread.sourceParentThreadId === null
+                      ? null
+                      : (threadIdBySourceId.get(thread.sourceParentThreadId) ?? null),
+                  title:
+                    sourceProjectTitles.size > 1
+                      ? `${thread.sourceProjectTitle}: ${thread.title}`
+                      : thread.title,
+                  modelSelection: thread.modelSelection,
+                  runtimeMode: thread.runtimeMode,
+                  interactionMode: thread.interactionMode,
+                  createdAt: thread.createdAt,
+                  updatedAt: thread.updatedAt,
+                  messages: thread.messages.map((message) => {
+                    const turnId =
+                      message.sourceTurnId === null
+                        ? null
+                        : (turnIdBySourceId.get(message.sourceTurnId) ??
+                          (() => {
+                            const id = TurnId.make(crypto.randomUUID());
+                            turnIdBySourceId.set(message.sourceTurnId!, id);
+                            return id;
+                          })());
+                    return {
+                      messageId: MessageId.make(crypto.randomUUID()),
+                      role: message.role,
+                      text: importedMessageText(message),
+                      turnId,
+                      createdAt: message.createdAt,
+                      updatedAt: message.updatedAt,
+                    };
+                  }),
+                };
+              });
+              yield* orchestrationEngine
+                .dispatch({
+                  type: "chat-archive.import",
+                  commandId: CommandId.make(crypto.randomUUID()),
+                  projectId,
+                  title: manifest.title,
+                  workspaceRoot: NodePath.resolve(input.path),
+                  threads,
+                  createdAt: new Date().toISOString(),
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ServerChatArchiveError({
+                        message: "Unable to import the chat archive.",
+                        cause,
+                      }),
+                  ),
+                );
+              return { projectId, threadCount: threads.length };
+            }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.workflowRun]: (input) =>
           observeRpcEffect(WS_METHODS.workflowRun, runWorkflow(input), {
             "rpc.aggregate": "workflow",
@@ -2643,6 +2791,40 @@ const makeWsRpcLayer = (
           observeRpcStream(WS_METHODS.subscribePreviewEvents, previewManager.events, {
             "rpc.aggregate": "preview",
           }),
+        [WS_METHODS.deviceConfigure]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceConfigure, deviceService.configure(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceList]: (_input) =>
+          observeRpcEffect(WS_METHODS.deviceList, deviceService.list, {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceOpen]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceOpen, deviceService.open(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceClose]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceClose, deviceService.close(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceShutdown]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceShutdown, deviceService.shutdown(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceDetail]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceDetail, deviceService.detail(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceAction]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceAction, deviceService.action(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.subscribeDeviceState]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeDeviceState,
+            DeviceService.stateStream(deviceService),
+            { "rpc.aggregate": "device" },
+          ),
         [WS_METHODS.subscribeDiscoveredLocalServers]: (_input) =>
           observeRpcStream(
             WS_METHODS.subscribeDiscoveredLocalServers,

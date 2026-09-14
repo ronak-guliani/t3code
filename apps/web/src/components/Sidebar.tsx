@@ -22,7 +22,7 @@ import {
 } from "./ThreadStatusIndicators";
 import { ThreadDetailsTooltip, ThreadDetailsTooltipProvider } from "./SidebarV2ThreadTooltip";
 import { ProjectFavicon } from "./ProjectFavicon";
-import { EnvironmentIdentity } from "./EnvironmentIdentity";
+import { SidebarThreadEnvironmentIcon } from "./SidebarThreadEnvironmentIcon";
 import { formatWorktreePathForDisplay } from "../worktreeCleanup";
 import { autoAnimate } from "@formkit/auto-animate";
 import React, {
@@ -437,6 +437,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     sortable,
     thread,
     threadStatus,
+    isRemoteThread,
     threadEnvironmentLabel,
     threadProjectCwd,
     threadProjectName,
@@ -862,7 +863,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 {/* Project, worktree, PR and last-active moved off the row and
                     into this tooltip — the row keeps title and status only. */}
                 <ThreadDetailsTooltip
-                  environmentLabel={`${threadEnvironmentLabel ?? "Local"} · ${thread.environmentId.slice(0, 6)}`}
+                  environmentLabel={isRemoteThread ? (threadEnvironmentLabel ?? "Remote") : null}
                   projectCwd={threadProjectCwd ?? props.projectCwd ?? null}
                   projectName={projectName ?? "Unknown project"}
                   providerEntry={null}
@@ -870,7 +871,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   thread={thread}
                 />
               </Tooltip>
-              <EnvironmentIdentity environmentId={thread.environmentId} compact />
               {composerDraftPreview ? (
                 <span
                   className="min-w-0 flex-1 truncate text-muted-foreground/50"
@@ -932,6 +932,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               </TooltipPopup>
             </Tooltip>
           ) : null}
+          <SidebarThreadEnvironmentIcon
+            environmentLabel={isRemoteThread ? (threadEnvironmentLabel ?? "Remote") : null}
+          />
           <ThreadBrowserOpenStatus environmentId={thread.environmentId} threadId={thread.id} />
           {props.hasChildren ? (
             <button
@@ -1182,8 +1185,7 @@ const VisibleSidebarProjectThreadList = memo(function VisibleSidebarProjectThrea
       const rowProps: SidebarThreadRowProps = {
         thread,
         threadStatus: row.status,
-        isRemoteThread:
-          primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId,
+        isRemoteThread: thread.environmentId !== primaryEnvironmentId,
         threadEnvironmentLabel: threadProject?.environmentLabel ?? null,
         depth: row.depth,
         hasChildren: row.hasChildren,
@@ -2706,26 +2708,28 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
               </TooltipPopup>
             </Tooltip>
           )}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <div className="pointer-events-none absolute top-1 right-1.5 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
-                  <button
-                    type="button"
-                    aria-label={`Create new thread in ${project.displayName}`}
-                    data-testid="new-thread-button"
-                    className="inline-flex size-5 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-                    onClick={handleCreateThreadClick}
-                  >
-                    <SquarePenIcon className="size-3.5" />
-                  </button>
-                </div>
-              }
-            />
-            <TooltipPopup side="top">
-              {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
-            </TooltipPopup>
-          </Tooltip>
+          {project.kind !== "chat-import" ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <div className="pointer-events-none absolute top-1 right-1.5 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
+                    <button
+                      type="button"
+                      aria-label={`Create new thread in ${project.displayName}`}
+                      data-testid="new-thread-button"
+                      className="inline-flex size-5 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                      onClick={handleCreateThreadClick}
+                    >
+                      <SquarePenIcon className="size-3.5" />
+                    </button>
+                  </div>
+                }
+              />
+              <TooltipPopup side="top">
+                {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
+              </TooltipPopup>
+            </Tooltip>
+          ) : null}
         </div>
       )}
 
@@ -3055,7 +3059,8 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron: boolean;
 }) {
   const router = useRouter();
-  const historyIndex = useLocation({ select: (location) => location.state.__TSR_index });
+  const location = useLocation();
+  const historyIndex = router.history.location.state.__TSR_index ?? location.state.__TSR_index;
   const canGoBack = router.history.canGoBack();
   const canGoForward = historyIndex < router.history.length - 1;
   const wordmark = (
@@ -3443,7 +3448,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
               </TooltipTrigger>
               <TooltipPopup side="right">Add project</TooltipPopup>
             </Tooltip>
-            {activeFilterProject ? (
+            {activeFilterProject && activeFilterProject.kind !== "chat-import" ? (
               <Tooltip>
                 <TooltipTrigger
                   render={

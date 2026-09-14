@@ -145,7 +145,7 @@ function parseBootstrapErrorMessage(message: string): string {
 function toFriendlyBootstrapErrorMessage(status: number, message: string): string {
   const parsedMessage = parseBootstrapErrorMessage(message);
   if (status === 401 && INVALID_BOOTSTRAP_CREDENTIAL_MESSAGES.has(parsedMessage)) {
-    return "Invalid pairing token. Check the token and try again.";
+    return "Invalid pairing token. Create a fresh pairing link for this environment and try again.";
   }
 
   return parsedMessage;
@@ -267,8 +267,11 @@ export async function submitServerAuthCredential(credential: string): Promise<vo
   }
 
   resolvedAuthenticatedGateState = null;
-  await exchangeBootstrapCredential(trimmedCredential);
   bootstrapPromise = null;
+  await exchangeBootstrapCredential(trimmedCredential);
+  await waitForAuthenticatedSessionAfterBootstrap();
+  bootstrapPromise = null;
+  resolvedAuthenticatedGateState = { status: "authenticated" };
   stripPairingTokenFromUrl();
 }
 

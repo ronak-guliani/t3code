@@ -187,6 +187,14 @@ export function usePaginatedBranches(target: VcsRefTarget) {
   }
   const first = values[0] ?? null;
   const last = values.at(-1) ?? null;
+  // O(n) loop instead of Math.max(...spread): page counts are unbounded and
+  // spreading them risks a stack overflow (js-min-max-loop).
+  let totalCount = 0;
+  for (const value of values) {
+    if (value.totalCount > totalCount) {
+      totalCount = value.totalCount;
+    }
+  }
   const data: VcsListRefsResult | null =
     first === null || last === null
       ? null
@@ -195,7 +203,7 @@ export function usePaginatedBranches(target: VcsRefTarget) {
           isRepo: first.isRepo,
           hasPrimaryRemote: first.hasPrimaryRemote,
           nextCursor: last.nextCursor,
-          totalCount: Math.max(...values.map((value) => value.totalCount)),
+          totalCount,
         };
   const lastResult = results.at(-1);
   const isFetchingNextPage =

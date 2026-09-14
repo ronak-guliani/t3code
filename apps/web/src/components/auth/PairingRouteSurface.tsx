@@ -1,7 +1,8 @@
 import type { AuthSessionState } from "@t3tools/contracts";
-import React, { startTransition, useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 
 import { APP_DISPLAY_NAME } from "../../branding";
+import { parsePairingCredential } from "../../pairingUrl";
 import {
   peekPairingTokenFromUrl,
   stripPairingTokenFromUrl,
@@ -41,7 +42,7 @@ export function PairingRouteSurface({
 }: {
   auth: AuthSessionState["auth"];
   initialErrorMessage?: string;
-  onAuthenticated: () => void;
+  onAuthenticated: () => void | Promise<void>;
 }) {
   const [autoPairToken] = useState(peekPairingTokenFromUrl);
   const [credential, setCredential] = useState(() => autoPairToken ?? "");
@@ -51,24 +52,33 @@ export function PairingRouteSurface({
 
   const submitCredential = useCallback(
     async (nextCredential: string) => {
+      let token: string;
+      try {
+        token = parsePairingCredential(nextCredential, window.location.origin);
+      } catch (error) {
+        setCredential("");
+        setErrorMessage(errorMessageFromUnknown(error));
+        return;
+      }
       setIsSubmitting(true);
       setErrorMessage("");
 
-      const submitError = await submitServerAuthCredential(nextCredential).then(
-        () => null,
-        (error) => errorMessageFromUnknown(error),
-      );
+      const submitError = await submitServerAuthCredential(token)
+        .then(onAuthenticated)
+        .then(
+          () => null,
+          (error) => errorMessageFromUnknown(error),
+        );
 
       setIsSubmitting(false);
 
       if (submitError) {
+        setCredential("");
         setErrorMessage(submitError);
         return;
       }
 
-      startTransition(() => {
-        onAuthenticated();
-      });
+      setCredential("");
     },
     [onAuthenticated],
   );
@@ -122,15 +132,19 @@ export function PairingRouteSurface({
               autoCorrect="off"
               disabled={isSubmitting}
               nativeInput
+              type="password"
               onChange={(event) => setCredential(event.currentTarget.value)}
-              placeholder="Paste a one-time token or pairing secret"
+              placeholder="Paste a one-time token or pairing link"
               spellCheck={false}
               value={credential}
             />
           </div>
 
           {errorMessage ? (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/6 px-3 py-2 text-sm text-destructive">
+            <div
+              role="alert"
+              className="rounded-lg border border-destructive/30 bg-destructive/6 px-3 py-2 text-sm text-destructive"
+            >
               {errorMessage}
             </div>
           ) : null}

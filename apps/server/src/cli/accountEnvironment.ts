@@ -83,6 +83,8 @@ const EnvironmentTokenCacheEntry = Schema.Struct({
   accessToken: Schema.String,
   expiresAtEpochMs: Schema.Finite,
   dpopThumbprint: Schema.String,
+  clientId: Schema.optionalKey(RelayPublicClientId),
+  authorizationScope: Schema.optionalKey(Schema.String),
 });
 type EnvironmentTokenCacheEntry = typeof EnvironmentTokenCacheEntry.Type;
 const LegacyEnvironmentTokenCacheEntry = Schema.Struct({
@@ -143,7 +145,7 @@ export interface CliAccountEnvironmentTarget {
   readonly environmentId: string;
   readonly label: string;
   readonly origin: string;
-  readonly socketUrl: string;
+  readonly nextSocketUrl: Effect.Effect<string, CliAccountEnvironmentError>;
 }
 
 interface CliDpopSigner {
@@ -172,6 +174,8 @@ export function findReusableEnvironmentToken(
       entry.environmentId === input.environmentId &&
       entry.relayUrl === input.relayUrl &&
       entry.dpopThumbprint === input.dpopThumbprint &&
+      entry.clientId === RelayWebClientId &&
+      entry.authorizationScope === [...AuthStandardClientScopes].sort().join(" ") &&
       entry.expiresAtEpochMs > input.nowEpochMs + TOKEN_REFRESH_SKEW_MS &&
       entry.accessToken !== input.rejectedAccessToken,
   );
@@ -494,6 +498,26 @@ export const discoverAccountEnvironments = (baseDir: string) =>
       .pipe(Effect.map((environments) => ({ session, environments }))),
   );
 
+export const deregisterAccountEnvironment = (
+  baseDir: string,
+  selection: { readonly accountId: string; readonly environmentId: EnvironmentId },
+) =>
+  withAccountRuntime(baseDir, ({ session, tokens, relay }) =>
+    Effect.gen(function* () {
+      if (session.accountId !== selection.accountId) {
+        return yield* new CliAccountEnvironmentError({
+          message:
+            "The T3 Connect account changed. List environments and confirm deregistration again.",
+        });
+      }
+      yield* assertSameAccount(tokens, selection.accountId);
+      yield* relay.unlinkEnvironment({
+        clerkToken: session.accessToken,
+        environmentId: selection.environmentId,
+      });
+    }),
+  );
+
 export const discoverCliEnvironmentCandidates = (
   baseDir: string,
   registry: CliEnvironmentRegistry,
@@ -557,8 +581,9 @@ const prepareAccountEnvironment = (
       const tokenStore = makeEnvironmentTokenStore(secrets);
 
       const mintToken = Effect.fn("cli.accountEnvironment.mintToken")(function* () {
+        const current = yield* assertSameAccount(tokens, session.accountId);
         const connected = yield* relay.connectEnvironment({
-          clerkToken: session.accessToken,
+          clerkToken: current.accessToken,
           scopes: [RelayEnvironmentConnectScope],
           environmentId,
         });
@@ -597,6 +622,8 @@ const prepareAccountEnvironment = (
           accessToken: exchanged.access_token,
           expiresAtEpochMs: now + exchanged.expires_in * 1_000,
           dpopThumbprint: signer.thumbprint,
+          clientId: RelayWebClientId,
+          authorizationScope: [...AuthStandardClientScopes].sort().join(" "),
         };
         const stored = yield* tokenStore.load;
         yield* tokenStore.save([
@@ -613,6 +640,7 @@ const prepareAccountEnvironment = (
         tokenLock
           .withPermits(1)(
             Effect.gen(function* () {
+              yield* assertSameAccount(tokens, session.accountId);
               const now = Date.now();
               const stored = yield* tokenStore.load;
               const cached = findReusableEnvironmentToken(stored, {
@@ -643,6 +671,15 @@ const prepareAccountEnvironment = (
 
       const socketUrl = (token: EnvironmentTokenCacheEntry) =>
         Effect.gen(function* () {
+          const descriptor = yield* fetchRemoteEnvironmentDescriptor({
+            httpBaseUrl: token.endpoint.httpBaseUrl,
+          });
+          if (descriptor.environmentId !== environmentId)
+            return yield* new CliAccountEnvironmentError({
+              message:
+                "The endpoint now belongs to a different environment. Refusing to send its credential.",
+            });
+          yield* assertSameAccount(tokens, session.accountId);
           const proof = yield* signer.createProof({
             method: "POST",
             url: environmentEndpointUrl(token.endpoint.httpBaseUrl, "/api/auth/websocket-ticket"),
@@ -666,18 +703,18 @@ const prepareAccountEnvironment = (
           ),
         );
 
-      let token = yield* getToken();
-      let ticket = yield* socketUrl(token).pipe(Effect.result);
-      if (ticket._tag === "Failure") {
-        token = yield* getToken(token.accessToken);
-        ticket = yield* socketUrl(token).pipe(Effect.result);
-      }
-      if (ticket._tag === "Failure") {
-        return yield* new CliAccountEnvironmentError({
-          message: `Could not connect to account environment '${environmentId}'.`,
-          cause: ticket.failure,
-        });
-      }
+      const token = yield* getToken();
+      const nextSocketUrl = Effect.gen(function* () {
+        let current = yield* getToken();
+        let ticket = yield* socketUrl(current).pipe(Effect.result);
+        if (ticket._tag === "Failure") {
+          current = yield* getToken(current.accessToken);
+          ticket = yield* socketUrl(current).pipe(Effect.result);
+        }
+        if (ticket._tag === "Failure") return yield* ticket.failure;
+        yield* assertSameAccount(tokens, session.accountId);
+        return ticket.success;
+      });
 
       return {
         source: "account",
@@ -685,7 +722,7 @@ const prepareAccountEnvironment = (
         environmentId,
         label: token.label,
         origin: token.endpoint.httpBaseUrl.replace(/\/$/, ""),
-        socketUrl: ticket.success,
+        nextSocketUrl,
       } satisfies CliAccountEnvironmentTarget;
     }).pipe(Effect.provide(FetchHttpClient.layer)),
   );

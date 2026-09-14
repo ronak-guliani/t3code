@@ -20,6 +20,7 @@ import {
   OpenCodeRuntime,
   openCodeRuntimeErrorDetail,
   type OpenCodeInventory,
+  type OpenCodeSkill,
 } from "../opencodeRuntime.ts";
 import type { Agent, ProviderListResponse } from "@opencode-ai/sdk/v2";
 
@@ -29,6 +30,7 @@ const OPENCODE_PRESENTATION = {
   showInteractionModeToggle: false,
 } as const;
 const MINIMUM_OPENCODE_VERSION = "1.14.19";
+const OPENCODE_VERSION_PROBE_TIMEOUT = "4 seconds";
 
 class OpenCodeProbeError extends Data.TaggedError("OpenCodeProbeError")<{
   readonly cause: unknown;
@@ -122,7 +124,15 @@ function formatOpenCodeProbeError(input: {
     return {
       installed: true,
       message:
-        "macOS killed the OpenCode process due to an invalid code signature. The binary may be corrupted — try reinstalling OpenCode.",
+        'macOS killed the OpenCode process due to an invalid code signature. Reinstall OpenCode or run `codesign --force --sign - "$(which opencode)"`, then verify `opencode --version` in a terminal.',
+    };
+  }
+
+  if (lower.includes("sigkill")) {
+    return {
+      installed: true,
+      message:
+        'The OpenCode CLI was terminated by SIGKILL before it could report its version. On macOS, reinstall OpenCode or run `codesign --force --sign - "$(which opencode)"`, then verify `opencode --version` in a terminal.',
     };
   }
 
@@ -162,8 +172,33 @@ function inferDefaultAgent(agents: ReadonlyArray<Agent>): string | undefined {
   return agents.find((agent) => agent.name === "build")?.name ?? agents[0]?.name ?? undefined;
 }
 
+const OPENCODE_REASONING_VARIANTS = ["low", "medium", "high", "xhigh"] as const;
+
+function openCodeReasoningVariantLabel(value: string): string {
+  return value === "xhigh" ? "Extra High" : titleCaseSlug(value);
+}
+
 const DEFAULT_OPENCODE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
-  optionDescriptors: [],
+  optionDescriptors: [
+    {
+      id: "variant",
+      label: "Reasoning",
+      type: "select",
+      options: OPENCODE_REASONING_VARIANTS.map((id) => ({
+        id,
+        label: openCodeReasoningVariantLabel(id),
+        ...(id === "medium" ? { isDefault: true as const } : {}),
+      })),
+      currentValue: "medium",
+    },
+    {
+      id: "agent",
+      label: "Agent",
+      type: "select",
+      options: [{ id: "build", label: "Build", isDefault: true }],
+      currentValue: "build",
+    },
+  ],
 });
 
 function openCodeCapabilitiesForModel(input: {
@@ -171,15 +206,18 @@ function openCodeCapabilitiesForModel(input: {
   readonly model: ProviderListResponse["all"][number]["models"][string];
   readonly agents: ReadonlyArray<Agent>;
 }): ModelCapabilities {
-  const variantValues = Object.keys(input.model.variants ?? {});
+  const advertisedVariants = Object.keys(input.model.variants ?? {});
+  const variantValues =
+    advertisedVariants.length > 0 ? advertisedVariants : [...OPENCODE_REASONING_VARIANTS];
   const defaultVariant = inferDefaultVariant(input.providerID, variantValues);
   const variantOptions = variantValues.map((value) =>
     defaultVariant === value
-      ? { id: value, label: titleCaseSlug(value), isDefault: true as const }
-      : { id: value, label: titleCaseSlug(value) },
+      ? { id: value, label: openCodeReasoningVariantLabel(value), isDefault: true as const }
+      : { id: value, label: openCodeReasoningVariantLabel(value) },
   );
   const primaryAgents = input.agents.filter(
-    (agent) => !agent.hidden && (agent.mode === "primary" || agent.mode === "all"),
+    (agent) =>
+      agent.name !== "plan" && !agent.hidden && (agent.mode === "primary" || agent.mode === "all"),
   );
   const defaultAgent = inferDefaultAgent(primaryAgents);
   const agentOptions = primaryAgents.map((agent) =>
@@ -193,7 +231,7 @@ function openCodeCapabilitiesForModel(input: {
         ? [
             {
               id: "variant",
-              label: "Variant",
+              label: "Reasoning",
               type: "select" as const,
               options: variantOptions,
               ...(defaultVariant ? { currentValue: defaultVariant } : {}),
@@ -246,6 +284,34 @@ function flattenOpenCodeModels(input: OpenCodeInventory): ReadonlyArray<ServerPr
   }
 
   return models.toSorted((left, right) => left.name.localeCompare(right.name));
+}
+
+function trimOptional(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+export function openCodeSkillsToServerProviderSkills(
+  input: ReadonlyArray<OpenCodeSkill> | undefined,
+): ReadonlyArray<NonNullable<ServerProviderDraft["skills"]>[number]> {
+  return (input ?? [])
+    .flatMap((skill) => {
+      const name = trimOptional(skill.name);
+      const path = trimOptional(skill.location);
+      if (!name || !path) {
+        return [];
+      }
+      const description = trimOptional(skill.description);
+      return [
+        {
+          name,
+          path,
+          enabled: true,
+          ...(description ? { description, shortDescription: description } : {}),
+        },
+      ];
+    })
+    .toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
 export const makePendingOpenCodeProvider = (
@@ -365,6 +431,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
           Effect.mapError(
             (cause) => new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
           ),
+          Effect.timeout(OPENCODE_VERSION_PROBE_TIMEOUT),
         ),
     );
     if (versionExit._tag === "Failure") {
@@ -403,42 +470,41 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   }
 
   const inventoryExit = yield* Effect.exit(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const server = yield* openCodeRuntime
-          .connectToOpenCodeServer({
-            binaryPath: openCodeSettings.binaryPath,
-            serverUrl: openCodeSettings.serverUrl,
-            environment,
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
-            ),
-          );
-        return yield* openCodeRuntime
-          .loadOpenCodeInventory(
-            openCodeRuntime.createOpenCodeSdkClient({
-              baseUrl: server.url,
-              directory: cwd,
-              ...(isExternalServer && openCodeSettings.serverPassword
-                ? { serverPassword: openCodeSettings.serverPassword }
-                : {}),
-            }),
-          )
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
-            ),
-          );
-      }),
+    (isExternalServer
+      ? Effect.scoped(
+          Effect.gen(function* () {
+            const server = yield* openCodeRuntime.connectToOpenCodeServer({
+              binaryPath: openCodeSettings.binaryPath,
+              serverUrl: openCodeSettings.serverUrl,
+              environment,
+            });
+            return yield* openCodeRuntime.loadOpenCodeInventory(
+              openCodeRuntime.createOpenCodeSdkClient({
+                baseUrl: server.url,
+                directory: cwd,
+                ...(openCodeSettings.serverPassword
+                  ? { serverPassword: openCodeSettings.serverPassword }
+                  : {}),
+              }),
+            );
+          }),
+        )
+      : openCodeRuntime.loadInventoryFromCli({
+          binaryPath: openCodeSettings.binaryPath,
+          cwd,
+          environment,
+        })
+    ).pipe(
+      Effect.mapError(
+        (cause) => new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
+      ),
     ),
   );
   if (inventoryExit._tag === "Failure") {
     return fallback(Cause.squash(inventoryExit.cause), version);
   }
+
+  const skills = openCodeSkillsToServerProviderSkills(inventoryExit.value.skills ?? []);
 
   const models = providerModelsFromSettings(
     flattenOpenCodeModels(inventoryExit.value),
@@ -452,6 +518,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     enabled: true,
     checkedAt,
     models,
+    skills,
     probe: {
       installed: true,
       version,

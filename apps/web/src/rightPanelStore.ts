@@ -9,11 +9,21 @@ export type RightPanelKind =
   | "file"
   | "insights"
   | "preview"
+  | "device"
   | "terminal";
+
+export interface DeviceTabTarget {
+  hostId: string;
+  deviceId: string;
+  platform: "ios" | "android";
+  name: string;
+  serverEpoch?: string;
+}
 
 export type RightPanelSurface =
   | { id: `browser:${string}`; kind: "preview"; resourceId: string }
   | { id: "browser:new"; kind: "preview"; resourceId: null }
+  | { id: "device" | `device:${string}`; kind: "device"; target?: DeviceTabTarget; title?: string }
   | { id: "diff"; kind: "diff" }
   | { id: "files"; kind: "files" }
   | { id: "insights"; kind: "insights" }
@@ -31,6 +41,7 @@ interface RightPanelStoreState {
   readonly byThreadKey: Readonly<Record<string, ThreadRightPanelState>>;
   readonly open: (ref: ScopedThreadRef, kind: Exclude<RightPanelKind, "file" | "terminal">) => void;
   readonly openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
+  readonly openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget) => void;
   readonly openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
   readonly openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
   readonly activateSurface: (ref: ScopedThreadRef, surfaceId: string) => void;
@@ -115,6 +126,16 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set) => ({
         const surfaces = tabId
           ? current.surfaces.filter((entry) => entry.id !== "browser:new")
           : current.surfaces;
+        return upsert({ ...current, surfaces }, surface);
+      }),
+    })),
+  openDevice: (ref, target) =>
+    set((state) => ({
+      byThreadKey: updateState(state.byThreadKey, ref, (current) => {
+        const id =
+          `device:${encodeURIComponent(target.hostId)}:${encodeURIComponent(target.deviceId)}` as const;
+        const surface: RightPanelSurface = { id, kind: "device", target };
+        const surfaces = current.surfaces.map((entry) => (entry.id === "device" ? surface : entry));
         return upsert({ ...current, surfaces }, surface);
       }),
     })),

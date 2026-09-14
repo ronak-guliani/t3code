@@ -2,7 +2,7 @@
  * ProviderService - Service interface for provider sessions, turns, and checkpoints.
  *
  * Acts as the cross-provider facade used by transports (WebSocket/RPC). It
- * resolves provider adapters through `ProviderAdapterRegistry`, routes
+ * resolves provider adapters through `ProviderInstanceRegistry`, routes
  * session-scoped calls via `ProviderSessionDirectory`, and exposes one unified
  * provider event stream to callers.
  *
@@ -16,6 +16,7 @@ import type {
   ProviderInstanceId,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
+  ProviderDriverKind,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
@@ -30,8 +31,17 @@ import { Context } from "effect";
 import type { Effect, Stream } from "effect";
 
 import type { ProviderServiceError } from "../Errors.ts";
+import type { ProviderContinuationIdentity } from "../ProviderDriver.ts";
 import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
-import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
+
+export interface ProviderInstanceRoutingInfo {
+  readonly instanceId: ProviderInstanceId;
+  readonly driverKind: ProviderDriverKind;
+  readonly displayName: string | undefined;
+  readonly accentColor?: string | undefined;
+  readonly enabled: boolean;
+  readonly continuationIdentity: ProviderContinuationIdentity;
+}
 
 /**
  * ProviderServiceShape - Service API for provider session and turn orchestration.

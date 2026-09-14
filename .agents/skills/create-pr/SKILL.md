@@ -44,14 +44,18 @@ For publication requests, create a **ready-for-review, non-draft PR** by default
 
    ## Testing
 
-   - <commands run, or `Not run (not requested)`>
+   - <commands actually run and their outcomes; identify failures and blockers>
+
+   ## Evidence
+
+   - <tested revision, observable scenario results, and published screenshot/recording links>
 
    ## Breaking changes
 
    - <migration impact, if any>
    ```
 
-   Add issue-closing keywords, screenshots, rollout notes, or reviewer context only when supported by the changes or supplied by the user. Describe the why and externally observable behavior, not a file-by-file diff.
+   Follow repository validation requirements even when the user only says "create PR". For user-visible changes, load `test-t3-app` and exercise the actual feature with meaningful data in a real client. Capture before/after screenshots; record motion or timing after authentication. Use `pnpm pr:media -- <PR URL> <capture files...>` to upload those captures and verify delivery. Describe the tested revision, actions, observations, diagnostics, and limitations in the PR's testing notes, not a separate feature-report manifest. Recheck affected scenarios after further code edits. `pnpm test:self` is only a pairing/reconnect smoke check; run it when relevant and never substitute its captures, a generic authenticated app, or a successful upload for feature testing. Remove obsolete pairing-only PR evidence when replacing it with feature captures. Inspect the published media before reporting success. If validation or publication is blocked, say so explicitly. Documentation-only changes may say "Not applicable" with the reason. Describe the why and externally observable behavior, not a file-by-file diff.
 
 5. Treat "create PR" as authorization to create a focused branch if needed, commit the task's changes, push, and create the PR. Do not ask for confirmation of the title, body, base, or these routine steps. Infer sensible defaults from repository context; ask only when a genuine blocker cannot be resolved safely.
 

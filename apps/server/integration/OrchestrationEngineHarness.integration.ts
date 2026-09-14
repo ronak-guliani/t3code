@@ -38,8 +38,8 @@ import { ProviderSessionRuntimeRepositoryLive } from "../src/persistence/Layers/
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
 import { ProjectionCheckpointRepository } from "../src/persistence/Services/ProjectionCheckpoints.ts";
 import { ProjectionPendingApprovalRepository } from "../src/persistence/Services/ProjectionPendingApprovals.ts";
-import { makeAdapterRegistryMock } from "../src/provider/testUtils/providerAdapterRegistryMock.ts";
-import { ProviderAdapterRegistry } from "../src/provider/Services/ProviderAdapterRegistry.ts";
+import { makeInstanceRegistryMock } from "../src/provider/testUtils/providerInstanceRegistryMock.ts";
+import { ProviderInstanceRegistry } from "../src/provider/Services/ProviderInstanceRegistry.ts";
 import { ProviderSessionDirectoryLive } from "../src/provider/Layers/ProviderSessionDirectory.ts";
 import { ServerSettingsService } from "../src/serverSettings.ts";
 import { makeProviderServiceLive } from "../src/provider/Layers/ProviderService.ts";
@@ -243,8 +243,8 @@ export const makeOrchestrationIntegrationHarness = (
         });
     const fakeRegistry = adapterHarness
       ? Layer.succeed(
-          ProviderAdapterRegistry,
-          makeAdapterRegistryMock({ [adapterHarness.provider]: adapterHarness.adapter }),
+          ProviderInstanceRegistry,
+          makeInstanceRegistryMock({ [adapterHarness.provider]: adapterHarness.adapter }),
         )
       : null;
     const rootDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -268,11 +268,11 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provide(ProviderSessionRuntimeRepositoryLive),
     );
     const realCodexRegistry = Layer.effect(
-      ProviderAdapterRegistry,
+      ProviderInstanceRegistry,
       Effect.gen(function* () {
         const codexSettings = decodeCodexSettings({});
         const codexAdapter = yield* makeCodexAdapter(codexSettings);
-        return makeAdapterRegistryMock({
+        return makeInstanceRegistryMock({
           [ProviderDriverKind.make("codex")]: codexAdapter,
         });
       }),

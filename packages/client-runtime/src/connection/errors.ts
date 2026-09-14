@@ -167,6 +167,11 @@ export function mapRemoteEnvironmentError(
         traceId: error.traceId,
       });
     case "RemoteEnvironmentAuthInvalidJsonError":
+      return new ConnectionBlockedError({
+        reason: "unsupported",
+        detail:
+          "The environment returned an incompatible response. Install compatible app and server releases, then reconnect.",
+      });
     case "RemoteEnvironmentAuthUndeclaredStatusError":
       return new ConnectionTransientError({
         reason: "remote-unavailable",

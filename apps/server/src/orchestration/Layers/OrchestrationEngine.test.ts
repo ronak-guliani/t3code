@@ -933,6 +933,7 @@ describe("OrchestrationEngine", () => {
               threads: [],
               updatedAt: projectionSnapshot.updatedAt,
             }),
+          getActiveChatArchiveEntries: () => Effect.succeed([]),
           getSnapshotSequence: () => Effect.succeed(projectionSnapshot.snapshotSequence),
           getCounts: () => Effect.succeed({ projectCount: 1, threadCount: 1 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),

@@ -47,6 +47,11 @@ import { type PullRequestMonitorFeedbackReadiness } from "./readiness.ts";
 import { monitorToolNamesForThread } from "./monitorTools.ts";
 import { sendQueuedTurn } from "./threadDelivery.ts";
 import { buildWakePrompt } from "./wakePrompt.ts";
+import {
+  resolveFindingDetail,
+  findingContextTurns,
+  formatFindingDetail,
+} from "./findingContext.ts";
 
 /** Debounce window so CI/review bursts batch into one queued delivery. */
 export const FEEDBACK_DEBOUNCE_MS = 15_000;
@@ -382,6 +387,16 @@ export const layer = Layer.effect(
             finding.severity,
             finding.path ?? "",
             String(finding.line ?? 0),
+            ...(finding.provenance === undefined
+              ? []
+              : [
+                  finding.provenance.reviewedHeadSha,
+                  finding.provenance.diffHash,
+                  finding.provenance.path,
+                  finding.provenance.side,
+                  String(finding.provenance.startLine),
+                  String(finding.provenance.endLine),
+                ]),
           ]);
           const revisionId = stableRevisionId(itemId, sourceRevision, contentHash);
           const inserted = yield* feedbackStore.insertRevision({
@@ -393,7 +408,7 @@ export const layer = Layer.effect(
             headSha,
             createdAt: now,
             summary,
-            payload: { event, finding, reviewThreadId: input.reviewThreadId },
+            payload: { event, finding, reviewThreadId: input.reviewThreadId, contentVersion: 1 },
           });
           if (inserted) newRevisionIds.push(revisionId);
           submitted.push({ key, itemId, revisionId, created: inserted });
@@ -675,6 +690,10 @@ export const layer = Layer.effect(
 
         // Bounded events reconstructed from durable revision payloads.
         const events: Array<PullRequestMonitorActionableEvent> = [];
+        const eventsByRevision = new Map<
+          PullRequestMonitorFeedbackRevisionId,
+          PullRequestMonitorActionableEvent
+        >();
         const revisionSummaries: string[] = [];
         for (const revision of revisions) {
           revisionSummaries.push(revision.summary);
@@ -689,11 +708,41 @@ export const layer = Layer.effect(
             typeof (payload.event as { kind: unknown }).kind === "string"
           ) {
             events.push(payload.event as PullRequestMonitorActionableEvent);
+            eventsByRevision.set(revision.id, payload.event as PullRequestMonitorActionableEvent);
           }
         }
 
         const availableTools = yield* availableToolsFor(ownerThreadId);
-        const prompt = buildWakePrompt({
+        const canRetrieve = availableTools.includes("pr_monitor_context");
+        const findingText = (entries: typeof batchRevisions) =>
+          entries
+            .filter((revision) => revision.summary.startsWith("review-finding:"))
+            .map((revision) => formatFindingDetail(resolveFindingDetail(revision)))
+            .join("\n\n");
+        // Choose the layout from the immutable batch, so partial retries never renumber parts.
+        const inlineBatch = findingText(batchRevisions).length <= 12_000;
+        const parts: ReadonlyArray<{
+          key: string;
+          text: string;
+          revisionId?: PullRequestMonitorFeedbackRevisionId;
+        }> = inlineBatch
+          ? [{ key: "", text: findingText(revisions) }]
+          : canRetrieve
+            ? [
+                {
+                  key: "",
+                  text: `${revisions.length} delivered revisions:\n${revisions
+                    .slice(0, 20)
+                    .map(
+                      (revision) => `${revision.id} (item ${revision.itemId}): ${revision.summary}`,
+                    )
+                    .join(
+                      "\n",
+                    )}${revisions.length > 20 ? "\nMore revisions: retrieve this delivery and follow nextOffset." : ""}`,
+                },
+              ]
+            : findingContextTurns(revisions);
+        const promptInput = {
           prNumber: monitor.number,
           repository: monitor.repository,
           deliveryId: delivery.id,
@@ -702,24 +751,52 @@ export const layer = Layer.effect(
           snapshot,
           readiness,
           availableTools,
-        });
+        };
 
         // Durable queue behind any active turn; QueuedTurnReactor drains it when idle.
         const sendResult = yield* Effect.result(
-          sendQueuedTurn({
-            threadId: ownerThreadId,
-            commandId: CommandId.make(delivery.commandId),
-            messageId: MessageId.make(delivery.messageId),
-            text: prompt,
-            repository: monitor.repository,
-            pullRequestNumber: monitor.number,
-            headSha: snapshot.headSha,
-            sourceRevision: snapshot.sourceRevision,
-            events,
-            deliveryId: delivery.id,
-            revisionSummaries,
-            availableTools,
-          }).pipe(Effect.provideService(OrchestrationEngineService, engine)),
+          Effect.forEach(
+            parts,
+            (part) => {
+              const findingContext = part.text.length === 0 ? undefined : part.text;
+              const suffix = part.key.length === 0 ? "" : `:${part.key}`;
+              const revisionEvent =
+                part.revisionId === undefined ? undefined : eventsByRevision.get(part.revisionId);
+              const turnEvents =
+                part.revisionId === undefined
+                  ? events
+                  : revisionEvent === undefined
+                    ? []
+                    : [revisionEvent];
+              const turnSummaries =
+                part.revisionId === undefined
+                  ? revisionSummaries
+                  : revisions
+                      .filter((revision) => revision.id === part.revisionId)
+                      .map((revision) => revision.summary);
+              return sendQueuedTurn({
+                threadId: ownerThreadId,
+                commandId: CommandId.make(`${delivery.commandId}${suffix}`),
+                messageId: MessageId.make(`${delivery.messageId}${suffix}`),
+                text: buildWakePrompt({
+                  ...promptInput,
+                  events: turnEvents,
+                  revisionSummaries: turnSummaries,
+                  ...(findingContext === undefined ? {} : { findingContext }),
+                }),
+                ...(findingContext === undefined ? {} : { findingContext }),
+                repository: monitor.repository,
+                pullRequestNumber: monitor.number,
+                headSha: snapshot.headSha,
+                sourceRevision: snapshot.sourceRevision,
+                events: turnEvents,
+                deliveryId: delivery.id,
+                revisionSummaries: turnSummaries,
+                availableTools,
+              });
+            },
+            { concurrency: 1 },
+          ).pipe(Effect.provideService(OrchestrationEngineService, engine)),
         );
 
         if (Result.isFailure(sendResult)) {
@@ -897,27 +974,78 @@ export const layer = Layer.effect(
       Effect.gen(function* () {
         const monitor = yield* input.resolveMonitor();
         if (!monitor) {
+          if (input.deliveryId !== undefined || input.revisionIds !== undefined) {
+            return yield* monitorError("No pull request monitor matched this context request.");
+          }
           return {
             monitor: null,
             latestSnapshot: null,
             items: [],
             recentDeliveries: [],
             recentReports: [],
+            revisions: [],
+            findingDetails: [],
+            nextOffset: null,
           };
         }
         const latest = yield* monitorStore.latestSnapshot(monitor.id);
         const items = yield* feedbackStore.listItems({
           monitorId: monitor.id,
-          includeClosed: input.includeClosed === true,
+          includeClosed:
+            input.includeClosed === true ||
+            input.deliveryId !== undefined ||
+            input.revisionIds !== undefined,
         });
         const recentDeliveries = yield* listDeliveries(monitor.id);
         const recentReports = yield* listReports(monitor.id);
+        if (input.deliveryId !== undefined && input.revisionIds !== undefined) {
+          return yield* monitorError("Select a delivery or revisions, not both.");
+        }
+        const delivery =
+          input.deliveryId === undefined
+            ? null
+            : yield* feedbackStore.getDelivery(input.deliveryId);
+        if (input.deliveryId !== undefined && (!delivery || delivery.monitorId !== monitor.id)) {
+          return yield* monitorError("Delivery was not found on this monitor.");
+        }
+        const selectedIds =
+          delivery?.revisionIds ??
+          input.revisionIds ??
+          items.flatMap((item) =>
+            item.currentRevisionId === null ? [] : [item.currentRevisionId],
+          );
+        const orderedIds = [...new Set(selectedIds)];
+        const offset = input.offset ?? 0;
+        const limit = input.limit ?? 10;
+        const pageIds = orderedIds.slice(offset, offset + limit);
+        const idsToValidate = input.revisionIds === undefined ? pageIds : orderedIds;
+        const selected = yield* feedbackStore.listRevisionsByIds(idsToValidate);
+        if (selected.length !== idsToValidate.length) {
+          return yield* monitorError("One or more feedback revisions are unavailable.");
+        }
+        const itemsById = new Map(items.map((item) => [item.id, item]));
+        for (const revision of selected) {
+          const item = itemsById.get(revision.itemId);
+          if (!item || item.monitorId !== monitor.id) {
+            return yield* monitorError("Revision was not found on this monitor.");
+          }
+        }
+        const byId = new Map(selected.map((revision) => [revision.id, revision]));
+        const page = pageIds.flatMap((id) => {
+          const revision = byId.get(id);
+          return revision ? [revision] : [];
+        });
         return {
           monitor,
           latestSnapshot: latest?.snapshot ?? null,
           items,
           recentDeliveries,
           recentReports,
+          revisions: page,
+          findingDetails: page
+            .filter((revision) => revision.summary.startsWith("review-finding:"))
+            .map(resolveFindingDetail),
+          nextOffset: offset + limit < orderedIds.length ? offset + limit : null,
         };
       });
 

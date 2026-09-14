@@ -24,7 +24,7 @@
     "test:parallel": "vp test run --fileParallelism --maxWorkers=3 --exclude src/server.test.ts --exclude integration/directConnectSmoke.integration.test.ts",
     "test:process-reaper": "vp test run src/server.test.ts src/provider/Layers/ClaudeAdapter.test.ts src/provider/Layers/ProviderSessionDirectory.test.ts src/provider/Layers/ProviderSessionReaper.test.ts src/provider/Layers/CodexAdapter.test.ts",
     "test:serial": "vp test run src/server.test.ts --no-file-parallelism",
-    "test:windows-smoke": "vp test run src/processRunner.test.ts src/pathExpansion.test.ts src/cloud/publicConfig.test.ts src/cloud/CliTokenManager.test.ts src/cloud/windowsService.test.ts src/cli/installation.test.ts src/cli/connectSetup.test.ts --no-file-parallelism"
+    "test:windows-smoke": "vp test run src/processRunner.test.ts src/pathExpansion.test.ts src/cloud/publicConfig.test.ts src/cloud/CliTokenManager.test.ts src/cloud/windowsService.test.ts src/auth/windowsSecretProtection.test.ts src/cli/installation.test.ts src/cli/connectSetup.test.ts --no-file-parallelism"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.111",
@@ -38,7 +38,8 @@
     "@t3tools/client-runtime": "workspace:*",
     "effect": "catalog:",
     "node-pty": "^1.1.0",
-    "open": "^10.1.0"
+    "open": "^10.1.0",
+    "pngjs": "7.0.0"
   },
   "devDependencies": {
     "@effect/language-service": "catalog:",
@@ -48,6 +49,7 @@
     "@t3tools/tailscale": "workspace:*",
     "@t3tools/web": "workspace:*",
     "@types/node": "catalog:",
+    "@types/pngjs": "6.0.5",
     "effect-acp": "workspace:*",
     "effect-codex-app-server": "workspace:*",
     "playwright": "^1.58.2",
