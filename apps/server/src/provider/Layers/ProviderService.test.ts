@@ -42,6 +42,7 @@ import { CopilotAdapter } from "../Services/CopilotAdapter.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 import {
   ProviderSessionDirectory,
+  type ProviderRuntimeBinding,
   type ProviderSessionDirectoryShape,
 } from "../Services/ProviderSessionDirectory.ts";
 import { makeCopilotAdapterLive } from "./CopilotAdapter.ts";
@@ -465,6 +466,66 @@ it.effect("ProviderServiceLive catches stopAll failures during shutdown", () =>
   }),
 );
 
+it.effect("ProviderServiceLive reuses one binding snapshot during shutdown", () =>
+  Effect.gen(function* () {
+    const codex = makeFakeCodexAdapter();
+    const threadId = asThreadId("thread-stop-all-snapshot");
+    const listBindings = vi.fn(() =>
+      Effect.succeed([
+        {
+          threadId,
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          status: "running" as const,
+          lastSeenAt: "2026-01-01T00:00:00.000Z",
+        },
+      ]),
+    );
+    const upsert = vi.fn((_binding: ProviderRuntimeBinding) => Effect.void);
+    const directory = {
+      upsert,
+      getBinding: () => Effect.succeed(Option.none()),
+      listBindings,
+    } satisfies ProviderSessionDirectoryShape;
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(
+        Layer.succeed(
+          ProviderInstanceRegistry,
+          makeInstanceRegistryMock({
+            [CODEX_DRIVER]: codex.adapter,
+          }),
+        ),
+      ),
+      Layer.provide(Layer.succeed(ProviderSessionDirectory, directory)),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+    );
+    const scope = yield* Scope.make();
+
+    yield* Layer.build(providerLayer).pipe(Scope.provide(scope));
+    yield* Scope.close(scope, Exit.void);
+
+    assert.equal(listBindings.mock.calls.length, 1);
+    assert.equal(upsert.mock.calls.length, 1);
+    const stoppedBinding = upsert.mock.calls[0]?.[0];
+    assert.isDefined(stoppedBinding);
+    assert.deepEqual(stoppedBinding, {
+      threadId,
+      provider: CODEX_DRIVER,
+      providerInstanceId: codexInstanceId,
+      status: "stopped",
+      runtimePayload: {
+        activeTurnId: null,
+        lastRuntimeEvent: "provider.stopAll",
+        lastRuntimeEventAt: (
+          stoppedBinding.runtimePayload as { readonly lastRuntimeEventAt: string }
+        ).lastRuntimeEventAt,
+      },
+    });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.effect("ProviderServiceLive lists persisted bindings with one directory read", () =>
   Effect.gen(function* () {
     const codex = makeFakeCodexAdapter();
@@ -490,9 +551,7 @@ it.effect("ProviderServiceLive lists persisted bindings with one directory read"
     );
     const directory = {
       upsert: () => Effect.void,
-      getProvider: () => Effect.die(new Error("getProvider should not be called")),
       getBinding: () => Effect.die(new Error("getBinding should not be called")),
-      listThreadIds: () => Effect.die(new Error("listThreadIds should not be called")),
       listBindings,
     } satisfies ProviderSessionDirectoryShape;
     const providerLayer = makeProviderServiceLive().pipe(
@@ -510,14 +569,18 @@ it.effect("ProviderServiceLive lists persisted bindings with one directory read"
       Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
     );
 
+    const scope = yield* Scope.make();
+    const runtimeServices = yield* Layer.build(providerLayer).pipe(Scope.provide(scope));
     const sessions = yield* Effect.gen(function* () {
       const provider = yield* ProviderService;
       return yield* provider.listSessions();
-    }).pipe(Effect.provide(providerLayer));
+    }).pipe(Effect.provide(runtimeServices));
 
     assert.equal(listBindings.mock.calls.length, 1);
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0]?.threadId, threadId);
+    yield* Scope.close(scope, Exit.void);
+    assert.equal(listBindings.mock.calls.length, 2);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
@@ -752,11 +815,14 @@ it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", (
       yield* ProviderService;
     }).pipe(Effect.provide(providerLayer));
 
-    const persistedProvider = yield* Effect.gen(function* () {
+    const persistedBinding = yield* Effect.gen(function* () {
       const directory = yield* ProviderSessionDirectory;
-      return yield* directory.getProvider(asThreadId("thread-stale"));
+      return yield* directory.getBinding(asThreadId("thread-stale"));
     }).pipe(Effect.provide(directoryLayer));
-    assert.equal(persistedProvider, "codex");
+    assert.equal(Option.isSome(persistedBinding), true);
+    if (Option.isSome(persistedBinding)) {
+      assert.equal(persistedBinding.value.provider, "codex");
+    }
 
     const runtime = yield* Effect.gen(function* () {
       const repository = yield* ProviderSessionRuntimeRepository;
