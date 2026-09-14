@@ -43,12 +43,12 @@ export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
 export type DeleteProjectionThreadActivitiesInput =
   typeof DeleteProjectionThreadActivitiesInput.Type;
 
-export const DeleteTrimmedProjectionThreadActivitiesInput = Schema.Struct({
+export const DeleteProjectionThreadActivitiesByTurnIdsInput = Schema.Struct({
   threadId: ThreadId,
-  retainedTurnIds: Schema.Array(TurnId),
+  turnIds: Schema.Array(TurnId),
 });
-export type DeleteTrimmedProjectionThreadActivitiesInput =
-  typeof DeleteTrimmedProjectionThreadActivitiesInput.Type;
+export type DeleteProjectionThreadActivitiesByTurnIdsInput =
+  typeof DeleteProjectionThreadActivitiesByTurnIdsInput.Type;
 
 export const ListProjectionThreadUserInputActivitiesInput = Schema.Struct({
   threadId: ThreadId,
@@ -129,15 +129,24 @@ export interface ProjectionThreadActivityRepositoryShape {
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
-   * Delete only activities of turns outside `retainedTurnIds`.
+   * List distinct non-null turn ids with activity rows for a thread.
    *
-   * Turn-less activities are always kept. Unlike `deleteByThreadId` +
-   * re-upserting kept rows, this never reads payloads and never rewrites
-   * retained rows. An empty `retainedTurnIds` list deletes every activity
-   * attached to a turn.
+   * Narrow index read without payloads; used to compute the trimmed turn set
+   * for revert without hydrating full histories.
    */
-  readonly deleteTrimmedByThreadId: (
-    input: DeleteTrimmedProjectionThreadActivitiesInput,
+  readonly listTurnIdsByThreadId: (
+    input: ListProjectionThreadActivitiesInput,
+  ) => Effect.Effect<ReadonlyArray<TurnId>, ProjectionRepositoryError>;
+
+  /**
+   * Delete activities of exactly the listed turns of a thread.
+   *
+   * Turn-less activities are never touched. Unlike `deleteByThreadId` +
+   * re-upserting kept rows, this never reads payloads and never rewrites
+   * retained rows. An empty `turnIds` list deletes nothing.
+   */
+  readonly deleteByTurnIds: (
+    input: DeleteProjectionThreadActivitiesByTurnIdsInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 

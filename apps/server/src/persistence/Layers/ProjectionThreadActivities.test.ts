@@ -91,7 +91,7 @@ layer("ProjectionThreadActivityRepository", (it) => {
     }),
   );
 
-  it.effect("deletes only activities outside retained turns", () =>
+  it.effect("lists turn ids and deletes only the listed turns", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadActivityRepository;
       const threadId = ThreadId.make("thread-trim-activities");
@@ -114,10 +114,15 @@ layer("ProjectionThreadActivityRepository", (it) => {
       yield* seed("kept", retainedTurnId);
       yield* seed("trimmed", trimmedTurnId);
 
-      yield* repository.deleteTrimmedByThreadId({
-        threadId,
-        retainedTurnIds: [retainedTurnId],
-      });
+      assert.deepStrictEqual(yield* repository.listTurnIdsByThreadId({ threadId }), [
+        retainedTurnId,
+        trimmedTurnId,
+      ]);
+
+      yield* repository.deleteByTurnIds({ threadId, turnIds: [] });
+      assert.strictEqual((yield* repository.listByThreadId({ threadId })).length, 3);
+
+      yield* repository.deleteByTurnIds({ threadId, turnIds: [trimmedTurnId] });
 
       const rows = yield* repository.listByThreadId({ threadId });
       assert.deepStrictEqual(
@@ -125,13 +130,6 @@ layer("ProjectionThreadActivityRepository", (it) => {
         ["activity-trim-turnless", "activity-trim-kept"],
       );
       assert.deepStrictEqual(rows[0]?.payload, { marker: "turnless" });
-
-      yield* repository.deleteTrimmedByThreadId({ threadId, retainedTurnIds: [] });
-      const remaining = yield* repository.listByThreadId({ threadId });
-      assert.deepStrictEqual(
-        remaining.map((row) => row.activityId),
-        ["activity-trim-turnless"],
-      );
     }),
   );
 });

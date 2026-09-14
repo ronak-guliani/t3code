@@ -50,7 +50,7 @@ layer("ProjectionThreadProposedPlanRepository", (it) => {
     }),
   );
 
-  it.effect("deletes only plans outside retained turns", () =>
+  it.effect("lists turn ids and deletes only the listed turns", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadProposedPlanRepository;
       const threadId = ThreadId.make("thread-trim-plans");
@@ -73,10 +73,15 @@ layer("ProjectionThreadProposedPlanRepository", (it) => {
       yield* seed("kept", retainedTurnId, "2026-03-02T00:00:02.000Z");
       yield* seed("trimmed", trimmedTurnId, "2026-03-02T00:00:03.000Z");
 
-      yield* repository.deleteTrimmedByThreadId({
-        threadId,
-        retainedTurnIds: [retainedTurnId],
-      });
+      assert.deepStrictEqual(yield* repository.listTurnIdsByThreadId({ threadId }), [
+        retainedTurnId,
+        trimmedTurnId,
+      ]);
+
+      yield* repository.deleteByTurnIds({ threadId, turnIds: [] });
+      assert.strictEqual((yield* repository.listByThreadId({ threadId })).length, 3);
+
+      yield* repository.deleteByTurnIds({ threadId, turnIds: [trimmedTurnId] });
 
       const rows = yield* repository.listByThreadId({ threadId });
       assert.deepStrictEqual(
@@ -84,13 +89,6 @@ layer("ProjectionThreadProposedPlanRepository", (it) => {
         ["plan-trim-turnless", "plan-trim-kept"],
       );
       assert.strictEqual(rows[1]?.planMarkdown, "kept plan body");
-
-      yield* repository.deleteTrimmedByThreadId({ threadId, retainedTurnIds: [] });
-      const remaining = yield* repository.listByThreadId({ threadId });
-      assert.deepStrictEqual(
-        remaining.map((row) => row.planId),
-        ["plan-trim-turnless"],
-      );
     }),
   );
 });

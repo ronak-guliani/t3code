@@ -34,12 +34,12 @@ export const DeleteProjectionThreadProposedPlansInput = Schema.Struct({
 export type DeleteProjectionThreadProposedPlansInput =
   typeof DeleteProjectionThreadProposedPlansInput.Type;
 
-export const DeleteTrimmedProjectionThreadProposedPlansInput = Schema.Struct({
+export const DeleteProjectionThreadProposedPlansByTurnIdsInput = Schema.Struct({
   threadId: ThreadId,
-  retainedTurnIds: Schema.Array(TurnId),
+  turnIds: Schema.Array(TurnId),
 });
-export type DeleteTrimmedProjectionThreadProposedPlansInput =
-  typeof DeleteTrimmedProjectionThreadProposedPlansInput.Type;
+export type DeleteProjectionThreadProposedPlansByTurnIdsInput =
+  typeof DeleteProjectionThreadProposedPlansByTurnIdsInput.Type;
 
 /**
  * Summary fields of a proposed plan: everything the shell summary needs
@@ -74,15 +74,23 @@ export interface ProjectionThreadProposedPlanRepositoryShape {
     input: DeleteProjectionThreadProposedPlansInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
   /**
-   * Delete only proposed plans of turns outside `retainedTurnIds`.
+   * List distinct non-null turn ids with proposed-plan rows for a thread.
    *
-   * Turn-less plans are always kept. Unlike `deleteByThreadId` +
-   * re-upserting kept rows, this never reads plan markdown and never rewrites
-   * retained rows. An empty `retainedTurnIds` list deletes every plan attached
-   * to a turn.
+   * Narrow index read without plan markdown; used to compute the trimmed turn
+   * set for revert without hydrating full histories.
    */
-  readonly deleteTrimmedByThreadId: (
-    input: DeleteTrimmedProjectionThreadProposedPlansInput,
+  readonly listTurnIdsByThreadId: (
+    input: ListProjectionThreadProposedPlansInput,
+  ) => Effect.Effect<ReadonlyArray<TurnId>, ProjectionRepositoryError>;
+  /**
+   * Delete only proposed plans of exactly the listed turns of a thread.
+   *
+   * Turn-less plans are never touched. Unlike `deleteByThreadId` +
+   * re-upserting kept rows, this never reads plan markdown and never rewrites
+   * retained rows. An empty `turnIds` list deletes nothing.
+   */
+  readonly deleteByTurnIds: (
+    input: DeleteProjectionThreadProposedPlansByTurnIdsInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 

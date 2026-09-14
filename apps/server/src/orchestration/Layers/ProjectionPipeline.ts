@@ -216,14 +216,29 @@ function retainedTurnIdsAfterRevert(
 const REVERT_TRIM_DELETE_BATCH_SIZE = 500;
 
 function chunkRevertTrimIds(
-  messageIds: ReadonlyArray<string>,
+  ids: ReadonlyArray<string>,
   batchSize: number = REVERT_TRIM_DELETE_BATCH_SIZE,
 ): Array<Array<string>> {
   const chunks: Array<Array<string>> = [];
-  for (let index = 0; index < messageIds.length; index += batchSize) {
-    chunks.push(messageIds.slice(index, index + batchSize));
+  for (let index = 0; index < ids.length; index += batchSize) {
+    chunks.push(ids.slice(index, index + batchSize));
   }
   return chunks;
+}
+
+// Turn-based trim shared by the activity/plan revert handlers: present turn
+// ids minus retained turn ids. A NOT IN keep-list cannot be chunked across
+// statements (each chunk would delete rows kept by the other chunks), so the
+// trimmed set is computed in JS and deleted with chunked IN lists instead.
+function trimmedTurnIdsAfterRevert(
+  presentTurnIds: ReadonlyArray<string>,
+  retainedTurnIds: ReadonlyArray<string>,
+): Array<string> {
+  if (retainedTurnIds.length === 0) {
+    return [...presentTurnIds];
+  }
+  const retained = new Set(retainedTurnIds);
+  return presentTurnIds.filter((turnId) => !retained.has(turnId));
 }
 
 const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjectionPipeline")(
@@ -881,16 +896,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
 
         case "thread.reverted": {
-          // Pure-SQL trim: plan retention is turn-based, so trimmed rows are
-          // deleted by turn without reading plan markdown or rewriting
-          // retained rows.
+          // Pure-SQL trim without payload hydration: retention is turn-based,
+          // so the trimmed turn set is diffed in JS and deleted with chunked
+          // IN lists. Retained rows are never rewritten.
           const existingTurns = yield* projectionTurnRepository.listByThreadId({
             threadId: event.payload.threadId,
           });
-          yield* projectionThreadProposedPlanRepository.deleteTrimmedByThreadId({
-            threadId: event.payload.threadId,
-            retainedTurnIds: retainedTurnIdsAfterRevert(existingTurns, event.payload.turnCount),
-          });
+          const presentTurnIds =
+            yield* projectionThreadProposedPlanRepository.listTurnIdsByThreadId({
+              threadId: event.payload.threadId,
+            });
+          const trimmedTurnIds = trimmedTurnIdsAfterRevert(
+            presentTurnIds,
+            retainedTurnIdsAfterRevert(existingTurns, event.payload.turnCount),
+          );
+          for (const chunk of chunkRevertTrimIds(trimmedTurnIds)) {
+            yield* projectionThreadProposedPlanRepository.deleteByTurnIds({
+              threadId: event.payload.threadId,
+              turnIds: chunk,
+            });
+          }
           return;
         }
 
@@ -939,16 +964,25 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.reverted": {
-          // Pure-SQL trim: activity retention is turn-based, so trimmed rows
-          // are deleted by turn without decoding payload JSON or rewriting
-          // retained rows.
+          // Pure-SQL trim without payload hydration: retention is turn-based,
+          // so the trimmed turn set is diffed in JS and deleted with chunked
+          // IN lists. Retained rows are never rewritten.
           const existingTurns = yield* projectionTurnRepository.listByThreadId({
             threadId: event.payload.threadId,
           });
-          yield* projectionThreadActivityRepository.deleteTrimmedByThreadId({
+          const presentTurnIds = yield* projectionThreadActivityRepository.listTurnIdsByThreadId({
             threadId: event.payload.threadId,
-            retainedTurnIds: retainedTurnIdsAfterRevert(existingTurns, event.payload.turnCount),
           });
+          const trimmedTurnIds = trimmedTurnIdsAfterRevert(
+            presentTurnIds,
+            retainedTurnIdsAfterRevert(existingTurns, event.payload.turnCount),
+          );
+          for (const chunk of chunkRevertTrimIds(trimmedTurnIds)) {
+            yield* projectionThreadActivityRepository.deleteByTurnIds({
+              threadId: event.payload.threadId,
+              turnIds: chunk,
+            });
+          }
           return;
         }
 
