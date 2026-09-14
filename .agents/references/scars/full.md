@@ -328,6 +328,7 @@
 
 ## Mobile drafts and navigation
 
+- Fixed-detent iOS form sheets must expose their primary list directly to native sizing; a flex-only ancestor can remain zero-height while the native scroll view expands. Keep the sheet title in the list header, and preserve Android's separate page header. DOM host-contract tests do not prove UIKit geometry.
 - Deferred route failures need an explicit failed state: a rejected promise can carry `null`, so using the rejection value as the loading/error sentinel can strand the screen without a retry action.
 
 - Upstream consumer imports must preserve fork-owned inbox composition. Exercise the real legacy and V2 row consumers, not only an orphanable compact component, so imports cannot silently restore metadata rows or remove related-chat navigation.

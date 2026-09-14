@@ -4,6 +4,8 @@ import { defineConfig } from "vitest/config";
 
 // Exercises React lifecycle only; DOM primitives cannot assert native layout or gestures.
 export default defineConfig({
+  // Let browser mocks intercept native-only modules before Vite follows their imports.
+  server: { preTransformRequests: false },
   resolve: {
     alias: {
       "react-native": fileURLToPath(
