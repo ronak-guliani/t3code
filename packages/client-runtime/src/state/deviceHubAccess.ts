@@ -43,6 +43,8 @@ export interface DeviceHubAccess {
     readonly prime: string;
     readonly mjpeg: string;
   };
+  /** Mint a fresh single-use ticket for non-media HTTP/EventSource requests. */
+  readonly issueTicket?: () => Promise<string>;
 }
 
 export const resolveDeviceHubAccess = Effect.fn("clientRuntime.state.resolveDeviceHubAccess")(
@@ -62,23 +64,27 @@ export const resolveDeviceHubAccess = Effect.fn("clientRuntime.state.resolveDevi
       "/api/auth/websocket-ticket",
     );
     const client = yield* makeEnvironmentHttpApiClient(input.prepared.httpBaseUrl);
-    const ticket = yield* requestEnvironmentRead(
-      input.prepared.httpAuthorization,
-      ticketUrl,
-      signer,
-      (headers) =>
-        executeEnvironmentHttpRequest(
+    const issueTicket = () =>
+      Effect.runPromise(
+        requestEnvironmentRead(
+          input.prepared.httpAuthorization!,
           ticketUrl,
-          TICKET_TIMEOUT_MS,
-          client.auth.webSocketTicket({ headers }),
-        ),
-      "POST",
-    );
+          signer,
+          (headers) =>
+            executeEnvironmentHttpRequest(
+              ticketUrl,
+              TICKET_TIMEOUT_MS,
+              client.auth.webSocketTicket({ headers }),
+            ),
+          "POST",
+        ).pipe(Effect.map((ticket) => ticket.ticket)),
+      );
     return {
       httpBase,
       wsBase,
-      query: { wsTicket: ticket.ticket },
+      query: {},
       credentials: false,
+      issueTicket,
     };
   },
 );

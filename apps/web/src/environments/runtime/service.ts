@@ -1077,6 +1077,7 @@ function createPrimaryEnvironmentConnection(): EnvironmentConnection {
           query: { hostId },
           credentials: false,
           tickets: { video, input, prime, mjpeg },
+          issueTicket,
         };
       },
       ...createEnvironmentConnectionHandlers(),
@@ -1149,6 +1150,7 @@ async function ensureSavedEnvironmentConnection(
         query: { hostId },
         credentials: false,
         tickets: { video, input, prime, mjpeg },
+        issueTicket,
       };
     },
     refreshMetadata: async () => {

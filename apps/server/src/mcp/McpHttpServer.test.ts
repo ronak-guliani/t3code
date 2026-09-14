@@ -61,7 +61,7 @@ it("normalizes empty successful notification responses to accepted", () => {
   expect(resultResponse.status).toBe(200);
 });
 
-it("omits device tools from tools/list unless the credential has device capability", async () => {
+it("filters tools/list independently by credential capability", async () => {
   const response = HttpServerResponse.jsonUnsafe({
     jsonrpc: "2.0",
     id: 1,
@@ -70,6 +70,7 @@ it("omits device tools from tools/list unless the credential has device capabili
     },
   });
   const disabled = McpHttpServer.filterAdvertisedToolsForTest(response, new Set(["preview"]));
+  const deviceOnly = McpHttpServer.filterAdvertisedToolsForTest(response, new Set(["device"]));
   const enabled = McpHttpServer.filterAdvertisedToolsForTest(
     response,
     new Set(["preview", "device"]),
@@ -79,6 +80,10 @@ it("omits device tools from tools/list unless the credential has device capabili
       readonly result: { readonly tools: ReadonlyArray<{ readonly name: string }> };
     };
   expect(decode(disabled).result.tools.map((tool) => tool.name)).toEqual(["preview_open"]);
+  expect(decode(deviceOnly).result.tools.map((tool) => tool.name)).toEqual([
+    "device_list",
+    "device_close",
+  ]);
   expect(decode(enabled).result.tools.map((tool) => tool.name)).toEqual([
     "preview_open",
     "device_list",

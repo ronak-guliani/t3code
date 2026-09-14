@@ -72,10 +72,15 @@ function normalizeSpawnError(command: string, args: readonly string[], error: un
 
   const maybeCode = (error as NodeJS.ErrnoException).code;
   if (maybeCode === "ENOENT") {
-    return new Error(`Command not found: ${command}`);
+    return Object.assign(new Error(`Command not found: ${command}`), { code: maybeCode });
   }
 
-  return new Error(`Failed to run ${commandLabel(command, args)}: ${error.message}`);
+  return Object.assign(
+    new Error(`Failed to run ${commandLabel(command, args)}: ${error.message}`),
+    {
+      ...(maybeCode ? { code: maybeCode } : {}),
+    },
+  );
 }
 
 const WINDOWS_COMMAND_NOT_FOUND_PATTERNS = [

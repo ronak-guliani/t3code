@@ -29,11 +29,48 @@ it.effect("failed installation cleans staging and exposes only a safe failure me
       }),
       Effect.flip,
     );
+
     expect(error.message).toBe(
       "Installing expo-device-hub failed while running npm install (exit code 1).",
     );
     expect(error.cause).toBe(result);
     expect(yield* isDeviceHubInstalled(baseDir)).toBe(false);
     expect(yield* fs.readDirectory(path.join(baseDir, "tools", "expo-device-hub"))).toEqual([]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("falls back to pnpm when npm cannot be spawned", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-device-install-" });
+    const commands: string[] = [];
+    const error = yield* ensureDeviceHub(baseDir).pipe(
+      Effect.provideService(ProcessRunner.ProcessRunner, {
+        run: ({ command }) => {
+          commands.push(command);
+          return command === "npm"
+            ? Effect.fail(
+                new ProcessRunner.ProcessSpawnError({
+                  command,
+                  argumentCount: 0,
+                  cause: Object.assign(new Error("Command not found: npm"), { code: "ENOENT" }),
+                }),
+              )
+            : Effect.succeed({
+                code: ChildProcessSpawner.ExitCode(0),
+                stdout: "",
+                stderr: "",
+                timedOut: false,
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                stdoutInvalidUtf8: false,
+                stderrInvalidUtf8: false,
+              });
+        },
+      }),
+      Effect.flip,
+    );
+    expect(commands).toEqual(["npm", "pnpm"]);
+    expect(error.message).toContain("verifying the installed entry point");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

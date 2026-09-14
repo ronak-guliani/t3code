@@ -185,6 +185,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   const initialHosts = yield* Effect.forEach(hosts.values(), (host) => host.summary);
   const stateRef = yield* SynchronizedRef.make<ServiceState>({
     state: {
+      serverEpoch: crypto.randomUUID(),
       hosts: initialHosts,
       hostStatus: initialSettings.enabled ? "idle" : "disabled",
       hostStatuses: {},

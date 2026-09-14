@@ -40,6 +40,11 @@ const platformLabel = (platform: DevicePlatform) =>
 const deviceKey = (device: Pick<DeviceSummary, "hostId" | "id">) =>
   `${device.hostId}\u0000${device.id}`;
 
+export const shouldRecoverDeviceTarget = (
+  targetServerEpoch: string | undefined,
+  currentServerEpoch: string | undefined,
+) => targetServerEpoch === undefined || targetServerEpoch !== currentServerEpoch;
+
 /** Each surface owns one host/device; only the visible surface streams. */
 export function DevicePanel(props: {
   readonly mode: PreviewPanelMode;
@@ -100,6 +105,11 @@ export function DevicePanel(props: {
       setRecovering(false);
       return;
     }
+    if (!shouldRecoverDeviceTarget(target.serverEpoch, state.serverEpoch)) {
+      recoveryTargetRef.current = null;
+      setRecovering(false);
+      return;
+    }
     const recoveryKey = `${target.hostId}\u0000${target.deviceId}`;
     if (recoveryTargetRef.current === recoveryKey) return;
     recoveryTargetRef.current = recoveryKey;
@@ -143,6 +153,7 @@ export function DevicePanel(props: {
     open,
     props.surface.target,
     props.visible,
+    state.serverEpoch,
     threadId,
   ]);
 
@@ -170,6 +181,7 @@ export function DevicePanel(props: {
           deviceId: result.value.deviceId,
           platform: device.platform,
           name: device.name,
+          ...(state.serverEpoch ? { serverEpoch: state.serverEpoch } : {}),
         });
     } finally {
       setPendingDevice(null);

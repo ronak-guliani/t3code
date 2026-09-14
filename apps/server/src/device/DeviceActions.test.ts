@@ -179,7 +179,22 @@ describe("runDeviceAction", () => {
           payload: "hi",
         }),
       );
+
       expect(error.message).toContain("not supported on android");
+      expect(calls).toEqual([]);
+    }),
+  );
+
+  it.effect("rejects Android location clearing instead of reporting a no-op success", () =>
+    Effect.gen(function* () {
+      const { ready, calls } = makeReady();
+      const error = yield* Effect.flip(
+        runDeviceAction(ready, "android", {
+          type: "clearLocation",
+          deviceId: "emulator-5554",
+        }),
+      );
+      expect(error._tag).toBe("DeviceActionUnavailableError");
       expect(calls).toEqual([]);
     }),
   );

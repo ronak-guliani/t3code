@@ -18,7 +18,6 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
@@ -144,8 +143,7 @@ const installTool = Effect.fn("DeviceToolchain.installTool")(function* (
       .pipe(
         Effect.catchTags({
           ProcessSpawnError: (error) =>
-            error.cause instanceof PlatformError.PlatformError &&
-            error.cause.reason._tag === "NotFound"
+            error.cause instanceof Error && (error.cause as NodeJS.ErrnoException).code === "ENOENT"
               ? runner.run({
                   command: "pnpm",
                   args: ["--package=npm@11", "dlx", "npm", ...installArgs],

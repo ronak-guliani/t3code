@@ -106,6 +106,7 @@ export const deviceEnvironment = {
 };
 
 const EMPTY_DEVICE_STATE: DeviceServiceState = {
+  serverEpoch: "",
   hosts: [],
   hostStatus: "disabled",
   hostStatuses: {},

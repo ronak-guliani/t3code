@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { subscribeDeviceForeground } from "./deviceHubApi";
+import { fetchDeviceAxTree, subscribeDeviceForeground } from "./deviceHubApi";
 
 describe("foreground app events", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("clears the last app when it exits and ignores malformed events", () => {
+  it("clears the last app when it exits and ignores malformed events", async () => {
     let source: FakeEventSource;
     class FakeEventSource {
       onmessage: ((event: { data: string }) => void) | null = null;
-      addEventListener(_type: string, listener: (event: { data: string }) => void) {
-        this.onmessage = listener;
+      addEventListener(type: string, listener: (event: { data: string }) => void) {
+        if (type === "message") this.onmessage = listener;
       }
       close = vi.fn();
       constructor() {
@@ -26,6 +26,7 @@ describe("foreground app events", () => {
       },
       onChange,
     );
+    await vi.waitFor(() => expect(source!.onmessage).not.toBeNull());
     const emit = (data: unknown) => source.onmessage?.({ data: JSON.stringify(data) });
     emit({ bundleId: "com.example.app", pid: 123 });
     emit({ bundleId: null });
@@ -40,5 +41,31 @@ describe("foreground app events", () => {
     ]);
     stop();
     expect(source!.close).toHaveBeenCalledOnce();
+  });
+
+  it("mints a fresh ticket for each bearer-authenticated read", async () => {
+    const issueTicket = vi.fn().mockResolvedValueOnce("ticket-1").mockResolvedValueOnce("ticket-2");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, json: async () => [] } satisfies Partial<Response>);
+    vi.stubGlobal("fetch", fetchMock);
+    const target = {
+      platform: "ios" as const,
+      deviceId: "test",
+      access: {
+        httpBase: "http://test",
+        wsBase: "ws://test",
+        query: { hostId: "local" },
+        credentials: false,
+        issueTicket,
+      },
+    };
+    await fetchDeviceAxTree(target);
+    await fetchDeviceAxTree(target);
+    expect(issueTicket).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      "http://test/vendor/serve-sim/helper/test/ax?hostId=local&wsTicket=ticket-1",
+      "http://test/vendor/serve-sim/helper/test/ax?hostId=local&wsTicket=ticket-2",
+    ]);
   });
 });

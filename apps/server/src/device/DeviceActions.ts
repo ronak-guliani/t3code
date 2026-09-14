@@ -413,9 +413,11 @@ const runAndroid = Effect.fn("DeviceActions.runAndroid")(function* (
       );
       return;
     case "clearLocation":
-      // The emulator has no "clear"; leaving the fix in place is the closest
-      // behavior, so this is a no-op that still refreshes the reading.
-      return;
+      return yield* new DeviceActionUnavailableError({
+        operation: input.type,
+        platform: "android",
+        reason: "unsupported",
+      });
     case "setPermission": {
       const permissions = ANDROID_PERMISSIONS[input.permission];
       if (!permissions) {

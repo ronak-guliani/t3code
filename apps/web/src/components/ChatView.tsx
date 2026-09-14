@@ -147,6 +147,7 @@ import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { useThreadPreviewState } from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
+import { useDeviceState } from "~/state/device";
 import { useAtomCommand } from "~/state/use-atom-command";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
@@ -1942,6 +1943,33 @@ function ChatViewBody(
     );
   }, [activeThreadKey]);
   const previewState = useThreadPreviewState(activeThreadRef);
+  const { state: deviceState } = useDeviceState(environmentId);
+  const reconciledDeviceSessionsRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (!activeThreadRef) return;
+    const sessions = deviceState.sessions.filter(
+      (session) => session.threadId === activeThreadRef.threadId,
+    );
+    const currentKeys = new Set(
+      sessions.map((session) => `${session.hostId}\u0000${session.deviceId}`),
+    );
+    for (const session of sessions) {
+      const key = `${session.hostId}\u0000${session.deviceId}`;
+      if (reconciledDeviceSessionsRef.current.has(key)) continue;
+      const device = deviceState.devices.find(
+        (candidate) => candidate.hostId === session.hostId && candidate.id === session.deviceId,
+      );
+      if (!device) continue;
+      useRightPanelStore.getState().openDevice(activeThreadRef, {
+        hostId: session.hostId,
+        deviceId: session.deviceId,
+        platform: session.platform,
+        name: device.name,
+        ...(deviceState.serverEpoch ? { serverEpoch: deviceState.serverEpoch } : {}),
+      });
+    }
+    reconciledDeviceSessionsRef.current = currentKeys;
+  }, [activeThreadRef, deviceState.devices, deviceState.serverEpoch, deviceState.sessions]);
   const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
     activeThreadRef ? selectThreadPreviewMiniPlayer(state.byThreadKey, activeThreadRef) : null,
   );

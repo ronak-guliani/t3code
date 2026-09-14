@@ -52,8 +52,15 @@ const hubUrl = (target: Target, path: string, params?: Record<string, string>) =
   return withDeviceHubQuery(`${vendorBase(target)}${path}${search}`, target.access);
 };
 
+const authorizeHubUrl = async (target: Target, url: string): Promise<string> => {
+  if (!target.access.issueTicket) return url;
+  const ticket = await target.access.issueTicket();
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}wsTicket=${encodeURIComponent(ticket)}`;
+};
+
 const fetchJson = async (target: Target, url: string, signal?: AbortSignal): Promise<unknown> => {
-  const response = await fetch(url, {
+  const response = await fetch(await authorizeHubUrl(target, url), {
     cache: "no-store",
     credentials: target.access.credentials ? "include" : "same-origin",
     ...(signal ? { signal } : {}),
@@ -172,15 +179,36 @@ const openEventSource = (
   url: string,
   onMessage: (data: unknown) => void,
 ): (() => void) => {
-  const source = new EventSource(url, { withCredentials: target.access.credentials });
-  source.addEventListener("message", (event) => {
+  let closed = false;
+  let source: EventSource | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  const connect = async () => {
     try {
-      onMessage(JSON.parse(String(event.data)));
+      const authorizedUrl = await authorizeHubUrl(target, url);
+      if (closed) return;
+      source = new EventSource(authorizedUrl, { withCredentials: target.access.credentials });
+      source.addEventListener("message", (event) => {
+        try {
+          onMessage(JSON.parse(String(event.data)));
+        } catch {
+          // Keep-alive comments and malformed frames carry nothing to render.
+        }
+      });
+      source.addEventListener("error", () => {
+        source?.close();
+        source = null;
+        if (!closed) retryTimer = setTimeout(() => void connect(), 1_000);
+      });
     } catch {
-      // Keep-alive comments and malformed frames carry nothing to render.
+      if (!closed) retryTimer = setTimeout(() => void connect(), 1_000);
     }
-  });
-  return () => source.close();
+  };
+  void connect();
+  return () => {
+    closed = true;
+    if (retryTimer) clearTimeout(retryTimer);
+    source?.close();
+  };
 };
 
 /** iOS only: the frontmost app, pushed by serve-sim whenever it changes. */

@@ -86,7 +86,7 @@ const filterAdvertisedTools = (
   response: HttpServerResponse.HttpServerResponse,
   capabilities: ReadonlySet<McpInvocationContext.McpCapability>,
 ): HttpServerResponse.HttpServerResponse => {
-  if (capabilities.has("device") || response.body._tag !== "Uint8Array") return response;
+  if (response.body._tag !== "Uint8Array") return response;
   try {
     const payload = JSON.parse(new TextDecoder().decode(response.body.body)) as {
       readonly result?: { readonly tools?: ReadonlyArray<{ readonly name?: string }> };
@@ -97,7 +97,11 @@ const filterAdvertisedTools = (
         ...payload,
         result: {
           ...payload.result,
-          tools: payload.result.tools.filter((tool) => !tool.name?.startsWith("device_")),
+          tools: payload.result.tools.filter(
+            (tool) =>
+              (capabilities.has("device") || !tool.name?.startsWith("device_")) &&
+              (capabilities.has("preview") || !tool.name?.startsWith("preview_")),
+          ),
         },
       },
       { status: response.status, headers: response.headers },
