@@ -112,6 +112,7 @@ describe("CheckpointDiffQueryLive", () => {
             Effect.die("CheckpointDiffQuery should not request the full orchestration snapshot"),
           getShellSnapshot: () =>
             Effect.die("CheckpointDiffQuery should not request the orchestration shell snapshot"),
+          getActiveChatArchiveEntries: () => Effect.die("unused"),
           getSnapshotSequence: () => Effect.die("unused"),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
@@ -194,6 +195,7 @@ describe("CheckpointDiffQueryLive", () => {
         Layer.succeed(ProjectionSnapshotQuery, {
           getSnapshot: () => Effect.die("unused"),
           getShellSnapshot: () => Effect.die("unused"),
+          getActiveChatArchiveEntries: () => Effect.die("unused"),
           getSnapshotSequence: () => Effect.die("unused"),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
@@ -260,6 +262,7 @@ describe("CheckpointDiffQueryLive", () => {
         Layer.succeed(ProjectionSnapshotQuery, {
           getSnapshot: () => Effect.die("unused"),
           getShellSnapshot: () => Effect.die("unused"),
+          getActiveChatArchiveEntries: () => Effect.die("unused"),
           getSnapshotSequence: () => Effect.die("unused"),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
@@ -316,6 +319,7 @@ describe("CheckpointDiffQueryLive", () => {
         Layer.succeed(ProjectionSnapshotQuery, {
           getSnapshot: () => Effect.die("unused"),
           getShellSnapshot: () => Effect.die("unused"),
+          getActiveChatArchiveEntries: () => Effect.die("unused"),
           getSnapshotSequence: () => Effect.die("unused"),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
@@ -424,6 +428,7 @@ describe("CheckpointDiffQueryLive", () => {
         Layer.succeed(ProjectionSnapshotQuery, {
           getSnapshot: () => Effect.die("unused"),
           getShellSnapshot: () => Effect.die("unused"),
+          getActiveChatArchiveEntries: () => Effect.die("unused"),
           getSnapshotSequence: () => Effect.die("unused"),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
@@ -483,6 +488,7 @@ describe("CheckpointDiffQueryLive", () => {
             Effect.die("CheckpointDiffQuery should not request the full orchestration snapshot"),
           getShellSnapshot: () =>
             Effect.die("CheckpointDiffQuery should not request the orchestration shell snapshot"),
+          getActiveChatArchiveEntries: () => Effect.die("unused"),
           getSnapshotSequence: () => Effect.die("unused"),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),

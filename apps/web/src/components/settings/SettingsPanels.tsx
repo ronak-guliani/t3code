@@ -999,6 +999,8 @@ export function GeneralSettingsPanel() {
   >({});
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isPickingChatExportDirectory, setIsPickingChatExportDirectory] = useState(false);
+  const [isExportingActiveChats, setIsExportingActiveChats] = useState(false);
+  const [isImportingChatArchive, setIsImportingChatArchive] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [newBrowserProfileName, setNewBrowserProfileName] = useState("");
   const [browserProfileNames, setBrowserProfileNames] = useState<Record<string, string>>({});
@@ -1254,6 +1256,62 @@ export function GeneralSettingsPanel() {
       setIsPickingChatExportDirectory(false);
     }
   }, [isPickingChatExportDirectory, settings.chatExportDirectory, updateSettings]);
+
+  const exportActiveChats = useCallback(async () => {
+    if (isExportingActiveChats) return;
+    setIsExportingActiveChats(true);
+    try {
+      const result = await ensureLocalApi().server.exportActiveChats();
+      toastManager.add(
+        stackedThreadToast({
+          type: "success",
+          title: `Exported ${result.threadCount} active chat${result.threadCount === 1 ? "" : "s"}`,
+          description: result.path,
+        }),
+      );
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not export active chats",
+          description:
+            error instanceof Error ? error.message : "An error occurred while exporting chats.",
+        }),
+      );
+    } finally {
+      setIsExportingActiveChats(false);
+    }
+  }, [isExportingActiveChats]);
+
+  const importChatArchive = useCallback(async () => {
+    if (isImportingChatArchive) return;
+    setIsImportingChatArchive(true);
+    try {
+      const path = await ensureLocalApi().dialogs.pickFolder(
+        settings.chatExportDirectory ? { initialPath: settings.chatExportDirectory } : undefined,
+      );
+      if (!path) return;
+      const result = await ensureLocalApi().server.importChatArchive({ path });
+      toastManager.add(
+        stackedThreadToast({
+          type: "success",
+          title: `Imported ${result.threadCount} chat${result.threadCount === 1 ? "" : "s"}`,
+          description: "The chats are available in a new reference-only sidebar folder.",
+        }),
+      );
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not import chat archive",
+          description:
+            error instanceof Error ? error.message : "An error occurred while importing chats.",
+        }),
+      );
+    } finally {
+      setIsImportingChatArchive(false);
+    }
+  }, [isImportingChatArchive, settings.chatExportDirectory]);
 
   const updateChatExportDetail = useCallback(
     (patch: Partial<typeof settings.chatExportDetail>) => {
@@ -2938,7 +2996,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Chat export directory"
-          description="Markdown chat exports are saved here before opening in your preferred editor."
+          description="Markdown exports and bulk chat archive folders are saved here."
           resetAction={
             settings.chatExportDirectory !== DEFAULT_UNIFIED_SETTINGS.chatExportDirectory ? (
               <SettingResetButton
@@ -2974,6 +3032,47 @@ export function GeneralSettingsPanel() {
                   <FolderOpenIcon className="size-3.5" />
                 )}
                 Choose
+              </Button>
+            </div>
+          }
+        />
+
+        <SettingsRow
+          title="Transfer active chats"
+          description="Export every non-archived chat, or import a T3 chat archive as a reference-only sidebar folder."
+          control={
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void exportActiveChats()}
+                disabled={
+                  isExportingActiveChats ||
+                  isImportingChatArchive ||
+                  settings.chatExportDirectory.trim().length === 0
+                }
+              >
+                {isExportingActiveChats ? (
+                  <LoaderIcon className="size-3.5 animate-spin" />
+                ) : (
+                  <ArchiveIcon className="size-3.5" />
+                )}
+                Export active chats
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void importChatArchive()}
+                disabled={isImportingChatArchive || isExportingActiveChats}
+              >
+                {isImportingChatArchive ? (
+                  <LoaderIcon className="size-3.5 animate-spin" />
+                ) : (
+                  <FolderOpenIcon className="size-3.5" />
+                )}
+                Import chat folder
               </Button>
             </div>
           }

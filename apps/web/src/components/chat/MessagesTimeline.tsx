@@ -135,7 +135,7 @@ interface TimelineRowSharedState {
   activeThreadEnvironmentId: EnvironmentId;
   activeThreadId: ThreadId;
   onRevertUserMessage: (messageId: MessageId) => void;
-  onForkAssistantMessage: (messageId: MessageId) => void;
+  onForkAssistantMessage?: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string, scope?: TurnDiffScope) => void;
   reviewOutputMessageIds: ReadonlySet<string>;
@@ -144,7 +144,6 @@ interface TimelineRowSharedState {
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
-const NOOP_FORK_ASSISTANT_MESSAGE = () => undefined;
 const EMPTY_RESPONSE_META_BY_TURN_ID = new Map<TurnId, AssistantResponseMeta>();
 
 // ---------------------------------------------------------------------------
@@ -264,7 +263,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   loadingOlder = false,
   onLoadOlder,
 }: MessagesTimelineProps) {
-  const handleForkAssistantMessage = onForkAssistantMessage ?? NOOP_FORK_ASSISTANT_MESSAGE;
   const workGroupExpansion = useMemo(() => new Map<string, boolean>(), [routeThreadKey]);
   const rawRows = useMemo(
     () =>
@@ -368,7 +366,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeChatFindRowId,
       highlightedMessageId,
       onRevertUserMessage,
-      onForkAssistantMessage: handleForkAssistantMessage,
+      ...(onForkAssistantMessage ? { onForkAssistantMessage } : {}),
       onImageExpand,
       onOpenTurnDiff,
       reviewOutputMessageIds,
@@ -393,7 +391,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeChatFindRowId,
       highlightedMessageId,
       onRevertUserMessage,
-      handleForkAssistantMessage,
+      onForkAssistantMessage,
       onImageExpand,
       onOpenTurnDiff,
       reviewOutputMessageIds,
@@ -719,7 +717,8 @@ function TimelineRowContent(props: { row: TimelineRow }) {
                       />
                     </div>
                   ) : null}
-                  {row.showAssistantTerminalMetadata &&
+                  {ctx.onForkAssistantMessage &&
+                  row.showAssistantTerminalMetadata &&
                   !row.message.streaming &&
                   !assistantTurnStillInProgress ? (
                     <div className="flex items-center opacity-0 transition-opacity duration-200 group-hover/assistant:opacity-100">
@@ -730,7 +729,7 @@ function TimelineRowContent(props: { row: TimelineRow }) {
                         className="border-border/50 bg-background/35 text-muted-foreground/45 shadow-none hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70"
                         title="Fork chat"
                         aria-label="Fork chat from this response"
-                        onClick={() => ctx.onForkAssistantMessage(row.message.id)}
+                        onClick={() => ctx.onForkAssistantMessage?.(row.message.id)}
                       >
                         <GitForkIcon className="size-3" />
                       </Button>

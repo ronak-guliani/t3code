@@ -226,7 +226,11 @@ export const ProjectScript = Schema.Struct({
 });
 export type ProjectScript = typeof ProjectScript.Type;
 
+export const OrchestrationProjectKind = Schema.Literals(["workspace", "chat-import"]);
+export type OrchestrationProjectKind = typeof OrchestrationProjectKind.Type;
+
 export const OrchestrationProject = Schema.Struct({
+  kind: Schema.optionalKey(OrchestrationProjectKind),
   autoPull: Schema.optional(Schema.Boolean),
   faviconPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   defaultThreadEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
@@ -672,6 +676,7 @@ export const OrchestrationReadModel = Schema.Struct({
 export type OrchestrationReadModel = typeof OrchestrationReadModel.Type;
 
 export const OrchestrationProjectShell = Schema.Struct({
+  kind: Schema.optionalKey(OrchestrationProjectKind),
   autoPull: Schema.optional(Schema.Boolean),
   faviconPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   defaultThreadEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
@@ -941,6 +946,37 @@ const ThreadForkCommand = Schema.Struct({
   sourceThreadId: ThreadId,
   threadId: ThreadId,
   targetMessageId: MessageId,
+  createdAt: IsoDateTime,
+});
+
+const ChatArchiveImportMessage = Schema.Struct({
+  messageId: MessageId,
+  role: OrchestrationMessageRole,
+  text: Schema.String,
+  turnId: Schema.NullOr(TurnId),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+
+const ChatArchiveImportThread = Schema.Struct({
+  threadId: ThreadId,
+  parentThreadId: Schema.NullOr(ThreadId),
+  title: TrimmedNonEmptyString,
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  messages: Schema.Array(ChatArchiveImportMessage),
+});
+
+const ChatArchiveImportCommand = Schema.Struct({
+  type: Schema.Literal("chat-archive.import"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  title: TrimmedNonEmptyString,
+  workspaceRoot: TrimmedNonEmptyString,
+  threads: Schema.Array(ChatArchiveImportThread),
   createdAt: IsoDateTime,
 });
 
@@ -1446,6 +1482,7 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  ChatArchiveImportCommand,
   ThreadSessionSetCommand,
   ThreadDispatchReplaceCommand,
   ThreadMessageAssistantDeltaCommand,
@@ -1525,6 +1562,7 @@ export const OrchestrationActorKind = Schema.Literals(["client", "server", "prov
 
 export const ProjectCreatedPayload = Schema.Struct({
   projectId: ProjectId,
+  kind: Schema.optionalKey(OrchestrationProjectKind),
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),

@@ -163,9 +163,14 @@ import {
 import {
   ServerConfigStreamEvent,
   ServerConfig,
+  ServerChatArchiveError,
+  ServerExportActiveChatsInput,
+  ServerExportActiveChatsResult,
   ServerExportThreadMarkdownError,
   ServerExportThreadMarkdownInput,
   ServerExportThreadMarkdownResult,
+  ServerImportChatArchiveInput,
+  ServerImportChatArchiveResult,
   ServerLifecycleStreamEvent,
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryInput,
@@ -377,6 +382,8 @@ export const WS_METHODS = {
   serverUpdateProvider: "server.updateProvider",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
+  serverExportActiveChats: "server.exportActiveChats",
+  serverImportChatArchive: "server.importChatArchive",
   serverExportThreadMarkdown: "server.exportThreadMarkdown",
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
@@ -530,6 +537,18 @@ export const WsServerExportThreadMarkdownRpc = Rpc.make(WS_METHODS.serverExportT
   payload: ServerExportThreadMarkdownInput,
   success: ServerExportThreadMarkdownResult,
   error: ServerExportThreadMarkdownError,
+});
+
+export const WsServerExportActiveChatsRpc = Rpc.make(WS_METHODS.serverExportActiveChats, {
+  payload: ServerExportActiveChatsInput,
+  success: ServerExportActiveChatsResult,
+  error: ServerChatArchiveError,
+});
+
+export const WsServerImportChatArchiveRpc = Rpc.make(WS_METHODS.serverImportChatArchive, {
+  payload: ServerImportChatArchiveInput,
+  success: ServerImportChatArchiveResult,
+  error: ServerChatArchiveError,
 });
 
 export const WsProjectsSearchEntriesRpc = Rpc.make(WS_METHODS.projectsSearchEntries, {
@@ -1294,6 +1313,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpdateSettingsRpc,
   WsSidebarGetStateRpc,
   WsSidebarUpdateStateRpc,
+  WsServerExportActiveChatsRpc,
+  WsServerImportChatArchiveRpc,
   WsServerExportThreadMarkdownRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsListEntriesRpc,

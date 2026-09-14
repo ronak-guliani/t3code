@@ -49,9 +49,12 @@ import {
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
   MessageId,
+  ProjectId,
+  ServerChatArchiveError,
   ServerProviderListCommandsError,
   ServerExportThreadMarkdownError,
   ThreadId,
+  TurnId,
   type TerminalEvent,
   type TerminalError,
   type TerminalAttachStreamEvent,
@@ -130,6 +133,12 @@ import {
 } from "./orchestration/shellStream.ts";
 import { isThreadDetailEvent } from "./orchestration/threadDetailEvents.ts";
 import { collectActiveThreadSubtree } from "./orchestration/threadHierarchy.ts";
+import {
+  createChatArchiveManifest,
+  importedMessageText,
+  readChatArchive,
+  writeChatArchive,
+} from "./orchestration/chatArchive.ts";
 import {
   createThreadMarkdownExportFilename,
   formatThreadMarkdownExport,
@@ -1527,6 +1536,138 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.sidebarUpdateState, sidebarState.update(input), {
             "rpc.aggregate": "sidebar",
           }),
+        [WS_METHODS.serverExportActiveChats]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverExportActiveChats,
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerChatArchiveError({
+                      message: cause.message,
+                      cause,
+                    }),
+                ),
+              );
+              const exportDirectory = settings.chatExportDirectory.trim();
+              if (exportDirectory.length === 0) {
+                return yield* new ServerChatArchiveError({
+                  message: "Set a chat export directory in Settings before exporting.",
+                });
+              }
+              const threads = yield* projectionSnapshotQuery.getActiveChatArchiveEntries().pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerChatArchiveError({
+                      message: "Unable to load active chats for export.",
+                      cause,
+                    }),
+                ),
+              );
+              if (threads.length === 0) {
+                return yield* new ServerChatArchiveError({
+                  message: "There are no active chats to export.",
+                });
+              }
+              const manifest = createChatArchiveManifest({
+                threads,
+                exportedAt: new Date(),
+              });
+              const path = yield* Effect.tryPromise({
+                try: () => writeChatArchive(exportDirectory, manifest),
+                catch: (cause) =>
+                  new ServerChatArchiveError({
+                    message: "Unable to write the chat archive.",
+                    cause,
+                  }),
+              });
+              return { path, threadCount: threads.length };
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverImportChatArchive]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverImportChatArchive,
+            Effect.gen(function* () {
+              const manifest = yield* Effect.tryPromise({
+                try: () => readChatArchive(input.path),
+                catch: (cause) =>
+                  new ServerChatArchiveError({
+                    message:
+                      cause instanceof Error ? cause.message : "Unable to read the chat archive.",
+                    cause,
+                  }),
+              });
+              const sourceProjectTitles = new Set(
+                manifest.threads.map((thread) => thread.sourceProjectTitle),
+              );
+              const projectId = ProjectId.make(crypto.randomUUID());
+              const threadIdBySourceId = new Map(
+                manifest.threads.map(
+                  (thread) => [thread.sourceThreadId, ThreadId.make(crypto.randomUUID())] as const,
+                ),
+              );
+              const threads = manifest.threads.map((thread) => {
+                const turnIdBySourceId = new Map<string, TurnId>();
+                return {
+                  threadId: threadIdBySourceId.get(thread.sourceThreadId)!,
+                  parentThreadId:
+                    thread.sourceParentThreadId === null
+                      ? null
+                      : (threadIdBySourceId.get(thread.sourceParentThreadId) ?? null),
+                  title:
+                    sourceProjectTitles.size > 1
+                      ? `${thread.sourceProjectTitle}: ${thread.title}`
+                      : thread.title,
+                  modelSelection: thread.modelSelection,
+                  runtimeMode: thread.runtimeMode,
+                  interactionMode: thread.interactionMode,
+                  createdAt: thread.createdAt,
+                  updatedAt: thread.updatedAt,
+                  messages: thread.messages.map((message) => {
+                    const turnId =
+                      message.sourceTurnId === null
+                        ? null
+                        : (turnIdBySourceId.get(message.sourceTurnId) ??
+                          (() => {
+                            const id = TurnId.make(crypto.randomUUID());
+                            turnIdBySourceId.set(message.sourceTurnId!, id);
+                            return id;
+                          })());
+                    return {
+                      messageId: MessageId.make(crypto.randomUUID()),
+                      role: message.role,
+                      text: importedMessageText(message),
+                      turnId,
+                      createdAt: message.createdAt,
+                      updatedAt: message.updatedAt,
+                    };
+                  }),
+                };
+              });
+              yield* orchestrationEngine
+                .dispatch({
+                  type: "chat-archive.import",
+                  commandId: CommandId.make(crypto.randomUUID()),
+                  projectId,
+                  title: manifest.title,
+                  workspaceRoot: NodePath.resolve(input.path),
+                  threads,
+                  createdAt: new Date().toISOString(),
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ServerChatArchiveError({
+                        message: "Unable to import the chat archive.",
+                        cause,
+                      }),
+                  ),
+                );
+              return { projectId, threadCount: threads.length };
+            }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.workflowRun]: (input) =>
           observeRpcEffect(WS_METHODS.workflowRun, runWorkflow(input), {
             "rpc.aggregate": "workflow",

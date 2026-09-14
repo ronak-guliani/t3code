@@ -1226,6 +1226,7 @@ describe("MessagesTimeline", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
+        onForkAssistantMessage={() => {}}
         timelineEntries={[
           {
             id: "entry-1",
@@ -1261,6 +1262,32 @@ describe("MessagesTimeline", () => {
 
     expect(markup.match(/aria-label="Fork chat from this response"/g)).toHaveLength(1);
     expect(markup.indexOf("Fork chat")).toBeGreaterThan(markup.indexOf("All set."));
+  });
+
+  it("hides the fork action when the caller does not provide fork capability", async () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "message",
+            createdAt: "2026-04-22T19:03:33.000Z",
+            message: {
+              id: MessageId.make("message-assistant-1"),
+              role: "assistant",
+              text: "Reference-only response.",
+              createdAt: "2026-04-22T19:03:33.000Z",
+              completedAt: "2026-04-22T19:03:40.000Z",
+              turnId: TurnId.make("turn-1"),
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).not.toContain('aria-label="Fork chat from this response"');
   });
 
   it("renders turn-scoped changed files by default", async () => {

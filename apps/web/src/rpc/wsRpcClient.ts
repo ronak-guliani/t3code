@@ -191,6 +191,8 @@ export interface WsRpcClient {
     readonly updateSettings: (
       patch: ServerSettingsPatch,
     ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverUpdateSettings>>;
+    readonly exportActiveChats: RpcUnaryNoArgMethod<typeof WS_METHODS.serverExportActiveChats>;
+    readonly importChatArchive: RpcUnaryMethod<typeof WS_METHODS.serverImportChatArchive>;
     readonly exportThreadMarkdown: RpcUnaryMethod<typeof WS_METHODS.serverExportThreadMarkdown>;
     readonly subscribeConfig: RpcStreamMethod<typeof WS_METHODS.subscribeServerConfig>;
     readonly subscribeLifecycle: RpcStreamMethod<typeof WS_METHODS.subscribeServerLifecycle>;
@@ -441,6 +443,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       getSettings: () => transport.request((client) => client[WS_METHODS.serverGetSettings]({})),
       updateSettings: (patch) =>
         transport.request((client) => client[WS_METHODS.serverUpdateSettings]({ patch })),
+      exportActiveChats: () =>
+        transport.request((client) => client[WS_METHODS.serverExportActiveChats]({})),
+      importChatArchive: (input) =>
+        transport.request((client) => client[WS_METHODS.serverImportChatArchive](input)),
       exportThreadMarkdown: (input) =>
         transport.request((client) => client[WS_METHODS.serverExportThreadMarkdown](input)),
       subscribeConfig: (listener, options) =>

@@ -55,6 +55,9 @@ function useNewThreadState() {
           candidate.id === projectRef.projectId &&
           candidate.environmentId === projectRef.environmentId,
       );
+      if (project?.kind === "chat-import") {
+        return Promise.resolve();
+      }
       const logicalProjectKey = project
         ? deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings)
         : scopedProjectKey(projectRef);
@@ -184,7 +187,7 @@ export function useHandleNewThread() {
   const projects = useStore(useShallow((store) => selectProjectsAcrossEnvironments(store)));
   const orderedProjects = useMemo(() => {
     return orderItemsByPreferredIds({
-      items: projects,
+      items: projects.filter((project) => project.kind !== "chat-import"),
       preferredIds: projectOrder,
       getId: getProjectOrderKey,
     });
