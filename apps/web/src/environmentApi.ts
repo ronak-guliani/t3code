@@ -91,6 +91,7 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       run: rpcClient.workflow.run,
     },
     server: {
+      refreshProviders: rpcClient.server.refreshProviders,
       listProviderCommands: rpcClient.server.listProviderCommands,
       prewarmProviderSession: rpcClient.server.prewarmProviderSession,
       exportThreadMarkdown: rpcClient.server.exportThreadMarkdown,

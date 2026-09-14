@@ -31,7 +31,6 @@ const OPENCODE_PRESENTATION = {
 } as const;
 const MINIMUM_OPENCODE_VERSION = "1.14.19";
 const OPENCODE_VERSION_PROBE_TIMEOUT = "4 seconds";
-const OPENCODE_SKILL_PROBE_TIMEOUT = "20 seconds";
 
 class OpenCodeProbeError extends Data.TaggedError("OpenCodeProbeError")<{
   readonly cause: unknown;
@@ -469,31 +468,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     return fallback(Cause.squash(inventoryExit.cause), version);
   }
 
-  const inventorySkills = inventoryExit.value.skills ?? [];
-  const skills =
-    inventorySkills.length > 0 || isExternalServer
-      ? openCodeSkillsToServerProviderSkills(inventorySkills)
-      : yield* openCodeRuntime
-          .loadOpenCodeSkillsForCwd({
-            binaryPath: openCodeSettings.binaryPath,
-            cwd,
-            serverUrl: openCodeSettings.serverUrl,
-            ...(openCodeSettings.serverPassword
-              ? { serverPassword: openCodeSettings.serverPassword }
-              : {}),
-            environment,
-          })
-          .pipe(
-            Effect.timeout(OPENCODE_SKILL_PROBE_TIMEOUT),
-            Effect.tapError((cause) =>
-              Effect.logWarning("OpenCode local skill discovery failed", {
-                cwd,
-                cause: openCodeRuntimeErrorDetail(cause),
-              }),
-            ),
-            Effect.orElseSucceed(() => []),
-            Effect.map(openCodeSkillsToServerProviderSkills),
-          );
+  const skills = openCodeSkillsToServerProviderSkills(inventoryExit.value.skills ?? []);
 
   const models = providerModelsFromSettings(
     flattenOpenCodeModels(inventoryExit.value),

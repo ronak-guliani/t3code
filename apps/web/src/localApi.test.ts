@@ -401,6 +401,23 @@ describe("wsApi", () => {
     expect(rpcClientMock.server.listProviderCommands).toHaveBeenCalledWith(input);
   });
 
+  it("forwards provider refresh through the environment API", async () => {
+    const nextProviders: ReadonlyArray<ServerProvider> = [];
+    const input = {
+      instanceId: ProviderInstanceId.make("opencode"),
+      cwd: "/repo",
+    };
+    rpcClientMock.server.refreshProviders.mockResolvedValue({ providers: nextProviders });
+    const { createEnvironmentApi } = await import("./environmentApi");
+
+    const api = createEnvironmentApi(rpcClientMock as never);
+
+    await expect(api.server.refreshProviders(input)).resolves.toEqual({
+      providers: nextProviders,
+    });
+    expect(rpcClientMock.server.refreshProviders).toHaveBeenCalledWith(input);
+  });
+
   it("forwards terminal and shell stream events", async () => {
     const { createEnvironmentApi } = await import("./environmentApi");
 

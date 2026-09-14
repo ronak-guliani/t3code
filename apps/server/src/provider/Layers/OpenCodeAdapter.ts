@@ -1158,6 +1158,9 @@ export function makeOpenCodeAdapter(
 
         case "session.status": {
           if (event.properties.status.type === "busy") {
+            if (!turnId) {
+              break;
+            }
             context.awaitingBusyAfterInterruption = false;
             updateProviderSession(context, {
               status: "running",

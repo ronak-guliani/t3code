@@ -38,6 +38,7 @@ import {
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
+import { readEnvironmentApi } from "~/environmentApi";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { readLocalApi } from "~/localApi";
 import {
@@ -744,7 +745,7 @@ export const ChatComposer = memo(
       if (selectedProvider !== "opencode" || !gitCwd || !selectedInstanceId) {
         return;
       }
-      const api = readLocalApi();
+      const api = readEnvironmentApi(environmentId);
       if (!api) {
         return;
       }
@@ -753,7 +754,7 @@ export const ChatComposer = memo(
         .catch((error) => {
           console.warn("Failed to refresh OpenCode workspace skills", error);
         });
-    }, [gitCwd, selectedInstanceId, selectedProvider]);
+    }, [environmentId, gitCwd, selectedInstanceId, selectedProvider]);
     const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
       () => selectedProviderEntry?.models ?? [],
       [selectedProviderEntry],

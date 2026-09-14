@@ -35,6 +35,7 @@ const runtimeMock = {
     inventoryError: null as Error | null,
     inventoryCwds: [] as string[],
     closeCalls: 0,
+    skillProbeCalls: 0,
     inventory: {
       providerList: { connected: [] as string[], all: [] as unknown[], default: {} },
       agents: [] as unknown[],
@@ -46,6 +47,7 @@ const runtimeMock = {
     this.state.inventoryError = null;
     this.state.inventoryCwds = [];
     this.state.closeCalls = 0;
+    this.state.skillProbeCalls = 0;
     this.state.inventory = {
       providerList: { connected: [], all: [] as unknown[], default: {} },
       agents: [] as unknown[],
@@ -98,7 +100,11 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         )
       : Effect.succeed(runtimeMock.state.inventory as OpenCodeInventory),
   loadOpenCodeSkills: () => Effect.succeed([]),
-  loadOpenCodeSkillsForCwd: () => Effect.succeed([]),
+  loadOpenCodeSkillsForCwd: () =>
+    Effect.sync(() => {
+      runtimeMock.state.skillProbeCalls += 1;
+      return [];
+    }),
   loadInventoryFromCli: (input) => {
     runtimeMock.state.inventoryCwds.push(input.cwd);
     return runtimeMock.state.inventoryError
@@ -213,6 +219,7 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
       yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
 
       assert.equal(runtimeMock.state.closeCalls, 0);
+      assert.equal(runtimeMock.state.skillProbeCalls, 0);
     }),
   );
 
