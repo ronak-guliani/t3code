@@ -118,13 +118,42 @@ function decodeHtmlEntities(value: string): string {
  * never rewritten.
  */
 export function toRenderablePullRequestMarkdown(body: string): string {
-  // Odd segments are fenced blocks (```...``` or ~~~...~~~, unterminated
-  // included) or inline code (`...`); even segments are prose to transform.
-  const segments = body.split(/(```+[\s\S]*?(?:```+|$)|~~~+[\s\S]*?(?:~~~+|$)|`[^`\n]*`)/g);
-  return segments
-    .map((segment, index) => (index % 2 === 1 ? segment : transformPullRequestMarkdown(segment)))
+  // Odd segments are fenced blocks (including unterminated blocks); even
+  // segments are prose, where inline code spans must remain untouched too.
+  return splitFencedCodeBlocks(body)
+    .map((segment, index) =>
+      index % 2 === 1
+        ? segment
+        : segment
+            .split(/(`[^`\n]*`)/g)
+            .map((inlineSegment, inlineIndex) =>
+              inlineIndex % 2 === 1 ? inlineSegment : transformPullRequestMarkdown(inlineSegment),
+            )
+            .join(""),
+    )
     .join("")
     .trim();
+}
+
+function splitFencedCodeBlocks(body: string): string[] {
+  const segments: string[] = [];
+  const openingFence = /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)/gm;
+  let proseStart = 0;
+
+  for (const opening of body.matchAll(openingFence)) {
+    if (opening.index === undefined || opening.index < proseStart) continue;
+    const fence = opening[1]!;
+    const closingFence = new RegExp(`^ {0,3}${fence[0]}{${fence.length},}[ \\t]*(?:\\n|$)`, "gm");
+    closingFence.lastIndex = opening.index + opening[0].length;
+    const closing = closingFence.exec(body);
+    const fenceEnd = closing ? closingFence.lastIndex : body.length;
+
+    segments.push(body.slice(proseStart, opening.index), body.slice(opening.index, fenceEnd));
+    proseStart = fenceEnd;
+  }
+
+  segments.push(body.slice(proseStart));
+  return segments;
 }
 
 function transformPullRequestMarkdown(body: string): string {
@@ -159,7 +188,7 @@ function transformPullRequestMarkdown(body: string): string {
   // `<user@example.com>`) by converting them to explicit links before the
   // generic tag strip below would otherwise delete them entirely.
   text = text.replace(
-    /<(https?:\/\/[^<>\s]+|mailto:[^<>\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})>/g,
+    /<([A-Za-z][A-Za-z0-9+.-]{1,31}:[^<>\s]*|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})>/g,
     (_match, target: string) => {
       const href =
         target.includes("@") && !/^(https?:|mailto:)/i.test(target) ? `mailto:${target}` : target;
