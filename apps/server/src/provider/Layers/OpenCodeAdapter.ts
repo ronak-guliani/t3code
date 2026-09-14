@@ -184,6 +184,8 @@ interface OpenCodeSessionContext {
   readonly descendantSessionIds: Set<string>;
   readonly pendingPermissions: Map<string, PermissionRequest>;
   readonly pendingQuestions: Map<string, QuestionRequest>;
+  readonly resolvedRequestIds: Set<string>;
+  readonly autoRepliedRequestIds: Set<string>;
   readonly messageRoleById: Map<string, "user" | "assistant">;
   readonly partById: Map<string, Part>;
   readonly emittedTextByPartId: Map<string, string>;
@@ -1007,14 +1009,25 @@ export function makeOpenCodeAdapter(
         }
 
         case "permission.asked": {
-          if (context.session.runtimeMode === "full-access") {
-            yield* runOpenCodeSdk("permission.reply", () =>
-              context.client.permission.reply({
-                requestID: event.properties.id,
-                reply: "once",
-              }),
-            );
+          if (
+            context.resolvedRequestIds.has(event.properties.id) ||
+            context.pendingPermissions.has(event.properties.id)
+          ) {
             break;
+          }
+          if (context.session.runtimeMode === "full-access") {
+            context.resolvedRequestIds.add(event.properties.id);
+            context.autoRepliedRequestIds.add(event.properties.id);
+            const replyResult = yield* runOpenCodeSdk("permission.reply", () =>
+              context.client.permission.reply({ requestID: event.properties.id, reply: "once" }),
+            ).pipe(Effect.result);
+            if (replyResult._tag === "Success") {
+              break;
+            }
+            context.autoRepliedRequestIds.delete(event.properties.id);
+            yield* Effect.logWarning(
+              `OpenCode full-access auto-reply failed for request '${event.properties.id}'; surfacing the approval.`,
+            );
           }
           context.pendingPermissions.set(event.properties.id, event.properties);
           const requestType = mapPermissionToRequestType(event.properties.permission);
@@ -1040,6 +1053,10 @@ export function makeOpenCodeAdapter(
         }
 
         case "permission.replied": {
+          context.resolvedRequestIds.add(event.properties.requestID);
+          if (context.autoRepliedRequestIds.delete(event.properties.requestID)) {
+            break;
+          }
           if (
             payloadSessionId !== context.openCodeSessionId &&
             !context.pendingPermissions.has(event.properties.requestID)
@@ -1475,6 +1492,8 @@ export function makeOpenCodeAdapter(
           descendantSessionIds: new Set(),
           pendingPermissions: new Map(),
           pendingQuestions: new Map(),
+          resolvedRequestIds: new Set(),
+          autoRepliedRequestIds: new Set(),
           partById: new Map(),
           emittedTextByPartId: new Map(),
           messageRoleById: new Map(),
