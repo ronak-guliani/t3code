@@ -23,6 +23,7 @@ import {
 } from "~/lib/pullRequestReactQuery";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
+import { humanizeMonitorToken } from "./pullRequestPresentation";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { toastManager } from "../ui/toast";
 
@@ -47,13 +48,40 @@ function statusLabel(monitor: PullRequestMonitorRecord | null | undefined): stri
   }
 }
 
-function blockersSummary(monitor: PullRequestMonitorRecord | null | undefined): string | null {
+function blockersSummary(monitor: PullRequestMonitorRecord | null | undefined): {
+  readonly label: string;
+  readonly title: string;
+} | null {
   const blockers = monitor?.readiness?.blockers ?? [];
   if (blockers.length === 0) return null;
-  return blockers
-    .slice(0, 4)
-    .map((blocker) => (blocker.detail ? `${blocker.kind}: ${blocker.detail}` : blocker.kind))
-    .join(" · ");
+  const pendingChecks = blockers.filter((blocker) => blocker.kind === "check-pending");
+  const otherBlockers = blockers.filter((blocker) => blocker.kind !== "check-pending");
+  const parts: string[] = [];
+  if (pendingChecks.length > 0) {
+    const names = pendingChecks
+      .map((blocker) => blocker.detail?.trim())
+      .filter((detail): detail is string => Boolean(detail));
+    const preview = names.slice(0, 2).join(", ");
+    parts.push(
+      `${pendingChecks.length} check${pendingChecks.length === 1 ? "" : "s"} pending${preview ? `: ${preview}` : ""}${names.length > 2 ? ` +${names.length - 2} more` : ""}`,
+    );
+  }
+  for (const blocker of otherBlockers.slice(0, 4 - parts.length)) {
+    parts.push(
+      blocker.detail
+        ? `${humanizeMonitorToken(blocker.kind)}: ${blocker.detail}`
+        : humanizeMonitorToken(blocker.kind),
+    );
+  }
+  const label = parts.join(" · ");
+  const title = blockers
+    .map((blocker) =>
+      blocker.detail
+        ? `${humanizeMonitorToken(blocker.kind)}: ${blocker.detail}`
+        : humanizeMonitorToken(blocker.kind),
+    )
+    .join("\n");
+  return { label, title };
 }
 
 /**
@@ -113,30 +141,30 @@ export function PullRequestMonitorStrip(props: {
   }, [ownerCandidates, ownerSelection]);
   const active = monitor?.enabled === true;
   const showFallback = active && monitor?.ownerThreadId === null;
-  // Exactly one chat may modify a monitored PR; make that owner visible.
+  // Exactly one chat may modify a monitored PR; show its human title, never a raw id.
+  // The tooltip intentionally repeats the visible label instead of thread ids.
   const ownership = useMemo(() => {
     if (!monitor) return null;
-    const owner = monitor.ownerThreadId ? `Owner chat ${monitor.ownerThreadId}` : "No owner chat";
-    const review = monitor.linkedReviewThreadId
-      ? ` · Review chat ${monitor.linkedReviewThreadId}`
-      : "";
-    return `${owner}${review}`;
-  }, [monitor]);
+    const ownerTitle = monitor.ownerThreadId
+      ? (ownerCandidates.find((candidate) => candidate.threadId === monitor.ownerThreadId)?.title ??
+        "Linked chat")
+      : "No owner chat";
+    return monitor.linkedReviewThreadId ? `${ownerTitle} · review linked` : ownerTitle;
+  }, [monitor, ownerCandidates]);
   const summary = useMemo(() => blockersSummary(monitor), [monitor]);
   const feedbackSummary = useMemo(() => {
     if (openFeedback.length === 0) return null;
-    return openFeedback
+    const kinds = openFeedback
       .slice(0, 3)
-      .map(
-        (item: PullRequestMonitorFeedbackItem) =>
-          `${item.kind}${item.disposition ? ` (${item.disposition})` : ""}`,
-      )
-      .join(" · ");
+      .map((item: PullRequestMonitorFeedbackItem) => humanizeMonitorToken(item.kind))
+      .join(", ");
+    const extra = openFeedback.length > 3 ? ` +${openFeedback.length - 3} more` : "";
+    return `${openFeedback.length} open feedback: ${kinds}${extra}`;
   }, [openFeedback]);
   const deliverySummary = useMemo(() => {
     const latest = recentDeliveries[0];
     if (!latest) return null;
-    return `Last delivery: ${latest.status}${latest.lastError ? ` — ${latest.lastError}` : ""}`;
+    return `Last delivery: ${humanizeMonitorToken(latest.status)}${latest.lastError ? ` — ${latest.lastError}` : ""}`;
   }, [recentDeliveries]);
 
   return (
@@ -156,9 +184,11 @@ export function PullRequestMonitorStrip(props: {
             </div>
           ) : null}
           {summary ? (
-            <div className="truncate text-xs text-muted-foreground">{summary}</div>
+            <div className="text-xs text-muted-foreground" title={summary.title}>
+              {summary.label}
+            </div>
           ) : monitor?.lastError ? (
-            <div className="truncate text-xs text-destructive">{monitor.lastError}</div>
+            <div className="text-xs break-words text-destructive">{monitor.lastError}</div>
           ) : (
             <div className="text-xs text-muted-foreground">
               Server-owned observe loop. Merge stays human-controlled.
@@ -301,7 +331,9 @@ export function PullRequestMonitorStrip(props: {
       {ownership ? (
         <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
           <UserRoundIcon className="mt-0.5 size-3 shrink-0" />
-          <span className="min-w-0 truncate">{ownership}</span>
+          <span className="min-w-0 break-words" title={ownership}>
+            {ownership}
+          </span>
         </div>
       ) : null}
       {feedbackSummary || deliverySummary || recentReports.length > 0 ? (
@@ -309,13 +341,13 @@ export function PullRequestMonitorStrip(props: {
           {feedbackSummary ? (
             <div className="flex items-start gap-1.5">
               <ActivityIcon className="mt-0.5 size-3 shrink-0" />
-              <span className="min-w-0 truncate">Open feedback: {feedbackSummary}</span>
+              <span className="min-w-0 break-words">{feedbackSummary}</span>
             </div>
           ) : null}
-          {deliverySummary ? <div className="truncate pl-4">{deliverySummary}</div> : null}
+          {deliverySummary ? <div className="break-words pl-4">{deliverySummary}</div> : null}
           {recentReports[0] ? (
-            <div className="truncate pl-4">
-              Last report: {recentReports[0].disposition}
+            <div className="break-words pl-4">
+              Last report: {humanizeMonitorToken(recentReports[0].disposition)}
               {recentReports[0].note ? ` — ${recentReports[0].note}` : ""}
             </div>
           ) : null}

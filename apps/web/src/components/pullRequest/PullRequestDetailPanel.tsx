@@ -61,6 +61,11 @@ import {
   PullRequestActorLabel,
   PullRequestDiffStat,
   PullRequestStateGlyph,
+  pullRequestActionLabel,
+  pullRequestCheckDotClassName,
+  pullRequestCheckSummaryLabel,
+  summarizePullRequestChecks,
+  toRenderablePullRequestMarkdown,
 } from "./pullRequestPresentation";
 import { PullRequestMonitorStrip } from "./PullRequestMonitorStrip";
 
@@ -172,7 +177,10 @@ function ReviewThread({
               <span>{formatRelativeTimeLabel(comment.createdAt)}</span>
             </div>
             <div className="mt-1">
-              <ChatMarkdown cwd={detail.workspaceRoot} text={comment.body} />
+              <ChatMarkdown
+                cwd={detail.workspaceRoot}
+                text={toRenderablePullRequestMarkdown(comment.body)}
+              />
             </div>
           </div>
         ))}
@@ -634,6 +642,13 @@ export function PullRequestDetailPanel({
   };
   const performAction = async (action: PullRequestAction) => {
     if (!detail || actionPending) return;
+    if (
+      action === "close" &&
+      typeof window !== "undefined" &&
+      !window.confirm(`Close PR #${detail.number} "${detail.title}"?`)
+    ) {
+      return;
+    }
     setActionPending(action);
     try {
       const mergeMethod =
@@ -707,6 +722,15 @@ export function PullRequestDetailPanel({
   const availableActions = detail.capabilities.actions.filter((action) =>
     isAvailableAction(detail, action),
   );
+  const checkSummary = summarizePullRequestChecks(detail.checks);
+  const checkIndicatorClassName =
+    checkSummary.failing > 0 || checkSummary.cancelled > 0
+      ? "text-destructive"
+      : checkSummary.pending > 0
+        ? "text-muted-foreground"
+        : "text-emerald-500";
+  const conversationItems = detail.comments.filter((item) => item.kind !== "review-comment");
+  const conversationCount = conversationItems.length;
   const tabs = detail.capabilities.diff ? TABS : TABS.filter((tab) => tab.value !== "code");
   const activeTab = tabs.some((item) => item.value === tab) ? tab : "summary";
   const reviewKey = pullRequestReviewKey(reference);
@@ -737,7 +761,10 @@ export function PullRequestDetailPanel({
             mergeability={detail.mergeability}
             state={detail.state}
           />
-          <h1 className="min-w-0 flex-1 truncate text-sm font-semibold">
+          <h1
+            className="min-w-0 flex-1 truncate text-sm font-semibold"
+            title={`#${detail.number} ${detail.title}`}
+          >
             #{detail.number} {detail.title}
           </h1>
           <Button
@@ -757,12 +784,35 @@ export function PullRequestDetailPanel({
             <XIcon className="size-3.5" />
           </Button>
         </div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          Opened by <PullRequestActorLabel actor={detail.author} className="inline-flex" /> ·
+          Updated {formatRelativeTimeLabel(detail.updatedAt)}
+          {detail.isDraft ? " · Draft" : ""}
+        </div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <PullRequestActorLabel actor={detail.author} />
-          <span>
-            {detail.headBranch} → {detail.baseBranch}
+          <span
+            className="inline-flex max-w-56 items-center gap-1 rounded bg-muted/60 px-1.5 py-0.5 font-mono"
+            title={`Head branch: ${detail.headBranch}`}
+          >
+            <span className="truncate">{detail.headBranch}</span>
+          </span>
+          <span aria-hidden>→</span>
+          <span
+            className="inline-flex max-w-40 items-center rounded bg-muted/60 px-1.5 py-0.5 font-mono"
+            title={`Base branch: ${detail.baseBranch}`}
+          >
+            <span className="truncate">{detail.baseBranch}</span>
           </span>
           <PullRequestDiffStat additions={detail.additions} deletions={detail.deletions} />
+          <span
+            className="inline-flex items-center gap-1"
+            title={pullRequestCheckSummaryLabel(checkSummary)}
+          >
+            {detail.checks.length > 0 ? <span className={checkIndicatorClassName}>●</span> : null}
+            {detail.checks.length > 0
+              ? `${checkSummary.passing}/${detail.checks.length} checks`
+              : "No checks"}
+          </span>
           <a
             className="inline-flex items-center gap-1 hover:text-foreground"
             href={detail.url}
@@ -789,55 +839,99 @@ export function PullRequestDetailPanel({
             GitHub <ExternalLinkIcon className="size-3" />
           </a>
         </div>
-        <div className="mt-3 flex flex-wrap gap-1">
-          {availableActions.map((action) => (
-            <Button
-              disabled={actionPending !== null}
-              key={action}
-              size="xs"
-              variant={action === "close" ? "destructive" : "outline"}
-              onClick={() => void performAction(action)}
-            >
-              {actionPending === action ? (
-                "Working…"
-              ) : action === "merge" ? (
-                <>
-                  <GitMergeIcon className="size-3" />
-                  Merge
-                </>
-              ) : (
-                action
-              )}
-            </Button>
-          ))}
+        {availableActions.length > 0 ? (
+          <div className="mt-3 flex flex-wrap items-center gap-1">
+            {availableActions
+              .filter((action) => action !== "close")
+              .map((action) => (
+                <Button
+                  aria-label={pullRequestActionLabel(action)}
+                  disabled={actionPending !== null}
+                  key={action}
+                  size="xs"
+                  title={
+                    action === "merge"
+                      ? `Merge ${detail.headBranch} into ${detail.baseBranch}`
+                      : pullRequestActionLabel(action)
+                  }
+                  variant={action === "merge" ? "default" : "outline"}
+                  onClick={() => void performAction(action)}
+                >
+                  {actionPending === action ? (
+                    "Working…"
+                  ) : action === "merge" ? (
+                    <>
+                      <GitMergeIcon className="size-3" />
+                      Merge
+                    </>
+                  ) : (
+                    pullRequestActionLabel(action)
+                  )}
+                </Button>
+              ))}
+            {availableActions.includes("close") ? (
+              <Button
+                aria-label="Close pull request"
+                className="ml-auto"
+                disabled={actionPending !== null}
+                size="xs"
+                title="Close this pull request without merging"
+                variant="destructive"
+                onClick={() => void performAction("close")}
+              >
+                {actionPending === "close" ? "Working…" : "Close"}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        <div aria-label="Pull request detail tabs" className="mt-3 flex gap-1" role="tablist">
+          {tabs.map((item) => {
+            const count =
+              item.value === "conversation"
+                ? conversationCount
+                : item.value === "code"
+                  ? detail.commits.length
+                  : null;
+            const selected = activeTab === item.value;
+            return (
+              <button
+                aria-controls={selected ? "pr-panel" : undefined}
+                aria-selected={selected}
+                className={cn(
+                  "rounded px-2 py-1 text-xs font-medium tabular-nums",
+                  selected
+                    ? "bg-accent text-foreground ring-1 ring-border"
+                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                )}
+                id={`pr-tab-${item.value}`}
+                key={item.value}
+                role="tab"
+                type="button"
+                onClick={() => setTab(item.value)}
+              >
+                {item.label}
+                {count !== null && count > 0 ? (
+                  <span className="ml-1 text-muted-foreground">({count})</span>
+                ) : null}
+              </button>
+            );
+          })}
         </div>
-        <nav aria-label="Pull request detail tabs" className="mt-3 flex gap-1">
-          {tabs.map((item) => (
-            <button
-              className={cn(
-                "rounded px-2 py-1 text-xs",
-                activeTab === item.value
-                  ? "bg-accent text-foreground"
-                  : "text-muted-foreground hover:bg-accent/60",
-              )}
-              key={item.value}
-              type="button"
-              onClick={() => setTab(item.value)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
       </header>
       <div className="border-b border-border px-4 py-2">
         <PullRequestMonitorStrip environmentId={environmentId} reference={reference} />
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        aria-labelledby={`pr-tab-${activeTab}`}
+        className="min-h-0 flex-1 overflow-y-auto"
+        id="pr-panel"
+        role="tabpanel"
+      >
         {activeTab === "summary" ? (
           <div className="space-y-5 p-4">
             <ChatMarkdown
               cwd={detail.workspaceRoot}
-              text={detail.body || "_No description provided._"}
+              text={toRenderablePullRequestMarkdown(detail.body || "_No description provided._")}
             />
             {detail.labels.length > 0 ? (
               <section>
@@ -860,17 +954,7 @@ export function PullRequestDetailPanel({
               <ul className="mt-2 space-y-1 text-sm">
                 {detail.checks.map((check) => (
                   <li className="flex items-center gap-2" key={check.name}>
-                    <span
-                      className={
-                        check.status === "success"
-                          ? "text-emerald-500"
-                          : check.status === "failure"
-                            ? "text-destructive"
-                            : "text-muted-foreground"
-                      }
-                    >
-                      ●
-                    </span>
+                    <span className={pullRequestCheckDotClassName(check.status)}>●</span>
                     {check.url ? (
                       <a
                         className="hover:underline"
@@ -995,23 +1079,24 @@ export function PullRequestDetailPanel({
                 </Button>
               </div>
             ) : null}
-            {detail.comments
-              .filter((item) => item.kind !== "review-comment")
-              .map((item) => (
-                <article className="border-b border-border/60 pb-4" key={item.id}>
-                  <div className="flex gap-2 text-xs text-muted-foreground">
-                    <PullRequestActorLabel actor={item.author} className="text-foreground" />
-                    <span>{formatRelativeTimeLabel(item.createdAt)}</span>
-                  </div>
-                  <div className="mt-2 text-sm">
-                    <ChatMarkdown cwd={detail.workspaceRoot} text={item.body} />
-                  </div>
-                </article>
-              ))}
+            {conversationItems.map((item) => (
+              <article className="border-b border-border/60 pb-4" key={item.id}>
+                <div className="flex gap-2 text-xs text-muted-foreground">
+                  <PullRequestActorLabel actor={item.author} className="text-foreground" />
+                  <span>{formatRelativeTimeLabel(item.createdAt)}</span>
+                </div>
+                <div className="mt-2 text-sm">
+                  <ChatMarkdown
+                    cwd={detail.workspaceRoot}
+                    text={toRenderablePullRequestMarkdown(item.body)}
+                  />
+                </div>
+              </article>
+            ))}
             {detail.commentsTruncated ? (
               <p className="text-xs text-muted-foreground">
                 GitHub returned the most recent {detail.comments.length} of {detail.commentCount}{" "}
-                conversation items.
+                items; some line-level review comments may be missing.
               </p>
             ) : null}
             {detail.commits.length > 0 ? (
@@ -1029,7 +1114,7 @@ export function PullRequestDetailPanel({
                 </ul>
               </section>
             ) : null}
-            {detail.comments.every((item) => item.kind === "review-comment") ? (
+            {conversationItems.length === 0 ? (
               <p className="text-sm text-muted-foreground">No conversation yet.</p>
             ) : null}
           </div>
@@ -1045,37 +1130,39 @@ export function PullRequestDetailPanel({
             pending={reply.isPending || resolve.isPending}
           />
         ) : null}
-        <div className="p-4 pt-0">
-          <ReviewComposer
-            detail={detail}
-            reference={reference}
-            submitting={submitReview.isPending}
-            onSubmit={({ verdict, body, comments }) =>
-              void submitReview
-                .mutateAsync({
-                  ...reference,
-                  verdict,
-                  body,
-                  comments: comments.map(({ id: _id, ...comment }) => comment),
-                })
-                .then(() => {
-                  usePullRequestReviewStore.getState().removeSubmitted(
-                    reviewKey,
-                    comments.map((comment) => comment.id),
-                  );
-                  usePullRequestReviewStore.getState().clearSubmitted(reviewKey, body);
-                  toastManager.add({ type: "success", title: "Review submitted" });
-                })
-                .catch((error) =>
-                  toastManager.add({
-                    type: "error",
-                    title: "Could not submit review",
-                    description: errorMessage(error),
-                  }),
-                )
-            }
-          />
-        </div>
+        {activeTab !== "summary" ? (
+          <div className="p-4 pt-0">
+            <ReviewComposer
+              detail={detail}
+              reference={reference}
+              submitting={submitReview.isPending}
+              onSubmit={({ verdict, body, comments }) =>
+                void submitReview
+                  .mutateAsync({
+                    ...reference,
+                    verdict,
+                    body,
+                    comments: comments.map(({ id: _id, ...comment }) => comment),
+                  })
+                  .then(() => {
+                    usePullRequestReviewStore.getState().removeSubmitted(
+                      reviewKey,
+                      comments.map((comment) => comment.id),
+                    );
+                    usePullRequestReviewStore.getState().clearSubmitted(reviewKey, body);
+                    toastManager.add({ type: "success", title: "Review submitted" });
+                  })
+                  .catch((error) =>
+                    toastManager.add({
+                      type: "error",
+                      title: "Could not submit review",
+                      description: errorMessage(error),
+                    }),
+                  )
+              }
+            />
+          </div>
+        ) : null}
       </div>
     </section>
   );

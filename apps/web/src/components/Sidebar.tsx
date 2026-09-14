@@ -3057,7 +3057,8 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron: boolean;
 }) {
   const router = useRouter();
-  const historyIndex = useLocation({ select: (location) => location.state.__TSR_index });
+  const location = useLocation();
+  const historyIndex = router.history.location.state.__TSR_index ?? location.state.__TSR_index;
   const canGoBack = router.history.canGoBack();
   const canGoForward = historyIndex < router.history.length - 1;
   const wordmark = (

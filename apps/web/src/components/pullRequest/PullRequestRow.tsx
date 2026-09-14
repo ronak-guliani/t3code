@@ -35,12 +35,21 @@ function PullRequestRowImpl({
         state={entry.state}
       />
       <span className="min-w-0">
-        <span className="block truncate text-sm font-medium">{entry.title}</span>
+        <span className="block truncate text-sm font-medium" title={entry.title}>
+          {entry.title}
+        </span>
         <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="shrink-0">#{entry.number}</span>
-          <span className="truncate">{entry.repository}</span>
+          <span className="shrink-0 tabular-nums">#{entry.number}</span>
+          <span className="min-w-0 flex-1 truncate" title={entry.repository}>
+            {entry.repository}
+          </span>
           <PullRequestActorLabel actor={entry.author} className="max-w-30 shrink-0" />
         </span>
+        {entry.viewerReviewRequested ? (
+          <span className="mt-0.5 inline-flex rounded bg-accent px-1 py-px text-[10px] font-medium text-foreground">
+            Review requested
+          </span>
+        ) : null}
       </span>
       <span className="flex flex-col items-end gap-0.5 text-xs text-muted-foreground">
         <span>{formatRelativeTimeLabel(entry.updatedAt)}</span>
