@@ -1,5 +1,11 @@
-import { CommandId, type OrchestrationEvent, type ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  type OrchestrationEvent,
+  type OrchestrationReadModel,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { threadPullRequestIdentity } from "@t3tools/shared/threadPullRequests";
 import { Cause, Clock, Effect, Exit, FileSystem, Layer, Option, Schedule, Stream } from "effect";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
@@ -26,10 +32,70 @@ type ThreadDeletedEvent = Extract<OrchestrationEvent, { type: "thread.deleted" }
 type ThreadArchivedEvent = Extract<OrchestrationEvent, { type: "thread.archived" }>;
 type ThreadUnarchivedEvent = Extract<OrchestrationEvent, { type: "thread.unarchived" }>;
 type ThreadCleanupLifecycleEvent = ThreadDeletedEvent | ThreadArchivedEvent | ThreadUnarchivedEvent;
+type PullRequestRefreshCandidate = {
+  readonly thread: OrchestrationReadModel["threads"][number];
+  readonly link: NonNullable<OrchestrationReadModel["threads"][number]["pullRequests"]>[number];
+};
+
+export type PullRequestRefreshGroup = {
+  readonly cwd: string;
+  readonly pullRequest: PullRequestRefreshCandidate["link"]["pullRequest"];
+  readonly candidates: ReadonlyArray<PullRequestRefreshCandidate>;
+};
 
 const MAX_WORKTREE_CLEANUP_ATTEMPTS = 5;
 const CLEANUP_RECONCILIATION_INTERVAL = "5 minutes";
 const CLEANUP_DUE_SWEEP_INTERVAL = "1 minute";
+
+export function groupOpenPullRequestAssociationRefreshes(
+  readModel: OrchestrationReadModel,
+): ReadonlyArray<PullRequestRefreshGroup> {
+  const projectsById = new Map(
+    readModel.projects
+      .filter((project) => project.deletedAt === null)
+      .map((project) => [project.id, project] as const),
+  );
+  const candidates = readModel.threads.flatMap((thread) => {
+    if (thread.deletedAt !== null || thread.archivedAt !== null) return [];
+    const links =
+      thread.pullRequests ??
+      (thread.pullRequest
+        ? [
+            {
+              pullRequest: thread.pullRequest,
+              source: "manual" as const,
+              linkedAt: thread.updatedAt,
+            },
+          ]
+        : []);
+    return links
+      .filter((link) => link.pullRequest.state !== "merged")
+      .map((link) => ({ thread, link }));
+  });
+  const groups = new Map<string, Array<PullRequestRefreshCandidate>>();
+  for (const candidate of candidates) {
+    const project = projectsById.get(candidate.thread.projectId);
+    if (!project) continue;
+    const identity = threadPullRequestIdentity(candidate.link.pullRequest);
+    const group = groups.get(`${identity.host}\0${identity.repository}\0${identity.number}`);
+    if (group) group.push(candidate);
+    else groups.set(`${identity.host}\0${identity.repository}\0${identity.number}`, [candidate]);
+  }
+
+  return [...groups.values()].flatMap((group) => {
+    const first = group[0];
+    if (!first) return [];
+    const project = projectsById.get(first.thread.projectId);
+    if (!project) return [];
+    return [
+      {
+        cwd: first.thread.worktreePath ?? project.workspaceRoot,
+        pullRequest: first.link.pullRequest,
+        candidates: group,
+      },
+    ];
+  });
+}
 
 export const processAfterWorktreeReservation = <A, E1, R1, E2, R2>(
   withLock: (
@@ -916,64 +982,22 @@ const make = Effect.gen(function* () {
   const refreshOpenPullRequestAssociations = Effect.fn("refreshOpenPullRequestAssociations")(
     function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
-      const projectsById = new Map(
-        readModel.projects
-          .filter((project) => project.deletedAt === null)
-          .map((project) => [project.id, project] as const),
-      );
-
-      const candidates = readModel.threads.flatMap((thread) => {
-        if (thread.deletedAt !== null || thread.archivedAt !== null) return [];
-        const links =
-          thread.pullRequests ??
-          (thread.pullRequest
-            ? [
-                {
-                  pullRequest: thread.pullRequest,
-                  source: "manual" as const,
-                  linkedAt: thread.updatedAt,
-                },
-              ]
-            : []);
-        return links
-          .filter((link) => link.pullRequest.state !== "merged")
-          .map((link) => ({ thread, link }));
-      });
-      type Candidate = (typeof candidates)[number];
-      const groups = new Map<string, Array<Candidate>>();
-      for (const candidate of candidates) {
-        const project = projectsById.get(candidate.thread.projectId);
-        if (!project) continue;
-        const cwd = candidate.thread.worktreePath ?? project.workspaceRoot;
-        const key = `${cwd}\0${candidate.link.pullRequest.url}`;
-        const group = groups.get(key);
-        if (group) group.push(candidate);
-        else groups.set(key, [candidate]);
-      }
+      const groups = groupOpenPullRequestAssociationRefreshes(readModel);
 
       yield* Effect.forEach(
-        [...groups.values()],
+        groups,
         (group) =>
           Effect.gen(function* () {
-            const first = group[0];
-            if (!first) return;
-            const { thread, link } = first;
-            const pullRequest = link.pullRequest;
-            const project = projectsById.get(thread.projectId);
-            if (!project) {
-              return;
-            }
-            const cwd = thread.worktreePath ?? project.workspaceRoot;
             const resolved = yield* gitManager
               .resolvePullRequest({
-                cwd,
-                reference: String(pullRequest.number),
+                cwd: group.cwd,
+                reference: group.pullRequest.url,
               })
               .pipe(
                 Effect.catch((error) =>
                   Effect.logDebug("pull request association refresh skipped", {
-                    threadId: thread.id,
-                    pullRequestNumber: pullRequest.number,
+                    threadId: group.candidates[0]?.thread.id,
+                    pullRequestNumber: group.pullRequest.number,
                     error: error instanceof Error ? error.message : String(error),
                   }).pipe(Effect.as(null)),
                 ),
@@ -983,7 +1007,7 @@ const make = Effect.gen(function* () {
             }
             const nextPullRequest = resolved.pullRequest;
             yield* Effect.forEach(
-              group.filter(
+              group.candidates.filter(
                 ({ link: candidateLink }) =>
                   candidateLink.pullRequest.state !== nextPullRequest.state ||
                   candidateLink.pullRequest.title !== nextPullRequest.title ||

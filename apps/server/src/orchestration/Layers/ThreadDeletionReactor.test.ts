@@ -34,7 +34,10 @@ import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
-import { ThreadDeletionReactorLive } from "./ThreadDeletionReactor.ts";
+import {
+  groupOpenPullRequestAssociationRefreshes,
+  ThreadDeletionReactorLive,
+} from "./ThreadDeletionReactor.ts";
 import { findCanonicalActiveWorktreeOwner } from "../worktreeOwnership.ts";
 import {
   logCleanupCauseUnlessInterrupted,
@@ -185,6 +188,54 @@ describe("logCleanupCauseUnlessInterrupted", () => {
   });
 
   describe("ThreadDeletionReactorLive", () => {
+    it("groups the same PR identity across worktrees into one resolver lookup", () => {
+      const timestamp = "2026-09-14T12:00:00.000Z";
+      const project = {
+        id: ProjectId.make("project-1"),
+        title: "Refresh grouping",
+        workspaceRoot: "/tmp/project",
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        deletedAt: null,
+      } satisfies OrchestrationReadModel["projects"][number];
+      const pullRequest = {
+        number: 42,
+        title: "Shared PR",
+        url: "https://github.com/acme/example/pull/42",
+        baseBranch: "main",
+        headBranch: "feature/shared",
+        state: "open" as const,
+      };
+      const readModel = {
+        ...makeReadModel([
+          {
+            ...makeThread("thread-refresh-a", "/tmp/worktree-a"),
+            projectId: project.id,
+            pullRequests: [{ pullRequest, source: "manual", linkedAt: timestamp }],
+          },
+          {
+            ...makeThread("thread-refresh-b", "/tmp/worktree-b"),
+            projectId: project.id,
+            pullRequests: [{ pullRequest, source: "manual", linkedAt: timestamp }],
+          },
+        ]),
+        projects: [project],
+      };
+
+      const groups = groupOpenPullRequestAssociationRefreshes(readModel);
+      let resolveCalls = 0;
+      for (const group of groups) {
+        resolveCalls += 1;
+        expect(group.pullRequest.url).toBe(pullRequest.url);
+      }
+
+      expect(resolveCalls).toBe(1);
+      expect(groups[0]?.cwd).toBe("/tmp/worktree-a");
+      expect(groups[0]?.candidates).toHaveLength(2);
+    });
+
     it("removes a clean archived merged-PR worktree from a disposable Git repository", async () => {
       const fixtureRoot = await mkdtemp(path.join(tmpdir(), "t3-cleanup-reactor-"));
       const repositoryRoot = path.join(fixtureRoot, "repo");

@@ -7,6 +7,10 @@ import {
 import { Effect, Layer, Option, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
+import {
+  legacyThreadPullRequestLink,
+  sameThreadPullRequest,
+} from "@t3tools/shared/threadPullRequests";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
@@ -608,20 +612,24 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             const existingLinks = yield* projectionThreadPullRequestRepository.listByThreadId({
               threadId: event.payload.threadId,
             });
-            for (const link of existingLinks) {
-              if (link.source === "manual") {
-                yield* projectionThreadPullRequestRepository.delete({
-                  threadId: event.payload.threadId,
-                  pullRequest: link.pullRequest,
-                });
-              }
-            }
             if (event.payload.pullRequest !== null) {
+              const existingLink = existingLinks.find((link) =>
+                sameThreadPullRequest(link.pullRequest, event.payload.pullRequest!),
+              );
               yield* projectionThreadPullRequestRepository.upsert({
                 threadId: event.payload.threadId,
                 pullRequest: event.payload.pullRequest,
-                source: "manual",
-                linkedAt: event.payload.updatedAt,
+                ...legacyThreadPullRequestLink(
+                  existingLink
+                    ? {
+                        pullRequest: existingLink.pullRequest,
+                        source: existingLink.source,
+                        linkedAt: existingLink.linkedAt,
+                      }
+                    : undefined,
+                  event.payload.pullRequest,
+                  event.payload.updatedAt,
+                ),
               });
             }
           }

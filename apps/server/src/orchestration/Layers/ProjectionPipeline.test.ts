@@ -53,6 +53,137 @@ const exists = (filePath: string) =>
 const BaseTestLayer = makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-test-");
 
 it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
+  it.effect("preserves unrelated links and provenance during singular PR refreshes", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-09-14T12:00:00.000Z";
+      const linkedAt = "2026-09-14T12:01:00.000Z";
+      const refreshedAt = "2026-09-14T12:02:00.000Z";
+      const projectId = ProjectId.make("project-pr-refresh");
+      const threadId = ThreadId.make("thread-pr-refresh");
+      const workspacePullRequest = {
+        number: 42,
+        title: "Workspace PR",
+        url: "https://github.com/acme/example/pull/42",
+        baseBranch: "main",
+        headBranch: "feature/workspace",
+        state: "open" as const,
+      };
+      const refreshedWorkspacePullRequest = {
+        ...workspacePullRequest,
+        title: "Refreshed workspace PR",
+      };
+      const supportingPullRequest = {
+        number: 43,
+        title: "Supporting PR",
+        url: "https://github.com/acme/example/pull/43",
+        baseBranch: "main",
+        headBranch: "feature/supporting",
+        state: "open" as const,
+      };
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-pr-refresh-created"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-pr-refresh-created"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pr-refresh-created"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId,
+          title: "PR refresh",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "feature/workspace",
+          worktreePath: "/tmp/pr-refresh",
+          pullRequest: workspacePullRequest,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.pull-request-linked",
+        eventId: EventId.make("evt-pr-refresh-supporting"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: linkedAt,
+        commandId: CommandId.make("cmd-pr-refresh-supporting"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pr-refresh-supporting"),
+        metadata: {},
+        payload: {
+          threadId,
+          link: {
+            pullRequest: supportingPullRequest,
+            source: "manual",
+            linkedAt,
+          },
+          updatedAt: linkedAt,
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.meta-updated",
+        eventId: EventId.make("evt-pr-refresh-meta"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: refreshedAt,
+        commandId: CommandId.make("cmd-pr-refresh-meta"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pr-refresh-meta"),
+        metadata: {},
+        payload: {
+          threadId,
+          pullRequest: refreshedWorkspacePullRequest,
+          updatedAt: refreshedAt,
+        },
+      });
+
+      const rows = yield* sql<{
+        readonly pullRequest: string;
+        readonly source: string;
+        readonly linkedAt: string;
+      }>`
+        SELECT
+          pull_request_json AS "pullRequest",
+          source,
+          linked_at AS "linkedAt"
+        FROM projection_thread_pull_requests
+        WHERE thread_id = ${threadId}
+        ORDER BY number
+      `;
+      assert.deepStrictEqual(rows, [
+        {
+          pullRequest: JSON.stringify(refreshedWorkspacePullRequest),
+          source: "created",
+          linkedAt: createdAt,
+        },
+        {
+          pullRequest: JSON.stringify(supportingPullRequest),
+          source: "manual",
+          linkedAt,
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-pr-refresh-")),
+      ),
+    ),
+  );
+
   it.effect("keeps failed post-commit reconciliation durable for bootstrap recovery", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

@@ -44,6 +44,29 @@ export function sameThreadPullRequest(
   return threadPullRequestKey(left) === threadPullRequestKey(right);
 }
 
+export function legacyThreadPullRequestLink(
+  existing: ThreadPullRequestLink | undefined,
+  pullRequest: GitPullRequestAssociation,
+  linkedAt: string,
+): ThreadPullRequestLink {
+  return existing ? { ...existing, pullRequest } : { pullRequest, source: "manual", linkedAt };
+}
+
+export function upsertLegacyThreadPullRequestLink(
+  links: ReadonlyArray<ThreadPullRequestLink> | undefined,
+  pullRequest: GitPullRequestAssociation,
+  linkedAt: string,
+): ReadonlyArray<ThreadPullRequestLink> {
+  const existingLinks = links ?? [];
+  const existingIndex = existingLinks.findIndex((link) =>
+    sameThreadPullRequest(link.pullRequest, pullRequest),
+  );
+  const nextLink = legacyThreadPullRequestLink(existingLinks[existingIndex], pullRequest, linkedAt);
+  return existingIndex < 0
+    ? [...existingLinks, nextLink]
+    : existingLinks.map((link, index) => (index === existingIndex ? nextLink : link));
+}
+
 export function visibleThreadPullRequests(
   pullRequests: ReadonlyArray<ThreadPullRequestLink> | undefined,
 ): ReadonlyArray<ThreadPullRequestLink> {

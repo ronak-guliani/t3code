@@ -6,7 +6,10 @@ import {
   OrchestrationThread,
 } from "@t3tools/contracts";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
-import { sameThreadPullRequest } from "@t3tools/shared/threadPullRequests";
+import {
+  sameThreadPullRequest,
+  upsertLegacyThreadPullRequestLink,
+} from "@t3tools/shared/threadPullRequests";
 import { Effect, Schema } from "effect";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
@@ -545,23 +548,39 @@ export function projectEvent(
 
     case "thread.meta-updated":
       return decodeForEvent(ThreadMetaUpdatedPayload, event.payload, event.type, "payload").pipe(
-        Effect.map((payload) => ({
-          ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, {
-            ...(payload.nudging !== undefined ? { nudging: payload.nudging } : {}),
-            ...(payload.title !== undefined ? { title: payload.title } : {}),
-            ...(payload.titleRegeneration !== undefined
-              ? { titleRegeneration: payload.titleRegeneration }
-              : {}),
-            ...(payload.modelSelection !== undefined
-              ? { modelSelection: payload.modelSelection }
-              : {}),
-            ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
-            ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
-            ...(payload.pullRequest !== undefined ? { pullRequest: payload.pullRequest } : {}),
-            updatedAt: payload.updatedAt,
-          }),
-        })),
+        Effect.map((payload) => {
+          const existingThread = nextBase.threads.find((thread) => thread.id === payload.threadId);
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              ...(payload.nudging !== undefined ? { nudging: payload.nudging } : {}),
+              ...(payload.title !== undefined ? { title: payload.title } : {}),
+              ...(payload.titleRegeneration !== undefined
+                ? { titleRegeneration: payload.titleRegeneration }
+                : {}),
+              ...(payload.modelSelection !== undefined
+                ? { modelSelection: payload.modelSelection }
+                : {}),
+              ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
+              ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
+              ...(payload.pullRequest !== undefined
+                ? {
+                    pullRequest: payload.pullRequest,
+                    ...(payload.pullRequest !== null
+                      ? {
+                          pullRequests: upsertLegacyThreadPullRequestLink(
+                            existingThread?.pullRequests,
+                            payload.pullRequest,
+                            payload.updatedAt,
+                          ),
+                        }
+                      : {}),
+                  }
+                : {}),
+              updatedAt: payload.updatedAt,
+            }),
+          };
+        }),
       );
 
     case "thread.pull-request-linked":

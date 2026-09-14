@@ -44,18 +44,26 @@ export default Effect.gen(function* () {
     } catch {
       continue;
     }
+    const candidate = pullRequest as {
+      readonly url?: unknown;
+      readonly number?: unknown;
+    };
     if (
       typeof pullRequest !== "object" ||
       pullRequest === null ||
-      typeof (pullRequest as { url?: unknown }).url !== "string" ||
-      typeof (pullRequest as { repository?: unknown }).repository !== "string" ||
-      typeof (pullRequest as { number?: unknown }).number !== "number"
+      typeof candidate.url !== "string" ||
+      candidate.url.trim().length === 0 ||
+      typeof candidate.number !== "number" ||
+      !Number.isSafeInteger(candidate.number) ||
+      candidate.number <= 0
     ) {
       continue;
     }
-    const identity = threadPullRequestIdentity(
-      pullRequest as { url: string; repository: string; number: number },
-    );
+    const identity = threadPullRequestIdentity({
+      url: candidate.url,
+      number: candidate.number,
+    });
+    if (identity.host === "unknown" || identity.repository.length === 0) continue;
     yield* sql`
       INSERT INTO projection_thread_pull_requests (
         thread_id, host, repository, number, pull_request_json, source, linked_at
