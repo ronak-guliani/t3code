@@ -252,6 +252,10 @@
       "types": "./src/threadUrl.ts",
       "import": "./src/threadUrl.ts"
     },
+    "./hostClassification": {
+      "types": "./src/hostClassification.ts",
+      "import": "./src/hostClassification.ts"
+    },
     "./hostProcess": {
       "types": "./src/hostProcess.ts",
       "import": "./src/hostProcess.ts"

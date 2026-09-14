@@ -14,9 +14,6 @@ export const SelfTestMedia = Schema.Struct({
   width: Schema.Int,
   height: Schema.Int,
   durationSeconds: Schema.optional(Schema.Finite),
-  sampledFrames: Schema.Int,
-  distinctFrames: Schema.Int,
-  url: Schema.optional(Schema.String),
 });
 export type SelfTestMedia = typeof SelfTestMedia.Type;
 
@@ -46,30 +43,36 @@ export const SelfTestManifest = Schema.Struct({
   scenarios: Schema.Array(Schema.String),
   media: Schema.Array(SelfTestMedia),
   diagnostics: Schema.optional(SelfTestDiagnostics),
-  publication: Schema.optional(
-    Schema.Struct({
-      pullRequestUrl: Schema.String,
-    }),
-  ),
 });
 export type SelfTestManifest = typeof SelfTestManifest.Type;
+
+export function parseSelfTestCommand(args: ReadonlyArray<string>): "run" | "status" {
+  const command = args[0] ?? "run";
+  if (args.length > 1 || (command !== "run" && command !== "status")) {
+    throw new Error(
+      "Usage: pnpm test:self -- [run|status]. This command only tests pairing/reconnect. " +
+        "Feature reports and publication flags are no longer supported. Exercise the feature " +
+        "in a real client and use pnpm pr:media -- <PR URL> <capture files...> to publish its captures.",
+    );
+  }
+  return command;
+}
 
 export function selfTestBlockers(
   manifest: SelfTestManifest,
   current: SelfTestRevision,
-  requirePublished: boolean,
 ): ReadonlyArray<string> {
   const blockers: string[] = [];
   if (
     manifest.revision.commit !== current.commit ||
     manifest.revision.contentHash !== current.contentHash
   ) {
-    blockers.push("Evidence is stale: the checkout differs from the tested revision.");
+    blockers.push("Baseline is stale: the checkout differs from the tested revision.");
   }
   if (manifest.status !== "passed" || manifest.exitCode !== 0 || !manifest.completedAt) {
-    blockers.push("The real-client test did not complete successfully.");
+    blockers.push("The pairing/reconnect smoke test did not complete successfully.");
   }
-  if (manifest.scenarios.length === 0) blockers.push("No observable scenarios were recorded.");
+  if (manifest.scenarios.length === 0) blockers.push("No baseline scenarios were recorded.");
   if (
     !manifest.diagnostics ||
     manifest.diagnostics.consoleErrors !== 0 ||
@@ -80,48 +83,17 @@ export function selfTestBlockers(
   }
   for (const kind of ["screenshot", "recording"] as const) {
     const media = manifest.media.filter((item) => item.kind === kind);
-    if (media.length === 0) blockers.push(`Missing ${kind} evidence.`);
+    if (media.length === 0) blockers.push(`Missing baseline ${kind}.`);
     for (const item of media) {
       if (
         item.width <= 0 ||
         item.height <= 0 ||
         item.sizeBytes <= 0 ||
-        item.sampledFrames < 1 ||
-        (kind === "recording" &&
-          (!(item.durationSeconds && item.durationSeconds > 0) ||
-            item.sampledFrames < 3 ||
-            item.distinctFrames < 2))
+        (kind === "recording" && (item.durationSeconds ?? 0) <= 0)
       ) {
-        blockers.push(`Invalid ${kind} capture.`);
-      }
-      if (
-        requirePublished &&
-        !item.url?.startsWith("https://github.com/user-attachments/assets/")
-      ) {
-        blockers.push(`The ${kind} has not been published.`);
+        blockers.push(`Invalid baseline ${kind}.`);
       }
     }
   }
-  if (requirePublished && !manifest.publication)
-    blockers.push("Evidence has not been attached to a PR.");
   return blockers;
-}
-
-export function replaceSelfTestSection(body: string, section: string): string {
-  const start = "<!-- t3-self-test:start -->";
-  const end = "<!-- t3-self-test:end -->";
-  const first = body.indexOf(start);
-  const last = body.indexOf(end);
-  if (
-    first < 0 !== last < 0 ||
-    (first >= 0 && last < first) ||
-    (first >= 0 && body.indexOf(start, first + start.length) >= 0) ||
-    (last >= 0 && body.indexOf(end, last + end.length) >= 0)
-  ) {
-    throw new Error("The PR contains an ambiguous self-test evidence section.");
-  }
-  const managed = `${start}\n${section}\n${end}`;
-  return first < 0
-    ? `${body.trimEnd()}\n\n${managed}\n`
-    : `${body.slice(0, first)}${managed}${body.slice(last + end.length)}`;
 }

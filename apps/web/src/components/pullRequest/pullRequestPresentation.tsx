@@ -5,58 +5,104 @@ import type {
   PullRequestState,
 } from "@t3tools/contracts";
 import {
+  CircleCheckIcon,
+  CircleDashedIcon,
+  CircleDotIcon,
+  CircleXIcon,
   GitMergeIcon,
   GitPullRequestClosedIcon,
   GitPullRequestDraftIcon,
   GitPullRequestIcon,
   TriangleAlertIcon,
 } from "lucide-react";
+import { Children, isValidElement, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+
+/**
+ * How a pull request's state reads on this page. Draft outranks conflicts: a
+ * draft is not heading for a merge yet, so conflicts only surface once it is
+ * real work.
+ */
 export function pullRequestStatePresentation(input: {
   readonly state: PullRequestState;
   readonly isDraft: boolean;
   readonly mergeability?: PullRequestMergeability;
+  readonly baseBranch?: string;
 }) {
   if (input.state === "merged") {
-    return { label: "Merged", Icon: GitMergeIcon, className: "text-violet-500" };
+    return {
+      label: "Merged",
+      Icon: GitMergeIcon,
+      className: "text-violet-600 dark:text-violet-300/90",
+    };
   }
   if (input.state === "closed") {
-    return { label: "Closed", Icon: GitPullRequestClosedIcon, className: "text-red-500" };
+    return {
+      label: "Closed",
+      Icon: GitPullRequestClosedIcon,
+      className: "text-red-600 dark:text-red-300/90",
+    };
   }
   if (input.isDraft) {
-    return { label: "Draft", Icon: GitPullRequestDraftIcon, className: "text-muted-foreground" };
+    return {
+      label: "Draft",
+      Icon: GitPullRequestDraftIcon,
+      className: "text-zinc-500 dark:text-zinc-400/80",
+    };
   }
   if (input.mergeability === "conflicting") {
-    return { label: "Conflicting", Icon: TriangleAlertIcon, className: "text-destructive" };
+    return {
+      label: input.baseBranch ? `Conflicts with ${input.baseBranch}` : "Conflicting",
+      Icon: TriangleAlertIcon,
+      className: "text-destructive",
+    };
   }
-  return { label: "Open", Icon: GitPullRequestIcon, className: "text-emerald-500" };
+  return {
+    label: "Open",
+    Icon: GitPullRequestIcon,
+    className: "text-emerald-600 dark:text-emerald-300/90",
+  };
 }
 
 export function PullRequestStateGlyph({
   state,
   isDraft,
   mergeability,
+  baseBranch,
+  className,
 }: {
   readonly state: PullRequestState;
   readonly isDraft: boolean;
   readonly mergeability?: PullRequestMergeability;
+  readonly baseBranch?: string;
+  readonly className?: string;
 }) {
   const presentation = pullRequestStatePresentation({
     state,
     isDraft,
     ...(mergeability ? { mergeability } : {}),
+    ...(baseBranch ? { baseBranch } : {}),
   });
   return (
-    <presentation.Icon
-      aria-label={presentation.label}
-      className={cn("size-4 shrink-0", presentation.className)}
-    />
+    <Tooltip>
+      {/* The list row is itself a button, so the trigger stays a span: an
+          interactive one would nest a control inside that button. */}
+      <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
+        <presentation.Icon
+          role="img"
+          aria-label={presentation.label}
+          className={cn("size-4 shrink-0", presentation.className, className)}
+        />
+      </TooltipTrigger>
+      <TooltipPopup>{presentation.label}</TooltipPopup>
+    </Tooltip>
   );
 }
 
-export function PullRequestActorLabel({
+export function PullRequestActorAvatar({
   actor,
   className,
 }: {
@@ -64,34 +110,133 @@ export function PullRequestActorLabel({
   readonly className?: string;
 }) {
   const login = actor?.login ?? "ghost";
+  if (!actor?.avatarUrl) {
+    // Not every host reports an avatar, so the initial stands in where none arrives.
+    return (
+      <span
+        aria-hidden
+        className={cn(
+          "flex size-4 shrink-0 items-center justify-center rounded-full bg-muted text-[8px] font-medium text-muted-foreground",
+          className,
+        )}
+      >
+        {login.slice(0, 1).toUpperCase()}
+      </span>
+    );
+  }
   return (
-    <span className={cn("inline-flex min-w-0 items-center gap-1.5", className)} title={login}>
-      {actor?.avatarUrl ? (
-        <img alt="" className="size-4 rounded-full" loading="lazy" src={actor.avatarUrl} />
-      ) : (
-        <span className="flex size-4 items-center justify-center rounded-full bg-muted text-[9px]">
-          {login.slice(0, 1).toUpperCase()}
-        </span>
-      )}
-      <span className="truncate">{login}</span>
-    </span>
+    <img
+      alt=""
+      aria-hidden
+      className={cn("size-4 shrink-0 rounded-full bg-muted object-cover", className)}
+      loading="lazy"
+      src={actor.avatarUrl}
+    />
+  );
+}
+
+/** GitHub attributes work from a deleted account to "ghost"; say the same word everywhere. */
+export function PullRequestActorLabel({
+  actor,
+  className,
+  labelClassName,
+  tooltip = true,
+}: {
+  readonly actor: PullRequestActor | null;
+  readonly className?: string;
+  readonly labelClassName?: string;
+  readonly tooltip?: boolean;
+}) {
+  const login = actor?.login ?? "ghost";
+  const label = (
+    <>
+      <PullRequestActorAvatar actor={actor} />
+      <span className={cn("truncate", labelClassName)}>{login}</span>
+    </>
+  );
+  if (!tooltip) {
+    return (
+      <span className={cn("inline-flex min-w-0 items-center gap-1.5", className)}>{label}</span>
+    );
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={<span />}
+        className={cn("inline-flex min-w-0 items-center gap-1.5", className)}
+      >
+        {label}
+      </TooltipTrigger>
+      <TooltipPopup side="top">{login}</TooltipPopup>
+    </Tooltip>
   );
 }
 
 export function PullRequestDiffStat({
   additions,
   deletions,
+  className,
 }: {
   readonly additions: number;
   readonly deletions: number;
+  readonly className?: string;
 }) {
+  // Zero means the host has not reported counts (or there are none); showing
+  // "+0 -0" would read as an empty change set rather than a missing one.
   if (additions === 0 && deletions === 0) return null;
   return (
-    <span className="inline-flex gap-1 tabular-nums text-xs">
-      <span className="text-emerald-600 dark:text-emerald-300">+{additions}</span>
-      <span className="text-destructive">-{deletions}</span>
+    <span className={cn("inline-flex items-baseline gap-1 tabular-nums", className)}>
+      <span className="text-emerald-600 dark:text-emerald-300">+{additions.toLocaleString()}</span>
+      <span className="text-destructive">-{deletions.toLocaleString()}</span>
     </span>
   );
+}
+
+/**
+ * Dot-separated metadata. It owns the separator, and draws one only between
+ * the segments that survive, so a caller can render
+ * `{condition ? <span/> : null}` without leaving a stray dot.
+ */
+function separatorKey(segment: ReactNode): string {
+  return `separator:${isValidElement(segment) ? String(segment.key) : String(segment)}`;
+}
+
+export function PullRequestMetaLine({
+  children,
+  className,
+}: {
+  readonly children: ReactNode;
+  readonly className?: string;
+}) {
+  const segments = Children.toArray(children);
+  return (
+    <span className={cn("flex min-w-0 items-center gap-1.5", className)}>
+      {segments.flatMap((segment, index) =>
+        index === 0
+          ? segment
+          : [
+              <span
+                aria-hidden
+                className="shrink-0 text-muted-foreground/50"
+                key={separatorKey(segment)}
+              >
+                ·
+              </span>,
+              segment,
+            ],
+      )}
+    </span>
+  );
+}
+
+/**
+ * Normalizes a label color to a CSS color, or null when it is absent. Label
+ * colors arrive as bare hex without the leading `#`.
+ */
+export function pullRequestLabelColor(color: string | null | undefined): string | null {
+  if (!color) return null;
+  const hex = color.startsWith("#") ? color : `#${color}`;
+  return /^#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?$/.test(hex) ? hex : null;
 }
 
 const HTML_ENTITY_PATTERN = /&(amp|lt|gt|quot|#39);/g;
@@ -211,8 +356,46 @@ function transformPullRequestMarkdown(body: string): string {
   return text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
 }
 
-export function humanizeMonitorToken(value: string): string {
-  return value.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+const CHECK_STATUS_PRESENTATION = {
+  pending: { label: "Running", Icon: CircleDotIcon, toneClassName: "text-amber-500" },
+  success: {
+    label: "Passed",
+    Icon: CircleCheckIcon,
+    toneClassName: "text-emerald-600 dark:text-emerald-300/90",
+  },
+  failure: { label: "Failed", Icon: CircleXIcon, toneClassName: "text-destructive" },
+  cancelled: { label: "Cancelled", Icon: CircleXIcon, toneClassName: "text-destructive" },
+  skipped: {
+    label: "Skipped",
+    Icon: CircleDashedIcon,
+    toneClassName: "text-muted-foreground/70",
+  },
+  neutral: {
+    label: "Neutral",
+    Icon: CircleDashedIcon,
+    toneClassName: "text-muted-foreground/70",
+  },
+} as const satisfies Record<
+  PullRequestCheckStatus,
+  { label: string; Icon: typeof CircleCheckIcon; toneClassName: string }
+>;
+
+export function pullRequestCheckStatusLabel(status: PullRequestCheckStatus): string {
+  return CHECK_STATUS_PRESENTATION[status].label;
+}
+
+export function PullRequestCheckStatusIcon({
+  status,
+}: {
+  readonly status: PullRequestCheckStatus;
+}) {
+  const presentation = CHECK_STATUS_PRESENTATION[status];
+  return (
+    <presentation.Icon
+      aria-hidden
+      className={cn("size-3.5 shrink-0", presentation.toneClassName)}
+    />
+  );
 }
 
 export interface PullRequestCheckSummary {

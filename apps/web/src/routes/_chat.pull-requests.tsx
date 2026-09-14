@@ -3,17 +3,28 @@ import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from "@tans
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   GitPullRequestIcon,
+  ListFilterIcon,
   LoaderCircleIcon,
   RefreshCwIcon,
   SearchIcon,
-  XIcon,
 } from "lucide-react";
 import { type ReactNode, useDeferredValue, useEffect, useMemo } from "react";
 
 import { PullRequestDetailPanel } from "../components/pullRequest/PullRequestDetailPanel";
 import { PullRequestRow } from "../components/pullRequest/PullRequestRow";
 import { Button } from "../components/ui/button";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "../components/ui/input-group";
+import {
+  Menu,
+  MenuGroupLabel,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "../components/ui/menu";
 import { SidebarInset, SidebarTrigger } from "../components/ui/sidebar";
+import { Spinner } from "../components/ui/spinner";
 import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
 import {
   pullRequestInvalidateMutationOptions,
@@ -55,6 +66,7 @@ const INVOLVEMENT_LABELS: Record<(typeof INVOLVEMENTS)[number], string> = {
 const PAGE_SIZE = 50;
 const STATS_BATCH_SIZE = 500;
 const EMPTY_PROJECTS: readonly Project[] = [];
+const ALL_PROJECTS_VALUE = "all";
 
 function isListState(value: unknown): value is PullRequestListState {
   return typeof value === "string" && (LIST_STATES as readonly string[]).includes(value);
@@ -157,6 +169,31 @@ function PullRequestsRoute() {
       return stat && entry.additions === 0 && entry.deletions === 0 ? { ...entry, ...stat } : entry;
     });
   }, [entries, statsQueries]);
+  const normalizedQuery = deferredQuery.trim().toLowerCase();
+  /**
+   * The list only narrows by title/repository client-side for display; a row
+   * whose match came from elsewhere (description, comments) says so on the
+   * row rather than reading as a random result.
+   */
+  const matchRowElsewhere = (entry: { readonly title: string; readonly repository: string }) => {
+    if (!normalizedQuery) return false;
+    return (
+      !entry.title.toLowerCase().includes(normalizedQuery) &&
+      !entry.repository.toLowerCase().includes(normalizedQuery)
+    );
+  };
+  const reviewRequestedEntries = useMemo(
+    () => entriesWithStats.filter((entry) => entry.viewerReviewRequested),
+    [entriesWithStats],
+  );
+  const otherEntries = useMemo(
+    () => entriesWithStats.filter((entry) => !entry.viewerReviewRequested),
+    [entriesWithStats],
+  );
+  const filterCount =
+    (search.state === "open" ? 0 : 1) +
+    (search.involvement === "all" ? 0 : 1) +
+    (search.projectId ? 1 : 0);
   const explicitSelection = useMemo(
     () =>
       search.repository && search.number && search.selectedProjectId
@@ -265,82 +302,95 @@ function PullRequestsRoute() {
         <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(22rem,0.9fr)_minmax(28rem,1.1fr)]">
           <section className="flex min-h-0 flex-col border-r border-border">
             <div className="space-y-2 border-b border-border p-3">
-              <div className="relative">
-                <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                <input
-                  aria-label="Search pull requests"
-                  className="h-8 w-full rounded border border-input bg-background py-1 pr-8 pl-8 text-sm"
-                  placeholder="Search pull requests"
-                  value={search.q ?? ""}
-                  onChange={(event) =>
-                    updateSearch({ q: event.currentTarget.value || undefined }, true)
-                  }
-                />
-                {search.q ? (
-                  <button
-                    aria-label="Clear search"
-                    className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground"
-                    type="button"
-                    onClick={() => updateSearch({ q: undefined }, true)}
+              <div className="flex min-w-0 items-center gap-2">
+                <InputGroup className="min-w-0 flex-1">
+                  <InputGroupAddon>
+                    {listQuery.isFetching && !listQuery.isFetchingNextPage ? (
+                      <Spinner aria-hidden />
+                    ) : (
+                      <SearchIcon aria-hidden />
+                    )}
+                  </InputGroupAddon>
+                  <InputGroupInput
+                    type="search"
+                    aria-label="Search pull requests"
+                    placeholder="Search pull requests"
+                    value={search.q ?? ""}
+                    onChange={(event) =>
+                      updateSearch({ q: event.currentTarget.value || undefined }, true)
+                    }
+                  />
+                </InputGroup>
+                <Menu>
+                  <MenuTrigger
+                    className="relative"
+                    render={
+                      <Button
+                        aria-label={`Filter pull requests${filterCount > 0 ? `, ${filterCount} active` : ""}`}
+                        size="icon-sm"
+                        variant="outline"
+                      />
+                    }
                   >
-                    <XIcon className="size-3.5" />
-                  </button>
-                ) : null}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <select
-                  aria-label="Pull request state"
-                  className="h-8 rounded border border-input bg-background px-2 text-xs"
-                  value={search.state}
-                  onChange={(event) =>
-                    updateSearch({ state: event.currentTarget.value as PullRequestListState }, true)
-                  }
-                >
-                  {LIST_STATES.map((state) => (
-                    <option key={state} value={state}>
-                      {LIST_STATE_LABELS[state]}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  aria-label="Pull request involvement"
-                  className="h-8 rounded border border-input bg-background px-2 text-xs"
-                  value={search.involvement}
-                  onChange={(event) =>
-                    updateSearch(
-                      { involvement: event.currentTarget.value as PullRequestInvolvement },
-                      true,
-                    )
-                  }
-                >
-                  {INVOLVEMENTS.map((involvement) => (
-                    <option key={involvement} value={involvement}>
-                      {INVOLVEMENT_LABELS[involvement]}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  aria-label="Pull request project"
-                  className="h-8 min-w-0 flex-1 rounded border border-input bg-background px-2 text-xs"
-                  value={search.projectId ?? ""}
-                  onChange={(event) =>
-                    updateSearch(
-                      {
-                        projectId: (event.currentTarget.value || undefined) as
-                          | ProjectId
-                          | undefined,
-                      },
-                      true,
-                    )
-                  }
-                >
-                  <option value="">All projects</option>
-                  {projects.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.name}
-                    </option>
-                  ))}
-                </select>
+                    <ListFilterIcon aria-hidden className="size-4" />
+                    {filterCount > 0 ? (
+                      <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-primary text-[10px] font-medium text-primary-foreground tabular-nums">
+                        {filterCount}
+                      </span>
+                    ) : null}
+                  </MenuTrigger>
+                  <MenuPopup align="end">
+                    <MenuGroupLabel>State</MenuGroupLabel>
+                    <MenuRadioGroup
+                      value={search.state}
+                      onValueChange={(value) =>
+                        updateSearch({ state: value as PullRequestListState }, true)
+                      }
+                    >
+                      {LIST_STATES.map((state) => (
+                        <MenuRadioItem key={state} value={state}>
+                          {LIST_STATE_LABELS[state]}
+                        </MenuRadioItem>
+                      ))}
+                    </MenuRadioGroup>
+                    <MenuSeparator />
+                    <MenuGroupLabel>Involvement</MenuGroupLabel>
+                    <MenuRadioGroup
+                      value={search.involvement}
+                      onValueChange={(value) =>
+                        updateSearch({ involvement: value as PullRequestInvolvement }, true)
+                      }
+                    >
+                      {INVOLVEMENTS.map((involvement) => (
+                        <MenuRadioItem key={involvement} value={involvement}>
+                          {INVOLVEMENT_LABELS[involvement]}
+                        </MenuRadioItem>
+                      ))}
+                    </MenuRadioGroup>
+                    <MenuSeparator />
+                    <MenuGroupLabel>Project</MenuGroupLabel>
+                    <MenuRadioGroup
+                      value={search.projectId ?? ALL_PROJECTS_VALUE}
+                      onValueChange={(value) =>
+                        updateSearch(
+                          {
+                            projectId: (value === ALL_PROJECTS_VALUE ? undefined : value) as
+                              | ProjectId
+                              | undefined,
+                          },
+                          true,
+                        )
+                      }
+                    >
+                      <MenuRadioItem value={ALL_PROJECTS_VALUE}>All projects</MenuRadioItem>
+                      {projects.map((project) => (
+                        <MenuRadioItem key={project.id} value={project.id}>
+                          {project.name}
+                        </MenuRadioItem>
+                      ))}
+                    </MenuRadioGroup>
+                  </MenuPopup>
+                </Menu>
               </div>
               {!listQuery.isPending && !listQuery.error ? (
                 <p aria-live="polite" className="text-xs text-muted-foreground">
@@ -390,10 +440,40 @@ function PullRequestsRoute() {
                   }
                 />
               ) : null}
-              {entriesWithStats.map((entry) => (
+              {reviewRequestedEntries.length > 0 && otherEntries.length > 0 ? (
+                <p className="px-3 pt-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                  Awaiting your review
+                </p>
+              ) : null}
+              {reviewRequestedEntries.map((entry) => (
                 <PullRequestRow
                   entry={entry}
                   key={`${entry.projectId}:${entry.repository}#${entry.number}`}
+                  matchedElsewhere={matchRowElsewhere(entry)}
+                  selected={
+                    selected?.projectId === entry.projectId &&
+                    selected.repository === entry.repository &&
+                    selected.number === entry.number
+                  }
+                  onSelect={(next) =>
+                    updateSearch({
+                      repository: next.repository,
+                      number: next.number,
+                      selectedProjectId: next.projectId,
+                    })
+                  }
+                />
+              ))}
+              {reviewRequestedEntries.length > 0 && otherEntries.length > 0 ? (
+                <p className="px-3 pt-3 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                  Other pull requests
+                </p>
+              ) : null}
+              {otherEntries.map((entry) => (
+                <PullRequestRow
+                  entry={entry}
+                  key={`${entry.projectId}:${entry.repository}#${entry.number}`}
+                  matchedElsewhere={matchRowElsewhere(entry)}
                   selected={
                     selected?.projectId === entry.projectId &&
                     selected.repository === entry.repository &&
@@ -443,7 +523,7 @@ function PullRequestsRoute() {
             ) : (
               <EmptyState
                 title="Select a pull request"
-                description="Choose a pull request to review its details, conversation, and diff."
+                description="Choose a pull request to review its details, timeline, and diff."
               />
             )}
           </section>

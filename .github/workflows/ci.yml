@@ -128,7 +128,7 @@ jobs:
       - name: Install browser runtime
         run: pnpm --filter t3 exec playwright install --with-deps chromium
 
-      - name: Self-test with visual evidence
+      - name: Pairing/reconnect baseline with diagnostic captures
         id: self-test
         timeout-minutes: 8
         run: pnpm test:self
@@ -157,7 +157,7 @@ jobs:
           ARTIFACT_URL: ${{ steps.self-test-evidence.outputs.artifact-url }}
           SELF_TEST_OUTCOME: ${{ steps.self-test.outcome }}
         run: |
-          printf '### Production web self-test\n\nResult: %s\n\n[Download screenshot, recording, and revision manifest](%s)\n\nScope: pairing/reconnect baseline, not feature-specific or native Electron validation. Artifacts require repository access and expire after 14 days.\n' "$SELF_TEST_OUTCOME" "$ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
+          printf '### Pairing/reconnect baseline only\n\nResult: %s\n\n[Download baseline diagnostics and revision manifest](%s)\n\nThis job does not exercise PR functionality or establish feature readiness. Exercise changed features in a real client and publish their captures separately with pnpm pr:media. Artifacts require repository access and expire after 14 days.\n' "$SELF_TEST_OUTCOME" "$ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
 
   release_smoke:
     name: Release Smoke

@@ -62,6 +62,8 @@ If OTLP is not configured, metrics still exist in-process, but you will not have
 
 Provider event NDJSON files still exist per-thread under `logs/provider/` for provider runtime streams. In addition, every provider event (native and canonical) is also written to a single global rotating file at `globalProviderEventLogPath` (default `~/.t3/userdata/logs/provider/provider-events.ndjson`), tagged with `stream`, `threadId`, and `observedAt`, so you can search or tail one file instead of grepping across hundreds of per-thread files. Both are separate from the main server trace file.
 
+Transient provider progress is intentionally omitted from these event logs. OpenCode text deltas and running tool snapshots are skipped, while pending and terminal tool states remain with their final output or error. This affects observability files only; client events and orchestration persistence are unchanged.
+
 ### Lifecycle Events
 
 Key server and provider lifecycle transitions are emitted as structured log entries (visible in `server.log` and stdout) so session boundaries are easy to find:
