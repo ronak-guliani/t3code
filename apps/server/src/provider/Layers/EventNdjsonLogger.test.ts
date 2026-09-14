@@ -113,6 +113,114 @@ describe("EventNdjsonLogger", () => {
       }),
   );
 
+  it.effect("omits repeated OpenCode progress while retaining terminal tool states", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));
+      const basePath = path.join(tempDir, "provider-native.ndjson");
+      const threadId = ThreadId.make("thread-tool-progress");
+      const toolEvent = (status: string) => ({
+        observedAt: "2026-09-14T00:00:00.000Z",
+        event: {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              type: "tool",
+              state: {
+                status,
+                input: { command: "pnpm test" },
+                ...(status === "completed" ? { output: "passed" } : {}),
+                ...(status === "error" ? { error: "failed" } : {}),
+              },
+            },
+          },
+        },
+      });
+      const retained = [toolEvent("pending"), toolEvent("completed"), toolEvent("error")];
+
+      try {
+        const logger = yield* makeEventNdjsonLogger(basePath, {
+          stream: "native",
+          batchWindowMs: 0,
+        });
+        assert.notEqual(logger, undefined);
+        if (!logger) {
+          return;
+        }
+
+        yield* logger.write(
+          {
+            observedAt: "2026-09-14T00:00:00.000Z",
+            event: {
+              type: "message.part.delta",
+              properties: { delta: "streamed text" },
+            },
+          },
+          threadId,
+        );
+        yield* logger.write(
+          {
+            observedAt: "2026-09-14T00:00:00.000Z",
+            event: {
+              type: "message.part.updated",
+              properties: { part: { type: "text", text: "growing response" } },
+            },
+          },
+          threadId,
+        );
+        yield* logger.write(toolEvent("running"), threadId);
+        for (const event of retained) {
+          yield* logger.write(event, threadId);
+        }
+        yield* logger.close();
+
+        const payloads = fs
+          .readFileSync(path.join(tempDir, "thread-tool-progress.log"), "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => parseLogLine(line).payload);
+        assert.deepEqual(payloads, retained.map((event) => JSON.stringify(event)));
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("omits repeated canonical progress events", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));
+      const basePath = path.join(tempDir, "provider-canonical.ndjson");
+      const threadId = ThreadId.make("thread-canonical-progress");
+
+      try {
+        const logger = yield* makeEventNdjsonLogger(basePath, {
+          stream: "canonical",
+          batchWindowMs: 0,
+        });
+        assert.notEqual(logger, undefined);
+        if (!logger) {
+          return;
+        }
+
+        yield* logger.write({ type: "content.delta", payload: { delta: "a" } }, threadId);
+        yield* logger.write({ type: "item.updated", payload: { status: "inProgress" } }, threadId);
+        yield* logger.write({ type: "item.completed", payload: { status: "completed" } }, threadId);
+        yield* logger.close();
+
+        const lines = fs
+          .readFileSync(path.join(tempDir, "thread-canonical-progress.log"), "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => parseLogLine(line));
+        assert.deepEqual(
+          lines.map((line) => line.payload),
+          ['{"type":"item.completed","payload":{"status":"completed"}}'],
+        );
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("serializes concurrent first writes for the same segment", () =>
     Effect.gen(function* () {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));
