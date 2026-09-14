@@ -203,6 +203,41 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       return PubSub.publish(statePubSub, next).pipe(Effect.as({ state: next }));
     }).pipe(Effect.map(({ state }) => state));
 
+  const applySettingsSnapshot = (next: {
+    readonly enabled: boolean;
+    readonly agentAccessEnabled: boolean;
+    readonly onboardingCompleted: boolean;
+  }) =>
+    Effect.gen(function* () {
+      const current = (yield* SynchronizedRef.get(stateRef)).state;
+      if (
+        current.agentAccessEnabled === next.agentAccessEnabled &&
+        current.onboardingCompleted === next.onboardingCompleted &&
+        (current.hostStatus !== "disabled") === next.enabled
+      ) {
+        return;
+      }
+      yield* publish((state) => ({
+        ...state,
+        hostStatus: next.enabled
+          ? state.hostStatus === "disabled"
+            ? "idle"
+            : state.hostStatus
+          : "disabled",
+        ...(next.enabled ? {} : { hostStatusDetail: undefined, hostStatuses: {} }),
+        devices: next.enabled ? state.devices : [],
+        sessions: next.enabled ? state.sessions : [],
+        bootingDevices: next.enabled ? state.bootingDevices : [],
+        agentAccessEnabled: next.agentAccessEnabled,
+        onboardingCompleted: next.onboardingCompleted,
+      }));
+    });
+
+  const syncSettingsState = readDeviceSettings.pipe(
+    Effect.tap(applySettingsSnapshot),
+    Effect.asVoid,
+  );
+
   const resolveHost = (hostId: DeviceHostId | undefined) =>
     Effect.gen(function* () {
       const id = hostId ?? LOCAL_DEVICE_HOST_ID;
@@ -388,6 +423,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   });
 
   const list: DeviceService["Service"]["list"] = Effect.gen(function* () {
+    yield* syncSettingsState;
     if (!(yield* readDeviceSettings).enabled) return (yield* SynchronizedRef.get(stateRef)).state;
     yield* Effect.forEach(
       hosts.values(),
@@ -782,7 +818,15 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           agentDeviceSession(input.threadId, input.hostId, input.deviceId),
         ];
       }),
-    state: SynchronizedRef.get(stateRef).pipe(Effect.map(({ state }) => state)),
+    state: syncSettingsState.pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("could not refresh Device service settings snapshot", {
+          error: error.message,
+        }),
+      ),
+      Effect.andThen(SynchronizedRef.get(stateRef)),
+      Effect.map(({ state }) => state),
+    ),
     subscribe: PubSub.subscribe(statePubSub),
     configure,
     list,

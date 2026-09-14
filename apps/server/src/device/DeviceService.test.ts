@@ -182,7 +182,9 @@ const fixture = Effect.fn("fixture")(function* (
       ),
     ),
   );
-  return { service, starts, agentStarts, agentStops, requests, settings };
+  const publishSettings = (patch: Partial<typeof DEFAULT_SERVER_SETTINGS>) =>
+    Ref.updateAndGet(settings, (current) => ({ ...current, ...patch }));
+  return { service, starts, agentStarts, agentStops, requests, settings, publishSettings };
 });
 
 describe("device setup consent", () => {
@@ -251,6 +253,17 @@ describe("device setup consent", () => {
       expect(agentStops).toEqual(["stop"]);
       expect((yield* service.state).onboardingCompleted).toBe(true);
       expect((yield* Ref.get(settings)).deviceOnboardingCompleted).toBe(true);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("publishes agent access changes made through server settings", () =>
+    Effect.gen(function* () {
+      const { service, publishSettings } = yield* fixture();
+      yield* publishSettings({ enableDeviceSupport: true, enableAgentDeviceAccess: true });
+      expect((yield* service.state).agentAccessEnabled).toBe(true);
+
+      yield* publishSettings({ enableAgentDeviceAccess: false });
+      expect((yield* service.state).agentAccessEnabled).toBe(false);
     }).pipe(Effect.scoped),
   );
 });
