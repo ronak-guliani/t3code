@@ -2,7 +2,7 @@ import type { DevicePlatform, EnvironmentId } from "@t3tools/contracts";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
-import { refreshDeviceHubAccess, useDeviceHubAccess } from "~/state/device";
+import { useDeviceHubAccess } from "~/state/device";
 import { DeviceLoadingView } from "./DeviceLoadingView";
 import { type DeviceAxElement, fetchDeviceAxTree } from "./deviceHubApi";
 import {
@@ -41,7 +41,11 @@ export function DeviceStreamView(props: {
   readonly onHandle?: (handle: DeviceStreamHandle | null) => void;
   readonly onScreen?: (screen: DeviceScreenSize | null) => void;
 }) {
-  const access = useDeviceHubAccess(props.environmentId, props.hostId);
+  const { access, refresh: refreshAccess } = useDeviceHubAccess(
+    props.environmentId,
+    props.hostId,
+    props.visible,
+  );
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const clientRef = useRef<DeviceStreamClient | null>(null);
   const [status, setStatus] = useState<DeviceStreamStatus>("connecting");
@@ -75,7 +79,7 @@ export function DeviceStreamView(props: {
         },
         onUnauthorized: () => {
           // A fresh ticket re-runs this effect through the access dependency.
-          refreshDeviceHubAccess(props.environmentId);
+          refreshAccess();
         },
         onMjpegFallback: (url) => {
           setMjpegUrl(url);
@@ -107,6 +111,7 @@ export function DeviceStreamView(props: {
     access,
     onHandle,
     onScreen,
+    refreshAccess,
     props.deviceId,
     props.environmentId,
     props.platform,

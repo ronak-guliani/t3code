@@ -20,7 +20,7 @@ import type {
 import { useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
 import { AsyncResult, Atom, type AtomRegistry } from "effect/unstable/reactivity";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { readEnvironmentConnection } from "~/environments/runtime";
 import type { WsRpcClient } from "~/rpc/wsRpcClient";
@@ -136,12 +136,17 @@ export function useDeviceState(environmentId: EnvironmentId | null): {
 export function useDeviceHubAccess(
   environmentId: EnvironmentId | null,
   hostId = "local",
-): DeviceHubAccess | null {
+  active = true,
+): {
+  readonly access: DeviceHubAccess | null;
+  readonly refresh: () => void;
+} {
   const [access, setAccess] = useState<DeviceHubAccess | null>(null);
   const [generation, setGeneration] = useState(0);
+  const refresh = useCallback(() => setGeneration((value) => value + 1), []);
 
   useEffect(() => {
-    if (environmentId === null) {
+    if (environmentId === null || !active) {
       setAccess(null);
       return;
     }
@@ -163,21 +168,10 @@ export function useDeviceHubAccess(
     return () => {
       cancelled = true;
     };
-  }, [environmentId, generation, hostId]);
+  }, [active, environmentId, generation, hostId]);
 
-  useEffect(() => {
-    if (environmentId === null) return;
-    deviceHubRefreshers.set(environmentId, () => setGeneration((value) => value + 1));
-    return () => {
-      deviceHubRefreshers.delete(environmentId);
-    };
-  }, [environmentId]);
-
-  return access;
-}
-
-const deviceHubRefreshers = new Map<EnvironmentId, () => void>();
-
-export function refreshDeviceHubAccess(environmentId: EnvironmentId): void {
-  deviceHubRefreshers.get(environmentId)?.();
+  return {
+    access,
+    refresh,
+  };
 }

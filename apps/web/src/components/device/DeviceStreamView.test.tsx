@@ -3,9 +3,12 @@ import { create, type ReactTestRenderer } from "react-test-renderer";
 import { EnvironmentId } from "@t3tools/contracts";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 
+const refreshAccess = vi.fn();
 vi.mock("~/state/device", () => ({
-  useDeviceHubAccess: () => access,
-  refreshDeviceHubAccess: vi.fn(),
+  useDeviceHubAccess: (_environmentId: unknown, _hostId: unknown, visible: boolean) => ({
+    access: visible ? access : null,
+    refresh: refreshAccess,
+  }),
 }));
 const access = { httpBase: "http://test", wsBase: "ws://test", query: {}, credentials: true };
 vi.mock("./deviceStream", () => ({
