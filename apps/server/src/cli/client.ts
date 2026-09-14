@@ -561,10 +561,12 @@ const dispatchCommand = (
     }),
   );
 
-export const wsRpcProtocolLayer = (url: string) => {
-  const socketLayer = Socket.layerWebSocket(url).pipe(
-    Layer.provide(NodeSocket.layerWebSocketConstructor),
-  );
+export const wsRpcProtocolLayer = (url: string | Effect.Effect<string, unknown>) => {
+  // Socket resolves this effect for each connection, never replaying a single-use ticket.
+  // Failed authorization terminates the protocol and fails its pending calls.
+  const socketLayer = Socket.layerWebSocket(
+    typeof url === "string" ? url : url.pipe(Effect.orDie),
+  ).pipe(Layer.provide(NodeSocket.layerWebSocketConstructor));
   return RpcClient.layerProtocolSocket().pipe(
     Layer.provide(socketLayer),
     Layer.provide(RpcSerialization.layerJson),
@@ -597,7 +599,7 @@ export const withResolvedLiveRpcClient = <A, E, R>(
           accountId: target.accountId,
           environmentId: target.environmentId,
         },
-        (accountTarget) => withRpcClientForSocketUrl(accountTarget.socketUrl, run),
+        (accountTarget) => withRpcClientForSocketUrl(accountTarget.nextSocketUrl, run),
       );
     }
     return yield* withBorrowedBearerTokenForTarget(target, ({ origin, bearerToken }) =>
@@ -716,7 +718,7 @@ export const withRpcClientForBearerToken = <A, E, R>(
   });
 
 const withRpcClientForSocketUrl = <A, E, R>(
-  socketUrl: string,
+  socketUrl: string | Effect.Effect<string, unknown>,
   run: (client: WsRpcClient) => Effect.Effect<A, E, R>,
 ) =>
   makeWsRpcClient.pipe(
@@ -736,7 +738,7 @@ export const getLiveOrchestrationShellSnapshot = (flags: CliLiveTargetFlags) =>
           environmentId: target.environmentId,
         },
         (accountTarget) =>
-          withRpcClientForSocketUrl(accountTarget.socketUrl, (client) =>
+          withRpcClientForSocketUrl(accountTarget.nextSocketUrl, (client) =>
             client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({}),
           ),
       );
@@ -760,7 +762,7 @@ export const withLiveOrchestrationClient = <A, E, R>(
           environmentId: target.environmentId,
         },
         (accountTarget) =>
-          withRpcClientForSocketUrl(accountTarget.socketUrl, (client) =>
+          withRpcClientForSocketUrl(accountTarget.nextSocketUrl, (client) =>
             run({
               getSnapshot: client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({}),
               dispatch: (command) => client[ORCHESTRATION_WS_METHODS.dispatchCommand](command),
@@ -790,7 +792,7 @@ export const withLiveSnapshotClient = <A, E, R>(
           environmentId: target.environmentId,
         },
         (accountTarget) =>
-          withRpcClientForSocketUrl(accountTarget.socketUrl, (client) =>
+          withRpcClientForSocketUrl(accountTarget.nextSocketUrl, (client) =>
             run({
               getSnapshot: client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({}),
               getThreadSnapshot: (threadId) =>

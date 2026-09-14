@@ -997,6 +997,7 @@ export interface LocalApi {
      */
     refreshProviders: (input?: {
       readonly instanceId?: ProviderInstanceId;
+      readonly cwd?: string;
     }) => Promise<ServerProviderUpdatedPayload>;
     listProviderCommands: (
       input: ServerProviderListCommandsInput,
@@ -1127,6 +1128,10 @@ export interface EnvironmentApi {
     ) => Promise<PullRequestMonitorLaunchFallbackResult>;
   };
   server: {
+    refreshProviders: (input?: {
+      readonly instanceId?: ProviderInstanceId;
+      readonly cwd?: string;
+    }) => Promise<ServerProviderUpdatedPayload>;
     exportThreadMarkdown: (
       input: ServerExportThreadMarkdownInput,
     ) => Promise<ServerExportThreadMarkdownResult>;

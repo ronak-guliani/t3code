@@ -35,10 +35,15 @@ export function isRelayManagedConnection(
 export function toStableSavedRemoteConnection(
   connection: SavedRemoteConnection,
 ): SavedRemoteConnection {
-  if (!isRelayManagedConnection(connection) || !connection.dpopAccessToken) {
-    return connection;
+  // Strip one-time pairing credentials at the persist boundary so stored
+  // records carry only the minimal fields needed to reconnect
+  // (client-localstorage-schema). Fresh pairing URLs already arrive redacted
+  // from linkEnvironment; this enforces the invariant for every writer.
+  const redacted = { ...connection, pairingUrl: redactPairingCredential(connection.pairingUrl) };
+  if (!isRelayManagedConnection(redacted) || !redacted.dpopAccessToken) {
+    return redacted;
   }
 
-  const { dpopAccessToken: _, ...stableConnection } = connection;
+  const { dpopAccessToken: _, ...stableConnection } = redacted;
   return stableConnection;
 }

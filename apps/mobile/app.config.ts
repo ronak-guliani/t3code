@@ -192,11 +192,9 @@ export function makeMobileConfig(env: BuildEnvironment): ExpoConfig {
       favicon: "./assets/favicon.png",
     },
     plugins: [
-      // Expo mod actions execute in reverse registration order; strip APNs after other plugins.
-      "./plugins/withLocalOnlyNotifications.cjs",
       ...authPlugins,
       ["expo-dev-client", { addGeneratedScheme: appVariant === "development" }],
-      ["expo-notifications", { enableBackgroundRemoteNotifications: false }],
+      ["expo-notifications", { mode: appVariant === "development" ? "development" : "production" }],
       "expo-asset",
       "expo-sqlite",
       "./plugins/withShareExtensionDisplayName.cjs",
@@ -309,7 +307,8 @@ export function makeMobileConfig(env: BuildEnvironment): ExpoConfig {
         {
           bundleIdentifier: `${variant.iosBundleIdentifier}.widgets`,
           groupIdentifier: `group.${variant.iosBundleIdentifier}`,
-          enablePushNotifications: false,
+          enablePushNotifications: true,
+          frequentUpdates: true,
           widgets: [
             {
               name: "AgentActivity",
@@ -330,8 +329,6 @@ export function makeMobileConfig(env: BuildEnvironment): ExpoConfig {
     ],
     extra: {
       appVariant,
-      // Connect does not opt this independently signed app into hosted push or telemetry.
-      agentAwarenessPushEnabled: false,
       relay: {
         url: connectEnabled ? relayUrl : null,
       },

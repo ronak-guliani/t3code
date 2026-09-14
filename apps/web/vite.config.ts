@@ -118,6 +118,12 @@ export default defineConfig({
       configuredCliOAuthClientId ?? "",
     ),
     "import.meta.env.VITE_HOSTED_APP_URL": JSON.stringify(configuredHostedAppUrl ?? ""),
+    "import.meta.env.VITE_T3CODE_RELAY_URL": JSON.stringify(
+      repoEnv.VITE_T3CODE_RELAY_URL?.trim() ?? "",
+    ),
+    "import.meta.env.VITE_CLERK_JWT_TEMPLATE": JSON.stringify(
+      repoEnv.VITE_CLERK_JWT_TEMPLATE?.trim() ?? "",
+    ),
     "import.meta.env.APP_VERSION": JSON.stringify(pkg.version),
   },
   resolve: {

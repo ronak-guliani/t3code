@@ -281,6 +281,7 @@ describe("send_to_thread MCP tool", () => {
         kind: "decision-needed",
         summary: "Choose the migration approach.",
         thread: "untrusted-target",
+        originTurnId: "turn-a",
       }),
     );
     expect(output).toEqual([
@@ -292,6 +293,8 @@ describe("send_to_thread MCP tool", () => {
       "decision-needed",
       "--report-id",
       "decision-1",
+      "--turn-id",
+      "turn-a",
       "--cross-thread-capability",
       expect.any(String),
       "--base-dir",
@@ -302,6 +305,7 @@ describe("send_to_thread MCP tool", () => {
         reportId: "bad",
         kind: "completion",
         summary: "Done",
+        originTurnId: "turn-a",
       }),
     ).rejects.toThrow("valid kind");
     await expect(
@@ -311,9 +315,17 @@ describe("send_to_thread MCP tool", () => {
           reportId: "no-source",
           kind: "progress",
           summary: "Working",
+          originTurnId: "turn-a",
         },
       ),
     ).rejects.toThrow("requires a T3 provider session");
+    await expect(
+      __testing.reportToParentTool(options, {
+        reportId: "missing-turn",
+        kind: "progress",
+        summary: "Working",
+      }),
+    ).rejects.toThrow("requires originTurnId");
   });
 
   it("queues through the authenticated source thread", async () => {

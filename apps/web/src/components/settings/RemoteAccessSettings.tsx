@@ -3,13 +3,16 @@ import { buildRemotePairingUrl } from "@t3tools/shared/remote";
 import { DateTime, Schema } from "effect";
 import { useEffect, useState } from "react";
 import { resolvePrimaryEnvironmentHttpUrl } from "~/environments/primary";
+import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { Button } from "../ui/button";
+import { toastManager } from "../ui/toast";
 import { MobilePairingDialog } from "./MobilePairingDialog";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 import type { MobilePairingDialogState } from "./useMobilePairing";
 
 const decodeStatus = Schema.decodeUnknownSync(RemoteAccessStatus);
 const decodePairing = Schema.decodeUnknownSync(RemoteAccessPairing);
+const SETUP_COMMAND = "t3 remote setup";
 
 async function request(path: string, options?: RequestInit): Promise<unknown> {
   const response = await fetch(resolvePrimaryEnvironmentHttpUrl(path), {
@@ -40,6 +43,22 @@ export function RemoteAccessSettings() {
   const [pairingOpen, setPairingOpen] = useState(false);
   const retryDisable = status?.enabled === false && status.status === "error";
   const nextAction = status?.enabled || retryDisable ? "disable" : "enable";
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    onCopy: () => {
+      toastManager.add({
+        type: "success",
+        title: "Setup command copied",
+        description: "Paste it into a terminal on this host.",
+      });
+    },
+    onError: (cause) => {
+      toastManager.add({
+        type: "error",
+        title: "Could not copy setup command",
+        description: cause.message,
+      });
+    },
+  });
 
   useEffect(() => {
     if (busy) return;
@@ -128,11 +147,27 @@ export function RemoteAccessSettings() {
             {status?.publicUrl ? (
               <p className="break-all font-mono text-xs">{status.publicUrl}</p>
             ) : null}
-            <p className="text-xs">
-              On this host, run <code>t3 remote setup</code> to configure or repair the tunnel. Run{" "}
-              <code>t3 service install</code> to keep a packaged server running after terminal
-              logout.
-            </p>
+            <div className="space-y-1.5">
+              <p className="text-xs">
+                Run this once in a terminal on this host. It starts or repairs the background host
+                when needed, then configures Remote Access.
+              </p>
+              <div className="flex min-w-0 items-center gap-2 rounded-md border border-border/60 bg-muted/40 p-2">
+                <code
+                  className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs"
+                  translate="no"
+                >
+                  {SETUP_COMMAND}
+                </code>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => copyToClipboard(SETUP_COMMAND, undefined)}
+                >
+                  {isCopied ? "Copied" : "Copy Command"}
+                </Button>
+              </div>
+            </div>
             <p className="text-xs">
               Pair each device separately. Repeat setup on each host. Disabling disconnects remote
               devices; it does not revoke their sessions.

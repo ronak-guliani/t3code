@@ -33,7 +33,9 @@ const runtimeMock = {
     runVersionError: null as Error | null,
     versionStdout: DEFAULT_VERSION_STDOUT,
     inventoryError: null as Error | null,
+    inventoryCwds: [] as string[],
     closeCalls: 0,
+    skillProbeCalls: 0,
     inventory: {
       providerList: { connected: [] as string[], all: [] as unknown[], default: {} },
       agents: [] as unknown[],
@@ -43,10 +45,13 @@ const runtimeMock = {
     this.state.runVersionError = null;
     this.state.versionStdout = DEFAULT_VERSION_STDOUT;
     this.state.inventoryError = null;
+    this.state.inventoryCwds = [];
     this.state.closeCalls = 0;
+    this.state.skillProbeCalls = 0;
     this.state.inventory = {
       providerList: { connected: [], all: [] as unknown[], default: {} },
       agents: [] as unknown[],
+      skills: [],
     };
   },
 };
@@ -94,6 +99,22 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           }),
         )
       : Effect.succeed(runtimeMock.state.inventory as OpenCodeInventory),
+  loadOpenCodeSkills: () => Effect.succeed([]),
+  loadOpenCodeSkillsForCwd: () =>
+    Effect.sync(() => {
+      runtimeMock.state.skillProbeCalls += 1;
+      return [];
+    }),
+  loadInventoryFromCli: (input) => {
+    runtimeMock.state.inventoryCwds.push(input.cwd);
+    return runtimeMock.state.inventoryError
+      ? Effect.succeed({
+          providerList: { all: [], default: {}, connected: [] as string[] },
+          agents: [],
+          skills: [],
+        } as OpenCodeInventory)
+      : Effect.succeed(runtimeMock.state.inventory as OpenCodeInventory);
+  },
 };
 
 beforeEach(() => {
@@ -138,6 +159,22 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
     }),
   );
 
+  it.effect("explains SIGKILL failures from invalid macOS binaries", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.runVersionError = new Error(
+        "Process interrupted due to receipt of signal: 'SIGKILL'",
+      );
+      const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
+
+      assert.equal(snapshot.status, "error");
+      assert.equal(snapshot.installed, true);
+      assert.equal(
+        snapshot.message,
+        'The OpenCode CLI was terminated by SIGKILL before it could report its version. On macOS, reinstall OpenCode or run `codesign --force --sign - "$(which opencode)"`, then verify `opencode --version` in a terminal.',
+      );
+    }),
+  );
+
   it.effect("emits OpenCode variant defaults so trait picker can resolve a visible selection", () =>
     Effect.gen(function* () {
       runtimeMock.state.inventory = {
@@ -178,9 +215,14 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
         (descriptor) => descriptor.id === "variant" && descriptor.type === "select",
       );
       assert.ok(variantDescriptor && variantDescriptor.type === "select");
+      assert.equal(variantDescriptor.label, "Reasoning");
       assert.equal(
         variantDescriptor.options.find((option) => option.isDefault === true)?.id,
         "medium",
+      );
+      assert.equal(
+        variantDescriptor.options.find((option) => option.id === "xhigh")?.label,
+        "Extra High",
       );
       const agentDescriptor = model.capabilities?.optionDescriptors?.find(
         (descriptor) => descriptor.id === "agent" && descriptor.type === "select",
@@ -190,14 +232,111 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
         agentDescriptor.options.find((option) => option.isDefault === true)?.id,
         "build",
       );
+      assert.deepEqual(
+        agentDescriptor.options.map((option) => option.id),
+        ["build"],
+      );
     }),
   );
 
-  it.effect("closes the local OpenCode server scope after provider refresh", () =>
+  it.effect("synthesizes standard reasoning levels when OpenCode omits variants", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.inventory = {
+        providerList: {
+          connected: ["openai"],
+          all: [
+            {
+              id: "openai",
+              name: "OpenAI",
+              models: {
+                "gpt-5.4": {
+                  id: "gpt-5.4",
+                  name: "GPT-5.4",
+                },
+              },
+            },
+          ],
+          default: {},
+        },
+        agents: [{ name: "build", hidden: false, mode: "primary" }],
+      };
+
+      const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
+      const model = snapshot.models.find((entry) => entry.slug === "openai/gpt-5.4");
+      const variantDescriptor = model?.capabilities?.optionDescriptors?.find(
+        (descriptor) => descriptor.id === "variant" && descriptor.type === "select",
+      );
+
+      assert.ok(variantDescriptor && variantDescriptor.type === "select");
+      assert.deepEqual(
+        variantDescriptor.options.map((option) => option.id),
+        ["low", "medium", "high", "xhigh"],
+      );
+      assert.equal(variantDescriptor.currentValue, "medium");
+      assert.equal(
+        variantDescriptor.options.find((option) => option.id === "xhigh")?.label,
+        "Extra High",
+      );
+    }),
+  );
+
+  it.effect("omits the retired plan agent when it is the only advertised agent", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.inventory = {
+        providerList: {
+          connected: ["openai"],
+          all: [
+            {
+              id: "openai",
+              name: "OpenAI",
+              models: {
+                "gpt-5.4": {
+                  id: "gpt-5.4",
+                  name: "GPT-5.4",
+                },
+              },
+            },
+          ],
+          default: {},
+        },
+        agents: [{ name: "plan", hidden: false, mode: "primary" }],
+      };
+
+      const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
+      const model = snapshot.models.find((entry) => entry.slug === "openai/gpt-5.4");
+      const agentDescriptor = model?.capabilities?.optionDescriptors?.find(
+        (descriptor) => descriptor.id === "agent",
+      );
+
+      assert.equal(agentDescriptor, undefined);
+    }),
+  );
+
+  it.effect("does not spawn a local server for health check (uses CLI instead)", () =>
     Effect.gen(function* () {
       yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
 
-      assert.equal(runtimeMock.state.closeCalls, 1);
+      assert.equal(runtimeMock.state.closeCalls, 0);
+      assert.equal(runtimeMock.state.skillProbeCalls, 0);
+    }),
+  );
+
+  it.effect("runs local inventory commands in the target project directory", () =>
+    Effect.gen(function* () {
+      yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), "/tmp/opencode-project");
+
+      assert.deepEqual(runtimeMock.state.inventoryCwds, ["/tmp/opencode-project"]);
+    }),
+  );
+
+  it.effect("degrades gracefully on CLI failure for local installs", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.inventoryError = new Error("opencode models failed");
+      const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
+
+      assert.equal(snapshot.status, "warning");
+      assert.equal(snapshot.installed, true);
+      assert.equal(snapshot.models.length, 0);
     }),
   );
 });

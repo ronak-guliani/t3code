@@ -88,6 +88,10 @@ export const PullRequestMonitorToolkitHandlersLive = PullRequestMonitorToolkit.t
       const result = yield* monitors.context({
         ...resolveSelector({ ...input, projectId: caller.projectId }),
         ...(input.includeClosed === undefined ? {} : { includeClosed: input.includeClosed }),
+        ...(input.deliveryId === undefined ? {} : { deliveryId: input.deliveryId }),
+        ...(input.revisionIds === undefined ? {} : { revisionIds: input.revisionIds }),
+        ...(input.offset === undefined ? {} : { offset: input.offset }),
+        ...(input.limit === undefined ? {} : { limit: input.limit }),
       });
       yield* requireMonitorAccess({
         monitor: result.monitor,

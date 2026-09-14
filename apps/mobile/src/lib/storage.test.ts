@@ -127,6 +127,7 @@ describe("mobile connection storage", () => {
     const savedValue = mocks.setItemAsync.mock.calls[0]?.[1];
     expect(savedValue).toBeDefined();
     expect(JSON.parse(savedValue ?? "")).toEqual({
+      version: 1,
       connections: [toStableSavedRemoteConnection(managedConnection)],
     });
   });
@@ -204,12 +205,15 @@ describe("mobile connection storage", () => {
 
   it("falls back to secure storage when SQLite cannot save preferences", async () => {
     mocks.setDatabaseFailures(true, true);
-    await expect(savePreferencesPatch({ baseFontSize: 19 })).resolves.toEqual({ baseFontSize: 19 });
+    await expect(savePreferencesPatch({ baseFontSize: 19 })).resolves.toEqual({
+      baseFontSize: 19,
+      storageVersion: 1,
+    });
     const fallback = JSON.parse(mocks.getStoredValue("t3code.preferences.fallback") ?? "") as {
       readonly payload: string;
       readonly updatedAt: number;
     };
-    expect(JSON.parse(fallback.payload)).toEqual({ baseFontSize: 19 });
+    expect(JSON.parse(fallback.payload)).toEqual({ baseFontSize: 19, storageVersion: 1 });
     expect(fallback.updatedAt).toEqual(expect.any(Number));
   });
 
@@ -222,15 +226,18 @@ describe("mobile connection storage", () => {
     ).resolves.toEqual({
       threadListSettledShelfExpanded: false,
       threadListSnoozedShelfExpanded: true,
+      storageVersion: 1,
     });
 
     await expect(loadPreferences()).resolves.toEqual({
       threadListSettledShelfExpanded: false,
       threadListSnoozedShelfExpanded: true,
+      storageVersion: 1,
     });
     expect(JSON.parse(mocks.getPreferencesJson() ?? "")).toEqual({
       threadListSettledShelfExpanded: false,
       threadListSnoozedShelfExpanded: true,
+      storageVersion: 1,
     });
   });
 
@@ -241,9 +248,10 @@ describe("mobile connection storage", () => {
       threadChildNotificationReadAt: { "environment-1:parent": "2026-09-05T12:00:00Z" },
       threadChildReadAt: { "environment-1:child": "2026-09-05T12:00:00Z" },
     };
-    await expect(savePreferencesPatch(preferences)).resolves.toEqual(preferences);
-    await expect(loadPreferences()).resolves.toEqual(preferences);
-    expect(JSON.parse(mocks.getPreferencesJson() ?? "")).toEqual(preferences);
+    const persisted = { ...preferences, storageVersion: 1 };
+    await expect(savePreferencesPatch(preferences)).resolves.toEqual(persisted);
+    await expect(loadPreferences()).resolves.toEqual(persisted);
+    expect(JSON.parse(mocks.getPreferencesJson() ?? "")).toEqual(persisted);
   });
 
   it("discards invalid hierarchy preference values without dropping valid entries", async () => {
@@ -280,8 +288,9 @@ describe("mobile connection storage", () => {
     const preferences = {
       threadCompletionReadAtMigrationVersion: 1,
     };
-    await expect(savePreferencesPatch(preferences)).resolves.toEqual(preferences);
-    await expect(loadPreferences()).resolves.toEqual(preferences);
+    const persisted = { ...preferences, storageVersion: 1 };
+    await expect(savePreferencesPatch(preferences)).resolves.toEqual(persisted);
+    await expect(loadPreferences()).resolves.toEqual(persisted);
   });
 
   it("drops legacy and invalid thread list shelf expansion preferences", async () => {

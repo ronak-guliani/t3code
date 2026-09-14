@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./connectManagement": {
+      "types": "./src/connectManagement.ts",
+      "import": "./src/connectManagement.ts"
+    },
     "./childFollowUp": {
       "types": "./src/childFollowUp.ts",
       "import": "./src/childFollowUp.ts"
@@ -243,6 +247,10 @@
     "./threadUrl": {
       "types": "./src/threadUrl.ts",
       "import": "./src/threadUrl.ts"
+    },
+    "./hostClassification": {
+      "types": "./src/hostClassification.ts",
+      "import": "./src/hostClassification.ts"
     },
     "./hostProcess": {
       "types": "./src/hostProcess.ts",

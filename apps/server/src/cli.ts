@@ -22,6 +22,7 @@ import {
   ProviderInstanceId,
   PullRequestMonitorFeedbackItemId,
   PullRequestMonitorFeedbackReportDisposition,
+  PullRequestMonitorContextInput,
   PullRequestMonitorFinding,
   PullRequestMonitorId,
   QueuedTurnId,
@@ -2239,6 +2240,7 @@ const chatNewCommand = Command.make("new", {
                 ? {
                     delegation: {
                       assignmentId: firstMessageId,
+                      dispatchId: crypto.randomUUID(),
                       followUp: flags.followUp.value,
                       completedAt: null,
                     },
@@ -2607,6 +2609,18 @@ const chatCommand = Command.make("chat").pipe(
       canContinue: Flag.choice("can-continue", ["true", "false"]).pipe(Flag.optional),
       supersedesReportId: Flag.string("supersedes-report").pipe(Flag.optional),
       crossThreadCapability: Flag.string("cross-thread-capability"),
+      dispatchId: Flag.string("dispatch-id").pipe(
+        Flag.optional,
+        Flag.withDescription(
+          "Execution dispatch presenting this report. Must come from the reporting execution's context; never inferred from live thread state.",
+        ),
+      ),
+      originTurnId: Flag.string("turn-id").pipe(
+        Flag.optional,
+        Flag.withDescription(
+          "Provider turn that produced this report. Must come from the reporting execution's session context.",
+        ),
+      ),
     }).pipe(
       Command.withDescription("Report an update from an authenticated delegated child."),
       Command.withHandler((flags) =>
@@ -2615,11 +2629,24 @@ const chatCommand = Command.make("chat").pipe(
             const decision = Option.isSome(flags.decision)
               ? yield* decodeChildDecisionJson(flags.decision.value)
               : undefined;
+            const presentedDispatchId = Option.getOrUndefined(flags.dispatchId);
+            const originTurnId = Option.getOrUndefined(flags.originTurnId);
+            const dispatchId =
+              presentedDispatchId ?? thread.nudging?.delegation?.dispatchId ?? undefined;
+            const assignmentId =
+              Option.getOrUndefined(flags.assignmentId) ??
+              thread.nudging?.delegation?.assignmentId ??
+              "";
+            // Older report_to_parent clients omit the dispatch. Resolve the
+            // active generation before receipt lookup so a new execution cannot
+            // replay a prior generation's command receipt. The immutable turn
+            // still proves which execution issued the report.
+            const keyBase = dispatchId
+              ? `child-report:${thread.id}:${dispatchId}:${assignmentId}:${flags.reportId}`
+              : `child-report:${thread.id}:${assignmentId}:${flags.reportId}`;
             return yield* dispatch({
               type: "thread.child.report",
-              commandId: CommandId.make(
-                `child-report:${thread.id}:${Option.getOrUndefined(flags.assignmentId) ?? thread.nudging?.delegation?.assignmentId ?? ""}:${flags.reportId}`,
-              ),
+              commandId: CommandId.make(originTurnId ? `${keyBase}:${originTurnId}` : keyBase),
               threadId: thread.id,
               reportId: flags.reportId,
               kind: flags.kind,
@@ -2627,6 +2654,8 @@ const chatCommand = Command.make("chat").pipe(
               ...(Option.isSome(flags.assignmentId)
                 ? { assignmentId: MessageId.make(flags.assignmentId.value) }
                 : {}),
+              ...(dispatchId ? { dispatchId } : {}),
+              ...(originTurnId ? { originTurnId: TurnId.make(originTurnId) } : {}),
               ...(decision ? { decision } : {}),
               ...(Option.isSome(flags.canContinue)
                 ? { canContinue: flags.canContinue.value === "true" }
@@ -3855,15 +3884,34 @@ const prMonitorContextCommand = Command.make("context", {
   ...prMonitorReferenceFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
   includeClosed: Flag.boolean("include-closed").pipe(Flag.withDefault(false)),
+  deliveryId: Flag.string("delivery-id").pipe(Flag.optional),
+  revisionId: Flag.string("revision-id").pipe(Flag.optional),
+  offset: Flag.integer("offset").pipe(Flag.withDefault(0)),
+  limit: Flag.integer("limit").pipe(Flag.withDefault(10)),
 }).pipe(
   Command.withDescription("Read the durable monitor feedback ledger for a chat."),
   Command.withHandler((flags) =>
     withThreadRpc(flags, flags.chat, ({ thread, client }) =>
       Effect.gen(function* () {
-        const result = yield* client[WS_METHODS.pullRequestMonitorsContext]({
-          ...prMonitorSelector(thread.projectId, flags),
-          includeClosed: flags.includeClosed,
-        });
+        const input = yield* decodeCliPayload(
+          PullRequestMonitorContextInput,
+          {
+            ...prMonitorSelector(thread.projectId, flags),
+            includeClosed: flags.includeClosed,
+            ...Option.match(flags.deliveryId, {
+              onNone: () => ({}),
+              onSome: (deliveryId) => ({ deliveryId }),
+            }),
+            ...Option.match(flags.revisionId, {
+              onNone: () => ({}),
+              onSome: (revisionId) => ({ revisionIds: [revisionId] }),
+            }),
+            offset: flags.offset,
+            limit: flags.limit,
+          },
+          "monitor context",
+        );
+        const result = yield* client[WS_METHODS.pullRequestMonitorsContext](input);
         yield* printJson(result);
       }),
     ),

@@ -7,6 +7,7 @@ import { ActivityIndicator, AppState, Pressable, View } from "react-native";
 import { AppText } from "./AppText";
 import { SymbolView } from "./AppSymbol";
 import { VideoThumbnailImage } from "./VideoThumbnailImage";
+import { useOnAppStateChange } from "../lib/appForeground";
 import { useMediaActions, type MediaActionsSource } from "../lib/mediaActions";
 import { MediaActionsMenu } from "./MediaActionsMenu";
 
@@ -39,12 +40,13 @@ function LoadedMediaVideo(props: {
   useEffect(() => {
     active.current = focused && !props.paused && AppState.currentState === "active";
     if (!active.current) player.pause();
-    const subscription = AppState.addEventListener("change", (state) => {
-      active.current = focused && !props.paused && state === "active";
-      if (!active.current) player.pause();
-    });
-    return () => subscription.remove();
   }, [focused, player, props.paused]);
+  // Shared foreground subscription instead of one AppState listener per
+  // mounted player (client-event-listeners).
+  useOnAppStateChange((state) => {
+    active.current = focused && !props.paused && state === "active";
+    if (!active.current) player.pause();
+  });
 
   useEffect(() => {
     const controller = new AbortController();

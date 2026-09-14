@@ -1,7 +1,6 @@
 import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import { isPrivateNetworkHost } from "@t3tools/shared/hostClassification";
 import { buildThreadPath } from "@t3tools/shared/threadUrl";
-
-import { isLoopbackHostname } from "../environments/primary/target";
 
 const THREAD_ID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const THREAD_ID_PATTERN = new RegExp(`^${THREAD_ID_SOURCE}$`, "i");
@@ -132,16 +131,17 @@ export function resolveExplicitThreadLink(
   if (trustedOrigin) {
     if (!trustedOrigin.unconstrained && !trustedOrigin.ids.has(ref.environmentId)) return null;
   } else {
-    // Desktop ports can change after restart; the registered environment ID,
-    // not a stale loopback address, identifies the internal destination.
-    const localEnvironmentOrigin = isLoopbackHostname(url.hostname)
+    // Servers advertise LAN addresses while clients may connect over loopback.
+    // Private addresses/ports can change; route by the registered environment,
+    // without contacting the alias or extending this fallback to public websites.
+    const localEnvironmentOrigin = isPrivateNetworkHost(url.hostname)
       ? input.trustedOrigins.some((entry) => {
           if (entry.environmentId !== ref.environmentId) return false;
           const normalizedOrigin = normalizeOrigin(entry.origin);
           if (!normalizedOrigin) return false;
           const registeredUrl = new URL(normalizedOrigin);
           return (
-            registeredUrl.protocol === url.protocol && isLoopbackHostname(registeredUrl.hostname)
+            registeredUrl.protocol === url.protocol && isPrivateNetworkHost(registeredUrl.hostname)
           );
         })
       : false;

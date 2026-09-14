@@ -44,4 +44,22 @@ describe("PullRequestRow", () => {
     await row.click();
     expect(onSelect).toHaveBeenCalledWith(entry);
   });
+
+  it("shows the review-requested badge in the row's accessible name", async () => {
+    const onSelect = vi.fn();
+    await render(
+      <PullRequestRow
+        entry={{ ...entry, viewerReviewRequested: true }}
+        selected={false}
+        onSelect={onSelect}
+      />,
+    );
+
+    const row = page.getByRole("button", { name: /review requested/i });
+    await expect.element(row).toBeVisible();
+    await expect.element(page.getByText("Review requested")).toBeVisible();
+
+    await row.click();
+    expect(onSelect).toHaveBeenCalled();
+  });
 });

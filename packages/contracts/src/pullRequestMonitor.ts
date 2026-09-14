@@ -412,10 +412,76 @@ export const PullRequestMonitorReportResult = Schema.Struct({
 });
 export type PullRequestMonitorReportResult = typeof PullRequestMonitorReportResult.Type;
 
+export const MAX_PULL_REQUEST_MONITOR_FINDING_BYTES = 64 * 1024;
+export const MAX_PULL_REQUEST_MONITOR_FINDINGS_BYTES = 256 * 1024;
+export const MAX_PULL_REQUEST_MONITOR_FINDINGS = 100;
+const findingEncoder = new TextEncoder();
+const encodedFindingBytes = (value: unknown) =>
+  findingEncoder.encode(JSON.stringify(value)).byteLength;
+
+export const PullRequestMonitorFinding = Schema.Struct({
+  /** Reviewer-stable key; unchanged content must survive positional reordering. */
+  key: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  detail: Schema.String,
+  severity: Schema.Literals(["blocker", "major", "minor", "nit"]),
+  path: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+  line: Schema.optional(PositiveInt),
+  provenance: Schema.optional(
+    Schema.Struct({
+      findingId: TrimmedNonEmptyString,
+      reviewedHeadSha: TrimmedNonEmptyString,
+      diffHash: TrimmedNonEmptyString,
+      path: TrimmedNonEmptyString,
+      side: Schema.Literals(["new", "old"]),
+      startLine: PositiveInt,
+      endLine: PositiveInt,
+    }).check(
+      Schema.makeFilter(
+        (location) =>
+          location.startLine <= location.endLine ||
+          "Review finding startLine must not exceed endLine",
+      ),
+    ),
+  ),
+}).check(
+  Schema.makeFilter(
+    (finding) =>
+      encodedFindingBytes(finding) <= MAX_PULL_REQUEST_MONITOR_FINDING_BYTES ||
+      "Review finding exceeds the 64 KiB UTF-8 JSON limit; submit a smaller finding without truncating its evidence.",
+  ),
+);
+export type PullRequestMonitorFinding = typeof PullRequestMonitorFinding.Type;
+
+export const PullRequestMonitorFindings = Schema.Array(PullRequestMonitorFinding).check(
+  Schema.isMaxLength(MAX_PULL_REQUEST_MONITOR_FINDINGS),
+  Schema.makeFilter(
+    (findings) =>
+      encodedFindingBytes(findings) <= MAX_PULL_REQUEST_MONITOR_FINDINGS_BYTES ||
+      "Review findings exceed the 256 KiB UTF-8 JSON batch limit; submit smaller batches.",
+  ),
+);
+
+export const PullRequestMonitorFindingDetail = Schema.Struct({
+  itemId: PullRequestMonitorFeedbackItemId,
+  revisionId: PullRequestMonitorFeedbackRevisionId,
+  reviewedHeadSha: TrimmedNonEmptyString,
+  reviewThreadId: Schema.NullOr(ThreadId),
+  contentStatus: Schema.Literals(["complete", "legacy-potentially-truncated", "unavailable"]),
+  finding: Schema.NullOr(PullRequestMonitorFinding),
+});
+export type PullRequestMonitorFindingDetail = typeof PullRequestMonitorFindingDetail.Type;
+
 export const PullRequestMonitorContextInput = Schema.Struct({
   monitorId: Schema.optional(PullRequestMonitorId),
   reference: Schema.optional(PullRequestRef),
   includeClosed: Schema.optional(Schema.Boolean),
+  deliveryId: Schema.optional(PullRequestMonitorFeedbackDeliveryId),
+  revisionIds: Schema.optional(
+    Schema.Array(PullRequestMonitorFeedbackRevisionId).check(Schema.isMaxLength(100)),
+  ),
+  offset: Schema.optional(NonNegativeInt),
+  limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(20))),
 });
 export type PullRequestMonitorContextInput = typeof PullRequestMonitorContextInput.Type;
 
@@ -426,6 +492,9 @@ export const PullRequestMonitorContextResult = Schema.Struct({
   items: Schema.Array(PullRequestMonitorFeedbackItem),
   recentDeliveries: Schema.Array(PullRequestMonitorFeedbackDelivery),
   recentReports: Schema.Array(PullRequestMonitorFeedbackReport),
+  revisions: Schema.optional(Schema.Array(PullRequestMonitorFeedbackRevision)),
+  findingDetails: Schema.optional(Schema.Array(PullRequestMonitorFindingDetail)),
+  nextOffset: Schema.optional(Schema.NullOr(NonNegativeInt)),
 });
 export type PullRequestMonitorContextResult = typeof PullRequestMonitorContextResult.Type;
 
@@ -459,21 +528,6 @@ export const PullRequestMonitorTransferInput = Schema.Struct({
 });
 export type PullRequestMonitorTransferInput = typeof PullRequestMonitorTransferInput.Type;
 
-/**
- * One structured review finding. Reviewers submit findings instead of prose so each one gets
- * its own durable id, revision, and disposition trail.
- */
-export const PullRequestMonitorFinding = Schema.Struct({
-  /** Reviewer-stable key; re-submitting the same key updates that finding instead of forking it. */
-  key: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
-  title: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
-  detail: Schema.String.check(Schema.isMaxLength(2_000)),
-  severity: Schema.Literals(["blocker", "major", "minor", "nit"]),
-  path: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
-  line: Schema.optional(PositiveInt),
-});
-export type PullRequestMonitorFinding = typeof PullRequestMonitorFinding.Type;
-
 export const PullRequestMonitorSubmitFindingsInput = Schema.Struct({
   reference: PullRequestRef,
   reviewThreadId: ThreadId,
@@ -482,7 +536,7 @@ export const PullRequestMonitorSubmitFindingsInput = Schema.Struct({
   ownerThreadId: Schema.optional(ThreadId),
   summary: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
   startMonitoring: Schema.optional(Schema.Boolean),
-  findings: Schema.optional(Schema.Array(PullRequestMonitorFinding)),
+  findings: Schema.optional(PullRequestMonitorFindings),
 });
 export type PullRequestMonitorSubmitFindingsInput =
   typeof PullRequestMonitorSubmitFindingsInput.Type;

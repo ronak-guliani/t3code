@@ -89,6 +89,19 @@ describe("mobile DPoP", () => {
     }).pipe(Effect.provide(cryptoLayer)),
   );
 
+  it.effect("reads pre-versioning raw JWK proof keys", () =>
+    Effect.gen(function* () {
+      secureStore.clear();
+      const generated = yield* generateDpopProofKeyPair();
+      secureStore.set("t3code.cloud.dpop-proof-key", JSON.stringify(generated.privateJwk));
+
+      const restored = yield* loadOrCreateDpopProofKeyPair();
+
+      expect(restored.thumbprint).toBe(generated.thumbprint);
+      expect(restored.privateJwk).toEqual(generated.privateJwk);
+    }).pipe(Effect.provide(cryptoLayer)),
+  );
+
   it.effect("rejects malformed persisted proof keys", () =>
     Effect.gen(function* () {
       secureStore.set("t3code.cloud.dpop-proof-key", `{"kty":"EC","crv":"P-256","d":42}`);
