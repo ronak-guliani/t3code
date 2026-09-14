@@ -12,7 +12,18 @@ import {
   TurnId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
-import { Cause, Effect, Exit, FileSystem, Path, Queue, Ref, Scope, Stream } from "effect";
+import {
+  Cause,
+  Effect,
+  Exit,
+  FileSystem,
+  Path,
+  Queue,
+  Ref,
+  Scope,
+  Semaphore,
+  Stream,
+} from "effect";
 import type { OpencodeClient, Part, PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
@@ -526,6 +537,74 @@ function updateProviderSession(
   return nextSession;
 }
 
+const abortOpenCodeDescendants = Effect.fn("abortOpenCodeDescendants")(function* (
+  context: OpenCodeSessionContext,
+) {
+  const visited = new Set([context.openCodeSessionId]);
+  const requests = Semaphore.makeUnsafe(8);
+
+  const visit = (sessionId: string): Effect.Effect<OpenCodeRuntimeError | undefined> =>
+    Effect.gen(function* () {
+      const childrenResult = yield* requests
+        .withPermit(
+          runOpenCodeSdk("session.children", () =>
+            context.client.session.children({ sessionID: sessionId }),
+          ),
+        )
+        .pipe(
+          Effect.catchIf(
+            (cause) => isOpenCodeNotFound(cause),
+            () => Effect.succeed(undefined),
+          ),
+          Effect.result,
+        );
+      if (childrenResult._tag === "Failure" || childrenResult.success === undefined) {
+        return childrenResult._tag === "Failure" ? childrenResult.failure : undefined;
+      }
+
+      const children = childrenResult.success.data ?? [];
+      const newChildren = children.filter((child) => {
+        if (visited.has(child.id)) {
+          return false;
+        }
+        visited.add(child.id);
+        context.descendantSessionIds.add(child.id);
+        return true;
+      });
+      const failures = yield* Effect.forEach(
+        newChildren,
+        (child) =>
+          requests
+            .withPermit(
+              runOpenCodeSdk("session.abort", () =>
+                context.client.session.abort({ sessionID: child.id }),
+              ),
+            )
+            .pipe(
+              Effect.catchIf(
+                (cause) => isOpenCodeNotFound(cause),
+                () => Effect.void,
+              ),
+              Effect.result,
+              Effect.flatMap((abortResult) =>
+                visit(child.id).pipe(
+                  Effect.map((childFailure) =>
+                    abortResult._tag === "Failure" ? abortResult.failure : childFailure,
+                  ),
+                ),
+              ),
+            ),
+        { concurrency: 8 },
+      );
+      return failures.find((failure) => failure !== undefined);
+    });
+
+  const failure = yield* visit(context.openCodeSessionId);
+  if (failure) {
+    return yield* failure;
+  }
+});
+
 const stopOpenCodeContext = Effect.fn("stopOpenCodeContext")(function* (
   context: OpenCodeSessionContext,
 ) {
@@ -540,6 +619,7 @@ const stopOpenCodeContext = Effect.fn("stopOpenCodeContext")(function* (
   yield* runOpenCodeSdk("session.abort", () =>
     context.client.session.abort({ sessionID: context.openCodeSessionId }),
   ).pipe(Effect.ignore({ log: true }));
+  yield* abortOpenCodeDescendants(context).pipe(Effect.ignore({ log: true }));
 
   // Closing the session scope interrupts every fiber forked into it and
   // runs each finalizer we registered — the `AbortController.abort()` call,
@@ -1553,6 +1633,7 @@ export function makeOpenCodeAdapter(
         yield* runOpenCodeSdk("session.abort", () =>
           context.client.session.abort({ sessionID: context.openCodeSessionId }),
         ).pipe(Effect.mapError(toRequestError));
+        yield* abortOpenCodeDescendants(context).pipe(Effect.mapError(toRequestError));
         if (turnId ?? context.activeTurnId) {
           yield* emit({
             ...(yield* buildEventBase({
