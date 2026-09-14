@@ -163,17 +163,20 @@ export function isSameOpenCodeDirectory(
   );
 }
 
-interface OpenCodeTurnSnapshot {
-  readonly id: TurnId;
-  readonly items: Array<unknown>;
-}
-
 type OpenCodeSubscribedEvent =
   Awaited<ReturnType<OpencodeClient["event"]["subscribe"]>> extends {
     readonly stream: AsyncIterable<infer TEvent>;
   }
     ? TEvent
     : never;
+
+type OpenCodeTextPart = Extract<Part, { readonly type: "text" | "reasoning" }>;
+
+type OpenCodeTextPartState = Pick<OpenCodeTextPart, "id" | "messageID" | "type" | "time"> & {
+  text: string | undefined;
+  emittedText: string | undefined;
+  completed: boolean;
+};
 
 interface OpenCodeSessionContext {
   session: ProviderSession;
@@ -189,10 +192,9 @@ interface OpenCodeSessionContext {
   interruptedTurnId: TurnId | undefined;
   awaitingBusyAfterInterruption: boolean;
   readonly messageRoleById: Map<string, "user" | "assistant">;
-  readonly partById: Map<string, Part>;
-  readonly emittedTextByPartId: Map<string, string>;
-  readonly completedAssistantPartIds: Set<string>;
-  readonly turns: Array<OpenCodeTurnSnapshot>;
+  // OpenCode permits edits to completed parts. Keep text for snapshot comparison
+  // until native removal or session teardown, but do not retain other part payloads.
+  readonly textPartsByMessageId: Map<string, Map<string, OpenCodeTextPartState>>;
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
@@ -349,31 +351,6 @@ function mapPermissionDecision(reply: "once" | "always" | "reject"): string {
   }
 }
 
-function resolveTurnSnapshot(
-  context: OpenCodeSessionContext,
-  turnId: TurnId,
-): OpenCodeTurnSnapshot {
-  const existing = context.turns.find((turn) => turn.id === turnId);
-  if (existing) {
-    return existing;
-  }
-
-  const created: OpenCodeTurnSnapshot = { id: turnId, items: [] };
-  context.turns.push(created);
-  return created;
-}
-
-function appendTurnItem(
-  context: OpenCodeSessionContext,
-  turnId: TurnId | undefined,
-  item: unknown,
-): void {
-  if (!turnId) {
-    return;
-  }
-  resolveTurnSnapshot(context, turnId).items.push(item);
-}
-
 function ensureSessionContext(
   sessions: ReadonlyMap<ThreadId, OpenCodeSessionContext>,
   threadId: ThreadId,
@@ -410,18 +387,29 @@ function normalizeQuestionRequest(request: QuestionRequest): ReadonlyArray<UserI
   }));
 }
 
-function resolveTextStreamKind(part: Part | undefined): "assistant_text" | "reasoning_text" {
-  return part?.type === "reasoning" ? "reasoning_text" : "assistant_text";
+function resolveTextStreamKind(part: Pick<Part, "type">): "assistant_text" | "reasoning_text" {
+  return part.type === "reasoning" ? "reasoning_text" : "assistant_text";
 }
 
-function textFromPart(part: Part): string | undefined {
-  switch (part.type) {
-    case "text":
-    case "reasoning":
-      return part.text;
-    default:
-      return undefined;
-  }
+function retainOpenCodeTextPart(
+  context: OpenCodeSessionContext,
+  part: OpenCodeTextPart,
+): OpenCodeTextPartState {
+  const parts =
+    context.textPartsByMessageId.get(part.messageID) ?? new Map<string, OpenCodeTextPartState>();
+  const previous = parts.get(part.id);
+  const state = {
+    id: part.id,
+    messageID: part.messageID,
+    type: part.type,
+    text: part.text,
+    ...(part.time !== undefined ? { time: part.time } : {}),
+    emittedText: previous?.emittedText,
+    completed: previous?.completed ?? false,
+  };
+  parts.set(part.id, state);
+  context.textPartsByMessageId.set(part.messageID, parts);
+  return state;
 }
 
 function commonPrefixLength(left: string, right: string): number {
@@ -432,24 +420,25 @@ function commonPrefixLength(left: string, right: string): number {
   return index;
 }
 
-function resolveLatestAssistantText(previousText: string | undefined, nextText: string): string {
-  if (previousText && previousText.length > nextText.length && previousText.startsWith(nextText)) {
-    return previousText;
-  }
-  return nextText;
-}
-
 export function mergeOpenCodeAssistantText(
   previousText: string | undefined,
   nextText: string,
 ): {
   readonly latestText: string;
   readonly deltaToEmit: string;
+  readonly replaceExisting: boolean;
 } {
-  const latestText = resolveLatestAssistantText(previousText, nextText);
+  const latestText = nextText;
+  const replaceExisting =
+    previousText !== undefined &&
+    latestText !== previousText &&
+    !latestText.startsWith(previousText);
   return {
     latestText,
-    deltaToEmit: latestText.slice(commonPrefixLength(previousText ?? "", latestText)),
+    deltaToEmit: replaceExisting
+      ? latestText
+      : latestText.slice(commonPrefixLength(previousText ?? "", latestText)),
+    replaceExisting,
   };
 }
 
@@ -767,25 +756,19 @@ export function makeOpenCodeAdapter(
     /** Emit content.delta and item.completed events for an assistant text part. */
     const emitAssistantTextDelta = Effect.fn("emitAssistantTextDelta")(function* (
       context: OpenCodeSessionContext,
-      part: Part,
+      part: OpenCodeTextPartState,
       turnId: TurnId | undefined,
       raw: unknown,
     ) {
-      const text = textFromPart(part);
-      if (text === undefined) {
+      if (part.text === undefined) {
         return;
       }
-      const previousText = context.emittedTextByPartId.get(part.id);
-      const { latestText, deltaToEmit } = mergeOpenCodeAssistantText(previousText, text);
-      context.emittedTextByPartId.set(part.id, latestText);
-      if (latestText !== text) {
-        context.partById.set(
-          part.id,
-          (part.type === "text" || part.type === "reasoning"
-            ? { ...part, text: latestText }
-            : part) satisfies Part,
-        );
-      }
+      const { latestText, deltaToEmit, replaceExisting } = mergeOpenCodeAssistantText(
+        part.emittedText,
+        part.text,
+      );
+      part.emittedText = latestText;
+      part.text = latestText;
       if (deltaToEmit.length > 0) {
         yield* emit({
           ...(yield* buildEventBase({
@@ -802,16 +785,13 @@ export function makeOpenCodeAdapter(
           payload: {
             streamKind: resolveTextStreamKind(part),
             delta: deltaToEmit,
+            ...(replaceExisting ? { replaceExisting: true } : {}),
           },
         });
       }
 
-      if (
-        part.type === "text" &&
-        part.time?.end !== undefined &&
-        !context.completedAssistantPartIds.has(part.id)
-      ) {
-        context.completedAssistantPartIds.add(part.id);
+      if (part.type === "text" && part.time?.end !== undefined && !part.completed) {
+        part.completed = true;
         yield* emit({
           ...(yield* buildEventBase({
             threadId: context.session.threadId,
@@ -903,11 +883,13 @@ export function makeOpenCodeAdapter(
       switch (event.type) {
         case "message.updated": {
           context.messageRoleById.set(event.properties.info.id, event.properties.info.role);
+          if (event.properties.info.role === "user") {
+            context.textPartsByMessageId.delete(event.properties.info.id);
+          }
           if (event.properties.info.role === "assistant") {
-            for (const part of context.partById.values()) {
-              if (part.messageID !== event.properties.info.id) {
-                continue;
-              }
+            for (const part of context.textPartsByMessageId
+              .get(event.properties.info.id)
+              ?.values() ?? []) {
               yield* emitAssistantTextDelta(context, part, turnId, event);
             }
           }
@@ -916,12 +898,24 @@ export function makeOpenCodeAdapter(
 
         case "message.removed": {
           context.messageRoleById.delete(event.properties.messageID);
+          context.textPartsByMessageId.delete(event.properties.messageID);
+          break;
+        }
+
+        case "message.part.removed": {
+          const parts = context.textPartsByMessageId.get(event.properties.messageID);
+          parts?.delete(event.properties.partID);
+          if (parts?.size === 0) {
+            context.textPartsByMessageId.delete(event.properties.messageID);
+          }
           break;
         }
 
         case "message.part.delta": {
-          const existingPart = context.partById.get(event.properties.partID);
-          if (!existingPart) {
+          const existingPart = context.textPartsByMessageId
+            .get(event.properties.messageID)
+            ?.get(event.properties.partID);
+          if (existingPart?.text === undefined || event.properties.field !== "text") {
             break;
           }
           const role = messageRoleForPart(context, existingPart);
@@ -933,21 +927,13 @@ export function makeOpenCodeAdapter(
           if (delta.length === 0) {
             break;
           }
-          const previousText =
-            context.emittedTextByPartId.get(event.properties.partID) ??
-            textFromPart(existingPart) ??
-            "";
+          const previousText = existingPart.emittedText ?? existingPart.text;
           const { nextText, deltaToEmit } = appendOpenCodeAssistantTextDelta(previousText, delta);
           if (deltaToEmit.length === 0) {
             break;
           }
-          context.emittedTextByPartId.set(event.properties.partID, nextText);
-          if (existingPart.type === "text" || existingPart.type === "reasoning") {
-            context.partById.set(event.properties.partID, {
-              ...existingPart,
-              text: nextText,
-            });
-          }
+          existingPart.emittedText = nextText;
+          existingPart.text = nextText;
           yield* emit({
             ...(yield* buildEventBase({
               threadId: context.session.threadId,
@@ -966,11 +952,20 @@ export function makeOpenCodeAdapter(
 
         case "message.part.updated": {
           const part = event.properties.part;
-          context.partById.set(part.id, part);
           const messageRole = messageRoleForPart(context, part);
 
-          if (messageRole === "assistant") {
-            yield* emitAssistantTextDelta(context, part, turnId, event);
+          if ((part.type === "text" || part.type === "reasoning") && messageRole !== "user") {
+            const state = retainOpenCodeTextPart(context, part);
+            if (messageRole === "assistant") {
+              yield* emitAssistantTextDelta(context, state, turnId, event);
+            }
+          } else {
+            const previous = context.textPartsByMessageId.get(part.messageID)?.get(part.id);
+            if (previous) {
+              // A non-text PATCH removes the current snapshot. Keep emitted text
+              // so a later text PATCH still emits only the changed suffix.
+              previous.text = undefined;
+            }
           }
 
           if (part.type === "tool") {
@@ -1008,7 +1003,6 @@ export function makeOpenCodeAdapter(
                     : "item.updated",
               payload,
             };
-            appendTurnItem(context, turnId, part);
             yield* emit(runtimeEvent);
           }
           break;
@@ -1595,11 +1589,8 @@ export function makeOpenCodeAdapter(
           autoRepliedRequestIds: new Set(),
           interruptedTurnId: undefined,
           awaitingBusyAfterInterruption: false,
-          partById: new Map(),
-          emittedTextByPartId: new Map(),
+          textPartsByMessageId: new Map(),
           messageRoleById: new Map(),
-          completedAssistantPartIds: new Set(),
-          turns: [],
           activeTurnId: undefined,
           activeAgent: undefined,
           activeVariant: undefined,
@@ -1670,11 +1661,12 @@ export function makeOpenCodeAdapter(
         });
       }
 
-      const agent = getModelSelectionStringOptionValue(modelSelection, "agent");
+      const selectedAgent = getModelSelectionStringOptionValue(modelSelection, "agent");
+      const agent = selectedAgent === "plan" ? undefined : selectedAgent;
       const variant = getModelSelectionStringOptionValue(modelSelection, "variant");
 
       context.activeTurnId = turnId;
-      context.activeAgent = agent ?? (input.interactionMode === "plan" ? "plan" : undefined);
+      context.activeAgent = agent;
       context.activeVariant = variant;
       updateProviderSession(
         context,

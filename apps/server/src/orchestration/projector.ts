@@ -632,11 +632,14 @@ export function projectEvent(
               entry.id === message.id
                 ? {
                     ...entry,
-                    text: message.streaming
-                      ? `${entry.text}${message.text}`
-                      : message.text.length > 0
+                    text:
+                      payload.replaceExisting === true
                         ? message.text
-                        : entry.text,
+                        : message.streaming
+                          ? `${entry.text}${message.text}`
+                          : message.text.length > 0
+                            ? message.text
+                            : entry.text,
                     streaming: message.streaming,
                     updatedAt: message.updatedAt,
                     turnId: message.turnId,

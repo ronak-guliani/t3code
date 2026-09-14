@@ -1409,6 +1409,7 @@ const ThreadMessageAssistantDeltaCommand = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   delta: Schema.String,
+  replaceExisting: Schema.optional(Schema.Boolean),
   turnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
@@ -1731,6 +1732,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   origin: Schema.optional(MessageOrigin),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
+  replaceExisting: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

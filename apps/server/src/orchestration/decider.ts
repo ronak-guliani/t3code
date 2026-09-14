@@ -2474,6 +2474,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           text: command.delta,
           turnId: command.turnId ?? null,
           streaming: true,
+          ...(command.replaceExisting === true ? { replaceExisting: true } : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },

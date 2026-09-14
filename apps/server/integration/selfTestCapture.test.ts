@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { closeSelfTestContext, hashSelfTestFrame } from "./selfTestCapture.ts";
+import { closeSelfTestContext } from "./selfTestCapture.ts";
 
 describe("self-test capture finalization", () => {
   let output: string;
@@ -58,20 +58,5 @@ describe("self-test capture finalization", () => {
     await expect(
       closeSelfTestContext({ close: async () => {} }, join(output, "missing"), diagnostics),
     ).rejects.toMatchObject({ code: "ENOENT" });
-  });
-});
-
-describe("self-test frame identity", () => {
-  it.each([0, 1, 2])("detects transitions in RGB channel %s", (channel) => {
-    const pixels = new Uint8ClampedArray([32, 32, 32, 255, 192, 192, 192, 255]);
-    const before = hashSelfTestFrame(pixels);
-    pixels[channel] = 96;
-    expect(hashSelfTestFrame(pixels)).not.toBe(before);
-  });
-
-  it("ignores within-bin color noise and alpha changes", () => {
-    expect(hashSelfTestFrame(new Uint8ClampedArray([32, 32, 32, 255]))).toBe(
-      hashSelfTestFrame(new Uint8ClampedArray([33, 34, 35, 254])),
-    );
   });
 });

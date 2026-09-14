@@ -21,6 +21,26 @@ const DEFAULT_MAX_FILES = 10;
 const DEFAULT_BATCH_WINDOW_MS = 200;
 const GLOBAL_THREAD_SEGMENT = "_global";
 const LOG_SCOPE = "provider-observability";
+const TRANSIENT_CANONICAL_EVENT_TYPES = new Set([
+  "content.delta",
+  "hook.progress",
+  "item.updated",
+  "task.progress",
+  "thread.realtime.audio.delta",
+  "tool.progress",
+  "turn.proposed.delta",
+]);
+const TRANSIENT_NATIVE_METHODS = new Set([
+  "item/agentMessage/delta",
+  "item/commandExecution/outputDelta",
+  "item/fileChange/outputDelta",
+  "item/plan/delta",
+  "item/reasoning/summaryTextDelta",
+  "item/reasoning/textDelta",
+  "thread/realtime/outputAudio/delta",
+  "thread/realtime/transcript/delta",
+]);
+const TRANSIENT_ACP_UPDATES = new Set(["agent_message_chunk", "agent_thought_chunk"]);
 
 export type EventNdjsonStream = "native" | "canonical" | "orchestration";
 
@@ -84,6 +104,105 @@ function resolveStreamLabel(stream: EventNdjsonStream): string {
     case "orchestration":
     default:
       return "CANON";
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function decodeProtocolPayload(value: unknown): ReadonlyArray<unknown> {
+  if (typeof value === "string") {
+    try {
+      return decodeProtocolPayload(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(value) ? value.flatMap(decodeProtocolPayload) : [value];
+}
+
+function isTransientAcpUpdate(value: unknown): boolean {
+  if (!isRecord(value) || value.method !== "session/update") {
+    return false;
+  }
+  const params = isRecord(value.params)
+    ? value.params
+    : isRecord(value.payload)
+      ? value.payload
+      : null;
+  const update = params && isRecord(params.update) ? params.update : null;
+  return update !== null && TRANSIENT_ACP_UPDATES.has(String(update.sessionUpdate));
+}
+
+function isTransientAcpProtocolRecord(nativeEvent: object): boolean {
+  if (Reflect.get(nativeEvent, "kind") !== "protocol") {
+    return false;
+  }
+  const protocolEvent = Reflect.get(nativeEvent, "payload");
+  if (!isRecord(protocolEvent)) {
+    return false;
+  }
+  const messages = decodeProtocolPayload(protocolEvent.payload);
+  return messages.length > 0 && messages.every(isTransientAcpUpdate);
+}
+
+function shouldPersist(stream: EventNdjsonStream, event: unknown): boolean {
+  if (stream === "orchestration" || typeof event !== "object" || event === null) {
+    return true;
+  }
+  try {
+    const type = Reflect.get(event, "type");
+    if (typeof type === "string" && TRANSIENT_CANONICAL_EVENT_TYPES.has(type)) {
+      return false;
+    }
+    if (stream !== "native") return true;
+
+    const nested = Reflect.get(event, "event");
+    const nativeEvent = typeof nested === "object" && nested !== null ? nested : event;
+    if (isTransientAcpProtocolRecord(nativeEvent)) {
+      return false;
+    }
+    const method = Reflect.get(nativeEvent, "method");
+    if (
+      typeof method === "string" &&
+      (TRANSIENT_NATIVE_METHODS.has(method) ||
+        method.startsWith("claude/stream_event/content_block_delta/"))
+    ) {
+      return false;
+    }
+
+    const nativeType = Reflect.get(nativeEvent, "type");
+    if (nativeType === "message.part.delta") return false;
+
+    const payload = Reflect.get(nativeEvent, "payload");
+
+    if (method === "session/update") {
+      return !isTransientAcpUpdate(nativeEvent);
+    }
+
+    if (nativeType === "message.part.updated") {
+      const properties =
+        typeof payload === "object" && payload !== null
+          ? Reflect.get(payload, "properties")
+          : Reflect.get(nativeEvent, "properties");
+      if (typeof properties !== "object" || properties === null) return true;
+      const part = Reflect.get(properties, "part");
+      if (typeof part !== "object" || part === null) return true;
+      const partType = Reflect.get(part, "type");
+      if (partType === "text" || partType === "reasoning") return false;
+      if (partType === "tool") {
+        // Running snapshots repeat growing output. Pending and terminal states stay in the log.
+        const state = Reflect.get(part, "state");
+        if (typeof state === "object" && state !== null) {
+          return Reflect.get(state, "status") !== "running";
+        }
+      }
+      return true;
+    }
+    return true;
+  } catch {
+    return true;
   }
 }
 
@@ -260,6 +379,9 @@ export const makeEventNdjsonLogger = Effect.fn("makeEventNdjsonLogger")(function
   });
 
   const write = Effect.fn("write")(function* (event: unknown, threadId: ThreadId | null) {
+    if (!shouldPersist(options.stream, event)) {
+      return;
+    }
     const message = yield* toLogMessage(event);
     if (!message) {
       return;
