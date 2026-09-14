@@ -19,9 +19,9 @@
 - For browser validation, call `preview_status` first. If no automation-capable tab is attached, call `preview_open` or `preview_open_and_snapshot` before concluding that browser automation is unavailable.
 - Navigate local apps with an environment-port target, inspect a snapshot before interacting, prefer snapshot-provided semantic locators, and inspect the final snapshot plus console and failed-network diagnostics.
 - A video is evidence, not the assertion. Validate observable behavior with snapshots, page state, console output, and network failures; record a short video when motion or timing is part of the change.
-- Capture a final screenshot for visual changes. Keep pairing tokens, credentials, and other secrets out of screenshots, recordings, committed files, and durable logs.
+- Capture before/after screenshots for visual changes, showing the changed feature with meaningful test data. Authenticate before recording feature interactions. Keep pairing tokens, credentials, and other secrets out of screenshots, recordings, committed files, and durable logs.
 - Include relevant screenshot or recording artifacts in the final handoff and pull request. Do not commit PR-only evidence to the repository.
-- For user-visible web PRs, run `pnpm test:self` for the isolated pairing/reconnect baseline. After committing, rerun it and use `pnpm test:self -- publish <PR URL>` followed by `pnpm test:self -- status --require-published`. Report publication blockers explicitly; baseline evidence does not replace feature-specific or native Electron validation.
+- Use focused tests and a real-client pass to validate the changed behavior. `pnpm test:self` is a separate pairing/reconnect smoke check, relevant when those flows change; it is not a prerequisite or substitute for feature testing. Publish actual feature captures with `pnpm pr:media -- <PR URL> <capture files...>`, inspect the uploaded media, and describe the tested revision, actions, observations, and limitations in the PR. No feature-report JSON or media-derived pass/fail gate is required. Pairing smoke captures stay in local/CI diagnostics.
 - Preserve the isolated dev process, authenticated browser tab, selected ports, and test state while the implementation loop is still active. Tear them down only after the task is complete.
 
 ## Core Priorities
