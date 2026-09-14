@@ -277,9 +277,17 @@ export function createDeviceStreamClient(
   const { access, platform, deviceId } = target;
   const vendor = platform === "ios" ? "/vendor/serve-sim" : "/vendor/serve-emu";
   const device = encodeURIComponent(deviceId);
-  const httpUrl = (path: string) =>
-    withDeviceHubQuery(`${access.httpBase}${vendor}${path}`, access);
-  const wsUrl = (path: string) => withDeviceHubQuery(`${access.wsBase}${vendor}${path}`, access);
+  const appendTicket = (url: string, ticket: string | undefined) => {
+    const base = withDeviceHubQuery(url, access);
+    if (!ticket) return base;
+    const parsed = new URL(base);
+    parsed.searchParams.set("wsTicket", ticket);
+    return parsed.toString();
+  };
+  const httpUrl = (path: string, ticket?: string) =>
+    appendTicket(`${access.httpBase}${vendor}${path}`, ticket);
+  const wsUrl = (path: string, ticket?: string) =>
+    appendTicket(`${access.wsBase}${vendor}${path}`, ticket);
   const useWebCodecs = isWebCodecsSupported();
 
   let stopped = true;
@@ -294,8 +302,9 @@ export function createDeviceStreamClient(
   let firstFrame = false;
   let configuring = false;
   let mjpeg = false;
+  let unauthorizedHandled = false;
 
-  const mjpegUrl = () => httpUrl(`/helper/${device}/stream.mjpeg`);
+  const mjpegUrl = () => httpUrl(`/helper/${device}/stream.mjpeg`, access.tickets?.mjpeg);
 
   const fallBackToMjpeg = () => {
     if (stopped || mjpeg) return;
@@ -418,6 +427,8 @@ export function createDeviceStreamClient(
   };
 
   const handleUnauthorized = () => {
+    if (unauthorizedHandled) return;
+    unauthorizedHandled = true;
     stop();
     events.onUnauthorized();
   };
@@ -427,10 +438,13 @@ export function createDeviceStreamClient(
     const demuxer = new AvccDemuxer();
     controller = new AbortController();
     try {
-      const response = await fetch(httpUrl(`/helper/${device}/stream.avcc`), {
-        signal: controller.signal,
-        credentials: access.credentials ? "include" : "same-origin",
-      });
+      const response = await fetch(
+        httpUrl(`/helper/${device}/stream.avcc`, access.tickets?.video),
+        {
+          signal: controller.signal,
+          credentials: access.credentials ? "include" : "same-origin",
+        },
+      );
       if (response.status === 401 || response.status === 403) return handleUnauthorized();
       if (!response.ok || !response.body) throw new Error(`stream ${response.status}`);
       const reader = response.body.getReader();
@@ -484,10 +498,13 @@ export function createDeviceStreamClient(
     primeController = controller;
     const timeout = setTimeout(() => controller.abort(), 2_000);
     try {
-      const response = await fetch(httpUrl(`/helper/${device}/stream.mjpeg`), {
-        signal: controller.signal,
-        credentials: access.credentials ? "include" : "same-origin",
-      });
+      const response = await fetch(
+        httpUrl(`/helper/${device}/stream.mjpeg`, access.tickets?.prime),
+        {
+          signal: controller.signal,
+          credentials: access.credentials ? "include" : "same-origin",
+        },
+      );
       if (response.status === 401 || response.status === 403) return handleUnauthorized();
       await response.body?.getReader().read();
     } catch {
@@ -504,7 +521,7 @@ export function createDeviceStreamClient(
     if (stopped) return;
     await primeIosHelper();
     if (stopped) return;
-    const ws = new WebSocket(wsUrl(`/helper/ws?device=${device}`));
+    const ws = new WebSocket(wsUrl(`/helper/ws?device=${device}`, access.tickets?.input));
     ws.binaryType = "arraybuffer";
     socket = ws;
     ws.onopen = () => {
@@ -542,7 +559,7 @@ export function createDeviceStreamClient(
   // Android: one socket for video and input.
   const connectAndroid = () => {
     if (stopped) return;
-    const ws = new WebSocket(wsUrl(`/ws?device=${device}&frame-meta=1`));
+    const ws = new WebSocket(wsUrl(`/ws?device=${device}&frame-meta=1`, access.tickets?.input));
     ws.binaryType = "arraybuffer";
     socket = ws;
     ws.onopen = () => {
@@ -595,6 +612,7 @@ export function createDeviceStreamClient(
   const start = () => {
     if (!stopped) return;
     stopped = false;
+    unauthorizedHandled = false;
     firstFrame = false;
     events.onStatus("connecting");
     if (platform === "ios") {

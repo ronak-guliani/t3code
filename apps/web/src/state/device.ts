@@ -20,8 +20,9 @@ import type {
 import { useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
 import { AsyncResult, Atom, type AtomRegistry } from "effect/unstable/reactivity";
+import { useEffect, useState } from "react";
 
-import { getEnvironmentHttpBaseUrl, readEnvironmentConnection } from "~/environments/runtime";
+import { readEnvironmentConnection } from "~/environments/runtime";
 import type { WsRpcClient } from "~/rpc/wsRpcClient";
 
 interface Target<Input> {
@@ -136,16 +137,47 @@ export function useDeviceHubAccess(
   environmentId: EnvironmentId | null,
   hostId = "local",
 ): DeviceHubAccess | null {
-  if (environmentId === null) return null;
-  const origin = getEnvironmentHttpBaseUrl(environmentId);
-  if (origin === null) return null;
-  const httpBase = new URL(EMPTY_DEVICE_STATE.hubBasePath, origin).toString().replace(/\/$/, "");
-  return {
-    httpBase,
-    wsBase: httpBase.replace(/^http/, "ws"),
-    query: { hostId },
-    credentials: true,
-  };
+  const [access, setAccess] = useState<DeviceHubAccess | null>(null);
+  const [generation, setGeneration] = useState(0);
+
+  useEffect(() => {
+    if (environmentId === null) {
+      setAccess(null);
+      return;
+    }
+    const connection = readEnvironmentConnection(environmentId);
+    if (!connection) {
+      setAccess(null);
+      return;
+    }
+    let cancelled = false;
+    setAccess(null);
+    void connection
+      .resolveDeviceHubAccess(EMPTY_DEVICE_STATE.hubBasePath, hostId)
+      .then((next) => {
+        if (!cancelled) setAccess(next);
+      })
+      .catch(() => {
+        if (!cancelled) setAccess(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [environmentId, generation, hostId]);
+
+  useEffect(() => {
+    if (environmentId === null) return;
+    deviceHubRefreshers.set(environmentId, () => setGeneration((value) => value + 1));
+    return () => {
+      deviceHubRefreshers.delete(environmentId);
+    };
+  }, [environmentId]);
+
+  return access;
 }
 
-export function refreshDeviceHubAccess(_environmentId: EnvironmentId): void {}
+const deviceHubRefreshers = new Map<EnvironmentId, () => void>();
+
+export function refreshDeviceHubAccess(environmentId: EnvironmentId): void {
+  deviceHubRefreshers.get(environmentId)?.();
+}

@@ -36,6 +36,13 @@ export interface DeviceHubAccess {
   readonly query: Readonly<Record<string, string>>;
   /** Whether requests must include cookies (same-origin session). */
   readonly credentials: boolean;
+  /** Single-use tickets, one for each concurrently opened media channel. */
+  readonly tickets?: {
+    readonly video: string;
+    readonly input: string;
+    readonly prime: string;
+    readonly mjpeg: string;
+  };
 }
 
 export const resolveDeviceHubAccess = Effect.fn("clientRuntime.state.resolveDeviceHubAccess")(

@@ -36,6 +36,7 @@ import {
   bootstrapRemoteBearerSession,
   fetchRemoteEnvironmentDescriptor,
   fetchRemoteSessionState,
+  issueRemoteWebSocketTicket,
   resolveRemoteWebSocketConnectionUrl,
 } from "../remote/api";
 import { resolveRemotePairingTarget } from "../remote/target";
@@ -1052,6 +1053,32 @@ function createPrimaryEnvironmentConnection(): EnvironmentConnection {
       kind: "primary",
       knownEnvironment,
       client: createPrimaryEnvironmentClient(knownEnvironment),
+      resolveDeviceHubAccess: async (hubBasePath, hostId) => {
+        const httpBase = new URL(hubBasePath, knownEnvironment.target.httpBaseUrl);
+        const issueTicket = async () => {
+          const response = await fetch(
+            new URL("/api/auth/websocket-ticket", knownEnvironment.target.httpBaseUrl),
+            { method: "POST", credentials: "include" },
+          );
+          if (!response.ok) {
+            throw new Error(`Failed to authorize Device Hub (${response.status}).`);
+          }
+          return ((await response.json()) as { readonly ticket: string }).ticket;
+        };
+        const [video, input, prime, mjpeg] = await Promise.all([
+          issueTicket(),
+          issueTicket(),
+          issueTicket(),
+          issueTicket(),
+        ]);
+        return {
+          httpBase: httpBase.toString().replace(/\/$/, ""),
+          wsBase: httpBase.toString().replace(/^http/, "ws").replace(/\/$/, ""),
+          query: { hostId },
+          credentials: false,
+          tickets: { video, input, prime, mjpeg },
+        };
+      },
       ...createEnvironmentConnectionHandlers(),
     }),
   );
@@ -1101,6 +1128,29 @@ async function ensureSavedEnvironmentConnection(
       environmentId: record.environmentId,
     },
     client,
+    resolveDeviceHubAccess: async (hubBasePath, hostId) => {
+      const issueTicket = async () =>
+        (
+          await issueRemoteWebSocketTicket({
+            httpBaseUrl: record.httpBaseUrl,
+            bearerToken,
+          })
+        ).ticket;
+      const [video, input, prime, mjpeg] = await Promise.all([
+        issueTicket(),
+        issueTicket(),
+        issueTicket(),
+        issueTicket(),
+      ]);
+      const httpBase = new URL(hubBasePath, record.httpBaseUrl);
+      return {
+        httpBase: httpBase.toString().replace(/\/$/, ""),
+        wsBase: httpBase.toString().replace(/^http/, "ws").replace(/\/$/, ""),
+        query: { hostId },
+        credentials: false,
+        tickets: { video, input, prime, mjpeg },
+      };
+    },
     refreshMetadata: async () => {
       await refreshSavedEnvironmentMetadata(record, bearerToken, client);
     },

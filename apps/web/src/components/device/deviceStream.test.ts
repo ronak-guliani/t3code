@@ -79,7 +79,12 @@ describe("iOS input startup", () => {
     vi.unstubAllGlobals();
   });
 
-  const setup = () => {
+  const setup = (tickets?: {
+    readonly video: string;
+    readonly input: string;
+    readonly prime: string;
+    readonly mjpeg: string;
+  }) => {
     vi.useFakeTimers();
     const sockets: FakeSocket[] = [];
     class FakeSocket {
@@ -91,7 +96,9 @@ describe("iOS input startup", () => {
       onclose: ((event: { code: number; reason: string }) => void) | null = null;
       send = vi.fn();
       close = vi.fn();
-      constructor() {
+      readonly url: string;
+      constructor(url: string) {
+        this.url = url;
         sockets.push(this);
       }
     }
@@ -122,6 +129,7 @@ describe("iOS input startup", () => {
           wsBase: "ws://test/api/device-hub",
           credentials: true,
           query: {},
+          ...(tickets ? { tickets } : {}),
         },
       },
       { getContext: () => null } as unknown as HTMLCanvasElement,
@@ -142,6 +150,20 @@ describe("iOS input startup", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     expect(signals[0]?.aborted).toBe(true);
     expect(sockets).toHaveLength(1);
+    client.stop();
+  });
+
+  it("uses independent single-use tickets for priming and input", async () => {
+    const { client, sockets } = setup({
+      video: "video-ticket",
+      input: "input-ticket",
+      prime: "prime-ticket",
+      mjpeg: "mjpeg-ticket",
+    });
+    client.start();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain("wsTicket=prime-ticket");
+    expect(sockets[0]?.url).toContain("wsTicket=input-ticket");
     client.stop();
   });
 
