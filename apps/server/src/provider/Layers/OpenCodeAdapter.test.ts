@@ -5,7 +5,7 @@ import { it } from "@effect/vitest";
 import { Context, Effect, Exit, Fiber, Layer, Option, Schema, Scope, Stream } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import { beforeEach } from "vitest";
+import { beforeEach, vi } from "vitest";
 import type { Event as OpenCodeEvent, ToolPart } from "@opencode-ai/sdk/v2";
 
 import {
@@ -1925,6 +1925,248 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           .map((event) => event.payload.delta),
         ["Tool results received"],
       );
+    }),
+  );
+
+  it.effect("processes late assistant metadata without visiting completed turns", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-indexed-opencode-parts");
+      const sessionID = "http://127.0.0.1:9999/session";
+      let countingHistoryVisits = false;
+      let visitedHistoryParts = 0;
+      const currentInfo = { id: "current-message" } as {
+        id: string;
+        role: "assistant";
+      };
+      Object.defineProperty(currentInfo, "role", {
+        enumerable: true,
+        get: () => {
+          countingHistoryVisits = true;
+          return "assistant";
+        },
+      });
+      const subscribedEvents: unknown[] = [];
+      for (let index = 0; index < 24; index += 1) {
+        subscribedEvents.push({
+          type: "message.updated",
+          properties: { sessionID, info: { id: `history-message-${index}`, role: "assistant" } },
+        });
+        subscribedEvents.push({
+          type: "message.part.updated",
+          properties: {
+            sessionID,
+            part: {
+              id: `history-part-${index}`,
+              messageID: `history-message-${index}`,
+              sessionID,
+              type: "text",
+              text: `Completed turn ${index}`,
+              time: { start: 1, end: 2 },
+            },
+          },
+        });
+      }
+      subscribedEvents.push(
+        {
+          type: "message.part.updated",
+          properties: {
+            sessionID,
+            part: {
+              id: "current-part",
+              messageID: "current-message",
+              sessionID,
+              type: "text",
+              text: "Current response",
+              time: { start: 3, end: 4 },
+            },
+          },
+        },
+        {
+          type: "message.updated",
+          properties: { sessionID, info: currentInfo },
+        },
+        {
+          type: "question.asked",
+          properties: { sessionID, id: "indexed-parts-barrier", questions: [] },
+        },
+      );
+      runtimeMock.state.subscribedEvents = subscribedEvents;
+      const values = Map.prototype.values;
+      const spy = vi
+        .spyOn(Map.prototype, "values")
+        .mockImplementation(function (this: Map<unknown, unknown>) {
+          const iterator = values.call(this);
+          const next = iterator.next.bind(iterator);
+          Object.defineProperty(iterator, "next", {
+            value: () => {
+              const result = next();
+              const value: unknown = result.value;
+              if (
+                typeof value === "object" &&
+                value !== null &&
+                "id" in value &&
+                typeof value.id === "string" &&
+                value.id.startsWith("history-part-") &&
+                countingHistoryVisits
+              ) {
+                visitedHistoryParts += 1;
+              }
+              return result;
+            },
+          });
+          return iterator;
+        });
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil(
+          (event) =>
+            event.type === "user-input.requested" && event.requestId === "indexed-parts-barrier",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "approval-required",
+      });
+
+      const events = yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second"));
+      spy.mockRestore();
+      NodeAssert.equal(visitedHistoryParts, 0);
+      NodeAssert.deepEqual(
+        events.flatMap((event) =>
+          event.type === "content.delta" && event.itemId === "current-part"
+            ? [event.payload.delta]
+            : [],
+        ),
+        ["Current response"],
+      );
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("keeps completed text edits and clears removed parts across reconnects", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-text-retention");
+      const sessionID = "http://127.0.0.1:9999/session";
+      const messageID = "retained-message";
+      const metadata = {
+        type: "message.updated",
+        properties: {
+          sessionID,
+          info: { id: messageID, role: "assistant", time: { created: 1, completed: 2 } },
+        },
+      };
+      const snapshot = (
+        text: string,
+        id = "retained-part",
+        type: "text" | "reasoning" = "text",
+      ) => ({
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          part: { id, sessionID, messageID, type, text, time: { start: 1, end: 2 } },
+        },
+      });
+      const delta = (text: string) => ({
+        type: "message.part.delta",
+        properties: { sessionID, messageID, partID: "retained-part", field: "text", delta: text },
+      });
+      const nonTextReplacement = {
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          part: {
+            id: "retained-part",
+            sessionID,
+            messageID,
+            type: "file",
+            mime: "text/plain",
+            url: "file:///repo/result.txt",
+          },
+        },
+      };
+      runtimeMock.state.subscribedEvents = [
+        snapshot("Replaced before metadata"),
+        nonTextReplacement,
+        metadata,
+        snapshot("Thinking", "reasoning-part", "reasoning"),
+        snapshot("Hello world"),
+        { type: "server.connected", properties: {} },
+        metadata,
+        snapshot("Thinking", "reasoning-part", "reasoning"),
+        snapshot("Thinking more", "reasoning-part", "reasoning"),
+        snapshot("Hello world"),
+        snapshot("Hello"),
+        snapshot("Hello there"),
+        delta(" again"),
+        snapshot("Hello there again"),
+        nonTextReplacement,
+        delta("ignored while file"),
+        metadata,
+        snapshot("Hello there again!"),
+        {
+          type: "message.part.removed",
+          properties: { sessionID, messageID, partID: "retained-part" },
+        },
+        delta("removed part"),
+        metadata,
+        snapshot("Fresh"),
+        snapshot("Second", "second-part"),
+        { type: "message.removed", properties: { sessionID, messageID } },
+        delta("removed message"),
+        metadata,
+        snapshot("New thoughts", "reasoning-part", "reasoning"),
+        snapshot("New"),
+        {
+          type: "question.asked",
+          properties: { sessionID, id: "retention-barrier", questions: [] },
+        },
+      ];
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil(
+          (event) =>
+            event.type === "user-input.requested" && event.requestId === "retention-barrier",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "approval-required",
+      });
+
+      const events = yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second"));
+      NodeAssert.deepEqual(
+        events
+          .filter((event) => event.type === "content.delta")
+          .map((event) => [event.payload.streamKind, event.payload.delta]),
+        [
+          ["reasoning_text", "Thinking"],
+          ["assistant_text", "Hello world"],
+          ["reasoning_text", " more"],
+          ["assistant_text", "there"],
+          ["assistant_text", " again"],
+          ["assistant_text", "!"],
+          ["assistant_text", "Fresh"],
+          ["assistant_text", "Second"],
+          ["reasoning_text", "New thoughts"],
+          ["assistant_text", "New"],
+        ],
+      );
+      NodeAssert.deepEqual(
+        events
+          .filter((event) => event.type === "item.completed")
+          .map((event) => event.payload.detail),
+        ["Hello world", "Fresh", "Second", "New"],
+      );
+      yield* adapter.stopSession(threadId);
     }),
   );
 
