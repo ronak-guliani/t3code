@@ -159,6 +159,22 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
     }),
   );
 
+  it.effect("explains SIGKILL failures from invalid macOS binaries", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.runVersionError = new Error(
+        "Process interrupted due to receipt of signal: 'SIGKILL'",
+      );
+      const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
+
+      assert.equal(snapshot.status, "error");
+      assert.equal(snapshot.installed, true);
+      assert.equal(
+        snapshot.message,
+        'The OpenCode CLI was terminated by SIGKILL before it could report its version. On macOS, reinstall OpenCode or run `codesign --force --sign - "$(which opencode)"`, then verify `opencode --version` in a terminal.',
+      );
+    }),
+  );
+
   it.effect("emits OpenCode variant defaults so trait picker can resolve a visible selection", () =>
     Effect.gen(function* () {
       runtimeMock.state.inventory = {

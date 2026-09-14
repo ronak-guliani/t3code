@@ -124,7 +124,15 @@ function formatOpenCodeProbeError(input: {
     return {
       installed: true,
       message:
-        "macOS killed the OpenCode process due to an invalid code signature. The binary may be corrupted — try reinstalling OpenCode.",
+        'macOS killed the OpenCode process due to an invalid code signature. Reinstall OpenCode or run `codesign --force --sign - "$(which opencode)"`, then verify `opencode --version` in a terminal.',
+    };
+  }
+
+  if (lower.includes("sigkill")) {
+    return {
+      installed: true,
+      message:
+        'The OpenCode CLI was terminated by SIGKILL before it could report its version. On macOS, reinstall OpenCode or run `codesign --force --sign - "$(which opencode)"`, then verify `opencode --version` in a terminal.',
     };
   }
 
