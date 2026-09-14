@@ -138,6 +138,7 @@ export function useDeviceHubAccess(
   environmentId: EnvironmentId | null,
   hostId = "local",
   active = true,
+  hubBasePath = EMPTY_DEVICE_STATE.hubBasePath,
 ): {
   readonly access: DeviceHubAccess | null;
   readonly refresh: () => void;
@@ -159,7 +160,7 @@ export function useDeviceHubAccess(
     let cancelled = false;
     setAccess(null);
     void connection
-      .resolveDeviceHubAccess(EMPTY_DEVICE_STATE.hubBasePath, hostId)
+      .resolveDeviceHubAccess(hubBasePath, hostId)
       .then((next) => {
         if (!cancelled) setAccess(next);
       })
@@ -169,7 +170,7 @@ export function useDeviceHubAccess(
     return () => {
       cancelled = true;
     };
-  }, [active, environmentId, generation, hostId]);
+  }, [active, environmentId, generation, hostId, hubBasePath]);
 
   return {
     access,

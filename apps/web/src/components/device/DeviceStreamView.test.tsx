@@ -40,6 +40,7 @@ it("removes MJPEG requests while hidden and reconnects when shown", async () => 
   const view = (visible: boolean) => (
     <DeviceStreamView
       hostId="local"
+      hubBasePath="/api/device-hub"
       environmentId={EnvironmentId.make("test")}
       deviceId="test"
       platform="ios"

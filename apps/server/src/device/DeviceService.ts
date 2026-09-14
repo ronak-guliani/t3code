@@ -375,7 +375,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         return yield* new DeviceOperationError({
           operation: "list",
           reason: "command_failed",
-          exitCode: avds.code,
+          ...(avds.code === null ? {} : { exitCode: avds.code }),
           cause: avds,
         });
       }

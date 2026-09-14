@@ -1951,10 +1951,12 @@ function ChatViewBody(
       (session) => session.threadId === activeThreadRef.threadId,
     );
     const currentKeys = new Set(
-      sessions.map((session) => `${session.hostId}\u0000${session.deviceId}`),
+      sessions.map(
+        (session) => `${session.threadId}\u0000${session.hostId}\u0000${session.deviceId}`,
+      ),
     );
     for (const session of sessions) {
-      const key = `${session.hostId}\u0000${session.deviceId}`;
+      const key = `${session.threadId}\u0000${session.hostId}\u0000${session.deviceId}`;
       if (reconciledDeviceSessionsRef.current.has(key)) continue;
       const device = deviceState.devices.find(
         (candidate) => candidate.hostId === session.hostId && candidate.id === session.deviceId,

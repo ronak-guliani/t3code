@@ -303,6 +303,16 @@ export function createDeviceStreamClient(
   let configuring = false;
   let mjpeg = false;
   let unauthorizedHandled = false;
+  const usedTicketChannels = new Set<keyof NonNullable<typeof access.tickets>>();
+
+  const nextTicket = async (channel: keyof NonNullable<typeof access.tickets>) => {
+    const initial = access.tickets?.[channel];
+    if (!usedTicketChannels.has(channel) && initial) {
+      usedTicketChannels.add(channel);
+      return initial;
+    }
+    return access.issueTicket?.();
+  };
 
   const mjpegUrl = () => httpUrl(`/helper/${device}/stream.mjpeg`, access.tickets?.mjpeg);
 
@@ -439,7 +449,7 @@ export function createDeviceStreamClient(
     controller = new AbortController();
     try {
       const response = await fetch(
-        httpUrl(`/helper/${device}/stream.avcc`, access.tickets?.video),
+        httpUrl(`/helper/${device}/stream.avcc`, await nextTicket("video")),
         {
           signal: controller.signal,
           credentials: access.credentials ? "include" : "same-origin",
@@ -499,7 +509,7 @@ export function createDeviceStreamClient(
     const timeout = setTimeout(() => controller.abort(), 2_000);
     try {
       const response = await fetch(
-        httpUrl(`/helper/${device}/stream.mjpeg`, access.tickets?.prime),
+        httpUrl(`/helper/${device}/stream.mjpeg`, await nextTicket("prime")),
         {
           signal: controller.signal,
           credentials: access.credentials ? "include" : "same-origin",
@@ -521,7 +531,7 @@ export function createDeviceStreamClient(
     if (stopped) return;
     await primeIosHelper();
     if (stopped) return;
-    const ws = new WebSocket(wsUrl(`/helper/ws?device=${device}`, access.tickets?.input));
+    const ws = new WebSocket(wsUrl(`/helper/ws?device=${device}`, await nextTicket("input")));
     ws.binaryType = "arraybuffer";
     socket = ws;
     ws.onopen = () => {
@@ -557,9 +567,9 @@ export function createDeviceStreamClient(
   };
 
   // Android: one socket for video and input.
-  const connectAndroid = () => {
+  const connectAndroid = async () => {
     if (stopped) return;
-    const ws = new WebSocket(wsUrl(`/ws?device=${device}&frame-meta=1`, access.tickets?.input));
+    const ws = new WebSocket(wsUrl(`/ws?device=${device}&frame-meta=1`, await nextTicket("input")));
     ws.binaryType = "arraybuffer";
     socket = ws;
     ws.onopen = () => {
@@ -603,7 +613,7 @@ export function createDeviceStreamClient(
       if (event.code === 1008 || event.code === 4401) return handleUnauthorized();
       if (!stopped) {
         setStatus("connecting", event.reason || undefined);
-        scheduleRetry("input", connectAndroid);
+        scheduleRetry("input", () => void connectAndroid());
       }
     };
     ws.onerror = () => ws.close();
@@ -620,7 +630,7 @@ export function createDeviceStreamClient(
       if (useWebCodecs) void readIosVideo();
       else fallBackToMjpeg();
     } else if (useWebCodecs) {
-      connectAndroid();
+      void connectAndroid();
     } else {
       setStatus("error", "This browser cannot decode the Android stream (WebCodecs unavailable).");
     }

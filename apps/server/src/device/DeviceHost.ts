@@ -61,7 +61,13 @@ export interface DeviceHostReady {
     command: string,
     args: ReadonlyArray<string>,
     options?: { readonly timeoutMs?: number; readonly stdin?: string },
-  ) => Effect.Effect<{ readonly stdout: string; readonly stderr: string; readonly code: number }>;
+  ) => Effect.Effect<{
+    readonly stdout: string;
+    readonly stderr: string;
+    readonly code: number | null;
+    readonly signal?: NodeJS.Signals | null;
+    readonly timedOut?: boolean;
+  }>;
   /** Absolute paths of helper binaries vendored with the hub, when present. */
   readonly helpers: {
     readonly serveSimAxSettings: string | null;

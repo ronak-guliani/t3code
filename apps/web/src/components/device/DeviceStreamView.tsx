@@ -30,6 +30,7 @@ export interface DeviceStreamHandle {
  */
 export function DeviceStreamView(props: {
   readonly environmentId: EnvironmentId;
+  readonly hubBasePath: string;
   readonly platform: DevicePlatform;
   readonly deviceId: string;
   readonly deviceName?: string;
@@ -45,6 +46,7 @@ export function DeviceStreamView(props: {
     props.environmentId,
     props.hostId,
     props.visible,
+    props.hubBasePath,
   );
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const clientRef = useRef<DeviceStreamClient | null>(null);

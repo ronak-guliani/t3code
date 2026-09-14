@@ -637,9 +637,19 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
         Effect.map((result) => ({
           stdout: result.stdout,
           stderr: result.stderr,
-          code: Number(result.code),
+          code: result.code,
+          signal: result.signal ?? null,
+          timedOut: result.timedOut,
         })),
-        Effect.catch((cause) => Effect.succeed({ stdout: "", stderr: String(cause), code: 127 })),
+        Effect.catch((cause) =>
+          Effect.succeed({
+            stdout: "",
+            stderr: String(cause),
+            code: 127,
+            signal: null,
+            timedOut: false,
+          }),
+        ),
       );
 
   const toReady = (running: RunningHost): DeviceHost.DeviceHostReady => ({

@@ -66,7 +66,7 @@ export function DevicePanel(props: {
   const [axOverlay, setAxOverlay] = useState(false);
   const [recovering, setRecovering] = useState(false);
   const recoveryTargetRef = useRef<string | null>(null);
-  const { access } = useDeviceHubAccess(environmentId, "local", props.visible);
+  const { access } = useDeviceHubAccess(environmentId, "local", props.visible, state.hubBasePath);
 
   const hostDisabled = state.hostStatus === "disabled";
 
@@ -335,6 +335,7 @@ export function DevicePanel(props: {
               <DeviceStreamView
                 key={deviceKey(activeDevice)}
                 environmentId={environmentId}
+                hubBasePath={state.hubBasePath}
                 platform={activeDevice.platform}
                 deviceName={activeDevice.name}
                 deviceDescription={`${state.hosts.find((host) => host.id === activeDevice.hostId)?.label ?? "Device host"} · ${activeDevice.version}`}

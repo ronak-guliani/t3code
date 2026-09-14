@@ -84,17 +84,27 @@ export const supportsAction = (platform: DevicePlatform, input: DeviceActionInpu
   return true;
 };
 
-const ok = (operation: string) => (result: { code: number; stderr: string; stdout: string }) =>
-  result.code === 0
-    ? Effect.succeed(result.stdout)
-    : Effect.fail(
-        new DeviceOperationError({
-          operation,
-          reason: "command_failed",
-          exitCode: result.code,
-          cause: result,
-        }),
-      );
+const ok =
+  (operation: string) =>
+  (result: {
+    code: number | null;
+    stderr: string;
+    stdout: string;
+    signal?: NodeJS.Signals | null;
+    timedOut?: boolean;
+  }) =>
+    result.code === 0 && result.timedOut !== true
+      ? Effect.succeed(result.stdout)
+      : Effect.fail(
+          new DeviceOperationError({
+            operation,
+            reason: "command_failed",
+            ...(result.code === null ? {} : { exitCode: result.code }),
+            cause: result,
+          }),
+        );
+
+const androidShellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 // iOS text-size categories in ascending order; the four shared steps index
 // into it. `default` is what a fresh simulator reports ("large").
@@ -430,24 +440,33 @@ const runAndroid = Effect.fn("DeviceActions.runAndroid")(function* (
       const verb = input.decision === "grant" ? "grant" : "revoke";
       for (const permission of permissions) {
         // Not every app declares every permission in a group; ignore those.
-        yield* shell(["pm", verb, input.appId, permission], "permission").pipe(Effect.ignore);
+        yield* shell(["pm", verb, androidShellQuote(input.appId), permission], "permission").pipe(
+          Effect.ignore,
+        );
       }
       return;
     }
     case "openUrl":
       yield* shell(
-        ["am", "start", "-a", "android.intent.action.VIEW", "-d", input.url],
+        ["am", "start", "-a", "android.intent.action.VIEW", "-d", androidShellQuote(input.url)],
         "open url",
       );
       return;
     case "launchApp":
       yield* shell(
-        ["monkey", "-p", input.appId, "-c", "android.intent.category.LAUNCHER", "1"],
+        [
+          "monkey",
+          "-p",
+          androidShellQuote(input.appId),
+          "-c",
+          "android.intent.category.LAUNCHER",
+          "1",
+        ],
         "launch",
       );
       return;
     case "terminateApp":
-      yield* shell(["am", "force-stop", input.appId], "terminate");
+      yield* shell(["am", "force-stop", androidShellQuote(input.appId)], "terminate");
       return;
     case "setLiquidGlass":
     case "setColorFilter":

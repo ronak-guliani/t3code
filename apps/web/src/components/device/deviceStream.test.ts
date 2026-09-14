@@ -79,12 +79,15 @@ describe("iOS input startup", () => {
     vi.unstubAllGlobals();
   });
 
-  const setup = (tickets?: {
-    readonly video: string;
-    readonly input: string;
-    readonly prime: string;
-    readonly mjpeg: string;
-  }) => {
+  const setup = (
+    tickets?: {
+      readonly video: string;
+      readonly input: string;
+      readonly prime: string;
+      readonly mjpeg: string;
+    },
+    issueTicket?: () => Promise<string>,
+  ) => {
     vi.useFakeTimers();
     const sockets: FakeSocket[] = [];
     class FakeSocket {
@@ -130,6 +133,7 @@ describe("iOS input startup", () => {
           credentials: true,
           query: {},
           ...(tickets ? { tickets } : {}),
+          ...(issueTicket ? { issueTicket } : {}),
         },
       },
       { getContext: () => null } as unknown as HTMLCanvasElement,
@@ -160,10 +164,35 @@ describe("iOS input startup", () => {
       prime: "prime-ticket",
       mjpeg: "mjpeg-ticket",
     });
+
     client.start();
     await vi.advanceTimersByTimeAsync(2_000);
     expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain("wsTicket=prime-ticket");
     expect(sockets[0]?.url).toContain("wsTicket=input-ticket");
+    client.stop();
+  });
+
+  it("mints a fresh input ticket after a socket retry", async () => {
+    const issueTicket = vi
+      .fn()
+      .mockResolvedValueOnce("retry-prime-ticket")
+      .mockResolvedValueOnce("retry-input-ticket");
+    const { client, sockets } = setup(
+      {
+        video: "video-ticket",
+        input: "initial-input-ticket",
+        prime: "prime-ticket",
+        mjpeg: "mjpeg-ticket",
+      },
+      issueTicket,
+    );
+    client.start();
+    await vi.advanceTimersByTimeAsync(2_000);
+    sockets[0]?.onclose?.({ code: 1006, reason: "dropped" });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(issueTicket).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(fetch).mock.calls[1]?.[0]).toContain("wsTicket=retry-prime-ticket");
+    expect(sockets[1]?.url).toContain("wsTicket=retry-input-ticket");
     client.stop();
   });
 

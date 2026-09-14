@@ -8,7 +8,13 @@ import type { DeviceHostReady } from "./DeviceHost.ts";
 type Call = { command: string; args: ReadonlyArray<string>; stdin?: string };
 
 const makeReady = (
-  respond: (call: Call) => { stdout?: string; stderr?: string; code?: number } = () => ({}),
+  respond: (call: Call) => {
+    stdout?: string;
+    stderr?: string;
+    code?: number | null;
+    timedOut?: boolean;
+    signal?: NodeJS.Signals | null;
+  } = () => ({}),
   helpers: DeviceHostReady["helpers"] = {
     serveSimAxSettings: "/hub/simax/serve-sim-ax-settings",
     serveSimCli: "/hub/serve-sim.js",
@@ -25,7 +31,9 @@ const makeReady = (
       return Effect.succeed({
         stdout: result.stdout ?? "",
         stderr: result.stderr ?? "",
-        code: result.code ?? 0,
+        code: result.code === undefined ? 0 : result.code,
+        signal: result.signal ?? null,
+        timedOut: result.timedOut ?? false,
       });
     },
   };
@@ -205,12 +213,49 @@ describe("runDeviceAction", () => {
       const error = yield* Effect.flip(
         runDeviceAction(ready, "ios", { type: "setAppearance", deviceId: udid, value: "dark" }),
       );
+
       expect(error.operation).toBe("appearance");
       expect(error.message).toContain("exit code 1");
       expect(error.message).not.toContain("Invalid device: SIM-1");
       expect(error._tag === "DeviceOperationError" && error.cause).toMatchObject({
         stderr: "Invalid device: SIM-1",
       });
+    }),
+  );
+
+  it.effect("surfaces timed out commands even when they have no exit code", () =>
+    Effect.gen(function* () {
+      const { ready } = makeReady(() => ({ code: null, timedOut: true, signal: "SIGTERM" }));
+      const error = yield* Effect.flip(
+        runDeviceAction(ready, "ios", {
+          type: "setAppearance",
+          deviceId: udid,
+          value: "dark",
+        }),
+      );
+      expect(error._tag).toBe("DeviceOperationError");
+      if (error._tag === "DeviceOperationError") {
+        expect(error.exitCode).toBeUndefined();
+        expect(error.cause).toMatchObject({ code: null, timedOut: true, signal: "SIGTERM" });
+      }
+    }),
+  );
+
+  it.effect("quotes untrusted Android shell arguments", () =>
+    Effect.gen(function* () {
+      const { ready, calls } = makeReady();
+      yield* runDeviceAction(ready, "android", {
+        type: "openUrl",
+        deviceId: "emulator-5554",
+        url: "https://example.test/a; reboot",
+      });
+      yield* runDeviceAction(ready, "android", {
+        type: "terminateApp",
+        deviceId: "emulator-5554",
+        appId: "com.example'; reboot",
+      });
+      expect(calls[0]?.args.at(-1)).toBe("'https://example.test/a; reboot'");
+      expect(calls[1]?.args.at(-1)).toBe("'com.example'\\''; reboot'");
     }),
   );
 
