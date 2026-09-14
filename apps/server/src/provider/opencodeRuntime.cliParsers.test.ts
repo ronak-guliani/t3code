@@ -2,7 +2,23 @@ import * as NodeAssert from "node:assert/strict";
 
 import { describe, it } from "vite-plus/test";
 
-import { parseModelsCliOutput, parseAgentListCliOutput } from "./opencodeRuntime.ts";
+import {
+  openCodeRuntimeErrorDetail,
+  parseModelsCliOutput,
+  parseAgentListCliOutput,
+} from "./opencodeRuntime.ts";
+
+describe("openCodeRuntimeErrorDetail", () => {
+  it("preserves the signal behind an opaque child-process exit error", () => {
+    const signalError = new Error("Process interrupted due to receipt of signal: 'SIGKILL'");
+    const platformError = new Error("Unknown: ChildProcess.exitCode", { cause: signalError });
+
+    NodeAssert.equal(
+      openCodeRuntimeErrorDetail(platformError),
+      "Process interrupted due to receipt of signal: 'SIGKILL'",
+    );
+  });
+});
 
 describe("parseModelsCliOutput", () => {
   it("parses a single model from a single provider", () => {

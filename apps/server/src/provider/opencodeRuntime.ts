@@ -70,9 +70,25 @@ export class OpenCodeRuntimeError extends Data.TaggedError(OPENCODE_RUNTIME_ERRO
     P.isTagged(u, OPENCODE_RUNTIME_ERROR_TAG);
 }
 
+function nestedErrorCause(cause: unknown): unknown {
+  if (!cause || typeof cause !== "object" || !("cause" in cause)) {
+    return undefined;
+  }
+  return (cause as { readonly cause?: unknown }).cause;
+}
+
 export function openCodeRuntimeErrorDetail(cause: unknown): string {
   if (OpenCodeRuntimeError.is(cause)) return cause.detail;
-  if (cause instanceof Error && cause.message.trim().length > 0) return cause.message.trim();
+  if (cause instanceof Error && cause.message.trim().length > 0) {
+    const message = cause.message.trim();
+    if (message.includes("ChildProcess.exitCode")) {
+      const nestedCause = nestedErrorCause(cause);
+      if (nestedCause !== undefined && nestedCause !== cause) {
+        return openCodeRuntimeErrorDetail(nestedCause);
+      }
+    }
+    return message;
+  }
   if (cause && typeof cause === "object") {
     // SDK v2 throws { response, request, error? } shapes — extract what's useful
     const anyCause = cause as Record<string, unknown>;
