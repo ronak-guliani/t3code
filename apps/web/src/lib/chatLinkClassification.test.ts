@@ -68,24 +68,47 @@ describe("resolveExplicitThreadLink", () => {
     ).toBeNull();
   });
 
-  it.each(["http://localhost:3773", "http://127.0.0.1:3773", "http://[::1]:3773"])(
-    "routes a stale local thread URL from %s to its registered environment",
-    (origin) => {
-      const threadId = "bc880b45-fd48-42db-98fa-f211bae7cc0a";
-      expect(
-        resolveExplicitThreadLink(`${origin}/environment-a/${threadId}`, {
-          baseOrigin: "http://127.0.0.1:4773",
-          trustedOrigins: [{ origin: "http://127.0.0.1:4773", environmentId: ENVIRONMENT_ID }],
-        }),
-      ).toEqual({
-        ref: { environmentId: ENVIRONMENT_ID, threadId },
-        href: `/environment-a/${threadId}`,
-      });
-    },
-  );
+  it.each([
+    "http://localhost:3773",
+    "http://127.0.0.1:3773",
+    "http://[::1]:3773",
+    "http://10.0.0.237:3773",
+    "http://192.168.1.25:3773",
+    "http://172.16.0.25:3773",
+    "http://[fd00::25]:3773",
+  ])("routes a stale local thread URL from %s to its registered environment", (origin) => {
+    const threadId = "bc880b45-fd48-42db-98fa-f211bae7cc0a";
+    expect(
+      resolveExplicitThreadLink(`${origin}/environment-a/${threadId}`, {
+        baseOrigin: "http://127.0.0.1:4773",
+        trustedOrigins: [{ origin: "http://127.0.0.1:4773", environmentId: ENVIRONMENT_ID }],
+      }),
+    ).toEqual({
+      ref: { environmentId: ENVIRONMENT_ID, threadId },
+      href: `/environment-a/${threadId}`,
+    });
+  });
+
+  it("resolves a changed private-network address through the registered environment", () => {
+    const threadId = "bc880b45-fd48-42db-98fa-f211bae7cc0a";
+    expect(
+      resolveExplicitThreadLink(`http://10.0.0.237:3773/environment-a/${threadId}`, {
+        baseOrigin: "https://app.example.test",
+        trustedOrigins: [{ origin: "http://192.168.1.25:4773", environmentId: ENVIRONMENT_ID }],
+      }),
+    ).toEqual({
+      ref: { environmentId: ENVIRONMENT_ID, threadId },
+      href: `/environment-a/${threadId}`,
+    });
+  });
 
   it.each([
     "http://localhost:3773/environment-other",
+    "http://10.0.0.237:3773/environment-other",
+    "http://8.8.8.8:3773/environment-a",
+    "http://172.32.0.25:3773/environment-a",
+    "http://10.0.0.237.evil.test:3773/environment-a",
+    "https://10.0.0.237:3773/environment-a",
     "http://untrusted.example.test:3773/environment-a",
     "https://localhost:3773/environment-a",
     "http://localhost.evil.test:3773/environment-a",
@@ -99,37 +122,53 @@ describe("resolveExplicitThreadLink", () => {
     ).toBeNull();
   });
 
-  it("does not infer a local environment from an unbound app origin or remote registration", () => {
-    for (const trustedOrigins of [
-      [{ origin: "http://127.0.0.1:4773" }],
-      [{ origin: "https://remote.example.test", environmentId: ENVIRONMENT_ID }],
-      [{ origin: "file:///app", environmentId: ENVIRONMENT_ID }],
-      [{ origin: "invalid", environmentId: ENVIRONMENT_ID }],
-    ]) {
-      expect(
-        resolveExplicitThreadLink(
-          "http://localhost:3773/environment-a/bc880b45-fd48-42db-98fa-f211bae7cc0a",
-          { baseOrigin: "http://127.0.0.1:4773", trustedOrigins },
-        ),
-      ).toBeNull();
-    }
-  });
+  it.each(["http://localhost:3773", "http://10.0.0.237:3773"])(
+    "does not infer an environment for %s from an unbound app origin or public registration",
+    (origin) => {
+      for (const trustedOrigins of [
+        [{ origin: "http://127.0.0.1:4773" }],
+        [{ origin: "https://remote.example.test", environmentId: ENVIRONMENT_ID }],
+        [{ origin: "file:///app", environmentId: ENVIRONMENT_ID }],
+        [{ origin: "invalid", environmentId: ENVIRONMENT_ID }],
+      ]) {
+        expect(
+          resolveExplicitThreadLink(
+            `${origin}/environment-a/bc880b45-fd48-42db-98fa-f211bae7cc0a`,
+            { baseOrigin: "http://127.0.0.1:4773", trustedOrigins },
+          ),
+        ).toBeNull();
+      }
+    },
+  );
 
-  it("preserves a loopback origin's explicit environment binding", () => {
-    expect(
-      resolveExplicitThreadLink(
-        "http://localhost:3773/environment-a/bc880b45-fd48-42db-98fa-f211bae7cc0a",
-        {
+  it.each(["http://localhost:3773", "http://10.0.0.237:3773"])(
+    "preserves the explicit environment binding of %s",
+    (origin) => {
+      expect(
+        resolveExplicitThreadLink(`${origin}/environment-a/bc880b45-fd48-42db-98fa-f211bae7cc0a`, {
           baseOrigin: "http://localhost:4773",
           trustedOrigins: [
             {
-              origin: "http://localhost:3773",
+              origin,
               environmentId: EnvironmentId.make("environment-other"),
             },
             { origin: "http://localhost:4773", environmentId: ENVIRONMENT_ID },
           ],
-        },
-      ),
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it.each([
+    "/pair",
+    "/pair#token=example",
+    "/environment-a/bc880b45-fd48-42db-98fa-f211bae7cc0a?x=1",
+  ])("keeps noncanonical private-network URLs external: %s", (path) => {
+    expect(
+      resolveExplicitThreadLink(`http://10.0.0.237:3773${path}`, {
+        baseOrigin: "http://127.0.0.1:4773",
+        trustedOrigins: [{ origin: "http://127.0.0.1:4773", environmentId: ENVIRONMENT_ID }],
+      }),
     ).toBeNull();
   });
 
