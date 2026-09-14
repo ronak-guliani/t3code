@@ -7,6 +7,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  GitManagerError,
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
 import {
@@ -233,7 +234,6 @@ describe("logCleanupCauseUnlessInterrupted", () => {
       }
 
       expect(resolveCalls).toBe(1);
-      expect(groups[0]?.cwd).toBe("/tmp/worktree-a");
       expect(groups[0]?.cwds).toEqual(["/tmp/worktree-a", "/tmp/project", "/tmp/worktree-b"]);
       expect(groups[0]?.candidates).toHaveLength(2);
     });
@@ -256,7 +256,12 @@ describe("logCleanupCauseUnlessInterrupted", () => {
           ({ cwd }) => {
             calls.push(cwd);
             return cwd === "/tmp/unhealthy-worktree"
-              ? Effect.die("checkout unavailable")
+              ? Effect.fail(
+                  new GitManagerError({
+                    operation: "test.resolvePullRequest",
+                    detail: "checkout unavailable",
+                  }),
+                )
               : Effect.succeed({ pullRequest });
           },
         ),
@@ -264,6 +269,23 @@ describe("logCleanupCauseUnlessInterrupted", () => {
 
       expect(calls).toEqual(["/tmp/unhealthy-worktree", "/tmp/healthy-worktree"]);
       expect(resolved).toEqual({ pullRequest });
+    });
+
+    it("does not swallow resolver defects while trying fallback checkouts", async () => {
+      const calls: string[] = [];
+      const exit = await Effect.runPromiseExit(
+        resolvePullRequestFromCwds(
+          ["/tmp/defective-worktree", "/tmp/healthy-worktree"],
+          "https://github.com/acme/example/pull/42",
+          ({ cwd }) => {
+            calls.push(cwd);
+            return Effect.die("resolver defect");
+          },
+        ),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(calls).toEqual(["/tmp/defective-worktree"]);
     });
 
     it("removes a clean archived merged-PR worktree from a disposable Git repository", async () => {

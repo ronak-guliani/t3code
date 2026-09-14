@@ -6,7 +6,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
-import { threadPullRequestIdentity } from "@t3tools/shared/threadPullRequests";
+import { sameThreadPullRequest, threadPullRequestKey } from "@t3tools/shared/threadPullRequests";
 import { Cause, Clock, Effect, Exit, FileSystem, Layer, Option, Schedule, Stream } from "effect";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
@@ -39,7 +39,6 @@ type PullRequestRefreshCandidate = {
 };
 
 export type PullRequestRefreshGroup = {
-  readonly cwd: string;
   readonly cwds: ReadonlyArray<string>;
   readonly pullRequest: PullRequestRefreshCandidate["link"]["pullRequest"];
   readonly candidates: ReadonlyArray<PullRequestRefreshCandidate>;
@@ -55,9 +54,7 @@ export function resolvePullRequestFromCwds(
     return Effect.succeed(null);
   }
   return resolvePullRequest({ cwd, reference }).pipe(
-    Effect.catchCause(() =>
-      resolvePullRequestFromCwds(cwds.slice(1), reference, resolvePullRequest),
-    ),
+    Effect.catch(() => resolvePullRequestFromCwds(cwds.slice(1), reference, resolvePullRequest)),
   );
 }
 
@@ -94,17 +91,15 @@ export function groupOpenPullRequestAssociationRefreshes(
   for (const candidate of candidates) {
     const project = projectsById.get(candidate.thread.projectId);
     if (!project) continue;
-    const identity = threadPullRequestIdentity(candidate.link.pullRequest);
-    const group = groups.get(`${identity.host}\0${identity.repository}\0${identity.number}`);
+    const key = threadPullRequestKey(candidate.link.pullRequest);
+    const group = groups.get(key);
     if (group) group.push(candidate);
-    else groups.set(`${identity.host}\0${identity.repository}\0${identity.number}`, [candidate]);
+    else groups.set(key, [candidate]);
   }
 
   return [...groups.values()].flatMap((group) => {
     const first = group[0];
     if (!first) return [];
-    const project = projectsById.get(first.thread.projectId);
-    if (!project) return [];
     const cwds = [
       ...new Set(
         group.flatMap((candidate) => {
@@ -118,7 +113,6 @@ export function groupOpenPullRequestAssociationRefreshes(
     ];
     return [
       {
-        cwd: cwds[0] ?? project.workspaceRoot,
         cwds,
         pullRequest: first.link.pullRequest,
         candidates: group,
@@ -1053,7 +1047,10 @@ const make = Effect.gen(function* () {
                   .pipe(
                     Effect.andThen(
                       candidateThread.pullRequest &&
-                        candidateThread.pullRequest.url === candidateLink.pullRequest.url
+                        sameThreadPullRequest(
+                          candidateThread.pullRequest,
+                          candidateLink.pullRequest,
+                        )
                         ? orchestrationEngine.dispatch({
                             type: "thread.meta.update",
                             commandId: CommandId.make(crypto.randomUUID()),

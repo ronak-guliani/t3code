@@ -44,6 +44,19 @@ export function sameThreadPullRequest(
   return threadPullRequestKey(left) === threadPullRequestKey(right);
 }
 
+export function sameThreadPullRequestAssociation(
+  left: GitPullRequestAssociation,
+  right: GitPullRequestAssociation,
+): boolean {
+  return (
+    sameThreadPullRequest(left, right) &&
+    left.title === right.title &&
+    left.baseBranch === right.baseBranch &&
+    left.headBranch === right.headBranch &&
+    left.state === right.state
+  );
+}
+
 export function legacyThreadPullRequestLink(
   existing: ThreadPullRequestLink | undefined,
   pullRequest: GitPullRequestAssociation,
@@ -65,10 +78,4 @@ export function upsertLegacyThreadPullRequestLink(
   return existingIndex < 0
     ? [...existingLinks, nextLink]
     : existingLinks.map((link, index) => (index === existingIndex ? nextLink : link));
-}
-
-export function visibleThreadPullRequests(
-  pullRequests: ReadonlyArray<ThreadPullRequestLink> | undefined,
-): ReadonlyArray<ThreadPullRequestLink> {
-  return pullRequests ?? [];
 }

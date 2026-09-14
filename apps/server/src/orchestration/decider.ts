@@ -36,7 +36,10 @@ import { assistantTurnCount } from "./Utils.ts";
 import { findCanonicalActiveWorktreeOwner } from "./worktreeOwnership.ts";
 import { childNudgePrompt, isAutomaticChildNudgeBlocked, queueChildNudge } from "./childNudging.ts";
 import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
-import { sameThreadPullRequest } from "@t3tools/shared/threadPullRequests";
+import {
+  sameThreadPullRequest,
+  sameThreadPullRequestAssociation,
+} from "@t3tools/shared/threadPullRequests";
 import {
   childReportDedupeKey,
   classifyChildReport,
@@ -1555,6 +1558,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const existing = (thread.pullRequests ?? []).find((link) =>
         sameThreadPullRequest(link.pullRequest, command.pullRequest),
       );
+      const source =
+        command.source === "manual" ? (existing?.source ?? command.source) : command.source;
+      if (
+        existing &&
+        existing.source === source &&
+        sameThreadPullRequestAssociation(existing.pullRequest, command.pullRequest)
+      ) {
+        return [];
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -1567,8 +1579,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           link: {
             pullRequest: command.pullRequest,
-            source:
-              command.source === "manual" ? (existing?.source ?? command.source) : command.source,
+            source,
             linkedAt: existing?.linkedAt ?? occurredAt,
           },
           updatedAt: occurredAt,
@@ -1577,11 +1588,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.pull-request.unlink": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      const hasLink = (thread.pullRequests ?? []).some((link) =>
+        sameThreadPullRequest(link.pullRequest, command.pullRequest),
+      );
+      const clearsLegacyPullRequest =
+        thread.pullRequest !== null &&
+        thread.pullRequest !== undefined &&
+        sameThreadPullRequest(thread.pullRequest, command.pullRequest);
+      if (!hasLink && !clearsLegacyPullRequest) {
+        return [];
+      }
       const occurredAt = nowIso();
       return {
         ...withEventBase({

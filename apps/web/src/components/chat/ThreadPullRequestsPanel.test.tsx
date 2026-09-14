@@ -30,4 +30,21 @@ describe("ThreadPullRequestsPanel", () => {
     expect(html).toContain('aria-label="Link pull request"');
     expect(html).toContain('aria-label="Unlink pull request #42"');
   });
+
+  it("keeps unsupported clients read-only when linked PRs are present", () => {
+    const html = renderToStaticMarkup(
+      <ThreadPullRequestsPanel
+        pullRequests={[
+          linkedPullRequest,
+          { ...linkedPullRequest, pullRequest: { ...linkedPullRequest.pullRequest, number: 43 } },
+        ]}
+        enabled={false}
+        onLink={async () => {}}
+        onUnlink={async () => {}}
+      />,
+    );
+
+    expect(html).not.toContain('aria-label="Unlink pull request');
+    expect(html).not.toContain('aria-label="Link pull request"');
+  });
 });

@@ -92,18 +92,20 @@ export function ThreadPullRequestsPanel({
                 >
                   #{link.pullRequest.number} {link.pullRequest.title}
                 </a>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={`Unlink pull request #${link.pullRequest.number}`}
-                  disabled={busy}
-                  onClick={() => {
-                    setBusy(true);
-                    void unlink(link.pullRequest);
-                  }}
-                >
-                  <UnlinkIcon className="size-3" />
-                </Button>
+                {enabled ? (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={`Unlink pull request #${link.pullRequest.number}`}
+                    disabled={busy}
+                    onClick={() => {
+                      setBusy(true);
+                      void unlink(link.pullRequest);
+                    }}
+                  >
+                    <UnlinkIcon className="size-3" />
+                  </Button>
+                ) : null}
               </div>
             ))
           )}
