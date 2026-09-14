@@ -15,6 +15,24 @@ const config = {
   threadResumeCompletionMarker: true,
 };
 
+const SHIPPED_V1_PROTOCOL_VERSION = 1;
+
+function shippedV1Compatibility(serverConfig: {
+  readonly environment: {
+    readonly capabilities: { readonly ownedMobileProtocolVersion?: number };
+  };
+}):
+  | { readonly status: "supported" }
+  | { readonly status: "unsupported"; readonly message: string } {
+  const serverVersion = serverConfig.environment.capabilities.ownedMobileProtocolVersion;
+  return serverVersion === undefined || serverVersion === SHIPPED_V1_PROTOCOL_VERSION
+    ? { status: "supported" }
+    : {
+        status: "unsupported",
+        message: `This server uses owned mobile protocol ${serverVersion}; this app supports version ${SHIPPED_V1_PROTOCOL_VERSION}. Install a matching app/server release.`,
+      };
+}
+
 describe("owned mobile compatibility", () => {
   it("accepts the existing fork through capabilities, not an unreliable app version", () => {
     expect(mobileCompatibility(config)).toEqual({
@@ -72,5 +90,31 @@ describe("owned mobile compatibility", () => {
       message:
         "This server uses owned mobile protocol 1; this app supports version 2. Install a matching app/server release.",
     });
+  });
+
+  it("keeps a frozen shipped v1 client from subscribing to a v2 server", () => {
+    const v2ServerConfig = {
+      ...config,
+      environment: {
+        ...config.environment,
+        capabilities: {
+          ...config.environment.capabilities,
+          ownedMobileProtocolVersion: 2,
+        },
+      },
+    };
+    let subscriptionStarted = false;
+
+    const compatibility = shippedV1Compatibility(v2ServerConfig);
+    if (compatibility.status === "supported") {
+      subscriptionStarted = true;
+    }
+
+    expect(compatibility).toEqual({
+      status: "unsupported",
+      message:
+        "This server uses owned mobile protocol 2; this app supports version 1. Install a matching app/server release.",
+    });
+    expect(subscriptionStarted).toBe(false);
   });
 });
