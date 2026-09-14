@@ -194,7 +194,7 @@ export function makeMobileConfig(env: BuildEnvironment): ExpoConfig {
     plugins: [
       ...authPlugins,
       ["expo-dev-client", { addGeneratedScheme: appVariant === "development" }],
-      ["expo-notifications", { enableBackgroundRemoteNotifications: false }],
+      ["expo-notifications", { mode: appVariant === "development" ? "development" : "production" }],
       "expo-asset",
       "expo-sqlite",
       "./plugins/withShareExtensionDisplayName.cjs",
@@ -308,6 +308,7 @@ export function makeMobileConfig(env: BuildEnvironment): ExpoConfig {
           bundleIdentifier: `${variant.iosBundleIdentifier}.widgets`,
           groupIdentifier: `group.${variant.iosBundleIdentifier}`,
           enablePushNotifications: true,
+          frequentUpdates: true,
           widgets: [
             {
               name: "AgentActivity",
@@ -328,10 +329,6 @@ export function makeMobileConfig(env: BuildEnvironment): ExpoConfig {
     ],
     extra: {
       appVariant,
-      // Ordinary notification alerts remain disabled, while Live Activities
-      // retain the APNs entitlement required for remote activity updates.
-      agentAwarenessPushEnabled: false,
-      agentAwarenessLiveActivitiesEnabled: true,
       relay: {
         url: connectEnabled ? relayUrl : null,
       },

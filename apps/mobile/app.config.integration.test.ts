@@ -52,8 +52,6 @@ describe("resolved Expo native configuration", () => {
       "_internal.modResults.ios.infoPlist.ClerkRedirectUrl",
       "com.t3tools.t3code://callback",
     );
-    expect(config).toHaveProperty("extra.agentAwarenessPushEnabled", false);
-    expect(config).toHaveProperty("extra.agentAwarenessLiveActivitiesEnabled", true);
     expect(config).toHaveProperty("extra.clerk.publishableKey", expect.stringMatching(/^pk_/));
     expect(config).toHaveProperty("extra.clerk.jwtTemplate", expect.any(String));
     expect(config).toHaveProperty("extra.relay.url", expect.stringMatching(/^https:\/\//));

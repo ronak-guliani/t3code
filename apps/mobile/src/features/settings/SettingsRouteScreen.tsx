@@ -20,10 +20,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
-import {
-  supportsAgentAwarenessLiveActivities,
-  supportsAgentAwarenessPush,
-} from "../agent-awareness/capabilities";
+import { supportsAgentAwarenessPush } from "../agent-awareness/capabilities";
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
 import { requestAgentNotificationPermission } from "../agent-awareness/notificationPermissions";
 import {
@@ -163,7 +160,6 @@ function ConfiguredSettingsRouteScreen() {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const agentAwarenessPushAvailable = supportsAgentAwarenessPush();
-  const agentAwarenessLiveActivitiesAvailable = supportsAgentAwarenessLiveActivities();
   const agentAwarenessPlatform = resolveAgentAwarenessPlatformPresentation(Platform.OS);
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
@@ -511,7 +507,7 @@ function ConfiguredSettingsRouteScreen() {
           <SettingsSwitchRow
             disabled={
               !agentAwarenessPlatform.supported ||
-              !agentAwarenessLiveActivitiesAvailable ||
+              !agentAwarenessPushAvailable ||
               !isLoaded ||
               liveActivityStatus === "checking" ||
               liveActivityStatus === "linking"
@@ -522,7 +518,7 @@ function ConfiguredSettingsRouteScreen() {
             // Same gate: a saved preference is meaningless until the device
             // registration the relay needs to push updates has succeeded.
             value={
-              agentAwarenessLiveActivitiesAvailable &&
+              agentAwarenessPushAvailable &&
               (liveActivityStatus === "enabled" || liveActivityStatus === "linking") &&
               deviceRegistered
             }

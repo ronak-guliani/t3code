@@ -35,7 +35,12 @@ describe("owned mobile build configuration", () => {
         bundleIdentifier: `${id}.widgets`,
         groupIdentifier: `group.${id}`,
         enablePushNotifications: true,
+        frequentUpdates: true,
       }),
+    ]);
+    expect(config.plugins).toContainEqual([
+      "expo-notifications",
+      { mode: variant === "development" ? "development" : "production" },
     ]);
   });
 
@@ -47,7 +52,7 @@ describe("owned mobile build configuration", () => {
     expect(() => makeMobileConfig({ APP_VARIANT })).toThrow("Unknown APP_VARIANT");
   });
 
-  it("restores Connect without enabling notification alerts, telemetry, or OTA", () => {
+  it("restores Connect push without enabling telemetry or OTA", () => {
     const config = makeMobileConfig({
       T3CODE_RELAY_URL: "https://relay.t3.codes",
       EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_not_for_mobile",
@@ -59,8 +64,6 @@ describe("owned mobile build configuration", () => {
     });
     expect(config.extra).toEqual({
       appVariant: "development",
-      agentAwarenessPushEnabled: false,
-      agentAwarenessLiveActivitiesEnabled: true,
       relay: { url: "https://relay.t3.codes" },
       clerk: { publishableKey: "pk_test_mobile", jwtTemplate: "t3-relay" },
       observability: { tracesUrl: null, tracesDataset: null, tracesToken: null },
@@ -79,8 +82,6 @@ describe("owned mobile build configuration", () => {
     expect(config.extra).toMatchObject({
       relay: { url: null },
       clerk: { publishableKey: null, jwtTemplate: null },
-      agentAwarenessPushEnabled: false,
-      agentAwarenessLiveActivitiesEnabled: true,
     });
     expect(config.plugins).not.toContainEqual(expect.arrayContaining(["@clerk/expo"]));
     expect(config.ios?.infoPlist).not.toHaveProperty("ClerkRedirectUrl");

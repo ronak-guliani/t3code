@@ -314,24 +314,14 @@ describe("makeRelayDeviceRegistrationRequest", () => {
 
   it.each([
     {
+      extra: {},
+      expected: { liveActivitiesEnabled: true, notificationsEnabled: true },
+    },
+    {
       extra: { iosPersonalTeamBuild: true },
       expected: { liveActivitiesEnabled: false, notificationsEnabled: false },
     },
-    {
-      extra: {
-        agentAwarenessLiveActivitiesEnabled: false,
-        agentAwarenessPushEnabled: false,
-      },
-      expected: { liveActivitiesEnabled: false, notificationsEnabled: false },
-    },
-    {
-      extra: {
-        agentAwarenessLiveActivitiesEnabled: true,
-        agentAwarenessPushEnabled: false,
-      },
-      expected: { liveActivitiesEnabled: true, notificationsEnabled: false },
-    },
-  ])("reports independently available awareness features: $extra", ({ extra, expected }) => {
+  ])("reports the upstream iOS push capability: $extra", ({ extra, expected }) => {
     Constants.expoConfig!.extra = extra;
 
     expect(
