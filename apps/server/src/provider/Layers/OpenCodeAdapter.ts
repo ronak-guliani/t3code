@@ -420,24 +420,25 @@ function commonPrefixLength(left: string, right: string): number {
   return index;
 }
 
-function resolveLatestAssistantText(previousText: string | undefined, nextText: string): string {
-  if (previousText && previousText.length > nextText.length && previousText.startsWith(nextText)) {
-    return previousText;
-  }
-  return nextText;
-}
-
 export function mergeOpenCodeAssistantText(
   previousText: string | undefined,
   nextText: string,
 ): {
   readonly latestText: string;
   readonly deltaToEmit: string;
+  readonly replaceExisting: boolean;
 } {
-  const latestText = resolveLatestAssistantText(previousText, nextText);
+  const latestText = nextText;
+  const replaceExisting =
+    previousText !== undefined &&
+    latestText !== previousText &&
+    !latestText.startsWith(previousText);
   return {
     latestText,
-    deltaToEmit: latestText.slice(commonPrefixLength(previousText ?? "", latestText)),
+    deltaToEmit: replaceExisting
+      ? latestText
+      : latestText.slice(commonPrefixLength(previousText ?? "", latestText)),
+    replaceExisting,
   };
 }
 
@@ -762,7 +763,10 @@ export function makeOpenCodeAdapter(
       if (part.text === undefined) {
         return;
       }
-      const { latestText, deltaToEmit } = mergeOpenCodeAssistantText(part.emittedText, part.text);
+      const { latestText, deltaToEmit, replaceExisting } = mergeOpenCodeAssistantText(
+        part.emittedText,
+        part.text,
+      );
       part.emittedText = latestText;
       part.text = latestText;
       if (deltaToEmit.length > 0) {
@@ -781,6 +785,7 @@ export function makeOpenCodeAdapter(
           payload: {
             streamKind: resolveTextStreamKind(part),
             delta: deltaToEmit,
+            ...(replaceExisting ? { replaceExisting: true } : {}),
           },
         });
       }
@@ -1656,11 +1661,12 @@ export function makeOpenCodeAdapter(
         });
       }
 
-      const agent = getModelSelectionStringOptionValue(modelSelection, "agent");
+      const selectedAgent = getModelSelectionStringOptionValue(modelSelection, "agent");
+      const agent = selectedAgent === "plan" ? undefined : selectedAgent;
       const variant = getModelSelectionStringOptionValue(modelSelection, "variant");
 
       context.activeTurnId = turnId;
-      context.activeAgent = agent ?? (input.interactionMode === "plan" ? "plan" : undefined);
+      context.activeAgent = agent;
       context.activeVariant = variant;
       updateProviderSession(
         context,

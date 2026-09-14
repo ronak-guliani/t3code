@@ -1506,6 +1506,36 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }).pipe(Effect.provide(adapterLayer));
   });
 
+  it.effect("does not dispatch the retired plan agent from persisted selections or modes", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-retired-plan-agent");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Fix it",
+        interactionMode: "plan",
+        modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5", [
+          { id: "agent", value: "plan" },
+        ]),
+      });
+
+      assert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
+        sessionID: "http://127.0.0.1:9999/session",
+        model: {
+          providerID: "openai",
+          modelID: "gpt-5",
+        },
+        parts: [{ type: "text", text: "Fix it" }],
+      });
+    }),
+  );
+
   it.effect("uses the bound custom instance id for fallback sendTurn model selection", () => {
     const customInstanceId = ProviderInstanceId.make("opencode_zen");
     const adapterLayer = Layer.effect(
@@ -1718,12 +1748,24 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const firstUpdate = mergeOpenCodeAssistantText(undefined, "Hello");
       const overlapDelta = appendOpenCodeAssistantTextDelta(firstUpdate.latestText, "lo world");
       const secondUpdate = mergeOpenCodeAssistantText(overlapDelta.nextText, "Hellolo world");
+      const replacement = mergeOpenCodeAssistantText(secondUpdate.latestText, "Hello again");
 
       assert.deepEqual(
-        [firstUpdate.deltaToEmit, overlapDelta.deltaToEmit, secondUpdate.deltaToEmit],
-        ["Hello", "lo world", ""],
+        [
+          [firstUpdate.deltaToEmit, firstUpdate.replaceExisting],
+          [overlapDelta.deltaToEmit, false],
+          [secondUpdate.deltaToEmit, secondUpdate.replaceExisting],
+          [replacement.deltaToEmit, replacement.replaceExisting],
+        ],
+        [
+          ["Hello", false],
+          ["lo world", false],
+          ["", false],
+          ["Hello again", true],
+        ],
       );
       assert.equal(secondUpdate.latestText, "Hellolo world");
+      assert.equal(replacement.latestText, "Hello again");
     }),
   );
 
@@ -2151,7 +2193,8 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           ["reasoning_text", "Thinking"],
           ["assistant_text", "Hello world"],
           ["reasoning_text", " more"],
-          ["assistant_text", "there"],
+          ["assistant_text", "Hello"],
+          ["assistant_text", " there"],
           ["assistant_text", " again"],
           ["assistant_text", "!"],
           ["assistant_text", "Fresh"],
@@ -2159,6 +2202,12 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           ["reasoning_text", "New thoughts"],
           ["assistant_text", "New"],
         ],
+      );
+      NodeAssert.deepEqual(
+        events
+          .filter((event) => event.type === "content.delta")
+          .map((event) => event.payload.replaceExisting === true),
+        [false, false, false, true, false, false, false, false, false, false, false],
       );
       NodeAssert.deepEqual(
         events

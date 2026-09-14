@@ -174,6 +174,10 @@ function inferDefaultAgent(agents: ReadonlyArray<Agent>): string | undefined {
 
 const OPENCODE_REASONING_VARIANTS = ["low", "medium", "high", "xhigh"] as const;
 
+function openCodeReasoningVariantLabel(value: string): string {
+  return value === "xhigh" ? "Extra High" : titleCaseSlug(value);
+}
+
 const DEFAULT_OPENCODE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [
     {
@@ -182,7 +186,7 @@ const DEFAULT_OPENCODE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabi
       type: "select",
       options: OPENCODE_REASONING_VARIANTS.map((id) => ({
         id,
-        label: id === "xhigh" ? "Extra High" : titleCaseSlug(id),
+        label: openCodeReasoningVariantLabel(id),
         ...(id === "medium" ? { isDefault: true as const } : {}),
       })),
       currentValue: "medium",
@@ -191,10 +195,7 @@ const DEFAULT_OPENCODE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabi
       id: "agent",
       label: "Agent",
       type: "select",
-      options: [
-        { id: "build", label: "Build", isDefault: true },
-        { id: "plan", label: "Plan" },
-      ],
+      options: [{ id: "build", label: "Build", isDefault: true }],
       currentValue: "build",
     },
   ],
@@ -211,11 +212,12 @@ function openCodeCapabilitiesForModel(input: {
   const defaultVariant = inferDefaultVariant(input.providerID, variantValues);
   const variantOptions = variantValues.map((value) =>
     defaultVariant === value
-      ? { id: value, label: titleCaseSlug(value), isDefault: true as const }
-      : { id: value, label: titleCaseSlug(value) },
+      ? { id: value, label: openCodeReasoningVariantLabel(value), isDefault: true as const }
+      : { id: value, label: openCodeReasoningVariantLabel(value) },
   );
   const primaryAgents = input.agents.filter(
-    (agent) => !agent.hidden && (agent.mode === "primary" || agent.mode === "all"),
+    (agent) =>
+      agent.name !== "plan" && !agent.hidden && (agent.mode === "primary" || agent.mode === "all"),
   );
   const defaultAgent = inferDefaultAgent(primaryAgents);
   const agentOptions = primaryAgents.map((agent) =>

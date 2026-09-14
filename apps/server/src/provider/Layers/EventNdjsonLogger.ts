@@ -107,6 +107,46 @@ function resolveStreamLabel(stream: EventNdjsonStream): string {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function decodeProtocolPayload(value: unknown): ReadonlyArray<unknown> {
+  if (typeof value === "string") {
+    try {
+      return decodeProtocolPayload(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(value) ? value.flatMap(decodeProtocolPayload) : [value];
+}
+
+function isTransientAcpUpdate(value: unknown): boolean {
+  if (!isRecord(value) || value.method !== "session/update") {
+    return false;
+  }
+  const params = isRecord(value.params)
+    ? value.params
+    : isRecord(value.payload)
+      ? value.payload
+      : null;
+  const update = params && isRecord(params.update) ? params.update : null;
+  return update !== null && TRANSIENT_ACP_UPDATES.has(String(update.sessionUpdate));
+}
+
+function isTransientAcpProtocolRecord(nativeEvent: object): boolean {
+  if (Reflect.get(nativeEvent, "kind") !== "protocol") {
+    return false;
+  }
+  const protocolEvent = Reflect.get(nativeEvent, "payload");
+  if (!isRecord(protocolEvent)) {
+    return false;
+  }
+  const messages = decodeProtocolPayload(protocolEvent.payload);
+  return messages.length > 0 && messages.every(isTransientAcpUpdate);
+}
+
 function shouldPersist(stream: EventNdjsonStream, event: unknown): boolean {
   if (stream === "orchestration" || typeof event !== "object" || event === null) {
     return true;
@@ -120,6 +160,9 @@ function shouldPersist(stream: EventNdjsonStream, event: unknown): boolean {
 
     const nested = Reflect.get(event, "event");
     const nativeEvent = typeof nested === "object" && nested !== null ? nested : event;
+    if (isTransientAcpProtocolRecord(nativeEvent)) {
+      return false;
+    }
     const method = Reflect.get(nativeEvent, "method");
     if (
       typeof method === "string" &&
@@ -135,11 +178,7 @@ function shouldPersist(stream: EventNdjsonStream, event: unknown): boolean {
     const payload = Reflect.get(nativeEvent, "payload");
 
     if (method === "session/update") {
-      if (typeof payload !== "object" || payload === null) return true;
-      const update = Reflect.get(payload, "update");
-      if (typeof update !== "object" || update === null) return true;
-      const updateType = Reflect.get(update, "sessionUpdate");
-      return typeof updateType !== "string" || !TRANSIENT_ACP_UPDATES.has(updateType);
+      return !isTransientAcpUpdate(nativeEvent);
     }
 
     if (nativeType === "message.part.updated") {

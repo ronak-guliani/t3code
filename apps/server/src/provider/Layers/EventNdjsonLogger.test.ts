@@ -224,6 +224,69 @@ describe("EventNdjsonLogger", () => {
     }),
   );
 
+  it.effect("omits transient ACP protocol records in decoded and raw wrapper shapes", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));
+      const basePath = path.join(tempDir, "provider-native.ndjson");
+      const threadId = ThreadId.make("thread-acp-progress");
+      const protocolRecord = (payload: unknown) => ({
+        observedAt: "2026-09-14T00:00:00.000Z",
+        event: {
+          id: "protocol-event",
+          kind: "protocol",
+          provider: "copilot",
+          createdAt: "2026-09-14T00:00:00.000Z",
+          threadId,
+          payload: {
+            direction: "incoming",
+            stage: typeof payload === "string" ? "raw" : "decoded",
+            payload,
+          },
+        },
+      });
+      const transientUpdate = {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "streaming" },
+          },
+        },
+      };
+      const retained = protocolRecord({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { update: { sessionUpdate: "tool_call_update" } },
+      });
+
+      try {
+        const logger = yield* makeEventNdjsonLogger(basePath, {
+          stream: "native",
+          batchWindowMs: 0,
+        });
+        assert.notEqual(logger, undefined);
+        if (!logger) {
+          return;
+        }
+
+        yield* logger.write(protocolRecord(transientUpdate), threadId);
+        yield* logger.write(protocolRecord(JSON.stringify([transientUpdate])), threadId);
+        yield* logger.write(retained, threadId);
+        yield* logger.close();
+
+        const payloads = fs
+          .readFileSync(path.join(tempDir, "thread-acp-progress.log"), "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => parseLogLine(line).payload);
+        assert.deepEqual(payloads, [JSON.stringify(retained)]);
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("serializes concurrent first writes for the same segment", () =>
     Effect.gen(function* () {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));

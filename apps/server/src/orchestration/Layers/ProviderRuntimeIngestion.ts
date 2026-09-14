@@ -159,9 +159,14 @@ function hasRenderableAssistantText(text: string | undefined): boolean {
   return (text?.trim().length ?? 0) > 0;
 }
 
-function assistantTextDeltaFromEvent(event: ProviderRuntimeEvent): string | undefined {
+function assistantTextDeltaFromEvent(
+  event: ProviderRuntimeEvent,
+): { readonly delta: string; readonly replaceExisting: boolean } | undefined {
   return event.type === "content.delta" && event.payload.streamKind === "assistant_text"
-    ? event.payload.delta
+    ? {
+        delta: event.payload.delta,
+        replaceExisting: event.payload.replaceExisting === true,
+      }
     : undefined;
 }
 
@@ -1952,11 +1957,11 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const assistantDelta = assistantTextDeltaFromEvent(event);
+      const assistantTextUpdate = assistantTextDeltaFromEvent(event);
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
-      if (assistantDelta && assistantDelta.length > 0) {
+      if (assistantTextUpdate && assistantTextUpdate.delta.length > 0) {
         const turnId = toTurnId(event.turnId);
         const assistantMessageId = yield* getOrCreateAssistantMessageId({
           threadId: thread.id,
@@ -1971,8 +1976,28 @@ const make = Effect.gen(function* () {
           serverSettingsService.getSettings,
           (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
         );
-        if (assistantDeliveryMode === "buffered") {
-          const spillChunk = yield* appendBufferedAssistantText(assistantMessageId, assistantDelta);
+        if (assistantTextUpdate.replaceExisting) {
+          yield* streamingDeltaFlushLock.withPermits(1)(
+            Effect.gen(function* () {
+              yield* takePendingStreamingDelta(assistantMessageId);
+              yield* clearBufferedAssistantText(assistantMessageId);
+              yield* orchestrationEngine.dispatch({
+                type: "thread.message.assistant.delta",
+                commandId: providerCommandId(event, "assistant-delta-replace"),
+                threadId: thread.id,
+                messageId: assistantMessageId,
+                delta: assistantTextUpdate.delta,
+                replaceExisting: true,
+                ...(turnId ? { turnId } : {}),
+                createdAt: now,
+              });
+            }),
+          );
+        } else if (assistantDeliveryMode === "buffered") {
+          const spillChunk = yield* appendBufferedAssistantText(
+            assistantMessageId,
+            assistantTextUpdate.delta,
+          );
           if (spillChunk.length > 0) {
             yield* orchestrationEngine.dispatch({
               type: "thread.message.assistant.delta",
@@ -1990,7 +2015,7 @@ const make = Effect.gen(function* () {
             messageId: assistantMessageId,
             turnId,
             eventId: event.eventId,
-            delta: assistantDelta,
+            delta: assistantTextUpdate.delta,
             createdAt: now,
           });
         }

@@ -3371,6 +3371,68 @@ describe("ProviderRuntimeIngestion", () => {
     expect(finalMessage?.streaming).toBe(false);
   });
 
+  it.each([false, true])(
+    "replaces corrected assistant snapshots with streaming enabled=%s",
+    async (enableAssistantStreaming) => {
+      const harness = await createHarness({ serverSettings: { enableAssistantStreaming } });
+      const now = new Date().toISOString();
+      const turnId = asTurnId(`turn-replace-${enableAssistantStreaming}`);
+      const itemId = asItemId(`item-replace-${enableAssistantStreaming}`);
+      const messageId = `assistant:${itemId}`;
+
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId(`evt-turn-replace-${enableAssistantStreaming}`),
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId,
+        payload: {},
+      });
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-delta-original-${enableAssistantStreaming}`),
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId,
+        itemId,
+        payload: { streamKind: "assistant_text", delta: "Hello world" },
+      });
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-delta-replacement-${enableAssistantStreaming}`),
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId,
+        itemId,
+        payload: {
+          streamKind: "assistant_text",
+          delta: "Hello there",
+          replaceExisting: true,
+        },
+      });
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId(`evt-completed-replacement-${enableAssistantStreaming}`),
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId,
+        itemId,
+        payload: { itemType: "assistant_message", status: "completed" },
+      });
+
+      await waitForThread(harness.engine, (entry) =>
+        entry.messages.some(
+          (message: ProviderRuntimeTestMessage) =>
+            message.id === messageId && message.text === "Hello there" && !message.streaming,
+        ),
+      );
+    },
+  );
+
   it("coalesces streaming assistant deltas into fewer engine commands without losing text", async () => {
     const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
     const now = new Date().toISOString();
