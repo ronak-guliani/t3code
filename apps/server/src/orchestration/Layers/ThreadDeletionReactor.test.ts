@@ -36,6 +36,7 @@ import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import {
   groupOpenPullRequestAssociationRefreshes,
+  resolvePullRequestFromCwds,
   ThreadDeletionReactorLive,
 } from "./ThreadDeletionReactor.ts";
 import { findCanonicalActiveWorktreeOwner } from "../worktreeOwnership.ts";
@@ -233,7 +234,36 @@ describe("logCleanupCauseUnlessInterrupted", () => {
 
       expect(resolveCalls).toBe(1);
       expect(groups[0]?.cwd).toBe("/tmp/worktree-a");
+      expect(groups[0]?.cwds).toEqual(["/tmp/worktree-a", "/tmp/project", "/tmp/worktree-b"]);
       expect(groups[0]?.candidates).toHaveLength(2);
+    });
+
+    it("falls back to another checkout when the first grouped refresh cwd fails", async () => {
+      const calls: string[] = [];
+      const pullRequest = {
+        number: 42,
+        title: "Shared PR",
+        url: "https://github.com/acme/example/pull/42",
+        baseBranch: "main",
+        headBranch: "feature/shared",
+        state: "open" as const,
+      };
+
+      const resolved = await Effect.runPromise(
+        resolvePullRequestFromCwds(
+          ["/tmp/unhealthy-worktree", "/tmp/healthy-worktree"],
+          pullRequest.url,
+          ({ cwd }) => {
+            calls.push(cwd);
+            return cwd === "/tmp/unhealthy-worktree"
+              ? Effect.die("checkout unavailable")
+              : Effect.succeed({ pullRequest });
+          },
+        ),
+      );
+
+      expect(calls).toEqual(["/tmp/unhealthy-worktree", "/tmp/healthy-worktree"]);
+      expect(resolved).toEqual({ pullRequest });
     });
 
     it("removes a clean archived merged-PR worktree from a disposable Git repository", async () => {

@@ -620,12 +620,23 @@ export function projectEvent(
       ).pipe(
         Effect.map((payload) => ({
           ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, {
-            pullRequests: (
-              nextBase.threads.find((entry) => entry.id === payload.threadId)?.pullRequests ?? []
-            ).filter((link) => !sameThreadPullRequest(link.pullRequest, payload.pullRequest)),
-            updatedAt: payload.updatedAt,
-          }),
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            (() => {
+              const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              return {
+                ...(thread?.pullRequest &&
+                sameThreadPullRequest(thread.pullRequest, payload.pullRequest)
+                  ? { pullRequest: null }
+                  : {}),
+                pullRequests: (thread?.pullRequests ?? []).filter(
+                  (link) => !sameThreadPullRequest(link.pullRequest, payload.pullRequest),
+                ),
+                updatedAt: payload.updatedAt,
+              };
+            })(),
+          ),
         })),
       );
 

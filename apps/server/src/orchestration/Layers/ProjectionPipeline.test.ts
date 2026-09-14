@@ -177,6 +177,45 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           linkedAt,
         },
       ]);
+
+      yield* appendAndProject({
+        type: "thread.pull-request-unlinked",
+        eventId: EventId.make("evt-pr-refresh-unlink"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-09-14T12:03:00.000Z",
+        commandId: CommandId.make("cmd-pr-refresh-unlink"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-pr-refresh-unlink"),
+        metadata: {},
+        payload: {
+          threadId,
+          pullRequest: refreshedWorkspacePullRequest,
+          updatedAt: "2026-09-14T12:03:00.000Z",
+        },
+      });
+
+      const afterUnlink = yield* sql<{
+        readonly pullRequest: string | null;
+        readonly supportingCount: number;
+      }>`
+        SELECT
+          pull_request_json AS "pullRequest",
+          (
+            SELECT COUNT(*)
+            FROM projection_thread_pull_requests
+            WHERE thread_id = ${threadId}
+              AND number = 43
+          ) AS "supportingCount"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepStrictEqual(afterUnlink, [
+        {
+          pullRequest: "null",
+          supportingCount: 1,
+        },
+      ]);
     }).pipe(
       Effect.provide(
         Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-pr-refresh-")),

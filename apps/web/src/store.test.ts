@@ -172,6 +172,7 @@ function makeState(thread: Thread): AppState {
         branch: thread.branch,
         worktreePath: thread.worktreePath,
         pullRequest: thread.pullRequest ?? null,
+        pullRequests: thread.pullRequests ?? [],
       },
     },
     threadSessionById: {
@@ -769,6 +770,67 @@ describe("setThreadBranch", () => {
 });
 
 describe("incremental orchestration updates", () => {
+  it("updates active thread links from live link and unlink events", () => {
+    const workspacePullRequest = {
+      number: 150,
+      title: "Workspace PR",
+      url: "https://example.test/pr/150",
+      baseBranch: "main",
+      headBranch: "feature/workspace",
+      state: "open" as const,
+    };
+    const supportingPullRequest = {
+      number: 151,
+      title: "Supporting PR",
+      url: "https://example.test/pr/151",
+      baseBranch: "main",
+      headBranch: "feature/supporting",
+      state: "open" as const,
+    };
+    const thread = makeThread({
+      pullRequest: workspacePullRequest,
+      pullRequests: [
+        { pullRequest: workspacePullRequest, source: "created", linkedAt: "2026-02-27T00:00:00Z" },
+      ],
+    });
+    let state = makeState(thread);
+
+    state = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.pull-request-linked", {
+        threadId: thread.id,
+        link: {
+          pullRequest: supportingPullRequest,
+          source: "manual",
+          linkedAt: "2026-02-27T00:00:01Z",
+        },
+        updatedAt: "2026-02-27T00:00:01Z",
+      }),
+      localEnvironmentId,
+    );
+    expect(
+      selectThreadByRef(state, scopeThreadRef(localEnvironmentId, thread.id))?.pullRequests,
+    ).toEqual([
+      { pullRequest: workspacePullRequest, source: "created", linkedAt: "2026-02-27T00:00:00Z" },
+      { pullRequest: supportingPullRequest, source: "manual", linkedAt: "2026-02-27T00:00:01Z" },
+    ]);
+
+    state = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.pull-request-unlinked", {
+        threadId: thread.id,
+        pullRequest: workspacePullRequest,
+        updatedAt: "2026-02-27T00:00:02Z",
+      }),
+      localEnvironmentId,
+    );
+    const updatedThread = selectThreadByRef(state, scopeThreadRef(localEnvironmentId, thread.id));
+    expect(updatedThread?.pullRequest).toBeNull();
+    expect(updatedThread?.pullRequests).toEqual([
+      { pullRequest: supportingPullRequest, source: "manual", linkedAt: "2026-02-27T00:00:01Z" },
+    ]);
+  });
+
   it("keeps sidebar activity aligned with a live assistant message", () => {
     const thread = makeThread();
     const state = makeState(thread);

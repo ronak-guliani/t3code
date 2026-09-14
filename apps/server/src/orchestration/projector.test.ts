@@ -338,6 +338,34 @@ describe("orchestration projector", () => {
         linkedAt: now,
       },
     ]);
+
+    const afterWorkspaceUnlink = await Effect.runPromise(
+      projectEvent(
+        afterWorkspaceRefresh,
+        makeEvent({
+          sequence: 6,
+          type: "thread.pull-request-unlinked",
+          aggregateKind: "thread",
+          aggregateId: "thread-pr",
+          occurredAt: new Date(later).toISOString(),
+          commandId: "cmd-workspace-unlink",
+          payload: {
+            threadId: "thread-pr",
+            pullRequest: refreshedWorkspacePullRequest,
+            updatedAt: new Date(later).toISOString(),
+          },
+        }),
+      ),
+    );
+    const unlinkedThread = afterWorkspaceUnlink.threads.find((thread) => thread.id === "thread-pr");
+    expect(unlinkedThread?.pullRequest).toBeNull();
+    expect(unlinkedThread?.pullRequests).toEqual([
+      {
+        pullRequest: supportingPullRequest,
+        source: "manual",
+        linkedAt: now,
+      },
+    ]);
   });
 
   it("recovers explicit PR review provenance from legacy thread.created events", async () => {

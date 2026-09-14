@@ -667,6 +667,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           });
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
+            ...(existingRow.value.pullRequest &&
+            sameThreadPullRequest(existingRow.value.pullRequest, event.payload.pullRequest)
+              ? { pullRequest: null }
+              : {}),
             updatedAt: event.payload.updatedAt,
           });
           return;

@@ -1,5 +1,6 @@
 import {
   CommandId,
+  type GitResolvePullRequestResult,
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type ThreadId,
@@ -10,7 +11,7 @@ import { Cause, Clock, Effect, Exit, FileSystem, Layer, Option, Schedule, Stream
 
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
-import { GitManager } from "../../git/Services/GitManager.ts";
+import { GitManager, type GitManagerShape } from "../../git/Services/GitManager.ts";
 import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
 import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
 import { WorktreeCleanupJobRepositoryLive } from "../../persistence/Layers/WorktreeCleanupJobs.ts";
@@ -39,9 +40,26 @@ type PullRequestRefreshCandidate = {
 
 export type PullRequestRefreshGroup = {
   readonly cwd: string;
+  readonly cwds: ReadonlyArray<string>;
   readonly pullRequest: PullRequestRefreshCandidate["link"]["pullRequest"];
   readonly candidates: ReadonlyArray<PullRequestRefreshCandidate>;
 };
+
+export function resolvePullRequestFromCwds(
+  cwds: ReadonlyArray<string>,
+  reference: string,
+  resolvePullRequest: GitManagerShape["resolvePullRequest"],
+): Effect.Effect<GitResolvePullRequestResult | null, never> {
+  const cwd = cwds[0];
+  if (!cwd) {
+    return Effect.succeed(null);
+  }
+  return resolvePullRequest({ cwd, reference }).pipe(
+    Effect.catchCause(() =>
+      resolvePullRequestFromCwds(cwds.slice(1), reference, resolvePullRequest),
+    ),
+  );
+}
 
 const MAX_WORKTREE_CLEANUP_ATTEMPTS = 5;
 const CLEANUP_RECONCILIATION_INTERVAL = "5 minutes";
@@ -87,9 +105,21 @@ export function groupOpenPullRequestAssociationRefreshes(
     if (!first) return [];
     const project = projectsById.get(first.thread.projectId);
     if (!project) return [];
+    const cwds = [
+      ...new Set(
+        group.flatMap((candidate) => {
+          const candidateProject = projectsById.get(candidate.thread.projectId);
+          return [
+            ...(candidate.thread.worktreePath ? [candidate.thread.worktreePath] : []),
+            ...(candidateProject ? [candidateProject.workspaceRoot] : []),
+          ];
+        }),
+      ),
+    ];
     return [
       {
-        cwd: first.thread.worktreePath ?? project.workspaceRoot,
+        cwd: cwds[0] ?? project.workspaceRoot,
+        cwds,
         pullRequest: first.link.pullRequest,
         candidates: group,
       },
@@ -988,21 +1018,17 @@ const make = Effect.gen(function* () {
         groups,
         (group) =>
           Effect.gen(function* () {
-            const resolved = yield* gitManager
-              .resolvePullRequest({
-                cwd: group.cwd,
-                reference: group.pullRequest.url,
-              })
-              .pipe(
-                Effect.catch((error) =>
-                  Effect.logDebug("pull request association refresh skipped", {
-                    threadId: group.candidates[0]?.thread.id,
-                    pullRequestNumber: group.pullRequest.number,
-                    error: error instanceof Error ? error.message : String(error),
-                  }).pipe(Effect.as(null)),
-                ),
-              );
+            const resolved = yield* resolvePullRequestFromCwds(
+              group.cwds,
+              group.pullRequest.url,
+              gitManager.resolvePullRequest,
+            );
             if (resolved === null) {
+              yield* Effect.logDebug("pull request association refresh skipped", {
+                threadId: group.candidates[0]?.thread.id,
+                pullRequestNumber: group.pullRequest.number,
+                attemptedCwds: group.cwds,
+              });
               return;
             }
             const nextPullRequest = resolved.pullRequest;
