@@ -35,6 +35,7 @@ import { assistantTurnCount } from "./Utils.ts";
 import { findCanonicalActiveWorktreeOwner } from "./worktreeOwnership.ts";
 import { childNudgePrompt, isAutomaticChildNudgeBlocked, queueChildNudge } from "./childNudging.ts";
 import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
+import { sameThreadPullRequest } from "@t3tools/shared/threadPullRequests";
 import {
   childReportDedupeKey,
   classifyChildReport,
@@ -1429,6 +1430,60 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(requestIsCurrent && command.title !== undefined ? { title: command.title } : {}),
           ...(requestIsCurrent ? { titleRegeneration: null } : {}),
           updatedAt: requestIsCurrent ? occurredAt : thread.updatedAt,
+        },
+      };
+    }
+
+    case "thread.pull-request.link": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = nowIso();
+      const existing = (thread.pullRequests ?? []).find((link) =>
+        sameThreadPullRequest(link.pullRequest, command.pullRequest),
+      );
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.pull-request-linked",
+        payload: {
+          threadId: command.threadId,
+          link: {
+            pullRequest: command.pullRequest,
+            source:
+              command.source === "manual" ? (existing?.source ?? command.source) : command.source,
+            linkedAt: existing?.linkedAt ?? occurredAt,
+          },
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.pull-request.unlink": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.pull-request-unlinked",
+        payload: {
+          threadId: command.threadId,
+          pullRequest: command.pullRequest,
+          updatedAt: occurredAt,
         },
       };
     }

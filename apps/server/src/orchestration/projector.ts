@@ -6,6 +6,7 @@ import {
   OrchestrationThread,
 } from "@t3tools/contracts";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
+import { sameThreadPullRequest } from "@t3tools/shared/threadPullRequests";
 import { Effect, Schema } from "effect";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
@@ -23,6 +24,8 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadPullRequestLinkedPayload,
+  ThreadPullRequestUnlinkedPayload,
   ThreadPendingRuntimeModeSetPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadQueuedTurnCreatedPayload,
@@ -369,6 +372,16 @@ export function projectEvent(
               : legacyReviewPullRequest !== undefined
                 ? { pullRequest: legacyReviewPullRequest }
                 : {}),
+            pullRequests:
+              payload.pullRequest !== undefined && payload.pullRequest !== null
+                ? [
+                    {
+                      pullRequest: payload.pullRequest,
+                      source: "created" as const,
+                      linkedAt: payload.createdAt,
+                    },
+                  ]
+                : [],
             ...(payload.reviewSnapshot !== undefined
               ? { reviewSnapshot: payload.reviewSnapshot }
               : {}),
@@ -546,6 +559,50 @@ export function projectEvent(
             ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
             ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
             ...(payload.pullRequest !== undefined ? { pullRequest: payload.pullRequest } : {}),
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.pull-request-linked":
+      return decodeForEvent(
+        ThreadPullRequestLinkedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pullRequests: (() => {
+              const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              if (!thread) return [];
+              const existing = thread.pullRequests ?? [];
+              const index = existing.findIndex((link) =>
+                sameThreadPullRequest(link.pullRequest, payload.link.pullRequest),
+              );
+              return index < 0
+                ? [...existing, payload.link]
+                : existing.map((link, linkIndex) => (linkIndex === index ? payload.link : link));
+            })(),
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.pull-request-unlinked":
+      return decodeForEvent(
+        ThreadPullRequestUnlinkedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pullRequests: (
+              nextBase.threads.find((entry) => entry.id === payload.threadId)?.pullRequests ?? []
+            ).filter((link) => !sameThreadPullRequest(link.pullRequest, payload.pullRequest)),
             updatedAt: payload.updatedAt,
           }),
         })),

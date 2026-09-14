@@ -922,26 +922,43 @@ const make = Effect.gen(function* () {
           .map((project) => [project.id, project] as const),
       );
 
-      const candidates = readModel.threads.filter((thread) => {
-        if (thread.deletedAt !== null || thread.archivedAt !== null) {
-          return false;
-        }
-        const pullRequest = thread.pullRequest;
-        if (!pullRequest) {
-          return false;
-        }
-        // Merged PRs cannot transition back; closed PRs can be reopened.
-        return pullRequest.state !== "merged";
+      const candidates = readModel.threads.flatMap((thread) => {
+        if (thread.deletedAt !== null || thread.archivedAt !== null) return [];
+        const links =
+          thread.pullRequests ??
+          (thread.pullRequest
+            ? [
+                {
+                  pullRequest: thread.pullRequest,
+                  source: "manual" as const,
+                  linkedAt: thread.updatedAt,
+                },
+              ]
+            : []);
+        return links
+          .filter((link) => link.pullRequest.state !== "merged")
+          .map((link) => ({ thread, link }));
       });
+      type Candidate = (typeof candidates)[number];
+      const groups = new Map<string, Array<Candidate>>();
+      for (const candidate of candidates) {
+        const project = projectsById.get(candidate.thread.projectId);
+        if (!project) continue;
+        const cwd = candidate.thread.worktreePath ?? project.workspaceRoot;
+        const key = `${cwd}\0${candidate.link.pullRequest.url}`;
+        const group = groups.get(key);
+        if (group) group.push(candidate);
+        else groups.set(key, [candidate]);
+      }
 
       yield* Effect.forEach(
-        candidates,
-        (thread) =>
+        [...groups.values()],
+        (group) =>
           Effect.gen(function* () {
-            const pullRequest = thread.pullRequest;
-            if (!pullRequest) {
-              return;
-            }
+            const first = group[0];
+            if (!first) return;
+            const { thread, link } = first;
+            const pullRequest = link.pullRequest;
             const project = projectsById.get(thread.projectId);
             if (!project) {
               return;
@@ -964,38 +981,47 @@ const make = Effect.gen(function* () {
             if (resolved === null) {
               return;
             }
-            if (
-              resolved.pullRequest.state === pullRequest.state &&
-              resolved.pullRequest.title === pullRequest.title &&
-              resolved.pullRequest.url === pullRequest.url &&
-              resolved.pullRequest.baseBranch === pullRequest.baseBranch &&
-              resolved.pullRequest.headBranch === pullRequest.headBranch
-            ) {
-              return;
-            }
-            yield* orchestrationEngine
-              .dispatch({
-                type: "thread.meta.update",
-                commandId: CommandId.make(crypto.randomUUID()),
-                threadId: thread.id,
-                pullRequest: {
-                  number: resolved.pullRequest.number,
-                  title: resolved.pullRequest.title,
-                  url: resolved.pullRequest.url,
-                  baseBranch: resolved.pullRequest.baseBranch,
-                  headBranch: resolved.pullRequest.headBranch,
-                  state: resolved.pullRequest.state,
-                },
-              })
-              .pipe(
-                Effect.catch((error) =>
-                  Effect.logDebug("failed to persist refreshed pull request association", {
-                    threadId: thread.id,
-                    pullRequestNumber: pullRequest.number,
-                    error: error instanceof Error ? error.message : String(error),
-                  }),
-                ),
-              );
+            const nextPullRequest = resolved.pullRequest;
+            yield* Effect.forEach(
+              group.filter(
+                ({ link: candidateLink }) =>
+                  candidateLink.pullRequest.state !== nextPullRequest.state ||
+                  candidateLink.pullRequest.title !== nextPullRequest.title ||
+                  candidateLink.pullRequest.url !== nextPullRequest.url ||
+                  candidateLink.pullRequest.baseBranch !== nextPullRequest.baseBranch ||
+                  candidateLink.pullRequest.headBranch !== nextPullRequest.headBranch,
+              ),
+              ({ thread: candidateThread, link: candidateLink }) =>
+                orchestrationEngine
+                  .dispatch({
+                    type: "thread.pull-request.link",
+                    commandId: CommandId.make(crypto.randomUUID()),
+                    threadId: candidateThread.id,
+                    pullRequest: nextPullRequest,
+                    source: candidateLink.source,
+                  })
+                  .pipe(
+                    Effect.andThen(
+                      candidateThread.pullRequest &&
+                        candidateThread.pullRequest.url === candidateLink.pullRequest.url
+                        ? orchestrationEngine.dispatch({
+                            type: "thread.meta.update",
+                            commandId: CommandId.make(crypto.randomUUID()),
+                            threadId: candidateThread.id,
+                            pullRequest: nextPullRequest,
+                          })
+                        : Effect.void,
+                    ),
+                    Effect.catch((error) =>
+                      Effect.logDebug("failed to persist refreshed pull request association", {
+                        threadId: candidateThread.id,
+                        pullRequestNumber: candidateLink.pullRequest.number,
+                        error: error instanceof Error ? error.message : String(error),
+                      }),
+                    ),
+                  ),
+              { concurrency: 2, discard: true },
+            );
           }),
         { concurrency: 2, discard: true },
       );

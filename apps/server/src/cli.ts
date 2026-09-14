@@ -2067,10 +2067,94 @@ const chatAssociatePrCommand = Command.make("associate-pr", {
             pullRequest: resolved.pullRequest,
             pullRequestOwnership: "transfer",
           });
+          yield* dispatch({
+            type: "thread.pull-request.link",
+            commandId: CommandId.make(crypto.randomUUID()),
+            threadId: thread.id,
+            pullRequest: resolved.pullRequest,
+            source: "agent",
+          });
           yield* printJson({ pullRequest: resolved.pullRequest, result });
         }),
       );
     }),
+  ),
+);
+
+const chatLinkPrCommand = Command.make("link-pr", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  reference: Argument.string("reference").pipe(
+    Argument.withDescription("Pull request URL, number, or explicit GitHub reference."),
+  ),
+  cwd: cwdFlag,
+}).pipe(
+  Command.withDescription("Link a pull request to a chat without changing its workspace PR."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const resolved = yield* callWsRpc(flags, (client) =>
+        client[WS_METHODS.gitResolvePullRequest]({ cwd: flags.cwd, reference: flags.reference }),
+      );
+      yield* withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
+        Effect.gen(function* () {
+          const result = yield* dispatch({
+            type: "thread.pull-request.link",
+            commandId: CommandId.make(crypto.randomUUID()),
+            threadId: thread.id,
+            pullRequest: resolved.pullRequest,
+            source: "manual",
+          });
+          yield* printJson({ pullRequest: resolved.pullRequest, result });
+        }),
+      );
+    }),
+  ),
+);
+
+const chatUnlinkPrCommand = Command.make("unlink-pr", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  reference: Argument.string("reference").pipe(
+    Argument.withDescription("Pull request URL, number, or explicit GitHub reference."),
+  ),
+  cwd: cwdFlag,
+}).pipe(
+  Command.withDescription("Unlink a pull request from a chat."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const resolved = yield* callWsRpc(flags, (client) =>
+        client[WS_METHODS.gitResolvePullRequest]({ cwd: flags.cwd, reference: flags.reference }),
+      );
+      yield* withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
+        Effect.gen(function* () {
+          const result = yield* dispatch({
+            type: "thread.pull-request.unlink",
+            commandId: CommandId.make(crypto.randomUUID()),
+            threadId: thread.id,
+            pullRequest: resolved.pullRequest,
+          });
+          yield* printJson({ pullRequest: resolved.pullRequest, result });
+        }),
+      );
+    }),
+  ),
+);
+
+const chatListPrCommand = Command.make("list-prs", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+}).pipe(
+  Command.withDescription("List pull requests linked to a chat."),
+  Command.withHandler((flags) =>
+    withThreadDispatch(flags, flags.chat, ({ thread }) =>
+      printJson({
+        pullRequests:
+          thread.pullRequests ??
+          (thread.pullRequest
+            ? [{ pullRequest: thread.pullRequest, source: "manual", linkedAt: thread.updatedAt }]
+            : []),
+      }),
+    ),
   ),
 );
 
@@ -2569,6 +2653,9 @@ const chatCommand = Command.make("chat").pipe(
     chatSetInteractionCommand,
     chatSetBranchCommand,
     chatAssociatePrCommand,
+    chatLinkPrCommand,
+    chatUnlinkPrCommand,
+    chatListPrCommand,
     chatHandoffCommand,
     chatSendCommand,
     chatNewCommand,

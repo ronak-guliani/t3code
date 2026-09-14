@@ -72,6 +72,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
         repositoryIdentity: true,
         connectionProbe: true,
         pullRequests: true,
+        threadPullRequestLinking: true,
         threadSettlement: true,
         threadSnooze: true,
         threadPinning: true,

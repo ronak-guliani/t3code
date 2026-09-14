@@ -607,6 +607,21 @@ export const ThreadLinkedPullRequest = Schema.Struct({
 });
 export type ThreadLinkedPullRequest = typeof ThreadLinkedPullRequest.Type;
 
+export const ThreadPullRequestLinkSource = Schema.Literals([
+  "manual",
+  "created",
+  "agent",
+  "recovered",
+]);
+export type ThreadPullRequestLinkSource = typeof ThreadPullRequestLinkSource.Type;
+
+export const ThreadPullRequestLink = Schema.Struct({
+  pullRequest: GitPullRequestAssociation,
+  source: ThreadPullRequestLinkSource,
+  linkedAt: IsoDateTime,
+});
+export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;
+
 export const OrchestrationThread = Schema.Struct({
   nudging: Schema.optional(ThreadNudging),
   linkedPullRequest: Schema.optionalKey(Schema.NullOr(ThreadLinkedPullRequest)),
@@ -629,6 +644,7 @@ export const OrchestrationThread = Schema.Struct({
    * equality — only set by explicit PR checkout/create/open flows.
    */
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
+  pullRequests: Schema.optionalKey(Schema.Array(ThreadPullRequestLink)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   reviewResult: Schema.optionalKey(Schema.NullOr(ReviewResult)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
@@ -713,6 +729,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
+  pullRequests: Schema.optionalKey(Schema.Array(ThreadPullRequestLink)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -933,6 +950,21 @@ const ThreadWorkspaceHandoffCommand = Schema.Struct({
   worktreePath: TrimmedNonEmptyString,
   markerMessageId: MessageId,
   continuation: OrchestrationQueuedTurn,
+});
+
+const ThreadPullRequestLinkCommand = Schema.Struct({
+  type: Schema.Literal("thread.pull-request.link"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  pullRequest: GitPullRequestAssociation,
+  source: ThreadPullRequestLinkSource,
+});
+
+const ThreadPullRequestUnlinkCommand = Schema.Struct({
+  type: Schema.Literal("thread.pull-request.unlink"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  pullRequest: GitPullRequestAssociation,
 });
 
 const ThreadForkCommand = Schema.Struct({
@@ -1290,6 +1322,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadPinReorderCommand,
   ThreadDecoupleCommand,
   ThreadMetaUpdateCommand,
+  ThreadPullRequestLinkCommand,
+  ThreadPullRequestUnlinkCommand,
   ThreadWorkspaceHandoffCommand,
   ThreadForkCommand,
   ThreadRuntimeModeSetCommand,
@@ -1327,6 +1361,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadPinReorderCommand,
   ThreadDecoupleCommand,
   ThreadMetaUpdateCommand,
+  ThreadPullRequestLinkCommand,
+  ThreadPullRequestUnlinkCommand,
   ThreadWorkspaceHandoffCommand,
   ThreadForkCommand,
   ThreadRuntimeModeSetCommand,
@@ -1487,6 +1523,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.pin-reordered",
   "thread.decoupled",
   "thread.meta-updated",
+  "thread.pull-request-linked",
+  "thread.pull-request-unlinked",
   "thread.runtime-mode-set",
   "thread.pending-runtime-mode-set",
   "thread.interaction-mode-set",
@@ -1663,6 +1701,20 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   pullRequestOwnership: Schema.optional(Schema.Literal("transfer")),
   updatedAt: IsoDateTime,
 });
+
+export const ThreadPullRequestLinkedPayload = Schema.Struct({
+  threadId: ThreadId,
+  link: ThreadPullRequestLink,
+  updatedAt: IsoDateTime,
+});
+export type ThreadPullRequestLinkedPayload = typeof ThreadPullRequestLinkedPayload.Type;
+
+export const ThreadPullRequestUnlinkedPayload = Schema.Struct({
+  threadId: ThreadId,
+  pullRequest: GitPullRequestAssociation,
+  updatedAt: IsoDateTime,
+});
+export type ThreadPullRequestUnlinkedPayload = typeof ThreadPullRequestUnlinkedPayload.Type;
 
 export const ThreadRuntimeModeSetPayload = Schema.Struct({
   threadId: ThreadId,
@@ -1957,6 +2009,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.meta-updated"),
     payload: ThreadMetaUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.pull-request-linked"),
+    payload: ThreadPullRequestLinkedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.pull-request-unlinked"),
+    payload: ThreadPullRequestUnlinkedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

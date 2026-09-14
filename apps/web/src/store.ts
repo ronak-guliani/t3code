@@ -342,6 +342,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
+    pullRequests: thread.pullRequests ?? [],
     ...(thread.reviewSnapshot !== undefined ? { reviewSnapshot: thread.reviewSnapshot } : {}),
     ...(thread.reviewResult !== undefined ? { reviewResult: thread.reviewResult } : {}),
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
@@ -384,6 +385,7 @@ function mapThreadShell(
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
+    pullRequests: thread.pullRequests ?? [],
   };
   const session = thread.session ? mapSession(thread.session) : null;
   const turnState: ThreadTurnState = {
@@ -409,6 +411,7 @@ function mapThreadShell(
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
+    pullRequests: thread.pullRequests ?? [],
     latestUserMessageAt: thread.latestUserMessageAt,
     latestChildNotificationAt: thread.latestChildNotificationAt ?? null,
     hasPendingApprovals: thread.hasPendingApprovals,

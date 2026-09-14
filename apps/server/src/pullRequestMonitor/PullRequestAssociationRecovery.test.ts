@@ -218,6 +218,12 @@ describe("pull request association recovery", () => {
         expectedWorkspaceCwd: "/isolated/worktree",
         pullRequest: status.pr,
       }),
+      expect.objectContaining({
+        type: "thread.pull-request.link",
+        threadId,
+        pullRequest: status.pr,
+        source: "recovered",
+      }),
     ]);
     expect(h.commands[0]).not.toHaveProperty("pullRequestOwnership");
     expect(h.thread()?.pullRequest).toEqual(status.pr);
@@ -232,7 +238,7 @@ describe("pull request association recovery", () => {
     expect(h.commands).toEqual([]);
     h.setStatus(status);
     await Effect.runPromise(h.recovery.sweep);
-    expect(h.commands).toHaveLength(1);
+    expect(h.commands).toHaveLength(2);
     expect(h.lookups()).toBe(2);
   });
 

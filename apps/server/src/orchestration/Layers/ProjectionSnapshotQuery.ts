@@ -31,6 +31,7 @@ import {
   ReviewResult,
   ReviewSnapshot,
   ThreadNudging,
+  ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { Context, Effect, Layer, Option, Schema, Struct } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -118,6 +119,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     pullRequest: Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation)),
     reviewSnapshot: Schema.fromJsonString(Schema.NullOr(ReviewSnapshot)),
     reviewResult: Schema.fromJsonString(Schema.NullOr(ReviewResult)),
+    pullRequests: Schema.fromJsonString(Schema.Array(ThreadPullRequestLink)),
   }),
 );
 const ProjectionThreadWithProjectTitleDbRowSchema = ProjectionThread.mapFields(
@@ -127,6 +129,7 @@ const ProjectionThreadWithProjectTitleDbRowSchema = ProjectionThread.mapFields(
     pullRequest: Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation)),
     reviewSnapshot: Schema.fromJsonString(Schema.NullOr(ReviewSnapshot)),
     reviewResult: Schema.fromJsonString(Schema.NullOr(ReviewResult)),
+    pullRequests: Schema.fromJsonString(Schema.Array(ThreadPullRequestLink)),
     projectTitle: Schema.NullOr(TrimmedNonEmptyString),
   }),
 );
@@ -501,6 +504,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     branch,
     worktree_path AS "worktreePath",
     pull_request_json AS "pullRequest",
+    COALESCE((
+      SELECT json_group_array(json_object(
+        'pullRequest', json(link.pull_request_json),
+        'source', link.source,
+        'linkedAt', link.linked_at
+      ))
+      FROM (
+        SELECT pull_request_json, source, linked_at
+        FROM projection_thread_pull_requests
+        WHERE thread_id = projection_threads.thread_id
+        ORDER BY linked_at ASC, rowid ASC
+      ) AS link
+    ), '[]') AS "pullRequests",
     review_snapshot_json AS "reviewSnapshot",
     review_result_json AS "reviewResult",
     latest_turn_id AS "latestTurnId",
@@ -1087,6 +1103,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threads.branch,
           threads.worktree_path AS "worktreePath",
           threads.pull_request_json AS "pullRequest",
+          COALESCE((
+            SELECT json_group_array(json_object(
+              'pullRequest', json(link.pull_request_json),
+              'source', link.source,
+              'linkedAt', link.linked_at
+            ))
+            FROM (
+              SELECT pull_request_json, source, linked_at
+              FROM projection_thread_pull_requests
+              WHERE thread_id = threads.thread_id
+              ORDER BY linked_at ASC, rowid ASC
+            ) AS link
+          ), '[]') AS "pullRequests",
           threads.review_snapshot_json AS "reviewSnapshot",
           threads.review_result_json AS "reviewResult",
           threads.latest_turn_id AS "latestTurnId",
@@ -1898,6 +1927,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   branch: row.branch,
                   worktreePath: row.worktreePath,
                   pullRequest: row.pullRequest ?? null,
+                  pullRequests: row.pullRequests,
                   ...(row.reviewSnapshot !== null && row.reviewSnapshot !== undefined
                     ? { reviewSnapshot: row.reviewSnapshot }
                     : {}),
@@ -2125,6 +2155,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     branch: row.branch,
                     worktreePath: row.worktreePath,
                     pullRequest: row.pullRequest ?? null,
+                    pullRequests: row.pullRequests,
                     latestTurn: reconcileLatestTurnWithSession(
                       latestTurnByThread.get(row.threadId) ?? null,
                       session,
@@ -2386,6 +2417,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             branch: threadRow.value.branch,
             worktreePath: threadRow.value.worktreePath,
             pullRequest: threadRow.value.pullRequest ?? null,
+            pullRequests: threadRow.value.pullRequests,
             latestTurn: reconcileLatestTurnWithSession(
               Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
               session,
@@ -2573,6 +2605,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
         pullRequest: threadRow.value.pullRequest ?? null,
+        pullRequests: threadRow.value.pullRequests,
         ...(threadRow.value.reviewSnapshot !== null && threadRow.value.reviewSnapshot !== undefined
           ? { reviewSnapshot: threadRow.value.reviewSnapshot }
           : {}),

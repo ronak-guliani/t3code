@@ -32,6 +32,7 @@ import {
   ProjectionTurnRepository,
 } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
+import { ProjectionThreadPullRequestRepository } from "../../persistence/Services/ProjectionThreadPullRequests.ts";
 import { ProjectionWorkflowRepository } from "../../persistence/Services/ProjectionWorkflows.ts";
 import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
 import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
@@ -47,6 +48,7 @@ import { ProjectionQueuedTurnRepositoryLive } from "../../persistence/Layers/Pro
 import { ProjectionThreadSessionRepositoryLive } from "../../persistence/Layers/ProjectionThreadSessions.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
+import { ProjectionThreadPullRequestRepositoryLive } from "../../persistence/Layers/ProjectionThreadPullRequests.ts";
 import { ProjectionWorkflowRepositoryLive } from "../../persistence/Layers/ProjectionWorkflows.ts";
 import { WorktreeCleanupJobRepositoryLive } from "../../persistence/Layers/WorktreeCleanupJobs.ts";
 import {
@@ -246,6 +248,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const reconciler = yield* ProjectionReconciler;
     const projectionProjectRepository = yield* ProjectionProjectRepository;
     const projectionThreadRepository = yield* ProjectionThreadRepository;
+    const projectionThreadPullRequestRepository = yield* ProjectionThreadPullRequestRepository;
     const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
     const projectionThreadProposedPlanRepository = yield* ProjectionThreadProposedPlanRepository;
     const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
@@ -322,6 +325,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     )(function* (event) {
       switch (event.type) {
         case "thread.created":
+          yield* projectionThreadPullRequestRepository.deleteByThreadId({
+            threadId: event.payload.threadId,
+          });
           yield* projectionThreadRepository.upsert({
             nudging: event.payload.nudging,
             threadId: event.payload.threadId,
@@ -359,6 +365,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             hasActionableProposedPlan: 0,
             deletedAt: null,
           });
+          if (event.payload.pullRequest !== undefined && event.payload.pullRequest !== null) {
+            yield* projectionThreadPullRequestRepository.upsert({
+              threadId: event.payload.threadId,
+              pullRequest: event.payload.pullRequest,
+              source: "created",
+              linkedAt: event.payload.createdAt,
+            });
+          }
           return;
 
         case "thread.archived": {
@@ -590,6 +604,59 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : {}),
             updatedAt: event.payload.updatedAt,
           });
+          if (event.payload.pullRequest !== undefined) {
+            const existingLinks = yield* projectionThreadPullRequestRepository.listByThreadId({
+              threadId: event.payload.threadId,
+            });
+            for (const link of existingLinks) {
+              if (link.source === "manual") {
+                yield* projectionThreadPullRequestRepository.delete({
+                  threadId: event.payload.threadId,
+                  pullRequest: link.pullRequest,
+                });
+              }
+            }
+            if (event.payload.pullRequest !== null) {
+              yield* projectionThreadPullRequestRepository.upsert({
+                threadId: event.payload.threadId,
+                pullRequest: event.payload.pullRequest,
+                source: "manual",
+                linkedAt: event.payload.updatedAt,
+              });
+            }
+          }
+          return;
+        }
+
+        case "thread.pull-request-linked": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) return;
+          yield* projectionThreadPullRequestRepository.upsert({
+            threadId: event.payload.threadId,
+            ...event.payload.link,
+          });
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.pull-request-unlinked": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) return;
+          yield* projectionThreadPullRequestRepository.delete({
+            threadId: event.payload.threadId,
+            pullRequest: event.payload.pullRequest,
+          });
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            updatedAt: event.payload.updatedAt,
+          });
           return;
         }
 
@@ -640,6 +707,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.deleted": {
+          yield* projectionThreadPullRequestRepository.deleteByThreadId({
+            threadId: event.payload.threadId,
+          });
           if (event.payload.worktreeCleanup !== undefined) {
             yield* worktreeCleanupJobRepository.enqueue({
               threadId: event.payload.threadId,
@@ -1781,6 +1851,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
 ).pipe(
   Layer.provideMerge(ProjectionProjectRepositoryLive),
   Layer.provideMerge(ProjectionThreadRepositoryLive),
+  Layer.provideMerge(ProjectionThreadPullRequestRepositoryLive),
   Layer.provideMerge(ProjectionThreadMessageRepositoryLive),
   Layer.provideMerge(ProjectionThreadProposedPlanRepositoryLive),
   Layer.provideMerge(ProjectionQueuedTurnRepositoryLive),
@@ -1797,6 +1868,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
       Layer.provide(
         Layer.mergeAll(
           ProjectionThreadRepositoryLive,
+          ProjectionThreadPullRequestRepositoryLive,
           ProjectionThreadMessageRepositoryLive,
           ProjectionThreadProposedPlanRepositoryLive,
           ProjectionThreadActivityRepositoryLive,

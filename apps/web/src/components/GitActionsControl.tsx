@@ -363,6 +363,13 @@ export default function GitActionsControl({
             threadId: activeThreadRef.threadId,
             pullRequest,
           });
+          await api.orchestration.dispatchCommand({
+            type: "thread.pull-request.link",
+            commandId: newCommandId(),
+            threadId: activeThreadRef.threadId,
+            pullRequest,
+            source: "created",
+          });
         } catch {
           // Keep local association unset when durable write fails so reload
           // cannot disagree with optimistic UI.

@@ -59,6 +59,13 @@ export const makePullRequestAssociationRecovery = Effect.gen(function* () {
       expectedWorkspaceCwd: cwd,
       pullRequest: status.pr,
     });
+    yield* engine.dispatch({
+      type: "thread.pull-request.link",
+      commandId: CommandId.make(`server:recover-pr-link:${crypto.randomUUID()}`),
+      threadId,
+      pullRequest: status.pr,
+      source: "recovered",
+    });
   });
 
   const sweep = Effect.gen(function* () {
