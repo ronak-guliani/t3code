@@ -49,6 +49,7 @@ const runtimeMock = {
     this.state.inventory = {
       providerList: { connected: [], all: [] as unknown[], default: {} },
       agents: [] as unknown[],
+      skills: [],
     };
   },
 };
@@ -96,12 +97,15 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           }),
         )
       : Effect.succeed(runtimeMock.state.inventory as OpenCodeInventory),
+  loadOpenCodeSkills: () => Effect.succeed([]),
+  loadOpenCodeSkillsForCwd: () => Effect.succeed([]),
   loadInventoryFromCli: (input) => {
     runtimeMock.state.inventoryCwds.push(input.cwd);
     return runtimeMock.state.inventoryError
       ? Effect.succeed({
           providerList: { all: [], default: {}, connected: [] as string[] },
           agents: [],
+          skills: [],
         } as OpenCodeInventory)
       : Effect.succeed(runtimeMock.state.inventory as OpenCodeInventory);
   },

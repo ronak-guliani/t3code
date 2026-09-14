@@ -4905,6 +4905,7 @@ function ChatViewBody(
                   runtimeMode={runtimeMode}
                   lockedProvider={lockedProvider}
                   providerStatuses={providerStatuses as ServerProvider[]}
+                  gitCwd={gitCwd ?? undefined}
                   activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
                   activeThreadModelSelection={activeThread?.modelSelection}
                   resolvedTheme={resolvedTheme}

@@ -31,7 +31,6 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { isWindowsCommandNotFound } from "../processRunner.ts";
-import { collectStreamAsString } from "./providerSnapshot.ts";
 import { NetService } from "@t3tools/shared/Net";
 import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 
@@ -88,6 +87,27 @@ export function openCodeRuntimeErrorDetail(cause: unknown): string {
   return String(cause);
 }
 
+const collectStreamAsStringBounded = <E>(
+  stream: Stream.Stream<Uint8Array, E>,
+  maxChars: number,
+): Effect.Effect<string, E> =>
+  stream.pipe(
+    Stream.decodeText(),
+    Stream.runFold(
+      () => ({ chunks: [] as string[], length: 0 }),
+      (state, chunk) => {
+        if (state.length >= maxChars) {
+          return state;
+        }
+        const remaining = maxChars - state.length;
+        const retained = chunk.slice(0, remaining);
+        state.chunks.push(retained);
+        return { chunks: state.chunks, length: state.length + retained.length };
+      },
+    ),
+    Effect.map((state) => state.chunks.join("")),
+  );
+
 export const runOpenCodeSdk = <A>(
   operation: string,
   fn: () => Promise<A>,
@@ -107,12 +127,22 @@ export interface OpenCodeCommandResult {
 export interface OpenCodeInventory {
   readonly providerList: ProviderListResponse;
   readonly agents: ReadonlyArray<Agent>;
+  readonly skills: ReadonlyArray<OpenCodeSkill>;
 }
 
 export interface ParsedOpenCodeModelSlug {
   readonly providerID: string;
   readonly modelID: string;
 }
+
+export interface OpenCodeSkill {
+  readonly name?: string | null;
+  readonly description?: string | null;
+  readonly location?: string | null;
+}
+
+const MAX_OPENCODE_COMMAND_OUTPUT_CHARS = 8 * 1024 * 1024;
+const MAX_OPENCODE_SKILLS = 512;
 
 export interface OpenCodeRuntimeShape {
   /**
@@ -124,6 +154,7 @@ export interface OpenCodeRuntimeShape {
   readonly startOpenCodeServerProcess: (input: {
     readonly binaryPath: string;
     readonly environment?: NodeJS.ProcessEnv;
+    readonly directory?: string;
     readonly port?: number;
     readonly hostname?: string;
     readonly timeoutMs?: number;
@@ -137,6 +168,8 @@ export interface OpenCodeRuntimeShape {
     readonly binaryPath: string;
     readonly serverUrl?: string | null;
     readonly environment?: NodeJS.ProcessEnv;
+    readonly directory?: string;
+    readonly serverPassword?: string;
     readonly port?: number;
     readonly hostname?: string;
     readonly timeoutMs?: number;
@@ -155,6 +188,16 @@ export interface OpenCodeRuntimeShape {
   readonly loadOpenCodeInventory: (
     client: OpencodeClient,
   ) => Effect.Effect<OpenCodeInventory, OpenCodeRuntimeError>;
+  readonly loadOpenCodeSkills: (
+    client: OpencodeClient,
+  ) => Effect.Effect<ReadonlyArray<OpenCodeSkill>, OpenCodeRuntimeError>;
+  readonly loadOpenCodeSkillsForCwd: (input: {
+    readonly binaryPath: string;
+    readonly cwd: string;
+    readonly serverUrl?: string | null;
+    readonly serverPassword?: string;
+    readonly environment?: NodeJS.ProcessEnv;
+  }) => Effect.Effect<ReadonlyArray<OpenCodeSkill>, OpenCodeRuntimeError>;
   readonly loadInventoryFromCli: (input: {
     readonly binaryPath: string;
     readonly cwd: string;
@@ -412,12 +455,17 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       const child = yield* spawner.spawn(
         ChildProcess.make(spawnTarget, [...input.args], {
           shell,
+          ...(input.cwd ? { cwd: input.cwd } : {}),
           env: spawnEnv,
           ...(input.cwd ? { cwd: input.cwd } : {}),
         }),
       );
       const [stdout, stderr, code] = yield* Effect.all(
-        [collectStreamAsString(child.stdout), collectStreamAsString(child.stderr), child.exitCode],
+        [
+          collectStreamAsStringBounded(child.stdout, MAX_OPENCODE_COMMAND_OUTPUT_CHARS),
+          collectStreamAsStringBounded(child.stderr, MAX_OPENCODE_COMMAND_OUTPUT_CHARS),
+          child.exitCode,
+        ],
         { concurrency: "unbounded" },
       );
       const exitCode = Number(code);
@@ -464,7 +512,12 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ),
         ));
       const timeoutMs = input.timeoutMs ?? DEFAULT_OPENCODE_SERVER_TIMEOUT_MS;
-      const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
+      const args = [
+        "serve",
+        `--hostname=${hostname}`,
+        `--port=${port}`,
+        ...(input.directory ? [`--dir=${input.directory}`] : []),
+      ];
 
       const serverEnv = {
         ...(input.environment ?? process.env),
@@ -621,6 +674,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     return startOpenCodeServerProcess({
       binaryPath: input.binaryPath,
       ...(input.environment !== undefined ? { environment: input.environment } : {}),
+      ...(input.directory !== undefined ? { directory: input.directory } : {}),
       ...(input.port !== undefined ? { port: input.port } : {}),
       ...(input.hostname !== undefined ? { hostname: input.hostname } : {}),
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
@@ -668,28 +722,72 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       Effect.map((result) => result.data ?? []),
     );
 
+  const loadOpenCodeSkills: OpenCodeRuntimeShape["loadOpenCodeSkills"] = (client) =>
+    runOpenCodeSdk("app.skills", () => client.app.skills()).pipe(
+      Effect.map((result) =>
+        (result.data ?? []).slice(0, MAX_OPENCODE_SKILLS).map((skill) => ({
+          name: skill.name,
+          ...(skill.description === undefined ? {} : { description: skill.description }),
+          location: skill.location,
+        })),
+      ),
+    );
+
   const loadOpenCodeInventory: OpenCodeRuntimeShape["loadOpenCodeInventory"] = (client) =>
-    Effect.all([loadProviders(client), loadAgents(client)], { concurrency: "unbounded" }).pipe(
-      Effect.map(([providerList, agents]) => ({ providerList, agents })),
+    Effect.all(
+      [
+        loadProviders(client),
+        loadAgents(client),
+        loadOpenCodeSkills(client).pipe(
+          Effect.tapError((cause) =>
+            Effect.logWarning("OpenCode skill discovery failed", {
+              cause: openCodeRuntimeErrorDetail(cause),
+            }),
+          ),
+          Effect.orElseSucceed(() => []),
+        ),
+      ],
+      { concurrency: "unbounded" },
+    ).pipe(Effect.map(([providerList, agents, skills]) => ({ providerList, agents, skills })));
+
+  const loadOpenCodeSkillsForCwd: OpenCodeRuntimeShape["loadOpenCodeSkillsForCwd"] = (input) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* connectToOpenCodeServer({
+          binaryPath: input.binaryPath,
+          ...(input.serverUrl !== undefined ? { serverUrl: input.serverUrl } : {}),
+          ...(input.serverPassword !== undefined ? { serverPassword: input.serverPassword } : {}),
+          ...(input.environment !== undefined ? { environment: input.environment } : {}),
+          directory: input.cwd,
+        });
+        const client = createOpenCodeSdkClient({
+          baseUrl: server.url,
+          directory: input.cwd,
+          ...(input.serverPassword !== undefined ? { serverPassword: input.serverPassword } : {}),
+        });
+        return yield* loadOpenCodeSkills(client);
+      }),
     );
 
   const loadInventoryFromCli: OpenCodeRuntimeShape["loadInventoryFromCli"] = (input) =>
     Effect.gen(function* () {
-      const env = input.environment !== undefined ? { environment: input.environment } : ({} as {});
-      const commandContext = { cwd: input.cwd, ...env };
+      const commandContext = {
+        cwd: input.cwd,
+        ...(input.environment !== undefined ? { environment: input.environment } : {}),
+      };
 
       const runModelsCli = () =>
         runOpenCodeCommand({
           binaryPath: input.binaryPath,
           args: ["models", "--verbose"],
           ...commandContext,
-        }).pipe(Effect.exit);
+        }).pipe(Effect.timeout("20 seconds"), Effect.exit);
       const runAgentsCli = () =>
         runOpenCodeCommand({
           binaryPath: input.binaryPath,
           args: ["agent", "list"],
           ...commandContext,
-        }).pipe(Effect.exit);
+        }).pipe(Effect.timeout("20 seconds"), Effect.exit);
 
       // OpenCode CLI commands share SQLite state, so serialize them.
       let [modelsResult, agentsResult] = yield* Effect.all([runModelsCli(), runAgentsCli()], {
@@ -736,6 +834,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       return {
         providerList: { all: allProviders, default: {}, connected },
         agents,
+        skills: [],
       };
     });
 
@@ -745,6 +844,8 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     runOpenCodeCommand,
     createOpenCodeSdkClient,
     loadOpenCodeInventory,
+    loadOpenCodeSkills,
+    loadOpenCodeSkillsForCwd,
     loadInventoryFromCli,
   } satisfies OpenCodeRuntimeShape;
 });
