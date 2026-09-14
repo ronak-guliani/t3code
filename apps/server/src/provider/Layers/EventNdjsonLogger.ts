@@ -164,7 +164,6 @@ function shouldPersist(stream: EventNdjsonStream, event: unknown): boolean {
     return true;
   } catch {
     return true;
-    return true;
   }
 }
 

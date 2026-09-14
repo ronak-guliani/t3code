@@ -178,7 +178,10 @@ describe("EventNdjsonLogger", () => {
           .trim()
           .split("\n")
           .map((line) => parseLogLine(line).payload);
-        assert.deepEqual(payloads, retained.map((event) => JSON.stringify(event)));
+        assert.deepEqual(
+          payloads,
+          retained.map((event) => JSON.stringify(event)),
+        );
       } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
