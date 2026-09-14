@@ -6,6 +6,7 @@ export {
   ConnectionDriver,
   type ConnectionDriverProgress,
   type EnvironmentConnectionLease,
+  make as makeConnectionDriver,
 } from "./driver.ts";
 export * from "./errors.ts";
 export * as Connection from "./layer.ts";

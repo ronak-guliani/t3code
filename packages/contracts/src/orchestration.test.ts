@@ -16,6 +16,7 @@ import {
   OrchestrationEvent,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
+  OrchestrationThreadDetailSnapshot,
   ProjectCreatedPayload,
   ProjectMetaUpdatedPayload,
   OrchestrationProposedPlan,
@@ -49,6 +50,7 @@ const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
 const decodeOrchestrationLatestTurn = Schema.decodeUnknownEffect(OrchestrationLatestTurn);
 const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(OrchestrationProposedPlan);
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
+const decodeThreadDetailSnapshot = Schema.decodeUnknownEffect(OrchestrationThreadDetailSnapshot);
 
 it("recognizes supported image MIME types without accepting whitespace or parameters", () => {
   for (const mimeType of PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES) {
@@ -877,6 +879,60 @@ it.effect("decodes pull request monitor provenance with normalized metadata", ()
       revalidationAttemptCount: 1,
       nextRevalidationAt: "2026-03-01T00:00:20.000Z",
     });
+  }),
+);
+
+it.effect("decodes a full thread snapshot containing child-nudge provenance", () =>
+  Effect.gen(function* () {
+    const snapshot = yield* decodeThreadDetailSnapshot({
+      snapshotSequence: 17,
+      thread: {
+        id: "thread-1",
+        projectId: "project-1",
+        parentThreadId: null,
+        title: "Synthetic compatibility fixture",
+        modelSelection: { instanceId: "copilot", model: "gpt-5.6-sol" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        latestTurn: null,
+        createdAt: "2026-09-13T20:00:00.000Z",
+        updatedAt: "2026-09-13T20:01:00.000Z",
+        archivedAt: null,
+        deletedAt: null,
+        messages: [
+          {
+            id: "message-1",
+            role: "user",
+            text: "Synthetic child update",
+            origin: {
+              kind: "child-nudge",
+              updates: [
+                {
+                  id: "report-1",
+                  childThreadId: "child-thread-1",
+                  childTitle: "Synthetic child",
+                  assignmentId: "assignment-1",
+                  kind: "progress",
+                  summary: "Still working",
+                },
+              ],
+            },
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-09-13T20:00:00.000Z",
+            updatedAt: "2026-09-13T20:00:00.000Z",
+          },
+        ],
+        proposedPlans: [],
+        activities: [],
+        checkpoints: [],
+        session: null,
+      },
+    });
+
+    assert.equal(snapshot.thread.messages[0]?.origin?.kind, "child-nudge");
   }),
 );
 
