@@ -270,6 +270,7 @@ function createMockEnvironmentApi(input: {
       }) as EnvironmentApi["workflow"]["run"],
     },
     server: {
+      refreshProviders: async () => ({ providers: [] }),
       exportThreadMarkdown: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["server"]["exportThreadMarkdown"],

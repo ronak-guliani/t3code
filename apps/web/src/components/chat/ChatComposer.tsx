@@ -19,6 +19,10 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   QueuedTurnId,
 } from "@t3tools/contracts";
+import {
+  resolveProviderSkillsForCwd,
+  resolveProviderSlashCommandsForCwd,
+} from "@t3tools/client-runtime";
 import { serializeComposerMentionPath } from "@t3tools/shared/composerTrigger";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import {
@@ -34,6 +38,7 @@ import {
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
+import { readEnvironmentApi } from "~/environmentApi";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { readLocalApi } from "~/localApi";
 import {
@@ -404,6 +409,7 @@ export interface ChatComposerProps {
   // Provider / model
   lockedProvider: ProviderDriverKind | null;
   providerStatuses: ServerProvider[];
+  gitCwd?: string | undefined;
   activeProjectDefaultModelSelection: ModelSelection | null | undefined;
   activeThreadModelSelection: ModelSelection | null | undefined;
 
@@ -494,6 +500,7 @@ export const ChatComposer = memo(
       runtimeMode,
       lockedProvider,
       providerStatuses,
+      gitCwd,
       activeProjectDefaultModelSelection,
       activeThreadModelSelection,
       resolvedTheme,
@@ -722,6 +729,32 @@ export const ChatComposer = memo(
       () => selectedProviderEntry?.snapshot ?? null,
       [selectedProviderEntry],
     );
+    const selectedProviderSkills = useMemo(
+      () =>
+        selectedProviderStatus ? resolveProviderSkillsForCwd(selectedProviderStatus, gitCwd) : [],
+      [gitCwd, selectedProviderStatus],
+    );
+    const selectedProviderSlashCommands = useMemo(
+      () =>
+        selectedProviderStatus
+          ? resolveProviderSlashCommandsForCwd(selectedProviderStatus, gitCwd)
+          : [],
+      [gitCwd, selectedProviderStatus],
+    );
+    useEffect(() => {
+      if (selectedProvider !== "opencode" || !gitCwd || !selectedInstanceId) {
+        return;
+      }
+      const api = readEnvironmentApi(environmentId);
+      if (!api) {
+        return;
+      }
+      void api.server
+        .refreshProviders({ instanceId: selectedInstanceId, cwd: gitCwd })
+        .catch((error) => {
+          console.warn("Failed to refresh OpenCode workspace skills", error);
+        });
+    }, [environmentId, gitCwd, selectedInstanceId, selectedProvider]);
     const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
       () => selectedProviderEntry?.models ?? [],
       [selectedProviderEntry],
@@ -900,16 +933,14 @@ export const ChatComposer = memo(
             description: "Switch response model for this thread",
           },
         ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
-        const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? []).map(
-          (command) => ({
-            id: `provider-slash-command:${selectedProvider}:${command.name}`,
-            type: "provider-slash-command" as const,
-            provider: selectedProvider,
-            command,
-            label: `/${command.name}`,
-            description: command.description ?? command.input?.hint ?? "Run provider command",
-          }),
-        );
+        const providerSlashCommandItems = selectedProviderSlashCommands.map((command) => ({
+          id: `provider-slash-command:${selectedProvider}:${command.name}`,
+          type: "provider-slash-command" as const,
+          provider: selectedProvider,
+          command,
+          label: `/${command.name}`,
+          description: command.description ?? command.input?.hint ?? "Run provider command",
+        }));
         const query = composerTrigger.query.trim().toLowerCase();
         const slashCommandItems = [...builtInSlashCommandItems, ...providerSlashCommandItems];
         if (!query) {
@@ -921,7 +952,7 @@ export const ChatComposer = memo(
         const skillsByName = new Map(
           catalogProviderSkills.map((skill) => [skill.name, skill] as const),
         );
-        for (const skill of selectedProviderStatus?.skills ?? []) {
+        for (const skill of selectedProviderSkills) {
           skillsByName.set(skill.name, skill);
         }
         return searchProviderSkills([...skillsByName.values()], composerTrigger.query).map(
@@ -943,6 +974,8 @@ export const ChatComposer = memo(
       catalogProviderSkills,
       composerTrigger,
       selectedProvider,
+      selectedProviderSkills,
+      selectedProviderSlashCommands,
       selectedProviderStatus,
       workspaceEntries,
     ]);
@@ -2360,7 +2393,7 @@ export const ChatComposer = memo(
                     ? composerTerminalContexts
                     : []
                 }
-                skills={selectedProviderStatus?.skills ?? []}
+                skills={selectedProviderSkills}
                 onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
                 onChange={onPromptChange}
                 onCommandKeyDown={onComposerCommandKey}

@@ -94,6 +94,16 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         cause: null,
       }),
     ),
+  loadOpenCodeSkills: () => Effect.succeed([]),
+  loadOpenCodeSkillsForCwd: () => Effect.succeed([]),
+  loadInventoryFromCli: () =>
+    Effect.fail(
+      new OpenCodeRuntimeError({
+        operation: "loadInventoryFromCli",
+        detail: "OpenCodeRuntimeTestDouble.loadInventoryFromCli not used in this test",
+        cause: null,
+      }),
+    ),
 };
 
 const DEFAULT_TEST_MODEL_SELECTION = {

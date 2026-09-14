@@ -66,6 +66,7 @@
 
 ## Provider tools and workspace ownership
 
+- Keep local provider health checks process-free when their contract promises CLI-only probing; workspace-specific discovery belongs in the explicit cwd refresh path, not an empty-inventory fallback that silently starts a temporary server.
 - Copilot ACP rejects client-supplied stdio MCP servers; expose T3 workspace handoff tools over authenticated loopback HTTP, inject the raw-worktree prohibition through a T3-owned custom-instructions directory, keep permission interception enabled in full-access mode, and fail raw `git worktree add`/`move` visibly so provider cwd, checkpoints, and diffs stay aligned. Inspect only normalized command-execution payloads for raw worktree mutations; MCP prompts may quote those commands as prohibitions. `git worktree remove` may run in-chat for cleanup.
 - Archive worktree cleanup must live-refresh PR state (`resolvePullRequest`) before scheduling: associations are usually stored while open, so trusting `pullRequest.state === "merged"` at archive time skips the intended cleanup. Never auto-remove `project.workspaceRoot` / main checkout. Last active owner only, no force-remove of dirty trees, one pending reservation per canonical path. Tear down every archived/deleted sibling on that path before removal. Unarchive must cancel pending cleanup for the thread/path and clear a missing `worktreePath` via `thread.meta.update` (not SQL-only) so the orchestration read model stays aligned. Cleanup must also abort if its named owner is active again, because ownership checks exclude that thread id.
 - Never auto-cancel a Copilot permission request just because its tool kind is unrecognized; MCP/dynamic tool calls arrive as kind `other` and a silent `cancelled` outcome reads to the model as user rejection, ending the turn early with no error. Let runtime mode decide, and keep the policy's actionable set aligned with `ProjectionPipeline.isActionableApprovalRequest`.
@@ -308,6 +309,7 @@
 
 ## UI discovery and browser capture
 
+- Composer-triggered provider discovery must use the route's environment connection; the primary environment cannot safely resolve remote workspace paths or update a remote provider snapshot.
 - Sidebar device markers belong in trailing metadata, not title text: omit primary-machine markers and raw IDs, keep remote names in tooltips, and cover hosted clients with no primary environment in both sidebar layouts.
 - Diff route search is thread-local UI state: clear it when sidebar navigation changes threads, but preserve it for the active thread so the split-layout store can restore each chat independently.
 - Composer skill discovery must map shared `~/.agents/skills` installations to every provider that reads them; otherwise live project skills appear while global skills silently disappear from `$` suggestions.

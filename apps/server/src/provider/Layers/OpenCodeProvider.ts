@@ -20,6 +20,7 @@ import {
   OpenCodeRuntime,
   openCodeRuntimeErrorDetail,
   type OpenCodeInventory,
+  type OpenCodeSkill,
 } from "../opencodeRuntime.ts";
 import type { Agent, ProviderListResponse } from "@opencode-ai/sdk/v2";
 
@@ -29,6 +30,7 @@ const OPENCODE_PRESENTATION = {
   showInteractionModeToggle: false,
 } as const;
 const MINIMUM_OPENCODE_VERSION = "1.14.19";
+const OPENCODE_VERSION_PROBE_TIMEOUT = "4 seconds";
 
 class OpenCodeProbeError extends Data.TaggedError("OpenCodeProbeError")<{
   readonly cause: unknown;
@@ -248,6 +250,34 @@ function flattenOpenCodeModels(input: OpenCodeInventory): ReadonlyArray<ServerPr
   return models.toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
+function trimOptional(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+export function openCodeSkillsToServerProviderSkills(
+  input: ReadonlyArray<OpenCodeSkill> | undefined,
+): ReadonlyArray<NonNullable<ServerProviderDraft["skills"]>[number]> {
+  return (input ?? [])
+    .flatMap((skill) => {
+      const name = trimOptional(skill.name);
+      const path = trimOptional(skill.location);
+      if (!name || !path) {
+        return [];
+      }
+      const description = trimOptional(skill.description);
+      return [
+        {
+          name,
+          path,
+          enabled: true,
+          ...(description ? { description, shortDescription: description } : {}),
+        },
+      ];
+    })
+    .toSorted((left, right) => left.name.localeCompare(right.name));
+}
+
 export const makePendingOpenCodeProvider = (
   openCodeSettings: OpenCodeSettings,
 ): ServerProviderDraft => {
@@ -365,6 +395,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
           Effect.mapError(
             (cause) => new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
           ),
+          Effect.timeout(OPENCODE_VERSION_PROBE_TIMEOUT),
         ),
     );
     if (versionExit._tag === "Failure") {
@@ -403,42 +434,41 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   }
 
   const inventoryExit = yield* Effect.exit(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const server = yield* openCodeRuntime
-          .connectToOpenCodeServer({
-            binaryPath: openCodeSettings.binaryPath,
-            serverUrl: openCodeSettings.serverUrl,
-            environment,
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
-            ),
-          );
-        return yield* openCodeRuntime
-          .loadOpenCodeInventory(
-            openCodeRuntime.createOpenCodeSdkClient({
-              baseUrl: server.url,
-              directory: cwd,
-              ...(isExternalServer && openCodeSettings.serverPassword
-                ? { serverPassword: openCodeSettings.serverPassword }
-                : {}),
-            }),
-          )
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
-            ),
-          );
-      }),
+    (isExternalServer
+      ? Effect.scoped(
+          Effect.gen(function* () {
+            const server = yield* openCodeRuntime.connectToOpenCodeServer({
+              binaryPath: openCodeSettings.binaryPath,
+              serverUrl: openCodeSettings.serverUrl,
+              environment,
+            });
+            return yield* openCodeRuntime.loadOpenCodeInventory(
+              openCodeRuntime.createOpenCodeSdkClient({
+                baseUrl: server.url,
+                directory: cwd,
+                ...(openCodeSettings.serverPassword
+                  ? { serverPassword: openCodeSettings.serverPassword }
+                  : {}),
+              }),
+            );
+          }),
+        )
+      : openCodeRuntime.loadInventoryFromCli({
+          binaryPath: openCodeSettings.binaryPath,
+          cwd,
+          environment,
+        })
+    ).pipe(
+      Effect.mapError(
+        (cause) => new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
+      ),
     ),
   );
   if (inventoryExit._tag === "Failure") {
     return fallback(Cause.squash(inventoryExit.cause), version);
   }
+
+  const skills = openCodeSkillsToServerProviderSkills(inventoryExit.value.skills ?? []);
 
   const models = providerModelsFromSettings(
     flattenOpenCodeModels(inventoryExit.value),
@@ -452,6 +482,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     enabled: true,
     checkedAt,
     models,
+    skills,
     probe: {
       installed: true,
       version,
