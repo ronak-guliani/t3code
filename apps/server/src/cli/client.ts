@@ -729,14 +729,6 @@ export const fetchLiveOrchestrationArchivedShellSnapshot = (origin: string, bear
     );
   });
 
-export const withLiveRpcClient = <A, E, R>(
-  flags: CliLiveTargetFlags,
-  run: (client: WsRpcClient) => Effect.Effect<A, E, R>,
-) =>
-  withBorrowedBearerToken(flags, ({ origin, bearerToken }) =>
-    withRpcClientForBearerToken(origin, bearerToken, run),
-  ).pipe(Effect.provide(FetchHttpClient.layer));
-
 export const withRpcClientForBearerToken = <A, E, R>(
   origin: string,
   bearerToken: string,

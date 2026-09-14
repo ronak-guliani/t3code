@@ -2649,7 +2649,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           }),
         );
 
-
   const getSnapshotSequence: ProjectionSnapshotQueryShape["getSnapshotSequence"] = () =>
     listProjectionStateRows(undefined).pipe(
       Effect.map(computeSnapshotSequence),
