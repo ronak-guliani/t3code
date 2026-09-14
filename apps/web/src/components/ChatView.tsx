@@ -142,6 +142,7 @@ import {
   useRightPanelStore,
 } from "~/rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { DevicePanel } from "./device/DevicePanel";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { useThreadPreviewState } from "~/previewStateStore";
@@ -2193,6 +2194,9 @@ function ChatViewBody(
   }, [activeThreadRef, diffOpen, updateDiffSearch]);
   const addInsightsSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "insights");
+  }, [activeThreadRef]);
+  const addDeviceSurface = useCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "device");
   }, [activeThreadRef]);
   const runProjectScript = useCallback(
     async (
@@ -4697,6 +4701,20 @@ function ChatViewBody(
               onTerminalClosed={handleRightPanelTerminalClosed}
             />
           ) : null;
+        case "device":
+          return activeThreadRef ? (
+            <DevicePanel
+              key={surface.id}
+              mode="embedded"
+              threadRef={activeThreadRef}
+              surface={surface}
+              visible={visible}
+              onDismissSetup={() => {
+                closeRightPanelSurface(surface);
+                useRightPanelStore.getState().show(activeThreadRef);
+              }}
+            />
+          ) : null;
         case "files":
         case "file":
           return activeThreadRef ? (
@@ -5016,6 +5034,7 @@ function ChatViewBody(
                 onAddFiles={addFilesSurface}
                 onAddDiff={addDiffSurface}
                 onAddInsights={addInsightsSurface}
+                onAddDevice={addDeviceSurface}
                 maximized={rightPanelMaximized}
                 onToggleMaximize={toggleRightPanelMaximized}
               >
@@ -5074,6 +5093,7 @@ function ChatViewBody(
             onAddFiles={addFilesSurface}
             onAddDiff={addDiffSurface}
             onAddInsights={addInsightsSurface}
+            onAddDevice={addDeviceSurface}
           >
             {renderRightPanelSurfaces()}
           </RightPanelTabs>

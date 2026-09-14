@@ -117,6 +117,9 @@ import { ProjectionStateRepositoryLive } from "./persistence/Layers/ProjectionSt
 import { layer as pullRequestMonitorServiceLayer } from "./pullRequestMonitor/PullRequestMonitorService.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
+import * as DeviceService from "./device/DeviceService.ts";
+import { deviceHubProxyRouteLayer } from "./device/DeviceHubProxy.ts";
+import * as ProcessRunner from "./processRunner.ts";
 
 const PtyAdapterLive = Layer.unwrap(
   Effect.gen(function* () {
@@ -256,6 +259,12 @@ const TerminalLayerLive = Layer.mergeAll(
   PortScanner.layer,
 );
 
+const DeviceLayerLive = DeviceService.layer.pipe(
+  Layer.provide(ServerSettingsLive),
+  Layer.provide(ProcessRunner.layer),
+  Layer.provide(NetService.layer),
+);
+
 const WorkspaceEntriesLayerLive = WorkspaceEntriesLive.pipe(
   Layer.provide(WorkspacePathsLive),
   Layer.provideMerge(GitCoreLive),
@@ -382,6 +391,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // keeps a single Live for all opencode consumers.
   Layer.provideMerge(OpenCodeRuntimeLive),
   Layer.provideMerge(ServerSettingsLive),
+  Layer.provideMerge(DeviceLayerLive),
   Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(SidebarStateLive),
   Layer.provideMerge(WorkspaceLayerLive),
@@ -446,8 +456,9 @@ export const makeRoutesLayer = Layer.mergeAll(
   projectFaviconRouteLayer,
   serverEnvironmentRouteLayer,
   staticAndDevRouteLayer,
-  websocketRpcRouteLayer,
-  McpHttpServer.layer,
+  websocketRpcRouteLayer.pipe(Layer.provide(DeviceLayerLive)),
+  deviceHubProxyRouteLayer.pipe(Layer.provide(DeviceLayerLive)),
+  McpHttpServer.layerWithDevice.pipe(Layer.provide(DeviceLayerLive)),
 ).pipe(Layer.provideMerge(environmentAuthenticatedAuthLayer), Layer.provide(browserApiCorsLayer));
 
 export const makeServerLayer = Layer.unwrap(
@@ -509,6 +520,7 @@ export const makeServerLayer = Layer.unwrap(
 
     return serverApplicationLayer.pipe(
       Layer.provideMerge(RuntimeServicesLive),
+      Layer.provideMerge(DeviceLayerLive),
       Layer.provideMerge(HttpServerLive),
       Layer.provide(ObservabilityLive),
       Layer.provideMerge(FetchHttpClient.layer),

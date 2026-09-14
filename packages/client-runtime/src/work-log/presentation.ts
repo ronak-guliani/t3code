@@ -327,6 +327,7 @@ export type ToolGroupAction =
   | "edit"
   | "command"
   | "browser"
+  | "device"
   | "code-search"
   | "search"
   | "skill"
@@ -390,6 +391,15 @@ const T3_MCP_TOOL_LABELS: Record<
   preview_set_appearance: ["Set", "Setting", "Set", "preview browser appearance"],
   preview_recording_start: ["Start", "Starting", "Started", "recording the preview browser"],
   preview_recording_stop: ["Stop", "Stopping", "Stopped", "recording the preview browser"],
+  device_list: ["List", "Listing", "Listed", "simulators and emulators"],
+  device_open: ["Open", "Opening", "Opened", "a device in the Device panel"],
+  device_screenshot: [
+    "Take a screenshot of",
+    "Taking a screenshot of",
+    "Took a screenshot of",
+    "the device",
+  ],
+  device_close: ["Close", "Closing", "Closed", "a device"],
 };
 
 function resolveT3McpToolPresentation(value: string | undefined, status: string | undefined) {
@@ -416,7 +426,11 @@ function resolveT3McpToolPresentation(value: string | undefined, status: string 
 
   return {
     displayName: `${verb} ${detail}`,
-    icon: name.startsWith("preview_") ? ("browser" as const) : ("t3-code" as const),
+    icon: name.startsWith("preview_")
+      ? ("browser" as const)
+      : name.startsWith("device_")
+        ? ("device" as const)
+        : ("t3-code" as const),
   };
 }
 
@@ -771,6 +785,8 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
       return `Changed ${count} ${count === 1 ? "file" : "files"}`;
     case "command":
       return `Ran ${count} ${count === 1 ? "command" : "commands"}`;
+    case "device":
+      return `Used device controls ${count} ${count === 1 ? "time" : "times"}`;
     case "browser":
       return `Used browser ${count} ${count === 1 ? "time" : "times"}`;
     case "search":

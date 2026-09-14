@@ -9,6 +9,7 @@ import {
   Minimize2,
   MoreHorizontal,
   Plus,
+  Smartphone,
   TerminalSquare,
   X,
 } from "lucide-react";
@@ -47,6 +48,7 @@ type Props = {
   readonly onAddFiles: () => void;
   readonly onAddDiff: () => void;
   readonly onAddInsights: () => void;
+  readonly onAddDevice?: () => void;
   readonly maximized?: boolean;
   readonly onToggleMaximize?: () => void;
   readonly children: ReactNode;
@@ -70,6 +72,8 @@ function titleFor(
       return surface.relativePath.split("/").at(-1) ?? surface.relativePath;
     case "terminal":
       return terminalLabels[surface.resourceId] ?? "Terminal";
+    case "device":
+      return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -120,6 +124,8 @@ function Icon({
       return <Activity className="size-3.5" />;
     case "terminal":
       return <TerminalSquare className="size-3.5" />;
+    case "device":
+      return <Smartphone className="size-3.5" />;
     case "preview": {
       const status = surface.resourceId ? sessions[surface.resourceId]?.navStatus : undefined;
       const url = status && status._tag !== "Idle" ? status.url : null;
@@ -146,6 +152,7 @@ export function RightPanelTabs({
   onAddFiles,
   onAddDiff,
   onAddInsights,
+  onAddDevice,
   maximized = false,
   onToggleMaximize,
   children,
@@ -269,6 +276,7 @@ export function RightPanelTabs({
               <MenuItem onClick={onAddFiles}>Files</MenuItem>
               <MenuItem onClick={onAddDiff}>Diff</MenuItem>
               <MenuItem onClick={onAddInsights}>Insights</MenuItem>
+              {onAddDevice ? <MenuItem onClick={onAddDevice}>Device</MenuItem> : null}
             </MenuPopup>
           </Menu>
         </div>

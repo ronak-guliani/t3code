@@ -2319,6 +2319,7 @@ describe("agent browser access", () => {
               providerSessionId: `mcp-${String(threadId)}`,
               providerInstanceId,
               endpoint: "http://localhost/mcp",
+              capabilities: new Set(["preview"]),
               authorizationHeader: "Bearer test",
             },
           }),

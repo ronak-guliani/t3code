@@ -14,6 +14,7 @@ import { revokeActivePreviewAutomationProviderSession } from "./PreviewAutomatio
 export interface McpCredentialRequest {
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
+  readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
 }
 
 export interface McpIssuedCredential {
@@ -27,6 +28,7 @@ export interface McpProviderSessionConfig {
   readonly providerInstanceId: ProviderInstanceId;
   readonly endpoint: string;
   readonly authorizationHeader: string;
+  readonly capabilities: ReadonlySet<McpInvocationContext.McpCapability>;
 }
 
 export interface McpSessionRegistryShape {
@@ -200,7 +202,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         threadId: ThreadId.make(request.threadId),
         providerSessionId,
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
-        capabilities: new Set(["preview"]),
+        capabilities: request.capabilities ?? new Set(["preview"]),
         issuedAt,
       };
       const config: McpProviderSessionConfig = {
@@ -209,6 +211,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         providerSessionId,
         providerInstanceId: scope.providerInstanceId,
         endpoint,
+        capabilities: scope.capabilities,
         authorizationHeader: `Bearer ${rawToken}`,
       };
       yield* modifyState((current) => {

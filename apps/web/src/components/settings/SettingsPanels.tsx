@@ -2222,6 +2222,37 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
+      <SettingsSection title="Devices">
+        <SettingsRow
+          title="Local device support"
+          description="Discover and control local iOS Simulators and Android Emulators. Device Hub tools are installed and started only after you enable this setting."
+          control={
+            <Switch
+              checked={settings.enableDeviceSupport}
+              onCheckedChange={(checked) =>
+                updateSettings({ enableDeviceSupport: Boolean(checked) })
+              }
+              aria-label="Enable local device support"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Agent device access"
+          description="Let newly started agent sessions list, open, capture, and close devices. This permission is separate from access to the Device panel."
+          control={
+            <Switch
+              checked={settings.enableAgentDeviceAccess}
+              disabled={!settings.enableDeviceSupport}
+              onCheckedChange={(checked) =>
+                updateSettings({ enableAgentDeviceAccess: Boolean(checked) })
+              }
+              aria-label="Allow agent device access"
+            />
+          }
+        />
+      </SettingsSection>
+
       <SettingsSection title="Preferences">
         <SettingsRow
           title="Agent browser access"

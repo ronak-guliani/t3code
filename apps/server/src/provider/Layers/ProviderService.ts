@@ -38,6 +38,7 @@ import {
   withMetrics,
 } from "../../observability/Metrics.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import type * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import {
   type ProviderAdapterError,
   ProviderUnsupportedError,
@@ -250,17 +251,24 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     serverSettings.getSettings.pipe(
-      Effect.map((settings) => settings.enableAgentBrowserAccess),
+      Effect.map((settings) => {
+        const capabilities = new Set<McpInvocationContext.McpCapability>();
+        if (settings.enableAgentBrowserAccess) capabilities.add("preview");
+        if (settings.enableDeviceSupport && settings.enableAgentDeviceAccess) {
+          capabilities.add("device");
+        }
+        return capabilities;
+      }),
       Effect.catch((cause) =>
         Effect.logWarning("provider.mcp.settings-read-failed", {
           threadId,
           providerInstanceId,
           cause,
-        }).pipe(Effect.as(false)),
+        }).pipe(Effect.as(new Set<McpInvocationContext.McpCapability>())),
       ),
-      Effect.flatMap((enabled) =>
-        enabled
-          ? issueMcpCredential({ threadId, providerInstanceId })
+      Effect.flatMap((capabilities) =>
+        capabilities.size > 0
+          ? issueMcpCredential({ threadId, providerInstanceId, capabilities })
           : revokeMcpCredential(threadId, providerInstanceId).pipe(Effect.as(undefined)),
       ),
     );
