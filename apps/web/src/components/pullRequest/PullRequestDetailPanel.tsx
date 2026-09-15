@@ -21,7 +21,7 @@ import {
   RefreshCwIcon,
   XIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 
 import ChatMarkdown from "../ChatMarkdown";
 import { Button } from "../ui/button";
@@ -44,6 +44,7 @@ import { buildPatchCacheKey, resolveDiffThemeName } from "~/lib/diffRendering";
 import { cn } from "~/lib/utils";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { useTheme } from "~/hooks/useTheme";
+import { useSettings } from "~/hooks/useSettings";
 import { useOpenLink } from "~/browser/useOpenLink";
 import { isWebUrl } from "~/browser/browserLinkTarget";
 import { selectThreadShellsAcrossEnvironments, useStore } from "~/store";
@@ -380,6 +381,18 @@ function CodeTab({
     (state) => state.commentsByKey[key] ?? EMPTY_PENDING_REVIEW_COMMENTS,
   );
   const { resolvedTheme } = useTheme();
+  const pullRequestsCodeFontSize = useSettings((s) => s.pullRequestsCodeFontSize);
+  const diffWordWrap = useSettings((s) => s.diffWordWrap);
+  // The renderer defaults to 13px/20px; drive both from the pull request
+  // code font size setting so diffs match the app's code density.
+  const diffTextStyle = useMemo<CSSProperties>(
+    () =>
+      ({
+        "--diffs-font-size": `${pullRequestsCodeFontSize}px`,
+        "--diffs-line-height": `${pullRequestsCodeFontSize + 8}px`,
+      }) as CSSProperties,
+    [pullRequestsCodeFontSize],
+  );
   const renderablePages = useMemo(
     () =>
       (diffQuery.data?.pages ?? []).map((page, index) => ({
@@ -508,10 +521,11 @@ function CodeTab({
             >
               <FileDiff
                 fileDiff={file}
+                style={diffTextStyle}
                 options={{
                   diffStyle: "unified",
                   lineDiffType: "none",
-                  overflow: "scroll",
+                  overflow: diffWordWrap ? "wrap" : "scroll",
                   theme: resolveDiffThemeName(resolvedTheme),
                   themeType: resolvedTheme,
                 }}
@@ -544,7 +558,12 @@ function CodeTab({
             <p className="border-b border-border/70 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
               {page.reason}
             </p>
-            <pre className="max-h-120 overflow-auto p-3 text-xs leading-5">{page.text}</pre>
+            <pre
+              className="max-h-120 overflow-auto p-3 leading-5"
+              style={{ fontSize: pullRequestsCodeFontSize }}
+            >
+              {page.text}
+            </pre>
           </section>
         ))}
       {renderablePages.length === 0 ? (
@@ -730,7 +749,11 @@ export function PullRequestDetailPanel({
       : checkSummary.pending > 0
         ? "text-muted-foreground"
         : "text-emerald-500";
-  const conversationItems = detail.comments.filter((item) => item.kind !== "review-comment");
+  // The timeline shows every comment kind, including line-level review
+  // comments (with their file location) the way the host's own timeline
+  // does. Filtering those out made review-heavy pull requests read as
+  // having no conversation at all.
+  const conversationItems = detail.comments;
   const timelineCount = conversationItems.length + detail.commits.length;
   const tabs = detail.capabilities.diff ? TABS : TABS.filter((tab) => tab.value !== "code");
   const activeTab = tabs.some((item) => item.value === tab) ? tab : "summary";
@@ -1088,9 +1111,22 @@ export function PullRequestDetailPanel({
             ) : null}
             {conversationItems.map((item) => (
               <article className="border-b border-border/60 pb-4" key={item.id}>
-                <div className="flex gap-2 text-xs text-muted-foreground">
+                <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
                   <PullRequestActorLabel actor={item.author} className="text-foreground" />
                   <span>{formatRelativeTimeLabel(item.createdAt)}</span>
+                  {item.kind === "review-comment" && item.path ? (
+                    <span className="min-w-0 truncate font-mono text-[11px]">
+                      {item.path}
+                      {typeof item.reviewState === "string" && item.reviewState
+                        ? ` · ${item.reviewState}`
+                        : ""}
+                    </span>
+                  ) : null}
+                  {item.kind === "review" ? (
+                    <span className="rounded bg-accent px-1 py-px font-medium text-foreground">
+                      Review
+                    </span>
+                  ) : null}
                 </div>
                 <div className="mt-2 text-sm">
                   <ChatMarkdown
