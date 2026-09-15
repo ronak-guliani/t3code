@@ -134,6 +134,7 @@ export function ConnectionEnvironmentRow(props: {
         </View>
 
         <ThemedSwitch
+          accessibilityLabel={`Enable ${props.environment.environmentLabel}`}
           onValueChange={(next) => props.onSetEnabled(props.environment.environmentId, next)}
           value={enabled}
         />

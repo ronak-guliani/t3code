@@ -170,6 +170,42 @@ function createTestClient() {
 }
 
 describe("createEnvironmentConnection", () => {
+  it("does not refresh metadata when a pending reconnect completes after disposal", async () => {
+    const environmentId = EnvironmentId.make("env-1");
+    const { client } = createTestClient();
+    let finishReconnect!: () => void;
+    const pendingReconnect = new Promise<void>((resolve) => {
+      finishReconnect = resolve;
+    });
+    vi.mocked(client.reconnect).mockReturnValue(pendingReconnect);
+    const refreshMetadata = vi.fn(async () => undefined);
+    const connection = createEnvironmentConnection({
+      kind: "saved",
+      knownEnvironment: {
+        id: "env-1",
+        label: "Remote env",
+        source: "manual",
+        target: { httpBaseUrl: "http://example.test", wsBaseUrl: "ws://example.test" },
+        environmentId,
+      },
+      client,
+      refreshMetadata,
+      applyShellEvent: vi.fn(),
+      syncShellSnapshot: vi.fn(),
+      applyTerminalEvent: vi.fn(),
+      applySidebarStateSnapshot: vi.fn(),
+      readLegacyPinnedThreads: vi.fn(() => ({})),
+      markLegacySidebarPinsMigrated: vi.fn(),
+    });
+    await connection.ensureBootstrapped();
+    const reconnecting = connection.reconnect();
+    const rejected = expect(reconnecting).rejects.toThrow("disposed");
+    await connection.dispose();
+    finishReconnect();
+    await rejected;
+    expect(refreshMetadata).not.toHaveBeenCalled();
+  });
+
   it("refreshes and applies the latest shell snapshot on demand", async () => {
     const environmentId = EnvironmentId.make("env-1");
     const { client } = createTestClient();

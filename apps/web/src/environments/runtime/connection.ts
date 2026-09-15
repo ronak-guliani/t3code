@@ -270,6 +270,9 @@ export function createEnvironmentConnection(
       bootstrapGate.reset();
       try {
         await input.client.reconnect();
+        if (disposed) {
+          throw fatalError ?? new Error(`Environment connection ${environmentId} is disposed.`);
+        }
         await input.refreshMetadata?.();
         await bootstrapGate.wait();
       } catch (error) {

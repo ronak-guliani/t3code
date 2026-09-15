@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
 import type { RelayEnvironmentView } from "./useConnectionController";
 import { CloudEnvironmentRows } from "./CloudEnvironmentRows";
+import { ConnectionEnvironmentRow } from "./ConnectionEnvironmentRow";
+import { AsyncResult } from "effect/unstable/reactivity";
 
 const harness = vi.hoisted(() => ({
   relayEnvironments: [] as RelayEnvironmentView[],
@@ -30,15 +32,29 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("../../components/AppText", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  AppTextInput: () => null,
 }));
+vi.mock("react-native-reanimated", () => {
+  const animation = { duration: () => animation };
+  return {
+    default: { View: ({ children }: { children?: ReactNode }) => <div>{children}</div> },
+    FadeIn: animation,
+    FadeOut: animation,
+    LinearTransition: animation,
+  };
+});
 vi.mock("../../components/AppSymbol", () => ({ SymbolView: () => null }));
 vi.mock("../../components/EnvironmentMachineSymbol", () => ({
   EnvironmentMachineSymbol: () => null,
 }));
 vi.mock("../../components/ThemedSwitch", () => ({
-  ThemedSwitch: ({ value }: { value: boolean }) => (
-    <input type="checkbox" checked={value} readOnly />
-  ),
+  ThemedSwitch: ({
+    value,
+    accessibilityLabel,
+  }: {
+    value: boolean;
+    accessibilityLabel?: string;
+  }) => <input type="checkbox" aria-label={accessibilityLabel} checked={value} readOnly />,
 }));
 vi.mock("./ConnectionStatusDot", () => ({ ConnectionStatusDot: () => null }));
 vi.mock("../../lib/copyTextWithHaptic", () => ({ copyTextWithHaptic: vi.fn() }));
@@ -97,6 +113,22 @@ beforeEach(() => {
 });
 
 describe("connected account environment actions", () => {
+  it.each([true, false])("names direct and cloud switches when enabled=%s", (isEnabled) => {
+    const environment = { ...connected, isEnabled };
+    expect(render(environment)).toContain('aria-label="Enable Windows laptop"');
+    const direct = renderToStaticMarkup(
+      <ConnectionEnvironmentRow
+        environment={{ ...environment, isRelayManaged: false }}
+        expanded={false}
+        onToggle={() => {}}
+        onReconnect={() => {}}
+        onRemove={() => {}}
+        onSetEnabled={() => {}}
+        onUpdate={async () => AsyncResult.success(undefined)}
+      />,
+    );
+    expect(direct).toContain('aria-label="Enable Windows laptop"');
+  });
   it("keeps paused cloud rows with an unchecked switch and without stale errors", () => {
     const html = render({
       ...connected,

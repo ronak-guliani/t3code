@@ -481,6 +481,7 @@ function CloudEnvironmentRowShell(props: {
         </StatusContainer>
       </View>
       <ThemedSwitch
+        accessibilityLabel={`Enable ${props.label}`}
         disabled={props.disabled}
         onValueChange={props.onValueChange}
         value={props.value}
