@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createAdvertisedEndpoint } from "@t3tools/shared/advertisedEndpoint";
+import * as Effect from "effect/Effect";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import {
+  resolveVerifiedTailscaleServeEndpoints,
   resolveServerAdvertisedEndpoints,
   type LiveListener,
 } from "./ServerAdvertisedEndpoints.ts";
@@ -70,7 +73,7 @@ describe("resolveServerAdvertisedEndpoints", () => {
     });
 
     expect(endpoints.map((value) => value.httpBaseUrl)).toEqual([
-      "http://127.0.0.1:13773/",
+      "http://[::1]:13773/",
       "http://[fd12::20]:13773/",
     ]);
   });
@@ -134,5 +137,68 @@ describe("resolveServerAdvertisedEndpoints", () => {
     });
 
     expect(endpoints.map((value) => value.httpBaseUrl)).toEqual(["http://100.64.0.4:13773/"]);
+  });
+});
+
+describe("resolveVerifiedTailscaleServeEndpoints", () => {
+  const serveListener = listener("127.0.0.1");
+  const matchingMapping = {
+    magicDnsName: "host.tailnet.ts.net",
+    servePort: 443,
+    target: "http://127.0.0.1:13773",
+  };
+
+  const runWithResponse = (status: number, environmentId: string) => {
+    const client = HttpClient.make((request) =>
+      Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          Response.json(
+            {
+              environmentId,
+              label: "Host",
+              platform: { os: "darwin", arch: "arm64" },
+              serverVersion: "0.0.0",
+              capabilities: {},
+            },
+            { status },
+          ),
+        ),
+      ),
+    );
+    return (mappings: readonly (typeof matchingMapping)[]) =>
+      Effect.runPromise(
+        resolveVerifiedTailscaleServeEndpoints({
+          listener: serveListener,
+          mappings,
+          magicDnsName: "host.tailnet.ts.net",
+          environmentId: "environment-a",
+          client,
+        }).pipe(Effect.provideService(HttpClient.HttpClient, client)),
+      );
+  };
+
+  it("accepts only matching Serve targets and environment identity", async () => {
+    const resolve = runWithResponse(200, "environment-a");
+    const endpoints = await resolve([
+      matchingMapping,
+      { ...matchingMapping, target: "http://127.0.0.1:13774" },
+      { ...matchingMapping, target: "http://192.168.1.20:13773" },
+      { ...matchingMapping, magicDnsName: "other.tailnet.ts.net" },
+    ]);
+
+    expect(endpoints.map((endpoint) => endpoint.httpBaseUrl)).toEqual([
+      "https://host.tailnet.ts.net/",
+    ]);
+  });
+
+  it("rejects mismatched identities, redirects, and failed probes", async () => {
+    const mismatchedIdentity = await runWithResponse(200, "environment-b")([matchingMapping]);
+    const redirected = await runWithResponse(302, "environment-a")([matchingMapping]);
+    const unavailable = await runWithResponse(503, "environment-a")([matchingMapping]);
+
+    expect(mismatchedIdentity).toEqual([]);
+    expect(redirected).toEqual([]);
+    expect(unavailable).toEqual([]);
   });
 });

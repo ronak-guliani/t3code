@@ -15,6 +15,7 @@ import {
   buildTailscaleHttpsBaseUrl,
   readTailscaleServeMappings,
   readTailscaleStatus,
+  type TailscaleServeMapping,
 } from "@t3tools/tailscale";
 import * as Effect from "effect/Effect";
 import * as Context from "effect/Context";
@@ -182,13 +183,14 @@ const resolveCoreEndpoints = (
 
   if (!isWildcardHost(listenerHost)) return endpoints;
 
+  const loopbackHost = input.listener.family === "IPv6" ? "::1" : "127.0.0.1";
   endpoints.push(
     createAdvertisedEndpoint({
       provider: SERVER_ENDPOINT_PROVIDER,
       source: "server",
       id: `server-loopback:${input.listener.port}`,
       label: "This machine",
-      httpBaseUrl: `http://127.0.0.1:${input.listener.port}`,
+      httpBaseUrl: `http://${formatHostForUrl(loopbackHost)}:${input.listener.port}`,
       reachability: "loopback",
       status: "available",
       description: "Loopback endpoint for this server.",
@@ -292,6 +294,55 @@ const verifyServeIdentity = (
     Effect.orElseSucceed(() => false),
   );
 
+export const resolveVerifiedTailscaleServeEndpoints = (input: {
+  readonly listener: LiveListener;
+  readonly mappings: readonly TailscaleServeMapping[];
+  readonly magicDnsName: string | null;
+  readonly environmentId: string;
+  readonly client: HttpClient.HttpClient;
+}): Effect.Effect<readonly AdvertisedEndpoint[], never> =>
+  Effect.forEach(
+    input.mappings.filter(
+      (mapping) =>
+        input.magicDnsName !== null &&
+        mapping.magicDnsName.toLowerCase() === input.magicDnsName.toLowerCase() &&
+        proxyTargetMatchesListener(mapping.target, input.listener),
+    ),
+    (mapping) => {
+      const baseUrl = buildTailscaleHttpsBaseUrl({
+        magicDnsName: mapping.magicDnsName,
+        servePort: mapping.servePort,
+      });
+      return verifyServeIdentity(baseUrl, input.environmentId, input.client).pipe(
+        Effect.map((verified) =>
+          verified
+            ? createAdvertisedEndpoint({
+                provider: {
+                  id: "tailscale",
+                  label: "Tailscale",
+                  kind: "private-network",
+                  isAddon: true,
+                },
+                source: "server",
+                id: `tailscale-magicdns:${baseUrl}`,
+                label: "Tailscale HTTPS",
+                httpBaseUrl: baseUrl,
+                reachability: "private-network",
+                hostedHttpsCompatibility: "compatible",
+                status: "available",
+                description: "HTTPS endpoint served by an existing Tailscale Serve mapping.",
+              })
+            : null,
+        ),
+      );
+    },
+    { concurrency: 4 },
+  ).pipe(
+    Effect.map((endpoints) =>
+      endpoints.filter((endpoint): endpoint is AdvertisedEndpoint => endpoint !== null),
+    ),
+  );
+
 const resolveTailscaleEndpoints = (input: {
   readonly listener: LiveListener;
   readonly networkInterfaces: TailscaleNetworkInterfaces;
@@ -329,39 +380,13 @@ const resolveTailscaleEndpoints = (input: {
     const mappings = yield* readTailscaleServeMappings.pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, input.spawner),
     );
-    const verifiedServeEndpoints: AdvertisedEndpoint[] = [];
-    for (const mapping of mappings) {
-      if (
-        status.magicDnsName === null ||
-        mapping.magicDnsName.toLowerCase() !== status.magicDnsName.toLowerCase() ||
-        !proxyTargetMatchesListener(mapping.target, input.listener)
-      ) {
-        continue;
-      }
-      const baseUrl = buildTailscaleHttpsBaseUrl({
-        magicDnsName: mapping.magicDnsName,
-        servePort: mapping.servePort,
-      });
-      if (!(yield* verifyServeIdentity(baseUrl, input.environmentId, input.client))) continue;
-      verifiedServeEndpoints.push(
-        createAdvertisedEndpoint({
-          provider: {
-            id: "tailscale",
-            label: "Tailscale",
-            kind: "private-network",
-            isAddon: true,
-          },
-          source: "server",
-          id: `tailscale-magicdns:${baseUrl}`,
-          label: "Tailscale HTTPS",
-          httpBaseUrl: baseUrl,
-          reachability: "private-network",
-          hostedHttpsCompatibility: "compatible",
-          status: "available",
-          description: "HTTPS endpoint served by an existing Tailscale Serve mapping.",
-        }),
-      );
-    }
+    const verifiedServeEndpoints = yield* resolveVerifiedTailscaleServeEndpoints({
+      listener: input.listener,
+      mappings,
+      magicDnsName: status.magicDnsName,
+      environmentId: input.environmentId,
+      client: input.client,
+    });
     return [...ipEndpoints, ...verifiedServeEndpoints];
   }).pipe(
     Effect.catchTags({

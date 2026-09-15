@@ -522,15 +522,15 @@ export const makeServerLayer = Layer.unwrap(
     );
 
     return serverApplicationLayer.pipe(
+      Layer.provide(ServerAdvertisedEndpoints.layer),
       Layer.provideMerge(RuntimeServicesLive),
       Layer.provideMerge(DeviceLayerLive),
       Layer.provideMerge(HttpServerLive),
-      Layer.provide(ServerAdvertisedEndpoints.layer),
       Layer.provide(ObservabilityLive),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provide(ServerStartupClaimLive),
       Layer.provideMerge(PlatformServicesLive),
-    ) as unknown as Layer.Layer<never, any, ServerConfig>;
+    );
   }),
 );
 
