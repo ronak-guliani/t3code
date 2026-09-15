@@ -334,6 +334,46 @@ const proxyTargetFromHandlers = (value: unknown): string | null => {
   return null;
 };
 
+export interface TailscaleServeMapping {
+  readonly magicDnsName: string;
+  readonly servePort: number;
+  readonly target: string;
+}
+
+const parseTailscaleServeHostPort = (
+  value: string,
+): { readonly magicDnsName: string; readonly servePort: number } | null => {
+  const separator = value.lastIndexOf(":");
+  if (separator <= 0) return null;
+  const magicDnsName = value.slice(0, separator).trim().replace(/\.$/u, "");
+  const servePort = Number.parseInt(value.slice(separator + 1), 10);
+  if (!magicDnsName || !Number.isInteger(servePort) || servePort < 1 || servePort > 65_535) {
+    return null;
+  }
+  return { magicDnsName, servePort };
+};
+
+export const parseTailscaleServeMappings = (
+  rawStatusJson: string,
+): Effect.Effect<readonly TailscaleServeMapping[], TailscaleServeStatusParseError> =>
+  Effect.try({
+    try: () => {
+      const parsed: unknown = JSON.parse(rawStatusJson);
+      if (!isUnknownRecord(parsed) || !isUnknownRecord(parsed.Web)) return [];
+
+      const mappings: TailscaleServeMapping[] = [];
+      for (const [hostPort, configuration] of Object.entries(parsed.Web)) {
+        const parsedHostPort = parseTailscaleServeHostPort(hostPort);
+        if (!parsedHostPort || !isUnknownRecord(configuration)) continue;
+        const target = proxyTargetFromHandlers(configuration.Handlers);
+        if (target === null) continue;
+        mappings.push({ ...parsedHostPort, target });
+      }
+      return mappings;
+    },
+    catch: (cause) => new TailscaleServeStatusParseError({ cause }),
+  });
+
 export const parseTailscaleServePortTarget = (
   rawStatusJson: string,
   servePort: number,
@@ -415,6 +455,10 @@ export const readTailscaleServePortTarget = (servePort: number) =>
   readTailscaleServeStatus.pipe(
     Effect.flatMap((stdout) => parseTailscaleServePortTarget(stdout, servePort)),
   );
+
+export const readTailscaleServeMappings = readTailscaleServeStatus.pipe(
+  Effect.flatMap(parseTailscaleServeMappings),
+);
 
 export const ensureTailscaleServe = (input: {
   readonly localPort: number;

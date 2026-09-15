@@ -436,6 +436,26 @@ Scan the printed QR code in the RN app or open the same canonical URL in a brows
 
 The service definition contains its startup paths and selected non-secret configuration. Pairing/session credentials still grant workstation access: use Tailnet ACLs, revoke unused T3 sessions, protect the workstation account, and do not expose the port directly to an untrusted network.
 
+### Automatic endpoint discovery
+
+Authenticated clients can read `GET /api/remote-access/endpoints` with an
+environment session carrying `relay:read`. The response is the additive
+`AdvertisedEndpoint[]` contract: it may include the live listener's loopback,
+LAN, private-network, and public candidates, plus a Tailscale IP or an already
+configured Tailscale Serve HTTPS mapping. A missing route on an older server is
+treated as no discovery candidates.
+
+Discovery uses the listener address family and actual bound port, including
+ephemeral ports. Wildcard listeners are projected only onto usable interfaces
+in the same family; loopback, link-local, and multicast addresses are not
+invented as LAN candidates, while private Docker/VM bridge addresses remain
+eligible. Existing Tailscale Serve mappings are inspected read-only and are
+advertised only when their loopback proxy target and HTTPS environment identity
+match this server. Discovery never enables Serve, changes firewall exposure, or
+turns plain LAN HTTP into an implicitly trusted transport. `401` means there is
+no authenticated environment session and `403` means the session lacks
+`relay:read`.
+
 ## Pausing a saved connection
 
 In Settings -> Connections, switch a saved environment off to pause it **on this

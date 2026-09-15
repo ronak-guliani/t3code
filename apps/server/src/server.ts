@@ -103,6 +103,7 @@ import * as CloudServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as CliTokenManager from "./cloud/CliTokenManager.ts";
 import * as ManagedEndpointRuntime from "./cloud/ManagedEndpointRuntime.ts";
 import * as RemoteAccess from "./remoteAccess/RemoteAccess.ts";
+import * as ServerAdvertisedEndpoints from "./remoteAccess/ServerAdvertisedEndpoints.ts";
 import { routes as remoteAccessRoutes } from "./remoteAccess/http.ts";
 import { connectHttpApiRoutesLayer } from "./cloud/http.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
@@ -357,6 +358,7 @@ export const CloudRuntimeLayerLive = Layer.effectDiscard(
 ) as unknown as Layer.Layer<CloudRuntimeServices>;
 
 const ConnectHttpApiRoutesLayerLive = connectHttpApiRoutesLayer as unknown as Layer.Layer<never>;
+const RemoteAccessRoutesLayerLive = remoteAccessRoutes as unknown as Layer.Layer<never>;
 
 const BackgroundLayerLive = BackgroundPolicy.layer.pipe(Layer.provideMerge(HostPowerMonitor.layer));
 
@@ -450,7 +452,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   worktreeCleanupRetryRouteLayer,
   pullRequestHttpApiRoutesLayer,
   ConnectHttpApiRoutesLayerLive,
-  remoteAccessRoutes,
+  RemoteAccessRoutesLayerLive,
   mobileRouteLayer,
   otlpTracesProxyRouteLayer,
   projectFaviconRouteLayer,
@@ -523,11 +525,12 @@ export const makeServerLayer = Layer.unwrap(
       Layer.provideMerge(RuntimeServicesLive),
       Layer.provideMerge(DeviceLayerLive),
       Layer.provideMerge(HttpServerLive),
+      Layer.provide(ServerAdvertisedEndpoints.layer),
       Layer.provide(ObservabilityLive),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provide(ServerStartupClaimLive),
       Layer.provideMerge(PlatformServicesLive),
-    );
+    ) as unknown as Layer.Layer<never, any, ServerConfig>;
   }),
 );
 
