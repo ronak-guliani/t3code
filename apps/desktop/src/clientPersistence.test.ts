@@ -101,6 +101,20 @@ const savedRegistryRecord: PersistedSavedEnvironmentRecord = {
 };
 
 describe("clientPersistence", () => {
+  it("keeps pause intent across encrypted credential renewal and resume", () => {
+    const registryPath = makeTempPath("saved-environments.json");
+    const secretStorage = makeSecretStorage(true);
+    const input = { registryPath, environmentId: savedRegistryRecord.environmentId, secretStorage };
+    writeSavedEnvironmentRegistry(registryPath, [savedRegistryRecord]);
+    writeSavedEnvironmentSecret({ ...input, secret: "saved-secret" });
+    writeSavedEnvironmentRegistry(registryPath, [{ ...savedRegistryRecord, enabled: false }]);
+    expect(readSavedEnvironmentRegistry(registryPath)[0]?.enabled).toBe(false);
+    expect(readSavedEnvironmentSecret(input)).toBe("saved-secret");
+    writeSavedEnvironmentSecret({ ...input, secret: "renewed-secret" });
+    expect(readSavedEnvironmentRegistry(registryPath)[0]?.enabled).toBe(false);
+    writeSavedEnvironmentRegistry(registryPath, [{ ...savedRegistryRecord, enabled: true }]);
+    expect(readSavedEnvironmentSecret(input)).toBe("renewed-secret");
+  });
   it("persists and reloads client settings", () => {
     const settingsPath = makeTempPath("client-settings.json");
 

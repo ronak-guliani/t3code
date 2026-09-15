@@ -34,6 +34,13 @@ export const DeleteProjectionThreadProposedPlansInput = Schema.Struct({
 export type DeleteProjectionThreadProposedPlansInput =
   typeof DeleteProjectionThreadProposedPlansInput.Type;
 
+export const DeleteProjectionThreadProposedPlansByTurnIdsInput = Schema.Struct({
+  threadId: ThreadId,
+  turnIds: Schema.Array(TurnId),
+});
+export type DeleteProjectionThreadProposedPlansByTurnIdsInput =
+  typeof DeleteProjectionThreadProposedPlansByTurnIdsInput.Type;
+
 /**
  * Summary fields of a proposed plan: everything the shell summary needs
  * without the (potentially large) plan markdown.
@@ -65,6 +72,25 @@ export interface ProjectionThreadProposedPlanRepositoryShape {
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadProposedPlanSummary>, ProjectionRepositoryError>;
   readonly deleteByThreadId: (
     input: DeleteProjectionThreadProposedPlansInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+  /**
+   * List distinct non-null turn ids with proposed-plan rows for a thread.
+   *
+   * Narrow index read without plan markdown; used to compute the trimmed turn
+   * set for revert without hydrating full histories.
+   */
+  readonly listTurnIdsByThreadId: (
+    input: ListProjectionThreadProposedPlansInput,
+  ) => Effect.Effect<ReadonlyArray<TurnId>, ProjectionRepositoryError>;
+  /**
+   * Delete only proposed plans of exactly the listed turns of a thread.
+   *
+   * Turn-less plans are never touched. Unlike `deleteByThreadId` +
+   * re-upserting kept rows, this never reads plan markdown and never rewrites
+   * retained rows. An empty `turnIds` list deletes nothing.
+   */
+  readonly deleteByTurnIds: (
+    input: DeleteProjectionThreadProposedPlansByTurnIdsInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 

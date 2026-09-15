@@ -11,17 +11,29 @@ import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
   waitForSavedEnvironmentRegistryHydration,
+  persistSavedEnvironmentEnabled,
 } from "./catalog";
+
+const writeRegistry = vi.fn(async (_records: readonly PersistedSavedEnvironmentRecord[]) => {});
+const pauseRecord: PersistedSavedEnvironmentRecord = {
+  environmentId: EnvironmentId.make("pause-host"),
+  label: "Pause host",
+  httpBaseUrl: "http://localhost:13775",
+  wsBaseUrl: "ws://localhost:13775",
+  createdAt: "2026-09-15T00:00:00Z",
+  lastConnectedAt: null,
+};
 
 describe("environment runtime catalog stores", () => {
   beforeEach(async () => {
+    writeRegistry.mockReset().mockResolvedValue(undefined);
     vi.stubGlobal("window", {
       nativeApi: {
         persistence: {
           getClientSettings: async () => null,
           setClientSettings: async () => undefined,
           getSavedEnvironmentRegistry: async () => [],
-          setSavedEnvironmentRegistry: async () => undefined,
+          setSavedEnvironmentRegistry: writeRegistry,
           getSavedEnvironmentSecret: async () => null,
           setSavedEnvironmentSecret: async () => true,
           removeSavedEnvironmentSecret: async () => undefined,
@@ -30,6 +42,47 @@ describe("environment runtime catalog stores", () => {
     });
     const { __resetLocalApiForTests } = await import("../../localApi");
     await __resetLocalApiForTests();
+  });
+
+  it("persists pause before publishing it and prevents a queued metadata write from re-enabling it", async () => {
+    const environmentId = pauseRecord.environmentId;
+    useSavedEnvironmentRegistryStore.setState({ byId: { [environmentId]: pauseRecord } });
+    let finishWrite!: () => void;
+    writeRegistry.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = resolve;
+        }),
+    );
+    const pause = persistSavedEnvironmentEnabled(environmentId, false);
+    await vi.waitFor(() => expect(writeRegistry).toHaveBeenCalled());
+    expect(
+      useSavedEnvironmentRegistryStore.getState().byId[environmentId]?.enabled,
+    ).toBeUndefined();
+    useSavedEnvironmentRegistryStore
+      .getState()
+      .markConnected(environmentId, "2026-09-15T00:01:00Z");
+    finishWrite();
+    await pause;
+    await vi.waitFor(() =>
+      expect(writeRegistry).toHaveBeenLastCalledWith([
+        { ...pauseRecord, enabled: false, lastConnectedAt: "2026-09-15T00:01:00Z" },
+      ]),
+    );
+    expect(useSavedEnvironmentRegistryStore.getState().byId[environmentId]?.enabled).toBe(false);
+  });
+
+  it("leaves enabled intent unchanged when persistence fails, then allows retry", async () => {
+    const environmentId = pauseRecord.environmentId;
+    useSavedEnvironmentRegistryStore.setState({ byId: { [environmentId]: pauseRecord } });
+    writeRegistry.mockRejectedValueOnce(new Error("disk full"));
+    await expect(persistSavedEnvironmentEnabled(environmentId, false)).rejects.toThrow("disk full");
+    expect(
+      useSavedEnvironmentRegistryStore.getState().byId[environmentId]?.enabled,
+    ).toBeUndefined();
+    await persistSavedEnvironmentEnabled(environmentId, false);
+    await persistSavedEnvironmentEnabled(environmentId, true);
+    expect(useSavedEnvironmentRegistryStore.getState().byId[environmentId]?.enabled).toBe(true);
   });
 
   afterEach(async () => {
@@ -91,7 +144,12 @@ describe("environment runtime catalog stores", () => {
       }),
     ).not.toThrow();
 
-    expect(errorSpy).toHaveBeenCalledWith("[SAVED_ENVIRONMENTS] persist failed", expect.any(Error));
+    await vi.waitFor(() =>
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[SAVED_ENVIRONMENTS] persist failed",
+        expect.any(Error),
+      ),
+    );
   });
 
   it("does not let stale hydration overwrite records added while hydration is in flight", async () => {

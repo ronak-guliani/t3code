@@ -198,6 +198,8 @@
 
 ## Pairing and environment recovery
 
+- Pausing a saved environment persists client intent without removing credentials or owned data. Gate retries and in-flight connection completions, and exclude paused rows only from presentation; cleanup reconciliation must still see paused projects and threads.
+
 - Pairing input must accept raw credentials and same-origin `/pair` links without sending a URL as a token; reject cross-environment links before exchange, mask input, and clear rejected credentials before evidence capture.
 - Self-test success is scoped to the tested revision and scenarios. Keep file-integrity checks and upload receipts separate from functional assertions; a finished worker turn or a local recording path is not verified PR delivery.
 - Pairing/reconnect is setup and separate smoke coverage, not PR feature evidence. Exercise the feature in a real client and publish its before/after captures with actual observations; do not add a feature-report manifest as a substitute for testing.
@@ -277,6 +279,7 @@
 - Shell-summary refreshes must use targeted aggregate/lifecycle queries (MAX/COUNT/kind-filtered scans), not full-history list + in-JS derive: `NodeSqliteClient` is a single connection behind `Semaphore(1)`, so `Effect` fan-out cannot overlap SELECTs and fewer decoded rows is the only de-serialization lever.
 - Live activity windows are ordered and capped; fast-path new tail appends, but retain the dedupe/sort fallback for duplicate IDs, out-of-order events, and unsorted restored state.
 - Restart hydration must apply the live projector's per-thread activity cap in SQL before decoding payload JSON; full projection histories can exceed the V8 heap even when each live thread is bounded in memory.
+- Revert trimming must delete only trimmed rows in SQL from narrow key reads (message identity columns) or retained-turn sets; never list full histories, delete-all, and serially re-upsert retained rows. Retained rows must be left untouched: fewer decoded payloads plus zero rewrites is the only lever on the single-connection client.
 - Projection bootstrap must prune cursor rows for retired projector names; a renamed projector can otherwise pin a global minimum cursor and replay gigabytes of event history on every startup.
 - Projection bootstrap batches may commit independently, but state-derived attachment cleanup must wait for the entire replay; arbitrary batch boundaries can split a revert from a later event that restores a file reference.
 - Eager background-service layers must retain construction dependencies with `Layer.provideMerge`; a sibling runtime layer is not enough. Keep a full `makeServerLayer` build test because isolated sublayer tests can pass while packaged startup fails with a missing service.

@@ -49,6 +49,19 @@ afterEach(() => {
 });
 
 describe("clientPersistenceStorage", () => {
+  it("round-trips paused intent without deleting or replacing the credential", async () => {
+    getTestWindow();
+    const storage = await import("./clientPersistenceStorage");
+    storage.writeBrowserSavedEnvironmentRegistry([savedRegistryRecord]);
+    storage.writeBrowserSavedEnvironmentSecret(testEnvironmentId, "saved-secret");
+    storage.writeBrowserSavedEnvironmentRegistry([{ ...savedRegistryRecord, enabled: false }]);
+    expect(storage.readBrowserSavedEnvironmentRegistry()[0]?.enabled).toBe(false);
+    expect(storage.readBrowserSavedEnvironmentSecret(testEnvironmentId)).toBe("saved-secret");
+    storage.writeBrowserSavedEnvironmentSecret(testEnvironmentId, "renewed-secret");
+    expect(storage.readBrowserSavedEnvironmentRegistry()[0]?.enabled).toBe(false);
+    storage.writeBrowserSavedEnvironmentRegistry([{ ...savedRegistryRecord, enabled: true }]);
+    expect(storage.readBrowserSavedEnvironmentSecret(testEnvironmentId)).toBe("renewed-secret");
+  });
   it("stores browser secrets inline with the saved environment record", async () => {
     const testWindow = getTestWindow();
     const {

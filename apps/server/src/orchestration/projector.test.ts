@@ -144,6 +144,7 @@ describe("orchestration projector", () => {
           instanceId: "codex",
           model: "gpt-5-codex",
         },
+        nudging: undefined,
         runtimeMode: "full-access",
         pendingRuntimeMode: null,
         interactionMode: "default",
@@ -173,6 +174,7 @@ describe("orchestration projector", () => {
 
   it("persists explicit pullRequest association and leaves peers without one", async () => {
     const now = new Date().toISOString();
+    const later = new Date(Date.parse(now) + 1_000).toISOString();
     const model = createEmptyReadModel(now);
     const pullRequest = {
       number: 42,
@@ -267,6 +269,103 @@ describe("orchestration projector", () => {
     expect(
       afterBranchOnlyMeta.threads.find((thread) => thread.id === "thread-pr")?.pullRequest,
     ).toEqual(pullRequest);
+
+    const supportingPullRequest = {
+      number: 43,
+      title: "Supporting association",
+      url: "https://example.test/pr/43",
+      baseBranch: "main",
+      headBranch: "feature/supporting",
+      state: "open" as const,
+    };
+    const withSupportingLink = await Effect.runPromise(
+      projectEvent(
+        withPeer,
+        makeEvent({
+          sequence: 4,
+          type: "thread.pull-request-linked",
+          aggregateKind: "thread",
+          aggregateId: "thread-pr",
+          occurredAt: now,
+          commandId: "cmd-supporting-link",
+          payload: {
+            threadId: "thread-pr",
+            link: {
+              pullRequest: supportingPullRequest,
+              source: "manual",
+              linkedAt: now,
+            },
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+    const refreshedWorkspacePullRequest = {
+      ...pullRequest,
+      title: "Refreshed durable association",
+    };
+    const afterWorkspaceRefresh = await Effect.runPromise(
+      projectEvent(
+        withSupportingLink,
+        makeEvent({
+          sequence: 5,
+          type: "thread.meta-updated",
+          aggregateKind: "thread",
+          aggregateId: "thread-pr",
+          occurredAt: later,
+          commandId: "cmd-workspace-refresh",
+          payload: {
+            threadId: "thread-pr",
+            pullRequest: refreshedWorkspacePullRequest,
+            updatedAt: later,
+          },
+        }),
+      ),
+    );
+    const refreshedThread = afterWorkspaceRefresh.threads.find(
+      (thread) => thread.id === "thread-pr",
+    );
+    expect(refreshedThread?.pullRequest).toEqual(refreshedWorkspacePullRequest);
+    expect(refreshedThread?.pullRequests).toEqual([
+      {
+        pullRequest: refreshedWorkspacePullRequest,
+        source: "created",
+        linkedAt: now,
+      },
+      {
+        pullRequest: supportingPullRequest,
+        source: "manual",
+        linkedAt: now,
+      },
+    ]);
+
+    const afterWorkspaceUnlink = await Effect.runPromise(
+      projectEvent(
+        afterWorkspaceRefresh,
+        makeEvent({
+          sequence: 6,
+          type: "thread.pull-request-unlinked",
+          aggregateKind: "thread",
+          aggregateId: "thread-pr",
+          occurredAt: new Date(later).toISOString(),
+          commandId: "cmd-workspace-unlink",
+          payload: {
+            threadId: "thread-pr",
+            pullRequest: refreshedWorkspacePullRequest,
+            updatedAt: new Date(later).toISOString(),
+          },
+        }),
+      ),
+    );
+    const unlinkedThread = afterWorkspaceUnlink.threads.find((thread) => thread.id === "thread-pr");
+    expect(unlinkedThread?.pullRequest).toBeNull();
+    expect(unlinkedThread?.pullRequests).toEqual([
+      {
+        pullRequest: supportingPullRequest,
+        source: "manual",
+        linkedAt: now,
+      },
+    ]);
   });
 
   it("recovers explicit PR review provenance from legacy thread.created events", async () => {
@@ -319,6 +418,13 @@ describe("orchestration projector", () => {
       headBranch: "feature/pr-146",
       state: null,
     });
+    expect(projected.threads[0]?.pullRequests).toEqual([
+      {
+        pullRequest: projected.threads[0]?.pullRequest,
+        source: "recovered",
+        linkedAt: now,
+      },
+    ]);
   });
 
   it("fast-appends ordered activities while preserving the 500-item cap", async () => {

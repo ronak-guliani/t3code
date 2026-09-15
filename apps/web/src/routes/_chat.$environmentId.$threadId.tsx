@@ -1,4 +1,4 @@
-import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, retainSearchParams, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo } from "react";
 
 import { ChatSplitArea } from "../components/ChatSplitArea";
@@ -20,6 +20,7 @@ import {
 import { SidebarInset } from "~/components/ui/sidebar";
 import { Skeleton } from "~/components/ui/skeleton";
 import { RootRouteErrorView } from "./__root";
+import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
 
 function ChatThreadRouteView() {
   const navigate = useNavigate();
@@ -38,6 +39,9 @@ function ChatThreadRouteView() {
     [threadRef?.environmentId, threadRef?.threadId],
   );
   const environmentId = threadRef?.environmentId ?? null;
+  const isPaused = useSavedEnvironmentRegistryStore(
+    (state) => environmentId !== null && state.byId[environmentId]?.enabled === false,
+  );
   const threadId = threadRef?.threadId ?? null;
   const bootstrapComplete = useStore(
     (store) => selectEnvironmentState(store, environmentId).bootstrapComplete,
@@ -91,6 +95,21 @@ function ChatThreadRouteView() {
     }
     finalizePromotedDraftThreadByRef(threadRef);
   }, [draftThread?.promotedTo, serverThreadStarted, threadRef]);
+
+  if (isPaused) {
+    return (
+      <SidebarInset className="items-center justify-center gap-3 p-8">
+        <h2 className="text-lg font-medium">Environment paused on this device</h2>
+        <p className="max-w-md text-center text-sm text-muted-foreground">
+          Your saved connection and drafts are kept. Work on the server continues. Switch this
+          environment on in Connections to resume.
+        </p>
+        <Link to="/settings/connections" className="text-sm underline">
+          Open Connections
+        </Link>
+      </SidebarInset>
+    );
+  }
 
   if (!threadRef || !routeTarget || (bootstrapComplete && !routeThreadExists)) {
     return null;
