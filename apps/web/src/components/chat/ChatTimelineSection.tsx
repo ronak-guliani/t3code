@@ -38,7 +38,10 @@ import {
   type TurnDiffSummary,
 } from "../../types";
 import { revokeBlobPreviewUrl } from "../../pendingTurnStore";
-import { deriveMessagesTimelineRows } from "./MessagesTimeline.logic";
+import {
+  deriveMessagesTimelineRows,
+  deriveRevertTurnCountByUserMessageId,
+} from "./MessagesTimeline.logic";
 import { MessagesTimeline, type AssistantResponseMeta } from "./MessagesTimeline";
 import { FindInChatBar } from "./FindInChatBar";
 import { useChatFind, type ChatFindController } from "./useChatFind";
@@ -426,41 +429,15 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       return metadata;
     }, [threadActivities]);
 
-    const revertTurnCountByUserMessageId = useMemo(() => {
-      // Single forward pass: each user message resolves against the first
-      // following assistant message carrying a numeric checkpoint turn count.
-      // Assistants without summaries are skipped; a non-numeric summary or a
-      // following user message discards the pending user. Equivalent to the
-      // previous nested scan in O(n) instead of O(n^2).
-      const byUserMessageId = new Map<MessageId, number>();
-      let pendingUserMessageId: MessageId | null = null;
-      for (const entry of timelineEntries) {
-        if (!entry || entry.kind !== "message") {
-          continue;
-        }
-        if (entry.message.role === "user") {
-          pendingUserMessageId = entry.message.id;
-          continue;
-        }
-        if (pendingUserMessageId === null) {
-          continue;
-        }
-        const summary = turnDiffSummaryByAssistantMessageId.get(entry.message.id);
-        if (!summary) {
-          continue;
-        }
-        const turnCount =
-          summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId];
-        const userMessageId = pendingUserMessageId;
-        pendingUserMessageId = null;
-        if (typeof turnCount !== "number") {
-          continue;
-        }
-        byUserMessageId.set(userMessageId, Math.max(0, turnCount - 1));
-      }
-
-      return byUserMessageId;
-    }, [inferredCheckpointTurnCountByTurnId, timelineEntries, turnDiffSummaryByAssistantMessageId]);
+    const revertTurnCountByUserMessageId = useMemo(
+      () =>
+        deriveRevertTurnCountByUserMessageId({
+          timelineEntries,
+          turnDiffSummaryByAssistantMessageId,
+          inferredCheckpointTurnCountByTurnId,
+        }),
+      [inferredCheckpointTurnCountByTurnId, timelineEntries, turnDiffSummaryByAssistantMessageId],
+    );
 
     const latestTurnHasToolActivity = useMemo(
       () => hasToolActivityForTurn(threadActivities, latestTurn?.turnId),
