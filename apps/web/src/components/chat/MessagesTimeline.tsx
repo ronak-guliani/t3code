@@ -423,10 +423,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
   // One shared 1s tick for live labels while work is in flight; idle lists
   // pay no interval. Consumers read TimelineNowMsCtx instead of owning timers.
+  // Refresh immediately when the ticker enables so resumed work does not show
+  // a stale elapsed time for up to a second.
   const [nowMs, setNowMs] = useState(() => Date.now());
   const ticking = isWorking || activeTurnInProgress;
   useEffect(() => {
     if (!ticking) return;
+    setNowMs(Date.now());
     const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, [ticking]);
@@ -761,22 +764,52 @@ const TimelineRowContent = memo(function TimelineRowContent(props: { row: Timeli
   );
 });
 
-// Streaming-subscribed assistant body. Only this subtree (plus live work
-// groups) re-renders on per-chunk TimelineStreamingCtx updates; the memoized
-// outer row shell stays settled for every other row.
+// Per-row streaming bridge. This is the only assistant subtree subscribed to
+// TimelineStreamingCtx: it projects the row's own slice (liveness boolean +
+// its turn's meta entry) and renders the memoized presentational below. The
+// bridge itself re-renders per chunk, but that render is two map lookups;
+// settled rows pass referentially-stable props (stable row identity from
+// useStableRows, stable meta entry identity for untouched turns), so the
+// heavy presentational subtree bails out via memo.
 const AssistantMessageContent = memo(function AssistantMessageContent({
   row,
 }: {
   row: Extract<MessagesTimelineRow, { kind: "message" }>;
 }) {
-  const ctx = use(TimelineRowCtx);
   const streaming = use(TimelineStreamingCtx);
-  const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
   const assistantTurnStillInProgress =
     streaming.activeTurnInProgress &&
     streaming.activeTurnId !== null &&
     streaming.activeTurnId !== undefined &&
     row.message.turnId === streaming.activeTurnId;
+  const responseMeta =
+    !row.showAssistantTerminalMetadata ||
+    row.message.streaming ||
+    assistantTurnStillInProgress ||
+    row.message.turnId === null ||
+    row.message.turnId === undefined
+      ? undefined
+      : streaming.responseMetaByTurnId.get(row.message.turnId);
+  return (
+    <AssistantMessagePresentational
+      row={row}
+      assistantTurnStillInProgress={assistantTurnStillInProgress}
+      responseMeta={responseMeta}
+    />
+  );
+});
+
+const AssistantMessagePresentational = memo(function AssistantMessagePresentational({
+  row,
+  assistantTurnStillInProgress,
+  responseMeta,
+}: {
+  row: Extract<MessagesTimelineRow, { kind: "message" }>;
+  assistantTurnStillInProgress: boolean;
+  responseMeta: AssistantResponseMeta | undefined;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
   const assistantCopyState = resolveAssistantMessageCopyState({
     text: row.message.text ?? null,
     showCopyButton: row.showAssistantCopyButton,
@@ -787,14 +820,6 @@ const AssistantMessageContent = memo(function AssistantMessageContent({
     !row.message.streaming &&
     !assistantTurnStillInProgress &&
     ctx.copilotResumeCommand;
-  const responseMeta =
-    !row.showAssistantTerminalMetadata ||
-    row.message.streaming ||
-    assistantTurnStillInProgress ||
-    row.message.turnId === null ||
-    row.message.turnId === undefined
-      ? undefined
-      : streaming.responseMetaByTurnId.get(row.message.turnId);
   return (
     <>
       <div className="min-w-0 px-1 py-0.5">
@@ -1085,8 +1110,33 @@ const WorkGroupSection = memo(function WorkGroupSection({
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
   shouldAutoCollapse: boolean;
 }) {
-  const { workspaceRoot, workGroupExpansion } = use(TimelineRowCtx);
+  // Per-row bridge over the streaming context. activeTurnInProgress/Id only
+  // change on turn transitions (not per chunk), so forwarding them as props
+  // keeps the memoized presentational below bailed out across chunks while
+  // preserving exact liveness semantics.
   const { activeTurnInProgress, activeTurnId } = use(TimelineStreamingCtx);
+  return (
+    <WorkGroupPresentational
+      groupedEntries={groupedEntries}
+      shouldAutoCollapse={shouldAutoCollapse}
+      activeTurnInProgress={activeTurnInProgress}
+      activeTurnId={activeTurnId}
+    />
+  );
+});
+
+const WorkGroupPresentational = memo(function WorkGroupPresentational({
+  groupedEntries,
+  shouldAutoCollapse,
+  activeTurnInProgress,
+  activeTurnId,
+}: {
+  groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
+  shouldAutoCollapse: boolean;
+  activeTurnInProgress: boolean;
+  activeTurnId: TurnId | null | undefined;
+}) {
+  const { workspaceRoot, workGroupExpansion } = use(TimelineRowCtx);
   const onlyToolEntries =
     groupedEntries.length > 0 && groupedEntries.every((entry) => entry.tone === "tool");
   const groupKey = groupedEntries[0]?.stableId ?? groupedEntries[0]?.id ?? "";
