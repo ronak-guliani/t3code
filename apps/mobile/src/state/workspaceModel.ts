@@ -1,5 +1,5 @@
 import { type EnvironmentShellSummary } from "@t3tools/client-runtime/state/shell";
-import { type NetworkStatus } from "@t3tools/client-runtime/connection";
+import { type ConnectionRouteKind, type NetworkStatus } from "@t3tools/client-runtime/connection";
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { EnvironmentId, ServerConfig } from "@t3tools/contracts";
 
@@ -14,6 +14,8 @@ export interface WorkspaceEnvironment {
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
   readonly connectionErrorTraceId: string | null;
+  readonly routeKind?: ConnectionRouteKind | null;
+  readonly routeSwitching?: boolean;
 }
 
 export interface WorkspaceState {
@@ -43,6 +45,8 @@ export function projectWorkspaceEnvironment(
     connectionState: environment.connection.phase,
     connectionError: environment.connection.error,
     connectionErrorTraceId: environment.connection.traceId,
+    routeKind: environment.connection.routeKind,
+    routeSwitching: environment.connection.routeSwitching,
   };
 }
 
