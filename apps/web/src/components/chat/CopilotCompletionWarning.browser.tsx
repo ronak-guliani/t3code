@@ -16,12 +16,15 @@ const warning = (id: string): OrchestrationThreadActivity => ({
 });
 
 describe("CopilotCompletionWarning", () => {
-  it("surfaces late activity", async () => {
+  it("shows a badge and reveals details on hover", async () => {
     await render(<CopilotCompletionWarning activities={[warning("first")]} />);
+    const badge = page.getByRole("alert");
+    await expect.element(badge).toHaveTextContent("Copilot continued after completion");
+    await expect.element(badge).not.toHaveTextContent("Review the session before sending");
+    await badge.hover();
     await expect
-      .element(page.getByRole("alert"))
-      .toHaveTextContent("Review the session before sending");
-    await expect.element(page.getByRole("alert")).toHaveTextContent("completion checkpoint");
+      .element(page.getByText("Review the session before sending"))
+      .toHaveTextContent("completion checkpoint");
   });
 
   it("does not label other warnings or malformed payloads as Copilot completion uncertainty", async () => {
