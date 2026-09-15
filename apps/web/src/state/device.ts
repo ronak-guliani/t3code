@@ -11,6 +11,8 @@ import type {
   DeviceDetail,
   DeviceDetailInput,
   DeviceListInput,
+  DeviceHostSummary,
+  SshDeviceHostConfig,
   DeviceOpenInput,
   DeviceServiceState,
   DeviceSession,
@@ -36,10 +38,11 @@ function deviceClient(environmentId: EnvironmentId): WsRpcClient["device"] {
   return connection.client.device;
 }
 
-function command<Input, A>(
+function command<Input, A, E = never>(
   label: string,
   execute: (client: WsRpcClient["device"], input: Input) => Promise<A>,
-): AtomCommand<Target<Input>, A, never> {
+  failure: (cause: unknown) => Cause.Cause<E> = Cause.die,
+): AtomCommand<Target<Input>, A, E> {
   const scheduler = createAtomCommandScheduler();
   return {
     label,
@@ -48,13 +51,13 @@ function command<Input, A>(
         registry,
         { mode: "serial", key: ({ environmentId }) => environmentId },
         target,
-        async (): Promise<AtomCommandResult<A, never>> => {
+        async (): Promise<AtomCommandResult<A, E>> => {
           try {
-            return AsyncResult.success<A, never>(
+            return AsyncResult.success<A, E>(
               await execute(deviceClient(target.environmentId), target.input),
             );
           } catch (cause) {
-            return AsyncResult.failure<A, never>(Cause.die(cause));
+            return AsyncResult.failure<A, E>(failure(cause));
           }
         },
       ),
@@ -77,6 +80,11 @@ const stateFamily = Atom.family((environmentId: EnvironmentId) =>
 );
 
 export const deviceEnvironment = {
+  testHost: command<SshDeviceHostConfig, DeviceHostSummary, Error>(
+    "environment-data:device:testHost",
+    (client, input) => client.testHost(input),
+    (cause) => Cause.fail(cause instanceof Error ? cause : new Error(String(cause))),
+  ),
   configure: command<DeviceConfigureInput, DeviceServiceState>(
     "environment-data:device:configure",
     (client, input) => client.configure(input),

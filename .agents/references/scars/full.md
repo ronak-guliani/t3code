@@ -199,6 +199,9 @@
 
 ## Pairing and environment recovery
 
+- SSH device startup must lock per host, not across the service; keep settings revocation coordinated with those locks so a slow remote install cannot block healthy hosts or publish readiness after access is disabled.
+- Saved-environment settings controls must consume incremental `settingsUpdated` events, not only config snapshots. Treat failed SSH probes as expected errors rendered per environment, not atom-command defects.
+
 - Pausing a saved environment persists client intent without removing credentials or owned data. Gate retries and in-flight connection completions, and exclude paused rows only from presentation; cleanup reconciliation must still see paused projects and threads.
 
 - Pairing input must accept raw credentials and same-origin `/pair` links without sending a URL as a token; reject cross-environment links before exchange, mask input, and clear rejected credentials before evidence capture.
