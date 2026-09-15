@@ -127,8 +127,18 @@ function finish(id: string): Extract<OrchestrationCommand, { type: "thread.turn.
   };
 }
 
-async function apply(readModel: OrchestrationReadModel, command: OrchestrationCommand) {
-  const result = await Effect.runPromise(decideOrchestrationCommand({ readModel, command }));
+async function apply(
+  readModel: OrchestrationReadModel,
+  command: OrchestrationCommand,
+  recordedReportOutcome?: "accepted" | "stale",
+) {
+  const result = await Effect.runPromise(
+    decideOrchestrationCommand({
+      readModel,
+      command,
+      ...(recordedReportOutcome !== undefined ? { recordedReportOutcome } : {}),
+    }),
+  );
   const events = (Array.isArray(result) ? result : [result]).map((event, index) =>
     decodeEvent({
       ...event,
@@ -971,10 +981,10 @@ describe("child nudging", () => {
     // The auto-completion batches into the existing nudge turn instead of
     // waking the parent twice.
     expect(state.threads[0]!.queuedTurns).toHaveLength(1);
-    const { readModel, events } = await apply(state, first);
+    const { readModel, events } = await apply(state, first, "accepted");
     expect(events.map((event) => event.type)).toEqual(["thread.activity-appended"]);
     expect(events[0]).toMatchObject({
-      payload: { activity: { payload: { dispatchVerdict: "already-recorded" } } },
+      payload: { activity: { payload: { dispatchVerdict: "accepted" } } },
     });
     expect(readModel.threads[0]!.queuedTurns).toHaveLength(1);
   });
@@ -997,11 +1007,46 @@ describe("child nudging", () => {
       },
       createdAt: finished,
     });
-    const delegation = bound.readModel.threads[1]!.nudging?.delegation!;
+    const delegation = bound.readModel.threads[1]!.nudging!.delegation!;
     expect(delegation.dispatchTurnId).toBe("turn-a");
     expect(delegation.dispatchId).toBeDefined();
     expect(delegation.dispatchSequence).toBe(1);
     expect(delegation.completedAt).toBeNull();
+  });
+
+  it("freezes assignment and dispatch identity on the provider turn-start event", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-a",
+        dispatchSequence: 1,
+        dispatchTurnId: null,
+      },
+    };
+    const result = await apply(model(child), {
+      type: "thread.turn.start",
+      commandId: CommandId.make("start-delegated-turn"),
+      threadId: child.id,
+      message: {
+        messageId: MessageId.make("delegated-message"),
+        role: "user",
+        text: "Continue delegated work",
+        attachments: [],
+      },
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      createdAt: finished,
+    });
+    const event = result.events.find(
+      (candidate) => candidate.type === "thread.turn-start-requested",
+    );
+    expect(event).toMatchObject({
+      payload: {
+        delegationAssignmentId: child.nudging!.delegation!.assignmentId,
+        delegationDispatchId: "dispatch-a",
+      },
+    });
   });
 
   it("mints a fresh dispatch when the bound turn is superseded, preserving replays", async () => {
@@ -1024,7 +1069,7 @@ describe("child nudging", () => {
         createdAt: finished,
       })
     ).readModel;
-    const first = state.threads[1]!.nudging?.delegation!;
+    const first = state.threads[1]!.nudging!.delegation!;
     state = (
       await apply(state, {
         type: "thread.session.set",
@@ -1043,7 +1088,7 @@ describe("child nudging", () => {
         createdAt: finished,
       })
     ).readModel;
-    const second = state.threads[1]!.nudging?.delegation!;
+    const second = state.threads[1]!.nudging!.delegation!;
     expect(second.dispatchTurnId).toBe("turn-b");
     expect(second.dispatchId).not.toBe(first.dispatchId);
     expect(second.dispatchSequence).toBe((first.dispatchSequence ?? 0) + 1);
@@ -1220,27 +1265,151 @@ describe("child nudging", () => {
       },
     };
     const state = model(child);
+    const replacement = {
+      type: "thread.dispatch.replace" as const,
+      threadId: child.id,
+      queuedTurnId: QueuedTurnId.make("replacement"),
+      message: {
+        messageId: MessageId.make("replacement"),
+        role: "user" as const,
+        text: "Retry with a fresh execution",
+        attachments: [],
+      },
+      runtimeMode: "approval-required" as const,
+      interactionMode: "default" as const,
+      createdAt: finished,
+    };
     await expect(
       apply(state, {
-        type: "thread.dispatch.replace",
+        ...replacement,
         commandId: CommandId.make("replace-wrong"),
-        threadId: child.id,
         expectedDispatchId: "dispatch-9",
-        createdAt: finished,
       }),
     ).rejects.toThrow("changed since this replacement was prepared");
     const { readModel } = await apply(state, {
-      type: "thread.dispatch.replace",
+      ...replacement,
       commandId: CommandId.make("replace-ok"),
-      threadId: child.id,
       expectedDispatchId: "dispatch-1",
-      createdAt: finished,
     });
-    const delegation = readModel.threads[1]!.nudging?.delegation!;
+    const delegation = readModel.threads[1]!.nudging!.delegation!;
     expect(delegation.dispatchId).not.toBe("dispatch-1");
     expect(delegation.dispatchSequence).toBe(2);
     expect(delegation.dispatchTurnId).toBeNull();
     expect(delegation.assignmentId).toBe("assignment-child");
+  });
+
+  it("retires an old decision answer when a provider turn replaces its execution", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-1",
+        dispatchSequence: 1,
+        dispatchTurnId: TurnId.make("turn-a"),
+      },
+    };
+    let state = (
+      await apply(model(child), {
+        ...report("child", "decision-needed"),
+        reportId: "decision-a",
+        assignmentId: child.nudging.delegation!.assignmentId,
+        dispatchId: "dispatch-1",
+        originTurnId: TurnId.make("turn-a"),
+        decision: { question: "Which approach?" },
+      })
+    ).readModel;
+    const decision = state.threads[1]!.nudging!.delegation!.decision!;
+    state = (
+      await apply(state, {
+        type: "thread.queued-turn.create",
+        commandId: CommandId.make("answer-a"),
+        threadId: child.id,
+        queuedTurnId: QueuedTurnId.make("answer-a"),
+        assignmentId: decision.assignmentId,
+        respondToReportId: decision.id,
+        message: {
+          messageId: MessageId.make("answer-a"),
+          role: "user",
+          text: "Use A",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: finished,
+      })
+    ).readModel;
+    const replaced = await apply(state, {
+      type: "thread.session.set",
+      commandId: CommandId.make("replace-with-turn-b"),
+      threadId: child.id,
+      session: {
+        threadId: child.id,
+        status: "running",
+        providerName: "copilot",
+        providerInstanceId: ProviderInstanceId.make("copilot"),
+        runtimeMode: "approval-required",
+        activeTurnId: TurnId.make("turn-b"),
+        lastError: null,
+        updatedAt: finished,
+      },
+      createdAt: finished,
+    });
+    expect(replaced.events.map((event) => event.type)).toContain("thread.queued-turn-deleted");
+    expect(replaced.readModel.threads[1]!.queuedTurns).toEqual([]);
+    expect(replaced.readModel.threads[1]!.nudging?.delegation).toMatchObject({
+      decision: null,
+      pendingResponse: null,
+      dispatchReason: "replaced",
+      dispatchTurnId: "turn-b",
+    });
+  });
+
+  it("filters a queued parent report after its dispatch generation is replaced", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-1",
+        dispatchSequence: 1,
+        dispatchTurnId: TurnId.make("turn-a"),
+      },
+    };
+    let state = (
+      await apply(model(child), {
+        ...report("child", "important-update"),
+        assignmentId: child.nudging.delegation!.assignmentId,
+        dispatchId: "dispatch-1",
+        originTurnId: TurnId.make("turn-a"),
+      })
+    ).readModel;
+    const queuedTurnId = state.threads[0]!.queuedTurns![0]!.id;
+    state = (
+      await apply(state, {
+        type: "thread.session.set",
+        commandId: CommandId.make("replace-before-parent-delivery"),
+        threadId: child.id,
+        session: {
+          threadId: child.id,
+          status: "running",
+          providerName: "copilot",
+          providerInstanceId: ProviderInstanceId.make("copilot"),
+          runtimeMode: "approval-required",
+          activeTurnId: TurnId.make("turn-b"),
+          lastError: null,
+          updatedAt: finished,
+        },
+        createdAt: finished,
+      })
+    ).readModel;
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("deliver-obsolete-parent-report"),
+      threadId: parentId,
+      queuedTurnId,
+      dispatchedAt: finished,
+    });
+    expect(delivered.readModel.threads[0]!.messages).toEqual([]);
+    expect(delivered.readModel.threads[0]!.queuedTurns).toEqual([]);
   });
 
   it("counts an existing unsequenced execution before replacement", async () => {
@@ -1257,6 +1426,15 @@ describe("child nudging", () => {
       commandId: CommandId.make("replace-unsequenced"),
       threadId: child.id,
       expectedDispatchId: "dispatch-legacy",
+      queuedTurnId: QueuedTurnId.make("replacement-unsequenced"),
+      message: {
+        messageId: MessageId.make("replacement-unsequenced"),
+        role: "user",
+        text: "Retry",
+        attachments: [],
+      },
+      runtimeMode: "approval-required",
+      interactionMode: "default",
       createdAt: finished,
     });
     expect(readModel.threads[1]!.nudging?.delegation).toMatchObject({

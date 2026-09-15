@@ -98,6 +98,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       repositoryIdentity: true,
       connectionProbe: true,
       pullRequests: true,
+      threadPullRequestLinking: true,
       threadSettlement: true,
       threadSnooze: true,
       threadPinning: true,

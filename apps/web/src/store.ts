@@ -31,6 +31,10 @@ import type { ThreadId, TurnId } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { resolveModelSlugForProvider } from "@t3tools/shared/model";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
+import {
+  sameThreadPullRequest,
+  upsertLegacyThreadPullRequestLink,
+} from "@t3tools/shared/threadPullRequests";
 import { create } from "zustand";
 import {
   type ChatMessage,
@@ -344,6 +348,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
+    pullRequests: thread.pullRequests ?? [],
     ...(thread.reviewSnapshot !== undefined ? { reviewSnapshot: thread.reviewSnapshot } : {}),
     ...(thread.reviewResult !== undefined ? { reviewResult: thread.reviewResult } : {}),
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
@@ -386,6 +391,7 @@ function mapThreadShell(
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
+    pullRequests: thread.pullRequests ?? [],
   };
   const session = thread.session ? mapSession(thread.session) : null;
   const turnState: ThreadTurnState = {
@@ -411,6 +417,7 @@ function mapThreadShell(
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
+    pullRequests: thread.pullRequests ?? [],
     latestUserMessageAt: thread.latestUserMessageAt,
     latestChildNotificationAt: thread.latestChildNotificationAt ?? null,
     hasPendingApprovals: thread.hasPendingApprovals,
@@ -451,6 +458,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
+    pullRequests: thread.pullRequests ?? [],
   };
 }
 
@@ -470,6 +478,23 @@ function sourceProposedPlansEqual(
   if (left === right) return true;
   if (left === undefined || right === undefined) return false;
   return left.threadId === right.threadId && left.planId === right.planId;
+}
+
+function threadPullRequestLinksEqual(
+  left: ReadonlyArray<NonNullable<ThreadShell["pullRequests"]>[number]>,
+  right: ReadonlyArray<NonNullable<ThreadShell["pullRequests"]>[number]>,
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((leftLink, index) => {
+    const rightLink = right[index];
+    return (
+      rightLink !== undefined &&
+      leftLink.source === rightLink.source &&
+      leftLink.linkedAt === rightLink.linkedAt &&
+      pullRequestsEqual(leftLink.pullRequest, rightLink.pullRequest)
+    );
+  });
 }
 
 function latestTurnsEqual(
@@ -555,6 +580,7 @@ function sidebarThreadSummariesEqual(
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
     pullRequestsEqual(left.pullRequest, right.pullRequest) &&
+    threadPullRequestLinksEqual(left.pullRequests ?? [], right.pullRequests ?? []) &&
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.latestChildNotificationAt === right.latestChildNotificationAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
@@ -653,6 +679,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
     pullRequestsEqual(left.pullRequest, right.pullRequest) &&
+    threadPullRequestLinksEqual(left.pullRequests ?? [], right.pullRequests ?? []) &&
     resumeCursorsEqual(left.nudging, right.nudging)
   );
 }
@@ -2029,6 +2056,72 @@ function applyEnvironmentOrchestrationEvent(
         ...(event.payload.pullRequest !== undefined
           ? { pullRequest: event.payload.pullRequest }
           : {}),
+        ...(event.payload.pullRequest !== undefined && event.payload.pullRequest !== null
+          ? {
+              pullRequests: upsertLegacyThreadPullRequestLink(
+                thread.pullRequests,
+                event.payload.pullRequest,
+                event.payload.updatedAt,
+                event.payload.pullRequestSource,
+              ),
+            }
+          : {}),
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.pull-request-linked":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const existingLinks = thread.pullRequests ?? [];
+        const existingIndex = existingLinks.findIndex((link) =>
+          sameThreadPullRequest(link.pullRequest, event.payload.link.pullRequest),
+        );
+        const pullRequests =
+          existingIndex < 0
+            ? [...existingLinks, event.payload.link]
+            : existingLinks.map((link, index) =>
+                index === existingIndex ? event.payload.link : link,
+              );
+        return {
+          ...thread,
+          pullRequests,
+          updatedAt: event.payload.updatedAt,
+        };
+      });
+
+    case "thread.pull-request-unlinked":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        ...(thread.pullRequest !== undefined
+          ? {
+              pullRequest:
+                thread.pullRequest === null ||
+                sameThreadPullRequest(thread.pullRequest, event.payload.pullRequest)
+                  ? null
+                  : thread.pullRequest,
+            }
+          : {}),
+        pullRequests: (thread.pullRequests ?? []).filter(
+          (link) => !sameThreadPullRequest(link.pullRequest, event.payload.pullRequest),
+        ),
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.pull-request-rekeyed":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        ...(thread.pullRequest !== undefined &&
+        thread.pullRequest !== null &&
+        sameThreadPullRequest(thread.pullRequest, event.payload.previousPullRequest)
+          ? { pullRequest: event.payload.link.pullRequest }
+          : {}),
+        pullRequests: [
+          ...(thread.pullRequests ?? []).filter(
+            (link) =>
+              !sameThreadPullRequest(link.pullRequest, event.payload.previousPullRequest) &&
+              !sameThreadPullRequest(link.pullRequest, event.payload.link.pullRequest),
+          ),
+          event.payload.link,
+        ],
         updatedAt: event.payload.updatedAt,
       }));
 
