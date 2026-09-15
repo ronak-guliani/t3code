@@ -1757,6 +1757,9 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
           "create_nested_threads",
           "send_to_thread",
           "associate_pull_request",
+          "link_pull_request",
+          "unlink_pull_request",
+          "list_thread_pull_requests",
         ],
       );
       assert.deepEqual(

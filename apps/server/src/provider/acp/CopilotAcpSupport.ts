@@ -97,6 +97,9 @@ const COPILOT_MCP_TOOLSETS = [
   "create_isolated_workspace",
   "switch_workspace",
   "associate_pull_request",
+  "link_pull_request",
+  "unlink_pull_request",
+  "list_thread_pull_requests",
 ] as const;
 type CopilotAcpRuntimeCopilotSettings = {
   readonly binaryPath: CopilotSettings["binaryPath"];
@@ -222,6 +225,9 @@ export function buildCopilotMcpServerOptions(
   toolsetNames.add("assign_to_thread");
   toolsetNames.add("set_child_wait");
   toolsetNames.add("associate_pull_request");
+  toolsetNames.add("link_pull_request");
+  toolsetNames.add("unlink_pull_request");
+  toolsetNames.add("list_thread_pull_requests");
   return {
     cwd,
     toolsets: toolsetNames,
