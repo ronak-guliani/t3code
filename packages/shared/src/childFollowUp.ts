@@ -64,11 +64,19 @@ export function evaluateChildFollowUp(
     const child = children.get(report.childThreadId);
     if (child && child.parentThreadId !== undefined && child.parentThreadId !== parent.id)
       return false;
-    if (child?.nudging?.delegation && child.nudging.delegation.assignmentId !== report.assignmentId)
+    const delegation = child?.nudging?.delegation;
+    if (
+      delegation &&
+      (delegation.assignmentId !== report.assignmentId ||
+        (report.dispatchId !== undefined &&
+          delegation.dispatchId !== undefined &&
+          report.dispatchId !== delegation.dispatchId))
+    ) {
       return false;
+    }
     if (report.kind !== "decision-needed") return true;
     // Legacy reports did not persist decision state; do not silently discard them.
-    const decision = child?.nudging?.delegation?.decision;
+    const decision = delegation?.decision;
     return decision === undefined || decision?.id === report.id;
   });
   if (updates.length === 0) return { updates, reason: null, dueAt: null };

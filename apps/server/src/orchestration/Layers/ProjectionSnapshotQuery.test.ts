@@ -444,6 +444,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           branch: null,
           worktreePath: null,
           pullRequest: null,
+          pullRequests: [],
           reviewResult: null,
           latestTurn: {
             turnId: asTurnId("turn-1"),
@@ -575,6 +576,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           branch: null,
           worktreePath: null,
           pullRequest: null,
+          pullRequests: [],
           latestTurn: {
             turnId: asTurnId("turn-1"),
             state: "running",

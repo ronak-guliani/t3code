@@ -7,6 +7,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  GitManagerError,
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
 import {
@@ -34,7 +35,11 @@ import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
-import { ThreadDeletionReactorLive } from "./ThreadDeletionReactor.ts";
+import {
+  groupOpenPullRequestAssociationRefreshes,
+  resolvePullRequestFromCwds,
+  ThreadDeletionReactorLive,
+} from "./ThreadDeletionReactor.ts";
 import { findCanonicalActiveWorktreeOwner } from "../worktreeOwnership.ts";
 import {
   logCleanupCauseUnlessInterrupted,
@@ -185,6 +190,104 @@ describe("logCleanupCauseUnlessInterrupted", () => {
   });
 
   describe("ThreadDeletionReactorLive", () => {
+    it("groups the same PR identity across worktrees into one resolver lookup", () => {
+      const timestamp = "2026-09-14T12:00:00.000Z";
+      const project = {
+        id: ProjectId.make("project-1"),
+        title: "Refresh grouping",
+        workspaceRoot: "/tmp/project",
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        deletedAt: null,
+      } satisfies OrchestrationReadModel["projects"][number];
+      const pullRequest = {
+        number: 42,
+        title: "Shared PR",
+        url: "https://github.com/acme/example/pull/42",
+        baseBranch: "main",
+        headBranch: "feature/shared",
+        state: "open" as const,
+      };
+      const readModel = {
+        ...makeReadModel([
+          {
+            ...makeThread("thread-refresh-a", "/tmp/worktree-a"),
+            projectId: project.id,
+            pullRequests: [{ pullRequest, source: "manual", linkedAt: timestamp }],
+          },
+          {
+            ...makeThread("thread-refresh-b", "/tmp/worktree-b"),
+            projectId: project.id,
+            pullRequests: [{ pullRequest, source: "manual", linkedAt: timestamp }],
+          },
+        ]),
+        projects: [project],
+      };
+
+      const groups = groupOpenPullRequestAssociationRefreshes(readModel);
+      let resolveCalls = 0;
+      for (const group of groups) {
+        resolveCalls += 1;
+        expect(group.pullRequest.url).toBe(pullRequest.url);
+      }
+
+      expect(resolveCalls).toBe(1);
+      expect(groups[0]?.cwds).toEqual(["/tmp/worktree-a", "/tmp/project", "/tmp/worktree-b"]);
+      expect(groups[0]?.candidates).toHaveLength(2);
+    });
+
+    it("falls back to another checkout when the first grouped refresh cwd fails", async () => {
+      const calls: string[] = [];
+      const pullRequest = {
+        number: 42,
+        title: "Shared PR",
+        url: "https://github.com/acme/example/pull/42",
+        baseBranch: "main",
+        headBranch: "feature/shared",
+        state: "open" as const,
+      };
+
+      const resolved = await Effect.runPromise(
+        resolvePullRequestFromCwds(
+          ["/tmp/unhealthy-worktree", "/tmp/healthy-worktree"],
+          pullRequest.url,
+          ({ cwd }) => {
+            calls.push(cwd);
+            return cwd === "/tmp/unhealthy-worktree"
+              ? Effect.fail(
+                  new GitManagerError({
+                    operation: "test.resolvePullRequest",
+                    detail: "checkout unavailable",
+                  }),
+                )
+              : Effect.succeed({ pullRequest });
+          },
+        ),
+      );
+
+      expect(calls).toEqual(["/tmp/unhealthy-worktree", "/tmp/healthy-worktree"]);
+      expect(resolved).toEqual({ pullRequest });
+    });
+
+    it("does not swallow resolver defects while trying fallback checkouts", async () => {
+      const calls: string[] = [];
+      const exit = await Effect.runPromiseExit(
+        resolvePullRequestFromCwds(
+          ["/tmp/defective-worktree", "/tmp/healthy-worktree"],
+          "https://github.com/acme/example/pull/42",
+          ({ cwd }) => {
+            calls.push(cwd);
+            return Effect.die("resolver defect");
+          },
+        ),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(calls).toEqual(["/tmp/defective-worktree"]);
+    });
+
     it("removes a clean archived merged-PR worktree from a disposable Git repository", async () => {
       const fixtureRoot = await mkdtemp(path.join(tmpdir(), "t3-cleanup-reactor-"));
       const repositoryRoot = path.join(fixtureRoot, "repo");

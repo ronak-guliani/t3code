@@ -53,6 +53,7 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
+import { appendT3ExecutionContext } from "../executionContext.ts";
 import { mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
 import {
   collectSessionConfigOptionValues,
@@ -1833,13 +1834,8 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
         }
 
         const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
-        if (input.input?.trim()) {
-          promptParts.push({ type: "text", text: input.input.trim() });
-        }
-        promptParts.push({
-          type: "text",
-          text: `T3 execution context: when calling report_to_parent during this turn, pass originTurnId="${turnId}" exactly. This value identifies this execution and must not be replaced with a later turn ID.`,
-        });
+        const promptText = appendT3ExecutionContext(input.input, input, turnId);
+        if (promptText) promptParts.push({ type: "text", text: promptText });
         if (input.attachments && input.attachments.length > 0) {
           for (const attachment of input.attachments) {
             const attachmentPath = resolveAttachmentPath({

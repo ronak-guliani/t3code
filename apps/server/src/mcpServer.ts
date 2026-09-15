@@ -99,6 +99,9 @@ const TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
   ["assign_to_thread", "assign_to_thread"],
   ["set_child_wait", "set_child_wait"],
   ["associate_pull_request", "associate_pull_request"],
+  ["link_pull_request", "link_pull_request"],
+  ["unlink_pull_request", "unlink_pull_request"],
+  ["list_thread_pull_requests", "list_thread_pull_requests"],
 ] as const);
 
 function writeJsonResponse(response: ServerResponse, status: number, payload: unknown): void {
@@ -1657,6 +1660,7 @@ async function reportToParentTool(
   const summary = asString(args.summary)?.trim();
   const kind = args.kind;
   const assignmentId = asString(args.assignmentId)?.trim();
+  const dispatchId = asString(args.dispatchId)?.trim();
   const decision = args.decision === undefined ? undefined : decodeChildDecision(args.decision);
   if (args.canContinue !== undefined && typeof args.canContinue !== "boolean") {
     throw new Error("canContinue must be a boolean");
@@ -1666,10 +1670,12 @@ async function reportToParentTool(
     reportId.length > 200 ||
     !summary ||
     summary.length > 4000 ||
-    (kind !== "progress" && kind !== "decision-needed" && kind !== "important-update")
+    (kind !== "progress" && kind !== "decision-needed" && kind !== "important-update") ||
+    !assignmentId ||
+    !dispatchId
   ) {
     throw new Error(
-      "report_to_parent requires reportId (1-200 characters), summary (1-4000 characters), and a valid kind",
+      "report_to_parent requires reportId (1-200 characters), summary (1-4000 characters), assignmentId, dispatchId, and a valid kind",
     );
   }
   const originTurnId = asString(args.originTurnId)?.trim();
@@ -1686,7 +1692,10 @@ async function reportToParentTool(
     kind,
     "--report-id",
     reportId,
-    ...(assignmentId ? ["--assignment-id", assignmentId] : []),
+    "--assignment-id",
+    assignmentId,
+    "--dispatch-id",
+    dispatchId,
     ...(decision ? ["--decision", JSON.stringify(decision)] : []),
     ...(args.canContinue !== undefined ? ["--can-continue", String(args.canContinue)] : []),
     "--turn-id",
@@ -1708,6 +1717,7 @@ async function associatePullRequestTool(
   if (!options.threadId) {
     throw new Error("associate_pull_request is only available from a T3 provider session");
   }
+
   const reference = asString(args.reference)?.trim();
   if (!reference) {
     throw new Error("associate_pull_request requires a pull request URL or number");
@@ -1721,6 +1731,62 @@ async function associatePullRequestTool(
     reference,
     "--cwd",
     options.cwd,
+    ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
+  ]);
+  return result.stdout.trim();
+}
+
+async function linkPullRequestTool(
+  options: McpServeOptions,
+  args: Record<string, unknown>,
+): Promise<string> {
+  if (!options.threadId)
+    throw new Error("link_pull_request is only available from a T3 provider session");
+  const reference = asString(args.reference)?.trim();
+  if (!reference) throw new Error("link_pull_request requires a pull request URL or number");
+  const result = await runCommand(options.cwd, options.cliCommand, [
+    ...(options.cliArgsPrefix ?? []),
+    "chat",
+    "link-pr",
+    options.threadId,
+    reference,
+    "--cwd",
+    options.cwd,
+    ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
+  ]);
+  return result.stdout.trim();
+}
+
+async function unlinkPullRequestTool(
+  options: McpServeOptions,
+  args: Record<string, unknown>,
+): Promise<string> {
+  if (!options.threadId)
+    throw new Error("unlink_pull_request is only available from a T3 provider session");
+  const reference = asString(args.reference)?.trim();
+  if (!reference) throw new Error("unlink_pull_request requires a pull request URL or number");
+  const result = await runCommand(options.cwd, options.cliCommand, [
+    ...(options.cliArgsPrefix ?? []),
+    "chat",
+    "unlink-pr",
+    options.threadId,
+    reference,
+    "--cwd",
+    options.cwd,
+    ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
+  ]);
+  return result.stdout.trim();
+}
+
+async function listThreadPullRequestsTool(options: McpServeOptions): Promise<string> {
+  if (!options.threadId) {
+    throw new Error("list_thread_pull_requests is only available from a T3 provider session");
+  }
+  const result = await runCommand(options.cwd, options.cliCommand, [
+    ...(options.cliArgsPrefix ?? []),
+    "chat",
+    "list-prs",
+    options.threadId,
     ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
   ]);
   return result.stdout.trim();
@@ -1953,6 +2019,11 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
           description:
             "The assignment that produced this report. Required for reused children; never substitute a newer assignment.",
         },
+        dispatchId: {
+          type: "string",
+          description:
+            "The immutable execution dispatch ID provided in the current prompt. Pass it exactly; never infer it from current thread state.",
+        },
         decision: {
           type: "object",
           properties: {
@@ -1973,7 +2044,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
             "The immutable T3 execution turn ID provided in the current prompt. Pass it exactly; never infer it from current thread state.",
         },
       },
-      required: ["reportId", "kind", "summary", "originTurnId"],
+      required: ["reportId", "kind", "summary", "assignmentId", "dispatchId", "originTurnId"],
     },
   },
   {
@@ -2181,6 +2252,41 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
       required: ["reference"],
     },
   },
+  {
+    name: "link_pull_request",
+    description:
+      "Link a pull request to the authenticated current T3 thread without changing its workspace pull request. The operation is idempotent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reference: {
+          type: "string",
+          description: "Pull request URL or number.",
+        },
+      },
+      required: ["reference"],
+    },
+  },
+  {
+    name: "unlink_pull_request",
+    description:
+      "Unlink a pull request from the authenticated current T3 thread. The operation is idempotent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reference: {
+          type: "string",
+          description: "Pull request URL or number.",
+        },
+      },
+      required: ["reference"],
+    },
+  },
+  {
+    name: "list_thread_pull_requests",
+    description: "List all pull requests linked to the authenticated current T3 thread.",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
 
 function availableTools(toolsets: ReadonlySet<string>): ReadonlyArray<McpTool> {
@@ -2237,6 +2343,12 @@ async function callTool(options: McpServeOptions, name: string, args: Record<str
       return await setChildWaitTool(options, args);
     case "associate_pull_request":
       return await associatePullRequestTool(options, args);
+    case "link_pull_request":
+      return await linkPullRequestTool(options, args);
+    case "unlink_pull_request":
+      return await unlinkPullRequestTool(options, args);
+    case "list_thread_pull_requests":
+      return await listThreadPullRequestsTool(options);
     default:
       throw new Error(`Unsupported MCP tool: ${name}`);
   }
