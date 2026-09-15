@@ -1379,23 +1379,30 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
     }),
     [markdownAnchor, markdownCode, markdownPre],
   );
+  // Stable plugin array: react-markdown re-tokenizes when the array identity
+  // changes, so factory plugins must be memoized across streaming renders.
+  // threadRef is a stable context object upstream; depend on its primitives.
+  const remarkPlugins = useMemo(
+    () => [
+      remarkGfm,
+      remarkClassifyChatLinks({
+        ...(threadRef ? { environmentId: threadRef.environmentId } : {}),
+        baseOrigin:
+          typeof window === "undefined"
+            ? "http://localhost"
+            : (window.location?.origin ?? "http://localhost"),
+        trustedOrigins,
+        githubReferences,
+      }),
+      remarkTagInlineCode(cwd),
+    ],
+    [cwd, githubReferences, threadRef?.environmentId, trustedOrigins],
+  );
 
   return (
     <div className="chat-markdown w-full min-w-0 leading-relaxed text-foreground/80">
       <ReactMarkdown
-        remarkPlugins={[
-          remarkGfm,
-          remarkClassifyChatLinks({
-            ...(threadRef ? { environmentId: threadRef.environmentId } : {}),
-            baseOrigin:
-              typeof window === "undefined"
-                ? "http://localhost"
-                : (window.location?.origin ?? "http://localhost"),
-            trustedOrigins,
-            githubReferences,
-          }),
-          remarkTagInlineCode(cwd),
-        ]}
+        remarkPlugins={remarkPlugins}
         components={markdownComponents}
         urlTransform={markdownUrlTransform}
       >

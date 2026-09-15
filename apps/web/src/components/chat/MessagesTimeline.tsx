@@ -118,11 +118,8 @@ import { selectSidebarThreadSummaryByRef, useStore, type AppState } from "../../
 // ---------------------------------------------------------------------------
 
 interface TimelineRowSharedState {
-  activeTurnInProgress: boolean;
-  activeTurnId: TurnId | null | undefined;
   isWorking: boolean;
   isRevertingCheckpoint: boolean;
-  completionSummary: string | null;
   copilotResumeCommand: string | null;
   timestampFormat: TimestampFormat;
   messagePreviewLineLimits: MessagePreviewLineLimits;
@@ -134,16 +131,31 @@ interface TimelineRowSharedState {
   highlightedMessageId: MessageId | null;
   activeThreadEnvironmentId: EnvironmentId;
   activeThreadId: ThreadId;
+  threadRef: { environmentId: EnvironmentId; threadId: ThreadId };
   onRevertUserMessage: (messageId: MessageId) => void;
   onForkAssistantMessage?: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string, scope?: TurnDiffScope) => void;
   reviewOutputMessageIds: ReadonlySet<string>;
-  responseMetaByTurnId: ReadonlyMap<TurnId, AssistantResponseMeta>;
   workGroupExpansion: Map<string, boolean>;
 }
 
+// Streaming-hot state, updated on every chunk. Kept in a separate context so
+// rows that only read TimelineRowCtx (user messages, settled rows) do not
+// re-render when a token arrives. Only the active assistant row and live
+// work-group sections subscribe to this.
+interface TimelineStreamingState {
+  activeTurnInProgress: boolean;
+  activeTurnId: TurnId | null | undefined;
+  completionSummary: string | null;
+  responseMetaByTurnId: ReadonlyMap<TurnId, AssistantResponseMeta>;
+}
+
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
+const TimelineStreamingCtx = createContext<TimelineStreamingState>(null!);
+// Single shared 1s ticker for live labels. One interval at the list root
+// replaces N per-row setIntervals (one per working/streaming row).
+const TimelineNowMsCtx = createContext<number | null>(null);
 const EMPTY_RESPONSE_META_BY_TURN_ID = new Map<TurnId, AssistantResponseMeta>();
 
 // ---------------------------------------------------------------------------
@@ -345,15 +357,28 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     };
   }, [listRef, onIsAtEndChange, rows.length]);
 
-  // Memoised context value — only changes on state transitions, NOT on
-  // every streaming chunk. Callbacks from ChatView are useCallback-stable.
-  const sharedState = useMemo<TimelineRowSharedState>(
+  // Memoised context values. Streaming-hot fields live in TimelineStreamingCtx
+  // so settled rows subscribed only to TimelineRowCtx skip per-chunk renders.
+  // Callbacks from ChatView are useCallback-stable.
+  // Stable thread ref object: ChatMarkdown keys its component/plugin memos on
+  // this identity, so a fresh inline object per row would defeat them.
+  const threadRef = useMemo(
+    () => ({ environmentId: activeThreadEnvironmentId, threadId: activeThreadId }),
+    [activeThreadEnvironmentId, activeThreadId],
+  );
+  const streamingState = useMemo<TimelineStreamingState>(
     () => ({
       activeTurnInProgress,
       activeTurnId: activeTurnId ?? null,
+      completionSummary,
+      responseMetaByTurnId,
+    }),
+    [activeTurnInProgress, activeTurnId, completionSummary, responseMetaByTurnId],
+  );
+  const sharedState = useMemo<TimelineRowSharedState>(
+    () => ({
       isWorking,
       isRevertingCheckpoint,
-      completionSummary,
       copilotResumeCommand,
       timestampFormat,
       messagePreviewLineLimits,
@@ -361,24 +386,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       markdownCwd,
       resolvedTheme,
       workspaceRoot,
-      activeThreadEnvironmentId,
-      activeThreadId,
       activeChatFindRowId,
       highlightedMessageId,
+      activeThreadEnvironmentId,
+      activeThreadId,
+      threadRef,
       onRevertUserMessage,
       ...(onForkAssistantMessage ? { onForkAssistantMessage } : {}),
       onImageExpand,
       onOpenTurnDiff,
       reviewOutputMessageIds,
-      responseMetaByTurnId,
       workGroupExpansion,
     }),
     [
-      activeTurnInProgress,
-      activeTurnId,
       isWorking,
       isRevertingCheckpoint,
-      completionSummary,
       copilotResumeCommand,
       timestampFormat,
       messagePreviewLineLimits,
@@ -386,19 +408,31 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       markdownCwd,
       resolvedTheme,
       workspaceRoot,
-      activeThreadEnvironmentId,
-      activeThreadId,
       activeChatFindRowId,
       highlightedMessageId,
+      activeThreadEnvironmentId,
+      activeThreadId,
+      threadRef,
       onRevertUserMessage,
       onForkAssistantMessage,
       onImageExpand,
       onOpenTurnDiff,
       reviewOutputMessageIds,
-      responseMetaByTurnId,
       workGroupExpansion,
     ],
   );
+  // One shared 1s tick for live labels while work is in flight; idle lists
+  // pay no interval. Consumers read TimelineNowMsCtx instead of owning timers.
+  // Refresh immediately when the ticker enables so resumed work does not show
+  // a stale elapsed time for up to a second.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const ticking = isWorking || activeTurnInProgress;
+  useEffect(() => {
+    if (!ticking) return;
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [ticking]);
 
   // Stable renderItem — no closure deps. Row components read shared state
   // from TimelineRowCtx, which propagates through LegendList's memo.
@@ -435,6 +469,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     return <div className="h-3 sm:h-4" />;
   }, [hasMoreOlder, loadingOlder, onLoadOlder]);
 
+  const listFooter = useMemo(() => <div className="h-3 sm:h-4" />, []);
+
   if (rows.length === 0 && !isWorking) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -447,23 +483,27 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   return (
     <TimelineRowCtx.Provider value={sharedState}>
-      <LegendList<MessagesTimelineRow>
-        ref={listRef}
-        data={rows}
-        keyExtractor={keyExtractor}
-        renderItem={renderItem}
-        estimatedItemSize={90}
-        initialScrollAtEnd
-        maintainScrollAtEnd
-        maintainScrollAtEndThreshold={0.1}
-        maintainVisibleContentPosition
-        onScroll={handleScroll}
-        onStartReached={handleStartReached}
-        onStartReachedThreshold={0.05}
-        className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
-        ListHeaderComponent={listHeader}
-        ListFooterComponent={<div className="h-3 sm:h-4" />}
-      />
+      <TimelineStreamingCtx.Provider value={streamingState}>
+        <TimelineNowMsCtx.Provider value={ticking ? nowMs : null}>
+          <LegendList<MessagesTimelineRow>
+            ref={listRef}
+            data={rows}
+            keyExtractor={keyExtractor}
+            renderItem={renderItem}
+            estimatedItemSize={90}
+            initialScrollAtEnd
+            maintainScrollAtEnd
+            maintainScrollAtEndThreshold={0.1}
+            maintainVisibleContentPosition
+            onScroll={handleScroll}
+            onStartReached={handleStartReached}
+            onStartReachedThreshold={0.05}
+            className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
+            ListHeaderComponent={listHeader}
+            ListFooterComponent={listFooter}
+          />
+        </TimelineNowMsCtx.Provider>
+      </TimelineStreamingCtx.Provider>
     </TimelineRowCtx.Provider>
   );
 });
@@ -481,7 +521,7 @@ type TimelineMessage = Extract<TimelineEntry, { kind: "message" }>["message"];
 type TimelineWorkEntry = Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"][number];
 type TimelineRow = MessagesTimelineRow;
 
-function TimelineRowContent(props: { row: TimelineRow }) {
+const TimelineRowContent = memo(function TimelineRowContent(props: { row: TimelineRow }) {
   const ctx = use(TimelineRowCtx);
   const { row } = props;
 
@@ -631,115 +671,9 @@ function TimelineRowContent(props: { row: TimelineRow }) {
           );
         })()}
 
-      {row.kind === "message" &&
-        row.message.role === "assistant" &&
-        (() => {
-          const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
-          const assistantTurnStillInProgress =
-            ctx.activeTurnInProgress &&
-            ctx.activeTurnId !== null &&
-            ctx.activeTurnId !== undefined &&
-            row.message.turnId === ctx.activeTurnId;
-          const assistantCopyState = resolveAssistantMessageCopyState({
-            text: row.message.text ?? null,
-            showCopyButton: row.showAssistantCopyButton,
-            streaming: row.message.streaming || assistantTurnStillInProgress,
-          });
-          const showCopilotResumeCommand =
-            row.showAssistantTerminalMetadata &&
-            !row.message.streaming &&
-            !assistantTurnStillInProgress &&
-            ctx.copilotResumeCommand;
-          const responseMeta =
-            !row.showAssistantTerminalMetadata ||
-            row.message.streaming ||
-            assistantTurnStillInProgress ||
-            row.message.turnId === null ||
-            row.message.turnId === undefined
-              ? undefined
-              : ctx.responseMetaByTurnId.get(row.message.turnId);
-          return (
-            <>
-              <div className="min-w-0 px-1 py-0.5">
-                {ctx.reviewOutputMessageIds.has(row.id) ? null : (
-                  <ChatMarkdown
-                    text={messageText}
-                    cwd={ctx.markdownCwd}
-                    isStreaming={Boolean(row.message.streaming)}
-                    threadRef={{
-                      environmentId: ctx.activeThreadEnvironmentId,
-                      threadId: ctx.activeThreadId,
-                    }}
-                  />
-                )}
-                <AssistantChangedFilesSection
-                  turnSummary={row.assistantTurnDiffSummary}
-                  resolvedTheme={ctx.resolvedTheme}
-                  onOpenTurnDiff={ctx.onOpenTurnDiff}
-                  workspaceRoot={ctx.workspaceRoot}
-                />
-                <div className="mt-1.5 flex min-w-0 items-center gap-2">
-                  {responseMeta ? (
-                    <span className="shrink-0 text-[length:var(--app-status-line-font-size)] text-muted-foreground/50">
-                      {formatAssistantResponseMeta(responseMeta)}
-                    </span>
-                  ) : null}
-                  <p className="shrink-0 text-[length:var(--app-status-line-font-size)] text-muted-foreground/30">
-                    {row.message.streaming ? (
-                      <LiveMessageMeta
-                        createdAt={row.message.createdAt}
-                        durationStart={row.durationStart}
-                        timestampFormat={ctx.timestampFormat}
-                      />
-                    ) : (
-                      formatMessageMeta(
-                        row.message.createdAt,
-                        formatElapsed(row.durationStart, row.message.completedAt),
-                        ctx.timestampFormat,
-                      )
-                    )}
-                  </p>
-                  {showCopilotResumeCommand ? (
-                    <span
-                      className="min-w-0 truncate font-mono text-[length:var(--app-status-line-font-size)] text-muted-foreground/30 opacity-0 transition-opacity duration-200 group-hover/assistant:opacity-100"
-                      title={showCopilotResumeCommand}
-                    >
-                      {showCopilotResumeCommand}
-                    </span>
-                  ) : null}
-                  {assistantCopyState.visible ? (
-                    <div className="flex items-center opacity-0 transition-opacity duration-200  group-hover/assistant:opacity-100">
-                      <MessageCopyButton
-                        text={assistantCopyState.text ?? ""}
-                        size="icon-xs"
-                        variant="outline"
-                        className="border-border/50 bg-background/35 text-muted-foreground/45 shadow-none hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70"
-                      />
-                    </div>
-                  ) : null}
-                  {ctx.onForkAssistantMessage &&
-                  row.showAssistantTerminalMetadata &&
-                  !row.message.streaming &&
-                  !assistantTurnStillInProgress ? (
-                    <div className="flex items-center opacity-0 transition-opacity duration-200 group-hover/assistant:opacity-100">
-                      <Button
-                        type="button"
-                        size="icon-xs"
-                        variant="outline"
-                        className="border-border/50 bg-background/35 text-muted-foreground/45 shadow-none hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70"
-                        title="Fork chat"
-                        aria-label="Fork chat from this response"
-                        onClick={() => ctx.onForkAssistantMessage?.(row.message.id)}
-                      >
-                        <GitForkIcon className="size-3" />
-                      </Button>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            </>
-          );
-        })()}
+      {row.kind === "message" && row.message.role === "assistant" && (
+        <AssistantMessageContent row={row} />
+      )}
 
       {row.kind === "message" && row.message.role === "system" && (
         <div className="mx-1 flex items-start gap-2 rounded-lg border border-border/50 bg-muted/25 px-3 py-2 text-sm text-muted-foreground">
@@ -828,7 +762,143 @@ function TimelineRowContent(props: { row: TimelineRow }) {
       )}
     </div>
   );
-}
+});
+
+// Per-row streaming bridge. This is the only assistant subtree subscribed to
+// TimelineStreamingCtx: it projects the row's own slice (liveness boolean +
+// its turn's meta entry) and renders the memoized presentational below. The
+// bridge itself re-renders per chunk, but that render is two map lookups;
+// settled rows pass referentially-stable props (stable row identity from
+// useStableRows, stable meta entry identity for untouched turns), so the
+// heavy presentational subtree bails out via memo.
+const AssistantMessageContent = memo(function AssistantMessageContent({
+  row,
+}: {
+  row: Extract<MessagesTimelineRow, { kind: "message" }>;
+}) {
+  const streaming = use(TimelineStreamingCtx);
+  const assistantTurnStillInProgress =
+    streaming.activeTurnInProgress &&
+    streaming.activeTurnId !== null &&
+    streaming.activeTurnId !== undefined &&
+    row.message.turnId === streaming.activeTurnId;
+  const responseMeta =
+    !row.showAssistantTerminalMetadata ||
+    row.message.streaming ||
+    assistantTurnStillInProgress ||
+    row.message.turnId === null ||
+    row.message.turnId === undefined
+      ? undefined
+      : streaming.responseMetaByTurnId.get(row.message.turnId);
+  return (
+    <AssistantMessagePresentational
+      row={row}
+      assistantTurnStillInProgress={assistantTurnStillInProgress}
+      responseMeta={responseMeta}
+    />
+  );
+});
+
+const AssistantMessagePresentational = memo(function AssistantMessagePresentational({
+  row,
+  assistantTurnStillInProgress,
+  responseMeta,
+}: {
+  row: Extract<MessagesTimelineRow, { kind: "message" }>;
+  assistantTurnStillInProgress: boolean;
+  responseMeta: AssistantResponseMeta | undefined;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const assistantCopyState = resolveAssistantMessageCopyState({
+    text: row.message.text ?? null,
+    showCopyButton: row.showAssistantCopyButton,
+    streaming: row.message.streaming || assistantTurnStillInProgress,
+  });
+  const showCopilotResumeCommand =
+    row.showAssistantTerminalMetadata &&
+    !row.message.streaming &&
+    !assistantTurnStillInProgress &&
+    ctx.copilotResumeCommand;
+  return (
+    <>
+      <div className="min-w-0 px-1 py-0.5">
+        {ctx.reviewOutputMessageIds.has(row.id) ? null : (
+          <ChatMarkdown
+            text={messageText}
+            cwd={ctx.markdownCwd}
+            isStreaming={Boolean(row.message.streaming)}
+            threadRef={ctx.threadRef}
+          />
+        )}
+        <AssistantChangedFilesSection
+          turnSummary={row.assistantTurnDiffSummary}
+          resolvedTheme={ctx.resolvedTheme}
+          onOpenTurnDiff={ctx.onOpenTurnDiff}
+          workspaceRoot={ctx.workspaceRoot}
+        />
+        <div className="mt-1.5 flex min-w-0 items-center gap-2">
+          {responseMeta ? (
+            <span className="shrink-0 text-[length:var(--app-status-line-font-size)] text-muted-foreground/50">
+              {formatAssistantResponseMeta(responseMeta)}
+            </span>
+          ) : null}
+          <p className="shrink-0 text-[length:var(--app-status-line-font-size)] text-muted-foreground/30">
+            {row.message.streaming ? (
+              <LiveMessageMeta
+                createdAt={row.message.createdAt}
+                durationStart={row.durationStart}
+                timestampFormat={ctx.timestampFormat}
+              />
+            ) : (
+              formatMessageMeta(
+                row.message.createdAt,
+                formatElapsed(row.durationStart, row.message.completedAt),
+                ctx.timestampFormat,
+              )
+            )}
+          </p>
+          {showCopilotResumeCommand ? (
+            <span
+              className="min-w-0 truncate font-mono text-[length:var(--app-status-line-font-size)] text-muted-foreground/30 opacity-0 transition-opacity duration-200 group-hover/assistant:opacity-100"
+              title={showCopilotResumeCommand}
+            >
+              {showCopilotResumeCommand}
+            </span>
+          ) : null}
+          {assistantCopyState.visible ? (
+            <div className="flex items-center opacity-0 transition-opacity duration-200  group-hover/assistant:opacity-100">
+              <MessageCopyButton
+                text={assistantCopyState.text ?? ""}
+                size="icon-xs"
+                variant="outline"
+                className="border-border/50 bg-background/35 text-muted-foreground/45 shadow-none hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70"
+              />
+            </div>
+          ) : null}
+          {ctx.onForkAssistantMessage &&
+          row.showAssistantTerminalMetadata &&
+          !row.message.streaming &&
+          !assistantTurnStillInProgress ? (
+            <div className="flex items-center opacity-0 transition-opacity duration-200 group-hover/assistant:opacity-100">
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="outline"
+                className="border-border/50 bg-background/35 text-muted-foreground/45 shadow-none hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70"
+                title="Fork chat"
+                aria-label="Fork chat from this response"
+                onClick={() => ctx.onForkAssistantMessage?.(row.message.id)}
+              >
+                <GitForkIcon className="size-3" />
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </>
+  );
+});
 
 function formatAssistantResponseMeta(meta: AssistantResponseMeta): string {
   const parts = [
@@ -934,11 +1004,17 @@ function PullRequestMonitorProvenance({
 }
 
 function formatCompactNumber(value: number): string {
-  return new Intl.NumberFormat("en", {
-    notation: value >= 1_000 ? "compact" : "standard",
-    maximumFractionDigits: 1,
-  }).format(value);
+  return (value >= 1_000 ? COMPACT_NUMBER_FORMAT : STANDARD_NUMBER_FORMAT).format(value);
 }
+
+const STANDARD_NUMBER_FORMAT = new Intl.NumberFormat("en", {
+  notation: "standard",
+  maximumFractionDigits: 1,
+});
+const COMPACT_NUMBER_FORMAT = new Intl.NumberFormat("en", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
 
 function UserMessagePreviewAnnotationCard(props: {
   annotation: ParsedPreviewAnnotation;
@@ -993,18 +1069,14 @@ function UserMessagePreviewAnnotationCard(props: {
 }
 
 // ---------------------------------------------------------------------------
-// Self-ticking components — bypass LegendList memoisation entirely.
-// Each owns a `nowMs` state value consumed in the render output so the
-// React Compiler cannot elide the re-render as a no-op.
+// Live labels read the single shared 1s tick from TimelineNowMsCtx. When the
+// list is idle the context is null and labels render settled text with no
+// interval. This replaces N per-row setIntervals with one list-level timer.
 // ---------------------------------------------------------------------------
 
 /** Live "Working for Xs" label. */
 function WorkingTimer({ createdAt }: { createdAt: string }) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [createdAt]);
+  const nowMs = use(TimelineNowMsCtx) ?? Date.now();
   return <>{formatWorkingTimer(createdAt, new Date(nowMs).toISOString()) ?? "0s"}</>;
 }
 
@@ -1018,11 +1090,7 @@ function LiveMessageMeta({
   durationStart: string | null | undefined;
   timestampFormat: TimestampFormat;
 }) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [durationStart]);
+  const nowMs = use(TimelineNowMsCtx) ?? Date.now();
   const elapsed = durationStart
     ? formatElapsed(durationStart, new Date(nowMs).toISOString())
     : null;
@@ -1042,8 +1110,33 @@ const WorkGroupSection = memo(function WorkGroupSection({
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
   shouldAutoCollapse: boolean;
 }) {
-  const { workspaceRoot, activeTurnInProgress, activeTurnId, workGroupExpansion } =
-    use(TimelineRowCtx);
+  // Per-row bridge over the streaming context. activeTurnInProgress/Id only
+  // change on turn transitions (not per chunk), so forwarding them as props
+  // keeps the memoized presentational below bailed out across chunks while
+  // preserving exact liveness semantics.
+  const { activeTurnInProgress, activeTurnId } = use(TimelineStreamingCtx);
+  return (
+    <WorkGroupPresentational
+      groupedEntries={groupedEntries}
+      shouldAutoCollapse={shouldAutoCollapse}
+      activeTurnInProgress={activeTurnInProgress}
+      activeTurnId={activeTurnId}
+    />
+  );
+});
+
+const WorkGroupPresentational = memo(function WorkGroupPresentational({
+  groupedEntries,
+  shouldAutoCollapse,
+  activeTurnInProgress,
+  activeTurnId,
+}: {
+  groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
+  shouldAutoCollapse: boolean;
+  activeTurnInProgress: boolean;
+  activeTurnId: TurnId | null | undefined;
+}) {
+  const { workspaceRoot, workGroupExpansion } = use(TimelineRowCtx);
   const onlyToolEntries =
     groupedEntries.length > 0 && groupedEntries.every((entry) => entry.tone === "tool");
   const groupKey = groupedEntries[0]?.stableId ?? groupedEntries[0]?.id ?? "";
