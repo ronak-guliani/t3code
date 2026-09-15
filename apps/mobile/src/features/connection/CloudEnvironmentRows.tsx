@@ -289,6 +289,8 @@ function ConnectedCloudEnvironmentRow(props: {
         onValueChange={props.onSetEnabled}
         onToggleError={props.onToggleError}
         statusText={props.environment.isEnabled ? undefined : "Off on this device"}
+        routeKind={props.environment.routeKind}
+        routeSwitching={props.environment.routeSwitching}
         value={props.environment.isEnabled}
       />
     </Pressable>
@@ -347,18 +349,30 @@ function CloudEnvironmentRowShell(props: {
   readonly onToggleError: () => void;
   readonly onValueChange: (enabled: boolean) => void;
   readonly statusText?: string;
+  readonly routeKind?: ConnectedEnvironmentSummary["routeKind"];
+  readonly routeSwitching?: boolean;
   readonly value: boolean;
 }) {
   const isRetrying =
     props.connectionState === "connecting" || props.connectionState === "reconnecting";
   const shouldPulse = isRetrying;
-  const statusText =
+  const connectionStatus =
     props.statusText ??
     connectionStatusText({
       phase: props.connectionState,
       error: props.connectionError,
       traceId: props.connectionErrorTraceId,
+      routeSwitching: props.routeSwitching,
     });
+  const routeText =
+    props.routeKind === "lan"
+      ? "LAN"
+      : props.routeKind === "tailscale"
+        ? "Tailscale"
+        : props.routeKind === "relay"
+          ? "Relay"
+          : null;
+  const statusText = routeText ? `${routeText} · ${connectionStatus}` : connectionStatus;
   const statusClassName = props.connectionError
     ? "text-adaptive-rose-500-400"
     : "text-foreground-muted";

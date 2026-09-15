@@ -28,6 +28,7 @@ import {
 import * as RpcSession from "../rpc/session.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
+import * as ConnectionPromotion from "./promotion.ts";
 
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
 const CONNECTION_ESTABLISHMENT_TIMEOUT = "15 seconds";
@@ -44,6 +45,7 @@ type SupervisorSignal =
   | { readonly _tag: "ConnectRequested" }
   | { readonly _tag: "DisconnectRequested" }
   | { readonly _tag: "RetryRequested" }
+  | { readonly _tag: "PromotionReady" }
   | { readonly _tag: "NetworkChanged"; readonly network: NetworkStatus }
   | { readonly _tag: "Wakeup"; readonly reason: ConnectionWakeups.ConnectionWakeup };
 
@@ -224,6 +226,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
   const connectivity = yield* Connectivity.Connectivity;
   const driver = yield* ConnectionDriver.ConnectionDriver;
   const wakeups = yield* ConnectionWakeups.ConnectionWakeups;
+  const promotion = yield* Effect.serviceOption(ConnectionPromotion.ConnectionPromotion);
+  const clearPromotion = (environmentId: typeof target.environmentId) =>
+    Option.isSome(promotion) ? promotion.value.clear(environmentId) : Effect.void;
   const initialIntent: SupervisorIntent = {
     desired: options?.initiallyDesired ?? false,
     network: yield* connectivity.status,
@@ -380,6 +385,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
           }
           if (next.reason === "credentials-changed" && target._tag === "RelayConnectionTarget") {
             yield* logManagedRelayAccountChange;
+            yield* clearPromotion(target.environmentId);
             return;
           }
           break;
@@ -389,12 +395,46 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
 
   const monitorConnectedLease = Effect.fnUntraced(function* (
     lease: ConnectionDriver.EnvironmentConnectionLease,
+    connection: PreparedConnection,
   ) {
+    const promotionFiber =
+      target._tag === "RelayConnectionTarget" &&
+      Option.isSome(promotion) &&
+      promotion.value.enabled &&
+      connection.routeKind === "relay"
+        ? yield* Effect.gen(function* () {
+            let promoted = false;
+            while (!promoted) {
+              const discovered = yield* promotion.value.discover(connection);
+              if (Option.isSome(discovered)) {
+                promoted = true;
+                yield* signal({ _tag: "PromotionReady" });
+              } else {
+                yield* Effect.sleep(yield* ConnectionPromotion.promotionRediscoveryDelay);
+              }
+            }
+          }).pipe(Effect.forkChild)
+        : null;
     for (;;) {
       const next = yield* Queue.take(signals);
       switch (next._tag) {
         case "DisconnectRequested":
         case "RetryRequested":
+          return;
+        case "PromotionReady":
+          yield* setState({
+            desired: true,
+            network: (yield* Ref.get(intent)).network,
+            phase: "connecting",
+            stage: "preparing",
+            attempt: 0,
+            generation: 0,
+            lastFailure: null,
+            retryAt: null,
+            routeKind: "relay",
+            routeSwitching: true,
+          });
+          if (promotionFiber !== null) yield* Fiber.interrupt(promotionFiber);
           return;
         case "NetworkChanged":
           if (next.network === "offline") {
@@ -404,6 +444,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         case "Wakeup":
           if (next.reason === "credentials-changed" && target._tag === "RelayConnectionTarget") {
             yield* logManagedRelayAccountChange;
+            yield* clearPromotion(target.environmentId);
             return;
           }
           if (next.reason === "application-active-reconnect") {
@@ -573,7 +614,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
           }),
         ),
       ),
-      monitorConnectedLease(active.lease).pipe(
+      monitorConnectedLease(active.lease, active.lease.prepared).pipe(
         Effect.mapError(
           (error): TracedAttemptFailure => ({
             error,
@@ -621,6 +662,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     for (;;) {
       const currentIntent = yield* Ref.get(intent);
       if (!currentIntent.desired) {
+        yield* clearPromotion(target.environmentId);
         failureCount = 0;
         latestFailure = null;
         pendingRetry = Option.none();
@@ -749,7 +791,12 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     Effect.withSpan("EnvironmentSupervisor.retryNow"),
   );
 
-  yield* Effect.addFinalizer(() => Queue.shutdown(signals).pipe(Effect.andThen(clearLease)));
+  yield* Effect.addFinalizer(() =>
+    clearPromotion(target.environmentId).pipe(
+      Effect.andThen(Queue.shutdown(signals)),
+      Effect.andThen(clearLease),
+    ),
+  );
 
   return EnvironmentSupervisor.of({
     target,
@@ -771,4 +818,5 @@ export const layer = (
   | Connectivity.Connectivity
   | ConnectionDriver.ConnectionDriver
   | ConnectionWakeups.ConnectionWakeups
+  | ConnectionPromotion.ConnectionPromotion
 > => Layer.effect(EnvironmentSupervisor, make(entry, options));
