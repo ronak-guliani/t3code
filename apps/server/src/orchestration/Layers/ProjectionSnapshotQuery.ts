@@ -2312,6 +2312,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   branch: row.branch,
                   worktreePath: row.worktreePath,
                   pullRequest: row.pullRequest ?? null,
+                  pullRequests: row.pullRequests,
                   ...(row.reviewSnapshot !== null && row.reviewSnapshot !== undefined
                     ? { reviewSnapshot: row.reviewSnapshot }
                     : {}),

@@ -793,7 +793,7 @@ export const withLiveOrchestrationClient = <A, E, R>(
           withRpcClientForSocketUrl(accountTarget.nextSocketUrl, (client) =>
             run({
               getSnapshot: client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({}),
-              getArchivedSnapshot: client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({}),
+              getArchivedSnapshot: client[ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]({}),
               dispatch: (command) => client[ORCHESTRATION_WS_METHODS.dispatchCommand](command),
             }),
           ),
@@ -825,7 +825,7 @@ export const withLiveSnapshotClient = <A, E, R>(
           withRpcClientForSocketUrl(accountTarget.nextSocketUrl, (client) =>
             run({
               getSnapshot: client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({}),
-              getArchivedSnapshot: client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({}),
+              getArchivedSnapshot: client[ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]({}),
               getThreadSnapshot: (threadId) =>
                 client[ORCHESTRATION_WS_METHODS.getThreadSnapshot]({ threadId }),
             }),

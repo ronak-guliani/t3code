@@ -13,7 +13,18 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
-import { Cache, Cause, Duration, Effect, Equal, Layer, Option, Schema, Stream } from "effect";
+import {
+  Cache,
+  Cause,
+  Duration,
+  Effect,
+  Equal,
+  Layer,
+  Option,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import {
@@ -1630,31 +1641,36 @@ const make = Effect.gen(function* () {
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, processEvent),
     );
-    yield* projectionTurnRepository.listPendingTurnStarts().pipe(
-      Effect.flatMap((durablePendingTurnStarts) =>
-        Effect.forEach(
-          durablePendingTurnStarts,
-          (pendingTurnStart) =>
-            eventStore.findTurnStartRequested(pendingTurnStart).pipe(
-              Effect.flatMap(
-                Option.match({
-                  onNone: () =>
-                    Effect.logWarning("pending turn start has no durable start intent", {
-                      threadId: pendingTurnStart.threadId,
-                      messageId: pendingTurnStart.messageId,
-                    }),
-                  onSome: processEvent,
-                }),
-              ),
+    const resumePendingTurnStarts = Effect.gen(function* () {
+      const durablePendingTurnStarts = yield* projectionTurnRepository.listPendingTurnStarts();
+      yield* Effect.forEach(
+        durablePendingTurnStarts,
+        (pendingTurnStart) =>
+          eventStore.findTurnStartRequested(pendingTurnStart).pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () =>
+                  Effect.logWarning("pending turn start has no durable start intent", {
+                    threadId: pendingTurnStart.threadId,
+                    messageId: pendingTurnStart.messageId,
+                  }),
+                onSome: processEvent,
+              }),
             ),
-          { concurrency: 1 },
-        ),
-      ),
-      Effect.catchCause((cause) =>
-        Effect.logWarning("provider command reactor failed to resume pending turn starts", {
+          ),
+        { concurrency: 1 },
+      );
+    });
+    yield* resumePendingTurnStarts.pipe(
+      Effect.retry(Schedule.spaced(Duration.seconds(1))),
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) {
+          return Effect.failCause(cause);
+        }
+        return Effect.logWarning("provider command reactor failed to resume pending turn starts", {
           cause: Cause.pretty(cause),
-        }),
-      ),
+        });
+      }),
     );
 
     // Correlated completions only clear the request captured here, leaving any
