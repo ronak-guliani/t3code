@@ -85,6 +85,11 @@ describe("selectPromotionCandidates", () => {
           httpBaseUrl: "http://192.168.1.20:3773",
           wsBaseUrl: "ws://192.168.1.20:3773/ws",
         }),
+        endpoint({
+          id: "plaintext-websocket",
+          httpBaseUrl: "https://192.168.1.21:3773",
+          wsBaseUrl: "ws://192.168.1.21:3773/ws",
+        }),
       ],
     });
 

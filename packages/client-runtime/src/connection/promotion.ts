@@ -31,6 +31,7 @@ const MAX_CONCURRENT_PROBES = 8;
 
 export interface PromotedRoute {
   readonly endpointId: string;
+  readonly currentHttpBaseUrl: string;
   readonly httpBaseUrl: string;
   readonly wsBaseUrl: string;
   readonly kind: Exclude<ConnectionRouteKind, "relay">;
@@ -118,11 +119,21 @@ function routeKind(endpoint: AdvertisedEndpoint): Exclude<ConnectionRouteKind, "
     : "lan";
 }
 
-function secureTransportAllowed(currentHttpBaseUrl: string, candidateHttpBaseUrl: string): boolean {
+function secureTransportAllowed(
+  currentHttpBaseUrl: string,
+  candidateHttpBaseUrl: string,
+  candidateWsBaseUrl: string,
+): boolean {
   try {
     const current = new URL(currentHttpBaseUrl);
     const candidate = new URL(candidateHttpBaseUrl);
-    return current.protocol !== "https:" || candidate.protocol === "https:";
+    const websocket = new URL(candidateWsBaseUrl);
+    return (
+      (candidate.protocol === "http:" || candidate.protocol === "https:") &&
+      (websocket.protocol === "ws:" || websocket.protocol === "wss:") &&
+      (current.protocol !== "https:" || candidate.protocol === "https:") &&
+      (current.protocol !== "https:" || websocket.protocol === "wss:")
+    );
   } catch {
     return false;
   }
@@ -142,7 +153,11 @@ export function selectPromotionCandidates(input: {
       }
       if (input.cooldownEndpointIds?.has(endpoint.id)) return false;
       if (normalizedBaseUrl(endpoint.httpBaseUrl) === currentBaseUrl) return false;
-      return secureTransportAllowed(input.currentHttpBaseUrl, endpoint.httpBaseUrl);
+      return secureTransportAllowed(
+        input.currentHttpBaseUrl,
+        endpoint.httpBaseUrl,
+        endpoint.wsBaseUrl,
+      );
     })
     .sort(
       (left, right) => reachabilityRank[left.reachability] - reachabilityRank[right.reachability],
@@ -434,6 +449,7 @@ export const make = Effect.gen(function* () {
 
     const route: PromotedRoute = {
       endpointId: selected.id,
+      currentHttpBaseUrl: prepared.httpBaseUrl,
       httpBaseUrl: selected.httpBaseUrl,
       wsBaseUrl: selected.wsBaseUrl,
       kind: routeKind(selected),

@@ -334,6 +334,7 @@ describe("EnvironmentSupervisor", () => {
       expect(
         (yield* SubscriptionRef.get(supervisor.prepared)).pipe(Option.getOrThrow).routeKind,
       ).toBe("relay");
+      expect((yield* SubscriptionRef.get(supervisor.state)).routeKind).toBe("relay");
     }),
   );
 

@@ -289,8 +289,8 @@ function ConnectedCloudEnvironmentRow(props: {
         onValueChange={props.onSetEnabled}
         onToggleError={props.onToggleError}
         statusText={props.environment.isEnabled ? undefined : "Off on this device"}
-        routeKind={props.environment.routeKind}
-        routeSwitching={props.environment.routeSwitching}
+        routeKind={props.environment.isEnabled ? props.environment.routeKind : null}
+        routeSwitching={props.environment.isEnabled ? props.environment.routeSwitching : false}
         value={props.environment.isEnabled}
       />
     </Pressable>
