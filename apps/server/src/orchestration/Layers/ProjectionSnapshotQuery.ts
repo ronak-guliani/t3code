@@ -307,29 +307,6 @@ const ProjectionThreadCheckpointContextThreadRowSchema = Schema.Struct({
   worktreePath: Schema.NullOr(Schema.String),
 });
 
-const listActiveSessionMessageRows = SqlSchema.findAll({
-  Request: Schema.Void,
-  Result: ProjectionThreadMessageDbRowSchema,
-  execute: () =>
-    sql`
-      SELECT
-        messages.message_id AS "messageId",
-        messages.thread_id AS "threadId",
-        messages.turn_id AS "turnId",
-        messages.role,
-        messages.text,
-        messages.attachments_json AS "attachments",
-        messages.origin_json AS "origin",
-        messages.is_streaming AS "isStreaming",
-        messages.created_at AS "createdAt",
-        messages.updated_at AS "updatedAt"
-      FROM projection_thread_messages AS messages
-      INNER JOIN projection_thread_sessions AS sessions
-        ON sessions.active_message_id = messages.message_id
-      ORDER BY messages.thread_id ASC, messages.created_at ASC, messages.message_id ASC
-    `,
-});
-
 const REQUIRED_SNAPSHOT_PROJECTORS = [
   ORCHESTRATION_PROJECTOR_NAMES.projects,
   ORCHESTRATION_PROJECTOR_NAMES.threads,
@@ -763,6 +740,29 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           CASE WHEN messages.sequence IS NULL THEN 0 ELSE 1 END ASC,
           messages.sequence ASC,
           messages.rowid ASC
+      `,
+  });
+
+  const listActiveSessionMessageRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          messages.message_id AS "messageId",
+          messages.thread_id AS "threadId",
+          messages.turn_id AS "turnId",
+          messages.role,
+          messages.text,
+          messages.attachments_json AS "attachments",
+          messages.origin_json AS "origin",
+          messages.is_streaming AS "isStreaming",
+          messages.created_at AS "createdAt",
+          messages.updated_at AS "updatedAt"
+        FROM projection_thread_messages AS messages
+        INNER JOIN projection_thread_sessions AS sessions
+          ON sessions.active_message_id = messages.message_id
+        ORDER BY messages.thread_id ASC, messages.created_at ASC, messages.message_id ASC
       `,
   });
 
@@ -1871,14 +1871,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          listActiveSessionMessageRows(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getCommandReadModel:listActiveSessionMessages:query",
-                "ProjectionSnapshotQuery.getCommandReadModel:listActiveSessionMessages:decodeRows",
-              ),
-            ),
-          ),
           listLatestTurnRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -2198,6 +2190,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getCommandReadModel:listThreadSessions:query",
                 "ProjectionSnapshotQuery.getCommandReadModel:listThreadSessions:decodeRows",
+              ),
+            ),
+          ),
+          listActiveSessionMessageRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getCommandReadModel:listActiveSessionMessages:query",
+                "ProjectionSnapshotQuery.getCommandReadModel:listActiveSessionMessages:decodeRows",
               ),
             ),
           ),
