@@ -82,6 +82,7 @@ import {
   persistServerRuntimeState,
 } from "./serverRuntimeState.ts";
 import {
+  orchestrationArchivedShellSnapshotRouteLayer,
   orchestrationDispatchRouteLayer,
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
@@ -441,6 +442,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   authWebSocketTicketRouteLayer,
   assetRouteLayer,
   attachmentsRouteLayer,
+  orchestrationArchivedShellSnapshotRouteLayer,
   orchestrationDispatchRouteLayer,
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,

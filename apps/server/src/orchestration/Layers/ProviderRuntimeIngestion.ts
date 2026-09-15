@@ -47,8 +47,12 @@ import {
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/Utils.ts";
+import {
+  OrchestrationEngineService,
+  readCommandModel,
+  readThreadDetail,
+} from "../Services/OrchestrationEngine.ts";
 import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProviderRuntimeIngestionService,
   type ProviderRuntimeIngestionShape,
@@ -1060,7 +1064,7 @@ const make = Effect.gen(function* () {
   const resolveGitRepositoryCwdForThread = Effect.fn("resolveGitRepositoryCwdForThread")(function* (
     threadId: ThreadId,
   ) {
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readCommandModel(orchestrationEngine);
     const thread = readModel.threads.find((entry) => entry.id === threadId);
     if (!thread) {
       return null;
@@ -1367,11 +1371,14 @@ const make = Effect.gen(function* () {
     createdAt: string;
   }) =>
     Effect.gen(function* () {
-      const readModel = yield* orchestrationEngine.getReadModel();
-      const thread = readModel.threads.find((entry) => entry.id === input.threadId);
-      if (!thread?.reviewSnapshot) {
+      const [threadDetail, commandModel] = yield* Effect.all([
+        readThreadDetail(orchestrationEngine, input.threadId),
+        readCommandModel(orchestrationEngine),
+      ]);
+      if (Option.isNone(threadDetail) || !threadDetail.value.reviewSnapshot) {
         return;
       }
+      const thread = threadDetail.value;
       const output =
         thread.messages
           .filter(
@@ -1395,7 +1402,7 @@ const make = Effect.gen(function* () {
       }
       const cwd = resolveThreadWorkspaceCwd({
         thread,
-        projects: readModel.projects,
+        projects: commandModel.projects,
       });
       if (cwd === null) {
         yield* Effect.logWarning("Discarding review result because the worktree is unavailable", {
@@ -1648,7 +1655,7 @@ const make = Effect.gen(function* () {
       implementationThreadId: ThreadId,
       implementedAt: string,
     ) {
-      const readModel = yield* orchestrationEngine.getReadModel();
+      const readModel = yield* readCommandModel(orchestrationEngine);
       const sourceThread = readModel.threads.find((entry) => entry.id === sourceThreadId);
       const sourcePlan = sourceThread?.proposedPlans.find((entry) => entry.id === sourcePlanId);
       if (!sourceThread || !sourcePlan || sourcePlan.implementedAt !== null) {
@@ -1674,14 +1681,36 @@ const make = Effect.gen(function* () {
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
-      const readModel = yield* orchestrationEngine.getReadModel();
-      const thread = readModel.threads.find((entry) => entry.id === event.threadId);
-      if (!thread) return;
+      const commandModel = yield* readCommandModel(orchestrationEngine);
+      const compactThread = commandModel.threads.find((thread) => thread.id === event.threadId);
+      if (compactThread === undefined) return;
+
+      const needsThreadBodies =
+        event.type === "turn.completed" ||
+        event.type === "request.opened" ||
+        event.type === "user-input.requested" ||
+        event.type === "turn.aborted" ||
+        (event.type === "item.completed" && event.payload.itemType === "assistant_message") ||
+        event.type === "turn.diff.updated";
+      const threadDetail = needsThreadBodies
+        ? yield* readThreadDetail(orchestrationEngine, event.threadId)
+        : Option.none();
+      const thread = Option.isSome(threadDetail)
+        ? {
+            ...compactThread,
+            messages: threadDetail.value.messages,
+            activities: threadDetail.value.activities,
+            activityContext: threadDetail.value.activityContext,
+            hasMoreActivities: threadDetail.value.hasMoreActivities,
+            hasMoreCurrentTurnActivities: threadDetail.value.hasMoreCurrentTurnActivities,
+            checkpoints: threadDetail.value.checkpoints,
+          }
+        : compactThread;
 
       if (event.type === "turn.completed" && event.turnId !== undefined) {
         const cwd =
           thread.worktreePath ??
-          readModel.projects.find((project) => project.id === thread.projectId)?.workspaceRoot;
+          commandModel.projects.find((project) => project.id === thread.projectId)?.workspaceRoot;
         if (cwd) {
           // Establish exclusion before any command can publish an idle session.
           // The owned checkpoint handoff releases it after terminal processing.

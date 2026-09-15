@@ -15,9 +15,11 @@ import type {
   OrchestrationCommand,
   OrchestrationEvent,
   OrchestrationReadModel,
+  OrchestrationThread,
+  ThreadId,
 } from "@t3tools/contracts";
-import { Context } from "effect";
-import type { Effect, PubSub, Scope, Stream } from "effect";
+import { Context, Effect, Option } from "effect";
+import type { PubSub, Scope, Stream } from "effect";
 
 import type { OrchestrationDispatchError } from "../Errors.ts";
 import type { OrchestrationEventStoreError } from "../../persistence/Errors.ts";
@@ -26,6 +28,25 @@ import type { OrchestrationEventStoreError } from "../../persistence/Errors.ts";
  * OrchestrationEngineShape - Service API for orchestration command and event flow.
  */
 export interface OrchestrationEngineShape {
+  /**
+   * Read the compact in-memory model used for metadata lookups and command validation.
+   * Test doubles may omit this and fall back to getReadModel through readCommandModel.
+   */
+  readonly getCommandReadModel?: () => Effect.Effect<OrchestrationReadModel, never, never>;
+
+  /** Read one thread with its message, activity, and checkpoint bodies. */
+  readonly getThreadDetailById?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<OrchestrationThread>, never, never>;
+
+  /**
+   * Read authoritative metadata with the latest projected bodies for recovery
+   * paths that must continue after event persistence outruns SQL projection.
+   */
+  readonly getRecoveryReadModel?: (
+    threadId?: ThreadId,
+  ) => Effect.Effect<OrchestrationReadModel, never, never>;
+
   /**
    * Read the current in-memory orchestration read model.
    *
@@ -41,6 +62,7 @@ export interface OrchestrationEngineShape {
    */
   readonly readEvents: (
     fromSequenceExclusive: number,
+    limit?: number,
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError, never>;
 
   /**
@@ -81,6 +103,34 @@ export interface OrchestrationEngineShape {
     never,
     Scope.Scope
   >;
+}
+
+export function readCommandModel(
+  engine: OrchestrationEngineShape,
+): Effect.Effect<OrchestrationReadModel, never, never> {
+  return engine.getCommandReadModel?.() ?? engine.getReadModel();
+}
+
+export function readThreadDetail(
+  engine: OrchestrationEngineShape,
+  threadId: ThreadId,
+): Effect.Effect<Option.Option<OrchestrationThread>, never, never> {
+  return (
+    engine.getThreadDetailById?.(threadId) ??
+    engine.getReadModel().pipe(
+      Effect.map((readModel) => {
+        const thread = readModel.threads.find((entry) => entry.id === threadId);
+        return thread === undefined ? Option.none() : Option.some(thread);
+      }),
+    )
+  );
+}
+
+export function readRecoveryModel(
+  engine: OrchestrationEngineShape,
+  threadId?: ThreadId,
+): Effect.Effect<OrchestrationReadModel, never, never> {
+  return engine.getRecoveryReadModel?.(threadId) ?? engine.getReadModel();
 }
 
 /**

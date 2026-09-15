@@ -2,6 +2,7 @@ import {
   CommandId,
   EventId,
   IsoDateTime,
+  MessageId,
   NonNegativeInt,
   OrchestrationActorKind,
   OrchestrationAggregateKind,
@@ -14,9 +15,10 @@ import {
 } from "@t3tools/contracts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
-import { Effect, Layer, Schema, Stream } from "effect";
+import { Effect, Layer, Option, Schema, Stream } from "effect";
 
 import {
+  PersistenceDecodeError,
   toPersistenceDecodeError,
   toPersistenceSqlError,
   type OrchestrationEventStoreError,
@@ -61,6 +63,10 @@ const OrchestrationEventPersistedRowSchema = Schema.Struct({
 const ReadFromSequenceRequestSchema = Schema.Struct({
   sequenceExclusive: NonNegativeInt,
   limit: Schema.Number,
+});
+const FindTurnStartRequestedInputSchema = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
 });
 const DEFAULT_READ_FROM_SEQUENCE_LIMIT = 1_000;
 const READ_PAGE_SIZE = 500;
@@ -179,6 +185,33 @@ const makeEventStore = Effect.gen(function* () {
       `,
   });
 
+  const findTurnStartRequestedRow = SqlSchema.findOneOption({
+    Request: FindTurnStartRequestedInputSchema,
+    Result: OrchestrationEventPersistedRowSchema,
+    execute: ({ threadId, messageId }) =>
+      sql`
+        SELECT
+          sequence,
+          event_id AS "eventId",
+          event_type AS "type",
+          aggregate_kind AS "aggregateKind",
+          stream_id AS "aggregateId",
+          occurred_at AS "occurredAt",
+          command_id AS "commandId",
+          causation_event_id AS "causationEventId",
+          correlation_id AS "correlationId",
+          payload_json AS "payload",
+          metadata_json AS "metadata"
+        FROM orchestration_events
+        WHERE aggregate_kind = 'thread'
+          AND stream_id = ${threadId}
+          AND event_type = 'thread.turn-start-requested'
+          AND json_extract(payload_json, '$.messageId') = ${messageId}
+        ORDER BY sequence DESC
+        LIMIT 1
+      `,
+  });
+
   const append: OrchestrationEventStoreShape["append"] = (event) =>
     appendEventRow({
       eventId: event.eventId,
@@ -258,10 +291,44 @@ const makeEventStore = Effect.gen(function* () {
     return readPage(sequenceExclusive, normalizedLimit);
   };
 
+  const findTurnStartRequested: OrchestrationEventStoreShape["findTurnStartRequested"] = (input) =>
+    findTurnStartRequestedRow(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "OrchestrationEventStore.findTurnStartRequested:query",
+          "OrchestrationEventStore.findTurnStartRequested:decodeRow",
+        ),
+      ),
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.succeedNone,
+          onSome: (row) =>
+            decodeEvent(row).pipe(
+              Effect.mapError(
+                toPersistenceDecodeError(
+                  "OrchestrationEventStore.findTurnStartRequested:rowToEvent",
+                ),
+              ),
+              Effect.flatMap((event) =>
+                event.type === "thread.turn-start-requested"
+                  ? Effect.succeed(Option.some(event))
+                  : Effect.fail(
+                      new PersistenceDecodeError({
+                        operation: "OrchestrationEventStore.findTurnStartRequested:type",
+                        issue: "Expected thread.turn-start-requested event",
+                      }),
+                    ),
+              ),
+            ),
+        }),
+      ),
+    );
+
   return {
     append,
     readFromSequence,
     readAll: () => readFromSequence(0, Number.MAX_SAFE_INTEGER),
+    findTurnStartRequested,
   } satisfies OrchestrationEventStoreShape;
 });
 

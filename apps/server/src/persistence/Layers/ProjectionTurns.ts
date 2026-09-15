@@ -163,12 +163,12 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
     execute: ({ threadId }) =>
       sql`
         SELECT
-          thread_id AS "threadId",
-          pending_message_id AS "messageId",
-          source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
-          source_proposed_plan_id AS "sourceProposedPlanId",
-          requested_at AS "requestedAt"
-        FROM projection_turns
+          turns.thread_id AS "threadId",
+          turns.pending_message_id AS "messageId",
+          turns.source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
+          turns.source_proposed_plan_id AS "sourceProposedPlanId",
+          turns.requested_at AS "requestedAt"
+        FROM projection_turns AS turns
         WHERE thread_id = ${threadId}
           AND turn_id IS NULL
           AND state = 'pending'
@@ -176,6 +176,40 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           AND checkpoint_turn_count IS NULL
         ORDER BY requested_at DESC
         LIMIT 1
+      `,
+  });
+
+  const listPendingProjectionTurns = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionPendingTurnStart,
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          pending_message_id AS "messageId",
+          source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
+          source_proposed_plan_id AS "sourceProposedPlanId",
+          requested_at AS "requestedAt"
+        FROM projection_turns AS turns
+        WHERE turns.turn_id IS NULL
+          AND turns.state = 'pending'
+          AND turns.pending_message_id IS NOT NULL
+          AND turns.checkpoint_turn_count IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM projection_turns AS advanced_turns
+            WHERE advanced_turns.thread_id = turns.thread_id
+              AND advanced_turns.turn_id IS NOT NULL
+              AND advanced_turns.requested_at >= turns.requested_at
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM projection_threads AS threads
+            WHERE threads.thread_id = turns.thread_id
+              AND threads.archived_at IS NULL
+              AND threads.deleted_at IS NULL
+          )
+        ORDER BY turns.requested_at DESC, turns.thread_id ASC
       `,
   });
 
@@ -304,6 +338,13 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
         ),
       );
 
+  const listPendingTurnStarts: ProjectionTurnRepositoryShape["listPendingTurnStarts"] = () =>
+    listPendingProjectionTurns(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionTurnRepository.listPendingTurnStarts:query"),
+      ),
+    );
+
   const deletePendingTurnStartByThreadId: ProjectionTurnRepositoryShape["deletePendingTurnStartByThreadId"] =
     (input) =>
       clearPendingProjectionTurnsByThread(input).pipe(
@@ -357,6 +398,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
     upsertByTurnId,
     replacePendingTurnStart,
     getPendingTurnStartByThreadId,
+    listPendingTurnStarts,
     deletePendingTurnStartByThreadId,
     listByThreadId,
     getByTurnId,

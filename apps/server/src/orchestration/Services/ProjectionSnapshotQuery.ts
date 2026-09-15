@@ -78,6 +78,15 @@ export interface ProjectionChatArchiveEntry {
  */
 export interface ProjectionSnapshotQueryShape {
   /**
+   * Read the lightweight snapshot used by command validation without
+   * hydrating message, activity, or checkpoint bodies.
+   */
+  readonly getCommandReadModel?: () => Effect.Effect<
+    OrchestrationReadModel,
+    ProjectionRepositoryError
+  >;
+
+  /**
    * Read the latest orchestration projection snapshot.
    *
    * Rehydrates from projection tables and derives snapshot sequence from
@@ -92,6 +101,10 @@ export interface ProjectionSnapshotQueryShape {
    * lightweight navigation state without hydrating every thread body.
    */
   readonly getShellSnapshot: () => Effect.Effect<
+    OrchestrationShellSnapshot,
+    ProjectionRepositoryError
+  >;
+  readonly getArchivedShellSnapshot?: () => Effect.Effect<
     OrchestrationShellSnapshot,
     ProjectionRepositoryError
   >;

@@ -22,7 +22,7 @@ import {
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { isRemovableArchiveWorktreePath } from "../archiveWorktreeCleanup.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { OrchestrationEngineService, readCommandModel } from "../Services/OrchestrationEngine.ts";
 import {
   ThreadDeletionReactor,
   type ThreadDeletionReactorShape,
@@ -301,7 +301,7 @@ const make = Effect.gen(function* () {
       return false;
     }
 
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readCommandModel(orchestrationEngine);
     const cleanupThread = readModel.threads.find((thread) => thread.id === threadId);
     const project = cleanupThread
       ? readModel.projects.find((entry) => entry.id === cleanupThread.projectId)
@@ -314,6 +314,21 @@ const make = Effect.gen(function* () {
         reason: project === undefined ? "project-not-found" : "project-deleted",
       });
       return false;
+    }
+
+    // Archive cleanup can race unarchive: the job still names this thread, but
+    // ownership checks exclude it. If the owner is active again, abort removal.
+    const cleanupOwnerIsActive =
+      cleanupThread !== undefined &&
+      cleanupThread.deletedAt === null &&
+      cleanupThread.archivedAt === null;
+    if (cleanupOwnerIsActive) {
+      yield* worktreeCleanupJobs.cancelByThreadId(cleanup.threadId);
+      yield* Effect.logInfo("cancelled worktree cleanup after owner became active again", {
+        threadId: cleanup.threadId,
+        worktreePath: canonicalPath,
+      });
+      return Option.none();
     }
 
     const canonicalWorkspaceRoot = yield* Effect.promise(() =>
@@ -781,7 +796,7 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     allowTerminalReset = false,
   ) {
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readCommandModel(orchestrationEngine);
     const thread = readModel.threads.find((entry) => entry.id === threadId);
     if (thread === undefined || thread.worktreePath === null) {
       return;
@@ -832,7 +847,7 @@ const make = Effect.gen(function* () {
     event: ThreadUnarchivedEvent,
   ) {
     const { threadId } = event.payload;
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readCommandModel(orchestrationEngine);
     const thread = readModel.threads.find((entry) => entry.id === threadId);
     const worktreePath = thread?.worktreePath ?? null;
     yield* cancelPendingCleanupForThreadAndPath(threadId, worktreePath);
@@ -1114,7 +1129,7 @@ const make = Effect.gen(function* () {
       ),
     );
     yield* Effect.forkScoped(
-      orchestrationEngine.getReadModel().pipe(
+      readCommandModel(orchestrationEngine).pipe(
         Effect.flatMap((readModel) =>
           Effect.forEach(
             new Set(
