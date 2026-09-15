@@ -17,6 +17,7 @@ import { AuthError, ServerAuth } from "../auth/Services/ServerAuth.ts";
 import { requireSessionScope, respondToAuthError } from "../auth/http.ts";
 import { ServerConfig } from "../config.ts";
 import { RemoteAccess } from "./RemoteAccess.ts";
+import { ServerAdvertisedEndpoints } from "./ServerAdvertisedEndpoints.ts";
 
 const responseHeaders = { "cache-control": "no-store", pragma: "no-cache" };
 const encodePairing = Schema.encodeEffect(RemoteAccessPairing);
@@ -134,4 +135,19 @@ const pairing = HttpRouter.add(
   ),
 );
 
-export const routes = Layer.mergeAll(status, update, pairing);
+const endpoints = HttpRouter.add(
+  "GET",
+  "/api/remote-access/endpoints",
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const auth = yield* ServerAuth;
+    const session = yield* auth.authenticateHttpRequest(request);
+    yield* requireSessionScope(session.role, AuthRelayReadScope, session.scopes);
+    const discovery = yield* ServerAdvertisedEndpoints;
+    return HttpServerResponse.jsonUnsafe(yield* discovery.getEndpoints, {
+      headers: responseHeaders,
+    });
+  }).pipe(Effect.catchTag("AuthError", respondToAuthError)),
+);
+
+export const routes = Layer.mergeAll(status, update, pairing, endpoints);
