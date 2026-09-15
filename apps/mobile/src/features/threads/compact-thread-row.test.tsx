@@ -244,14 +244,18 @@ describe("compact inbox row", () => {
   });
 
   it.each(["legacy", "v2"] as const)(
-    "keeps the %s list consumer compact with related navigation",
+    "keeps the %s list consumer compact with inline nested threads",
     (mode) => {
-      const hierarchy = mobileThreadTreeRows(
+      const rows = mobileThreadTreeRows(
         buildMobileThreadTree([
           parent,
           { ...parent, id: ThreadId.make("child"), parentThreadId: parent.id },
         ]),
-      )[0]!;
+        { includeAllDescendants: true },
+      );
+      expect(rows.map((row) => row.thread.id)).toEqual(["parent", "child"]);
+      expect(rows[1]?.depth).toBe(1);
+      const hierarchy = rows[0]!;
       const onSelectThread = vi.fn();
       const shared = {
         thread: parent,
@@ -291,13 +295,10 @@ describe("compact inbox row", () => {
       expect(markup).not.toContain(parent.branch);
       expect(markup).not.toContain(parent.worktreePath);
       expect(markup).not.toContain("Child update");
-      harness.pressables
-        .find((item) => item.accessibilityLabel?.startsWith("Related chats"))
-        ?.onPress?.();
-      expect(harness.navigate).toHaveBeenCalledWith("RelatedThreads", {
-        environmentId: parent.environmentId,
-        threadId: parent.id,
-      });
+      // Inline families hide the Related entry point; the parent still activates.
+      expect(
+        harness.pressables.some((item) => item.accessibilityLabel?.startsWith("Related")),
+      ).toBe(false);
       harness.menus[0]?.onAccessibilityTap?.();
       expect(onSelectThread).toHaveBeenCalledWith(parent);
     },
@@ -406,7 +407,7 @@ describe("compact inbox row", () => {
     expect(shared.onDeletePendingTask).toHaveBeenCalledWith(draft);
   });
 
-  it("keeps related navigation outside the primary context menu and preserves activation", () => {
+  it("hides the related entry when children render inline and preserves activation", () => {
     const onPress = vi.fn();
     const hierarchy = mobileThreadTreeRows(
       buildMobileThreadTree([
@@ -418,6 +419,7 @@ describe("compact inbox row", () => {
           hasPendingApprovals: true,
         },
       ]),
+      { includeAllDescendants: true },
     )[0]!;
     harness.unread = true;
     const markup = renderToStaticMarkup(
@@ -439,37 +441,45 @@ describe("compact inbox row", () => {
     expect(harness.menus[0]?.accessibilityLabel).toBe("Parent chat, 2m");
     harness.menus[0]?.onAccessibilityTap?.();
     expect(onPress).toHaveBeenCalledOnce();
-    const related = harness.pressables.find((item) =>
-      item.accessibilityLabel?.startsWith("Related chats"),
-    );
-    expect(related?.accessibilityLabel).toContain("unread activity");
-    expect(related?.accessibilityLabel).toContain("needs approval in group");
-    related?.onPress?.();
-    expect(harness.navigate).toHaveBeenCalledWith("RelatedThreads", {
-      environmentId: "local",
-      threadId: "parent",
-    });
+    // Inline families replace the Related entry point.
+    expect(
+      harness.pressables.some((item) => item.accessibilityLabel?.startsWith("Related chats")),
+    ).toBe(false);
   });
 
-  it("does not repeat the parent's status on quiet related chats", () => {
+  it("renders nested subchats compact with rail, smaller type, and level announcement", () => {
+    renderToStaticMarkup(
+      <CompactThreadRow title="Child" timestamp="1m" status="ready" depth={1} onPress={() => {}} />,
+    );
+    expect(harness.pressables[0]?.accessibilityLabel).toContain("subchat, level 1");
+    expect(harness.views[0]?.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ paddingStart: 30 })]),
+    );
+  });
+
+  it("does not repeat the parent's status on quiet inline children", () => {
     const working = { ...parent, hasPendingQueuedTurn: true };
-    const hierarchy = mobileThreadTreeRows(
+    const rows = mobileThreadTreeRows(
       buildMobileThreadTree([
         working,
         { ...parent, id: ThreadId.make("child"), parentThreadId: parent.id },
       ]),
-    )[0]!;
+      { includeAllDescendants: true },
+    );
+    expect(rows.map((row) => row.thread.id)).toEqual(["parent", "child"]);
     renderToStaticMarkup(
       <CompactThreadRow
         title={parent.title}
         timestamp="2m"
         status="working"
         onPress={() => {}}
-        related={{ thread: working, hierarchy }}
+        related={{ thread: working, hierarchy: rows[0] }}
       />,
     );
     expect(harness.pressables[0]?.accessibilityLabel).toContain("Working");
-    expect(harness.pressables[1]?.accessibilityLabel).not.toContain("working in group");
+    expect(
+      harness.pressables.some((item) => item.accessibilityLabel?.includes("working in group")),
+    ).toBe(false);
   });
 
   it("includes the timestamp and search excerpt in the primary tap and long-press target", () => {

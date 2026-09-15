@@ -124,7 +124,7 @@ describe("buildHomeListLayout", () => {
     });
   });
 
-  it("pages root groups, retains the selected grandchild and keeps agents behind the group control", () => {
+  it("pages root groups and shows nested threads inline with the selected grandchild", () => {
     const group = makeGroup("nested", 2);
     const parent = group.threads[0]!;
     const child = { ...makeThread("child", parent.projectId), parentThreadId: parent.id };
@@ -133,7 +133,7 @@ describe("buildHomeListLayout", () => {
     const collapsed = buildHomeListLayout({ groups: [nestedGroup], displayStates: new Map() });
     expect(
       collapsed.items.filter((item) => item.type === "thread").map((item) => item.thread.id),
-    ).toEqual([parent.id, group.threads[1]!.id]);
+    ).toEqual([parent.id, child.id, leaf.id, group.threads[1]!.id]);
     const selected = buildHomeListLayout({
       groups: [nestedGroup],
       displayStates: new Map(),
@@ -141,7 +141,7 @@ describe("buildHomeListLayout", () => {
     });
     expect(
       selected.items.filter((item) => item.type === "thread").map((item) => item.hierarchy?.depth),
-    ).toEqual([0, 2, 0]);
+    ).toEqual([0, 1, 2, 0]);
     const virtual = buildHomeListLayout({
       groups: [
         {
@@ -168,7 +168,7 @@ describe("buildHomeListLayout", () => {
     });
     expect(
       virtual.items.filter((item) => item.type === "thread").map((item) => item.thread.id),
-    ).toEqual([parent.id, `agent-run:${parent.id}:run`, group.threads[1]!.id]);
+    ).toEqual([parent.id, `agent-run:${parent.id}:run`, child.id, leaf.id, group.threads[1]!.id]);
     expect(virtual.items.find((item) => item.type === "thread")).toMatchObject({
       hierarchy: { childCount: 3, displayStatus: "working", archiveBlocked: true },
     });

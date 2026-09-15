@@ -337,6 +337,9 @@ export function mobileThreadTreeRows(
   options: {
     readonly selectedThreadKey?: string | null | undefined;
     readonly revealThreadKeys?: ReadonlySet<string> | undefined;
+    /** Show every nested thread inline under its parent. Main lists set this;
+        search and filtered views keep passing an explicit reveal set. */
+    readonly includeAllDescendants?: boolean | undefined;
   } = {},
 ): MobileThreadTreeRow[] {
   const rows: MobileThreadTreeRow[] = [];
@@ -346,10 +349,12 @@ export function mobileThreadTreeRows(
   }
   while (pending.length > 0) {
     const { node, depth } = pending.pop()!;
-    // Keep quiet descendants behind the group control; callers explicitly reveal
-    // active, unread, or matching chats alongside the selected iPad conversation.
+    // Main lists render the full inline family. Filtered callers (search,
+    // related-group screens) keep quiet descendants behind an explicit reveal
+    // set alongside the selected conversation.
     if (
       depth === 0 ||
+      options.includeAllDescendants === true ||
       node.threadKey === options.selectedThreadKey ||
       options.revealThreadKeys?.has(node.threadKey)
     ) {

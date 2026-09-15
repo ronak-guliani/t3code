@@ -441,6 +441,7 @@ export function buildThreadListV2Items(input: {
           query.length > 0
             ? new Set([...searchKeys, ...nestedVirtualAgentKeys([node]).values()])
             : nestedThreadRevealKeys([node], input.threadChildReadAt ?? {}),
+        includeAllDescendants: query.length === 0,
       }),
     ]),
   );

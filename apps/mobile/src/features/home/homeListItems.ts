@@ -230,6 +230,9 @@ export function buildHomeListLayout(input: {
         revealThreadKeys: matchingThreadKeys
           ? new Set([...matchingThreadKeys, ...nestedVirtualAgentKeys([root])])
           : nestedThreadRevealKeys([root], input.threadChildReadAt ?? {}),
+        // Main list shows the full nested family inline; search keeps its
+        // match-scoped reveal set so ancestors don't flood with siblings.
+        includeAllDescendants: matchingThreadKeys === undefined,
       }),
     );
     const visibleThreads = rows

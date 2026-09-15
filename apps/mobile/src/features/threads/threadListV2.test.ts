@@ -128,6 +128,8 @@ describe("mobile nested threads", () => {
       expect(layout([leaf, child, parent, other]).items.map((item) => item.thread.id)).toEqual([
         "other",
         "parent",
+        "child",
+        "leaf",
       ]);
       expect(
         relatedThreadRows(
@@ -168,13 +170,18 @@ describe("mobile nested threads", () => {
     ).toMatchObject({ displayStatus: "approval", relatedStatus: "ready" });
   });
 
-  it("keeps the inbox flat while retaining the selected iPad conversation", () => {
-    expect(layout([leaf, parent, child]).items.map((item) => item.thread.id)).toEqual(["parent"]);
+  it("shows nested threads inline while retaining the selected iPad conversation", () => {
+    expect(layout([leaf, parent, child]).items.map((item) => item.thread.id)).toEqual([
+      "parent",
+      "child",
+      "leaf",
+    ]);
     const items = layout([leaf, parent, child], {
       selectedThreadKey: `${environmentId}:leaf`,
     }).items;
     expect(items.map((item) => [item.thread.id, item.hierarchy?.depth])).toEqual([
       ["parent", 0],
+      ["child", 1],
       ["leaf", 2],
     ]);
   });
@@ -387,6 +394,8 @@ describe("mobile nested threads", () => {
     });
     expect(layout([parent, child, newer, other]).items.map((item) => item.thread.id)).toEqual([
       "parent",
+      "newer",
+      "child",
       "other",
     ]);
     expect(
@@ -460,7 +469,12 @@ describe("mobile nested threads", () => {
     expect(layout(threads, { searchQuery: "Parent" }).items.map((item) => item.thread.id)).toEqual([
       "parent",
     ]);
-    expect(layout(threads).items.map((item) => item.thread.id)).toEqual(["parent", "sibling"]);
+    expect(layout(threads).items.map((item) => item.thread.id)).toEqual([
+      "parent",
+      "child",
+      "leaf",
+      "sibling",
+    ]);
   });
 
   it("uses an errored session timestamp when a failed child has no completed turn", () => {
@@ -535,7 +549,7 @@ describe("mobile nested threads", () => {
       selectedThreadKey: `${environmentId}:leaf`,
     });
     expect(result.settledCount).toBe(2);
-    expect(result.items.map((item) => item.thread.id)).toEqual(["parent", "leaf"]);
+    expect(result.items.map((item) => item.thread.id)).toEqual(["parent", "child", "leaf"]);
   });
 
   it("shows provider background runs as local children, never as independent server threads", () => {

@@ -50,6 +50,11 @@ function RelatedThreadsButton(props: {
     props.hierarchy?.latestRelatedNotificationAt,
   );
   const count = props.hierarchy?.relatedChildCount ?? props.hierarchy?.childCount ?? 0;
+  const inlineVisible = (props.hierarchy?.childCount ?? 0) > 0;
+  // Nested threads render inline under their parent, so a populated inline
+  // group no longer needs a separate entry point. Keep the affordance for
+  // pruned groups (read children reachable via Related) and orphan unread.
+  if (inlineVisible) return null;
   if (count === 0 && !unread) return null;
   const groupStatus = props.hierarchy?.relatedStatus ?? "ready";
   const status = STATUS[groupStatus];
@@ -116,6 +121,7 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
   readonly sidebar?: boolean;
   readonly depth?: number | undefined;
   readonly showDivider?: boolean;
+  readonly isAgentRun?: boolean;
   readonly related?: {
     readonly thread: MobileThreadShell;
     readonly hierarchy?: MobileThreadTreeRow | undefined;
@@ -127,16 +133,23 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
   const theme = useUniwindTheme();
   const selected = props.selected === true;
   const status = STATUS[props.status];
+  const depth = Math.min(Math.max(props.depth ?? 0, 0), MAX_NESTED_INDENT_DEPTH);
+  const isNested = depth > 0;
+  const isAgentRun = props.isAgentRun === true;
   const foreground = selected
     ? "text-user-bubble-foreground"
-    : props.muted
+    : props.muted || (isNested && props.status === "ready")
       ? "text-foreground-muted"
       : "text-foreground";
   const excerptLabel = props.searchMatch
     ? `, ${props.searchMatch.source === "user" ? "You" : "Agent"}: ${props.searchMatch.snippet}`
     : "";
-  const accessibilityLabel = `${props.title}${status.label ? `, ${status.label}` : ""}${props.pinned ? ", pinned" : ""}, ${props.timestamp}${excerptLabel}`;
+  const nestingLabel = isNested
+    ? `, subchat, level ${depth}${isAgentRun ? ", background run" : ""}`
+    : "";
+  const accessibilityLabel = `${props.title}${status.label ? `, ${status.label}` : ""}${props.pinned ? ", pinned" : ""}${nestingLabel}, ${props.timestamp}${excerptLabel}`;
   const pullRequest = props.pullRequest;
+  const rowMinHeight = isNested ? 40 : 48;
   const primary = (
     <Pressable
       accessibilityRole="button"
@@ -144,11 +157,26 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
       accessibilityHint={props.accessibilityHint ?? "Opens the thread"}
       accessibilityState={{ selected }}
       onPress={props.onPress}
-      style={({ pressed }) => [styles.primaryButton, { opacity: pressed ? 0.6 : 1 }]}
+      style={({ pressed }) => [
+        styles.primaryButton,
+        { minHeight: rowMinHeight, opacity: pressed ? 0.6 : 1 },
+      ]}
     >
-      <View style={styles.primaryLine}>
+      <View style={[styles.primaryLine, { minHeight: rowMinHeight }]}>
+        {isNested ? (
+          <View className="items-center" style={styles.nestedRail}>
+            <View className="bg-border-subtle" style={styles.nestedRailLine} />
+            <SymbolView
+              name="arrow.turn.left.up"
+              size={11}
+              tintColorClassName={
+                selected ? "accent-user-bubble-foreground" : "accent-foreground-tertiary"
+              }
+            />
+          </View>
+        ) : null}
         <View className="w-3 items-center">
-          {props.pinned && props.status === "ready" ? (
+          {props.pinned && props.status === "ready" && !isNested ? (
             <SymbolView
               name="pin.fill"
               size={10}
@@ -159,13 +187,16 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
           ) : (
             <View
               className={cn(
-                "size-1.5 rounded-full",
+                isNested ? "size-1 rounded-full" : "size-1.5 rounded-full",
                 selected && props.status !== "ready" ? "bg-user-bubble-foreground" : status.color,
               )}
             />
           )}
         </View>
-        <Text className={cn("flex-1 text-base font-t3-medium", foreground)} numberOfLines={1}>
+        <Text
+          className={cn("flex-1 font-t3-medium", isNested ? "text-sm" : "text-base", foreground)}
+          numberOfLines={1}
+        >
           {props.title}
         </Text>
         {status.action ? (
@@ -206,20 +237,22 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
     <View
       style={[
         styles.container,
+        isNested ? styles.nestedContainer : null,
         {
           backgroundColor: selected
             ? theme["--color-user-bubble"]
-            : props.sidebar
-              ? theme["--color-drawer"]
-              : theme["--color-screen"],
-          paddingStart:
-            (props.sidebar ? 12 : 18) +
-            Math.min(Math.max(props.depth ?? 0, 0), MAX_NESTED_INDENT_DEPTH) * NESTED_INDENT,
+            : isNested
+              ? (theme["--color-subtle"] ?? theme["--color-screen"])
+              : props.sidebar
+                ? theme["--color-drawer"]
+                : theme["--color-screen"],
+          paddingStart: (props.sidebar ? 12 : 18) + depth * NESTED_INDENT,
           paddingEnd: props.sidebar ? 12 : 18,
+          opacity: isNested && props.status === "ready" && !selected ? 0.92 : 1,
         },
       ]}
     >
-      <View style={styles.row}>
+      <View style={[styles.row, { minHeight: rowMinHeight }]}>
         <View style={styles.primarySlot}>
           {props.menu ? (
             <ControlPillMenu
@@ -276,6 +309,15 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
 
 const styles = StyleSheet.create({
   container: { borderRadius: 10 },
+  nestedContainer: { borderRadius: 8, marginVertical: 1 },
+  nestedRail: {
+    width: 14,
+    alignSelf: "stretch",
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  nestedRailLine: { position: "absolute", top: 6, bottom: 6, width: 1.5, borderRadius: 1 },
   primarySlot: { flex: 1, minWidth: 0 },
   row: { flexDirection: "row", alignItems: "flex-start", minHeight: 48, gap: 4 },
   pullRequestButton: {
