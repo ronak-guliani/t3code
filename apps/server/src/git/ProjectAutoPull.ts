@@ -2,7 +2,10 @@ import { Clock, Context, Effect, FileSystem, Layer, PubSub, Stream } from "effec
 import type { Scope } from "effect";
 import type { OrchestrationProject, ProjectId } from "@t3tools/contracts";
 import { threadHasInFlightTurn } from "../orchestration/commandInvariants.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import {
+  OrchestrationEngineService,
+  readCommandModel,
+} from "../orchestration/Services/OrchestrationEngine.ts";
 import { GitCore, type GitStatusDetails } from "./Services/GitCore.ts";
 import { CheckoutCoordinator, CheckoutCoordinatorLive } from "./CheckoutCoordinator.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
@@ -40,7 +43,7 @@ export const ProjectAutoPullLive = Layer.effect(
     const failures = new Map<string, { count: number; retryAt: number }>();
 
     const enabledProjects = Effect.gen(function* () {
-      const model = yield* engine.getReadModel();
+      const model = yield* readCommandModel(engine);
       return model.projects.filter((project) => !project.deletedAt && project.autoPull === true);
     });
 
@@ -77,7 +80,7 @@ export const ProjectAutoPullLive = Layer.effect(
     const eligible = (cwd: string, projectIds: ReadonlySet<ProjectId>) =>
       Effect.gen(function* () {
         if (yield* coordinator.isFinalizing(cwd)) return false;
-        const model = yield* engine.getReadModel();
+        const model = yield* readCommandModel(engine);
         const projects = indexProjects(model.projects);
         let enabled = false;
         for (const id of projectIds) {
@@ -226,7 +229,7 @@ export const ProjectAutoPullLive = Layer.effect(
         ),
         Stream.runForEach((event) =>
           Effect.gen(function* () {
-            const model = yield* engine.getReadModel();
+            const model = yield* readCommandModel(engine);
             const project = model.projects.find((entry) => entry.id === event.aggregateId);
             if (project) yield* attempt(project.workspaceRoot);
           }),

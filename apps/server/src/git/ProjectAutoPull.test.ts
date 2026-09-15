@@ -76,11 +76,14 @@ const fixture = Effect.gen(function* () {
   });
   const events = yield* PubSub.unbounded<OrchestrationEvent>();
   const sessions = yield* Ref.make<ProviderSession[]>([]);
+  const legacyReadCount = yield* Ref.make(0);
   const serviceLayer = ProjectAutoPullLive.pipe(
     Layer.provide(Layer.mock(ProviderService)({ listSessions: () => Ref.get(sessions) })),
     Layer.provide(
       Layer.mock(OrchestrationEngineService)({
-        getReadModel: () => Ref.get(model),
+        getCommandReadModel: () => Ref.get(model),
+        getReadModel: () =>
+          Ref.update(legacyReadCount, (count) => count + 1).pipe(Effect.zipRight(Ref.get(model))),
         acquireDomainEventSubscription: PubSub.subscribe(events),
       }),
     ),
@@ -96,6 +99,7 @@ const fixture = Effect.gen(function* () {
     model,
     events,
     sessions,
+    legacyReadCount,
     serviceLayer,
     projectId,
     now,
@@ -187,6 +191,7 @@ describe("ProjectAutoPull", () => {
         const service = yield* ProjectAutoPull;
         yield* service.start;
       }).pipe(Effect.provide(f.serviceLayer));
+      assert.equal(yield* Ref.get(f.legacyReadCount), 0);
       assert.equal(yield* f.git(f.cwd, ["rev-parse", "HEAD"]), f.after);
     }).pipe(Effect.provide(GitLayer)),
   );
