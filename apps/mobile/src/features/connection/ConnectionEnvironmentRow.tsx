@@ -23,11 +23,24 @@ function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string
   if (!environment.isEnabled) {
     return "Off";
   }
-  return connectionStatusText({
+  const status = connectionStatusText({
     phase: environment.connectionState,
     error: environment.connectionError,
     traceId: environment.connectionErrorTraceId,
+    routeSwitching: environment.routeSwitching,
   });
+  return environment.routeKind ? `${routeLabel(environment.routeKind)} · ${status}` : status;
+}
+
+function routeLabel(routeKind: NonNullable<ConnectedEnvironmentSummary["routeKind"]>): string {
+  switch (routeKind) {
+    case "lan":
+      return "LAN";
+    case "tailscale":
+      return "Tailscale";
+    case "relay":
+      return "Relay";
+  }
 }
 
 export function ConnectionEnvironmentRow(props: {

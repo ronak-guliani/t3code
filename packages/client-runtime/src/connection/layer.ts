@@ -3,6 +3,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
 import * as ConnectionResolver from "./resolver.ts";
+import * as ConnectionPromotion from "./promotion.ts";
 import * as ConnectionDriver from "./driver.ts";
 import * as EnvironmentRegistry from "./registry.ts";
 import * as ConnectionOnboarding from "./onboarding.ts";
@@ -25,6 +26,7 @@ const onboardingLayer = ConnectionOnboarding.layer.pipe(Layer.provide(registryLa
 
 const connectionServicesLayer = Layer.mergeAll(
   registryLayer,
+  ConnectionPromotion.layer,
   RelayEnvironmentDiscovery.layer,
   onboardingLayer,
 );
