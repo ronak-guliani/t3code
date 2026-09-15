@@ -13,20 +13,21 @@ import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import * as RpcSession from "../rpc/session.ts";
 
 const resolverLayer = ConnectionResolver.layer.pipe(
-  Layer.provide(RemoteEnvironmentAuthorization.layer),
+  Layer.provide(Layer.mergeAll(RemoteEnvironmentAuthorization.layer, ConnectionPromotion.layer)),
 );
 
 const driverLayer = ConnectionDriver.layer.pipe(
   Layer.provide(Layer.mergeAll(resolverLayer, RpcSession.layer)),
 );
 
-const registryLayer = EnvironmentRegistry.layer.pipe(Layer.provide(driverLayer));
+const registryLayer = EnvironmentRegistry.layer.pipe(
+  Layer.provide(Layer.mergeAll(driverLayer, ConnectionPromotion.layer)),
+);
 
 const onboardingLayer = ConnectionOnboarding.layer.pipe(Layer.provide(registryLayer));
 
 const connectionServicesLayer = Layer.mergeAll(
   registryLayer,
-  ConnectionPromotion.layer,
   RelayEnvironmentDiscovery.layer,
   onboardingLayer,
 );

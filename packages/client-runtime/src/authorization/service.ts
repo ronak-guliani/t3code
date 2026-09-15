@@ -93,6 +93,27 @@ function mapDpopSocketError(error: RemoteEnvironmentAuthError | ConnectionAttemp
     : mapRemoteEnvironmentError(error);
 }
 
+function mapDirectEndpointError(error: ConnectionAttemptError): ConnectionAttemptError {
+  return error._tag === "ConnectionBlockedError" && error.reason === "unsupported"
+    ? new ConnectionTransientError({
+        reason: "endpoint-unavailable",
+        detail: error.detail,
+        ...(error.traceId === undefined ? {} : { traceId: error.traceId }),
+      })
+    : error;
+}
+
+function mapDirectDescriptorError(error: ConnectionAttemptError): ConnectionAttemptError {
+  const mapped = mapDirectEndpointError(error);
+  return mapped._tag === "ConnectionBlockedError" && mapped.reason === "configuration"
+    ? new ConnectionTransientError({
+        reason: "endpoint-unavailable",
+        detail: mapped.detail,
+        ...(mapped.traceId === undefined ? {} : { traceId: mapped.traceId }),
+      })
+    : mapped;
+}
+
 const fetchDescriptor = Effect.fn("clientRuntime.connection.remote.fetchDescriptor")(function* (
   httpBaseUrl: string,
 ) {
@@ -540,10 +561,15 @@ export const make = Effect.gen(function* () {
 
       const currentUrl = new URL(input.endpoint.currentHttpBaseUrl);
       const directUrl = new URL(input.endpoint.httpBaseUrl);
-      if (currentUrl.protocol === "https:" && directUrl.protocol !== "https:") {
+      const directSocketUrl = new URL(input.endpoint.wsBaseUrl);
+      if (
+        currentUrl.protocol === "https:" &&
+        (directUrl.protocol !== "https:" || directSocketUrl.protocol !== "wss:")
+      ) {
         return yield* new ConnectionTransientError({
           reason: "endpoint-unavailable",
-          detail: "Automatic routing will not downgrade an encrypted relay to plaintext HTTP.",
+          detail:
+            "Automatic routing will not downgrade an encrypted relay to plaintext HTTP or WebSocket.",
         });
       }
 
@@ -558,14 +584,7 @@ export const make = Effect.gen(function* () {
       }).pipe(
         Effect.mapError(mapRemoteEnvironmentError),
         Effect.catch((error: ConnectionAttemptError) =>
-          error.reason === "configuration"
-            ? Effect.fail(
-                new ConnectionTransientError({
-                  reason: "endpoint-unavailable",
-                  detail: error.detail,
-                }),
-              )
-            : Effect.fail(error),
+          Effect.fail(mapDirectDescriptorError(error)),
         ),
         Effect.provideService(HttpClient.HttpClient, httpClient),
       ) as Effect.Effect<
@@ -583,7 +602,7 @@ export const make = Effect.gen(function* () {
       }
 
       const socketUrl = yield* createDpopSocketUrlForEndpoint(cached.value, input.endpoint).pipe(
-        Effect.mapError(mapDpopSocketError),
+        Effect.mapError((error) => mapDirectEndpointError(mapDpopSocketError(error))),
       );
       yield* assertAccount(identity);
       const renewAccessToken = (rejectedAccessToken?: string) =>

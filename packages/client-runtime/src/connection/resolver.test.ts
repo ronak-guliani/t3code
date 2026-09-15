@@ -24,6 +24,7 @@ import {
 import * as ConnectionCredentialStore from "./credentialStore.ts";
 import {
   BearerConnectionTarget,
+  ConnectionBlockedError,
   ConnectionTransientError,
   PrimaryConnectionTarget,
   RelayConnectionTarget,
@@ -397,6 +398,49 @@ describe("ConnectionResolver", () => {
             Effect.succeed(
               Option.some({
                 endpointId: "lan",
+                currentHttpBaseUrl: ENDPOINT.httpBaseUrl,
+                httpBaseUrl: "https://192.168.1.20:3773",
+                wsBaseUrl: "wss://192.168.1.20:3773",
+                kind: "lan" as const,
+              }),
+            ),
+          diagnosticFor: () => Effect.succeed(Option.none()),
+          reportOverrideFailed: () => Ref.update(reportedFailures, (count) => count + 1),
+          clear: () => Effect.void,
+          discover: () => Effect.succeed(Option.none()),
+        },
+      });
+      const broker = yield* ConnectionResolver.ConnectionResolver.pipe(Effect.provide(brokerLayer));
+
+      const prepared = yield* broker.prepare(catalogEntry(target));
+
+      expect(prepared.routeKind).toBe("relay");
+      expect(yield* Ref.get(reportedFailures)).toBe(1);
+    }),
+  );
+
+  it.effect("falls back to relay when a direct endpoint is incompatible", () =>
+    Effect.gen(function* () {
+      const target = new RelayConnectionTarget({
+        environmentId: ENVIRONMENT_ID,
+        label: "Cloud",
+      });
+      const reportedFailures = yield* Ref.make(0);
+      const brokerLayer = yield* makeDependencies({
+        authorizeDpopDirect: () =>
+          Effect.fail(
+            new ConnectionBlockedError({
+              reason: "unsupported",
+              detail: "The direct endpoint returned an incompatible response.",
+            }),
+          ),
+        promotion: {
+          enabled: true,
+          overrideFor: () =>
+            Effect.succeed(
+              Option.some({
+                endpointId: "lan",
+                currentHttpBaseUrl: ENDPOINT.httpBaseUrl,
                 httpBaseUrl: "https://192.168.1.20:3773",
                 wsBaseUrl: "wss://192.168.1.20:3773",
                 kind: "lan" as const,

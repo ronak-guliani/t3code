@@ -509,6 +509,50 @@ describe("RemoteEnvironmentAuthorization", () => {
     }),
   );
 
+  it.effect("falls back from an incompatible direct descriptor response", () =>
+    Effect.gen(function* () {
+      const directEndpoint = {
+        httpBaseUrl: "https://192.168.1.20:3773",
+        wsBaseUrl: "wss://192.168.1.20:3773",
+        relayUrl: RELAY_URL,
+        currentHttpBaseUrl: ENDPOINT.httpBaseUrl,
+        kind: "lan" as const,
+      };
+      const harness = yield* makeHarness({
+        responses: [
+          Response.json(DESCRIPTOR),
+          accessToken("fresh-access-token"),
+          websocketTicket("relay-ticket"),
+          Response.json(DESCRIPTOR),
+          new Response("{not-json", {
+            headers: { "content-type": "application/json" },
+          }),
+        ],
+      });
+
+      const failure = yield* Effect.gen(function* () {
+        const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
+        yield* remote.authorizeDpop({
+          expectedEnvironmentId: ENVIRONMENT_ID,
+          relayUrl: RELAY_URL,
+          obtainBootstrap: harness.obtainBootstrap,
+        });
+        return yield* remote
+          .authorizeDpopDirect({
+            expectedEnvironmentId: ENVIRONMENT_ID,
+            endpoint: directEndpoint,
+            obtainBootstrap: harness.obtainBootstrap,
+          })
+          .pipe(Effect.flip);
+      }).pipe(Effect.provide(harness.layer));
+
+      expect(failure).toMatchObject({
+        _tag: "ConnectionTransientError",
+        reason: "endpoint-unavailable",
+      });
+    }),
+  );
+
   it.effect("evicts an auth-invalid cached token and obtains a fresh bootstrap", () =>
     Effect.gen(function* () {
       const cached = new TokenStore.RemoteDpopAccessToken({

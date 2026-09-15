@@ -635,6 +635,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       generation,
       lastFailure: null,
       retryAt: null,
+      ...(active.lease.prepared.routeKind === undefined
+        ? {}
+        : { routeKind: active.lease.prepared.routeKind }),
     });
 
     const connectedExit = yield* Effect.raceFirst(

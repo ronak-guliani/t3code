@@ -190,7 +190,6 @@ const makeRelayBroker = Effect.fn("clientRuntime.connection.broker.makeRelay")(f
             endpoint: {
               ...override.value,
               relayUrl: relay.relayUrl,
-              currentHttpBaseUrl: relay.relayUrl,
             },
             obtainBootstrap: Effect.gen(function* () {
               const clerkToken = yield* session.clerkToken;
@@ -226,6 +225,22 @@ const makeRelayBroker = Effect.fn("clientRuntime.connection.broker.makeRelay")(f
                 ),
                 Effect.as(null),
               ),
+            ),
+            Effect.catchTag("ConnectionBlockedError", (error) =>
+              error.reason === "unsupported"
+                ? (Option.isSome(promotion)
+                    ? promotion.value.reportOverrideFailed(target.environmentId)
+                    : Effect.void
+                  ).pipe(
+                    Effect.andThen(
+                      Effect.logDebug("Direct route is incompatible; using the relay.", {
+                        environmentId: target.environmentId,
+                        reason: error.reason,
+                      }),
+                    ),
+                    Effect.as(null),
+                  )
+                : Effect.fail(error),
             ),
           );
         authorized = direct;
