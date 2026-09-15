@@ -5,7 +5,7 @@ import {
   ThreadId,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
-import { Cause, Duration, Effect, Layer, Option, Result, Stream } from "effect";
+import { Cause, Duration, Effect, Layer, Result, Stream } from "effect";
 
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
@@ -17,11 +17,7 @@ import {
 import { PullRequestMonitorFeedbackService } from "../../pullRequestMonitor/PullRequestMonitorFeedbackService.ts";
 import { computeReadiness } from "../../pullRequestMonitor/readiness.ts";
 import { buildWakePrompt } from "../../pullRequestMonitor/wakePrompt.ts";
-import {
-  OrchestrationEngineService,
-  readCommandModel,
-  readThreadDetail,
-} from "../Services/OrchestrationEngine.ts";
+import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { QueuedTurnReactor, type QueuedTurnReactorShape } from "../Services/QueuedTurnReactor.ts";
 import { isThreadReadyForQueuedDispatch } from "../commandInvariants.ts";
 import { isAutomaticChildNudgeBlocked } from "../childNudging.ts";
@@ -80,18 +76,16 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     }
     drainingThreadIds.add(threadId);
     try {
-      const thread = Option.getOrUndefined(yield* readThreadDetail(orchestrationEngine, threadId));
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const thread = readModel.threads.find((entry) => entry.id === threadId);
       const queuedTurns = thread?.queuedTurns ?? [];
       if (!thread || queuedTurns.length === 0 || !isThreadReadyForQueuedDispatch(thread)) {
         return;
       }
 
-      const readModel = queuedTurns.some((turn) => turn.origin?.kind === "child-nudge")
-        ? yield* orchestrationEngine.getCommandReadModel()
-        : undefined;
       const threadsById = new Map(
         queuedTurns.some((turn) => turn.origin?.kind === "child-nudge")
-          ? readModel!.threads.map((entry) => [entry.id, entry] as const)
+          ? readModel.threads.map((entry) => [entry.id, entry] as const)
           : [],
       );
       const nowIso = new Date().toISOString();
@@ -293,13 +287,8 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         .pipe(
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
-              const latestThread = Option.getOrUndefined(
-                yield* readThreadDetail(orchestrationEngine, threadId),
-              );
-              const latestReadModel =
-                nextQueuedTurn.origin?.kind === "child-nudge"
-                  ? yield* orchestrationEngine.getCommandReadModel()
-                  : undefined;
+              const latestReadModel = yield* orchestrationEngine.getReadModel();
+              const latestThread = latestReadModel.threads.find((entry) => entry.id === threadId);
               if (
                 !latestThread ||
                 !isThreadReadyForQueuedDispatch(latestThread) ||
@@ -308,7 +297,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
                     evaluateChildFollowUp(
                       latestThread,
                       nextQueuedTurn,
-                      new Map(latestReadModel!.threads.map((entry) => [entry.id, entry])),
+                      new Map(latestReadModel.threads.map((entry) => [entry.id, entry])),
                       new Date().toISOString(),
                     ).reason !== null))
               ) {
@@ -349,7 +338,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     );
 
   const drainQueuedThreads = Effect.gen(function* () {
-    const readModel = yield* readCommandModel(orchestrationEngine);
+    const readModel = yield* orchestrationEngine.getReadModel();
     yield* Effect.forEach(
       readModel.threads.filter((thread) => (thread.queuedTurns ?? []).length > 0),
       (thread) => drainThreadSafely(thread.id).pipe(Effect.forkScoped),

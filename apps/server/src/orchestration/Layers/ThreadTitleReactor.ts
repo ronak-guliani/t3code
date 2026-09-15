@@ -23,7 +23,7 @@ type ThreadTitleEvent = Extract<
 type ThreadTitleRegenerationEvent = Extract<ThreadTitleEvent, { type: "thread.meta-updated" }>;
 type FirstTurnTitleEvent = Extract<ThreadTitleEvent, { type: "thread.turn-start-requested" }>;
 
-export const DEFAULT_THREAD_TITLE = "New thread";
+const DEFAULT_THREAD_TITLE = "New thread";
 const MAX_REGENERATION_ATTACHMENTS = 4;
 const MAX_THREAD_TITLE_CONTEXT_CHARS = 8_000;
 const THREAD_TITLE_CONTEXT_TRUNCATION_MARKER = "[Earlier content truncated]\n\n";
@@ -33,7 +33,7 @@ const MAX_QUEUED_FIRST_TURN_TITLES = 64;
 const serverCommandId = (tag: string): CommandId =>
   CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
 
-export function formatThreadTitleContext(
+function formatThreadTitleContext(
   messages: ReadonlyArray<{
     readonly role: "user" | "assistant" | "system";
     readonly text: string;
@@ -84,7 +84,7 @@ export function formatThreadTitleContext(
   };
 }
 
-export function canReplaceThreadTitle(currentTitle: string, titleSeed?: string): boolean {
+function canReplaceThreadTitle(currentTitle: string, titleSeed?: string): boolean {
   const trimmedCurrentTitle = currentTitle.trim();
   if (trimmedCurrentTitle === DEFAULT_THREAD_TITLE) {
     return true;

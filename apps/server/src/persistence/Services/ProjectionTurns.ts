@@ -131,12 +131,6 @@ export interface ProjectionTurnRepositoryShape {
     input: GetProjectionPendingTurnStartInput,
   ) => Effect.Effect<Option.Option<ProjectionPendingTurnStart>, ProjectionRepositoryError>;
 
-  /** Lists the pending-start placeholder for every thread. */
-  readonly listPendingTurnStarts: () => Effect.Effect<
-    ReadonlyArray<ProjectionPendingTurnStart>,
-    ProjectionRepositoryError
-  >;
-
   /**
    * Deletes only pending-start placeholder rows (`turnId = null`) for a thread and leaves concrete turn rows untouched.
    */

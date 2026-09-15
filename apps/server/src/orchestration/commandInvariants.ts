@@ -215,7 +215,7 @@ function threadHasUnresolvedActivity(
   resolvedKind: string,
 ): boolean {
   const pending = new Set<string>();
-  for (const activity of [...thread.activities, ...(thread.activityContext ?? [])]
+  for (const activity of thread.activities
     .slice()
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt))) {
     const requestId = activityRequestId(activity.payload);
