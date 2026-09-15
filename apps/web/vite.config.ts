@@ -163,5 +163,36 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: buildSourcemap,
+    rollupOptions: {
+      output: {
+        // Split stable third-party graphs out of the index chunk so first
+        // paint downloads less and long-lived vendor chunks stay cached
+        // across app-code deploys. Deliberately leaves the markdown/Shiki
+        // graph alone: Shiki grammars are already lazy per-language async
+        // chunks, and forcing them into a sync chunk regresses first paint.
+        // pnpm nests packages under node_modules/.pnpm, so match on
+        // package-name segments.
+        manualChunks(id) {
+          if (!id.includes("node_modules")) {
+            return undefined;
+          }
+          if (
+            id.includes("node_modules/react/") ||
+            id.includes("node_modules/react-dom/") ||
+            id.includes("node_modules/scheduler/")
+          ) {
+            return "vendor-react";
+          }
+          if (
+            id.includes("@tanstack/") ||
+            id.includes("node_modules/effect/") ||
+            id.includes("@effect/")
+          ) {
+            return "vendor-core";
+          }
+          return undefined;
+        },
+      },
+    },
   },
 });

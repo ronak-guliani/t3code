@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { MessageId, TurnId } from "@t3tools/contracts";
 import type { TimelineEntry } from "../../session-logic";
+import type { TurnDiffSummary } from "../../types";
 import {
   collectReviewOutputMessageIds,
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
+  deriveRevertTurnCountByUserMessageId,
   EMPTY_REVIEW_OUTPUT_MESSAGE_IDS,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
@@ -1418,5 +1420,113 @@ describe("stabilizeReadonlyStringSet", () => {
     const second = stabilizeReadonlyStringSet(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS, first);
     expect(second).toBe(first);
     expect(second).toBe(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS);
+  });
+});
+
+describe("deriveRevertTurnCountByUserMessageId", () => {
+  const userEntry = (id: string): TimelineEntry => ({
+    kind: "message",
+    id: `entry-${id}`,
+    createdAt: "2026-09-08T10:00:00.000Z",
+    message: {
+      id: MessageId.make(id),
+      role: "user",
+      text: id,
+      createdAt: "2026-09-08T10:00:00.000Z",
+      streaming: false,
+    },
+  });
+  const assistantEntry = (id: string, turnId: string): TimelineEntry => ({
+    kind: "message",
+    id: `entry-${id}`,
+    createdAt: "2026-09-08T10:00:01.000Z",
+    message: {
+      id: MessageId.make(id),
+      role: "assistant",
+      text: id,
+      turnId: TurnId.make(turnId),
+      createdAt: "2026-09-08T10:00:01.000Z",
+      streaming: false,
+    },
+  });
+  const summaryFor = (
+    messageId: string,
+    turnId: string,
+    checkpointTurnCount?: number,
+  ): [string, TurnDiffSummary] => [
+    messageId,
+    {
+      turnId: TurnId.make(turnId),
+      completedAt: "2026-09-08T10:00:02.000Z",
+      files: [],
+      ...(checkpointTurnCount === undefined ? {} : { checkpointTurnCount }),
+    },
+  ];
+  const derive = (
+    timelineEntries: TimelineEntry[],
+    summaries: Array<ReturnType<typeof summaryFor>>,
+    inferred: Record<string, number> = {},
+  ) =>
+    deriveRevertTurnCountByUserMessageId({
+      timelineEntries,
+      turnDiffSummaryByAssistantMessageId: new Map(
+        summaries.map(([messageId, summary]) => [MessageId.make(messageId), summary] as const),
+      ),
+      inferredCheckpointTurnCountByTurnId: inferred as Record<
+        ReturnType<typeof TurnId.make>,
+        number
+      >,
+    });
+
+  it("resolves each user message against the first summarized assistant reply", () => {
+    const result = derive(
+      [userEntry("user-1"), assistantEntry("assistant-1", "turn-1")],
+      [summaryFor("assistant-1", "turn-1", 3)],
+    );
+    expect([...result]).toEqual([[MessageId.make("user-1"), 2]]);
+  });
+
+  it("skips summary-less assistant messages and keeps scanning", () => {
+    const result = derive(
+      [
+        userEntry("user-1"),
+        assistantEntry("assistant-1", "turn-1"),
+        assistantEntry("assistant-2", "turn-1"),
+      ],
+      [summaryFor("assistant-2", "turn-1", 2)],
+    );
+    expect([...result]).toEqual([[MessageId.make("user-1"), 1]]);
+  });
+
+  it("discards the pending user on a non-numeric summary", () => {
+    const result = derive(
+      [
+        userEntry("user-1"),
+        assistantEntry("assistant-1", "turn-1"),
+        userEntry("user-2"),
+        assistantEntry("assistant-2", "turn-2"),
+      ],
+      [summaryFor("assistant-1", "turn-1"), summaryFor("assistant-2", "turn-2", 4)],
+    );
+    // assistant-1's summary carries no count and no inferred count exists, so
+    // user-1 is discarded while user-2 resolves normally.
+    expect([...result]).toEqual([[MessageId.make("user-2"), 3]]);
+  });
+
+  it("discards the pending user when another user message follows", () => {
+    const result = derive(
+      [userEntry("user-1"), userEntry("user-2"), assistantEntry("assistant-2", "turn-2")],
+      [summaryFor("assistant-2", "turn-2", 1)],
+    );
+    expect([...result]).toEqual([[MessageId.make("user-2"), 0]]);
+  });
+
+  it("falls back to inferred checkpoint counts and clamps at zero", () => {
+    const result = derive(
+      [userEntry("user-1"), assistantEntry("assistant-1", "turn-1")],
+      [summaryFor("assistant-1", "turn-1")],
+      { "turn-1": 1 },
+    );
+    expect([...result]).toEqual([[MessageId.make("user-1"), 0]]);
   });
 });
