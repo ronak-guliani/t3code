@@ -301,6 +301,15 @@ export const ChildNudgeUpdate = Schema.Struct({
   supersedesReportId: Schema.optional(TrimmedNonEmptyString),
   /** Execution generation that produced this update. Absent on pre-fence history. */
   dispatchId: Schema.optional(TrimmedNonEmptyString),
+  wakeReason: Schema.optional(
+    Schema.Literals([
+      "decision-required",
+      "assignment-failed",
+      "assignment-blocked",
+      "result-ready",
+      "important-update",
+    ]),
+  ),
 });
 export type ChildNudgeUpdate = typeof ChildNudgeUpdate.Type;
 
@@ -336,6 +345,10 @@ export const ThreadDelegation = Schema.Struct({
   dispatchSequence: Schema.optional(NonNegativeInt),
   /** Provider turn authorized for the active dispatch. Null until bound. */
   dispatchTurnId: Schema.optional(Schema.NullOr(TurnId)),
+  /** Why the active execution generation was created. */
+  dispatchReason: Schema.optional(Schema.Literals(["assigned", "continued", "replaced"])),
+  /** Previous generation revoked by a continuation or replacement. */
+  previousDispatchId: Schema.optional(TrimmedNonEmptyString),
   followUp: Schema.Literals(["automatic", "notify-only"]),
   completedAt: Schema.NullOr(IsoDateTime),
   assignedAt: Schema.optional(IsoDateTime),
@@ -1305,6 +1318,11 @@ const ThreadDispatchReplaceCommand = Schema.Struct({
    * delegation. Mismatches are rejected, never silently applied.
    */
   expectedDispatchId: Schema.optional(TrimmedNonEmptyString),
+  queuedTurnId: QueuedTurnId,
+  message: QueuedTurnMessage,
+  modelSelection: Schema.optional(ModelSelection),
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
   createdAt: IsoDateTime,
 });
 
@@ -1752,6 +1770,8 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  delegationDispatchId: Schema.optional(TrimmedNonEmptyString),
+  delegationTransition: Schema.optional(Schema.Literals(["assigned", "continued", "replaced"])),
   createdAt: IsoDateTime,
 });
 

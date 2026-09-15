@@ -1838,7 +1838,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
         }
         promptParts.push({
           type: "text",
-          text: `T3 execution context: when calling report_to_parent during this turn, pass originTurnId="${turnId}" exactly. This value identifies this execution and must not be replaced with a later turn ID.`,
+          text: `T3 execution context: when calling report_to_parent during this turn, pass originTurnId="${turnId}" exactly${input.delegationDispatchId ? `, dispatchId="${input.delegationDispatchId}" exactly` : ""}${input.delegationAssignmentId ? `, and assignmentId="${input.delegationAssignmentId}" exactly` : ""}. These values identify this execution and must not be replaced with values from a later turn.`,
         });
         if (input.attachments && input.attachments.length > 0) {
           for (const attachment of input.attachments) {

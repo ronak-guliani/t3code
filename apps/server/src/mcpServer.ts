@@ -1657,6 +1657,7 @@ async function reportToParentTool(
   const summary = asString(args.summary)?.trim();
   const kind = args.kind;
   const assignmentId = asString(args.assignmentId)?.trim();
+  const dispatchId = asString(args.dispatchId)?.trim();
   const decision = args.decision === undefined ? undefined : decodeChildDecision(args.decision);
   if (args.canContinue !== undefined && typeof args.canContinue !== "boolean") {
     throw new Error("canContinue must be a boolean");
@@ -1666,10 +1667,12 @@ async function reportToParentTool(
     reportId.length > 200 ||
     !summary ||
     summary.length > 4000 ||
-    (kind !== "progress" && kind !== "decision-needed" && kind !== "important-update")
+    (kind !== "progress" && kind !== "decision-needed" && kind !== "important-update") ||
+    !assignmentId ||
+    !dispatchId
   ) {
     throw new Error(
-      "report_to_parent requires reportId (1-200 characters), summary (1-4000 characters), and a valid kind",
+      "report_to_parent requires reportId (1-200 characters), summary (1-4000 characters), assignmentId, dispatchId, and a valid kind",
     );
   }
   const originTurnId = asString(args.originTurnId)?.trim();
@@ -1686,7 +1689,10 @@ async function reportToParentTool(
     kind,
     "--report-id",
     reportId,
-    ...(assignmentId ? ["--assignment-id", assignmentId] : []),
+    "--assignment-id",
+    assignmentId,
+    "--dispatch-id",
+    dispatchId,
     ...(decision ? ["--decision", JSON.stringify(decision)] : []),
     ...(args.canContinue !== undefined ? ["--can-continue", String(args.canContinue)] : []),
     "--turn-id",
@@ -1953,6 +1959,11 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
           description:
             "The assignment that produced this report. Required for reused children; never substitute a newer assignment.",
         },
+        dispatchId: {
+          type: "string",
+          description:
+            "The immutable execution dispatch ID provided in the current prompt. Pass it exactly; never infer it from current thread state.",
+        },
         decision: {
           type: "object",
           properties: {
@@ -1973,7 +1984,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
             "The immutable T3 execution turn ID provided in the current prompt. Pass it exactly; never infer it from current thread state.",
         },
       },
-      required: ["reportId", "kind", "summary", "originTurnId"],
+      required: ["reportId", "kind", "summary", "assignmentId", "dispatchId", "originTurnId"],
     },
   },
   {

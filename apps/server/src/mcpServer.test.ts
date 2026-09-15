@@ -282,6 +282,8 @@ describe("send_to_thread MCP tool", () => {
         summary: "Choose the migration approach.",
         thread: "untrusted-target",
         originTurnId: "turn-a",
+        assignmentId: "assignment-a",
+        dispatchId: "dispatch-a",
       }),
     );
     expect(output).toEqual([
@@ -293,6 +295,10 @@ describe("send_to_thread MCP tool", () => {
       "decision-needed",
       "--report-id",
       "decision-1",
+      "--assignment-id",
+      "assignment-a",
+      "--dispatch-id",
+      "dispatch-a",
       "--turn-id",
       "turn-a",
       "--cross-thread-capability",
@@ -306,6 +312,8 @@ describe("send_to_thread MCP tool", () => {
         kind: "completion",
         summary: "Done",
         originTurnId: "turn-a",
+        assignmentId: "assignment-a",
+        dispatchId: "dispatch-a",
       }),
     ).rejects.toThrow("valid kind");
     await expect(
@@ -316,6 +324,8 @@ describe("send_to_thread MCP tool", () => {
           kind: "progress",
           summary: "Working",
           originTurnId: "turn-a",
+          assignmentId: "assignment-a",
+          dispatchId: "dispatch-a",
         },
       ),
     ).rejects.toThrow("requires a T3 provider session");
@@ -324,6 +334,8 @@ describe("send_to_thread MCP tool", () => {
         reportId: "missing-turn",
         kind: "progress",
         summary: "Working",
+        assignmentId: "assignment-a",
+        dispatchId: "dispatch-a",
       }),
     ).rejects.toThrow("requires originTurnId");
   });
