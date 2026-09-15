@@ -307,6 +307,29 @@ const ProjectionThreadCheckpointContextThreadRowSchema = Schema.Struct({
   worktreePath: Schema.NullOr(Schema.String),
 });
 
+const listActiveSessionMessageRows = SqlSchema.findAll({
+  Request: Schema.Void,
+  Result: ProjectionThreadMessageDbRowSchema,
+  execute: () =>
+    sql`
+      SELECT
+        messages.message_id AS "messageId",
+        messages.thread_id AS "threadId",
+        messages.turn_id AS "turnId",
+        messages.role,
+        messages.text,
+        messages.attachments_json AS "attachments",
+        messages.origin_json AS "origin",
+        messages.is_streaming AS "isStreaming",
+        messages.created_at AS "createdAt",
+        messages.updated_at AS "updatedAt"
+      FROM projection_thread_messages AS messages
+      INNER JOIN projection_thread_sessions AS sessions
+        ON sessions.active_message_id = messages.message_id
+      ORDER BY messages.thread_id ASC, messages.created_at ASC, messages.message_id ASC
+    `,
+});
+
 const REQUIRED_SNAPSHOT_PROJECTORS = [
   ORCHESTRATION_PROJECTOR_NAMES.projects,
   ORCHESTRATION_PROJECTOR_NAMES.threads,
@@ -1848,6 +1871,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listActiveSessionMessageRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getCommandReadModel:listActiveSessionMessages:query",
+                "ProjectionSnapshotQuery.getCommandReadModel:listActiveSessionMessages:decodeRows",
+              ),
+            ),
+          ),
           listLatestTurnRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -2024,6 +2055,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     : {}),
                   runtimeMode: row.runtimeMode,
                   activeTurnId: row.activeTurnId,
+                  ...(row.activeMessageId != null ? { activeMessageId: row.activeMessageId } : {}),
                   ...(row.resumeCursor !== null ? { resumeCursor: row.resumeCursor } : {}),
                   lastError: row.lastError,
                   updatedAt: row.updatedAt,
@@ -2196,6 +2228,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             proposedPlanRows,
             queuedTurnRows,
             sessionRows,
+            activeSessionMessageRows,
             latestTurnRows,
             stateRows,
             workflowRuns,
@@ -2205,7 +2238,25 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               const queuedTurnsByThread = new Map<string, Array<OrchestrationQueuedTurn>>();
               const sessionsByThread = new Map<string, OrchestrationSession>();
               const latestTurnByThread = new Map<string, OrchestrationLatestTurn>();
+              const activeMessagesByThread = new Map<string, OrchestrationMessage[]>();
               let updatedAt: string | null = null;
+
+              for (const row of activeSessionMessageRows) {
+                const message = Object.assign(
+                  {
+                    id: row.messageId,
+                    role: row.role,
+                    text: row.text,
+                    turnId: row.turnId,
+                    streaming: row.isStreaming === 1,
+                    createdAt: row.createdAt,
+                    updatedAt: row.updatedAt,
+                  },
+                  row.attachments !== null ? { attachments: row.attachments } : {},
+                  row.origin !== null ? { origin: row.origin } : {},
+                );
+                activeMessagesByThread.set(row.threadId, [message]);
+              }
 
               for (const row of proposedPlanRows) {
                 updatedAt = maxIso(updatedAt, row.updatedAt);
@@ -2329,7 +2380,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   snoozedUntil: row.snoozedUntil,
                   snoozedAt: row.snoozedAt,
                   deletedAt: row.deletedAt,
-                  messages: [],
+                  messages: activeMessagesByThread.get(row.threadId) ?? [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                   queuedTurns: queuedTurnsByThread.get(row.threadId) ?? [],
                   activities: [],
