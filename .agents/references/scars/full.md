@@ -171,6 +171,7 @@
 - Connect origins must use the actual TCP listener address and port, mapping wildcard IPv4/IPv6 to their matching loopback addresses. Preserve IPv6 in the Node adapter patch (with URL brackets), and test through `NodeHttpServer.layer`, not fabricated addresses: upstream normalizes `::` to IPv4. `localhost` can reach another environment on the same port in the other family; a registered tunnel is not proof that the public endpoint identifies the intended host.
 - Automatic endpoint discovery must project only the live listener's family and bound port. Inspect existing Tailscale Serve mappings read-only, require their loopback target and environment descriptor to match this server, and never treat a public environment ID or DPoP alone as proof that an arbitrary listener is safe.
 - IPv4-only Tailnet IP synthesis must not gate IPv6 loopback Serve inspection; optional Serve command failures must preserve independently discovered IP endpoints.
+- Verified Serve mappings targeting `localhost` must survive wildcard matching and final IPv6 endpoint composition; retain descriptor identity checks because localhost can resolve to either family. Classify core private-network routes from reachability, not only addon provider IDs.
 
 ## Desktop browser surfaces
 

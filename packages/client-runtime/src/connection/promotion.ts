@@ -114,7 +114,9 @@ function normalizedBaseUrl(rawValue: string): string | null {
 }
 
 function routeKind(endpoint: AdvertisedEndpoint): Exclude<ConnectionRouteKind, "relay"> {
-  return endpoint.id.startsWith("tailscale-") || endpoint.provider.kind === "private-network"
+  return endpoint.id.startsWith("tailscale-") ||
+    endpoint.provider.kind === "private-network" ||
+    endpoint.reachability === "private-network"
     ? "tailscale"
     : "lan";
 }

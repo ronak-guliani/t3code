@@ -231,7 +231,9 @@ const isCompatibleTailscaleEndpoint = (
     if (url.protocol === "https:") {
       return (
         endpoint.compatibility.hostedHttpsApp === "compatible" &&
-        (isLoopbackHost(listener.host) || listener.family === "IPv4")
+        (isLoopbackHost(listener.host) ||
+          isWildcardHost(listener.host) ||
+          listener.family === "IPv4")
       );
     }
     if (url.protocol !== "http:" || listener.family !== "IPv4") return false;
@@ -270,7 +272,9 @@ const proxyTargetMatchesListener = (target: string, listener: LiveListener): boo
     if (!url.port || Number.parseInt(url.port, 10) !== listener.port) return false;
     const targetHost = normalizeHost(url.hostname);
     if (!isLoopbackProxyHost(targetHost)) return false;
-    if (targetHost === "localhost") return isLoopbackHost(listener.host);
+    if (targetHost === "localhost") {
+      return isLoopbackHost(listener.host) || isWildcardHost(listener.host);
+    }
     if (NodeNet.isIP(targetHost) !== NodeNet.isIP(listener.host)) return false;
     if (isWildcardHost(listener.host)) return true;
     return targetHost === normalizeHost(listener.host);
@@ -373,7 +377,7 @@ export const resolveTailscaleEndpoints = (input: {
           (endpoint) =>
             endpoint.status === "available" &&
             endpoint.httpBaseUrl.startsWith("http://") &&
-            (isWildcardHost(listenerHost) || endpoint.httpBaseUrl.includes(listenerHost)),
+            isCompatibleTailscaleEndpoint(endpoint, input.listener),
         )
       : [];
 

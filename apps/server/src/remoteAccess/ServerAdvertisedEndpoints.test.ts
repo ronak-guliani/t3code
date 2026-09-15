@@ -23,6 +23,7 @@ describe("resolveTailscaleEndpoints", () => {
   const runDiscovery = async (
     liveListener: LiveListener,
     serve: { readonly stdout: string; readonly code?: number },
+    tailnetAddresses: readonly string[] = ["100.64.0.4"],
   ) => {
     const commands: ReadonlyArray<string>[] = [];
     const spawner = ChildProcessSpawner.make((command) => {
@@ -68,7 +69,11 @@ describe("resolveTailscaleEndpoints", () => {
       resolveTailscaleEndpoints({
         listener: liveListener,
         networkInterfaces: {
-          utun0: [{ address: "100.64.0.4", family: "IPv4", internal: false }],
+          utun0: tailnetAddresses.map((address) => ({
+            address,
+            family: "IPv4",
+            internal: false,
+          })),
         },
         environmentId: "environment-a",
         client,
@@ -79,8 +84,43 @@ describe("resolveTailscaleEndpoints", () => {
       ["status", "--json"],
       ["serve", "status", "--json"],
     ]);
+    expect(
+      resolveServerAdvertisedEndpoints({
+        listener: liveListener,
+        networkInterfaces: {},
+        tailscaleEndpoints: endpoints,
+      }),
+    ).toEqual(expect.arrayContaining([...endpoints]));
     return endpoints.map((value) => value.httpBaseUrl);
   };
+
+  it.each([
+    { liveListener: listener("0.0.0.0"), target: "localhost" },
+    { liveListener: listener("::", "IPv6"), target: "localhost" },
+    { liveListener: listener("::", "IPv6"), target: "[::1]" },
+  ])(
+    "publishes verified Serve mappings on wildcard listeners: %j",
+    async ({ liveListener, target }) => {
+      expect(
+        await runDiscovery(liveListener, {
+          stdout: JSON.stringify({
+            TCP: { "443": { HTTPS: true } },
+            Web: {
+              "host.tailnet.ts.net:443": {
+                Handlers: { "/": { Proxy: `http://${target}:13773` } },
+              },
+            },
+          }),
+        }),
+      ).toContain("https://host.tailnet.ts.net/");
+    },
+  );
+
+  it("filters prefix-colliding Tailnet IPs before final endpoint composition", async () => {
+    expect(
+      await runDiscovery(listener("100.64.0.4"), { stdout: "{}" }, ["100.64.0.4", "100.64.0.40"]),
+    ).toEqual(["http://100.64.0.4:13773/"]);
+  });
 
   it("inspects verified Serve mappings for IPv6 loopback without synthesizing IPv4 routes", async () => {
     expect(
@@ -238,7 +278,11 @@ describe("resolveVerifiedTailscaleServeEndpoints", () => {
     target: "http://127.0.0.1:13773",
   };
 
-  const runWithResponse = (status: number, environmentId: string) => {
+  const runWithResponse = (
+    status: number,
+    environmentId: string,
+    liveListener: LiveListener = serveListener,
+  ) => {
     const client = HttpClient.make((request) =>
       Effect.succeed(
         HttpClientResponse.fromWeb(
@@ -259,7 +303,7 @@ describe("resolveVerifiedTailscaleServeEndpoints", () => {
     return (mappings: readonly (typeof matchingMapping)[]) =>
       Effect.runPromise(
         resolveVerifiedTailscaleServeEndpoints({
-          listener: serveListener,
+          listener: liveListener,
           mappings,
           magicDnsName: "host.tailnet.ts.net",
           environmentId: "environment-a",
@@ -291,4 +335,16 @@ describe("resolveVerifiedTailscaleServeEndpoints", () => {
     expect(redirected).toEqual([]);
     expect(unavailable).toEqual([]);
   });
+
+  it.each([listener("0.0.0.0"), listener("::", "IPv6")])(
+    "still verifies environment identity for localhost on wildcard listeners: %j",
+    async (liveListener) => {
+      const endpoints = await runWithResponse(
+        200,
+        "environment-b",
+        liveListener,
+      )([{ ...matchingMapping, target: "http://localhost:13773" }]);
+      expect(endpoints).toEqual([]);
+    },
+  );
 });

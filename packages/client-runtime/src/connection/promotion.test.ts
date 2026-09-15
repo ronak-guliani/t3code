@@ -184,6 +184,38 @@ function promotionLayer(fetchFn: typeof fetch) {
 }
 
 describe("ConnectionPromotion", () => {
+  it.effect("classifies core private-network endpoints independently of their provider", () =>
+    Effect.gen(function* () {
+      for (const candidate of [
+        endpoint({
+          id: "server-private-network:http://100.64.0.4:3773",
+          httpBaseUrl: "http://100.64.0.4:3773",
+          wsBaseUrl: "ws://100.64.0.4:3773",
+          reachability: "private-network",
+        }),
+        endpoint({ id: "server-lan:https://192.168.1.20:3773" }),
+      ]) {
+        const requests: string[] = [];
+        const fetchFn = ((url) => {
+          requests.push(String(url));
+          return Promise.resolve(Response.json(requests.length === 1 ? [candidate] : descriptor));
+        }) satisfies typeof fetch;
+        yield* Effect.gen(function* () {
+          const promotion = yield* ConnectionPromotion.ConnectionPromotion;
+          const route = yield* promotion.discover({
+            ...preparedRelay,
+            httpBaseUrl: "http://relay.example.test",
+          });
+          expect(Option.getOrThrow(route).kind).toBe(
+            candidate.reachability === "private-network" ? "tailscale" : "lan",
+          );
+          expect(yield* promotion.overrideFor(environmentId)).toEqual(route);
+        }).pipe(Effect.provide(promotionLayer(fetchFn)));
+        expect(requests).toHaveLength(2);
+      }
+    }),
+  );
+
   it.effect("discovers candidates and cools down only the failed endpoint", () =>
     Effect.gen(function* () {
       const lan = makeAdvertisedEndpoint("lan", "https://192.168.1.20:3773", "lan");
