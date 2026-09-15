@@ -199,6 +199,8 @@
 
 ## Pairing and environment recovery
 
+- Pausing a saved environment persists client intent without removing credentials or owned data. Gate retries and in-flight connection completions, and exclude paused rows only from presentation; cleanup reconciliation must still see paused projects and threads.
+
 - Pairing input must accept raw credentials and same-origin `/pair` links without sending a URL as a token; reject cross-environment links before exchange, mask input, and clear rejected credentials before evidence capture.
 - Self-test success is scoped to the tested revision and scenarios. Keep file-integrity checks and upload receipts separate from functional assertions; a finished worker turn or a local recording path is not verified PR delivery.
 - Pairing/reconnect is setup and separate smoke coverage, not PR feature evidence. Exercise the feature in a real client and publish its before/after captures with actual observations; do not add a feature-report manifest as a substitute for testing.

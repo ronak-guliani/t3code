@@ -362,6 +362,7 @@ export default function GitActionsControl({
             commandId: newCommandId(),
             threadId: activeThreadRef.threadId,
             pullRequest,
+            pullRequestSource: "created",
           });
         } catch {
           // Keep local association unset when durable write fails so reload

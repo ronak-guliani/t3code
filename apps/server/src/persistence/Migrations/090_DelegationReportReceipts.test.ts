@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
-import migration from "./089_DelegationReportReceipts.ts";
+import migration from "./090_DelegationReportReceipts.ts";
 
 it.layer(NodeSqliteClient.layerMemory())("delegation report receipt migration", (it) => {
   it.effect("backfills accepted and stale outcomes idempotently", () =>
