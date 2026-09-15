@@ -11,6 +11,7 @@ import { Effect, Fiber, Layer, Stream } from "effect";
 import {
   ApprovalRequestId,
   EnvironmentId,
+  MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
@@ -985,6 +986,8 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
         input: "plan this",
         attachments: [],
         interactionMode: "plan",
+        delegationAssignmentId: MessageId.make("assignment-plan"),
+        delegationDispatchId: "dispatch-plan",
       });
 
       const argv = yield* Effect.promise(() => readArgvLog(argvLogPath));
@@ -1021,7 +1024,9 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
             "text" in part &&
             typeof part.text === "string" &&
             part.text.includes("when calling report_to_parent during this turn") &&
-            part.text.includes('originTurnId="'),
+            part.text.includes('originTurnId="') &&
+            part.text.includes('dispatchId="dispatch-plan"') &&
+            part.text.includes('assignmentId="assignment-plan"'),
         ) ?? false,
       );
 

@@ -4,6 +4,7 @@ import {
   ApprovalRequestId,
   EventId,
   IsoDateTime,
+  MessageId,
   ProviderItemId,
   ThreadId,
   TurnId,
@@ -87,6 +88,8 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  delegationAssignmentId: Schema.optional(MessageId),
+  delegationDispatchId: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 

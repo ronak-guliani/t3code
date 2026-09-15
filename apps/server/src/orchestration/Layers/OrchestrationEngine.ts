@@ -47,6 +47,7 @@ import {
   type OrchestrationDispatchError,
 } from "../Errors.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
+import { childReportDedupeKey } from "../dispatchAuthority.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import type { ProjectionReceipt } from "../Services/ProjectionPipeline.ts";
@@ -333,6 +334,39 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       ),
     );
 
+  const reportIdentityForCommand = (
+    command: Extract<OrchestrationCommand, { type: "thread.child.report" }>,
+    model: OrchestrationReadModel,
+  ) => {
+    const delegation = model.threads.find((thread) => thread.id === command.threadId)?.nudging
+      ?.delegation;
+    const assignmentId = command.assignmentId ?? delegation?.assignmentId;
+    if (!assignmentId) return null;
+    return {
+      reportKey: childReportDedupeKey({
+        childThreadId: command.threadId,
+        dispatchId: command.dispatchId,
+        originTurnId: command.originTurnId,
+        assignmentId,
+        reportId: command.reportId,
+      }),
+      assignmentId,
+    };
+  };
+
+  const findRecordedReportOutcome = (reportKey: string) =>
+    sql<{ readonly outcome: string }>`
+      SELECT outcome
+      FROM delegation_report_receipts
+      WHERE report_key = ${reportKey}
+    `.pipe(
+      Effect.map((rows) => {
+        const outcome = rows[0]?.outcome;
+        return outcome === "accepted" || outcome === "stale" ? outcome : undefined;
+      }),
+      Effect.mapError(toPersistenceSqlError("OrchestrationEngine.reportReceipt:query")),
+    );
+
   const commandWorktreePath = (command: OrchestrationCommand): string | null => {
     switch (command.type) {
       case "thread.create":
@@ -484,9 +518,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             }
           }
         }
+        const reportIdentity =
+          command.type === "thread.child.report"
+            ? reportIdentityForCommand(command, contextualReadModel)
+            : null;
+        const recordedReportOutcome =
+          reportIdentity === null
+            ? undefined
+            : yield* findRecordedReportOutcome(reportIdentity.reportKey);
         const eventBase = yield* decideOrchestrationCommand({
           command,
           readModel: contextualReadModel,
+          ...(recordedReportOutcome !== undefined ? { recordedReportOutcome } : {}),
         });
         const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
         // A failed metadata precondition is an accepted no-op. Persist its
@@ -555,6 +598,37 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                   commandType: envelope.command.type,
                   detail: "Command produced no events.",
                 });
+              }
+
+              if (command.type === "thread.child.report" && reportIdentity !== null) {
+                const outcome = reportVerdictForCommand(command.commandId, committedEvents);
+                if (outcome === "accepted" || outcome === "stale") {
+                  yield* sql`
+                    INSERT INTO delegation_report_receipts (
+                      report_key,
+                      command_id,
+                      child_thread_id,
+                      assignment_id,
+                      dispatch_id,
+                      origin_turn_id,
+                      report_id,
+                      outcome,
+                      created_at
+                    )
+                    VALUES (
+                      ${reportIdentity.reportKey},
+                      ${command.commandId},
+                      ${command.threadId},
+                      ${reportIdentity.assignmentId},
+                      ${command.dispatchId ?? null},
+                      ${command.originTurnId ?? null},
+                      ${command.reportId},
+                      ${outcome},
+                      ${command.createdAt}
+                    )
+                    ON CONFLICT(report_key) DO NOTHING
+                  `;
+                }
               }
 
               yield* commandReceiptRepository.upsert({

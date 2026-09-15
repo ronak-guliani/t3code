@@ -2725,19 +2725,16 @@ const chatCommand = Command.make("chat").pipe(
               : undefined;
             const presentedDispatchId = Option.getOrUndefined(flags.dispatchId);
             const originTurnId = Option.getOrUndefined(flags.originTurnId);
-            const dispatchId =
-              presentedDispatchId ?? thread.nudging?.delegation?.dispatchId ?? undefined;
+            const dispatchId = presentedDispatchId;
             const assignmentId =
               Option.getOrUndefined(flags.assignmentId) ??
               thread.nudging?.delegation?.assignmentId ??
               "";
-            // Older report_to_parent clients omit the dispatch. Resolve the
-            // active generation before receipt lookup so a new execution cannot
-            // replay a prior generation's command receipt. The immutable turn
-            // still proves which execution issued the report.
             const keyBase = dispatchId
               ? `child-report:${thread.id}:${dispatchId}:${assignmentId}:${flags.reportId}`
-              : `child-report:${thread.id}:${assignmentId}:${flags.reportId}`;
+              : originTurnId
+                ? `child-report:${thread.id}:turn:${originTurnId}:${assignmentId}:${flags.reportId}`
+                : `child-report:${thread.id}:${assignmentId}:${flags.reportId}`;
             return yield* dispatch({
               type: "thread.child.report",
               commandId: CommandId.make(originTurnId ? `${keyBase}:${originTurnId}` : keyBase),

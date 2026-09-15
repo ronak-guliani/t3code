@@ -95,6 +95,7 @@
 
 ## Delegation and handoff transactions
 
+- Delegated reports must freeze assignment, dispatch generation, and origin turn at execution start. Persist the accepted/stale outcome by that identity before applying current-authority checks on retries, and rotate execution authority atomically with decision retirement and replacement work so old questions or answers cannot survive replacement.
 - Reused children need explicit assignment identity on reports and a checkpoint generation fence; never infer a late report's assignment from the child's current metadata. Queue an assignment or decision response in the same transaction as its lifecycle change.
 - Execution authority is a (dispatch, turn) pair minted and bound server-side: mint the dispatch at delegation creation, bind/rotate it at session-turn transitions, and require reports to present the reporting execution's own turn from immutable per-prompt context. Never stamp MCP reports from a mutable session-wide active turn. Fence every attempt-scoped mutation path (explicit reports, checkpoint completions, runtime failures), including minted-but-unbound windows, before delegation, decision, wait, or queue mutation; return explicit accepted/already-recorded/stale verdicts through the dispatch result and keep pre-fence key formats byte-identical for upgrade replays.
 - Keep an undelivered decision response correlated with its original report until dispatch. Deleting it restores the question; deleting a queued assignment must terminate that assignment rather than strand it.

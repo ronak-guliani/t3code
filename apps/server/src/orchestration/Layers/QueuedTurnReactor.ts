@@ -38,6 +38,17 @@ function threadIdForEvent(event: OrchestrationEvent): ThreadId | null {
   return event.aggregateKind === "thread" ? (event.aggregateId as ThreadId) : null;
 }
 
+function canChangeQueuedTurnReadiness(event: OrchestrationEvent): boolean {
+  switch (event.type) {
+    case "thread.message-sent":
+    case "thread.child-lifecycle-notified":
+    case "thread.turn-diff-completed":
+      return false;
+    default:
+      return event.aggregateKind === "thread";
+  }
+}
+
 const makeQueuedTurnReactor = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const pullRequests = yield* PullRequestService;
@@ -351,6 +362,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
 
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
+        if (!canChangeQueuedTurnReadiness(event)) return Effect.void;
         const threadId = threadIdForEvent(event);
         if (threadId === null) return Effect.void;
         return Effect.gen(function* () {
