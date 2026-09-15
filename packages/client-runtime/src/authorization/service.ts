@@ -12,7 +12,10 @@ import {
   ConnectionTransientError,
   type ConnectionAttemptError,
 } from "../connection/model.ts";
-import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
+import {
+  fetchAuthenticatedRemoteEnvironmentDescriptor,
+  fetchRemoteEnvironmentDescriptor,
+} from "../environment/descriptor.ts";
 import { environmentEndpointUrl } from "../environment/endpoint.ts";
 import * as ClientCapabilities from "../platform/capabilities.ts";
 import * as ManagedRelay from "../relay/managedRelay.ts";
@@ -44,6 +47,14 @@ export interface AuthorizedRemoteEnvironment {
   readonly httpAuthorization: PreparedHttpAuthorization;
 }
 
+export interface AuthorizedEndpointOverride {
+  readonly httpBaseUrl: string;
+  readonly wsBaseUrl: string;
+  readonly relayUrl: string;
+  readonly currentHttpBaseUrl: string;
+  readonly kind: "lan" | "tailscale";
+}
+
 export class RemoteEnvironmentAuthorization extends Context.Service<
   RemoteEnvironmentAuthorization,
   {
@@ -61,16 +72,46 @@ export class RemoteEnvironmentAuthorization extends Context.Service<
         ConnectionAttemptError
       >;
     }) => Effect.Effect<AuthorizedRemoteEnvironment, ConnectionAttemptError>;
+    readonly authorizeDpopDirect: (input: {
+      readonly expectedEnvironmentId: EnvironmentId;
+      readonly endpoint: AuthorizedEndpointOverride;
+      readonly obtainBootstrap: Effect.Effect<
+        RelayEnvironmentAuthorization,
+        ConnectionAttemptError
+      >;
+    }) => Effect.Effect<AuthorizedRemoteEnvironment, ConnectionAttemptError>;
   }
 >()("@t3tools/client-runtime/authorization/service/RemoteEnvironmentAuthorization") {}
 
 const TOKEN_EXPIRY_SAFETY_MARGIN_MS = 60_000;
 const CACHED_ENDPOINT_FAILURE_THRESHOLD = 2;
+const CACHED_ENDPOINT_SOCKET_TIMEOUT_MS = 3_000;
 
 function mapDpopSocketError(error: RemoteEnvironmentAuthError | ConnectionAttemptError) {
   return error._tag === "ConnectionTransientError" || error._tag === "ConnectionBlockedError"
     ? error
     : mapRemoteEnvironmentError(error);
+}
+
+function mapDirectEndpointError(error: ConnectionAttemptError): ConnectionAttemptError {
+  return error._tag === "ConnectionBlockedError" && error.reason === "unsupported"
+    ? new ConnectionTransientError({
+        reason: "endpoint-unavailable",
+        detail: error.detail,
+        ...(error.traceId === undefined ? {} : { traceId: error.traceId }),
+      })
+    : error;
+}
+
+function mapDirectDescriptorError(error: ConnectionAttemptError): ConnectionAttemptError {
+  const mapped = mapDirectEndpointError(error);
+  return mapped._tag === "ConnectionBlockedError" && mapped.reason === "configuration"
+    ? new ConnectionTransientError({
+        reason: "endpoint-unavailable",
+        detail: mapped.detail,
+        ...(mapped.traceId === undefined ? {} : { traceId: mapped.traceId }),
+      })
+    : mapped;
 }
 
 const fetchDescriptor = Effect.fn("clientRuntime.connection.remote.fetchDescriptor")(function* (
@@ -199,6 +240,31 @@ export const make = Effect.gen(function* () {
       }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
     },
   );
+  const createDpopSocketUrlForEndpoint = Effect.fn(
+    "clientRuntime.connection.remote.createDpopSocketUrlForEndpoint",
+  )(function* (token: TokenStore.RemoteDpopAccessToken, endpoint: AuthorizedEndpointOverride) {
+    const ticketProof = yield* signer
+      .createProof({
+        method: "POST",
+        url: environmentEndpointUrl(endpoint.httpBaseUrl, "/api/auth/websocket-ticket"),
+        accessToken: token.accessToken,
+      })
+      .pipe(
+        Effect.mapError(
+          () =>
+            new ConnectionBlockedError({
+              reason: "configuration",
+              detail: "Could not create the websocket authorization proof.",
+            }),
+        ),
+      );
+    return yield* resolveRemoteDpopWebSocketConnectionUrl({
+      wsBaseUrl: endpoint.wsBaseUrl,
+      httpBaseUrl: endpoint.httpBaseUrl,
+      accessToken: token.accessToken,
+      dpopProof: ticketProof,
+    }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
+  });
 
   const authorizeDpopToken = Effect.fn("clientRuntime.connection.remote.authorizeDpopToken")(
     function* (input: {
@@ -454,10 +520,137 @@ export const make = Effect.gen(function* () {
     };
   });
 
+  const authorizeDpopDirect = Effect.fn("clientRuntime.connection.remote.authorizeDpopDirect")(
+    function* (
+      input: Parameters<RemoteEnvironmentAuthorization["Service"]["authorizeDpopDirect"]>[0],
+    ) {
+      const account = yield* cloudSession.identity;
+      if (Option.isNone(account)) {
+        return yield* new ConnectionBlockedError({
+          reason: "authentication",
+          detail: "Sign in to T3 Connect to authorize this environment.",
+        });
+      }
+      const identity = account.value;
+      yield* assertAccount(identity);
+      const thumbprint = yield* signer.thumbprint.pipe(
+        Effect.mapError(
+          () =>
+            new ConnectionBlockedError({
+              reason: "configuration",
+              detail: "Could not load the environment authorization key.",
+            }),
+        ),
+      );
+      const now = yield* Clock.currentTimeMillis;
+      const cached = yield* tokenStore.get(input.expectedEnvironmentId);
+      if (
+        Option.isNone(cached) ||
+        cached.value.accountId !== identity.accountId ||
+        cached.value.authorizationScope !== authorizationScope ||
+        cached.value.relayUrl !== input.endpoint.relayUrl ||
+        owners.get(input.expectedEnvironmentId) !== identity ||
+        cached.value.dpopThumbprint !== thumbprint ||
+        cached.value.expiresAtEpochMs <= now + TOKEN_EXPIRY_SAFETY_MARGIN_MS
+      ) {
+        return yield* new ConnectionTransientError({
+          reason: "endpoint-unavailable",
+          detail: "No cached environment credential is available for the direct route.",
+        });
+      }
+
+      const currentUrl = new URL(input.endpoint.currentHttpBaseUrl);
+      const directUrl = new URL(input.endpoint.httpBaseUrl);
+      const directSocketUrl = new URL(input.endpoint.wsBaseUrl);
+      if (
+        currentUrl.protocol === "https:" &&
+        (directUrl.protocol !== "https:" || directSocketUrl.protocol !== "wss:")
+      ) {
+        return yield* new ConnectionTransientError({
+          reason: "endpoint-unavailable",
+          detail:
+            "Automatic routing will not downgrade an encrypted relay to plaintext HTTP or WebSocket.",
+        });
+      }
+
+      const descriptorEffect = fetchAuthenticatedRemoteEnvironmentDescriptor({
+        httpBaseUrl: input.endpoint.httpBaseUrl,
+        authorization: {
+          _tag: "Dpop",
+          accessToken: cached.value.accessToken,
+        },
+        signer: Option.some(signer),
+        timeoutMs: CACHED_ENDPOINT_SOCKET_TIMEOUT_MS,
+      }).pipe(
+        Effect.mapError(mapRemoteEnvironmentError),
+        Effect.catch((error: ConnectionAttemptError) =>
+          Effect.fail(mapDirectDescriptorError(error)),
+        ),
+        Effect.provideService(HttpClient.HttpClient, httpClient),
+      ) as Effect.Effect<
+        import("@t3tools/contracts").ExecutionEnvironmentDescriptor,
+        ConnectionAttemptError,
+        never
+      >;
+      const descriptor = yield* descriptorEffect;
+      yield* assertAccount(identity);
+      if (descriptor.environmentId !== input.expectedEnvironmentId) {
+        return yield* new ConnectionTransientError({
+          reason: "endpoint-unavailable",
+          detail: "The direct endpoint did not identify the expected environment.",
+        });
+      }
+
+      const socketUrl = yield* createDpopSocketUrlForEndpoint(cached.value, input.endpoint).pipe(
+        Effect.mapError((error) => mapDirectEndpointError(mapDpopSocketError(error))),
+      );
+      yield* assertAccount(identity);
+      const renewAccessToken = (rejectedAccessToken?: string) =>
+        authorizeDpop({
+          expectedEnvironmentId: input.expectedEnvironmentId,
+          relayUrl: input.endpoint.relayUrl,
+          obtainBootstrap: input.obtainBootstrap,
+        }).pipe(
+          Effect.map((renewed) => renewed.httpAuthorization),
+          Effect.flatMap((authorization) =>
+            authorization?._tag === "Dpop"
+              ? Effect.succeed(authorization.accessToken)
+              : Effect.fail(
+                  new ConnectionBlockedError({
+                    reason: "configuration",
+                    detail: "The environment did not return a DPoP credential.",
+                  }),
+                ),
+          ),
+          Effect.filterOrFail(
+            (accessToken) => accessToken !== rejectedAccessToken,
+            () =>
+              new ConnectionBlockedError({
+                reason: "authentication",
+                detail: "The environment did not replace the rejected credential. Sign in again.",
+              }),
+          ),
+        ) as Effect.Effect<string, ConnectionAttemptError>;
+      return {
+        environmentId: descriptor.environmentId,
+        label: descriptor.label,
+        httpBaseUrl: input.endpoint.httpBaseUrl,
+        socketUrl,
+        httpAuthorization: {
+          _tag: "Dpop" as const,
+          accessToken: cached.value.accessToken,
+          renewAccessToken,
+        },
+      };
+    },
+  );
+
   return RemoteEnvironmentAuthorization.of({
     authorizeBearer,
     authorizeDpop: (input) =>
       authorizeDpop(input).pipe(Effect.withSpan("environment.authorization")),
+    authorizeDpopDirect: (input) =>
+      authorizeDpopDirect(input).pipe(Effect.withSpan("environment.authorization.direct")),
   });
 });
 

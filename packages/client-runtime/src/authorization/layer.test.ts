@@ -83,6 +83,7 @@ const authInvalid = () =>
 const makeHarness = Effect.fn("TestRemoteAuthorization.makeHarness")(function* (input: {
   readonly initialToken?: TokenStore.RemoteDpopAccessToken;
   readonly responses: ReadonlyArray<Response>;
+  readonly changeAccountOnProofUrl?: string;
 }) {
   const tokens = yield* Ref.make(
     new Map(
@@ -126,6 +127,11 @@ const makeHarness = Effect.fn("TestRemoteAuthorization.makeHarness")(function* (
     thumbprint: Effect.succeed("thumbprint-1"),
     createProof: (proofInput) =>
       Ref.update(proofInputs, (current) => [...current, proofInput]).pipe(
+        Effect.flatMap(() =>
+          input.changeAccountOnProofUrl === proofInput.url
+            ? Ref.set(account, Option.some({ accountId: "account-2" }))
+            : Effect.void,
+        ),
         Effect.as(`proof:${proofInput.url}`),
       ),
   });
@@ -393,7 +399,157 @@ describe("RemoteEnvironmentAuthorization", () => {
           dpopThumbprint: "thumbprint-1",
         }),
       );
+
       expect(harness.fetch.calls).toHaveLength(3);
+    }),
+  );
+
+  it.effect("authorizes an encrypted direct route with a fresh route-specific DPoP proof", () =>
+    Effect.gen(function* () {
+      const directEndpoint = {
+        httpBaseUrl: "https://192.168.1.20:3773",
+        wsBaseUrl: "wss://192.168.1.20:3773",
+        relayUrl: RELAY_URL,
+        currentHttpBaseUrl: ENDPOINT.httpBaseUrl,
+        kind: "lan" as const,
+      };
+      const harness = yield* makeHarness({
+        responses: [
+          Response.json(DESCRIPTOR),
+          accessToken("fresh-access-token"),
+          websocketTicket("relay-ticket"),
+          Response.json(DESCRIPTOR),
+          websocketTicket("direct-ticket"),
+        ],
+      });
+
+      const direct = yield* Effect.gen(function* () {
+        const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
+        yield* remote.authorizeDpop({
+          expectedEnvironmentId: ENVIRONMENT_ID,
+          relayUrl: RELAY_URL,
+          obtainBootstrap: harness.obtainBootstrap,
+        });
+        return yield* remote.authorizeDpopDirect({
+          expectedEnvironmentId: ENVIRONMENT_ID,
+          endpoint: directEndpoint,
+          obtainBootstrap: harness.obtainBootstrap,
+        });
+      }).pipe(Effect.provide(harness.layer));
+
+      expect(direct.socketUrl).toContain("direct-ticket");
+      expect(direct.httpBaseUrl).toBe(directEndpoint.httpBaseUrl);
+      expect(
+        (yield* Ref.get(harness.proofInputs)).map((proof) => ({
+          method: proof.method,
+          url: proof.url,
+          accessToken: proof.accessToken,
+        })),
+      ).toEqual([
+        {
+          method: "POST",
+          url: `${ENDPOINT.httpBaseUrl}/oauth/token`,
+          accessToken: undefined,
+        },
+        {
+          method: "POST",
+          url: `${ENDPOINT.httpBaseUrl}/api/auth/websocket-ticket`,
+          accessToken: "fresh-access-token",
+        },
+        {
+          method: "GET",
+          url: `${directEndpoint.httpBaseUrl}/.well-known/t3/environment`,
+          accessToken: "fresh-access-token",
+        },
+        {
+          method: "POST",
+          url: `${directEndpoint.httpBaseUrl}/api/auth/websocket-ticket`,
+          accessToken: "fresh-access-token",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("rejects direct authorization when the account changes after endpoint validation", () =>
+    Effect.gen(function* () {
+      const directEndpoint = {
+        httpBaseUrl: "https://192.168.1.20:3773",
+        wsBaseUrl: "wss://192.168.1.20:3773",
+        relayUrl: RELAY_URL,
+        currentHttpBaseUrl: ENDPOINT.httpBaseUrl,
+        kind: "lan" as const,
+      };
+      const harness = yield* makeHarness({
+        responses: [
+          Response.json(DESCRIPTOR),
+          accessToken("fresh-access-token"),
+          websocketTicket("relay-ticket"),
+          Response.json(DESCRIPTOR),
+        ],
+        changeAccountOnProofUrl: `${directEndpoint.httpBaseUrl}/.well-known/t3/environment`,
+      });
+
+      const failure = yield* Effect.gen(function* () {
+        const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
+        yield* remote.authorizeDpop({
+          expectedEnvironmentId: ENVIRONMENT_ID,
+          relayUrl: RELAY_URL,
+          obtainBootstrap: harness.obtainBootstrap,
+        });
+        return yield* remote
+          .authorizeDpopDirect({
+            expectedEnvironmentId: ENVIRONMENT_ID,
+            endpoint: directEndpoint,
+            obtainBootstrap: harness.obtainBootstrap,
+          })
+          .pipe(Effect.flip);
+      }).pipe(Effect.provide(harness.layer));
+
+      expect(failure._tag).toBe("ConnectionBlockedError");
+    }),
+  );
+
+  it.effect("falls back from an incompatible direct descriptor response", () =>
+    Effect.gen(function* () {
+      const directEndpoint = {
+        httpBaseUrl: "https://192.168.1.20:3773",
+        wsBaseUrl: "wss://192.168.1.20:3773",
+        relayUrl: RELAY_URL,
+        currentHttpBaseUrl: ENDPOINT.httpBaseUrl,
+        kind: "lan" as const,
+      };
+      const harness = yield* makeHarness({
+        responses: [
+          Response.json(DESCRIPTOR),
+          accessToken("fresh-access-token"),
+          websocketTicket("relay-ticket"),
+          Response.json(DESCRIPTOR),
+          new Response("{not-json", {
+            headers: { "content-type": "application/json" },
+          }),
+        ],
+      });
+
+      const failure = yield* Effect.gen(function* () {
+        const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
+        yield* remote.authorizeDpop({
+          expectedEnvironmentId: ENVIRONMENT_ID,
+          relayUrl: RELAY_URL,
+          obtainBootstrap: harness.obtainBootstrap,
+        });
+        return yield* remote
+          .authorizeDpopDirect({
+            expectedEnvironmentId: ENVIRONMENT_ID,
+            endpoint: directEndpoint,
+            obtainBootstrap: harness.obtainBootstrap,
+          })
+          .pipe(Effect.flip);
+      }).pipe(Effect.provide(harness.layer));
+
+      expect(failure).toMatchObject({
+        _tag: "ConnectionTransientError",
+        reason: "endpoint-unavailable",
+      });
     }),
   );
 
