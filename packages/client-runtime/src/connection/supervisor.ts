@@ -244,6 +244,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
   );
   const session = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(Option.none());
   const prepared = yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(Option.none());
+  const directRouteFailure = yield* Ref.make(false);
 
   const clearLease = Effect.all(
     [SubscriptionRef.set(session, Option.none()), SubscriptionRef.set(prepared, Option.none())],
@@ -291,6 +292,23 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     return yield* driver.connect(entry, (progress) =>
       reportProgress(attempt, generation, lastFailure, progress),
     );
+  });
+
+  const reportDirectRouteFailure = Effect.fnUntraced(function* (
+    attemptedPrepared: PreparedConnection | null,
+    error: ConnectionAttemptError,
+  ) {
+    if (
+      attemptedPrepared === null ||
+      attemptedPrepared.routeKind === undefined ||
+      attemptedPrepared.routeKind === "relay" ||
+      error._tag !== "ConnectionTransientError" ||
+      Option.isNone(promotion)
+    ) {
+      return;
+    }
+    yield* promotion.value.reportOverrideFailed(target.environmentId);
+    yield* Ref.set(directRouteFailure, true);
   });
 
   const traceRelayEstablishment = (
@@ -524,6 +542,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     pendingRetry: Option.Option<PendingRetryTrace>,
   ) {
     yield* SubscriptionRef.set(prepared, Option.none());
+    yield* Ref.set(directRouteFailure, false);
     const establishment = yield* Effect.raceAllFirst([
       exitUnlessInterrupted(
         establishTracedConnection(attempt, generation, lastFailure, pendingRetry),
@@ -549,6 +568,13 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       } satisfies AttemptOutcome;
     }
     if (establishment._tag === "TimedOut") {
+      yield* reportDirectRouteFailure(
+        Option.getOrNull(yield* SubscriptionRef.get(prepared)),
+        new ConnectionTransientError({
+          reason: "timeout",
+          detail: `${target.label} did not respond during connection setup.`,
+        }),
+      );
       return {
         _tag: "Failure",
         established: false,
@@ -567,6 +593,12 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         !Cause.hasInterruptsOnly(establishment.exit.cause) &&
         !establishment.exit.cause.reasons.some(Cause.isFailReason);
       const outcome = failureFromExit(target, establishment.exit, false, false);
+      if (outcome._tag === "Failure") {
+        yield* reportDirectRouteFailure(
+          Option.getOrNull(yield* SubscriptionRef.get(prepared)),
+          outcome.failure.error,
+        );
+      }
       if (isUnexpectedDefect) {
         const defect = establishment.exit.cause.reasons.find(Cause.isDieReason)?.defect;
         yield* Effect.logError("Connection attempt failed with an unexpected defect.").pipe(
@@ -624,7 +656,16 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       ),
     ).pipe(exitUnlessInterrupted);
     const connectedForMs = (yield* Clock.currentTimeMillis) - connectedAt;
-    return failureFromExit(target, connectedExit, true, connectedForMs >= BACKOFF_RESET_AFTER_MS);
+    const outcome = failureFromExit(
+      target,
+      connectedExit,
+      true,
+      connectedForMs >= BACKOFF_RESET_AFTER_MS,
+    );
+    if (outcome._tag === "Failure") {
+      yield* reportDirectRouteFailure(active.lease.prepared, outcome.failure.error);
+    }
+    return outcome;
   }, Effect.ensuring(clearLease));
 
   const waitForRetrySignal = Effect.fnUntraced(function* (delayMs: number) {
@@ -698,6 +739,12 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
           latestFailure = null;
           pendingRetry = Option.none();
         }
+      }
+      if (yield* Ref.get(directRouteFailure)) {
+        failureCount = 0;
+        latestFailure = null;
+        pendingRetry = Option.none();
+        continue;
       }
       if (outcome._tag === "Interrupted") {
         continue;

@@ -1,5 +1,6 @@
 import type { AdvertisedEndpoint, EnvironmentId } from "@t3tools/contracts";
-import { decodeUnknownJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
+import { formatSchemaError } from "@t3tools/shared/schemaJson";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -17,7 +18,7 @@ import { fetchAuthenticatedRemoteEnvironmentDescriptor } from "../environment/de
 import { environmentEndpointUrl } from "../environment/endpoint.ts";
 import * as ClientCapabilities from "../platform/capabilities.ts";
 import * as ManagedRelay from "../relay/managedRelay.ts";
-import { executeEnvironmentHttpRequest } from "../rpc/http.ts";
+import { RemoteEnvironmentAuthFetchError, RemoteEnvironmentAuthTimeoutError } from "../rpc/http.ts";
 import { requestEnvironmentRead } from "../state/environmentHttpAuth.ts";
 import type { ConnectionRouteKind, PreparedConnection } from "./model.ts";
 
@@ -90,7 +91,7 @@ const advertisedEndpoints = Schema.Array(
     description: Schema.optional(Schema.String),
   }),
 );
-const decodeAdvertisedEndpoints = decodeUnknownJsonResult(advertisedEndpoints);
+const decodeAdvertisedEndpoints = Schema.decodeUnknownEffect(advertisedEndpoints);
 
 const reachabilityRank: Record<AdvertisedEndpoint["reachability"], number> = {
   lan: 0,
@@ -179,10 +180,8 @@ const fetchAdvertisedEndpoints = Effect.fn(
     requestUrl,
     Option.some(signer),
     (headers) =>
-      executeEnvironmentHttpRequest(
-        requestUrl,
-        ENDPOINTS_REQUEST_TIMEOUT_MS,
-        httpClient.execute(
+      httpClient
+        .execute(
           HttpClientRequest.get(requestUrl).pipe(
             HttpClientRequest.acceptJson,
             HttpClientRequest.setHeaders({
@@ -192,8 +191,26 @@ const fetchAdvertisedEndpoints = Effect.fn(
               ...(headers.dpop === undefined ? {} : { dpop: headers.dpop }),
             }),
           ),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new RemoteEnvironmentAuthFetchError({
+                message: `Failed to fetch remote route discovery ${requestUrl}.`,
+                cause,
+              }),
+          ),
+          Effect.timeoutOption(Duration.millis(ENDPOINTS_REQUEST_TIMEOUT_MS)),
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.fail(
+                  new RemoteEnvironmentAuthTimeoutError(requestUrl, ENDPOINTS_REQUEST_TIMEOUT_MS),
+                ),
+              onSome: Effect.succeed,
+            }),
+          ),
         ),
-      ),
   );
 
   if (response.status === 404) {
@@ -244,13 +261,13 @@ const fetchAdvertisedEndpoints = Effect.fn(
         }),
     ),
   );
-  const decoded = decodeAdvertisedEndpoints(body);
+  const decoded = yield* decodeAdvertisedEndpoints(body).pipe(Effect.result);
   if (Result.isFailure(decoded)) {
     return yield* new ConnectionPromotionDiscoveryError({
       diagnostic: {
         _tag: "invalid-response",
         status: 200,
-        detail: `Route discovery returned an invalid endpoint list: ${formatSchemaError(decoded.failure)}`,
+        detail: `Route discovery returned an invalid endpoint list: ${formatSchemaError(Cause.fail(decoded.failure))}`,
       },
     });
   }

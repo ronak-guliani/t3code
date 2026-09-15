@@ -19,6 +19,7 @@ import { requestEnvironmentRead } from "../state/environmentHttpAuth.ts";
 
 const DEFAULT_REMOTE_REQUEST_TIMEOUT_MS = 10_000;
 type EnvironmentDescriptor = import("@t3tools/contracts").ExecutionEnvironmentDescriptor;
+const decodeEnvironmentDescriptor = Schema.decodeUnknownEffect(ExecutionEnvironmentDescriptor);
 
 export const fetchRemoteEnvironmentDescriptor = Effect.fn(
   "clientRuntime.environment.fetchRemoteEnvironmentDescriptor",
@@ -78,7 +79,7 @@ export const fetchAuthenticatedRemoteEnvironmentDescriptor = Effect.fn(
                     );
                   }
                   const body = yield* response.json;
-                  return yield* Schema.decodeUnknownEffect(ExecutionEnvironmentDescriptor)(body);
+                  return yield* decodeEnvironmentDescriptor(body);
                 }).pipe(
                   Effect.mapError((cause) =>
                     cause instanceof RemoteEnvironmentAuthUndeclaredStatusError
