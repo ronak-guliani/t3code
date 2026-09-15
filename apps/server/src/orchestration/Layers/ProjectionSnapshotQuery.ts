@@ -3305,10 +3305,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getCommandReadModel,
     getSnapshot,
     getShellSnapshot,
-<<<<<<< HEAD
     getArchivedShellSnapshot,
-=======
->>>>>>> origin/main
     getActiveChatArchiveEntries,
     getSnapshotSequence,
     getCounts,
