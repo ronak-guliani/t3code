@@ -76,7 +76,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
       }
 
       const readModel = queuedTurns.some((turn) => turn.origin?.kind === "child-nudge")
-        ? yield* orchestrationEngine.getReadModel()
+        ? yield* orchestrationEngine.getCommandReadModel()
         : undefined;
       const threadsById = new Map(
         queuedTurns.some((turn) => turn.origin?.kind === "child-nudge")
@@ -287,7 +287,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
               );
               const latestReadModel =
                 nextQueuedTurn.origin?.kind === "child-nudge"
-                  ? yield* orchestrationEngine.getReadModel()
+                  ? yield* orchestrationEngine.getCommandReadModel()
                   : undefined;
               if (
                 !latestThread ||

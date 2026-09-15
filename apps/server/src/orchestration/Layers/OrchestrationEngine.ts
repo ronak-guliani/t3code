@@ -205,7 +205,20 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     );
     return {
       ...commandReadModel,
-      threads: commandReadModel.threads.map((thread) => detailById.get(thread.id) ?? thread),
+      threads: commandReadModel.threads.map((thread) => {
+        const detail = detailById.get(thread.id);
+        return detail === undefined
+          ? thread
+          : {
+              ...thread,
+              messages: detail.messages,
+              activities: detail.activities,
+              activityContext: detail.activityContext,
+              hasMoreActivities: detail.hasMoreActivities,
+              hasMoreCurrentTurnActivities: detail.hasMoreCurrentTurnActivities,
+              checkpoints: detail.checkpoints,
+            };
+      }),
     } satisfies OrchestrationReadModel;
   });
 
@@ -760,9 +773,20 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           : projectionSnapshotQuery.getThreadDetailById(threadId).pipe(
               Effect.map((detail) => ({
                 ...commandReadModel,
-                threads: commandReadModel.threads.map((thread) =>
-                  Option.isSome(detail) && thread.id === detail.value.id ? detail.value : thread,
-                ),
+                threads: commandReadModel.threads.map((thread) => {
+                  if (!Option.isSome(detail) || thread.id !== detail.value.id) {
+                    return thread;
+                  }
+                  return {
+                    ...thread,
+                    messages: detail.value.messages,
+                    activities: detail.value.activities,
+                    activityContext: detail.value.activityContext,
+                    hasMoreActivities: detail.value.hasMoreActivities,
+                    hasMoreCurrentTurnActivities: detail.value.hasMoreCurrentTurnActivities,
+                    checkpoints: detail.value.checkpoints,
+                  };
+                }),
               })),
             ),
       ),
