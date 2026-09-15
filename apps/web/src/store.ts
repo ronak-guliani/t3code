@@ -120,6 +120,7 @@ export interface EnvironmentState {
 }
 
 export interface AppState {
+  disabledEnvironmentIds?: ReadonlyArray<EnvironmentId>;
   activeEnvironmentId: EnvironmentId | null;
   environmentStateById: Record<string, EnvironmentState>;
 }
@@ -2598,10 +2599,12 @@ export function applyOrchestrationEvents(
 
 function getEnvironmentEntries(
   state: AppState,
+  includePaused = false,
 ): ReadonlyArray<readonly [EnvironmentId, EnvironmentState]> {
-  return Object.entries(state.environmentStateById) as unknown as ReadonlyArray<
-    readonly [EnvironmentId, EnvironmentState]
-  >;
+  return Object.entries(state.environmentStateById).filter(
+    ([environmentId]) =>
+      includePaused || !state.disabledEnvironmentIds?.some((id) => id === environmentId),
+  ) as unknown as ReadonlyArray<readonly [EnvironmentId, EnvironmentState]>;
 }
 
 interface ProjectsAcrossEnvironmentsCache {
@@ -2689,8 +2692,11 @@ export function selectWorkflowRunsForParentThread(
     : EMPTY_WORKFLOW_RUNS;
 }
 
-export function selectProjectsAcrossEnvironments(state: AppState): Project[] {
-  const entries = getEnvironmentEntries(state);
+export function selectProjectsAcrossEnvironments(
+  state: AppState,
+  includePaused = false,
+): Project[] {
+  const entries = getEnvironmentEntries(state, includePaused);
   const slices = entries.map(([environmentId, environmentState]) => ({
     environmentId,
     projectIds: environmentState.projectIds,
@@ -2728,8 +2734,11 @@ export function selectThreadShellsAcrossEnvironments(state: AppState): ThreadShe
   );
 }
 
-export function selectSidebarThreadsAcrossEnvironments(state: AppState): SidebarThreadSummary[] {
-  const entries = getEnvironmentEntries(state);
+export function selectSidebarThreadsAcrossEnvironments(
+  state: AppState,
+  includePaused = false,
+): SidebarThreadSummary[] {
+  const entries = getEnvironmentEntries(state, includePaused);
   const slices = entries.map(([environmentId, environmentState]) => ({
     environmentId,
     threadIds: environmentState.threadIds,

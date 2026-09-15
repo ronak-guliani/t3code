@@ -13,6 +13,7 @@ import { reportClientError } from "../../lib/clientLogger";
 import { getPrimaryKnownEnvironment } from "../primary";
 
 export interface SavedEnvironmentRecord {
+  readonly enabled?: boolean;
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly wsBaseUrl: string;
@@ -34,6 +35,13 @@ interface SavedEnvironmentRegistryStore extends SavedEnvironmentRegistryState {
 
 let savedEnvironmentRegistryHydrated = false;
 let savedEnvironmentRegistryHydrationPromise: Promise<void> | null = null;
+let registryWrite: Promise<void> = Promise.resolve();
+
+function enqueueRegistryWrite(write: () => Promise<void>): Promise<void> {
+  const result = registryWrite.then(write);
+  registryWrite = result.catch(() => undefined);
+  return result;
+}
 
 function toPersistedSavedEnvironmentRecord(
   record: SavedEnvironmentRecord,
@@ -45,6 +53,7 @@ function toPersistedSavedEnvironmentRecord(
     wsBaseUrl: record.wsBaseUrl,
     createdAt: record.createdAt,
     lastConnectedAt: record.lastConnectedAt,
+    ...(record.enabled === undefined ? {} : { enabled: record.enabled }),
   };
 }
 
@@ -54,22 +63,37 @@ function valuesOfSavedEnvironmentRegistry(
   return Object.values(byId) as ReadonlyArray<SavedEnvironmentRecord>;
 }
 
-function persistSavedEnvironmentRegistryState(
-  byId: Record<EnvironmentId, SavedEnvironmentRecord>,
-): void {
-  try {
-    void ensureLocalApi()
-      .persistence.setSavedEnvironmentRegistry(
-        valuesOfSavedEnvironmentRegistry(byId).map((record) =>
-          toPersistedSavedEnvironmentRecord(record),
-        ),
-      )
-      .catch((error) => {
-        reportClientError("[SAVED_ENVIRONMENTS] persist failed", error);
-      });
-  } catch (error) {
+function persistSavedEnvironmentRegistryState(): void {
+  void enqueueRegistryWrite(async () => {
+    await ensureLocalApi().persistence.setSavedEnvironmentRegistry(
+      valuesOfSavedEnvironmentRegistry(useSavedEnvironmentRegistryStore.getState().byId).map(
+        toPersistedSavedEnvironmentRecord,
+      ),
+    );
+  }).catch((error) => {
     reportClientError("[SAVED_ENVIRONMENTS] persist failed", error);
-  }
+  });
+}
+
+export function persistSavedEnvironmentEnabled(
+  environmentId: EnvironmentId,
+  enabled: boolean,
+): Promise<void> {
+  return enqueueRegistryWrite(async () => {
+    const { byId } = useSavedEnvironmentRegistryStore.getState();
+    const record = byId[environmentId];
+    if (!record) throw new Error("Saved environment not found.");
+    await ensureLocalApi().persistence.setSavedEnvironmentRegistry(
+      valuesOfSavedEnvironmentRegistry({ ...byId, [environmentId]: { ...record, enabled } }).map(
+        toPersistedSavedEnvironmentRecord,
+      ),
+    );
+    useSavedEnvironmentRegistryStore.setState((state) => {
+      const current = state.byId[environmentId];
+      if (!current) return state;
+      return { byId: { ...state.byId, [environmentId]: { ...current, enabled } } };
+    });
+  });
 }
 
 function replaceSavedEnvironmentRegistryState(
@@ -122,13 +146,13 @@ export const useSavedEnvironmentRegistryStore = create<SavedEnvironmentRegistryS
         ...state.byId,
         [record.environmentId]: record,
       };
-      persistSavedEnvironmentRegistryState(byId);
+      persistSavedEnvironmentRegistryState();
       return { byId };
     }),
   remove: (environmentId) =>
     set((state) => {
       const { [environmentId]: _removed, ...remaining } = state.byId;
-      persistSavedEnvironmentRegistryState(remaining);
+      persistSavedEnvironmentRegistryState();
       return {
         byId: remaining,
       };
@@ -146,11 +170,11 @@ export const useSavedEnvironmentRegistryStore = create<SavedEnvironmentRegistryS
           lastConnectedAt: connectedAt,
         },
       };
-      persistSavedEnvironmentRegistryState(byId);
+      persistSavedEnvironmentRegistryState();
       return { byId };
     }),
   reset: () => {
-    persistSavedEnvironmentRegistryState({});
+    persistSavedEnvironmentRegistryState();
     set({
       byId: {},
     });
@@ -215,14 +239,15 @@ export function resetSavedEnvironmentRegistryStoreForTests() {
 }
 
 export async function persistSavedEnvironmentRecord(record: SavedEnvironmentRecord): Promise<void> {
-  const byId = {
-    ...useSavedEnvironmentRegistryStore.getState().byId,
-    [record.environmentId]: record,
-  };
-
-  await ensureLocalApi().persistence.setSavedEnvironmentRegistry(
-    valuesOfSavedEnvironmentRegistry(byId).map((entry) => toPersistedSavedEnvironmentRecord(entry)),
-  );
+  await enqueueRegistryWrite(async () => {
+    const byId = {
+      ...useSavedEnvironmentRegistryStore.getState().byId,
+      [record.environmentId]: record,
+    };
+    await ensureLocalApi().persistence.setSavedEnvironmentRegistry(
+      valuesOfSavedEnvironmentRegistry(byId).map(toPersistedSavedEnvironmentRecord),
+    );
+  });
 }
 
 export async function readSavedEnvironmentBearerToken(

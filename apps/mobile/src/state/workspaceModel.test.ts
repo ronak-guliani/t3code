@@ -36,6 +36,7 @@ function environment(
           wsBaseUrl: "wss://environment.example.test",
         }),
       ),
+      enabled: true,
     },
     connection: {
       phase,
@@ -64,6 +65,21 @@ const CACHED_SHELL_SUMMARY: EnvironmentShellSummary = {
 };
 
 describe("mobile workspace projection", () => {
+  it("keeps paused registrations without counting their errors or connection progress", () => {
+    const saved = environment("error");
+    const paused = { ...saved, entry: { ...saved.entry, enabled: false } };
+    const state = projectWorkspaceState({
+      isReady: true,
+      networkStatus: "online",
+      environments: [projectWorkspaceEnvironment(paused)],
+      shellSummary: EMPTY_SHELL_SUMMARY,
+    });
+    expect(state.hasConnections).toBe(true);
+    expect(state.hasReadyEnvironment).toBe(false);
+    expect(state.hasConnectingEnvironment).toBe(false);
+    expect(state.connectionError).toBeNull();
+    expect(state.connectionState).toBe("available");
+  });
   it("preserves explicit offline state without presenting it as a connection error", () => {
     const projected = projectWorkspaceEnvironment(environment("offline"));
 
