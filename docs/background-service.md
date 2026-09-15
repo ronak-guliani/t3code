@@ -158,12 +158,13 @@ cancel; automation must pass `--yes`. It removes the account registration for al
 not projects, history, or drafts. It does **not** revoke already-issued sessions. Disable an
 enabled host first so it cannot automatically register again.
 
-| Action                                    | Effect                                                                               |
-| ----------------------------------------- | ------------------------------------------------------------------------------------ |
-| Disconnect/remove on this client          | Removes this device's connection; local removal may clear its drafts and outbox.     |
-| `t3 connect disable --base-dir ...`       | Stops this host's Connect exposure while retaining account sign-in and registration. |
-| `t3 connect deregister --environment ...` | Removes the account registration, including an offline host.                         |
-| `t3 connect unlink --base-dir ...`        | Disables this host and removes its account registration.                             |
+| Action                                    | Effect                                                                                |
+| ----------------------------------------- | ------------------------------------------------------------------------------------- |
+| Switch off on this client                 | Pauses retries on this device; keeps credentials, cached history, drafts, and outbox. |
+| Remove from this device                   | Forgets this device's connection; local removal may clear its drafts and outbox.      |
+| `t3 connect disable --base-dir ...`       | Stops this host's Connect exposure while retaining account sign-in and registration.  |
+| `t3 connect deregister --environment ...` | Removes the account registration, including an offline host.                          |
+| `t3 connect unlink --base-dir ...`        | Disables this host and removes its account registration.                              |
 
 The current relay lists stable IDs, labels, endpoints, and registration dates. It does not
 expose actual tunnel quota usage/limits, last-seen time, installation type, or build. Clients
@@ -434,3 +435,17 @@ tailscale serve status
 Scan the printed QR code in the RN app or open the same canonical URL in a browser. Tailscale Serve persists independently across T3 restarts. Use the exact per-port removal command printed by `t3 pair`; avoid `tailscale serve reset`, which removes unrelated mappings too.
 
 The service definition contains its startup paths and selected non-secret configuration. Pairing/session credentials still grant workstation access: use Tailnet ACLs, revoke unused T3 sessions, protect the workstation account, and do not expose the port directly to an untrusted network.
+
+## Pausing a saved connection
+
+In Settings -> Connections, switch a saved environment off to pause it **on this
+client only**. The choice survives restarts, stops connection retries, and hides
+that environment's projects and threads from combined workspace lists. Credentials,
+cached history, and drafts are retained; switch it back on to reconnect without
+pairing again. On mobile, saved direct connections and T3 Connect rows use the
+same switch. Long-press a saved T3 Connect row to remove it instead.
+
+Pausing does not stop the host service or server-side agent work, disable remote
+access, or affect other clients. **Remove from this device** forgets the saved
+connection and requires pairing again. **Deregister from account** is a separate
+account-wide action.

@@ -149,7 +149,8 @@ export function createEnvironmentThreadShellAtoms(input: {
   let previousThreadRefs: ReadonlyArray<ScopedThreadRef> = [];
   const threadRefsAtom = Atom.make((get) => {
     const refs: ScopedThreadRef[] = [];
-    for (const environmentId of get(input.catalogValueAtom).entries.keys()) {
+    for (const [environmentId, entry] of get(input.catalogValueAtom).entries) {
+      if (!entry.enabled) continue;
       refs.push(...get(environmentThreadRefsAtom(environmentId)));
     }
     if (threadRefsEqual(previousThreadRefs, refs)) {

@@ -45,6 +45,7 @@ import {
   hasSavedEnvironmentRegistryHydrated,
   listSavedEnvironmentRecords,
   persistSavedEnvironmentRecord,
+  persistSavedEnvironmentEnabled,
   readSavedEnvironmentBearerToken,
   removeSavedEnvironmentBearerToken,
   type SavedEnvironmentRecord,
@@ -76,6 +77,7 @@ import {
   derivePhysicalProjectKey,
 } from "../../logicalProject";
 import { getClientSettings } from "~/hooks/useSettings";
+import { reportClientError } from "~/lib/clientLogger";
 
 type EnvironmentServiceState = {
   readonly queryClient: QueryClient;
@@ -95,6 +97,8 @@ type ThreadDetailSubscriptionEntry = {
 };
 
 const environmentConnections = new Map<EnvironmentId, EnvironmentConnection>();
+const connectionDisposals = new Map<EnvironmentId, Promise<boolean>>();
+const pendingSavedConnections = new Map<EnvironmentId, Promise<EnvironmentConnection | null>>();
 const environmentConnectionListeners = new Set<() => void>();
 const threadDetailSubscriptions = new Map<string, ThreadDetailSubscriptionEntry>();
 const lastAppliedProjectionVersionByEnvironment = new Map<
@@ -655,7 +659,7 @@ function coalesceOrchestrationUiEvents(
 }
 
 function syncProjectUiFromStore() {
-  const projects = selectProjectsAcrossEnvironments(useStore.getState());
+  const projects = selectProjectsAcrossEnvironments(useStore.getState(), true);
   const clientSettings = getClientSettings();
   useUiStateStore.getState().syncProjects(
     projects.map((project) => ({
@@ -667,7 +671,7 @@ function syncProjectUiFromStore() {
 }
 
 function syncThreadUiFromStore() {
-  const threads = selectSidebarThreadsAcrossEnvironments(useStore.getState());
+  const threads = selectSidebarThreadsAcrossEnvironments(useStore.getState(), true);
   useUiStateStore.getState().syncThreads(
     threads.map((thread) => ({
       key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
@@ -685,7 +689,7 @@ function reconcileSnapshotDerivedState() {
   syncProjectUiFromStore();
   syncThreadUiFromStore();
 
-  const threads = selectSidebarThreadsAcrossEnvironments(useStore.getState());
+  const threads = selectSidebarThreadsAcrossEnvironments(useStore.getState(), true);
   const activeThreadKeys = collectActiveTerminalThreadIds({
     snapshotThreads: threads.map((thread) => ({
       key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
@@ -1024,6 +1028,8 @@ function registerConnection(connection: EnvironmentConnection): EnvironmentConne
 }
 
 async function removeConnection(environmentId: EnvironmentId): Promise<boolean> {
+  const pending = connectionDisposals.get(environmentId);
+  if (pending) return pending;
   const connection = environmentConnections.get(environmentId);
   if (!connection) {
     return false;
@@ -1033,8 +1039,14 @@ async function removeConnection(environmentId: EnvironmentId): Promise<boolean> 
   lastAppliedProjectionVersionByEnvironment.delete(environmentId);
   environmentConnections.delete(environmentId);
   emitEnvironmentConnectionRegistryChange();
-  await connection.dispose();
-  return true;
+  const disposal = connection
+    .dispose()
+    .then(() => true)
+    .finally(() => {
+      connectionDisposals.delete(environmentId);
+    });
+  connectionDisposals.set(environmentId, disposal);
+  return disposal;
 }
 
 function createPrimaryEnvironmentConnection(): EnvironmentConnection {
@@ -1085,7 +1097,27 @@ function createPrimaryEnvironmentConnection(): EnvironmentConnection {
   );
 }
 
-async function ensureSavedEnvironmentConnection(
+function ensureSavedEnvironmentConnection(
+  record: SavedEnvironmentRecord,
+  options?: Parameters<typeof createSavedEnvironmentConnection>[1],
+): Promise<EnvironmentConnection | null> {
+  const pending = pendingSavedConnections.get(record.environmentId);
+  if (pending) {
+    return pending.then((connection) => {
+      const current = getSavedEnvironmentRecord(record.environmentId);
+      return connection === null && current && current.enabled !== false
+        ? ensureSavedEnvironmentConnection(current)
+        : connection;
+    });
+  }
+  const connection = createSavedEnvironmentConnection(record, options).finally(() => {
+    pendingSavedConnections.delete(record.environmentId);
+  });
+  pendingSavedConnections.set(record.environmentId, connection);
+  return connection;
+}
+
+async function createSavedEnvironmentConnection(
   record: SavedEnvironmentRecord,
   options?: {
     readonly client?: WsRpcClient;
@@ -1093,7 +1125,10 @@ async function ensureSavedEnvironmentConnection(
     readonly role?: AuthSessionRole | null;
     readonly serverConfig?: ServerConfig | null;
   },
-): Promise<EnvironmentConnection> {
+): Promise<EnvironmentConnection | null> {
+  const disposal = connectionDisposals.get(record.environmentId);
+  if (disposal) await disposal;
+  if (getSavedEnvironmentRecord(record.environmentId)?.enabled === false) return null;
   const existing = environmentConnections.get(record.environmentId);
   if (existing) {
     return existing;
@@ -1101,6 +1136,10 @@ async function ensureSavedEnvironmentConnection(
 
   const bearerToken =
     options?.bearerToken ?? (await readSavedEnvironmentBearerToken(record.environmentId));
+  if (!options && !getSavedEnvironmentRecord(record.environmentId)) return null;
+  if (getSavedEnvironmentRecord(record.environmentId)?.enabled === false) return null;
+  const currentConnection = environmentConnections.get(record.environmentId);
+  if (currentConnection) return currentConnection;
   if (!bearerToken) {
     useSavedEnvironmentRuntimeStore.getState().patch(record.environmentId, {
       authState: "requires-auth",
@@ -1180,8 +1219,10 @@ async function ensureSavedEnvironmentConnection(
       options?.role ?? null,
       options?.serverConfig ?? null,
     );
-    return connection;
+    return environmentConnections.get(record.environmentId) === connection ? connection : null;
   } catch (error) {
+    if (environmentConnections.get(record.environmentId) !== connection) return null;
+    if (getSavedEnvironmentRecord(record.environmentId)?.enabled === false) return null;
     setRuntimeError(record.environmentId, error);
     await removeConnection(record.environmentId).catch(() => false);
     throw error;
@@ -1191,7 +1232,13 @@ async function ensureSavedEnvironmentConnection(
 async function syncSavedEnvironmentConnections(
   records: ReadonlyArray<SavedEnvironmentRecord>,
 ): Promise<void> {
-  const expectedEnvironmentIds = new Set(records.map((record) => record.environmentId));
+  useStore.setState({
+    disabledEnvironmentIds: records
+      .filter((record) => record.enabled === false)
+      .map((record) => record.environmentId),
+  });
+  const enabledRecords = records.filter((record) => record.enabled !== false);
+  const expectedEnvironmentIds = new Set(enabledRecords.map((record) => record.environmentId));
   const staleEnvironmentIds = [...environmentConnections.values()]
     .filter((connection) => connection.kind === "saved")
     .map((connection) => connection.environmentId)
@@ -1201,7 +1248,7 @@ async function syncSavedEnvironmentConnections(
     staleEnvironmentIds.map((environmentId) => disconnectSavedEnvironment(environmentId)),
   );
   await Promise.all(
-    records.map((record) => ensureSavedEnvironmentConnection(record).catch(() => undefined)),
+    enabledRecords.map((record) => ensureSavedEnvironmentConnection(record).catch(() => undefined)),
   );
 }
 
@@ -1245,14 +1292,21 @@ export async function disconnectSavedEnvironment(environmentId: EnvironmentId): 
     return;
   }
 
-  useSavedEnvironmentRuntimeStore.getState().clear(environmentId);
-  await removeConnection(environmentId).catch(() => false);
+  await removeConnection(environmentId);
+  useSavedEnvironmentRuntimeStore.getState().patch(environmentId, {
+    connectionState: "disconnected",
+    lastError: null,
+    lastErrorAt: null,
+  });
 }
 
 export async function reconnectSavedEnvironment(environmentId: EnvironmentId): Promise<void> {
   const record = getSavedEnvironmentRecord(environmentId);
   if (!record) {
     throw new Error("Saved environment not found.");
+  }
+  if (record.enabled === false) {
+    throw new Error("This environment is paused. Switch it on before reconnecting.");
   }
 
   const connection = environmentConnections.get(environmentId);
@@ -1268,6 +1322,14 @@ export async function reconnectSavedEnvironment(environmentId: EnvironmentId): P
     setRuntimeError(environmentId, error);
     throw error;
   }
+}
+
+export async function setSavedEnvironmentEnabled(
+  environmentId: EnvironmentId,
+  enabled: boolean,
+): Promise<void> {
+  await persistSavedEnvironmentEnabled(environmentId, enabled);
+  await syncSavedEnvironmentConnections(listSavedEnvironmentRecords());
 }
 
 export async function removeSavedEnvironment(environmentId: EnvironmentId): Promise<void> {
@@ -1308,6 +1370,7 @@ export async function addSavedEnvironment(input: {
     httpBaseUrl: resolvedTarget.httpBaseUrl,
     createdAt: isoNow(),
     lastConnectedAt: isoNow(),
+    enabled: getSavedEnvironmentRecord(environmentId)?.enabled ?? true,
   };
 
   await persistSavedEnvironmentRecord(record);
@@ -1324,6 +1387,7 @@ export async function addSavedEnvironment(input: {
         wsBaseUrl: entry.wsBaseUrl,
         createdAt: entry.createdAt,
         lastConnectedAt: entry.lastConnectedAt,
+        enabled: entry.enabled ?? true,
       })),
     );
     throw new Error("Unable to persist saved environment credentials.");
@@ -1380,12 +1444,16 @@ export function startEnvironmentConnectionService(queryClient: QueryClient): () 
     if (!hasSavedEnvironmentRegistryHydrated()) {
       return;
     }
-    void syncSavedEnvironmentConnections(listSavedEnvironmentRecords());
+    void syncSavedEnvironmentConnections(listSavedEnvironmentRecords()).catch((error) => {
+      reportClientError("[SAVED_ENVIRONMENTS] synchronization failed", error);
+    });
   });
 
   void waitForSavedEnvironmentRegistryHydration()
     .then(() => syncSavedEnvironmentConnections(listSavedEnvironmentRecords()))
-    .catch(() => undefined);
+    .catch((error) => {
+      reportClientError("[SAVED_ENVIRONMENTS] initialization failed", error);
+    });
 
   activeService = {
     queryClient,

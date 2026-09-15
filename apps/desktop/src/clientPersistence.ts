@@ -58,6 +58,7 @@ function isPersistedSavedEnvironmentStorageRecord(
     typeof value.httpBaseUrl === "string" &&
     typeof value.wsBaseUrl === "string" &&
     typeof value.createdAt === "string" &&
+    (value.enabled === undefined || typeof value.enabled === "boolean") &&
     (value.lastConnectedAt === null || typeof value.lastConnectedAt === "string") &&
     (value.encryptedBearerToken === undefined || typeof value.encryptedBearerToken === "string")
   );
@@ -86,6 +87,7 @@ function toPersistedSavedEnvironmentRecord(
     wsBaseUrl: record.wsBaseUrl,
     createdAt: record.createdAt,
     lastConnectedAt: record.lastConnectedAt,
+    ...(record.enabled === undefined ? {} : { enabled: record.enabled }),
   };
 }
 
@@ -136,6 +138,7 @@ export function writeSavedEnvironmentRegistry(
             wsBaseUrl: record.wsBaseUrl,
             createdAt: record.createdAt,
             lastConnectedAt: record.lastConnectedAt,
+            ...(record.enabled === undefined ? {} : { enabled: record.enabled }),
             encryptedBearerToken,
           }
         : record;
@@ -198,6 +201,7 @@ export function writeSavedEnvironmentSecret(input: {
         wsBaseUrl: record.wsBaseUrl,
         createdAt: record.createdAt,
         lastConnectedAt: record.lastConnectedAt,
+        ...(record.enabled === undefined ? {} : { enabled: record.enabled }),
         encryptedBearerToken,
       } satisfies PersistedSavedEnvironmentStorageRecord;
     }),

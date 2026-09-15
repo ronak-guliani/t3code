@@ -204,7 +204,13 @@ describe("createEnvironmentConnection", () => {
       environmentId,
     );
 
+    const reconnecting = connection.reconnect();
+    const rejected = expect(reconnecting).rejects.toThrow("disposed");
+    await Promise.resolve();
     await connection.dispose();
+    await rejected;
+    await expect(connection.reconnect()).rejects.toThrow("disposed");
+    expect(client.reconnect).toHaveBeenCalledTimes(1);
   });
 
   it("does not apply a refresh snapshot behind the live shell stream", async () => {

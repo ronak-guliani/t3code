@@ -60,6 +60,7 @@ const connected: ConnectedEnvironmentSummary = {
   environmentLabel: "Windows laptop",
   displayUrl: "https://host.test",
   isRelayManaged: true,
+  isEnabled: true,
   connectionState: "connected",
   connectionError: null,
   connectionErrorTraceId: null,
@@ -80,11 +81,12 @@ const registered: RelayEnvironmentView = {
   error: null,
   traceId: null,
 };
-const render = () =>
+const render = (environment: ConnectedEnvironmentSummary = connected) =>
   renderToStaticMarkup(
     <CloudEnvironmentRows
-      connectedCloudEnvironments={[connected]}
-      onReconnectEnvironment={() => {}}
+      connectedCloudEnvironments={[environment]}
+      onSetEnvironmentEnabled={() => {}}
+      onRemoveEnvironment={() => {}}
     />,
   );
 
@@ -95,6 +97,21 @@ beforeEach(() => {
 });
 
 describe("connected account environment actions", () => {
+  it("keeps paused cloud rows with an unchecked switch and without stale errors", () => {
+    const html = render({
+      ...connected,
+      isEnabled: false,
+      connectionState: "error",
+      connectionError: "stale failure",
+      connectionErrorTraceId: "stale-trace",
+    });
+    expect(html).toContain("Windows laptop");
+    expect(html).toContain("Off on this device");
+    expect(html).not.toContain('checked=""');
+    expect(html).not.toContain("stale failure");
+    expect(html).not.toContain("stale-trace");
+    expect(harness.remove).not.toHaveBeenCalled();
+  });
   it("removes deregistration after account refresh without removing the connected row", () => {
     expect(render()).toContain('aria-label="Deregister Windows laptop"');
     harness.relayEnvironments = [];

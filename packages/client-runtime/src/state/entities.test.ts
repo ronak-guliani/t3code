@@ -168,6 +168,7 @@ function makeHarness() {
             wsBaseUrl: "wss://example.test",
           }),
           profile: Option.none(),
+          enabled: true,
         },
       ],
     ]),
@@ -186,6 +187,7 @@ function makeHarness() {
   );
 
   return {
+    catalogValueAtom,
     registry: AtomRegistry.make(),
     shellStateAtom: shellStateAtoms(ENVIRONMENT_ID),
     threadStateAtom: (threadId: ThreadId) => threadStateAtoms(`${ENVIRONMENT_ID}\u0000${threadId}`),
@@ -196,6 +198,28 @@ function makeHarness() {
 }
 
 describe("environment entity projections", () => {
+  it("hides paused projects and threads without discarding their cached snapshot", () => {
+    const harness = makeHarness();
+    const catalog = harness.registry.get(harness.catalogValueAtom);
+    const entry = catalog.entries.get(ENVIRONMENT_ID)!;
+    const originalProjects = harness.registry.get(harness.projects.projectRefsAtom);
+    const originalThreads = harness.registry.get(harness.threadShells.threadRefsAtom);
+    expect(originalProjects.length).toBeGreaterThan(0);
+    expect(originalThreads.length).toBeGreaterThan(0);
+    harness.registry.set(harness.catalogValueAtom, {
+      ...catalog,
+      entries: new Map([[ENVIRONMENT_ID, { ...entry, enabled: false }]]),
+    });
+    expect(harness.registry.get(harness.projects.projectRefsAtom)).toEqual([]);
+    expect(harness.registry.get(harness.threadShells.threadRefsAtom)).toEqual([]);
+    expect(
+      harness.registry.get(harness.threadShells.environmentThreadRefsAtom(ENVIRONMENT_ID)),
+    ).toEqual(originalThreads);
+    harness.registry.set(harness.catalogValueAtom, catalog);
+    expect(harness.registry.get(harness.projects.projectRefsAtom)).toEqual(originalProjects);
+    expect(harness.registry.get(harness.threadShells.threadRefsAtom)).toEqual(originalThreads);
+    harness.registry.dispose();
+  });
   it("composes detail collections with authoritative shell workspace metadata", () => {
     const messages: OrchestrationThread["messages"] = [];
     const detail = {

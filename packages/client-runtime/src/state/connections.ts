@@ -25,6 +25,14 @@ export const EMPTY_ENVIRONMENT_CATALOG_STATE: EnvironmentCatalogState = Object.f
   entries: new Map(),
 });
 
+export function enabledEnvironmentIds(
+  catalog: EnvironmentCatalogState,
+): ReadonlyArray<EnvironmentIdType> {
+  return [...catalog.entries]
+    .filter(([, entry]) => entry.enabled)
+    .map(([environmentId]) => environmentId);
+}
+
 export function createEnvironmentCatalogAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, E>,
 ) {
@@ -115,6 +123,15 @@ export function createEnvironmentCatalogAtoms<R, E>(
         Effect.flatMap((registry) => registry.retryNow(environmentId)),
       ),
   });
+  const setEnabled = createRuntimeCommand(runtime, {
+    label: "environment-catalog:set-enabled",
+    scheduler: commandScheduler,
+    concurrency: serial,
+    execute: (input: { readonly environmentId: EnvironmentIdType; readonly enabled: boolean }) =>
+      EnvironmentRegistry.EnvironmentRegistry.pipe(
+        Effect.flatMap((registry) => registry.setEnabled(input.environmentId, input.enabled)),
+      ),
+  });
 
   return {
     catalogAtom,
@@ -126,5 +143,6 @@ export function createEnvironmentCatalogAtoms<R, E>(
     remove,
     removeRelayEnvironments,
     retryNow,
+    setEnabled,
   };
 }
