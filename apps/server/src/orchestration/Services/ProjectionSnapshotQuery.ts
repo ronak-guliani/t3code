@@ -181,6 +181,18 @@ export interface ProjectionSnapshotQueryShape {
   readonly searchTranscript?: (
     query: string,
   ) => Effect.Effect<OrchestrationSearchTranscriptResult, ProjectionRepositoryError>;
+  /**
+   * Batch-resolve owning projects for live threads in a single narrow query.
+   *
+   * Used by search enrichment, which needs only the project id per match:
+   * hydrating full thread details (messages, activities, plans, turns) per
+   * match costs ~9 heavy queries each and decodes payloads the caller
+   * discards. Soft-deleted threads are excluded, matching
+   * `getThreadDetailById` filtering; unknown ids are simply absent.
+   */
+  readonly listThreadProjectIds?: (
+    threadIds: ReadonlyArray<ThreadId>,
+  ) => Effect.Effect<ReadonlyMap<ThreadId, ProjectId>, ProjectionRepositoryError>;
 }
 
 /**

@@ -5767,6 +5767,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           projectionSnapshotQuery: {
             getSnapshot: () => Effect.succeed(snapshot),
             getThreadDetailById: () => Effect.succeed(Option.some(snapshot.threads[0]!)),
+            listThreadProjectIds: () =>
+              Effect.succeed(new Map([[ThreadId.make("thread-1"), ProjectId.make("project-a")]])),
             searchTranscript: () =>
               Effect.succeed({
                 matches: [

@@ -1173,29 +1173,38 @@ const makeWsRpcLayer = (
               projectionSnapshotQuery.searchTranscript?.(input.query) ??
               Effect.succeed({ matches: [] })
             ).pipe(
-              Effect.flatMap((result) =>
-                Effect.forEach(result.matches.slice(0, input.limit ?? 50), (match) =>
-                  projectionSnapshotQuery.getThreadDetailById(match.threadId).pipe(
-                    Effect.map((thread) =>
-                      Option.map(thread, (value) => ({
-                        threadId: match.threadId,
-                        projectId: value.projectId,
-                        source: match.role,
-                        snippet: match.excerpt.slice(0, 240),
-                        messageCreatedAt: match.updatedAt,
-                      })),
-                    ),
-                  ),
-                ),
-              ),
-              Effect.map((matches) => ({
-                matches: matches.flatMap((match) =>
-                  Option.match(match, {
-                    onNone: () => [],
-                    onSome: (value) => [value],
-                  }),
-                ),
-              })),
+              Effect.flatMap((result) => {
+                const matches = result.matches.slice(0, input.limit ?? 50);
+                if (matches.length === 0) {
+                  return Effect.succeed({ matches: [] });
+                }
+                // Narrow project lookup: search results need only the owning
+                // project id per match. Hydrating full thread details here
+                // cost ~9 heavy queries per match (messages, activities,
+                // plans, turns) decoding payloads the caller discards.
+                return (
+                  projectionSnapshotQuery.listThreadProjectIds?.(
+                    matches.map((match) => match.threadId),
+                  ) ?? Effect.succeed(new Map<ThreadId, ProjectId>())
+                ).pipe(
+                  Effect.map((projectIds) => ({
+                    matches: matches.flatMap((match) => {
+                      const projectId = projectIds.get(match.threadId);
+                      return projectId === undefined
+                        ? []
+                        : [
+                            {
+                              threadId: match.threadId,
+                              projectId,
+                              source: match.role,
+                              snippet: match.excerpt.slice(0, 240),
+                              messageCreatedAt: match.updatedAt,
+                            },
+                          ];
+                    }),
+                  })),
+                );
+              }),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationGetSnapshotError({
