@@ -241,6 +241,7 @@ export interface DesktopEnvironmentBootstrap {
 }
 
 export interface PersistedSavedEnvironmentRecord {
+  enabled?: boolean;
   environmentId: EnvironmentId;
   label: string;
   wsBaseUrl: string;

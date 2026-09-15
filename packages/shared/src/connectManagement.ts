@@ -7,5 +7,6 @@ export const CONNECT_CAPACITY_UNAVAILABLE =
   "This relay does not report current tunnel usage or your account limit. Account registrations are not a tunnel-usage measurement.";
 
 export const CONNECT_ACTION_HELP =
-  "Disconnect this client removes only this device's connection. Disable host exposure stops its tunnel. " +
+  "Switch off to pause on this device and keep credentials and drafts. Remove from this device forgets its connection. " +
+  "Disable host exposure stops its tunnel. " +
   "Deregister removes the account registration for every device.";

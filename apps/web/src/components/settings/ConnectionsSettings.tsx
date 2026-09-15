@@ -65,6 +65,7 @@ import {
   addSavedEnvironment,
   getPrimaryEnvironmentConnection,
   reconnectSavedEnvironment,
+  setSavedEnvironmentEnabled,
   removeSavedEnvironment,
 } from "~/environments/runtime";
 import { MobilePairingDialog } from "./MobilePairingDialog";
@@ -715,6 +716,8 @@ function SavedBackendListRow({
   onReconnect,
   onRemove,
 }: SavedBackendListRowProps) {
+  const [isSwitching, setIsSwitching] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const nowMs = useRelativeTimeTick(1_000);
   const record = useSavedEnvironmentRegistryStore((state) => state.byId[environmentId] ?? null);
   const runtime = useSavedEnvironmentRuntimeStore((state) => state.byId[environmentId] ?? null);
@@ -723,7 +726,8 @@ function SavedBackendListRow({
     return null;
   }
 
-  const connectionState = runtime?.connectionState ?? "disconnected";
+  const enabled = record.enabled !== false;
+  const connectionState = enabled ? (runtime?.connectionState ?? "disconnected") : "disconnected";
   const stateDotClassName =
     connectionState === "connected"
       ? "bg-success"
@@ -734,7 +738,9 @@ function SavedBackendListRow({
           : "bg-muted-foreground/40";
   const roleLabel = runtime?.role ? (runtime.role === "owner" ? "Owner" : "Client") : null;
   const descriptorLabel = runtime?.descriptor?.label ?? null;
-  const statusTooltip = getSavedBackendStatusTooltip(runtime, record, nowMs);
+  const statusTooltip = enabled
+    ? getSavedBackendStatusTooltip(runtime, record, nowMs)
+    : "Off on this device";
   const metadataBits = [
     roleLabel,
     record.lastConnectedAt
@@ -743,7 +749,7 @@ function SavedBackendListRow({
   ].filter((value): value is string => value !== null);
 
   return (
-    <div className={ITEM_ROW_CLASSNAME}>
+    <div className={cn(ITEM_ROW_CLASSNAME, !enabled && "text-muted-foreground")}>
       <div className={ITEM_ROW_INNER_CLASSNAME}>
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex min-h-5 items-center gap-1.5">
@@ -762,25 +768,74 @@ function SavedBackendListRow({
           {descriptorLabel && descriptorLabel !== record.label ? (
             <p className="text-xs text-muted-foreground">Server label: {descriptorLabel}</p>
           ) : null}
+          <p className="truncate text-xs text-muted-foreground">
+            {record.httpBaseUrl} · {enabled ? connectionState : "Off on this device"}
+          </p>
+          {enabled && runtime?.lastError ? (
+            <p className="truncate text-xs text-destructive" title={runtime.lastError}>
+              {runtime.lastError}
+            </p>
+          ) : null}
         </div>
         <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
           <Button
             size="xs"
             variant="outline"
-            disabled={reconnectingEnvironmentId === environmentId}
+            disabled={!enabled || isSwitching || reconnectingEnvironmentId === environmentId}
             onClick={() => void onReconnect(environmentId)}
           >
             {reconnectingEnvironmentId === environmentId ? "Reconnecting…" : "Reconnect"}
           </Button>
+          <Switch
+            aria-label={`Enable ${record.label}`}
+            checked={enabled}
+            disabled={isSwitching || removingEnvironmentId === environmentId}
+            onCheckedChange={(checked) => {
+              setIsSwitching(true);
+              void setSavedEnvironmentEnabled(environmentId, checked)
+                .catch((error) => {
+                  toastManager.add({
+                    type: "error",
+                    title: "Could not change environment connection",
+                    description: error instanceof Error ? error.message : String(error),
+                  });
+                })
+                .finally(() => setIsSwitching(false));
+            }}
+          />
           <Button
             size="xs"
             variant="destructive-outline"
             disabled={removingEnvironmentId === environmentId}
-            onClick={() => void onRemove(environmentId)}
+            onClick={() => setConfirmRemove(true)}
           >
-            {removingEnvironmentId === environmentId ? "Removing…" : "Remove"}
+            {removingEnvironmentId === environmentId ? "Removing…" : "Remove from this device"}
           </Button>
         </div>
+        <AlertDialog open={confirmRemove} onOpenChange={setConfirmRemove}>
+          <AlertDialogPopup>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Remove {record.label} from this device?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This forgets its saved connection and credential. Pair again to reconnect. Switch it
+                off instead to pause without forgetting it. Neither action stops server-side work or
+                deregisters the host from your account.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  setConfirmRemove(false);
+                  onRemove(environmentId);
+                }}
+              >
+                Remove from this device
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogPopup>
+        </AlertDialog>
       </div>
     </div>
   );

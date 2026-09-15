@@ -1,5 +1,6 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as Schema from "effect/Schema";
 
 import * as TokenStore from "../authorization/tokenStore.ts";
 import {
@@ -17,11 +18,14 @@ import {
 } from "../connection/model.ts";
 import {
   EMPTY_CONNECTION_CATALOG_DOCUMENT,
+  ConnectionCatalogDocument,
+  setConnectionEnabledInCatalog,
   registerConnectionInCatalog,
   removeConnectionFromCatalog,
 } from "./storageDocument.ts";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
+const decodeCatalog = Schema.decodeUnknownSync(ConnectionCatalogDocument);
 
 const BEARER_TARGET = new BearerConnectionTarget({
   environmentId: ENVIRONMENT_ID,
@@ -52,6 +56,24 @@ const REMOTE_TOKEN = new TokenStore.RemoteDpopAccessToken({
 });
 
 describe("ConnectionCatalogDocument", () => {
+  it("defaults legacy documents to enabled and preserves credentials through pause and edits", () => {
+    const { disabledEnvironmentIds: _, ...legacy } = EMPTY_CONNECTION_CATALOG_DOCUMENT;
+    expect(decodeCatalog(legacy).disabledEnvironmentIds).toEqual([]);
+    const registration = new BearerConnectionRegistration({
+      target: BEARER_TARGET,
+      profile: BEARER_PROFILE,
+      credential: BEARER_CREDENTIAL,
+    });
+    const original = registerConnectionInCatalog(EMPTY_CONNECTION_CATALOG_DOCUMENT, registration);
+    const paused = setConnectionEnabledInCatalog(original, ENVIRONMENT_ID, false);
+    expect(paused.credentials).toEqual(original.credentials);
+    expect(paused.profiles).toEqual(original.profiles);
+    expect(registerConnectionInCatalog(paused, registration).disabledEnvironmentIds).toEqual([
+      ENVIRONMENT_ID,
+    ]);
+    expect(setConnectionEnabledInCatalog(paused, ENVIRONMENT_ID, true)).toEqual(original);
+    expect(removeConnectionFromCatalog(paused, BEARER_TARGET).disabledEnvironmentIds).toEqual([]);
+  });
   it("registers a bearer connection as one catalog mutation", () => {
     const document = registerConnectionInCatalog(
       EMPTY_CONNECTION_CATALOG_DOCUMENT,

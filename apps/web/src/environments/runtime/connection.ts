@@ -251,6 +251,7 @@ export function createEnvironmentConnection(
         throw new Error(`Environment connection ${environmentId} is disposed.`);
       }
       const snapshot = await input.client.orchestration.getShellSnapshot();
+      if (disposed) return;
       if (
         latestShellStreamSequence !== null &&
         snapshot.snapshotSequence < latestShellStreamSequence
@@ -263,9 +264,15 @@ export function createEnvironmentConnection(
       if (fatalError) {
         throw fatalError;
       }
+      if (disposed) {
+        throw new Error(`Environment connection ${environmentId} is disposed.`);
+      }
       bootstrapGate.reset();
       try {
         await input.client.reconnect();
+        if (disposed) {
+          throw fatalError ?? new Error(`Environment connection ${environmentId} is disposed.`);
+        }
         await input.refreshMetadata?.();
         await bootstrapGate.wait();
       } catch (error) {
@@ -274,6 +281,7 @@ export function createEnvironmentConnection(
       }
     },
     dispose: async () => {
+      bootstrapGate.reject(new Error(`Environment connection ${environmentId} is disposed.`));
       cleanup();
       if (!clientDisposed) {
         clientDisposed = true;
