@@ -38,7 +38,7 @@ export const makePullRequestAssociationRecovery = Effect.gen(function* () {
       const existingLink = thread.pullRequests?.find((link) =>
         sameThreadPullRequest(link.pullRequest, thread.pullRequest!),
       );
-      if (!existingLink || existingLink.source === "recovered") {
+      if (existingLink) {
         return;
       }
     }

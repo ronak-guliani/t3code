@@ -291,7 +291,16 @@ describe("pull request association recovery", () => {
   it("skips existing associations, archived threads, and missing intent without Git calls", async () => {
     const h = await harness();
     for (const update of [
-      { pullRequest: status.pr },
+      {
+        pullRequest: status.pr,
+        pullRequests: [
+          {
+            pullRequest: status.pr!,
+            source: "created" as const,
+            linkedAt: now,
+          },
+        ],
+      },
       { pullRequest: null, archivedAt: now },
       { archivedAt: null, messages: [message("Done")] },
     ]) {
@@ -300,6 +309,32 @@ describe("pull request association recovery", () => {
     }
     expect(h.lookups()).toBe(0);
     expect(h.commands).toEqual([]);
+  });
+
+  it("does not downgrade explicit link provenance during recovery", async () => {
+    const h = await harness();
+    h.updateThread({
+      pullRequest: status.pr,
+      pullRequests: [
+        {
+          pullRequest: status.pr!,
+          source: "created",
+          linkedAt: now,
+        },
+      ],
+    });
+
+    await Effect.runPromise(h.recovery.sweep);
+
+    expect(h.lookups()).toBe(0);
+    expect(h.commands).toEqual([]);
+    expect(h.thread()?.pullRequests).toEqual([
+      {
+        pullRequest: status.pr,
+        source: "created",
+        linkedAt: now,
+      },
+    ]);
   });
 
   it("rejects default branches and changed checkouts", async () => {

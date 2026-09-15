@@ -54,7 +54,15 @@ export function resolvePullRequestFromCwds(
     return Effect.succeed(null);
   }
   return resolvePullRequest({ cwd, reference }).pipe(
-    Effect.catch(() => resolvePullRequestFromCwds(cwds.slice(1), reference, resolvePullRequest)),
+    Effect.catch((error) =>
+      Effect.logDebug("pull request association resolver failed for checkout", {
+        cwd,
+        reference,
+        error: error instanceof Error ? error.message : String(error),
+      }).pipe(
+        Effect.andThen(resolvePullRequestFromCwds(cwds.slice(1), reference, resolvePullRequest)),
+      ),
+    ),
   );
 }
 
