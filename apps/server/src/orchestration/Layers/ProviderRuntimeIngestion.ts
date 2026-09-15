@@ -1689,6 +1689,7 @@ const make = Effect.gen(function* () {
         event.type === "turn.completed" ||
         event.type === "request.opened" ||
         event.type === "user-input.requested" ||
+        event.type === "turn.aborted" ||
         (event.type === "item.completed" && event.payload.itemType === "assistant_message") ||
         event.type === "turn.diff.updated";
       const threadDetail = needsThreadBodies

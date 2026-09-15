@@ -239,7 +239,10 @@ export const withThreadDispatch = <A, E, R>(
 ) =>
   withLiveOrchestrationClient(flags, ({ getSnapshot, getArchivedSnapshot, dispatch }) =>
     Effect.gen(function* () {
-      const snapshot = yield* options?.includeArchived === true ? getArchivedSnapshot : getSnapshot;
+      const snapshot =
+        options?.includeArchived === true
+          ? combineCliSnapshots(...(yield* Effect.all([getSnapshot, getArchivedSnapshot])))
+          : yield* getSnapshot;
       const thread = yield* findThreadForCli(snapshot, identifier, options);
       return yield* run({ thread, snapshot, dispatch });
     }),

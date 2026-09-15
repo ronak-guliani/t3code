@@ -75,9 +75,12 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         return;
       }
 
+      const readModel = queuedTurns.some((turn) => turn.origin?.kind === "child-nudge")
+        ? yield* orchestrationEngine.getReadModel()
+        : undefined;
       const threadsById = new Map(
         queuedTurns.some((turn) => turn.origin?.kind === "child-nudge")
-          ? readModel.threads.map((entry) => [entry.id, entry] as const)
+          ? readModel!.threads.map((entry) => [entry.id, entry] as const)
           : [],
       );
       const nowIso = new Date().toISOString();
@@ -282,6 +285,10 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
               const latestThread = Option.getOrUndefined(
                 yield* readThreadDetail(orchestrationEngine, threadId),
               );
+              const latestReadModel =
+                nextQueuedTurn.origin?.kind === "child-nudge"
+                  ? yield* orchestrationEngine.getReadModel()
+                  : undefined;
               if (
                 !latestThread ||
                 !isThreadReadyForQueuedDispatch(latestThread) ||
@@ -290,7 +297,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
                     evaluateChildFollowUp(
                       latestThread,
                       nextQueuedTurn,
-                      new Map(latestReadModel.threads.map((entry) => [entry.id, entry])),
+                      new Map(latestReadModel!.threads.map((entry) => [entry.id, entry])),
                       new Date().toISOString(),
                     ).reason !== null))
               ) {
