@@ -1,7 +1,18 @@
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import { AlertTriangle } from "lucide-react";
+import { cn } from "~/lib/utils";
+import {
+  COMPOSER_INLINE_CHIP_CLASS_NAME,
+  COMPOSER_INLINE_CHIP_ICON_CLASS_NAME,
+  COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME,
+} from "../composerInlineChip";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const POST_COMPLETION_WARNING_CODE = "copilot-acp-post-completion-activity";
+
+const BADGE_LABEL = "Copilot continued after completion";
+const BADGE_TOOLTIP =
+  "Copilot activity continued after completion. Background work may still be running. Review the session before sending or interrupting; later edits may be missing from the completion checkpoint.";
 
 export function CopilotCompletionWarning({
   activities,
@@ -16,21 +27,30 @@ export function CopilotCompletionWarning({
   if (!warning) return null;
 
   return (
-    <div
-      role="alert"
-      className="flex items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs"
-    >
-      <AlertTriangle
-        className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400"
-        aria-hidden
-      />
-      <div className="min-w-0 flex-1">
-        <p className="font-medium">Copilot activity continued after completion</p>
-        <p className="mt-1 text-muted-foreground">
-          Background work may still be running. Review the session before sending or interrupting;
-          later edits may be missing from the completion checkpoint.
-        </p>
-      </div>
+    <div className="flex justify-start px-3 pt-2">
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span
+              role="alert"
+              aria-label={BADGE_TOOLTIP}
+              className={cn(
+                COMPOSER_INLINE_CHIP_CLASS_NAME,
+                "cursor-default border-warning/30 bg-warning/8 text-warning-foreground",
+              )}
+            >
+              <AlertTriangle
+                className={cn(COMPOSER_INLINE_CHIP_ICON_CLASS_NAME, "text-warning opacity-100")}
+                aria-hidden
+              />
+              <span className={COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME}>{BADGE_LABEL}</span>
+            </span>
+          }
+        />
+        <TooltipPopup side="top" className="max-w-80 whitespace-pre-wrap leading-snug">
+          {BADGE_TOOLTIP}
+        </TooltipPopup>
+      </Tooltip>
     </div>
   );
 }

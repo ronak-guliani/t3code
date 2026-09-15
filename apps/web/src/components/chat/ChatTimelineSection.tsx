@@ -38,7 +38,10 @@ import {
   type TurnDiffSummary,
 } from "../../types";
 import { revokeBlobPreviewUrl } from "../../pendingTurnStore";
-import { deriveMessagesTimelineRows } from "./MessagesTimeline.logic";
+import {
+  deriveMessagesTimelineRows,
+  deriveRevertTurnCountByUserMessageId,
+} from "./MessagesTimeline.logic";
 import { MessagesTimeline, type AssistantResponseMeta } from "./MessagesTimeline";
 import { FindInChatBar } from "./FindInChatBar";
 import { useChatFind, type ChatFindController } from "./useChatFind";
@@ -426,38 +429,15 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       return metadata;
     }, [threadActivities]);
 
-    const revertTurnCountByUserMessageId = useMemo(() => {
-      const byUserMessageId = new Map<MessageId, number>();
-      for (let index = 0; index < timelineEntries.length; index += 1) {
-        const entry = timelineEntries[index];
-        if (!entry || entry.kind !== "message" || entry.message.role !== "user") {
-          continue;
-        }
-
-        for (let nextIndex = index + 1; nextIndex < timelineEntries.length; nextIndex += 1) {
-          const nextEntry = timelineEntries[nextIndex];
-          if (!nextEntry || nextEntry.kind !== "message") {
-            continue;
-          }
-          if (nextEntry.message.role === "user") {
-            break;
-          }
-          const summary = turnDiffSummaryByAssistantMessageId.get(nextEntry.message.id);
-          if (!summary) {
-            continue;
-          }
-          const turnCount =
-            summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId];
-          if (typeof turnCount !== "number") {
-            break;
-          }
-          byUserMessageId.set(entry.message.id, Math.max(0, turnCount - 1));
-          break;
-        }
-      }
-
-      return byUserMessageId;
-    }, [inferredCheckpointTurnCountByTurnId, timelineEntries, turnDiffSummaryByAssistantMessageId]);
+    const revertTurnCountByUserMessageId = useMemo(
+      () =>
+        deriveRevertTurnCountByUserMessageId({
+          timelineEntries,
+          turnDiffSummaryByAssistantMessageId,
+          inferredCheckpointTurnCountByTurnId,
+        }),
+      [inferredCheckpointTurnCountByTurnId, timelineEntries, turnDiffSummaryByAssistantMessageId],
+    );
 
     const latestTurnHasToolActivity = useMemo(
       () => hasToolActivityForTurn(threadActivities, latestTurn?.turnId),
