@@ -4,7 +4,6 @@ import {
   ProjectId,
   ThreadId,
   TurnId,
-  type OrchestrationEvent,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -13,7 +12,6 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CheckoutCoordinator } from "../../git/CheckoutCoordinator.ts";
 import { ServerConfig } from "../../config.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
@@ -21,7 +19,6 @@ import {
   SqlitePersistenceMemory,
   makeSqlitePersistenceLive,
 } from "../../persistence/Layers/Sqlite.ts";
-import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
@@ -31,7 +28,6 @@ import {
   OrchestrationProjectionPipeline,
   type OrchestrationProjectionPipelineShape,
 } from "../Services/ProjectionPipeline.ts";
-import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 
 async function createFenceTestSystem(dbPath?: string) {
   const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
@@ -231,6 +227,112 @@ describe("dispatch fence engine", () => {
     }
   });
 
+  it("replays a lost accepted acknowledgement after execution replacement", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "t3-fence-lost-ack-"));
+    const system = await createFenceTestSystem();
+    try {
+      const { parentId, childId } = await setupDelegatedChild(system, directory);
+      await system.run(
+        system.engine.dispatch(
+          sessionSetCommand(childId, TurnId.make("turn-a"), "fence-lost-session-a"),
+        ),
+      );
+      const bound = await system.run(system.engine.getReadModel());
+      const delegation = bound.threads.find((entry) => entry.id === childId)?.nudging?.delegation;
+      expect(delegation?.dispatchId).toBeDefined();
+      const report = {
+        type: "thread.child.report" as const,
+        threadId: childId,
+        reportId: "result-a",
+        kind: "important-update" as const,
+        summary: "Execution A produced a result.",
+        assignmentId: delegation!.assignmentId,
+        dispatchId: delegation!.dispatchId!,
+        originTurnId: TurnId.make("turn-a"),
+        createdAt: now(),
+      };
+      const accepted = await system.run(
+        system.engine.dispatch({
+          ...report,
+          commandId: CommandId.make("fence-lost-report-a"),
+        }),
+      );
+      expect(accepted.reportVerdict).toBe("accepted");
+      const queuedBefore = (await system.run(system.engine.getReadModel())).threads.find(
+        (entry) => entry.id === parentId,
+      )?.queuedTurns;
+      expect(queuedBefore).toHaveLength(1);
+      await system.run(
+        system.engine.dispatch(
+          sessionSetCommand(childId, TurnId.make("turn-b"), "fence-lost-session-b"),
+        ),
+      );
+      const replayed = await system.run(
+        system.engine.dispatch({
+          ...report,
+          commandId: CommandId.make("fence-lost-report-a-retry"),
+        }),
+      );
+      expect(replayed.reportVerdict).toBe("accepted");
+      const after = await system.run(system.engine.getReadModel());
+      expect(after.threads.find((entry) => entry.id === parentId)?.queuedTurns).toHaveLength(1);
+      expect(
+        after.threads.find((entry) => entry.id === childId)?.nudging?.delegation?.dispatchId,
+      ).not.toBe(delegation!.dispatchId);
+    } finally {
+      await system.dispose();
+    }
+  });
+
+  it("replays an original stale outcome instead of reclassifying it", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "t3-fence-stale-replay-"));
+    const system = await createFenceTestSystem();
+    try {
+      const { parentId, childId } = await setupDelegatedChild(system, directory);
+      await system.run(
+        system.engine.dispatch(
+          sessionSetCommand(childId, TurnId.make("turn-a"), "fence-stale-session-a"),
+        ),
+      );
+      const first = await system.run(system.engine.getReadModel());
+      const delegation = first.threads.find((entry) => entry.id === childId)?.nudging?.delegation;
+      await system.run(
+        system.engine.dispatch(
+          sessionSetCommand(childId, TurnId.make("turn-b"), "fence-stale-session-b"),
+        ),
+      );
+      const report = {
+        type: "thread.child.report" as const,
+        threadId: childId,
+        reportId: "stale-a",
+        kind: "important-update" as const,
+        summary: "Superseded execution A update.",
+        assignmentId: delegation!.assignmentId,
+        dispatchId: delegation!.dispatchId!,
+        originTurnId: TurnId.make("turn-a"),
+        createdAt: now(),
+      };
+      const stale = await system.run(
+        system.engine.dispatch({
+          ...report,
+          commandId: CommandId.make("fence-stale-report-a"),
+        }),
+      );
+      expect(stale.reportVerdict).toBe("stale");
+      const replayed = await system.run(
+        system.engine.dispatch({
+          ...report,
+          commandId: CommandId.make("fence-stale-report-a-retry"),
+        }),
+      );
+      expect(replayed.reportVerdict).toBe("stale");
+      const after = await system.run(system.engine.getReadModel());
+      expect(after.threads.find((entry) => entry.id === parentId)?.queuedTurns).toEqual([]);
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("retains the active generation across restarts", async () => {
     const directory = await mkdtemp(join(tmpdir(), "t3-fence-restart-"));
     const dbPath = join(directory, "state.sqlite");
@@ -245,9 +347,10 @@ describe("dispatch fence engine", () => {
         system.engine.dispatch(sessionSetCommand(childId, TurnId.make("turn-b"), "fence-rs-b")),
       );
       const state = await system.run(system.engine.getReadModel());
-      secondDispatch = state.threads.find((entry) => entry.id === childId)?.nudging?.delegation
-        ?.dispatchId!;
-      expect(secondDispatch).toBeDefined();
+      const persistedDispatch = state.threads.find((entry) => entry.id === childId)?.nudging
+        ?.delegation?.dispatchId;
+      expect(persistedDispatch).toBeDefined();
+      secondDispatch = persistedDispatch!;
     } finally {
       await system.dispose();
     }

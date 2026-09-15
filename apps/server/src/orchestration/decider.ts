@@ -34,19 +34,25 @@ import { projectEvent } from "./projector.ts";
 import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
 import { assistantTurnCount } from "./Utils.ts";
 import { findCanonicalActiveWorktreeOwner } from "./worktreeOwnership.ts";
-import { childNudgePrompt, isAutomaticChildNudgeBlocked, queueChildNudge } from "./childNudging.ts";
+import {
+  childNudgePrompt,
+  childWakeReason,
+  isAutomaticChildNudgeBlocked,
+  queueChildNudge,
+} from "./childNudging.ts";
 import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
 import {
   sameThreadPullRequest,
   sameThreadPullRequestAssociation,
 } from "@t3tools/shared/threadPullRequests";
 import {
+  bindDelegationExecution,
   childReportDedupeKey,
   classifyChildReport,
-  hasReportReceipt,
   legacyUpdateId,
-  mintDispatch,
   mintDispatchRecord,
+  transitionDelegationExecution,
+  type RecordedReportOutcome,
 } from "./dispatchAuthority.ts";
 
 const FORK_TITLE_PREFIX = "Forked: ";
@@ -373,6 +379,9 @@ function buildTurnStartEvents(input: {
   readonly interactionMode: TurnStartRequestedPayload["interactionMode"];
   readonly sourceProposedPlan: TurnStartRequestedPayload["sourceProposedPlan"];
   readonly source?: TurnStartRequestedPayload["source"];
+  readonly delegationAssignmentId?: TurnStartRequestedPayload["delegationAssignmentId"];
+  readonly delegationDispatchId?: TurnStartRequestedPayload["delegationDispatchId"];
+  readonly delegationTransition?: TurnStartRequestedPayload["delegationTransition"];
   readonly at: string;
 }): {
   readonly userMessageEvent: PlannedOrchestrationEvent;
@@ -416,6 +425,15 @@ function buildTurnStartEvents(input: {
         ? { sourceProposedPlan: input.sourceProposedPlan }
         : {}),
       ...(input.source !== undefined ? { source: input.source } : {}),
+      ...(input.delegationAssignmentId !== undefined
+        ? { delegationAssignmentId: input.delegationAssignmentId }
+        : {}),
+      ...(input.delegationDispatchId !== undefined
+        ? { delegationDispatchId: input.delegationDispatchId }
+        : {}),
+      ...(input.delegationTransition !== undefined
+        ? { delegationTransition: input.delegationTransition }
+        : {}),
       createdAt: input.at,
     },
   };
@@ -515,9 +533,11 @@ const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   command,
   readModel,
+  recordedReportOutcome,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
+  readonly recordedReportOutcome?: RecordedReportOutcome;
 }): Effect.fn.Return<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
   switch (command.type) {
     case "chat-archive.import": {
@@ -1777,6 +1797,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Proposed plan '${sourceProposedPlan?.planId}' belongs to thread '${sourceThread.id}' in a different project.`,
         });
       }
+      const activeDelegation =
+        targetThread.nudging?.delegation?.completedAt === null
+          ? targetThread.nudging.delegation
+          : undefined;
+      if (activeDelegation?.decision) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "Resolve the current child decision through its correlated response before continuing.",
+        });
+      }
+      const execution =
+        activeDelegation?.dispatchTurnId != null
+          ? transitionDelegationExecution(activeDelegation, "continued")
+          : null;
+      const turnDelegation = execution?.delegation ?? activeDelegation;
       const { userMessageEvent, turnStartRequestedEvent } = buildTurnStartEvents({
         commandId: command.commandId,
         threadId: command.threadId,
@@ -1792,6 +1828,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         interactionMode: targetThread.interactionMode,
         sourceProposedPlan,
         source: command.source,
+        ...(turnDelegation?.dispatchId
+          ? {
+              delegationAssignmentId: turnDelegation.assignmentId,
+              delegationDispatchId: turnDelegation.dispatchId,
+              delegationTransition: turnDelegation.dispatchReason ?? "assigned",
+            }
+          : {}),
         at: command.createdAt,
       });
       const occurredAt = command.createdAt;
@@ -1828,10 +1871,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
+      const delegationEvents =
+        execution && targetThread.nudging
+          ? [
+              nudgingMetaEvent(targetThread, turnStartRequestedEvent, {
+                ...targetThread.nudging,
+                delegation: execution.delegation,
+              }),
+            ]
+          : [];
       return appendChildLifecycleNotification({
         readModel,
         childThread: targetThread,
-        sourceEvents: [userMessageEvent, turnStartRequestedEvent, ...lifecycleEvents],
+        sourceEvents: [
+          userMessageEvent,
+          turnStartRequestedEvent,
+          ...delegationEvents,
+          ...lifecycleEvents,
+        ],
         sourceEvent: turnStartRequestedEvent,
         lifecycle: "started",
         sourceKey: command.message.messageId,
@@ -2117,6 +2174,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Queued turn '${command.queuedTurnId}' is failed and must be edited before dispatch.`,
         });
       }
+      const nudging = targetThread.nudging;
+      const activeDelegation =
+        nudging?.delegation?.completedAt === null ? nudging.delegation : undefined;
+      const responseDispatched = activeDelegation?.pendingResponse?.queuedTurnId === queuedTurn.id;
+      if (activeDelegation?.decision && !responseDispatched) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "Resolve the current child decision through its correlated response before continuing.",
+        });
+      }
+      const execution =
+        activeDelegation?.dispatchTurnId != null
+          ? transitionDelegationExecution(activeDelegation, "continued")
+          : null;
+      const turnDelegation = execution?.delegation ?? activeDelegation;
       const events: PlannedOrchestrationEvent[] = [];
       if (queuedTurn.modelSelection !== undefined) {
         events.push({
@@ -2186,6 +2259,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         runtimeMode: isNudge ? targetThread.runtimeMode : queuedTurn.runtimeMode,
         interactionMode: isNudge ? targetThread.interactionMode : queuedTurn.interactionMode,
         sourceProposedPlan: queuedTurn.sourceProposedPlan,
+        ...(turnDelegation?.dispatchId
+          ? {
+              delegationAssignmentId: turnDelegation.assignmentId,
+              delegationDispatchId: turnDelegation.dispatchId,
+              delegationTransition: turnDelegation.dispatchReason ?? "assigned",
+            }
+          : {}),
         at: command.dispatchedAt,
       });
       const dispatchedEvent: PlannedOrchestrationEvent = {
@@ -2204,19 +2284,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           dispatchedAt: command.dispatchedAt,
         },
       };
-      const nudging = targetThread.nudging;
-      const responseDispatched =
-        nudging?.delegation?.pendingResponse?.queuedTurnId === queuedTurn.id;
       const waitSatisfied =
         isNudge && nudging?.wait && !nudging.wait.satisfiedAt && childWaitIsSatisfied(nudging.wait);
       const nudgingEvents =
-        responseDispatched || waitSatisfied
+        execution || responseDispatched || waitSatisfied
           ? [
               nudgingMetaEvent(targetThread, dispatchedEvent, {
                 ...nudging,
-                ...(responseDispatched
-                  ? { delegation: { ...nudging.delegation, pendingResponse: null } }
-                  : {}),
+                ...(execution
+                  ? { delegation: execution.delegation }
+                  : responseDispatched
+                    ? { delegation: { ...nudging.delegation, pendingResponse: null } }
+                    : {}),
                 ...(waitSatisfied
                   ? { wait: { ...nudging.wait, satisfiedAt: command.dispatchedAt } }
                   : {}),
@@ -2439,33 +2518,40 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       ) {
         const boundTurn = (bindingDelegation.dispatchTurnId as string | null | undefined) ?? null;
         if (boundTurn === null) {
-          const [dispatchId, dispatchSequence] = mintDispatch(bindingDelegation.dispatchSequence);
+          const bindableDelegation = bindingDelegation.dispatchId
+            ? bindingDelegation
+            : { ...bindingDelegation, ...mintDispatchRecord(bindingDelegation.dispatchSequence) };
           sourceEvents.push(
             nudgingMetaEvent(thread, sessionSetEvent, {
               ...thread.nudging,
-              delegation: {
-                ...bindingDelegation,
-                dispatchId: bindingDelegation.dispatchId ?? dispatchId,
-                dispatchSequence: bindingDelegation.dispatchId
-                  ? (bindingDelegation.dispatchSequence ?? 1)
-                  : dispatchSequence,
-                dispatchTurnId: nextActiveTurn,
-              },
+              delegation: bindDelegationExecution(bindableDelegation, nextActiveTurn),
             }),
           );
         } else if (boundTurn !== nextActiveTurn) {
-          const [dispatchId, dispatchSequence] = mintDispatch(bindingDelegation.dispatchSequence);
+          const replacement = transitionDelegationExecution(bindingDelegation, "replaced");
           sourceEvents.push(
             nudgingMetaEvent(thread, sessionSetEvent, {
               ...thread.nudging,
-              delegation: {
-                ...bindingDelegation,
-                dispatchId,
-                dispatchSequence,
-                dispatchTurnId: nextActiveTurn,
-              },
+              delegation: bindDelegationExecution(replacement.delegation, nextActiveTurn),
             }),
           );
+          if (replacement.retiredPendingResponseQueuedTurnId !== null) {
+            sourceEvents.push({
+              ...withEventBase({
+                aggregateKind: "thread",
+                aggregateId: thread.id,
+                occurredAt: command.createdAt,
+                commandId: command.commandId,
+              }),
+              causationEventId: sessionSetEvent.eventId,
+              type: "thread.queued-turn-deleted",
+              payload: {
+                threadId: thread.id,
+                queuedTurnId: replacement.retiredPendingResponseQueuedTurnId,
+                deletedAt: command.createdAt,
+              },
+            });
+          }
         }
       }
       if (command.session?.status === "running" && threadHasSettlementOverride(thread)) {
@@ -2548,8 +2634,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             "The active execution changed since this replacement was prepared; refresh and retry with the current dispatch.",
         });
       }
-      const [dispatchId, dispatchSequence] = mintDispatch(delegation.dispatchSequence ?? 1);
-      return {
+      const pendingResponseId = delegation.pendingResponse?.queuedTurnId ?? null;
+      const unrelatedQueuedTurns = (thread.queuedTurns ?? []).filter(
+        (queuedTurn) => queuedTurn.id !== pendingResponseId,
+      );
+      if (unrelatedQueuedTurns.length > 0) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "Replacement requires an empty child queue apart from its pending decision answer.",
+        });
+      }
+      if ((thread.queuedTurns ?? []).some((queuedTurn) => queuedTurn.id === command.queuedTurnId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Queued turn '${command.queuedTurnId}' already exists on thread '${command.threadId}'.`,
+        });
+      }
+      const replacement = transitionDelegationExecution(delegation, "replaced");
+      const metaUpdated: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -2561,16 +2664,56 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           nudging: {
             ...thread.nudging,
-            delegation: {
-              ...delegation,
-              dispatchId,
-              dispatchSequence,
-              dispatchTurnId: null,
-            },
+            delegation: replacement.delegation,
           },
           updatedAt: command.createdAt,
         },
       };
+      const queued: PlannedOrchestrationEvent = {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        causationEventId: metaUpdated.eventId,
+        type: "thread.queued-turn-created",
+        payload: {
+          threadId: command.threadId,
+          queuedTurn: {
+            id: command.queuedTurnId,
+            threadId: command.threadId,
+            message: command.message,
+            ...(command.modelSelection ? { modelSelection: command.modelSelection } : {}),
+            runtimeMode: command.runtimeMode,
+            interactionMode: command.interactionMode,
+            createdAt: command.createdAt,
+            updatedAt: command.createdAt,
+            failedAt: null,
+            failureMessage: null,
+          },
+        },
+      };
+      const retiredAnswer =
+        replacement.retiredPendingResponseQueuedTurnId === null
+          ? []
+          : [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread" as const,
+                  aggregateId: command.threadId,
+                  occurredAt: command.createdAt,
+                  commandId: command.commandId,
+                }),
+                type: "thread.queued-turn-deleted" as const,
+                payload: {
+                  threadId: command.threadId,
+                  queuedTurnId: replacement.retiredPendingResponseQueuedTurnId,
+                  deletedAt: command.createdAt,
+                },
+              },
+            ];
+      return [...retiredAnswer, metaUpdated, queued];
     }
 
     case "thread.message.assistant.delta": {
@@ -2749,6 +2892,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         childThreadId: thread.id,
         childTitle: thread.title,
         kind,
+        wakeReason: childWakeReason({ kind }),
         summary,
         ...(resultMessage ? { sourceMessageId: resultMessage.id } : {}),
       };
@@ -2786,8 +2930,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       const parent = yield* requireThread({ readModel, command, threadId: child.parentThreadId });
       if (
-        (command.assignmentId !== undefined && command.assignmentId !== delegation.assignmentId) ||
-        (delegation.assignedAt !== undefined && command.assignmentId === undefined)
+        recordedReportOutcome === undefined &&
+        ((command.assignmentId !== undefined && command.assignmentId !== delegation.assignmentId) ||
+          (delegation.assignedAt !== undefined && command.assignmentId === undefined))
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -2800,11 +2945,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "The parent thread has been deleted.",
         });
       }
-      const effectiveDispatchId = command.dispatchId ?? delegation.dispatchId ?? undefined;
+      const reportAssignmentId = command.assignmentId ?? delegation.assignmentId;
+      const reportDispatchId = command.dispatchId ?? delegation.dispatchId ?? undefined;
       const expectedDecisionId = childReportDedupeKey({
         childThreadId: child.id,
-        dispatchId: effectiveDispatchId,
-        assignmentId: delegation.assignmentId,
+        dispatchId: reportDispatchId,
+        originTurnId: command.originTurnId,
+        assignmentId: reportAssignmentId,
         reportId: command.reportId,
       });
       const verdict = classifyChildReport({
@@ -2812,11 +2959,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         claimedDispatchId: command.dispatchId,
         claimedTurnId: command.originTurnId,
         kind: command.kind,
-        hasReceipt: hasReportReceipt(child, {
-          reportId: command.reportId,
-          assignmentId: delegation.assignmentId,
-          dispatchId: effectiveDispatchId,
-        }),
+        recordedOutcome: recordedReportOutcome,
       });
       const verdictActivity = (summary: string): PlannedOrchestrationEvent => ({
         ...withEventBase({
@@ -2835,8 +2978,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             summary,
             payload: {
               reportId: command.reportId,
-              assignmentId: delegation.assignmentId,
-              ...(effectiveDispatchId ? { dispatchId: effectiveDispatchId } : {}),
+              assignmentId: reportAssignmentId,
+              ...(command.dispatchId ? { dispatchId: command.dispatchId } : {}),
               ...(command.originTurnId ? { originTurnId: command.originTurnId } : {}),
               dispatchVerdict: verdict,
             },
@@ -2848,6 +2991,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         },
       });
+      if (recordedReportOutcome !== undefined) {
+        return verdictActivity(
+          `Recorded ${recordedReportOutcome} outcome replayed for report '${command.reportId}' without applying it again.`,
+        );
+      }
       if (verdict !== "accepted") {
         return verdictActivity(
           verdict === "already-recorded"
@@ -2893,15 +3041,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const report = {
         id: childReportDedupeKey({
           childThreadId: child.id,
-          dispatchId: effectiveDispatchId,
-          assignmentId: delegation.assignmentId,
+          dispatchId: reportDispatchId,
+          originTurnId: command.originTurnId,
+          assignmentId: reportAssignmentId,
           reportId: command.reportId,
         }),
-        assignmentId: delegation.assignmentId,
-        ...(effectiveDispatchId ? { dispatchId: effectiveDispatchId } : {}),
+        assignmentId: reportAssignmentId,
+        ...(reportDispatchId ? { dispatchId: reportDispatchId } : {}),
         childThreadId: child.id,
         childTitle: child.title,
         kind: command.kind,
+        wakeReason: childWakeReason({ kind: command.kind }),
         summary: command.summary,
         ...(command.decision !== undefined ? { decision: command.decision } : {}),
         ...(command.canContinue !== undefined ? { canContinue: command.canContinue } : {}),
