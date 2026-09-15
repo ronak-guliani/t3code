@@ -31,7 +31,10 @@ import type { ThreadId, TurnId } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { resolveModelSlugForProvider } from "@t3tools/shared/model";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
-import { sameThreadPullRequest } from "@t3tools/shared/threadPullRequests";
+import {
+  sameThreadPullRequest,
+  upsertLegacyThreadPullRequestLink,
+} from "@t3tools/shared/threadPullRequests";
 import { create } from "zustand";
 import {
   type ChatMessage,
@@ -2052,6 +2055,16 @@ function applyEnvironmentOrchestrationEvent(
         ...(event.payload.pullRequest !== undefined
           ? { pullRequest: event.payload.pullRequest }
           : {}),
+        ...(event.payload.pullRequest !== undefined && event.payload.pullRequest !== null
+          ? {
+              pullRequests: upsertLegacyThreadPullRequestLink(
+                thread.pullRequests,
+                event.payload.pullRequest,
+                event.payload.updatedAt,
+                event.payload.pullRequestSource,
+              ),
+            }
+          : {}),
         updatedAt: event.payload.updatedAt,
       }));
 
@@ -2089,6 +2102,25 @@ function applyEnvironmentOrchestrationEvent(
         pullRequests: (thread.pullRequests ?? []).filter(
           (link) => !sameThreadPullRequest(link.pullRequest, event.payload.pullRequest),
         ),
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.pull-request-rekeyed":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        ...(thread.pullRequest !== undefined &&
+        thread.pullRequest !== null &&
+        sameThreadPullRequest(thread.pullRequest, event.payload.previousPullRequest)
+          ? { pullRequest: event.payload.link.pullRequest }
+          : {}),
+        pullRequests: [
+          ...(thread.pullRequests ?? []).filter(
+            (link) =>
+              !sameThreadPullRequest(link.pullRequest, event.payload.previousPullRequest) &&
+              !sameThreadPullRequest(link.pullRequest, event.payload.link.pullRequest),
+          ),
+          event.payload.link,
+        ],
         updatedAt: event.payload.updatedAt,
       }));
 

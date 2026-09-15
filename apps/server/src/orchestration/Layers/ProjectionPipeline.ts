@@ -634,6 +634,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                     : undefined,
                   event.payload.pullRequest,
                   event.payload.updatedAt,
+                  event.payload.pullRequestSource,
                 ),
               });
             }
@@ -671,6 +672,30 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(existingRow.value.pullRequest &&
             sameThreadPullRequest(existingRow.value.pullRequest, event.payload.pullRequest)
               ? { pullRequest: null }
+              : {}),
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.pull-request-rekeyed": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) return;
+          yield* projectionThreadPullRequestRepository.delete({
+            threadId: event.payload.threadId,
+            pullRequest: event.payload.previousPullRequest,
+          });
+          yield* projectionThreadPullRequestRepository.upsert({
+            threadId: event.payload.threadId,
+            ...event.payload.link,
+          });
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            ...(existingRow.value.pullRequest &&
+            sameThreadPullRequest(existingRow.value.pullRequest, event.payload.previousPullRequest)
+              ? { pullRequest: event.payload.link.pullRequest }
               : {}),
             updatedAt: event.payload.updatedAt,
           });

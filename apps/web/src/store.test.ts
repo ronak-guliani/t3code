@@ -2587,6 +2587,7 @@ describe("insights lifecycle retention", () => {
       makeEvent("thread.meta-updated", {
         threadId: peerId,
         pullRequest,
+        pullRequestSource: "created",
         updatedAt: "2026-02-27T00:00:02.000Z",
       }),
       localEnvironmentId,
@@ -2594,5 +2595,14 @@ describe("insights lifecycle retention", () => {
     expect(
       selectThreadByRef(withCreatedPr, scopeThreadRef(localEnvironmentId, peerId))?.pullRequest,
     ).toEqual(pullRequest);
+    expect(
+      selectThreadByRef(withCreatedPr, scopeThreadRef(localEnvironmentId, peerId))?.pullRequests,
+    ).toEqual([
+      {
+        pullRequest,
+        source: "created",
+        linkedAt: "2026-02-27T00:00:02.000Z",
+      },
+    ]);
   });
 });

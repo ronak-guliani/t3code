@@ -1,4 +1,5 @@
 import { CommandId, type OrchestrationThread, type ThreadId } from "@t3tools/contracts";
+import { sameThreadPullRequest } from "@t3tools/shared/threadPullRequests";
 import { Effect, Layer, PubSub, Stream } from "effect";
 
 import { resolveThreadWorkspaceCwd } from "../checkpointing/Utils.ts";
@@ -32,7 +33,15 @@ export const makePullRequestAssociationRecovery = Effect.gen(function* () {
   const recover = Effect.fn("recoverPullRequestAssociation")(function* (threadId: ThreadId) {
     const snapshot = yield* engine.getReadModel();
     const thread = snapshot.threads.find((entry) => entry.id === threadId);
-    if (!thread || thread.deletedAt || thread.archivedAt || thread.pullRequest) return;
+    if (!thread || thread.deletedAt || thread.archivedAt) return;
+    if (thread.pullRequest) {
+      const existingLink = thread.pullRequests?.find((link) =>
+        sameThreadPullRequest(link.pullRequest, thread.pullRequest!),
+      );
+      if (!existingLink || existingLink.source === "recovered") {
+        return;
+      }
+    }
     const reference = reportedPullRequestUrl(thread);
     if (!reference) return;
     const cwd = resolveThreadWorkspaceCwd({ thread, projects: snapshot.projects });
@@ -49,6 +58,20 @@ export const makePullRequestAssociationRecovery = Effect.gen(function* () {
     ) {
       return;
     }
+    const pullRequest = status.pr;
+    if (!pullRequest) {
+      return;
+    }
+    if (thread.pullRequest && !sameThreadPullRequest(thread.pullRequest, pullRequest)) {
+      return;
+    }
+    if (
+      thread.pullRequests?.some(
+        (link) => link.source === "recovered" && link.pullRequest.url === pullRequest.url,
+      )
+    ) {
+      return;
+    }
     // Serialized dispatch checks the snapshot version: explicit associations,
     // workspace handoffs, and archival that race the lookup always win.
     yield* engine.dispatch({
@@ -57,14 +80,8 @@ export const makePullRequestAssociationRecovery = Effect.gen(function* () {
       threadId,
       expectedUpdatedAt: thread.updatedAt,
       expectedWorkspaceCwd: cwd,
-      pullRequest: status.pr,
-    });
-    yield* engine.dispatch({
-      type: "thread.pull-request.link",
-      commandId: CommandId.make(`server:recover-pr-link:${crypto.randomUUID()}`),
-      threadId,
-      pullRequest: status.pr,
-      source: "recovered",
+      pullRequest,
+      pullRequestSource: "recovered",
     });
   });
 
@@ -72,10 +89,7 @@ export const makePullRequestAssociationRecovery = Effect.gen(function* () {
     const snapshot = yield* engine.getReadModel();
     const candidates = snapshot.threads.filter(
       (thread) =>
-        !thread.deletedAt &&
-        !thread.archivedAt &&
-        !thread.pullRequest &&
-        reportedPullRequestUrl(thread) !== null,
+        !thread.deletedAt && !thread.archivedAt && reportedPullRequestUrl(thread) !== null,
     );
     yield* Effect.forEach(candidates, (thread) => recoverSafely(thread.id), {
       concurrency: 4,

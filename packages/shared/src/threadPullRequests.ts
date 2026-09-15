@@ -13,11 +13,13 @@ export function threadPullRequestIdentity(
     const url = new URL(pullRequest.url);
     const parts = url.pathname.split("/").filter(Boolean);
     const markerIndex = parts.findLastIndex((part) =>
-      ["pull", "pulls", "merge_requests", "pull-requests"].includes(part.toLowerCase()),
+      ["pull", "pulls", "pullrequest", "merge_requests", "pull-requests"].includes(
+        part.toLowerCase(),
+      ),
     );
     const repository = markerIndex > 0 ? parts.slice(0, markerIndex).join("/") : "";
     return {
-      host: url.hostname.toLowerCase(),
+      host: url.host.toLowerCase(),
       repository: repository.toLowerCase(),
       number: pullRequest.number,
     };
@@ -50,6 +52,7 @@ export function sameThreadPullRequestAssociation(
 ): boolean {
   return (
     sameThreadPullRequest(left, right) &&
+    left.url === right.url &&
     left.title === right.title &&
     left.baseBranch === right.baseBranch &&
     left.headBranch === right.headBranch &&
@@ -61,20 +64,29 @@ export function legacyThreadPullRequestLink(
   existing: ThreadPullRequestLink | undefined,
   pullRequest: GitPullRequestAssociation,
   linkedAt: string,
+  source?: ThreadPullRequestLink["source"],
 ): ThreadPullRequestLink {
-  return existing ? { ...existing, pullRequest } : { pullRequest, source: "manual", linkedAt };
+  return existing
+    ? { ...existing, pullRequest, ...(source !== undefined ? { source } : {}) }
+    : { pullRequest, source: source ?? "manual", linkedAt };
 }
 
 export function upsertLegacyThreadPullRequestLink(
   links: ReadonlyArray<ThreadPullRequestLink> | undefined,
   pullRequest: GitPullRequestAssociation,
   linkedAt: string,
+  source?: ThreadPullRequestLink["source"],
 ): ReadonlyArray<ThreadPullRequestLink> {
   const existingLinks = links ?? [];
   const existingIndex = existingLinks.findIndex((link) =>
     sameThreadPullRequest(link.pullRequest, pullRequest),
   );
-  const nextLink = legacyThreadPullRequestLink(existingLinks[existingIndex], pullRequest, linkedAt);
+  const nextLink = legacyThreadPullRequestLink(
+    existingLinks[existingIndex],
+    pullRequest,
+    linkedAt,
+    source,
+  );
   return existingIndex < 0
     ? [...existingLinks, nextLink]
     : existingLinks.map((link, index) => (index === existingIndex ? nextLink : link));

@@ -21,7 +21,7 @@ export function ThreadPullRequestsPanel({
   const [reference, setReference] = useState("");
   const [busy, setBusy] = useState(false);
 
-  if (!enabled && pullRequests.length < 2) {
+  if (!enabled && pullRequests.length === 0) {
     return null;
   }
 

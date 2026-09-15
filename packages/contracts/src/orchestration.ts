@@ -938,6 +938,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   pullRequest: Schema.optional(Schema.NullOr(GitPullRequestAssociation)),
+  pullRequestSource: Schema.optional(ThreadPullRequestLinkSource),
   pullRequestOwnership: Schema.optional(Schema.Literal("transfer")),
 }).check(
   Schema.makeFilter(
@@ -969,6 +970,14 @@ const ThreadPullRequestUnlinkCommand = Schema.Struct({
   type: Schema.Literal("thread.pull-request.unlink"),
   commandId: CommandId,
   threadId: ThreadId,
+  pullRequest: GitPullRequestAssociation,
+});
+
+const ThreadPullRequestRekeyCommand = Schema.Struct({
+  type: Schema.Literal("thread.pull-request.rekey"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  previousPullRequest: GitPullRequestAssociation,
   pullRequest: GitPullRequestAssociation,
 });
 
@@ -1360,6 +1369,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadMetaUpdateCommand,
   ThreadPullRequestLinkCommand,
   ThreadPullRequestUnlinkCommand,
+  ThreadPullRequestRekeyCommand,
   ThreadWorkspaceHandoffCommand,
   ThreadForkCommand,
   ThreadRuntimeModeSetCommand,
@@ -1399,6 +1409,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadMetaUpdateCommand,
   ThreadPullRequestLinkCommand,
   ThreadPullRequestUnlinkCommand,
+  ThreadPullRequestRekeyCommand,
   ThreadWorkspaceHandoffCommand,
   ThreadForkCommand,
   ThreadRuntimeModeSetCommand,
@@ -1563,6 +1574,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.meta-updated",
   "thread.pull-request-linked",
   "thread.pull-request-unlinked",
+  "thread.pull-request-rekeyed",
   "thread.runtime-mode-set",
   "thread.pending-runtime-mode-set",
   "thread.interaction-mode-set",
@@ -1737,6 +1749,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   pullRequest: Schema.optional(Schema.NullOr(GitPullRequestAssociation)),
+  pullRequestSource: Schema.optional(ThreadPullRequestLinkSource),
   pullRequestOwnership: Schema.optional(Schema.Literal("transfer")),
   updatedAt: IsoDateTime,
 });
@@ -1754,6 +1767,14 @@ export const ThreadPullRequestUnlinkedPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 export type ThreadPullRequestUnlinkedPayload = typeof ThreadPullRequestUnlinkedPayload.Type;
+
+export const ThreadPullRequestRekeyedPayload = Schema.Struct({
+  threadId: ThreadId,
+  previousPullRequest: GitPullRequestAssociation,
+  link: ThreadPullRequestLink,
+  updatedAt: IsoDateTime,
+});
+export type ThreadPullRequestRekeyedPayload = typeof ThreadPullRequestRekeyedPayload.Type;
 
 export const ThreadRuntimeModeSetPayload = Schema.Struct({
   threadId: ThreadId,
@@ -2059,6 +2080,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.pull-request-unlinked"),
     payload: ThreadPullRequestUnlinkedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.pull-request-rekeyed"),
+    payload: ThreadPullRequestRekeyedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

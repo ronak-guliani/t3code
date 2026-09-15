@@ -1244,6 +1244,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.branch !== undefined ? { branch: command.branch } : {}),
           ...(command.worktreePath !== undefined ? { worktreePath: command.worktreePath } : {}),
           ...(command.pullRequest !== undefined ? { pullRequest: command.pullRequest } : {}),
+          ...(command.pullRequestSource !== undefined
+            ? { pullRequestSource: command.pullRequestSource }
+            : {}),
           ...(command.pullRequestOwnership !== undefined
             ? { pullRequestOwnership: command.pullRequestOwnership }
             : {}),
@@ -1615,6 +1618,47 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           pullRequest: command.pullRequest,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.pull-request.rekey": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (sameThreadPullRequest(command.previousPullRequest, command.pullRequest)) {
+        return [];
+      }
+      const existing = (thread.pullRequests ?? []).find((link) =>
+        sameThreadPullRequest(link.pullRequest, command.previousPullRequest),
+      );
+      const clearsLegacyPullRequest =
+        thread.pullRequest !== null &&
+        thread.pullRequest !== undefined &&
+        sameThreadPullRequest(thread.pullRequest, command.previousPullRequest);
+      if (!existing && !clearsLegacyPullRequest) {
+        return [];
+      }
+      const occurredAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.pull-request-rekeyed",
+        payload: {
+          threadId: command.threadId,
+          previousPullRequest: command.previousPullRequest,
+          link: {
+            pullRequest: command.pullRequest,
+            source: existing?.source ?? "manual",
+            linkedAt: existing?.linkedAt ?? occurredAt,
+          },
           updatedAt: occurredAt,
         },
       };

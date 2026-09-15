@@ -165,4 +165,51 @@ describe("pull request link decider", () => {
       },
     });
   });
+
+  it("rekeys refreshed identities while preserving link provenance", async () => {
+    let readModel = await makeReadModel();
+    readModel = await Effect.runPromise(
+      projectEvent(
+        readModel,
+        makeEvent({
+          sequence: 2,
+          type: "thread.pull-request-linked",
+          payload: {
+            threadId,
+            link: { pullRequest, source: "created", linkedAt: now },
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+    const nextPullRequest = {
+      ...pullRequest,
+      url: "https://github.com/acme/renamed/pull/42",
+    };
+
+    const rekeyed = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.pull-request.rekey",
+          commandId: CommandId.make("rekey"),
+          threadId,
+          previousPullRequest: pullRequest,
+          pullRequest: nextPullRequest,
+        },
+        readModel,
+      }),
+    );
+
+    expect(rekeyed).toMatchObject({
+      type: "thread.pull-request-rekeyed",
+      payload: {
+        previousPullRequest: pullRequest,
+        link: {
+          pullRequest: nextPullRequest,
+          source: "created",
+          linkedAt: now,
+        },
+      },
+    });
+  });
 });

@@ -1036,37 +1036,48 @@ const make = Effect.gen(function* () {
                   candidateLink.pullRequest.headBranch !== nextPullRequest.headBranch,
               ),
               ({ thread: candidateThread, link: candidateLink }) =>
-                orchestrationEngine
-                  .dispatch({
-                    type: "thread.pull-request.link",
-                    commandId: CommandId.make(crypto.randomUUID()),
-                    threadId: candidateThread.id,
-                    pullRequest: nextPullRequest,
-                    source: candidateLink.source,
-                  })
-                  .pipe(
-                    Effect.andThen(
-                      candidateThread.pullRequest &&
-                        sameThreadPullRequest(
-                          candidateThread.pullRequest,
-                          candidateLink.pullRequest,
-                        )
-                        ? orchestrationEngine.dispatch({
-                            type: "thread.meta.update",
-                            commandId: CommandId.make(crypto.randomUUID()),
-                            threadId: candidateThread.id,
-                            pullRequest: nextPullRequest,
-                          })
-                        : Effect.void,
-                    ),
-                    Effect.catch((error) =>
-                      Effect.logDebug("failed to persist refreshed pull request association", {
+                (threadPullRequestKey(candidateLink.pullRequest) ===
+                threadPullRequestKey(nextPullRequest)
+                  ? orchestrationEngine
+                      .dispatch({
+                        type: "thread.pull-request.link",
+                        commandId: CommandId.make(crypto.randomUUID()),
                         threadId: candidateThread.id,
-                        pullRequestNumber: candidateLink.pullRequest.number,
-                        error: error instanceof Error ? error.message : String(error),
-                      }),
-                    ),
+                        pullRequest: nextPullRequest,
+                        source: candidateLink.source,
+                      })
+                      .pipe(
+                        Effect.andThen(
+                          candidateThread.pullRequest &&
+                            sameThreadPullRequest(
+                              candidateThread.pullRequest,
+                              candidateLink.pullRequest,
+                            )
+                            ? orchestrationEngine.dispatch({
+                                type: "thread.meta.update",
+                                commandId: CommandId.make(crypto.randomUUID()),
+                                threadId: candidateThread.id,
+                                pullRequest: nextPullRequest,
+                              })
+                            : Effect.void,
+                        ),
+                      )
+                  : orchestrationEngine.dispatch({
+                      type: "thread.pull-request.rekey",
+                      commandId: CommandId.make(crypto.randomUUID()),
+                      threadId: candidateThread.id,
+                      previousPullRequest: candidateLink.pullRequest,
+                      pullRequest: nextPullRequest,
+                    })
+                ).pipe(
+                  Effect.catch((error) =>
+                    Effect.logDebug("failed to persist refreshed pull request association", {
+                      threadId: candidateThread.id,
+                      pullRequestNumber: candidateLink.pullRequest.number,
+                      error: error instanceof Error ? error.message : String(error),
+                    }),
                   ),
+                ),
               { concurrency: 2, discard: true },
             );
           }),

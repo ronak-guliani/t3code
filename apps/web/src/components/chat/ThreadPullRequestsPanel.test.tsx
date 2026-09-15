@@ -47,4 +47,19 @@ describe("ThreadPullRequestsPanel", () => {
     expect(html).not.toContain('aria-label="Unlink pull request');
     expect(html).not.toContain('aria-label="Link pull request"');
   });
+
+  it("shows one linked PR to unsupported clients without mutation controls", () => {
+    const html = renderToStaticMarkup(
+      <ThreadPullRequestsPanel
+        pullRequests={[linkedPullRequest]}
+        enabled={false}
+        onLink={async () => {}}
+        onUnlink={async () => {}}
+      />,
+    );
+
+    expect(html).toContain("Add linked pull request");
+    expect(html).not.toContain('aria-label="Unlink pull request');
+    expect(html).not.toContain('aria-label="Link pull request"');
+  });
 });

@@ -28,6 +28,7 @@ import {
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
   ThreadPullRequestLinkedPayload,
+  ThreadPullRequestRekeyedPayload,
   ThreadPullRequestUnlinkedPayload,
   ThreadPendingRuntimeModeSetPayload,
   ThreadProposedPlanUpsertedPayload,
@@ -575,6 +576,7 @@ export function projectEvent(
                             existingThread?.pullRequests,
                             payload.pullRequest,
                             payload.updatedAt,
+                            payload.pullRequestSource,
                           ),
                         }
                       : {}),
@@ -634,6 +636,41 @@ export function projectEvent(
                 pullRequests: (thread?.pullRequests ?? []).filter(
                   (link) => !sameThreadPullRequest(link.pullRequest, payload.pullRequest),
                 ),
+                updatedAt: payload.updatedAt,
+              };
+            })(),
+          ),
+        })),
+      );
+
+    case "thread.pull-request-rekeyed":
+      return decodeForEvent(
+        ThreadPullRequestRekeyedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            (() => {
+              const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              const pullRequests = [
+                ...(thread?.pullRequests ?? []).filter(
+                  (link) =>
+                    !sameThreadPullRequest(link.pullRequest, payload.previousPullRequest) &&
+                    !sameThreadPullRequest(link.pullRequest, payload.link.pullRequest),
+                ),
+                payload.link,
+              ];
+              return {
+                ...(thread?.pullRequest &&
+                sameThreadPullRequest(thread.pullRequest, payload.previousPullRequest)
+                  ? { pullRequest: payload.link.pullRequest }
+                  : {}),
+                pullRequests,
                 updatedAt: payload.updatedAt,
               };
             })(),
