@@ -37,7 +37,6 @@ function threadIdForEvent(event: OrchestrationEvent): ThreadId | null {
 function canChangeQueuedTurnReadiness(event: OrchestrationEvent): boolean {
   switch (event.type) {
     case "thread.message-sent":
-    case "thread.activity-appended":
     case "thread.child-lifecycle-notified":
     case "thread.turn-diff-completed":
       return false;

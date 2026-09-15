@@ -375,6 +375,7 @@ function buildTurnStartEvents(input: {
   readonly interactionMode: TurnStartRequestedPayload["interactionMode"];
   readonly sourceProposedPlan: TurnStartRequestedPayload["sourceProposedPlan"];
   readonly source?: TurnStartRequestedPayload["source"];
+  readonly delegationAssignmentId?: TurnStartRequestedPayload["delegationAssignmentId"];
   readonly delegationDispatchId?: TurnStartRequestedPayload["delegationDispatchId"];
   readonly delegationTransition?: TurnStartRequestedPayload["delegationTransition"];
   readonly at: string;
@@ -420,6 +421,9 @@ function buildTurnStartEvents(input: {
         ? { sourceProposedPlan: input.sourceProposedPlan }
         : {}),
       ...(input.source !== undefined ? { source: input.source } : {}),
+      ...(input.delegationAssignmentId !== undefined
+        ? { delegationAssignmentId: input.delegationAssignmentId }
+        : {}),
       ...(input.delegationDispatchId !== undefined
         ? { delegationDispatchId: input.delegationDispatchId }
         : {}),
@@ -1706,6 +1710,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         source: command.source,
         ...(turnDelegation?.dispatchId
           ? {
+              delegationAssignmentId: turnDelegation.assignmentId,
               delegationDispatchId: turnDelegation.dispatchId,
               delegationTransition: turnDelegation.dispatchReason ?? "assigned",
             }
@@ -2136,6 +2141,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         sourceProposedPlan: queuedTurn.sourceProposedPlan,
         ...(turnDelegation?.dispatchId
           ? {
+              delegationAssignmentId: turnDelegation.assignmentId,
               delegationDispatchId: turnDelegation.dispatchId,
               delegationTransition: turnDelegation.dispatchReason ?? "assigned",
             }

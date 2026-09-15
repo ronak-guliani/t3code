@@ -1014,6 +1014,41 @@ describe("child nudging", () => {
     expect(delegation.completedAt).toBeNull();
   });
 
+  it("freezes assignment and dispatch identity on the provider turn-start event", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-a",
+        dispatchSequence: 1,
+        dispatchTurnId: null,
+      },
+    };
+    const result = await apply(model(child), {
+      type: "thread.turn.start",
+      commandId: CommandId.make("start-delegated-turn"),
+      threadId: child.id,
+      message: {
+        messageId: MessageId.make("delegated-message"),
+        role: "user",
+        text: "Continue delegated work",
+        attachments: [],
+      },
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      createdAt: finished,
+    });
+    const event = result.events.find(
+      (candidate) => candidate.type === "thread.turn-start-requested",
+    );
+    expect(event).toMatchObject({
+      payload: {
+        delegationAssignmentId: child.nudging!.delegation!.assignmentId,
+        delegationDispatchId: "dispatch-a",
+      },
+    });
+  });
+
   it("mints a fresh dispatch when the bound turn is superseded, preserving replays", async () => {
     const child = thread("child", true);
     let state = (

@@ -1770,6 +1770,7 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  delegationAssignmentId: Schema.optional(MessageId),
   delegationDispatchId: Schema.optional(TrimmedNonEmptyString),
   delegationTransition: Schema.optional(Schema.Literals(["assigned", "continued", "replaced"])),
   createdAt: IsoDateTime,

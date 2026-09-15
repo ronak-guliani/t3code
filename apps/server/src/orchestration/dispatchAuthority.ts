@@ -27,8 +27,6 @@ export function activeDispatchTurnId(delegation: ThreadDelegation): string | nul
  * execution's context — the classifier never substitutes live thread state.
  *
  * - `accepted`: authoritative execution (or genuinely pre-fence history).
- * - `already-recorded`: the assignment closed and this exact report has a
- *   durable receipt. Acknowledge without a second wake.
  * - `stale`: superseded execution, missing proof, unminted claim, or novel
  *   report on closed work. No task, wait, or queue mutation.
  */

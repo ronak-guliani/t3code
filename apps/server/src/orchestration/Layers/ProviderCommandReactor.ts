@@ -649,6 +649,7 @@ const make = Effect.gen(function* () {
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: "default" | "plan";
+    readonly delegationAssignmentId?: MessageId;
     readonly delegationDispatchId?: string;
     readonly createdAt: string;
   }) {
@@ -702,8 +703,8 @@ const make = Effect.gen(function* () {
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-      ...(thread.nudging?.delegation?.assignmentId
-        ? { delegationAssignmentId: thread.nudging.delegation.assignmentId }
+      ...(input.delegationAssignmentId !== undefined
+        ? { delegationAssignmentId: input.delegationAssignmentId }
         : {}),
       ...(input.delegationDispatchId !== undefined
         ? { delegationDispatchId: input.delegationDispatchId }
@@ -1027,6 +1028,9 @@ const make = Effect.gen(function* () {
         ? { modelSelection: event.payload.modelSelection }
         : {}),
       interactionMode: event.payload.interactionMode,
+      ...(event.payload.delegationAssignmentId !== undefined
+        ? { delegationAssignmentId: event.payload.delegationAssignmentId }
+        : {}),
       ...(event.payload.delegationDispatchId !== undefined
         ? { delegationDispatchId: event.payload.delegationDispatchId }
         : {}),
