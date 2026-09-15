@@ -170,6 +170,7 @@
 - LaunchAgent bootstrap already starts `RunAtLoad` jobs: never immediately kill that process with `kickstart -k`. Wait for asynchronous bootout to fully unload before restarting, then wait boundedly for a running PID before probing it. Copy installed production dependencies with the CLI; a relocated `dist` alone cannot resolve external packages.
 - Connect origins must use the actual TCP listener address and port, mapping wildcard IPv4/IPv6 to their matching loopback addresses. Preserve IPv6 in the Node adapter patch (with URL brackets), and test through `NodeHttpServer.layer`, not fabricated addresses: upstream normalizes `::` to IPv4. `localhost` can reach another environment on the same port in the other family; a registered tunnel is not proof that the public endpoint identifies the intended host.
 - Automatic endpoint discovery must project only the live listener's family and bound port. Inspect existing Tailscale Serve mappings read-only, require their loopback target and environment descriptor to match this server, and never treat a public environment ID or DPoP alone as proof that an arbitrary listener is safe.
+- IPv4-only Tailnet IP synthesis must not gate IPv6 loopback Serve inspection; optional Serve command failures must preserve independently discovered IP endpoints.
 
 ## Desktop browser surfaces
 
@@ -285,6 +286,7 @@
 - Projection bootstrap must prune cursor rows for retired projector names; a renamed projector can otherwise pin a global minimum cursor and replay gigabytes of event history on every startup.
 - Projection bootstrap batches may commit independently, but state-derived attachment cleanup must wait for the entire replay; arbitrary batch boundaries can split a revert from a later event that restores a file reference.
 - Eager background-service layers must retain construction dependencies with `Layer.provideMerge`; a sibling runtime layer is not enough. Keep a full `makeServerLayer` build test because isolated sublayer tests can pass while packaged startup fails with a missing service.
+- Registries that construct supervisors later must capture and re-provide optional services from construction time; test calls outside the provider layer so an ambient test service cannot mask lost promotion state.
 - Flavor-scoped provider subprocesses must inherit `T3CODE_HOME`, and live CLI commands must honor it; reject runtime-state files owned by dead PIDs before borrowing auth so port reuse cannot surface as a misleading HTTP 401.
 
 ## Test clocks and durable PR monitoring
@@ -338,6 +340,7 @@
 
 - No-argument MCP parameters need an object-only schema, such as `Schema.Record(Schema.String, Schema.Never)`; `Schema.Struct({})` exports an object/array union. Do not add unused parameters to satisfy provider schema checks.
 - Auth bootstrap cache writes must belong to the current in-flight promise so reset cannot be undone by an older completion. Import auth test dependencies before test execution, not inside a timed test or its cleanup.
+- Direct HTTP authorization must use shared token-only renewal, not relay connection establishment; cached reads must mint no socket tickets or depend on relay availability, while rejected-token retries retain single-flight and account-identity guards.
 
 ## Mobile drafts and navigation
 

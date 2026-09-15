@@ -187,6 +187,7 @@ it("discovers and authorizes direct/relay routes over TLS using real DPoP and si
             }).pipe(Effect.catchTag("AuthError", respondToAuthError)),
           ),
         );
+        const requestCounts = new Map<number, number>();
         const startListener = () =>
           Layer.build(
             HttpRouter.serve(httpRoutes, {
@@ -198,6 +199,10 @@ it("discovers and authorizes direct/relay routes over TLS using real DPoP and si
                 NodeHttpServer.layer(
                   () =>
                     NodeHttps.createServer({ key, cert }, (request) => {
+                      const port = request.socket.localPort;
+                      if (port !== undefined) {
+                        requestCounts.set(port, (requestCounts.get(port) ?? 0) + 1);
+                      }
                       // Match the trusted HTTPS proxy metadata supplied by relay/Serve termination.
                       request.headers["x-forwarded-proto"] = "https";
                     }),
@@ -292,6 +297,8 @@ it("discovers and authorizes direct/relay routes over TLS using real DPoP and si
           expect(tokens.get(environmentId)?.endpoint.httpBaseUrl).toBe(relayOrigin);
           const client = yield* HttpClient.HttpClient;
           const sessionUrl = `${directOrigin}/api/auth/session`;
+          const relayPort = Number(new URL(relayOrigin).port);
+          const relayRequestsBeforeRead = requestCounts.get(relayPort);
           const headers = yield* buildEnvironmentAuthHeaders(
             direct.httpAuthorization,
             "GET",
@@ -301,6 +308,7 @@ it("discovers and authorizes direct/relay routes over TLS using real DPoP and si
           const session = yield* client.get(sessionUrl, { headers: { ...headers } });
           expect(session.status).toBe(200);
           expect(yield* session.json).toMatchObject({ authenticated: true });
+          expect(requestCounts.get(relayPort)).toBe(relayRequestsBeforeRead);
           const rejectedUpgrades: Array<number | undefined> = [];
           const roundTrip = (socketUrl: string, frame: string) =>
             Effect.acquireUseRelease(

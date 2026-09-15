@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { createAdvertisedEndpoint } from "@t3tools/shared/advertisedEndpoint";
 import * as Effect from "effect/Effect";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   resolveVerifiedTailscaleServeEndpoints,
   resolveServerAdvertisedEndpoints,
+  resolveTailscaleEndpoints,
   type LiveListener,
 } from "./ServerAdvertisedEndpoints.ts";
 
@@ -13,6 +17,92 @@ const listener = (host: string, family: LiveListener["family"] = "IPv4"): LiveLi
   host,
   family,
   port: 13773,
+});
+
+describe("resolveTailscaleEndpoints", () => {
+  const runDiscovery = async (
+    liveListener: LiveListener,
+    serve: { readonly stdout: string; readonly code?: number },
+  ) => {
+    const commands: ReadonlyArray<string>[] = [];
+    const spawner = ChildProcessSpawner.make((command) => {
+      if (!ChildProcess.isStandardCommand(command)) {
+        return Effect.die("Expected a standard Tailscale command");
+      }
+      commands.push(command.args);
+      const result =
+        command.args[0] === "serve"
+          ? serve
+          : { stdout: JSON.stringify({ Self: { DNSName: "host.tailnet.ts.net." } }) };
+      return Effect.succeed(
+        ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(result.code ?? 0)),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.drain,
+          stdout: Stream.make(new TextEncoder().encode(result.stdout)),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        }),
+      );
+    });
+    const client = HttpClient.make((request) =>
+      Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          Response.json({
+            environmentId: "environment-a",
+            label: "Host",
+            platform: { os: "darwin", arch: "arm64" },
+            serverVersion: "0.0.0",
+            capabilities: {},
+          }),
+        ),
+      ),
+    );
+    const endpoints = await Effect.runPromise(
+      resolveTailscaleEndpoints({
+        listener: liveListener,
+        networkInterfaces: {
+          utun0: [{ address: "100.64.0.4", family: "IPv4", internal: false }],
+        },
+        environmentId: "environment-a",
+        client,
+        spawner,
+      }),
+    );
+    expect(commands).toEqual([
+      ["status", "--json"],
+      ["serve", "status", "--json"],
+    ]);
+    return endpoints.map((value) => value.httpBaseUrl);
+  };
+
+  it("inspects verified Serve mappings for IPv6 loopback without synthesizing IPv4 routes", async () => {
+    expect(
+      await runDiscovery(listener("::1", "IPv6"), {
+        stdout: JSON.stringify({
+          TCP: { "443": { HTTPS: true } },
+          Web: {
+            "host.tailnet.ts.net:443": {
+              Handlers: { "/": { Proxy: "http://[::1]:13773" } },
+            },
+          },
+        }),
+      }),
+    ).toEqual(["https://host.tailnet.ts.net/"]);
+  });
+
+  it.each([{ stdout: "", code: 1 }, { stdout: "{invalid-json" }])(
+    "retains Tailnet IP discovery when optional Serve inspection fails: %j",
+    async (serve) => {
+      expect(await runDiscovery(listener("0.0.0.0"), serve)).toEqual(["http://100.64.0.4:13773/"]);
+    },
+  );
 });
 
 const interfaces = {

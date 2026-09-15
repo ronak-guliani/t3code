@@ -10,6 +10,7 @@ import { remoteHttpClientLayer } from "../rpc/http.ts";
 import * as ClientCapabilities from "../platform/capabilities.ts";
 import * as RemoteEnvironmentAuthorization from "./service.ts";
 import * as TokenStore from "./tokenStore.ts";
+import { buildEnvironmentAuthHeaders } from "../state/environmentHttpAuth.ts";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
 const ENDPOINT = {
@@ -169,12 +170,85 @@ const makeHarness = Effect.fn("TestRemoteAuthorization.makeHarness")(function* (
     bootstrapCalls,
     account,
     proofInputs,
+    signer,
     fetch,
     obtainBootstrap,
   };
 });
 
 describe("RemoteEnvironmentAuthorization", () => {
+  it.effect("keeps direct HTTP reads relay-independent and shares rejected-token renewal", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        responses: [
+          Response.json(DESCRIPTOR),
+          accessToken("first"),
+          websocketTicket("relay-ticket"),
+          Response.json(DESCRIPTOR),
+          websocketTicket("direct-ticket"),
+          Response.json(DESCRIPTOR),
+          accessToken("second"),
+        ],
+      });
+      yield* Effect.gen(function* () {
+        const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
+        const relay = yield* remote.authorizeDpop({
+          expectedEnvironmentId: ENVIRONMENT_ID,
+          relayUrl: RELAY_URL,
+          obtainBootstrap: harness.obtainBootstrap,
+        });
+        const direct = yield* remote.authorizeDpopDirect({
+          expectedEnvironmentId: ENVIRONMENT_ID,
+          endpoint: {
+            httpBaseUrl: "https://direct.example.test",
+            wsBaseUrl: "wss://direct.example.test",
+            relayUrl: RELAY_URL,
+            currentHttpBaseUrl: ENDPOINT.httpBaseUrl,
+            kind: "lan",
+          },
+          obtainBootstrap: harness.obtainBootstrap,
+        });
+        for (let index = 0; index < 3; index++) {
+          const headers = yield* buildEnvironmentAuthHeaders(
+            direct.httpAuthorization,
+            "GET",
+            `${direct.httpBaseUrl}/api/remote-access/endpoints`,
+            Option.some(harness.signer),
+          );
+          expect(headers.authorization).toBe("DPoP first");
+        }
+        expect(harness.fetch.calls).toHaveLength(5);
+        expect(yield* Ref.get(harness.bootstrapCalls)).toBe(1);
+        if (
+          direct.httpAuthorization._tag !== "Dpop" ||
+          !direct.httpAuthorization.renewAccessToken ||
+          relay.httpAuthorization._tag !== "Dpop" ||
+          !relay.httpAuthorization.renewAccessToken
+        ) {
+          return yield* Effect.die("Expected renewable DPoP authorization");
+        }
+        const renew = direct.httpAuthorization.renewAccessToken;
+        const renewed = yield* Effect.all(
+          [renew("first"), relay.httpAuthorization.renewAccessToken("first"), renew("first")],
+          { concurrency: "unbounded" },
+        );
+        expect(renewed).toEqual(["second", "second", "second"]);
+        expect(harness.fetch.calls).toHaveLength(7);
+        expect(
+          harness.fetch.calls.filter(([url]) => String(url).includes("websocket-ticket")),
+        ).toHaveLength(2);
+        expect(yield* Ref.get(harness.bootstrapCalls)).toBe(2);
+        expect(yield* renew()).toBe("second");
+        yield* Ref.set(harness.account, Option.some({ accountId: "account-2" }));
+        expect(yield* renew().pipe(Effect.flip)).toMatchObject({
+          _tag: "ConnectionBlockedError",
+          reason: "authentication",
+        });
+        expect(harness.fetch.calls).toHaveLength(7);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("renews concurrent HTTP requests once without minting another websocket ticket", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({

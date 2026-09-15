@@ -385,16 +385,8 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  const authorizeDpop = Effect.fn("clientRuntime.connection.remote.authorizeDpop")(function* (
-    input: Parameters<RemoteEnvironmentAuthorization["Service"]["authorizeDpop"]>[0],
-  ) {
-    const account = yield* cloudSession.identity;
-    if (Option.isNone(account))
-      return yield* new ConnectionBlockedError({
-        reason: "authentication",
-        detail: "Sign in to T3 Connect to authorize this environment.",
-      });
-    const identity = account.value;
+  const makeTokenGetter = (input: Parameters<typeof authorizeDpopToken>[0]) => {
+    const identity = input.identity;
     const tokenLock = tokenLocks.get(input.expectedEnvironmentId) ?? Semaphore.makeUnsafe(1);
     tokenLocks.set(input.expectedEnvironmentId, tokenLock);
     const getToken = (
@@ -454,6 +446,20 @@ export const make = Effect.gen(function* () {
         yield* assertAccount(identity);
         return selected;
       });
+    return { getToken, tokenLock };
+  };
+
+  const authorizeDpop = Effect.fn("clientRuntime.connection.remote.authorizeDpop")(function* (
+    input: Parameters<RemoteEnvironmentAuthorization["Service"]["authorizeDpop"]>[0],
+  ) {
+    const account = yield* cloudSession.identity;
+    if (Option.isNone(account))
+      return yield* new ConnectionBlockedError({
+        reason: "authentication",
+        detail: "Sign in to T3 Connect to authorize this environment.",
+      });
+    const identity = account.value;
+    const { getToken, tokenLock } = makeTokenGetter({ ...input, identity });
     let selected = yield* getToken();
     let socket = yield* Effect.gen(function* () {
       if (selected.fromCache) {
@@ -605,32 +611,14 @@ export const make = Effect.gen(function* () {
         Effect.mapError((error) => mapDirectEndpointError(mapDpopSocketError(error))),
       );
       yield* assertAccount(identity);
+      const { getToken } = makeTokenGetter({
+        expectedEnvironmentId: input.expectedEnvironmentId,
+        relayUrl: input.endpoint.relayUrl,
+        obtainBootstrap: input.obtainBootstrap,
+        identity,
+      });
       const renewAccessToken = (rejectedAccessToken?: string) =>
-        authorizeDpop({
-          expectedEnvironmentId: input.expectedEnvironmentId,
-          relayUrl: input.endpoint.relayUrl,
-          obtainBootstrap: input.obtainBootstrap,
-        }).pipe(
-          Effect.map((renewed) => renewed.httpAuthorization),
-          Effect.flatMap((authorization) =>
-            authorization?._tag === "Dpop"
-              ? Effect.succeed(authorization.accessToken)
-              : Effect.fail(
-                  new ConnectionBlockedError({
-                    reason: "configuration",
-                    detail: "The environment did not return a DPoP credential.",
-                  }),
-                ),
-          ),
-          Effect.filterOrFail(
-            (accessToken) => accessToken !== rejectedAccessToken,
-            () =>
-              new ConnectionBlockedError({
-                reason: "authentication",
-                detail: "The environment did not replace the rejected credential. Sign in again.",
-              }),
-          ),
-        ) as Effect.Effect<string, ConnectionAttemptError>;
+        getToken(rejectedAccessToken).pipe(Effect.map(({ token }) => token.accessToken));
       return {
         environmentId: descriptor.environmentId,
         label: descriptor.label,

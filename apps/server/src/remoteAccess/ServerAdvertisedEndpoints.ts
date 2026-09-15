@@ -343,7 +343,7 @@ export const resolveVerifiedTailscaleServeEndpoints = (input: {
     ),
   );
 
-const resolveTailscaleEndpoints = (input: {
+export const resolveTailscaleEndpoints = (input: {
   readonly listener: LiveListener;
   readonly networkInterfaces: TailscaleNetworkInterfaces;
   readonly environmentId: string;
@@ -351,11 +351,11 @@ const resolveTailscaleEndpoints = (input: {
   readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
 }): Effect.Effect<readonly AdvertisedEndpoint[], never> =>
   Effect.gen(function* () {
-    if (input.listener.family !== "IPv4") return [];
     const listenerHost = normalizeHost(input.listener.host);
     const canUseTailnetIps =
-      isWildcardHost(listenerHost) ||
-      (isUsableIpv4(listenerHost) && listenerHost.startsWith("100."));
+      input.listener.family === "IPv4" &&
+      (isWildcardHost(listenerHost) ||
+        (isUsableIpv4(listenerHost) && listenerHost.startsWith("100.")));
 
     const status = yield* readTailscaleStatus.pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, input.spawner),
@@ -379,6 +379,11 @@ const resolveTailscaleEndpoints = (input: {
 
     const mappings = yield* readTailscaleServeMappings.pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, input.spawner),
+      Effect.catch((error) =>
+        Effect.logDebug("Tailscale Serve inspection unavailable", { reason: error._tag }).pipe(
+          Effect.as([] as readonly TailscaleServeMapping[]),
+        ),
+      ),
     );
     const verifiedServeEndpoints = yield* resolveVerifiedTailscaleServeEndpoints({
       listener: input.listener,
@@ -395,7 +400,6 @@ const resolveTailscaleEndpoints = (input: {
       TailscaleCommandExitError: () => Effect.succeed([]),
       TailscaleCommandTimeoutError: () => Effect.succeed([]),
       TailscaleStatusParseError: () => Effect.succeed([]),
-      TailscaleServeStatusParseError: () => Effect.succeed([]),
     }),
   );
 
