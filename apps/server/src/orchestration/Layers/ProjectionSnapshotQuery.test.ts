@@ -3001,47 +3001,4 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* Effect.ensuring(body, Effect.ignore(clearRaceTables));
     }),
   );
-
-  it.effect("resolves owning projects for live threads in one narrow query", () =>
-    Effect.gen(function* () {
-      const snapshotQuery = yield* ProjectionSnapshotQuery;
-      const sql = yield* SqlClient.SqlClient;
-      assert.ok(snapshotQuery.listThreadProjectIds);
-      const listThreadProjectIds = snapshotQuery.listThreadProjectIds;
-      yield* sql`
-        INSERT INTO projection_projects
-          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
-        VALUES ('search-project', 'Search Project', '/tmp/search-project', '[]',
-          '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')
-      `;
-      yield* sql`
-        INSERT INTO projection_threads (
-          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
-          created_at, updated_at, deleted_at
-        ) VALUES
-          ('search-live', 'search-project', 'Live thread',
-            '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default',
-            '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z', NULL),
-          ('search-deleted', 'search-project', 'Deleted thread',
-            '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default',
-            '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z',
-            '2026-09-14T00:00:01.000Z')
-      `;
-
-      // Empty input short-circuits without touching SQL.
-      assert.strictEqual((yield* listThreadProjectIds([])).size, 0);
-
-      const projectIds = yield* listThreadProjectIds([
-        asThreadId("search-live"),
-        asThreadId("search-deleted"),
-        asThreadId("search-missing"),
-      ]);
-      // Live threads resolve; soft-deleted and unknown threads are absent,
-      // matching getThreadDetailById filtering for search enrichment.
-      assert.deepStrictEqual(
-        [...projectIds],
-        [[asThreadId("search-live"), asProjectId("search-project")]],
-      );
-    }),
-  );
 });

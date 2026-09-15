@@ -2969,34 +2969,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     );
   };
 
-  const listThreadProjectIds: NonNullable<ProjectionSnapshotQueryShape["listThreadProjectIds"]> = (
-    threadIds,
-  ) => {
-    if (threadIds.length === 0) {
-      return Effect.succeed(new Map<ThreadId, ProjectId>());
-    }
-    return SqlSchema.findAll({
-      Request: Schema.Struct({ threadIds: Schema.Array(ThreadId) }),
-      Result: Schema.Struct({ threadId: ThreadId, projectId: ProjectId }),
-      execute: ({ threadIds: ids }) => sql`
-        SELECT
-          thread_id AS "threadId",
-          project_id AS "projectId"
-        FROM projection_threads
-        WHERE deleted_at IS NULL
-          AND thread_id IN ${sql.in(ids)}
-      `,
-    })({ threadIds: [...threadIds] }).pipe(
-      Effect.map((rows) => new Map(rows.map((row) => [row.threadId, row.projectId] as const))),
-      Effect.mapError(
-        toPersistenceSqlOrDecodeError(
-          "ProjectionSnapshotQuery.listThreadProjectIds:query",
-          "ProjectionSnapshotQuery.listThreadProjectIds:decodeRows",
-        ),
-      ),
-    );
-  };
-
   return {
     getSnapshot,
     getShellSnapshot,
@@ -3013,7 +2985,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadDetailSnapshotById,
     getThreadActivitiesPage,
     searchTranscript,
-    listThreadProjectIds,
   } satisfies ProjectionSnapshotQueryShape;
 });
 
