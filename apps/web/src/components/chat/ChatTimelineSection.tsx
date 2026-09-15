@@ -427,33 +427,36 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
     }, [threadActivities]);
 
     const revertTurnCountByUserMessageId = useMemo(() => {
+      // Single forward pass: each user message resolves against the first
+      // following assistant message carrying a numeric checkpoint turn count.
+      // Assistants without summaries are skipped; a non-numeric summary or a
+      // following user message discards the pending user. Equivalent to the
+      // previous nested scan in O(n) instead of O(n^2).
       const byUserMessageId = new Map<MessageId, number>();
-      for (let index = 0; index < timelineEntries.length; index += 1) {
-        const entry = timelineEntries[index];
-        if (!entry || entry.kind !== "message" || entry.message.role !== "user") {
+      let pendingUserMessageId: MessageId | null = null;
+      for (const entry of timelineEntries) {
+        if (!entry || entry.kind !== "message") {
           continue;
         }
-
-        for (let nextIndex = index + 1; nextIndex < timelineEntries.length; nextIndex += 1) {
-          const nextEntry = timelineEntries[nextIndex];
-          if (!nextEntry || nextEntry.kind !== "message") {
-            continue;
-          }
-          if (nextEntry.message.role === "user") {
-            break;
-          }
-          const summary = turnDiffSummaryByAssistantMessageId.get(nextEntry.message.id);
-          if (!summary) {
-            continue;
-          }
-          const turnCount =
-            summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId];
-          if (typeof turnCount !== "number") {
-            break;
-          }
-          byUserMessageId.set(entry.message.id, Math.max(0, turnCount - 1));
-          break;
+        if (entry.message.role === "user") {
+          pendingUserMessageId = entry.message.id;
+          continue;
         }
+        if (pendingUserMessageId === null) {
+          continue;
+        }
+        const summary = turnDiffSummaryByAssistantMessageId.get(entry.message.id);
+        if (!summary) {
+          continue;
+        }
+        const turnCount =
+          summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId];
+        const userMessageId = pendingUserMessageId;
+        pendingUserMessageId = null;
+        if (typeof turnCount !== "number") {
+          continue;
+        }
+        byUserMessageId.set(userMessageId, Math.max(0, turnCount - 1));
       }
 
       return byUserMessageId;
