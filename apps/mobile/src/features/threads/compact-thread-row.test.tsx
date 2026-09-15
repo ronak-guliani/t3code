@@ -243,6 +243,64 @@ describe("compact inbox row", () => {
     );
   });
 
+  it("announces the true nesting level beyond the visual indent cap", () => {
+    renderToStaticMarkup(
+      <CompactThreadRow title="Deep" timestamp="1m" status="ready" depth={10} onPress={vi.fn()} />,
+    );
+    expect(harness.pressables[0]?.accessibilityLabel).toContain("subchat, level 10");
+    expect(harness.views[0]?.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ paddingStart: 18 + 36 })]),
+    );
+  });
+
+  it("keeps the Related entry for mixed groups with pruned descendants", () => {
+    harness.unread = false;
+    const activeChild = {
+      ...parent,
+      id: ThreadId.make("active-child"),
+      parentThreadId: parent.id,
+      hasPendingApprovals: true,
+    };
+    const readChild = {
+      ...parent,
+      id: ThreadId.make("read-child"),
+      parentThreadId: parent.id,
+      latestTurn: {
+        turnId: TurnId.make("read-child-turn"),
+        state: "completed" as const,
+        requestedAt: parent.createdAt,
+        startedAt: parent.createdAt,
+        completedAt: parent.updatedAt,
+        assistantMessageId: null,
+      },
+    };
+    const hierarchy = mobileThreadTreeRows(
+      buildMobileThreadTree([parent, activeChild, readChild], undefined, [], {
+        readMarkers: { [`${parent.environmentId}:${readChild.id}`]: readChild.updatedAt },
+      }),
+      { includeAllDescendants: false },
+    )[0]!;
+    expect(hierarchy.relatedChildCount).toBeGreaterThan(hierarchy.childCount);
+    renderToStaticMarkup(
+      <CompactThreadRow
+        title={parent.title}
+        timestamp="1m"
+        status="ready"
+        onPress={() => {}}
+        related={{ thread: parent, hierarchy }}
+      />,
+    );
+    const related = harness.pressables.find((item) =>
+      item.accessibilityLabel?.startsWith("Related chats"),
+    );
+    expect(related?.accessibilityLabel).toContain(`${hierarchy.relatedChildCount}`);
+    related?.onPress?.();
+    expect(harness.navigate).toHaveBeenCalledWith("RelatedThreads", {
+      environmentId: parent.environmentId,
+      threadId: parent.id,
+    });
+  });
+
   it.each(["legacy", "v2"] as const)(
     "keeps the %s list consumer compact with inline nested threads",
     (mode) => {

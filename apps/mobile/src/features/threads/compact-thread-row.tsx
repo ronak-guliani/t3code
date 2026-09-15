@@ -49,12 +49,16 @@ function RelatedThreadsButton(props: {
     props.thread,
     props.hierarchy?.latestRelatedNotificationAt,
   );
+  const childCount = props.hierarchy?.childCount ?? 0;
+  const relatedChildCount = props.hierarchy?.relatedChildCount ?? childCount;
   const count = props.hierarchy?.relatedChildCount ?? props.hierarchy?.childCount ?? 0;
-  const inlineVisible = (props.hierarchy?.childCount ?? 0) > 0;
-  // Nested threads render inline under their parent, so a populated inline
-  // group no longer needs a separate entry point. Keep the affordance for
-  // pruned groups (read children reachable via Related) and orphan unread.
-  if (inlineVisible) return null;
+  const inlineVisible = childCount > 0;
+  const hasPrunedDescendants = relatedChildCount > childCount;
+  // Nested threads render inline under their parent, so a fully visible
+  // inline group needs no separate entry point. Keep the affordance when
+  // read descendants were pruned (relatedChildCount exceeds the inline
+  // childCount) and for orphan unread.
+  if (inlineVisible && !hasPrunedDescendants) return null;
   if (count === 0 && !unread) return null;
   const groupStatus = props.hierarchy?.relatedStatus ?? "ready";
   const status = STATUS[groupStatus];
@@ -133,8 +137,9 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
   const theme = useUniwindTheme();
   const selected = props.selected === true;
   const status = STATUS[props.status];
-  const depth = Math.min(Math.max(props.depth ?? 0, 0), MAX_NESTED_INDENT_DEPTH);
-  const isNested = depth > 0;
+  const rawDepth = Math.max(props.depth ?? 0, 0);
+  const depth = Math.min(rawDepth, MAX_NESTED_INDENT_DEPTH);
+  const isNested = rawDepth > 0;
   const isAgentRun = props.isAgentRun === true;
   const foreground = selected
     ? "text-user-bubble-foreground"
@@ -145,7 +150,7 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
     ? `, ${props.searchMatch.source === "user" ? "You" : "Agent"}: ${props.searchMatch.snippet}`
     : "";
   const nestingLabel = isNested
-    ? `, subchat, level ${depth}${isAgentRun ? ", background run" : ""}`
+    ? `, subchat, level ${rawDepth}${isAgentRun ? ", background run" : ""}`
     : "";
   const accessibilityLabel = `${props.title}${status.label ? `, ${status.label}` : ""}${props.pinned ? ", pinned" : ""}${nestingLabel}, ${props.timestamp}${excerptLabel}`;
   const pullRequest = props.pullRequest;
