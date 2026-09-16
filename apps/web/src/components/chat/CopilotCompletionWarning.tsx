@@ -1,11 +1,5 @@
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import { AlertTriangle } from "lucide-react";
-import { cn } from "~/lib/utils";
-import {
-  COMPOSER_INLINE_CHIP_CLASS_NAME,
-  COMPOSER_INLINE_CHIP_ICON_CLASS_NAME,
-  COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME,
-} from "../composerInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const POST_COMPLETION_WARNING_CODE = "copilot-acp-post-completion-activity";
@@ -27,23 +21,19 @@ export function CopilotCompletionWarning({
   if (!warning) return null;
 
   return (
-    <div className="flex justify-start px-3 pt-2">
+    <div className="flex justify-start px-3 pt-1.5">
       <Tooltip>
         <TooltipTrigger
           render={
             <span
               role="alert"
               aria-label={BADGE_TOOLTIP}
-              className={cn(
-                COMPOSER_INLINE_CHIP_CLASS_NAME,
-                "cursor-default border-warning/30 bg-warning/8 text-warning-foreground",
-              )}
+              className="inline-flex max-w-full cursor-default select-none items-center gap-1.5 py-0.5 text-[11px] leading-tight text-muted-foreground"
             >
-              <AlertTriangle
-                className={cn(COMPOSER_INLINE_CHIP_ICON_CLASS_NAME, "text-warning opacity-100")}
-                aria-hidden
-              />
-              <span className={COMPOSER_INLINE_CHIP_LABEL_CLASS_NAME}>{BADGE_LABEL}</span>
+              <AlertTriangle className="size-3 shrink-0 text-warning/70" aria-hidden />
+              <span className="truncate decoration-muted-foreground/40 decoration-dotted underline-offset-[3px] hover:underline">
+                {BADGE_LABEL}
+              </span>
             </span>
           }
         />

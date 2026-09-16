@@ -64,6 +64,7 @@ import {
 } from "../sidebarThreadTree";
 import { createThreadExpandedOverridesSelector, useUiStateStore } from "../uiStateStore";
 import { usePendingTurnStore } from "../pendingTurnStore";
+import { useThreadSelectionStore } from "../threadSelectionStore";
 import {
   classifySidebarV2Shelves,
   resolveThreadLifecycleSupport,
@@ -89,7 +90,8 @@ import {
 import { SidebarTopActions } from "./SidebarTopActions";
 import { TITLEBAR_ROW_CLASS, TITLEBAR_TRAFFIC_LIGHT_INSET_CLASS } from "../lib/titlebar";
 import { reportClientError } from "../lib/clientLogger";
-import { cn } from "../lib/utils";
+import { cn, isMacPlatform } from "../lib/utils";
+import { resolveSidebarThreadClickKind } from "./Sidebar.logic";
 
 const SETTLED_PAGE_SIZE = 25;
 const EMPTY_THREAD_ACTIVITIES: readonly OrchestrationThreadActivity[] = [];
@@ -303,6 +305,10 @@ export default function SidebarV2() {
   const setThreadPinned = useUiStateStore((state) => state.setThreadPinned);
   const setThreadExpanded = useUiStateStore((state) => state.setThreadExpanded);
   const reorderPinnedThreads = useUiStateStore((state) => state.reorderPinnedThreads);
+  const toggleThreadSelection = useThreadSelectionStore((state) => state.toggleThread);
+  const rangeSelectThreadsTo = useThreadSelectionStore((state) => state.rangeSelectTo);
+  const clearThreadSelection = useThreadSelectionStore((state) => state.clearSelection);
+  const setSelectionAnchor = useThreadSelectionStore((state) => state.setAnchor);
   const threadsWithAgentRuns = useMemo(
     () =>
       deriveSidebarThreadsWithAgentRuns({
@@ -460,6 +466,66 @@ export default function SidebarV2() {
       });
     },
     [activeThreadKey, router],
+  );
+  // Visible row order backing Shift+Click range selection. Shelves render
+  // in this exact sequence — pinned projects, active, snoozed, settled — so a
+  // range anchored in one shelf resolves against the order the user sees. An
+  // anchor outside this list falls back to a single toggle in the store.
+  const orderedVisibleThreadKeys = useMemo(() => {
+    const keys: string[] = [];
+    const pushGroups = (groups: readonly SidebarV2ThreadGroup[]) => {
+      for (const group of groups) {
+        for (const row of group.rows) {
+          keys.push(row.threadKey);
+        }
+      }
+    };
+    for (const pinnedGroups of shelves.pinnedByProjectKey.values()) {
+      pushGroups(pinnedGroups);
+    }
+    pushGroups(shelves.active);
+    pushGroups(shelves.snoozed);
+    pushGroups(openedSettled);
+    return keys;
+  }, [openedSettled, shelves.active, shelves.pinnedByProjectKey, shelves.snoozed]);
+  // Ctrl/Cmd+Click toggles one thread and Shift+Click extends a range from the
+  // anchor; neither navigates. A plain click clears the selection, anchors the
+  // clicked thread for a later Shift+Click, and opens it.
+  const handleThreadClick = useCallback(
+    (thread: SidebarThreadSummary, event?: React.MouseEvent) => {
+      const threadKey = sidebarThreadKey(thread);
+      if (event) {
+        const clickKind = resolveSidebarThreadClickKind({
+          metaKey: event.metaKey,
+          ctrlKey: event.ctrlKey,
+          shiftKey: event.shiftKey,
+          isMac: isMacPlatform(navigator.platform),
+        });
+        if (clickKind === "toggle") {
+          event.preventDefault();
+          toggleThreadSelection(threadKey);
+          return;
+        }
+        if (clickKind === "range") {
+          event.preventDefault();
+          rangeSelectThreadsTo(threadKey, orderedVisibleThreadKeys);
+          return;
+        }
+      }
+      if (useThreadSelectionStore.getState().selectedThreadKeys.size > 0) {
+        clearThreadSelection();
+      }
+      setSelectionAnchor(threadKey);
+      openThread(thread);
+    },
+    [
+      clearThreadSelection,
+      openThread,
+      orderedVisibleThreadKeys,
+      rangeSelectThreadsTo,
+      setSelectionAnchor,
+      toggleThreadSelection,
+    ],
   );
   const handleDismissAgentRun = useCallback(
     (thread: SidebarThreadSummary) => {
@@ -637,7 +703,7 @@ export default function SidebarV2() {
             key={row.threadKey}
             onArchive={handleArchive}
             onDismissAgentRun={handleDismissAgentRun}
-            onOpen={openThread}
+            onOpen={handleThreadClick}
             onToggleExpanded={handleToggleExpanded}
             projectCwd={project?.cwd ?? null}
             projectName={project?.name ?? "Unknown project"}
@@ -657,7 +723,7 @@ export default function SidebarV2() {
           isExpanded={row.isExpanded}
           pinned={(pinnedThreadKeysByProjectKey[projectKey] ?? []).includes(row.threadKey)}
           onDismissAgentRun={handleDismissAgentRun}
-          onOpen={openThread}
+          onOpen={handleThreadClick}
           onSetPinned={handleSetPinned}
           onSettle={handleSettle}
           onSnooze={handleSnooze}
@@ -698,7 +764,7 @@ export default function SidebarV2() {
       handleUnsnooze,
       lifecycleSupport,
       now,
-      openThread,
+      handleThreadClick,
       projectsByKey,
       providerEntryByKey,
       pinnedThreadKeysByProjectKey,

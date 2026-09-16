@@ -461,6 +461,29 @@ export function resolveThreadRowClassName(input: {
   return cn(baseClassName, "text-muted-foreground hover:bg-accent hover:text-foreground");
 }
 
+export type SidebarThreadClickKind = "toggle" | "range" | "open";
+
+/**
+ * Maps a sidebar row click to its selection behavior. Cmd (macOS) or Ctrl
+ * (other platforms) toggles a single thread, Shift extends a range from the
+ * selection anchor, and a plain click opens the thread. Modifier clicks never
+ * navigate: the row stays put while the selection changes underneath it.
+ */
+export function resolveSidebarThreadClickKind(input: {
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  isMac: boolean;
+}): SidebarThreadClickKind {
+  if (input.isMac ? input.metaKey : input.ctrlKey) {
+    return "toggle";
+  }
+  if (input.shiftKey) {
+    return "range";
+  }
+  return "open";
+}
+
 export function resolveThreadStatusPill(input: {
   readonly thread: ThreadStatusInput;
   readonly lastVisitedAt: string | null | undefined;
