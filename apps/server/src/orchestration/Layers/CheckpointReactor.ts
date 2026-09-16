@@ -228,6 +228,12 @@ const make = Effect.gen(function* () {
       }>;
       readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
       readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
+      readonly workspaceBinding?: {
+        readonly canonicalPath: string;
+        readonly worktreePath: string;
+        readonly branch: string | null;
+        readonly generation: number;
+      };
     };
     readonly cwd: string;
     readonly turnCount: number;
@@ -264,6 +270,7 @@ const make = Effect.gen(function* () {
     yield* checkpointStore.captureCheckpoint({
       cwd: input.cwd,
       checkpointRef: targetCheckpointRef,
+      ...(input.workspaceBinding !== undefined ? { workspaceBinding: input.workspaceBinding } : {}),
     });
 
     // Invalidate the workspace entry cache so the @-mention file picker
@@ -522,6 +529,9 @@ const make = Effect.gen(function* () {
         status: checkpointStatusFromRuntime(event.payload.state),
         assistantMessageId: undefined,
         createdAt: event.createdAt,
+        ...(thread.workspaceBinding !== undefined
+          ? { workspaceBinding: thread.workspaceBinding }
+          : {}),
       }).pipe(
         Effect.catch((error) =>
           completeTurnWithoutCheckpoint({
@@ -608,6 +618,9 @@ const make = Effect.gen(function* () {
       status: "ready",
       assistantMessageId: event.payload.assistantMessageId ?? undefined,
       createdAt: event.payload.completedAt,
+      ...(thread.workspaceBinding !== undefined
+        ? { workspaceBinding: thread.workspaceBinding }
+        : {}),
     });
   });
 
@@ -643,6 +656,9 @@ const make = Effect.gen(function* () {
         cwd: checkpointCwd,
         checkpointRef: baselineCheckpointRef,
         compareContents: false,
+        ...(thread.workspaceBinding !== undefined
+          ? { workspaceBinding: thread.workspaceBinding }
+          : {}),
       });
       if (baselineMatchesWorkspace) {
         return;
@@ -651,6 +667,9 @@ const make = Effect.gen(function* () {
       yield* checkpointStore.captureCheckpoint({
         cwd: checkpointCwd,
         checkpointRef: baselineCheckpointRef,
+        ...(thread.workspaceBinding !== undefined
+          ? { workspaceBinding: thread.workspaceBinding }
+          : {}),
       });
       yield* receiptBus.publish({
         type: "checkpoint.baseline.captured",
@@ -815,6 +834,9 @@ const make = Effect.gen(function* () {
     yield* checkpointStore.captureCheckpoint({
       cwd: sessionRuntime.value.cwd,
       checkpointRef: revertGuardRef,
+      ...(thread.workspaceBinding !== undefined
+        ? { workspaceBinding: thread.workspaceBinding }
+        : {}),
     });
 
     let providerRolledBack = false;
@@ -825,6 +847,9 @@ const make = Effect.gen(function* () {
         cwd: sessionRuntime.value.cwd,
         checkpointRef: targetCheckpointRef,
         fallbackToHead: event.payload.turnCount === 0 && !initialBaselineExists,
+        ...(thread.workspaceBinding !== undefined
+          ? { workspaceBinding: thread.workspaceBinding }
+          : {}),
       });
       if (!restored) {
         return yield* new CheckpointInvariantError({
@@ -887,6 +912,9 @@ const make = Effect.gen(function* () {
               .restoreCheckpoint({
                 cwd: sessionRuntime.value.cwd,
                 checkpointRef: revertGuardRef,
+                ...(thread.workspaceBinding !== undefined
+                  ? { workspaceBinding: thread.workspaceBinding }
+                  : {}),
               })
               .pipe(
                 Effect.flatMap((restored) =>

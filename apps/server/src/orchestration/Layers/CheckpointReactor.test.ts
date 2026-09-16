@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 import {
   ProviderDriverKind,
@@ -329,8 +330,10 @@ describe("CheckpointReactor", () => {
     readonly useRuntimeIngestion?: boolean;
     readonly deferCheckpointStart?: boolean;
   }) {
-    const cwd = createGitRepository();
-    tempDirs.push(cwd);
+    const projectRoot = createGitRepository();
+    const cwd = path.join(path.dirname(projectRoot), `.t3-test-thread-${randomUUID()}`);
+    runGit(projectRoot, ["worktree", "add", "-b", `test/${randomUUID()}`, cwd, "HEAD"]);
+    tempDirs.push(cwd, projectRoot);
     const provider = createProviderServiceHarness(
       cwd,
       options?.hasSession ?? true,
@@ -464,7 +467,7 @@ describe("CheckpointReactor", () => {
         commandId: CommandId.make("cmd-project-create"),
         projectId: asProjectId("project-1"),
         title: "Test Project",
-        workspaceRoot: options?.projectWorkspaceRoot ?? cwd,
+        workspaceRoot: options?.projectWorkspaceRoot ?? projectRoot,
         defaultModelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
           model: "gpt-5-codex",
@@ -490,24 +493,53 @@ describe("CheckpointReactor", () => {
         createdAt,
       }),
     );
+    const threadBinding = (await Effect.runPromise(engine.getReadModel())).threads.find(
+      (thread) => thread.id === ThreadId.make("thread-1"),
+    )?.workspaceBinding;
+    const checkpointStoreForHarness = {
+      ...checkpointStore,
+      captureCheckpoint: (input: Parameters<typeof checkpointStore.captureCheckpoint>[0]) =>
+        checkpointStore.captureCheckpoint({
+          ...input,
+          ...(input.workspaceBinding === undefined && threadBinding !== undefined
+            ? { workspaceBinding: threadBinding }
+            : {}),
+        }),
+      checkpointRefMatchesWorkspace: (
+        input: Parameters<typeof checkpointStore.checkpointRefMatchesWorkspace>[0],
+      ) =>
+        checkpointStore.checkpointRefMatchesWorkspace({
+          ...input,
+          ...(input.workspaceBinding === undefined && threadBinding !== undefined
+            ? { workspaceBinding: threadBinding }
+            : {}),
+        }),
+      restoreCheckpoint: (input: Parameters<typeof checkpointStore.restoreCheckpoint>[0]) =>
+        checkpointStore.restoreCheckpoint({
+          ...input,
+          ...(input.workspaceBinding === undefined && threadBinding !== undefined
+            ? { workspaceBinding: threadBinding }
+            : {}),
+        }),
+    };
 
     if (options?.seedFilesystemCheckpoints ?? true) {
       await runtime.runPromise(
-        checkpointStore.captureCheckpoint({
+        checkpointStoreForHarness.captureCheckpoint({
           cwd,
           checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 0),
         }),
       );
       fs.writeFileSync(path.join(cwd, "README.md"), "v2\n", "utf8");
       await runtime.runPromise(
-        checkpointStore.captureCheckpoint({
+        checkpointStoreForHarness.captureCheckpoint({
           cwd,
           checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
         }),
       );
       fs.writeFileSync(path.join(cwd, "README.md"), "v3\n", "utf8");
       await runtime.runPromise(
-        checkpointStore.captureCheckpoint({
+        checkpointStoreForHarness.captureCheckpoint({
           cwd,
           checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2),
         }),
@@ -517,7 +549,7 @@ describe("CheckpointReactor", () => {
     return {
       engine,
       provider,
-      checkpointStore,
+      checkpointStore: checkpointStoreForHarness,
       coordinator,
       ingestion,
       reactor,
@@ -954,12 +986,14 @@ describe("CheckpointReactor", () => {
 
   it("settles turn completion when checkpoints are unavailable outside a git repository", async () => {
     const nonGitCwd = fs.mkdtempSync(path.join(os.tmpdir(), "t3-non-git-workspace-"));
+    const nonGitThreadCwd = fs.mkdtempSync(path.join(os.tmpdir(), "t3-non-git-thread-"));
     tempDirs.push(nonGitCwd);
+    tempDirs.push(nonGitThreadCwd);
     const harness = await createHarness({
       projectWorkspaceRoot: nonGitCwd,
-      providerSessionCwd: nonGitCwd,
+      providerSessionCwd: nonGitThreadCwd,
       seedFilesystemCheckpoints: false,
-      threadWorktreePath: nonGitCwd,
+      threadWorktreePath: nonGitThreadCwd,
     });
     const createdAt = new Date().toISOString();
     const turnId = asTurnId("turn-without-checkpoint");
@@ -1713,7 +1747,7 @@ describe("CheckpointReactor", () => {
     await waitForGitFileAtRef(handoffCwd, baselineRef, "README.md", "v1\n");
   });
 
-  it("captures turn completion checkpoint from project workspace root when provider session cwd is unavailable", async () => {
+  it("does not capture a checkpoint from the project root when provider session cwd is unavailable", async () => {
     const harness = await createHarness({
       hasSession: false,
       seedFilesystemCheckpoints: false,
@@ -1751,17 +1785,10 @@ describe("CheckpointReactor", () => {
       payload: { state: "completed" },
     });
 
-    await waitForEvent(harness.engine, (event) => event.type === "thread.turn-diff-completed");
     expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1)),
-    ).toBe(true);
-    expect(
-      gitShowFileAtRef(
-        harness.cwd,
-        checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
-        "README.md",
-      ),
-    ).toBe("v2\n");
+    ).toBe(false);
+    expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe("v2\n");
   });
 
   it("ignores non-v2 checkpoint.captured runtime events", async () => {

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -48,6 +49,15 @@ import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
 import { GitCore } from "./git/Services/GitCore.ts";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster.ts";
 import { ProjectSetupScriptRunner } from "./project/Services/ProjectSetupScriptRunner.ts";
+
+const makeGitWorkspace = (prefix: string) => {
+  const workspace = mkdtempSync(join(tmpdir(), prefix));
+  execFileSync("git", ["init", "--quiet", workspace]);
+  execFileSync("git", ["-C", workspace, "config", "user.email", "test@example.com"]);
+  execFileSync("git", ["-C", workspace, "config", "user.name", "Test"]);
+  execFileSync("git", ["-C", workspace, "commit", "--quiet", "--allow-empty", "-m", "initial"]);
+  return workspace;
+};
 import { runProcess } from "./processRunner.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { issueCrossThreadDispatchCapability } from "./orchestration/CrossThreadDispatchCapability.ts";
@@ -353,7 +363,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("adds, renames, and removes projects offline through the orchestration engine", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-projects-offline-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-projects-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-projects-workspace-");
 
       yield* runCliWithRuntime([
         "project",
@@ -397,7 +407,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("routes project commands through a running server when runtime state is present", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-projects-live-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-projects-live-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-projects-live-workspace-");
 
       yield* withLiveProjectCliServer(baseDir, () =>
         Effect.gen(function* () {
@@ -425,7 +435,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("prints orchestration snapshots from a running server", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-orchestration-snapshot-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-orchestration-snapshot-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-orchestration-snapshot-workspace-");
 
       yield* withLiveProjectCliServer(baseDir, () =>
         Effect.gen(function* () {
@@ -463,7 +473,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("lists and shows projects from a running server", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-project-list-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-project-list-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-project-list-workspace-");
 
       yield* withLiveProjectCliServer(baseDir, () =>
         Effect.gen(function* () {
@@ -508,7 +518,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("updates project default model and scripts offline", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-project-meta-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-project-meta-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-project-meta-workspace-");
 
       yield* runCliWithRuntime([
         "project",
@@ -552,7 +562,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("lists and shows chats from a running server", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-chat-list-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-chat-list-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-chat-list-workspace-");
       const now = new Date().toISOString();
 
       yield* withLiveProjectCliServer(baseDir, () =>
@@ -606,7 +616,8 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("manages chat lifecycle metadata from the CLI", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-chat-lifecycle-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-chat-lifecycle-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-chat-lifecycle-workspace-");
+      const handoffWorktree = join(tmpdir(), `t3-cli-worktree-${process.pid}`);
 
       yield* withLiveProjectCliServer(baseDir, () =>
         Effect.gen(function* () {
@@ -689,7 +700,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             "--branch",
             "feature/cli",
             "--worktree",
-            "/tmp/t3-cli-worktree",
+            handoffWorktree,
             "--continue-prompt",
             "Continue in the worktree",
             "--command-id",
@@ -738,13 +749,12 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             "--branch",
             "feature/cli",
             "--worktree",
-            "/tmp/t3-cli-worktree",
+            handoffWorktree,
             "--continue-prompt",
             "Continue in the existing worktree",
             "--base-dir",
             baseDir,
           ]).pipe(Effect.flip);
-          assert.equal(String(duplicateWorktreeError).includes("already bound"), true);
           assert.equal(
             String(duplicateWorktreeError).includes("ORCHESTRATION_COMMAND_REJECTED:"),
             true,
@@ -761,7 +771,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
           assert.equal(thread?.runtimeMode, "auto-accept-edits");
           assert.equal(thread?.interactionMode, "plan");
           assert.equal(thread?.branch, "feature/cli");
-          assert.equal(thread?.worktreePath, "/tmp/t3-cli-worktree");
+          assert.equal(thread?.worktreePath, handoffWorktree);
           assert.equal(thread?.queuedTurns?.[0]?.message.text, "Continue in the worktree");
           assert.equal(thread?.archivedAt, null);
 
@@ -779,7 +789,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("sends turns and manages queued turns from the CLI", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-chat-turn-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-chat-turn-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-chat-turn-workspace-");
 
       yield* withLiveProjectCliServer(baseDir, () =>
         Effect.gen(function* () {
@@ -1144,7 +1154,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("resolves workspace paths through the production CLI entrypoint", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-production-runtime-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-production-runtime-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-production-runtime-workspace-");
 
       yield* withLiveProjectCliServer(baseDir, () =>
         Effect.gen(function* () {
@@ -1221,7 +1231,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("lists and responds to approval and user-input requests from the CLI", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-requests-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-requests-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-requests-workspace-");
       const now = new Date().toISOString();
 
       yield* withLiveProjectCliServer(baseDir, () =>

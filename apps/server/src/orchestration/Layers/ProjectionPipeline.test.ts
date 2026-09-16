@@ -4134,7 +4134,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: null,
+        worktreePath: "/tmp/pinning-pipeline-worktree",
         createdAt,
       });
 
@@ -4222,7 +4222,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: null,
+        worktreePath: "/tmp/title-regeneration-pipeline-worktree",
         createdAt,
       });
 
@@ -4296,7 +4296,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           interactionMode: "default",
           runtimeMode: "full-access",
           branch: null,
-          worktreePath: null,
+          worktreePath: "/tmp/handoff-origin-thread-worktree",
           createdAt,
         });
 

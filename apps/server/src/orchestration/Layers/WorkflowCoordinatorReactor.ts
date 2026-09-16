@@ -174,8 +174,11 @@ const makeWorkflowCoordinatorReactor = Effect.gen(function* () {
       modelSelection: input.workerConfig.modelSelection,
       runtimeMode: input.workerConfig.runtimeMode,
       interactionMode: input.workerConfig.interactionMode,
-      branch: input.workerConfig.branch,
-      worktreePath: input.workerConfig.worktreePath,
+      // Workflow workers are independent writers. The orchestration admission
+      // path allocates a fresh branch/worktree instead of reusing the parent
+      // or a PR checkout supplied in the workflow config.
+      branch: null,
+      worktreePath: null,
       ...(input.workerConfig.pullRequest !== undefined
         ? { pullRequest: input.workerConfig.pullRequest }
         : {}),

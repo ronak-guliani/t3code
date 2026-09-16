@@ -135,7 +135,7 @@ const seedProjectAndThread = (harness: OrchestrationIntegrationHarness) =>
       commandId: CommandId.make("cmd-project-create"),
       projectId: PROJECT_ID,
       title: "Integration Project",
-      workspaceRoot: harness.workspaceDir,
+      workspaceRoot: path.dirname(harness.workspaceDir),
       defaultModelSelection: {
         instanceId,
         model: defaultModel,
@@ -284,7 +284,7 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           commandId: CommandId.make("cmd-project-create-real-codex"),
           projectId: PROJECT_ID,
           title: "Integration Project",
-          workspaceRoot: harness.workspaceDir,
+          workspaceRoot: path.dirname(harness.workspaceDir),
           defaultModelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5.3-codex",

@@ -374,6 +374,9 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
+            ...(payload.workspaceBinding !== undefined
+              ? { workspaceBinding: payload.workspaceBinding }
+              : {}),
             ...(initialPullRequest !== undefined ? { pullRequest: initialPullRequest } : {}),
             ...(initialPullRequest !== undefined && initialPullRequest !== null
               ? {
@@ -567,6 +570,9 @@ export function projectEvent(
                 : {}),
               ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
               ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
+              ...(payload.workspaceBinding !== undefined
+                ? { workspaceBinding: payload.workspaceBinding }
+                : {}),
               ...(payload.pullRequest !== undefined
                 ? {
                     pullRequest: payload.pullRequest,

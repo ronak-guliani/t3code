@@ -229,6 +229,14 @@ export type ProjectScript = typeof ProjectScript.Type;
 export const OrchestrationProjectKind = Schema.Literals(["workspace", "chat-import"]);
 export type OrchestrationProjectKind = typeof OrchestrationProjectKind.Type;
 
+export const WorkspaceBinding = Schema.Struct({
+  canonicalPath: TrimmedNonEmptyString,
+  worktreePath: TrimmedNonEmptyString,
+  branch: Schema.NullOr(TrimmedNonEmptyString),
+  generation: NonNegativeInt,
+});
+export type WorkspaceBinding = typeof WorkspaceBinding.Type;
+
 export const OrchestrationProject = Schema.Struct({
   kind: Schema.optionalKey(OrchestrationProjectKind),
   autoPull: Schema.optional(Schema.Boolean),
@@ -259,6 +267,7 @@ export const WorkspaceHandoffOrigin = Schema.Struct({
   role: Schema.Literals(["marker", "continuation"]),
   branch: TrimmedNonEmptyString,
   worktreePath: TrimmedNonEmptyString,
+  workspaceBinding: Schema.optional(WorkspaceBinding),
 });
 export type WorkspaceHandoffOrigin = typeof WorkspaceHandoffOrigin.Type;
 
@@ -404,6 +413,7 @@ export const OrchestrationMessage = Schema.Struct({
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   origin: Schema.optional(MessageOrigin),
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -459,6 +469,7 @@ export const OrchestrationQueuedTurn = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   failedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -656,6 +667,7 @@ export const OrchestrationThread = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   /**
    * Durable PR association for this thread. Never inferred from checkout/branch
    * equality — only set by explicit PR checkout/create/open flows.
@@ -746,6 +758,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   pullRequests: Schema.optionalKey(Schema.Array(ThreadPullRequestLink)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
@@ -860,6 +873,7 @@ const ThreadCreateCommand = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   createdAt: IsoDateTime,
@@ -950,6 +964,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   pullRequest: Schema.optional(Schema.NullOr(GitPullRequestAssociation)),
   pullRequestSource: Schema.optional(ThreadPullRequestLinkSource),
   pullRequestOwnership: Schema.optional(Schema.Literal("transfer")),
@@ -967,6 +982,7 @@ const ThreadWorkspaceHandoffCommand = Schema.Struct({
   threadId: ThreadId,
   branch: TrimmedNonEmptyString,
   worktreePath: TrimmedNonEmptyString,
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   markerMessageId: MessageId,
   continuation: OrchestrationQueuedTurn,
 });
@@ -1067,6 +1083,7 @@ const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   createdAt: IsoDateTime,
@@ -1103,6 +1120,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   origin: Schema.optional(MessageOrigin),
   crossThreadSourceThreadId: Schema.optional(ThreadId),
@@ -1125,6 +1143,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   crossThreadSourceThreadId: Schema.optional(ThreadId),
   crossThreadDispatchCapability: Schema.optional(Schema.String),
@@ -1209,6 +1228,7 @@ const ThreadQueuedTurnDispatchCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   queuedTurnId: QueuedTurnId,
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   dispatchedAt: IsoDateTime,
 });
 
@@ -1271,6 +1291,7 @@ export const WorkflowWorkerConfig = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
 });
@@ -1670,6 +1691,7 @@ export const ThreadCreatedPayload = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   createdAt: IsoDateTime,
@@ -1766,6 +1788,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   pullRequest: Schema.optional(Schema.NullOr(GitPullRequestAssociation)),
   pullRequestSource: Schema.optional(ThreadPullRequestLinkSource),
   pullRequestOwnership: Schema.optional(Schema.Literal("transfer")),
@@ -1846,6 +1869,7 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   delegationAssignmentId: Schema.optional(MessageId),
   delegationDispatchId: Schema.optional(TrimmedNonEmptyString),
   delegationTransition: Schema.optional(Schema.Literals(["assigned", "continued", "replaced"])),
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   createdAt: IsoDateTime,
 });
 

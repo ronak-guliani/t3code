@@ -395,6 +395,9 @@ const make = Effect.gen(function* () {
     const baselineMatchesWorkspace = yield* checkpointStore.checkpointRefMatchesWorkspace({
       cwd,
       checkpointRef,
+      ...(thread.workspaceBinding !== undefined
+        ? { workspaceBinding: thread.workspaceBinding }
+        : {}),
     });
     if (baselineMatchesWorkspace) {
       return;
@@ -403,6 +406,9 @@ const make = Effect.gen(function* () {
     yield* checkpointStore.captureCheckpoint({
       cwd,
       checkpointRef,
+      ...(thread.workspaceBinding !== undefined
+        ? { workspaceBinding: thread.workspaceBinding }
+        : {}),
     });
   });
 

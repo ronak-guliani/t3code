@@ -382,6 +382,7 @@ function buildTurnStartEvents(input: {
   readonly delegationAssignmentId?: TurnStartRequestedPayload["delegationAssignmentId"];
   readonly delegationDispatchId?: TurnStartRequestedPayload["delegationDispatchId"];
   readonly delegationTransition?: TurnStartRequestedPayload["delegationTransition"];
+  readonly workspaceBinding?: TurnStartRequestedPayload["workspaceBinding"];
   readonly at: string;
 }): {
   readonly userMessageEvent: PlannedOrchestrationEvent;
@@ -434,6 +435,7 @@ function buildTurnStartEvents(input: {
       ...(input.delegationTransition !== undefined
         ? { delegationTransition: input.delegationTransition }
         : {}),
+      ...(input.workspaceBinding !== undefined ? { workspaceBinding: input.workspaceBinding } : {}),
       createdAt: input.at,
     },
   };
@@ -825,6 +827,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           ...(command.pullRequest !== undefined ? { pullRequest: command.pullRequest } : {}),
           ...(command.reviewSnapshot !== undefined
             ? { reviewSnapshot: command.reviewSnapshot }
@@ -1263,6 +1268,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.branch !== undefined ? { branch: command.branch } : {}),
           ...(command.worktreePath !== undefined ? { worktreePath: command.worktreePath } : {}),
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           ...(command.pullRequest !== undefined ? { pullRequest: command.pullRequest } : {}),
           ...(command.pullRequestSource !== undefined
             ? { pullRequestSource: command.pullRequestSource }
@@ -1835,6 +1843,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               delegationTransition: turnDelegation.dispatchReason ?? "assigned",
             }
           : {}),
+        ...(command.workspaceBinding !== undefined
+          ? { workspaceBinding: command.workspaceBinding }
+          : {}),
         at: command.createdAt,
       });
       const occurredAt = command.createdAt;
@@ -1880,10 +1891,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               }),
             ]
           : [];
+      const workspaceBindingEvent =
+        command.workspaceBinding !== undefined &&
+        (targetThread.workspaceBinding?.generation !== command.workspaceBinding.generation ||
+          targetThread.workspaceBinding?.canonicalPath !== command.workspaceBinding.canonicalPath)
+          ? [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread",
+                  aggregateId: command.threadId,
+                  occurredAt,
+                  commandId: command.commandId,
+                }),
+                type: "thread.meta-updated" as const,
+                payload: {
+                  threadId: command.threadId,
+                  branch: command.workspaceBinding.branch,
+                  worktreePath: command.workspaceBinding.worktreePath,
+                  workspaceBinding: command.workspaceBinding,
+                  updatedAt: occurredAt,
+                },
+              },
+            ]
+          : [];
       return appendChildLifecycleNotification({
         readModel,
         childThread: targetThread,
         sourceEvents: [
+          ...workspaceBindingEvent,
           userMessageEvent,
           turnStartRequestedEvent,
           ...delegationEvents,
@@ -2259,6 +2294,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         runtimeMode: isNudge ? targetThread.runtimeMode : queuedTurn.runtimeMode,
         interactionMode: isNudge ? targetThread.interactionMode : queuedTurn.interactionMode,
         sourceProposedPlan: queuedTurn.sourceProposedPlan,
+        workspaceBinding: command.workspaceBinding ?? targetThread.workspaceBinding ?? undefined,
         ...(turnDelegation?.dispatchId
           ? {
               delegationAssignmentId: turnDelegation.assignmentId,

@@ -152,6 +152,10 @@ describe("ProviderCommandReactor", () => {
     const now = new Date().toISOString();
     const baseDir = input?.baseDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-"));
     createdBaseDirs.add(baseDir);
+    fs.mkdirSync(path.join(baseDir, "thread-1"), { recursive: true });
+    fs.mkdirSync(path.join(baseDir, "thread-2"), { recursive: true });
+    const threadOneWorkspace = fs.realpathSync(path.join(baseDir, "thread-1"));
+    const threadTwoWorkspace = fs.realpathSync(path.join(baseDir, "thread-2"));
     const { stateDir } = deriveServerPathsSync(baseDir, undefined);
     createdStateDirs.add(stateDir);
     const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
@@ -423,13 +427,16 @@ describe("ProviderCommandReactor", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: null,
+        worktreePath: threadOneWorkspace,
         createdAt: now,
       }),
     );
 
     return {
       engine,
+      baseDir,
+      workspacePath: threadOneWorkspace,
+      workspacePath2: threadTwoWorkspace,
       startSession,
       sendTurn,
       interruptTurn,
@@ -501,7 +508,7 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     expect(harness.startSession.mock.calls[0]?.[0]).toEqual(ThreadId.make("thread-1"));
     expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
-      cwd: "/tmp/provider-project",
+      cwd: harness.workspacePath,
       modelSelection: {
         instanceId: ProviderInstanceId.make("codex"),
         model: "gpt-5-codex",
@@ -611,8 +618,14 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.turnStartOrder.length === 2);
 
     expect(harness.checkpointStore.captureCheckpoint).toHaveBeenCalledWith({
-      cwd: "/tmp/provider-project",
+      cwd: harness.workspacePath,
       checkpointRef: checkpointBaselineRefForThreadTurn(ThreadId.make("thread-1"), 1),
+      workspaceBinding: {
+        canonicalPath: harness.workspacePath,
+        worktreePath: harness.workspacePath,
+        branch: null,
+        generation: 1,
+      },
     });
     expect(harness.turnStartOrder).toEqual(["captureCheckpoint", "sendTurn"]);
   });
@@ -646,8 +659,14 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.turnStartOrder.length === 2);
 
     expect(harness.checkpointStore.captureCheckpoint).toHaveBeenCalledWith({
-      cwd: "/tmp/provider-project",
+      cwd: harness.workspacePath,
       checkpointRef: checkpointBaselineRefForThreadTurn(ThreadId.make("thread-1"), 1),
+      workspaceBinding: {
+        canonicalPath: harness.workspacePath,
+        worktreePath: harness.workspacePath,
+        branch: null,
+        generation: 1,
+      },
     });
     expect(harness.turnStartOrder).toEqual(["captureCheckpoint", "sendTurn"]);
   });
@@ -721,7 +740,7 @@ describe("ProviderCommandReactor", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: null,
+        worktreePath: harness.workspacePath2,
         createdAt: now,
       }),
     );
@@ -1413,7 +1432,7 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     await completeTurnForNextStart(harness, { commandId: "cmd-complete-workspace-1" });
     expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
-      cwd: "/tmp/provider-project",
+      cwd: harness.workspacePath,
     });
 
     await Effect.runPromise(
@@ -2161,7 +2180,7 @@ describe("ProviderCommandReactor", () => {
       status: "ready",
       runtimeMode: "approval-required",
       threadId: ThreadId.make("thread-1"),
-      cwd: "/tmp/provider-project",
+      cwd: harness.workspacePath,
       resumeCursor: { opaque: "resume-without-instance" },
       createdAt: now,
       updatedAt: now,

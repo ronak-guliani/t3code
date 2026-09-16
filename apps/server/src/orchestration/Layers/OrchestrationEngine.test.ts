@@ -22,6 +22,7 @@ import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Lay
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
+import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
 import {
   OrchestrationEventStore,
   type OrchestrationEventStoreShape,
@@ -38,7 +39,7 @@ import {
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeSqlitePersistenceLive } from "../../persistence/Layers/Sqlite.ts";
@@ -79,18 +80,79 @@ async function createOrchestrationSystem(
   );
   const runtime = ManagedRuntime.make(orchestrationLayer);
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+  const testWorkspaceRoot = await mkdtemp(join(tmpdir(), "t3-orchestration-workspaces-"));
+  const workspaceForThread = (threadId: string) => join(testWorkspaceRoot, threadId);
+  const ownedThreadIds = new Set<string>();
+  const testEngine = {
+    ...engine,
+    dispatch: (command: Parameters<typeof engine.dispatch>[0]) => {
+      if (command.type === "thread.create") {
+        ownedThreadIds.add(String(command.threadId));
+      }
+      if (command.type === "thread.create" && command.worktreePath == null) {
+        const worktreePath = workspaceForThread(String(command.threadId));
+        return Effect.promise(() => mkdir(worktreePath, { recursive: true })).pipe(
+          Effect.andThen(
+            engine.dispatch({
+              ...command,
+              worktreePath,
+            }),
+          ),
+        );
+      }
+      if (
+        command.type === "thread.turn.start" &&
+        command.bootstrap?.createThread !== undefined &&
+        command.bootstrap.createThread.worktreePath == null
+      ) {
+        ownedThreadIds.add(String(command.threadId));
+        const worktreePath = workspaceForThread(String(command.threadId));
+        return Effect.promise(() => mkdir(worktreePath, { recursive: true })).pipe(
+          Effect.andThen(
+            engine.dispatch({
+              ...command,
+              bootstrap: {
+                ...command.bootstrap,
+                createThread: {
+                  ...command.bootstrap.createThread,
+                  worktreePath,
+                },
+              },
+            }),
+          ),
+        );
+      }
+      return engine.dispatch(command);
+    },
+  } satisfies typeof engine;
   const snapshots = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
   const coordinator = await runtime.runPromise(Effect.service(CheckoutCoordinator));
+  const workspaceOwnership = await runtime.runPromise(Effect.service(WorkspaceOwnershipRepository));
   const worktreeCleanupJobs = await runtime.runPromise(
     Effect.service(WorktreeCleanupJobRepository),
   );
   return {
-    engine,
+    engine: testEngine,
     snapshots,
     coordinator,
     worktreeCleanupJobs,
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
-    dispose: () => runtime.dispose(),
+    dispose: async () => {
+      if (dbPath === undefined) {
+        for (const threadId of ownedThreadIds) {
+          const ownerships = await runtime.runPromise(
+            workspaceOwnership.getByThreadId(ThreadId.make(threadId)),
+          );
+          for (const ownership of ownerships) {
+            await runtime.runPromise(
+              workspaceOwnership.release(ThreadId.make(threadId), ownership.canonicalPath),
+            );
+          }
+        }
+      }
+      await runtime.dispose();
+      await rm(testWorkspaceRoot, { recursive: true, force: true });
+    },
   };
 }
 
@@ -322,13 +384,14 @@ describe("OrchestrationEngine", () => {
     const threadId = ThreadId.make("conditional-thread");
     const createdAt = now();
     try {
+      await mkdir("/tmp/conditional-metadata", { recursive: true });
       await system.run(
         system.engine.dispatch({
           type: "project.create",
           commandId: CommandId.make("conditional-project"),
           projectId,
           title: "Conditional metadata",
-          workspaceRoot: "/tmp/conditional-metadata",
+          workspaceRoot: "/tmp/conditional-project-root",
           createdAt,
         }),
       );
@@ -343,7 +406,7 @@ describe("OrchestrationEngine", () => {
           runtimeMode: "approval-required",
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           branch: "feature",
-          worktreePath: null,
+          worktreePath: "/tmp/conditional-metadata",
           createdAt,
         }),
       );
@@ -395,7 +458,7 @@ describe("OrchestrationEngine", () => {
         ...command,
         commandId: CommandId.make("stale-workspace"),
         expectedUpdatedAt: before.threads[0]!.updatedAt,
-        expectedWorkspaceCwd: "/tmp/conditional-metadata",
+        expectedWorkspaceCwd: "/tmp/moved-checkout",
       };
       const staleWorkspaceResult = await system.run(system.engine.dispatch(staleWorkspaceCommand));
       expect(staleWorkspaceResult.sequence).toBe(afterMove.snapshotSequence);
@@ -405,7 +468,7 @@ describe("OrchestrationEngine", () => {
         await system.run(
           system.engine.dispatch({
             ...staleWorkspaceCommand,
-            expectedWorkspaceCwd: "/tmp/moved-checkout",
+            expectedWorkspaceCwd: "/tmp/conditional-metadata",
           }),
         ),
       ).toEqual(staleWorkspaceResult);
@@ -416,7 +479,6 @@ describe("OrchestrationEngine", () => {
           ...command,
           commandId: CommandId.make("fresh-conditional"),
           expectedUpdatedAt: before.threads[0]!.updatedAt,
-          expectedWorkspaceCwd: "/tmp/moved-checkout",
         }),
       );
       expect((await system.run(system.engine.getReadModel())).threads[0]?.pullRequest).toEqual(
@@ -444,7 +506,7 @@ describe("OrchestrationEngine", () => {
               )
             : Effect.void,
         );
-        const cwd = "/tmp/coordinated-admission";
+        const cwd = "/tmp/coordinated-admission-worktree";
         const threadId = ThreadId.make("coordinated-thread");
         const projectId = ProjectId.make("coordinated-project");
         const createdAt = now();
@@ -464,7 +526,7 @@ describe("OrchestrationEngine", () => {
               commandId: CommandId.make("coordinated-project"),
               projectId,
               title: "Coordination",
-              workspaceRoot: cwd,
+              workspaceRoot: "/tmp/coordinated-admission-project",
               defaultModelSelection: null,
               createdAt,
             }),
@@ -483,7 +545,7 @@ describe("OrchestrationEngine", () => {
               interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
               runtimeMode: "approval-required",
               branch: null,
-              worktreePath: null,
+              worktreePath: cwd,
               createdAt,
             }),
           );
@@ -1546,6 +1608,8 @@ describe("OrchestrationEngine", () => {
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const createdAt = now();
+    const flakyWorkspace = `/tmp/t3-orchestration-flaky-${process.pid}`;
+    await mkdir(flakyWorkspace, { recursive: true });
 
     await runtime.runPromise(
       engine.dispatch({
@@ -1577,7 +1641,7 @@ describe("OrchestrationEngine", () => {
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "approval-required",
           branch: null,
-          worktreePath: null,
+          worktreePath: flakyWorkspace,
           createdAt,
         }),
       ),
@@ -1597,7 +1661,7 @@ describe("OrchestrationEngine", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: null,
+        worktreePath: `${flakyWorkspace}-ok`,
         createdAt,
       }),
     );
@@ -1670,7 +1734,7 @@ describe("OrchestrationEngine", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: null,
+        worktreePath: "/tmp/t3-orchestration-atomic-thread",
         createdAt,
       }),
     );
@@ -1866,7 +1930,7 @@ describe("OrchestrationEngine", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: null,
+        worktreePath: "/tmp/t3-orchestration-sync-thread",
         createdAt,
       }),
     );
