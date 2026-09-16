@@ -1,4 +1,4 @@
-import type { AdvertisedEndpoint, EnvironmentId } from "@t3tools/contracts";
+import { AdvertisedEndpoint, type EnvironmentId } from "@t3tools/contracts";
 import { formatSchemaError } from "@t3tools/shared/schemaJson";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -64,35 +64,7 @@ export class ConnectionPromotionDiscoveryError extends Data.TaggedError(
   readonly diagnostic: ConnectionPromotionDiagnostic;
 }> {}
 
-const advertisedEndpoints = Schema.Array(
-  Schema.Struct({
-    id: Schema.String,
-    label: Schema.String,
-    provider: Schema.Struct({
-      id: Schema.String,
-      label: Schema.String,
-      kind: Schema.Literals(["core", "private-network", "tunnel", "manual"]),
-      isAddon: Schema.Boolean,
-    }),
-    httpBaseUrl: Schema.String,
-    wsBaseUrl: Schema.String,
-    reachability: Schema.Literals(["loopback", "lan", "private-network", "public"]),
-    compatibility: Schema.Struct({
-      hostedHttpsApp: Schema.Literals([
-        "compatible",
-        "mixed-content-blocked",
-        "requires-configuration",
-        "unknown",
-      ]),
-      desktopApp: Schema.Literals(["compatible", "unknown"]),
-    }),
-    source: Schema.Literals(["desktop-core", "desktop-addon", "server", "user"]),
-    status: Schema.Literals(["available", "unavailable", "unknown"]),
-    isDefault: Schema.optional(Schema.Boolean),
-    description: Schema.optional(Schema.String),
-  }),
-);
-const decodeAdvertisedEndpoints = Schema.decodeUnknownEffect(advertisedEndpoints);
+const decodeAdvertisedEndpoints = Schema.decodeUnknownEffect(Schema.Array(AdvertisedEndpoint));
 
 const reachabilityRank: Record<AdvertisedEndpoint["reachability"], number> = {
   lan: 0,
@@ -288,7 +260,7 @@ const fetchAdvertisedEndpoints = Effect.fn(
       },
     });
   }
-  return decoded.success as readonly AdvertisedEndpoint[];
+  return decoded.success;
 });
 
 export const make = Effect.gen(function* () {

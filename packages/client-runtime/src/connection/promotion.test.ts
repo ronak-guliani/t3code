@@ -184,6 +184,37 @@ function promotionLayer(fetchFn: typeof fetch) {
 }
 
 describe("ConnectionPromotion", () => {
+  it.effect("rejects contract-invalid discovery fields before probing or storing overrides", () =>
+    Effect.gen(function* () {
+      const valid = endpoint();
+      for (const invalid of [
+        { ...valid, id: " " },
+        { ...valid, label: "" },
+        { ...valid, httpBaseUrl: " " },
+        { ...valid, wsBaseUrl: "" },
+        { ...valid, description: " " },
+        { ...valid, provider: { ...valid.provider, id: "" } },
+        { ...valid, provider: { ...valid.provider, label: " " } },
+      ]) {
+        let requests = 0;
+        const fetchFn = (() => {
+          requests += 1;
+          return Promise.resolve(Response.json(requests === 1 ? [invalid] : descriptor));
+        }) satisfies typeof fetch;
+        yield* Effect.gen(function* () {
+          const promotion = yield* ConnectionPromotion.ConnectionPromotion;
+          expect(yield* promotion.discover(preparedRelay)).toEqual(Option.none());
+          expect(yield* promotion.overrideFor(environmentId)).toEqual(Option.none());
+          expect(Option.getOrThrow(yield* promotion.diagnosticFor(environmentId))).toMatchObject({
+            _tag: "invalid-response",
+            status: 200,
+          });
+          expect(requests).toBe(1);
+        }).pipe(Effect.provide(promotionLayer(fetchFn)));
+      }
+    }),
+  );
+
   it.effect("classifies core private-network endpoints independently of their provider", () =>
     Effect.gen(function* () {
       for (const candidate of [

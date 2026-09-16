@@ -1057,6 +1057,81 @@ describe("EnvironmentSupervisor", () => {
     }),
   );
 
+  for (const duringProbe of [false, true]) {
+    it.effect(
+      `clears account promotion after stopping discovery${duringProbe ? " during a health probe" : ""}`,
+      () =>
+        Effect.gen(function* () {
+          const discoveryStarted = yield* Deferred.make<void>();
+          const probeStarted = yield* Deferred.make<void>();
+          const staleRoute: ConnectionPromotion.PromotedRoute = {
+            endpointId: "old-account-route",
+            currentHttpBaseUrl: TARGET.httpBaseUrl,
+            httpBaseUrl: "https://direct.example.test",
+            wsBaseUrl: "wss://direct.example.test",
+            kind: "tailscale",
+          };
+          const override = yield* Ref.make(Option.some(staleRoute));
+          const events = yield* Ref.make<ReadonlyArray<string>>([]);
+          const promotion = ConnectionPromotion.ConnectionPromotion.of({
+            enabled: true,
+            overrideFor: () => Ref.get(override),
+            diagnosticFor: () => Effect.succeed(Option.none()),
+            reportOverrideFailed: () => Ref.update(events, (values) => [...values, "cooled-down"]),
+            clear: () =>
+              Ref.set(override, Option.none()).pipe(
+                Effect.andThen(Ref.update(events, (values) => [...values, "cleared"])),
+              ),
+            discover: () =>
+              Deferred.succeed(discoveryStarted, undefined).pipe(
+                Effect.andThen(Effect.never),
+                Effect.ensuring(
+                  Ref.set(override, Option.some(staleRoute)).pipe(
+                    Effect.andThen(
+                      Ref.update(events, (values) => [...values, "discovery-stopped"]),
+                    ),
+                  ),
+                ),
+              ),
+          });
+          const harness = yield* makeHarness({
+            prepare: (attempt) =>
+              Effect.gen(function* () {
+                if (attempt > 1) {
+                  expect(yield* promotion.overrideFor(TARGET.environmentId)).toEqual(Option.none());
+                  yield* Ref.update(events, (values) => [...values, "prepared"]);
+                }
+                return {
+                  ...PREPARED_CONNECTION,
+                  target: RELAY_TARGET,
+                  routeKind: "relay" as const,
+                };
+              }),
+            probe: () =>
+              Deferred.succeed(probeStarted, undefined).pipe(Effect.andThen(Effect.never)),
+          });
+          const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+            initiallyDesired: true,
+          }).pipe(
+            Effect.provide(harness.dependencies),
+            Effect.provideService(ConnectionPromotion.ConnectionPromotion, promotion),
+          );
+          yield* Deferred.await(discoveryStarted);
+          if (duringProbe) {
+            yield* harness.wake("application-active-probe");
+            yield* Deferred.await(probeStarted);
+          }
+          yield* harness.wake("credentials-changed");
+          yield* awaitState(
+            supervisor.state,
+            (state) => state.phase === "connected" && state.generation === 2,
+          );
+          expect(yield* Ref.get(events)).toEqual(["discovery-stopped", "cleared", "prepared"]);
+          expect(yield* Ref.get(harness.releaseCount)).toBe(1);
+        }),
+    );
+  }
+
   it.effect("keeps a non-relay session during an in-flight probe when credentials change", () =>
     Effect.gen(function* () {
       const probeStarted = yield* Deferred.make<void>();

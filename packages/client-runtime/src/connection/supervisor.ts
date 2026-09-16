@@ -433,6 +433,10 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
             }
           }).pipe(Effect.forkChild)
         : null;
+    const clearAccountPromotion = Effect.gen(function* () {
+      if (promotionFiber !== null) yield* Fiber.interrupt(promotionFiber);
+      yield* clearPromotion(target.environmentId);
+    });
     for (;;) {
       const next = yield* Queue.take(signals);
       switch (next._tag) {
@@ -462,7 +466,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         case "Wakeup":
           if (next.reason === "credentials-changed" && target._tag === "RelayConnectionTarget") {
             yield* logManagedRelayAccountChange;
-            yield* clearPromotion(target.environmentId);
+            yield* clearAccountPromotion;
             return;
           }
           if (next.reason === "application-active-reconnect") {
@@ -516,6 +520,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
                   ) {
                     yield* logManagedRelayAccountChange;
                     yield* Fiber.interrupt(probe);
+                    yield* clearAccountPromotion;
                     return;
                   }
                   if (probeEvent.signal.reason === "application-active-reconnect") {

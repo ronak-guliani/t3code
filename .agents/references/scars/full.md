@@ -227,6 +227,8 @@
 
 ## Streaming reconnects and workflow dispatch
 
+- Account-change handling must cancel and join route discovery before clearing promotion state in both normal and nested health-probe loops; discovery finalizers must not repopulate the previous account's overrides after cleanup.
+
 - Live `thread.message-sent` events that create or change `latestTurn` must reconcile the sidebar activity summary; a slow shell stream otherwise leaves the active row stale.
 - Custom workflow settings and chat actions must stay wired through `workflow.run`; built-in-only server guards make every configured prompt workflow fail as `workflow-not-found`. Built-in IDs remain reserved, and custom child/new-chat retries must reuse deterministic create/turn IDs instead of bootstrap-generated UUIDs.
 - A user interrupt can arrive after `thread.turn.start` is accepted but before its provider turn is acknowledged; keep cancellation intent until the provider returns its turn ID, suppress an unsent call, then interrupt an unacknowledged or active turn without aborting adapter lifecycle cleanup.
