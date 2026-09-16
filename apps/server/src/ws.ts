@@ -181,6 +181,7 @@ import {
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
 import { expandHomePath } from "./pathExpansion.ts";
+import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { repositoryFromPullRequestUrl } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
@@ -276,6 +277,8 @@ const makeWsRpcLayer = (
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const deviceHostContext =
+        yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngineService;
@@ -1173,29 +1176,36 @@ const makeWsRpcLayer = (
               projectionSnapshotQuery.searchTranscript?.(input.query) ??
               Effect.succeed({ matches: [] })
             ).pipe(
-              Effect.flatMap((result) =>
-                Effect.forEach(result.matches.slice(0, input.limit ?? 50), (match) =>
-                  projectionSnapshotQuery.getThreadDetailById(match.threadId).pipe(
-                    Effect.map((thread) =>
-                      Option.map(thread, (value) => ({
-                        threadId: match.threadId,
-                        projectId: value.projectId,
-                        source: match.role,
-                        snippet: match.excerpt.slice(0, 240),
-                        messageCreatedAt: match.updatedAt,
-                      })),
-                    ),
-                  ),
-                ),
-              ),
-              Effect.map((matches) => ({
-                matches: matches.flatMap((match) =>
-                  Option.match(match, {
-                    onNone: () => [],
-                    onSome: (value) => [value],
-                  }),
-                ),
-              })),
+              Effect.flatMap((result) => {
+                const matches = result.matches.slice(0, input.limit ?? 50);
+                if (matches.length === 0) {
+                  return Effect.succeed({ matches: [] });
+                }
+                // Narrow project lookup: search results need only the owning
+                // project id per match. Hydrating full thread details here
+                // cost ~9 heavy queries per match (messages, activities,
+                // plans, turns) decoding payloads the caller discards.
+                return projectionSnapshotQuery
+                  .listThreadProjectIds(matches.map((match) => match.threadId))
+                  .pipe(
+                    Effect.map((projectIds) => ({
+                      matches: matches.flatMap((match) => {
+                        const projectId = projectIds.get(match.threadId);
+                        return projectId === undefined
+                          ? []
+                          : [
+                              {
+                                threadId: match.threadId,
+                                projectId,
+                                source: match.role,
+                                snippet: match.excerpt.slice(0, 240),
+                                messageCreatedAt: match.updatedAt,
+                              },
+                            ];
+                      }),
+                    })),
+                  );
+              }),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationGetSnapshotError({
@@ -1523,7 +1533,18 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverUpdateSettings]: ({ patch }) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateSettings,
-            serverSettings.updateSettings(patch).pipe(Effect.map(redactServerSettingsForClient)),
+            Effect.gen(function* () {
+              const deviceHosts = patch.deviceHosts
+                ? yield* remoteSshDeviceHosts(patch.deviceHosts).pipe(
+                    Effect.provide(deviceHostContext),
+                  )
+                : undefined;
+              const settings = yield* serverSettings.updateSettings({
+                ...patch,
+                ...(deviceHosts ? { deviceHosts } : {}),
+              });
+              return redactServerSettingsForClient(settings);
+            }),
             {
               "rpc.aggregate": "server",
             },
@@ -2783,6 +2804,10 @@ const makeWsRpcLayer = (
           }),
         [WS_METHODS.deviceConfigure]: (input) =>
           observeRpcEffect(WS_METHODS.deviceConfigure, deviceService.configure(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceTestHost]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceTestHost, deviceService.testHost(input), {
             "rpc.aggregate": "device",
           }),
         [WS_METHODS.deviceList]: (_input) =>

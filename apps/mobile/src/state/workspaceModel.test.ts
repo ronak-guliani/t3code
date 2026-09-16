@@ -14,6 +14,7 @@ const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
 
 function environment(
   phase: EnvironmentPresentation["connection"]["phase"],
+  options?: { readonly error?: string },
 ): EnvironmentPresentation {
   const connectionId = `bearer:${ENVIRONMENT_ID}`;
   return {
@@ -40,7 +41,7 @@ function environment(
     },
     connection: {
       phase,
-      error: phase === "error" ? "Connection failed." : null,
+      error: options?.error ?? (phase === "error" ? "Connection failed." : null),
       traceId: phase === "error" ? "trace-1" : null,
     },
     serverConfig: null,
@@ -135,5 +136,32 @@ describe("mobile workspace projection", () => {
     expect(state.hasPendingShellSnapshot).toBe(true);
     expect(state.hasReadyEnvironment).toBe(false);
     expect(state.connectionState).toBe("reconnecting");
+  });
+
+  it("pairs the aggregate unsupported phase with the unsupported environment's error", () => {
+    const failing = projectWorkspaceEnvironment({
+      ...environment("error"),
+      environmentId: EnvironmentId.make("environment-2"),
+    });
+    const unsupported = projectWorkspaceEnvironment({
+      ...environment("unsupported", {
+        error: "This client is not supported by this server.",
+      }),
+      environmentId: EnvironmentId.make("environment-3"),
+    });
+    for (const environments of [
+      [failing, unsupported],
+      [unsupported, failing],
+    ] as const) {
+      const state = projectWorkspaceState({
+        isReady: true,
+        networkStatus: "online",
+        environments: [...environments],
+        shellSummary: EMPTY_SHELL_SUMMARY,
+      });
+
+      expect(state.connectionState).toBe("unsupported");
+      expect(state.connectionError).toBe("This client is not supported by this server.");
+    }
   });
 });

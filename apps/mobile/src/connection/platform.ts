@@ -171,6 +171,7 @@ const capabilitiesLayer = Layer.effectContext(
         ClientPresentation.of({
           metadata: authClientMetadata(Constants.expoConfig?.version),
           scopes: AuthStandardClientScopes,
+          automaticRoutePromotion: false,
         }),
       ),
       Context.add(

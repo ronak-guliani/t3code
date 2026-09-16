@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { codexFeedbackMessage } from "@t3tools/client-runtime/state/threads";
 import { groupConsecutiveWorkEntries } from "@t3tools/client-runtime/work-log/presentation";
 
@@ -26,6 +26,21 @@ import {
   type ThreadFeedActivity,
   type ThreadFeedEntry,
 } from "./threadActivity";
+
+// Match Hermes: these ES2023 array methods are absent on mobile.
+beforeEach(() => {
+  const methods = ["toSorted", "toReversed"] as const;
+  const descriptors = methods.map((method) =>
+    Object.getOwnPropertyDescriptor(Array.prototype, method),
+  );
+  for (const method of methods) Reflect.deleteProperty(Array.prototype, method);
+  return () => {
+    for (const [index, method] of methods.entries()) {
+      const descriptor = descriptors[index];
+      if (descriptor) Reflect.defineProperty(Array.prototype, method, descriptor);
+    }
+  };
+});
 
 describe("Codex feedback pseudo-messages", () => {
   it("keeps pending and completed feedback messages in the mobile thread body", () => {

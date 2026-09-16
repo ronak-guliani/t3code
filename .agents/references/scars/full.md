@@ -169,6 +169,9 @@
 - Background-service health must use an instance-private PID-owned state file while the server also maintains shared CLI discovery state; a shared health file lets unrelated foreground servers satisfy or erase service health.
 - LaunchAgent bootstrap already starts `RunAtLoad` jobs: never immediately kill that process with `kickstart -k`. Wait for asynchronous bootout to fully unload before restarting, then wait boundedly for a running PID before probing it. Copy installed production dependencies with the CLI; a relocated `dist` alone cannot resolve external packages.
 - Connect origins must use the actual TCP listener address and port, mapping wildcard IPv4/IPv6 to their matching loopback addresses. Preserve IPv6 in the Node adapter patch (with URL brackets), and test through `NodeHttpServer.layer`, not fabricated addresses: upstream normalizes `::` to IPv4. `localhost` can reach another environment on the same port in the other family; a registered tunnel is not proof that the public endpoint identifies the intended host.
+- Automatic endpoint discovery must project only the live listener's family and bound port. Inspect existing Tailscale Serve mappings read-only, require their loopback target and environment descriptor to match this server, and never treat a public environment ID or DPoP alone as proof that an arbitrary listener is safe.
+- IPv4-only Tailnet IP synthesis must not gate IPv6 loopback Serve inspection; optional Serve command failures must preserve independently discovered IP endpoints.
+- Verified Serve mappings targeting `localhost` must survive wildcard matching and final IPv6 endpoint composition; retain descriptor identity checks because localhost can resolve to either family. Classify core private-network routes from reachability, not only addon provider IDs.
 
 ## Desktop browser surfaces
 
@@ -199,6 +202,11 @@
 
 ## Pairing and environment recovery
 
+- SSH device startup must lock per host, not across the service; keep settings revocation coordinated with those locks so a slow remote install cannot block healthy hosts or publish readiness after access is disabled.
+- Persist agent endpoints under the adapter's reconnect lock using its current endpoint; a service-only lock cannot prevent a stale readiness snapshot from overwriting a new tunnel configuration.
+- Host IDs are environment-local. Cross-environment edits and removals must confirm the SSH destination before trusting an ID, and must not append a duplicate ID belonging to an unrelated host.
+- Saved-environment settings controls must consume incremental `settingsUpdated` events, not only config snapshots. Treat failed SSH probes as expected errors rendered per environment, not atom-command defects.
+
 - Pausing a saved environment persists client intent without removing credentials or owned data. Gate retries and in-flight connection completions, and exclude paused rows only from presentation; cleanup reconciliation must still see paused projects and threads.
 
 - Pairing input must accept raw credentials and same-origin `/pair` links without sending a URL as a token; reject cross-environment links before exchange, mask input, and clear rejected credentials before evidence capture.
@@ -224,6 +232,8 @@
 
 ## Streaming reconnects and workflow dispatch
 
+- Account-change handling must cancel and join route discovery before clearing promotion state in both normal and nested health-probe loops; discovery finalizers must not repopulate the previous account's overrides after cleanup.
+
 - Live `thread.message-sent` events that create or change `latestTurn` must reconcile the sidebar activity summary; a slow shell stream otherwise leaves the active row stale.
 - Custom workflow settings and chat actions must stay wired through `workflow.run`; built-in-only server guards make every configured prompt workflow fail as `workflow-not-found`. Built-in IDs remain reserved, and custom child/new-chat retries must reuse deterministic create/turn IDs instead of bootstrap-generated UUIDs.
 - A user interrupt can arrive after `thread.turn.start` is accepted but before its provider turn is acknowledged; keep cancellation intent until the provider returns its turn ID, suppress an unsent call, then interrupt an unacknowledged or active turn without aborting adapter lifecycle cleanup.
@@ -242,6 +252,7 @@
 - Effect RPC request IDs changed wire types across mobile releases; accept safe numeric and decimal-string IDs, normalize them internally, and echo each connection's original representation in chunks, exits, and defects.
 - Mobile capability flags are executable protocol promises: advertise a feature only when every current RPC it gates is implemented, and send explicit `false` when current clients distinguish disabled behavior from legacy absence.
 - Official `wsTicket` credentials are single-use while legacy `wsToken` credentials remain replayable; keep the ticket replay guard process-wide because HTTP issuance and WebSocket upgrade routes may materialize separate auth layer instances.
+- Port upstream connection gates through the fork's post-connect `ConnectionCompatibility.validate` path (driver calls it after session ready) rather than rewiring resolver brokers: a resolver descriptor fetch adds HttpClient layer requirements and a new failure mode to every platform. Widening `EnvironmentConnectionPhase` breaks exhaustive mobile switches (composer pill, status dot, tone, notices); fix every switch in the same change and let `tsc` on `@t3tools/mobile` prove it.
 
 ## Migration repairs
 
@@ -284,6 +295,7 @@
 - Projection bootstrap must prune cursor rows for retired projector names; a renamed projector can otherwise pin a global minimum cursor and replay gigabytes of event history on every startup.
 - Projection bootstrap batches may commit independently, but state-derived attachment cleanup must wait for the entire replay; arbitrary batch boundaries can split a revert from a later event that restores a file reference.
 - Eager background-service layers must retain construction dependencies with `Layer.provideMerge`; a sibling runtime layer is not enough. Keep a full `makeServerLayer` build test because isolated sublayer tests can pass while packaged startup fails with a missing service.
+- Registries that construct supervisors later must capture and re-provide optional services from construction time; test calls outside the provider layer so an ambient test service cannot mask lost promotion state.
 - Flavor-scoped provider subprocesses must inherit `T3CODE_HOME`, and live CLI commands must honor it; reject runtime-state files owned by dead PIDs before borrowing auth so port reuse cannot surface as a misleading HTTP 401.
 
 ## Test clocks and durable PR monitoring
@@ -337,6 +349,7 @@
 
 - No-argument MCP parameters need an object-only schema, such as `Schema.Record(Schema.String, Schema.Never)`; `Schema.Struct({})` exports an object/array union. Do not add unused parameters to satisfy provider schema checks.
 - Auth bootstrap cache writes must belong to the current in-flight promise so reset cannot be undone by an older completion. Import auth test dependencies before test execution, not inside a timed test or its cleanup.
+- Direct HTTP authorization must use shared token-only renewal, not relay connection establishment; cached reads must mint no socket tickets or depend on relay availability, while rejected-token retries retain single-flight and account-identity guards.
 
 ## Mobile drafts and navigation
 

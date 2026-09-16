@@ -22,6 +22,7 @@ import {
   resolveFilteredSidebarProjects,
   resolveProjectExpanded,
   resolveSidebarThreadRowStatus,
+  resolveSidebarThreadClickKind,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
   shouldClearThreadSelectionOnMouseDown,
@@ -1013,6 +1014,82 @@ describe("resolveThreadRowClassName", () => {
     const className = resolveThreadRowClassName({ isActive: true, isSelected: false });
     expect(className).toContain("bg-accent/85");
     expect(className).toContain("hover:bg-accent");
+  });
+});
+
+describe("resolveSidebarThreadClickKind", () => {
+  it("toggles on Cmd+Click on macOS", () => {
+    expect(
+      resolveSidebarThreadClickKind({
+        metaKey: true,
+        ctrlKey: false,
+        shiftKey: false,
+        isMac: true,
+      }),
+    ).toBe("toggle");
+  });
+
+  it("toggles on Ctrl+Click off macOS", () => {
+    expect(
+      resolveSidebarThreadClickKind({
+        metaKey: false,
+        ctrlKey: true,
+        shiftKey: false,
+        isMac: false,
+      }),
+    ).toBe("toggle");
+  });
+
+  it("ignores Ctrl+Click on macOS, where Cmd owns toggle", () => {
+    expect(
+      resolveSidebarThreadClickKind({
+        metaKey: false,
+        ctrlKey: true,
+        shiftKey: false,
+        isMac: true,
+      }),
+    ).toBe("open");
+  });
+
+  it("extends a range on Shift+Click", () => {
+    expect(
+      resolveSidebarThreadClickKind({
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: true,
+        isMac: true,
+      }),
+    ).toBe("range");
+    expect(
+      resolveSidebarThreadClickKind({
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: true,
+        isMac: false,
+      }),
+    ).toBe("range");
+  });
+
+  it("prefers toggle when both the modifier and Shift are held", () => {
+    expect(
+      resolveSidebarThreadClickKind({
+        metaKey: true,
+        ctrlKey: false,
+        shiftKey: true,
+        isMac: true,
+      }),
+    ).toBe("toggle");
+  });
+
+  it("opens on a plain click", () => {
+    expect(
+      resolveSidebarThreadClickKind({
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: false,
+        isMac: false,
+      }),
+    ).toBe("open");
   });
 });
 

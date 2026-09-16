@@ -98,6 +98,8 @@ export function useRemoteConnectionStatus() {
         connectionState: environment.connectionState,
         connectionError: environment.connectionError,
         connectionErrorTraceId: environment.connectionErrorTraceId,
+        routeKind: environment.routeKind,
+        routeSwitching: environment.routeSwitching,
       })),
     [workspace.environments],
   );

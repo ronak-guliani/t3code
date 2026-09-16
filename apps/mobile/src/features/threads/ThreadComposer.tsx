@@ -228,7 +228,7 @@ export function ComposerSurface(props: {
 }
 
 type ComposerStatusPillState = {
-  readonly kind: "unavailable" | "reconnecting";
+  readonly kind: "unavailable" | "reconnecting" | "unsupported";
   readonly label: string;
 };
 
@@ -258,6 +258,8 @@ function composerConnectionStatus(input: {
           ? `Failed to connect to ${environmentLabel}: ${input.connectionError}`
           : `Failed to connect to ${environmentLabel}`,
       };
+    case "unsupported":
+      return { kind: "unsupported", label: "Client not supported" };
     case "available":
       return { kind: "unavailable", label: `${environmentLabel} is not connected` };
     case "connected":
@@ -270,6 +272,36 @@ const ComposerConnectionStatusPill = memo(function ComposerConnectionStatusPill(
   readonly status: ComposerStatusPillState;
 }) {
   const isReconnecting = props.status.kind === "reconnecting";
+  const statusDot = isReconnecting ? (
+    <ActivityIndicator size="small" colorClassName={"accent-icon-muted"} />
+  ) : (
+    <View className="h-2 w-2 rounded-full bg-red-500" />
+  );
+  const statusLabel = (
+    <Text
+      className="max-w-[260px] text-sm font-t3-bold leading-snug text-foreground"
+      numberOfLines={1}
+    >
+      {props.status.label}
+    </Text>
+  );
+  // An unsupported client cannot reconnect its way out: render the status as
+  // plain text with no button role or retry handler.
+  if (props.status.kind === "unsupported") {
+    return (
+      <Animated.View
+        className="absolute inset-x-0 bottom-full items-center pb-2"
+        entering={FadeInDown.duration(180)}
+        exiting={FadeOutDown.duration(140)}
+        pointerEvents="box-none"
+      >
+        <View className="max-w-full flex-row items-center gap-2 rounded-full bg-card px-3 py-2 shadow-sm">
+          {statusDot}
+          {statusLabel}
+        </View>
+      </Animated.View>
+    );
+  }
   return (
     <Animated.View
       className="absolute inset-x-0 bottom-full items-center pb-2"
@@ -282,17 +314,8 @@ const ComposerConnectionStatusPill = memo(function ComposerConnectionStatusPill(
         onPress={props.onPress}
         className="max-w-full flex-row items-center gap-2 rounded-full bg-card px-3 py-2 shadow-sm active:opacity-70"
       >
-        {isReconnecting ? (
-          <ActivityIndicator size="small" colorClassName={"accent-icon-muted"} />
-        ) : (
-          <View className="h-2 w-2 rounded-full bg-red-500" />
-        )}
-        <Text
-          className="max-w-[260px] text-sm font-t3-bold leading-snug text-foreground"
-          numberOfLines={1}
-        >
-          {props.status.label}
-        </Text>
+        {statusDot}
+        {statusLabel}
       </Pressable>
     </Animated.View>
   );

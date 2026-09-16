@@ -46,6 +46,11 @@ export class ClientPresentation extends Context.Service<
   {
     readonly metadata: AuthClientPresentationMetadata;
     readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
+    /**
+     * Explicit rollout gate for automatic relay-to-direct route promotion.
+     * Omitted by existing clients, so promotion remains disabled by default.
+     */
+    readonly automaticRoutePromotion?: boolean;
   }
 >()("@t3tools/client-runtime/platform/capabilities/ClientPresentation") {}
 
