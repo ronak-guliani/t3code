@@ -360,6 +360,52 @@ export function buildThreadListV2ListItems(input: {
 }
 
 /**
+ * Recycled-list equality for v2 rows. Every layout rebuild mints fresh
+ * item/row objects (even when nothing visible changed), so reference
+ * equality would re-render every visible row on each toggle — compare the
+ * fields rows actually consume instead. Shared by the Home list and the
+ * iPad sidebar so both recycle identically.
+ */
+export function threadListV2ItemsAreEqual(
+  previous: ThreadListV2ListItem,
+  item: ThreadListV2ListItem,
+): boolean {
+  if (previous.type === "v2-thread" && item.type === "v2-thread") {
+    return (
+      previous.key === item.key &&
+      previous.item.thread === item.item.thread &&
+      previous.item.hierarchy?.depth === item.item.hierarchy?.depth &&
+      previous.item.hierarchy?.isExpanded === item.item.hierarchy?.isExpanded &&
+      previous.item.hierarchy?.childCount === item.item.hierarchy?.childCount &&
+      previous.item.hierarchy?.relatedChildCount === item.item.hierarchy?.relatedChildCount &&
+      previous.item.hierarchy?.displayStatus === item.item.hierarchy?.displayStatus &&
+      previous.item.hierarchy?.relatedStatus === item.item.hierarchy?.relatedStatus &&
+      previous.item.hierarchy?.archiveBlocked === item.item.hierarchy?.archiveBlocked &&
+      previous.item.hierarchy?.latestRelatedNotificationAt ===
+        item.item.hierarchy?.latestRelatedNotificationAt &&
+      previous.item.status === item.item.status &&
+      previous.item.variant === item.item.variant &&
+      previous.item.snoozed === item.item.snoozed &&
+      previous.item.pinned === item.item.pinned &&
+      previous.snoozeWakeLabelText === item.snoozeWakeLabelText
+    );
+  }
+  if (previous.type === "v2-pending" && item.type === "v2-pending") {
+    return (
+      previous.pendingTask === item.pendingTask &&
+      previous.showPendingDivider === item.showPendingDivider
+    );
+  }
+  if (previous.type === "v2-snoozed-shelf" && item.type === "v2-snoozed-shelf") {
+    return previous.count === item.count && previous.expanded === item.expanded;
+  }
+  if (previous.type === "v2-settled-shelf" && item.type === "v2-settled-shelf") {
+    return previous.count === item.count && previous.expanded === item.expanded;
+  }
+  return false;
+}
+
+/**
  * Keeps root groups together across shelves. Active roots and children use
  * recent subtree activity; snoozed and settled roots retain their shelf order.
  */
@@ -413,20 +459,28 @@ export function buildThreadListV2Items(input: {
       (input.environmentId === null || thread.environmentId === input.environmentId) &&
       (projectKeys === null || projectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );
-  const matchingKeys = new Set(
-    scopedThreads
-      .filter(
-        (thread) =>
-          thread.title.toLocaleLowerCase().includes(query) ||
-          threadPullRequestSearchTerms(thread).some((term) =>
-            term.toLocaleLowerCase().includes(query),
-          ) ||
-          input.matchedThreadKeys?.has(
-            threadSearchMatchKey({ environmentId: thread.environmentId, threadId: thread.id }),
-          ),
-      )
-      .map((thread) => `${thread.environmentId}:${thread.id}`),
-  );
+  // Skipped for the common no-query case: nothing downstream reads the
+  // set then, and lowercasing every title on each layout is pure waste.
+  const matchingKeys =
+    query.length === 0
+      ? new Set<string>()
+      : new Set(
+          scopedThreads
+            .filter(
+              (thread) =>
+                thread.title.toLocaleLowerCase().includes(query) ||
+                threadPullRequestSearchTerms(thread).some((term) =>
+                  term.toLocaleLowerCase().includes(query),
+                ) ||
+                input.matchedThreadKeys?.has(
+                  threadSearchMatchKey({
+                    environmentId: thread.environmentId,
+                    threadId: thread.id,
+                  }),
+                ),
+            )
+            .map((thread) => `${thread.environmentId}:${thread.id}`),
+        );
   const tree = buildMobileThreadTree(
     scopedThreads,
     compareNestedThreads,

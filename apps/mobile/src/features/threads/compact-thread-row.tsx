@@ -1,5 +1,6 @@
 import type { EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state/thread-search";
-import { memo, type ComponentProps } from "react";
+import * as Haptics from "expo-haptics";
+import { memo, useCallback, type ComponentProps } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
@@ -173,6 +174,17 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
   const accessibilityLabel = `${props.title}${status.label ? `, ${status.label}` : ""}${props.pinned ? ", pinned" : ""}${nestingLabel}${groupLabel}, ${props.timestamp}${excerptLabel}`;
   const pullRequest = props.pullRequest;
   const rowMinHeight = isNested ? NESTED_ROW_HEIGHT : PARENT_ROW_HEIGHT;
+  const handleToggleExpanded = useCallback(() => {
+    // Instant tactile confirmation; the list state update follows in the
+    // same tick so the chevron never feels dead on large inboxes. The
+    // toggle must never depend on haptics being available.
+    try {
+      void Haptics.selectionAsync().catch(() => undefined);
+    } catch {
+      // Haptics unavailable (tests, simulators without the engine).
+    }
+    props.onToggleExpanded?.();
+  }, [props.onToggleExpanded]);
   const primary = (
     <Pressable
       accessibilityRole="button"
@@ -189,13 +201,6 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
         {isNested ? (
           <View className="items-center" style={styles.nestedRail}>
             <View className="bg-border-subtle" style={styles.nestedRailLine} />
-            <SymbolView
-              name="arrow.turn.left.up"
-              size={11}
-              tintColorClassName={
-                selected ? "accent-user-bubble-foreground" : "accent-foreground-tertiary"
-              }
-            />
           </View>
         ) : null}
         <View className="w-3 items-center">
@@ -260,15 +265,14 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
     <View
       style={[
         styles.container,
-        isNested ? styles.nestedContainer : null,
         {
+          // Nested rows share the parent surface; indentation, the reply
+          // rail, and compact type carry the grouping instead of a fill.
           backgroundColor: selected
             ? theme["--color-user-bubble"]
-            : isNested
-              ? (theme["--color-subtle"] ?? theme["--color-screen"])
-              : props.sidebar
-                ? theme["--color-drawer"]
-                : theme["--color-screen"],
+            : props.sidebar
+              ? theme["--color-drawer"]
+              : theme["--color-screen"],
           paddingStart: (props.sidebar ? 12 : 18) + depth * NESTED_INDENT,
           paddingEnd: props.sidebar ? 12 : 18,
           opacity: isNested && props.status === "ready" && !selected ? 0.92 : 1,
@@ -336,7 +340,7 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
             }
             accessibilityHint={expanded ? "Collapses the subchats" : "Expands the subchats"}
             accessibilityState={{ expanded }}
-            onPress={props.onToggleExpanded}
+            onPress={handleToggleExpanded}
             style={({ pressed }) => [styles.expandButton, { opacity: pressed ? 0.6 : 1 }]}
           >
             <SymbolView
@@ -366,7 +370,6 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
 
 const styles = StyleSheet.create({
   container: { borderRadius: 10 },
-  nestedContainer: { borderRadius: 8, marginVertical: 1 },
   nestedRail: {
     width: NESTED_RAIL_WIDTH,
     alignSelf: "stretch",
@@ -383,8 +386,8 @@ const styles = StyleSheet.create({
   },
   primarySlot: { flex: 1, minWidth: 0 },
   expandButton: {
-    width: 32,
-    minHeight: PARENT_ROW_HEIGHT,
+    width: 44,
+    alignSelf: "stretch",
     alignItems: "center",
     justifyContent: "center",
   },
