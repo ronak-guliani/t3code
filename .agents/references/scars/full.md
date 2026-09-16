@@ -66,6 +66,11 @@
 
 ## Provider tools and workspace ownership
 
+- Agent CLI stdout is a data boundary: send logs and failures to stderr, use the server-matched launcher rather than ambient PATH, and never infer matching protocol contracts from equal package versions.
+- Pending CLI approvals/questions must combine `activityContext` with the recent activity window and honor terminal lifecycle events; a request outside the window is not resolved.
+- Thread history reads must filter and limit in SQL before decoding, omit unrelated checkpoints, and bind pagination cursors to thread/view. Unary RPC deadlines must not cap stream lifetime or imply that timed-out mutations were rejected.
+- Preserve typed thread-read input failures through HTTP and RPC; missing/ambiguous threads and invalid cursors are client errors, not error-logged repository failures.
+
 - Keep local provider health checks process-free when their contract promises CLI-only probing; workspace-specific discovery belongs in the explicit cwd refresh path, not an empty-inventory fallback that silently starts a temporary server.
 - Child processes terminated by a signal surface through Effect as `Unknown: ChildProcess.exitCode` with the signal only in the nested cause; preserve that cause before wrapping provider diagnostics.
 - Copilot ACP rejects client-supplied stdio MCP servers; expose T3 workspace handoff tools over authenticated loopback HTTP, inject the raw-worktree prohibition through a T3-owned custom-instructions directory, keep permission interception enabled in full-access mode, and fail raw `git worktree add`/`move` visibly so provider cwd, checkpoints, and diffs stay aligned. Inspect only normalized command-execution payloads for raw worktree mutations; MCP prompts may quote those commands as prohibitions. `git worktree remove` may run in-chat for cleanup.

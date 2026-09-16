@@ -8,6 +8,7 @@
  */
 import type {
   OrchestrationCheckpointSummary,
+  OrchestrationGetSnapshotError,
   OrchestrationGetThreadActivitiesInput,
   OrchestrationGetThreadActivitiesResult,
   OrchestrationProject,
@@ -16,6 +17,9 @@ import type {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadShell,
+  OrchestrationReadThreadInput,
+  OrchestrationReadThreadInputError,
+  OrchestrationReadThreadResult,
   OrchestrationSearchTranscriptResult,
   ProjectId,
   ThreadId,
@@ -77,6 +81,12 @@ export interface ProjectionChatArchiveEntry {
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
+  readonly readThread: (
+    input: OrchestrationReadThreadInput,
+  ) => Effect.Effect<
+    OrchestrationReadThreadResult,
+    OrchestrationReadThreadInputError | OrchestrationGetSnapshotError
+  >;
   /**
    * Read the latest orchestration projection snapshot.
    *
