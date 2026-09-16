@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -31,6 +31,7 @@ type FilesystemOwnershipState = {
   readonly ownerThreadId: string | null;
   readonly branch: string | null;
   readonly generation: number;
+  readonly attemptId: string | null;
 };
 
 const filesystemOwnershipStatePath = (canonicalPath: string) =>
@@ -170,6 +171,16 @@ const make = Effect.gen(function* () {
       );
       const canonicalPath = yield* canonicalCheckoutIdentity(canonicalWorktreePath);
       const filesystemPaths = yield* filesystemOwnershipStatePath(canonicalPath);
+      // Unique per-attempt token. The filesystem lock is released before the
+      // SQLite transaction runs, and same-thread claims preserve the
+      // generation, so concurrent reentrant claims can share one generation.
+      // Compensation must only clear state this attempt wrote.
+      const attemptId = randomUUID();
+      // Snapshot of the ledger entry before this attempt overwrote it. The
+      // filesystem write below is not transactional, so compensation restores
+      // this snapshot instead of nulling the entry: a failed reentrant claim
+      // must not destroy the successful claim it overwrote.
+      let previousFilesystemState: FilesystemOwnershipState | null = null;
       const filesystemBinding = yield* withFilesystemOwnershipLock(
         filesystemPaths,
         async (state) => {
@@ -180,6 +191,7 @@ const make = Effect.gen(function* () {
               requestedByThreadId: input.threadId,
             });
           }
+          previousFilesystemState = state;
           const generation =
             state?.ownerThreadId === input.threadId
               ? state.generation
@@ -191,6 +203,7 @@ const make = Effect.gen(function* () {
               ownerThreadId: input.threadId,
               branch: input.branch,
               generation,
+              attemptId,
             },
             value: {
               canonicalPath,
@@ -205,10 +218,16 @@ const make = Effect.gen(function* () {
         yield* withFilesystemOwnershipLock(filesystemPaths, async (state) => {
           if (
             state?.ownerThreadId === input.threadId &&
-            state.generation === filesystemBinding.generation
+            state.generation === filesystemBinding.generation &&
+            state.attemptId === attemptId
           ) {
             return {
-              state: { ...state, ownerThreadId: null, branch: null },
+              state: previousFilesystemState ?? {
+                ...state,
+                ownerThreadId: null,
+                branch: null,
+                attemptId: null,
+              },
               value: undefined,
             };
           }
@@ -216,6 +235,7 @@ const make = Effect.gen(function* () {
             state: state ?? {
               ...filesystemBinding,
               ownerThreadId: null,
+              attemptId: null,
             },
             value: undefined,
           };
@@ -225,6 +245,7 @@ const make = Effect.gen(function* () {
           WHERE canonical_path = ${canonicalPath}
             AND owner_thread_id = ${input.threadId}
             AND generation = ${filesystemBinding.generation}
+            AND attempt_id = ${attemptId}
         `;
       });
       const claimResult = yield* Effect.exit(
@@ -244,7 +265,7 @@ const make = Effect.gen(function* () {
             yield* sql`
             INSERT INTO workspace_ownership (
               canonical_path, worktree_path, owner_thread_id, branch,
-              generation, command_id, claimed_at, updated_at
+              generation, command_id, attempt_id, claimed_at, updated_at
             ) VALUES (
               ${canonicalPath},
               ${canonicalWorktreePath},
@@ -252,6 +273,7 @@ const make = Effect.gen(function* () {
               ${input.branch},
               ${nextGeneration},
               ${input.commandId},
+              ${attemptId},
               ${input.now},
               ${input.now}
             )
@@ -260,6 +282,7 @@ const make = Effect.gen(function* () {
               branch = excluded.branch,
               generation = excluded.generation,
               command_id = excluded.command_id,
+              attempt_id = excluded.attempt_id,
               updated_at = excluded.updated_at
           `;
             return yield* getRow(canonicalPath);
@@ -311,6 +334,7 @@ const make = Effect.gen(function* () {
             ownerThreadId: null,
             branch: binding.branch,
             generation: binding.generation,
+            attemptId: null,
           },
           value: state,
         }),
@@ -346,6 +370,7 @@ const make = Effect.gen(function* () {
         WHERE owner_thread_id = ${threadId}
         ${canonicalPath ? sql`AND canonical_path = ${canonicalPath}` : sql``}
       `;
+      const clearedPaths = new Set<string>();
       for (const row of rows) {
         const filesystemPaths = yield* filesystemOwnershipStatePath(row.canonical_path);
         yield* withFilesystemOwnershipLock(filesystemPaths, async (state) => {
@@ -361,10 +386,59 @@ const make = Effect.gen(function* () {
                   ownerThreadId: null,
                   branch: null,
                   generation: 0,
+                  attemptId: null,
                 },
             value: undefined,
           };
         });
+        clearedPaths.add(row.canonical_path);
+      }
+      if (canonicalPath !== undefined && !clearedPaths.has(canonicalPath)) {
+        // The database row can go missing after a partial failure or a
+        // database restoration while the filesystem ledger still names this
+        // thread. Inspect the ledger for the supplied path independently of
+        // the SQL result so a leaked claim cannot block the worktree forever.
+        // The ledger is keyed by Git top-level path, so also check the
+        // containing checkout root when a subdirectory was supplied.
+        const candidates = yield* Effect.promise(async () => {
+          try {
+            const root = await resolveGitWorktreeRoot(canonicalPath);
+            return root !== null && root !== canonicalPath
+              ? [canonicalPath, root]
+              : [canonicalPath];
+          } catch {
+            return [canonicalPath];
+          }
+        }).pipe(Effect.catch(() => Effect.succeed([canonicalPath] as string[])));
+        for (const candidate of candidates) {
+          if (clearedPaths.has(candidate)) continue;
+          const fallbackPaths = yield* filesystemOwnershipStatePath(candidate).pipe(
+            Effect.catch(() => Effect.succeed(null)),
+          );
+          if (fallbackPaths === null) continue;
+          const wasOwned = yield* withFilesystemOwnershipLock(fallbackPaths, async (state) => {
+            if (state?.ownerThreadId === threadId) {
+              return {
+                state: { ...state, ownerThreadId: null, branch: null },
+                value: true,
+              };
+            }
+            return {
+              state: state ?? {
+                canonicalPath: candidate,
+                worktreePath: candidate,
+                ownerThreadId: null,
+                branch: null,
+                generation: 0,
+                attemptId: null,
+              },
+              value: false,
+            };
+          }).pipe(Effect.catch(() => Effect.succeed(false as boolean)));
+          if (wasOwned) {
+            clearedPaths.add(candidate);
+          }
+        }
       }
       yield* canonicalPath
         ? sql`DELETE FROM workspace_ownership WHERE owner_thread_id = ${threadId} AND canonical_path = ${canonicalPath}`

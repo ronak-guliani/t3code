@@ -855,6 +855,11 @@ const make = Effect.gen(function* () {
     );
     const revertGuardRef = checkpointRevertGuardRefForThread(event.payload.threadId);
 
+    // A delayed revert may arrive after this thread's workspace claim was
+    // released or reassigned. Fence the mutation boundary so the restore
+    // cannot rewrite the index and working tree of the new owner.
+    yield* assertThreadWorkspaceOwned(thread);
+
     yield* checkpointStore.captureCheckpoint({
       cwd: sessionRuntime.value.cwd,
       checkpointRef: revertGuardRef,

@@ -660,6 +660,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         yield* PubSub.publish(eventPubSub, persistedEvent);
       }
     });
+    // Canonical path admitted by this dispatch attempt (the Git top-level
+    // ownership key). Recorded for failure compensation below: recomputing it
+    // from the command input would miss the claimed row when a handoff
+    // targets a subdirectory of the worktree.
+    let admittedCanonicalPath: string | undefined;
 
     const process = Effect.exit(
       Effect.gen(function* () {
@@ -703,6 +708,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             ? readModel.threads.find((thread) => thread.id === command.threadId)?.workspaceBinding
             : undefined;
         const admittedCommand = yield* admitWorkspace(command);
+        admittedCanonicalPath =
+          "workspaceBinding" in admittedCommand
+            ? admittedCommand.workspaceBinding?.canonicalPath
+            : undefined;
         const worktreePath = cleanupWorktreePath(admittedCommand, readModel);
         if (worktreePath !== null && (yield* isWorktreeCleanupPending(worktreePath))) {
           return yield* new OrchestrationCommandWorktreeCleanupPendingError({
@@ -981,24 +990,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 envelope.command.type === "thread.meta.update"
                   ? envelope.command
                   : undefined;
-              if (transferCommand !== undefined) {
+              if (transferCommand !== undefined && admittedCanonicalPath !== undefined) {
                 const currentThread = readModel.threads.find(
                   (thread) => thread.id === transferCommand.threadId,
                 );
-                const requestedPath = transferCommand.worktreePath;
-                if (requestedPath !== undefined && requestedPath !== null) {
-                  const requestedCanonicalPath = yield* Effect.promise(() =>
-                    canonicalizeWorktreePath(requestedPath),
+                if (admittedCanonicalPath !== currentThread?.workspaceBinding?.canonicalPath) {
+                  yield* workspaceOwnership.release(
+                    transferCommand.threadId,
+                    admittedCanonicalPath,
                   );
-                  if (
-                    requestedCanonicalPath !== null &&
-                    requestedCanonicalPath !== currentThread?.workspaceBinding?.canonicalPath
-                  ) {
-                    yield* workspaceOwnership.release(
-                      transferCommand.threadId,
-                      requestedCanonicalPath,
-                    );
-                  }
                 }
               }
             }).pipe(

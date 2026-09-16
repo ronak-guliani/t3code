@@ -2280,6 +2280,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
+      // Persist an isolated workspace binding admitted for this dispatch. The
+      // turn-start-requested payload below carries the binding for provenance,
+      // but no projector applies it to the thread; without this meta-updated
+      // event the provider would keep executing in the stale worktree while
+      // the claimed isolated workspace sits unused.
+      if (
+        command.workspaceBinding !== undefined &&
+        (targetThread.workspaceBinding?.generation !== command.workspaceBinding.generation ||
+          targetThread.workspaceBinding?.canonicalPath !== command.workspaceBinding.canonicalPath)
+      ) {
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.dispatchedAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.meta-updated",
+          payload: {
+            threadId: command.threadId,
+            branch: command.workspaceBinding.branch,
+            worktreePath: command.workspaceBinding.worktreePath,
+            workspaceBinding: command.workspaceBinding,
+            updatedAt: command.dispatchedAt,
+          },
+        });
+      }
       const { userMessageEvent, turnStartRequestedEvent } = buildTurnStartEvents({
         commandId: command.commandId,
         threadId: command.threadId,
