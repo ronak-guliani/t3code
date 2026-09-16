@@ -49,6 +49,21 @@ import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 const isGitCommandError = Schema.is(GitCommandError);
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+// Short-lived Git commands (status polls, rev-parse, diff reads) can burst by
+// the dozens across projects and WebSocket sessions, starving connection
+// heartbeats. Bound them with a process-wide pool shared by every GitCore
+// instance (per-session drivers included). Commands with no timeout or a
+// timeout above the 30s default (fetch/clone/commit-with-hooks) bypass the
+// pool so slow network-bound work cannot monopolize polling capacity.
+const GIT_SHORT_COMMAND_CONCURRENCY = 8;
+const gitProcesses = Semaphore.makeUnsafe(GIT_SHORT_COMMAND_CONCURRENCY);
+
+function shouldBypassGitProcessPool(timeoutMs: number | null | undefined): boolean {
+  if (timeoutMs === null) {
+    return true;
+  }
+  return (timeoutMs ?? DEFAULT_TIMEOUT_MS) > DEFAULT_TIMEOUT_MS;
+}
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const REVIEW_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
 const REVIEW_DIFF_NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
@@ -119,7 +134,7 @@ class StatusRemoteRefreshCacheKey extends Data.Class<{
 
 interface ExecuteGitOptions {
   stdin?: string | undefined;
-  timeoutMs?: number | undefined;
+  timeoutMs?: number | null | undefined;
   allowNonZeroExit?: boolean | undefined;
   fallbackErrorMessage?: string | undefined;
   maxOutputBytes?: number | undefined;
@@ -705,7 +720,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
         ...input,
         args: [...input.args],
       } as const;
-      const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const timeoutMs = input.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : input.timeoutMs;
       const maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
       const truncateOutputAtMaxBytes = input.truncateOutputAtMaxBytes ?? false;
 
@@ -780,6 +795,13 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
         } satisfies ExecuteGitResult;
       });
 
+      // A null timeout means "no timeout": run without a deadline. The
+      // semaphore (see `execute`) is acquired outside this timeout, so queue
+      // waits never consume execution budget.
+      if (timeoutMs === null) {
+        return yield* runGitCommand().pipe(Effect.scoped);
+      }
+
       return yield* runGitCommand().pipe(
         Effect.scoped,
         Effect.timeoutOption(timeoutMs),
@@ -810,6 +832,14 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
           operation: input.operation,
         },
       }),
+      // Acquire outside both the execution timeout and the duration metric so
+      // queue waits neither time out commands nor pollute execution timings.
+      // Interruption while queued never spawns a process; the permit releases
+      // on success, failure, or interruption via withPermits.
+      (execution) =>
+        shouldBypassGitProcessPool(input.timeoutMs)
+          ? execution
+          : gitProcesses.withPermits(1)(execution),
       Effect.withSpan(input.operation, {
         kind: "client",
         attributes: {
