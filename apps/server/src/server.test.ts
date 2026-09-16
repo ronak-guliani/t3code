@@ -87,7 +87,11 @@ import * as ServerAdvertisedEndpoints from "./remoteAccess/ServerAdvertisedEndpo
 import { CheckoutCoordinatorLive } from "./git/CheckoutCoordinator.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import { attachmentRelativePath } from "./attachmentStore.ts";
-import { getLiveOrchestrationShellSnapshot } from "./cli/client.ts";
+import {
+  getLiveOrchestrationShellSnapshot,
+  readLiveThread,
+  withRpcClientForBearerToken,
+} from "./cli/client.ts";
 import {
   CheckpointDiffQuery,
   type CheckpointDiffQueryShape,
@@ -2531,6 +2535,49 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.equal(snapshot.threads.length, 338);
       assert.equal(snapshot.snapshotSequence, 338);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes bounded thread reads over HTTP and WebSocket without full snapshots", () =>
+    Effect.gen(function* () {
+      const input = { thread: defaultThreadId, view: "messages", limit: 2 } as const;
+      const expected = {
+        thread: makeDefaultOrchestrationThreadShell(),
+        messages: [],
+        page: { hasMore: false, before: null },
+      };
+      let reads = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getSnapshot: () => Effect.die("Targeted reads must not load the full snapshot"),
+            getShellSnapshot: () => Effect.die("Targeted reads must not load the shell snapshot"),
+            readThread: (request) =>
+              Effect.sync(() => {
+                assert.deepStrictEqual(request, input);
+                reads++;
+                return expected;
+              }),
+          },
+        },
+      });
+      const origin = yield* getHttpServerUrl();
+      const bearerToken = yield* getAuthenticatedBearerSessionToken();
+      const httpResult = yield* readLiveThread(
+        {
+          url: Option.some(origin),
+          token: Option.some(bearerToken),
+          baseDir: Option.none(),
+          environment: Option.none(),
+        },
+        input,
+      );
+      const rpcResult = yield* withRpcClientForBearerToken(origin, bearerToken, (client) =>
+        client[ORCHESTRATION_WS_METHODS.readThread](input),
+      ).pipe(Effect.provide(FetchHttpClient.layer));
+      assert.deepStrictEqual(httpResult, expected);
+      assert.deepStrictEqual(rpcResult, expected);
+      assert.equal(reads, 2);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

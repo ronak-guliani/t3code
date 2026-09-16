@@ -16,6 +16,8 @@ import type {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadShell,
+  OrchestrationReadThreadInput,
+  OrchestrationReadThreadResult,
   OrchestrationSearchTranscriptResult,
   ProjectId,
   ThreadId,
@@ -77,6 +79,12 @@ export interface ProjectionChatArchiveEntry {
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
+  readonly readThread: (
+    input: OrchestrationReadThreadInput,
+  ) => Effect.Effect<
+    OrchestrationReadThreadResult,
+    ProjectionRepositoryError | import("@t3tools/contracts").OrchestrationGetSnapshotError
+  >;
   /**
    * Read the latest orchestration projection snapshot.
    *

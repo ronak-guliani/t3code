@@ -1308,6 +1308,11 @@ export const WsOrchestrationGetArchivedShellSnapshotRpc = Rpc.make(
 );
 
 export const WsRpcGroup = RpcGroup.make(
+  Rpc.make(ORCHESTRATION_WS_METHODS.readThread, {
+    payload: OrchestrationRpcSchemas.readThread.input,
+    success: OrchestrationRpcSchemas.readThread.output,
+    error: OrchestrationGetSnapshotError,
+  }),
   WsServerProbeRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,

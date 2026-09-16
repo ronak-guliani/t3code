@@ -4,12 +4,13 @@ import {
   ClientOrchestrationCommand,
   OrchestrationDispatchCommandError,
   OrchestrationGetSnapshotError,
+  OrchestrationReadThreadInput,
   type OrchestrationReadModel,
   type OrchestrationShellSnapshot,
   type OrchestrationThreadDetailSnapshot,
   ThreadId,
 } from "@t3tools/contracts";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import { requireSessionScope, respondToAuthError } from "../auth/http.ts";
@@ -36,6 +37,7 @@ const isDefinitiveCommandRejection = (error: OrchestrationDispatchCommandError):
     cause._tag === "OrchestrationCommandPreviouslyRejectedError"
   );
 };
+const isOrchestrationGetSnapshotError = Schema.is(OrchestrationGetSnapshotError);
 
 const respondToOrchestrationHttpError = (
   error: OrchestrationDispatchCommandError | OrchestrationGetSnapshotError,
@@ -150,6 +152,35 @@ export const orchestrationThreadSnapshotRouteLayer = HttpRouter.add(
       projectThreadDetailSnapshot(snapshot.value satisfies OrchestrationThreadDetailSnapshot),
       { status: 200 },
     );
+  }).pipe(
+    Effect.catchTags({
+      AuthError: respondToAuthError,
+      OrchestrationGetSnapshotError: respondToOrchestrationHttpError,
+    }),
+  ),
+);
+
+export const orchestrationThreadReadRouteLayer = HttpRouter.add(
+  "POST",
+  "/api/orchestration/thread-read",
+  Effect.gen(function* () {
+    yield* authorizeClientSession(AuthOrchestrationReadScope);
+    const input = yield* HttpServerRequest.schemaBodyJson(OrchestrationReadThreadInput).pipe(
+      Effect.mapError(
+        () => new OrchestrationGetSnapshotError({ message: "Invalid thread read request." }),
+      ),
+    );
+    const query = yield* ProjectionSnapshotQuery;
+    const result = yield* query
+      .readThread(input)
+      .pipe(
+        Effect.mapError((cause) =>
+          isOrchestrationGetSnapshotError(cause)
+            ? cause
+            : new OrchestrationGetSnapshotError({ message: "Failed to read thread.", cause }),
+        ),
+      );
+    return HttpServerResponse.jsonUnsafe(result);
   }).pipe(
     Effect.catchTags({
       AuthError: respondToAuthError,
