@@ -4,7 +4,7 @@ import { GitPullRequestIcon } from "lucide-react";
 import { openPullRequestLink } from "../lib/openPullRequestLink";
 import { cn } from "../lib/utils";
 import { prStatusIndicator } from "./ThreadStatusIndicators";
-import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
+import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "./ui/popover";
 
 export function resolveThreadPullRequests(
   links: ReadonlyArray<ThreadPullRequestLink> | undefined,
@@ -75,11 +75,16 @@ export function ThreadPullRequestsPopover({
         side="bottom"
         align="start"
         className="w-[min(22rem,calc(100vw-2rem))] p-0"
+        onPointerDown={(event) => {
+          event.stopPropagation();
+        }}
         onClick={(event) => {
           event.stopPropagation();
         }}
       >
-        <div className="mb-2 text-xs font-medium text-foreground">Linked pull requests</div>
+        <PopoverTitle className="mb-2 text-xs font-medium text-foreground">
+          Linked pull requests
+        </PopoverTitle>
         <div className="space-y-1">
           {pullRequests.map((pullRequest, index) => {
             const status = prStatusIndicator(pullRequest);

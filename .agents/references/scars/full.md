@@ -335,6 +335,7 @@
 - Sidebar device markers belong in trailing metadata, not title text: omit primary-machine markers and raw IDs, keep remote names in tooltips, and cover hosted clients with no primary environment in both sidebar layouts.
 - Diff route search is thread-local UI state: clear it when sidebar navigation changes threads, but preserve it for the active thread so the split-layout store can restore each chat independently.
 - Composer skill discovery must map shared `~/.agents/skills` installations to every provider that reads them; otherwise live project skills appear while global skills silently disappear from `$` suggestions.
+- Browser fixtures that reduce full thread snapshots to shell rows must preserve every row-rendering primitive, including linked `pullRequests`; otherwise integration tests silently exercise legacy fallback data instead of the production shell path.
 - Electron native preview recording serializes only the display-media grant, not the recording lifetime; keep hidden guests composited and unthrottled until their activity lease ends, and pin each attached debugger wrapper until its control scope closes.
 - Background webviews at `z-index: -1` still show through native-vibrancy sidebars. Set unpresented host opacity to zero while keeping guest visibility and capture dimensions intact; restore opacity when presented.
 
