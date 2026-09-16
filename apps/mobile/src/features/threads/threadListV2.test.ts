@@ -170,6 +170,41 @@ describe("mobile nested threads", () => {
     ).toMatchObject({ displayStatus: "approval", relatedStatus: "ready" });
   });
 
+  it("collapses inline subchats behind the parent while keeping the group reachable", () => {
+    const collapsed = new Set([`${environmentId}:parent`]);
+    const result = layout([leaf, parent, child], { collapsedThreadKeys: collapsed });
+    expect(result.items.map((item) => item.thread.id)).toEqual(["parent"]);
+    expect(result.items[0]?.hierarchy).toMatchObject({
+      isExpanded: false,
+      childCount: 2,
+      relatedChildCount: 2,
+    });
+  });
+
+  it("forces collapsed ancestors open for the selected conversation", () => {
+    const collapsed = new Set([`${environmentId}:parent`]);
+    const items = layout([leaf, parent, child], {
+      collapsedThreadKeys: collapsed,
+      selectedThreadKey: `${environmentId}:leaf`,
+    }).items;
+    expect(items.map((item) => [item.thread.id, item.hierarchy?.depth])).toEqual([
+      ["parent", 0],
+      ["child", 1],
+      ["leaf", 2],
+    ]);
+    expect(items[0]?.hierarchy?.isExpanded).toBe(true);
+  });
+
+  it("suspends collapse while searching so matches never hide", () => {
+    const collapsed = new Set([`${environmentId}:parent`]);
+    expect(
+      layout([leaf, parent, child], {
+        collapsedThreadKeys: collapsed,
+        searchQuery: "Leaf",
+      }).items.map((item) => item.thread.id),
+    ).toEqual(["parent", "leaf"]);
+  });
+
   it("shows nested threads inline while retaining the selected iPad conversation", () => {
     expect(layout([leaf, parent, child]).items.map((item) => item.thread.id)).toEqual([
       "parent",

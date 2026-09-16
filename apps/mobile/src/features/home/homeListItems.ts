@@ -153,6 +153,9 @@ export function buildHomeListLayout(input: {
   readonly threadChildReadAt?: NestedThreadReadMarkers;
   readonly threadCompletionReadAt?: Readonly<Record<string, string>>;
   readonly selectedThreadKey?: string | null;
+  /** Thread keys whose inline subchats stay hidden behind the parent
+      chevron. Search suspends collapse so matches never hide. */
+  readonly collapsedThreadKeys?: ReadonlySet<string>;
 }): HomeListLayout {
   const items: HomeListItem[] = [];
   const stickyHeaderIndices: number[] = [];
@@ -233,6 +236,7 @@ export function buildHomeListLayout(input: {
         // Main list shows the full nested family inline; search keeps its
         // match-scoped reveal set so ancestors don't flood with siblings.
         includeAllDescendants: matchingThreadKeys === undefined,
+        collapsedKeys: matchingThreadKeys === undefined ? input.collapsedThreadKeys : undefined,
       }),
     );
     const visibleThreads = rows

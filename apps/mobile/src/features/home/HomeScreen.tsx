@@ -416,6 +416,22 @@ export function HomeScreen(props: HomeScreenProps) {
   );
 
   const hasSearchQuery = props.searchQuery.trim().length > 0;
+  // Inline subchat groups collapse per parent thread key. Empty means every
+  // group renders expanded; search suspends collapse in the list builders.
+  const [collapsedThreadKeys, setCollapsedThreadKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const toggleCollapsedThread = useCallback((threadKey: string) => {
+    setCollapsedThreadKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(threadKey)) {
+        next.delete(threadKey);
+      } else {
+        next.add(threadKey);
+      }
+      return next;
+    });
+  }, []);
   const listLayout = useMemo(
     () =>
       threadListV2Enabled
@@ -427,6 +443,7 @@ export function HomeScreen(props: HomeScreenProps) {
             dismissedAgentRunKeys,
             threadChildReadAt,
             threadCompletionReadAt,
+            collapsedThreadKeys,
           }),
     [
       threadListV2Enabled,
@@ -436,6 +453,7 @@ export function HomeScreen(props: HomeScreenProps) {
       dismissedAgentRunKeys,
       threadChildReadAt,
       threadCompletionReadAt,
+      collapsedThreadKeys,
     ],
   );
 
@@ -662,6 +680,7 @@ export function HomeScreen(props: HomeScreenProps) {
       snoozedShelfExpanded,
       settledShelfExpanded,
       selectedThreadKey: null,
+      collapsedThreadKeys,
     });
   }, [
     nowMinute,
@@ -679,6 +698,7 @@ export function HomeScreen(props: HomeScreenProps) {
     matchedThreadKeys,
     threadListV2Enabled,
     v2ScopedProjectGroup,
+    collapsedThreadKeys,
   ]);
   // Re-partition the moment the earliest snooze expires (clamped to the
   // signed-32-bit setTimeout range; far-future wakes re-arm at the clamp).
@@ -812,6 +832,7 @@ export function HomeScreen(props: HomeScreenProps) {
           onMovePinnedThread={handleMovePinnedThread}
           onSwipeableClose={handleSwipeableClose}
           onSwipeableWillOpen={handleSwipeableWillOpen}
+          onToggleExpanded={toggleCollapsedThread}
         />
       );
     },
@@ -842,6 +863,7 @@ export function HomeScreen(props: HomeScreenProps) {
       titleRegenerationEnvironmentIds,
       toggleSettledShelf,
       toggleSnoozedShelf,
+      toggleCollapsedThread,
       props.searchQuery,
       nowMinute,
       projectCwdByKey,
@@ -930,6 +952,7 @@ export function HomeScreen(props: HomeScreenProps) {
               onSelectThread={props.onSelectThread}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
+              onToggleExpanded={toggleCollapsedThread}
             />
           );
         }
@@ -959,6 +982,7 @@ export function HomeScreen(props: HomeScreenProps) {
       props.searchQuery,
       threadSearchMatchByKey,
       titleRegenerationEnvironmentIds,
+      toggleCollapsedThread,
       updateGroupDisplay,
     ],
   );

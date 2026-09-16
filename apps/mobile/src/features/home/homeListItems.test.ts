@@ -174,6 +174,21 @@ describe("buildHomeListLayout", () => {
     });
   });
 
+  it("collapses inline subchats behind the parent chevron", () => {
+    const group = makeGroup("nested", 1);
+    const parent = group.threads[0]!;
+    const child = { ...makeThread("child", parent.projectId), parentThreadId: parent.id };
+    const nestedGroup = { ...group, threads: [parent, child] };
+    const collapsed = buildHomeListLayout({
+      groups: [nestedGroup],
+      displayStates: new Map(),
+      collapsedThreadKeys: new Set([`${environmentId}:${parent.id}`]),
+    });
+    const threads = collapsed.items.filter((item) => item.type === "thread");
+    expect(threads.map((item) => item.thread.id)).toEqual([parent.id]);
+    expect(threads[0]).toMatchObject({ hierarchy: { isExpanded: false, childCount: 1 } });
+  });
+
   it("keeps unread terminal nested rows visible and hides them after acknowledgement", () => {
     const parent = makeThread("parent", ProjectId.make("nested"));
     const child = {

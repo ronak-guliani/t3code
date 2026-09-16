@@ -19,6 +19,10 @@ export type CompactThreadStatus = ThreadListRowStatus;
 
 const NESTED_INDENT = 12;
 const MAX_NESTED_INDENT_DEPTH = 3;
+const PARENT_ROW_HEIGHT = 48;
+const NESTED_ROW_HEIGHT = 36;
+const NESTED_RAIL_WIDTH = 16;
+const NESTED_RAIL_LINE_WIDTH = 2;
 
 const STATUS: Record<CompactThreadStatus, { label: string; color: string; action?: string }> = {
   ready: { label: "", color: "bg-transparent" },
@@ -43,6 +47,9 @@ function RelatedThreadsButton(props: {
   readonly thread: MobileThreadShell;
   readonly hierarchy?: MobileThreadTreeRow | undefined;
   readonly selected: boolean;
+  /** Mirrors the row's collapse state; defaults to the hierarchy so the
+      button and the chevron never disagree. */
+  readonly expanded?: boolean;
 }) {
   const navigation = useAppNavigation();
   const unread = useUnreadChildNotification(
@@ -52,12 +59,13 @@ function RelatedThreadsButton(props: {
   const childCount = props.hierarchy?.childCount ?? 0;
   const relatedChildCount = props.hierarchy?.relatedChildCount ?? childCount;
   const count = props.hierarchy?.relatedChildCount ?? props.hierarchy?.childCount ?? 0;
-  const inlineVisible = childCount > 0;
+  const expanded = props.expanded ?? props.hierarchy?.isExpanded ?? true;
+  const inlineVisible = childCount > 0 && expanded;
   const hasPrunedDescendants = relatedChildCount > childCount;
   // Nested threads render inline under their parent, so a fully visible
-  // inline group needs no separate entry point. Keep the affordance when
-  // read descendants were pruned (relatedChildCount exceeds the inline
-  // childCount) and for orphan unread.
+  // inline group needs no separate entry point. Keep the affordance for
+  // collapsed groups, pruned groups (read children reachable via Related),
+  // and orphan unread.
   if (inlineVisible && !hasPrunedDescendants) return null;
   if (count === 0 && !unread) return null;
   const groupStatus = props.hierarchy?.relatedStatus ?? "ready";
@@ -126,6 +134,10 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
   readonly depth?: number | undefined;
   readonly showDivider?: boolean;
   readonly isAgentRun?: boolean;
+  /** Toggles the inline subchat group. Present only on expandable parents;
+      the chevron hides without it (related-group screens, search). */
+  readonly expanded?: boolean;
+  readonly onToggleExpanded?: () => void;
   readonly related?: {
     readonly thread: MobileThreadShell;
     readonly hierarchy?: MobileThreadTreeRow | undefined;
@@ -141,6 +153,9 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
   const depth = Math.min(rawDepth, MAX_NESTED_INDENT_DEPTH);
   const isNested = rawDepth > 0;
   const isAgentRun = props.isAgentRun === true;
+  const childCount = props.related?.hierarchy?.childCount ?? 0;
+  const expandable = !isNested && childCount > 0 && props.onToggleExpanded !== undefined;
+  const expanded = props.expanded ?? true;
   const foreground = selected
     ? "text-user-bubble-foreground"
     : props.muted || (isNested && props.status === "ready")
@@ -152,9 +167,12 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
   const nestingLabel = isNested
     ? `, subchat, level ${rawDepth}${isAgentRun ? ", background run" : ""}`
     : "";
-  const accessibilityLabel = `${props.title}${status.label ? `, ${status.label}` : ""}${props.pinned ? ", pinned" : ""}${nestingLabel}, ${props.timestamp}${excerptLabel}`;
+  const groupLabel = expandable
+    ? `, ${childCount} ${childCount === 1 ? "subchat" : "subchats"}, ${expanded ? "expanded" : "collapsed"}`
+    : "";
+  const accessibilityLabel = `${props.title}${status.label ? `, ${status.label}` : ""}${props.pinned ? ", pinned" : ""}${nestingLabel}${groupLabel}, ${props.timestamp}${excerptLabel}`;
   const pullRequest = props.pullRequest;
-  const rowMinHeight = isNested ? 40 : 48;
+  const rowMinHeight = isNested ? NESTED_ROW_HEIGHT : PARENT_ROW_HEIGHT;
   const primary = (
     <Pressable
       accessibilityRole="button"
@@ -281,7 +299,7 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
             accessibilityLabel={pullRequest.accessibilityLabel}
             accessibilityHint="Opens the pull request in your browser"
             onPress={() => void tryOpenExternalUrl(pullRequest.url, "pull-request")}
-            style={styles.pullRequestButton}
+            style={[styles.pullRequestButton, { minHeight: rowMinHeight }]}
           >
             <SymbolView
               name="arrow.triangle.pull"
@@ -305,9 +323,43 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
             </Text>
           </Pressable>
         ) : null}
-        {props.related ? <RelatedThreadsButton {...props.related} selected={selected} /> : null}
+        {props.related ? (
+          <RelatedThreadsButton {...props.related} selected={selected} expanded={expanded} />
+        ) : null}
+        {expandable ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              expanded
+                ? `Collapse ${childCount} ${childCount === 1 ? "subchat" : "subchats"} under ${props.title}`
+                : `Expand ${childCount} ${childCount === 1 ? "subchat" : "subchats"} under ${props.title}`
+            }
+            accessibilityHint={expanded ? "Collapses the subchats" : "Expands the subchats"}
+            accessibilityState={{ expanded }}
+            onPress={props.onToggleExpanded}
+            style={({ pressed }) => [styles.expandButton, { opacity: pressed ? 0.6 : 1 }]}
+          >
+            <SymbolView
+              name="chevron.down"
+              size={12}
+              tintColorClassName={
+                selected ? "accent-user-bubble-foreground" : "accent-foreground-muted"
+              }
+              type="monochrome"
+              style={{ transform: [{ rotate: expanded ? "0deg" : "-90deg" }] }}
+            />
+          </Pressable>
+        ) : null}
       </View>
-      {props.showDivider ? <View className="bg-border-subtle" style={styles.divider} /> : null}
+      {props.showDivider ? (
+        <View
+          className="bg-border-subtle"
+          style={[
+            styles.divider,
+            { marginLeft: (props.sidebar ? 12 : 18) + depth * NESTED_INDENT + 2 },
+          ]}
+        />
+      ) : null}
     </View>
   );
 });
@@ -316,14 +368,26 @@ const styles = StyleSheet.create({
   container: { borderRadius: 10 },
   nestedContainer: { borderRadius: 8, marginVertical: 1 },
   nestedRail: {
-    width: 14,
+    width: NESTED_RAIL_WIDTH,
     alignSelf: "stretch",
     alignItems: "center",
     justifyContent: "center",
-    position: "relative",
   },
-  nestedRailLine: { position: "absolute", top: 6, bottom: 6, width: 1.5, borderRadius: 1 },
+  nestedRailLine: {
+    position: "absolute",
+    top: 5,
+    bottom: 5,
+    width: NESTED_RAIL_LINE_WIDTH,
+    borderRadius: 1,
+    left: (NESTED_RAIL_WIDTH - NESTED_RAIL_LINE_WIDTH) / 2,
+  },
   primarySlot: { flex: 1, minWidth: 0 },
+  expandButton: {
+    width: 32,
+    minHeight: PARENT_ROW_HEIGHT,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   row: { flexDirection: "row", alignItems: "flex-start", minHeight: 48, gap: 4 },
   pullRequestButton: {
     minHeight: 48,
@@ -340,7 +404,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
-  relatedButton: { minWidth: 44, minHeight: 48, alignItems: "center", justifyContent: "center" },
+  relatedButton: {
+    minWidth: 44,
+    alignSelf: "stretch",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   timestamp: { minWidth: 30, textAlign: "right" },
   excerpt: { paddingLeft: 20, paddingBottom: 8 },
   divider: { height: StyleSheet.hairlineWidth, marginLeft: 20 },

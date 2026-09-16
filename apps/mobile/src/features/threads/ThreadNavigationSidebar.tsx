@@ -345,6 +345,22 @@ function ThreadNavigationSidebarPane(
     });
   }, []);
   const hasSearchQuery = props.searchQuery.trim().length > 0;
+  // Inline subchat groups collapse per parent thread key. Empty means every
+  // group renders expanded; search suspends collapse in the list builders.
+  const [collapsedThreadKeys, setCollapsedThreadKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const toggleCollapsedThread = useCallback((threadKey: string) => {
+    setCollapsedThreadKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(threadKey)) {
+        next.delete(threadKey);
+      } else {
+        next.add(threadKey);
+      }
+      return next;
+    });
+  }, []);
   const listLayout = useMemo(
     () =>
       threadListV2Enabled
@@ -357,6 +373,7 @@ function ThreadNavigationSidebarPane(
             threadChildReadAt,
             threadCompletionReadAt,
             selectedThreadKey: props.selectedThreadKey,
+            collapsedThreadKeys,
           }),
     [
       threadListV2Enabled,
@@ -367,6 +384,7 @@ function ThreadNavigationSidebarPane(
       dismissedAgentRunKeys,
       threadChildReadAt,
       threadCompletionReadAt,
+      collapsedThreadKeys,
     ],
   );
 
@@ -497,6 +515,7 @@ function ThreadNavigationSidebarPane(
       snoozedShelfExpanded,
       settledShelfExpanded,
       selectedThreadKey: props.selectedThreadKey ?? null,
+      collapsedThreadKeys,
     });
   }, [
     nowMinute,
@@ -515,6 +534,7 @@ function ThreadNavigationSidebarPane(
     threadListV2Enabled,
     threads,
     selectedProjectScope,
+    collapsedThreadKeys,
   ]);
   // Re-partition the moment the earliest snooze expires (clamped to the
   // signed-32-bit setTimeout range; far-future wakes re-arm at the clamp).
@@ -882,6 +902,7 @@ function ThreadNavigationSidebarPane(
               onMovePinnedThread={movePinnedThread}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
+              onToggleExpanded={toggleCollapsedThread}
               simultaneousSwipeGesture={sidebarScrollGesture}
             />
           );
@@ -978,6 +999,7 @@ function ThreadNavigationSidebarPane(
               onSelectThread={handleSelectThread}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
+              onToggleExpanded={toggleCollapsedThread}
               simultaneousSwipeGesture={sidebarScrollGesture}
             />
           );
@@ -1025,6 +1047,7 @@ function ThreadNavigationSidebarPane(
       snoozeEnvironmentIds,
       snoozeThread,
       nowMinute,
+      toggleCollapsedThread,
       toggleSettledShelf,
       toggleSnoozedShelf,
       unpinThread,

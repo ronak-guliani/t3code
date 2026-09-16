@@ -515,6 +515,89 @@ describe("compact inbox row", () => {
     );
   });
 
+  it("centers the nested rail line under its icon at the compact height", () => {
+    renderToStaticMarkup(
+      <CompactThreadRow title="Child" timestamp="1m" status="ready" depth={1} onPress={() => {}} />,
+    );
+    const entries = harness.views.flatMap((view) =>
+      Array.isArray(view.style) ? view.style : [view.style],
+    );
+    const railLine = entries.find(
+      (entry) =>
+        typeof entry === "object" && entry !== null && "width" in entry && entry.width === 2,
+    );
+    expect(railLine).toMatchObject({ width: 2, left: 7, top: 5, bottom: 5 });
+    expect(
+      entries.some(
+        (entry) =>
+          typeof entry === "object" &&
+          entry !== null &&
+          "minHeight" in entry &&
+          entry.minHeight === 36,
+      ),
+    ).toBe(true);
+  });
+
+  it("toggles inline subchats from the parent chevron and restores Related while collapsed", () => {
+    const onToggleExpanded = vi.fn();
+    const hierarchy = mobileThreadTreeRows(
+      buildMobileThreadTree([
+        parent,
+        { ...parent, id: ThreadId.make("child"), parentThreadId: parent.id },
+      ]),
+      { includeAllDescendants: true },
+    )[0]!;
+    expect(hierarchy.isExpanded).toBe(true);
+    const shared = {
+      title: parent.title,
+      timestamp: "2m",
+      status: "ready" as const,
+      onPress: vi.fn(),
+      menu: { actions: [] },
+      related: { thread: parent, hierarchy },
+    };
+    renderToStaticMarkup(
+      <CompactThreadRow {...shared} expanded onToggleExpanded={onToggleExpanded} />,
+    );
+    const collapse = harness.pressables.find((item) =>
+      item.accessibilityLabel?.startsWith("Collapse"),
+    );
+    expect(collapse?.accessibilityLabel).toContain("Collapse 1 subchat");
+    expect(harness.menus[0]?.accessibilityLabel).toContain("1 subchat, expanded");
+    // Inline families replace the Related entry point while expanded.
+    expect(
+      harness.pressables.some((item) => item.accessibilityLabel?.startsWith("Related chats")),
+    ).toBe(false);
+    collapse?.onPress?.();
+    expect(onToggleExpanded).toHaveBeenCalledOnce();
+
+    harness.pressables.length = 0;
+    harness.menus.length = 0;
+    harness.views.length = 0;
+    renderToStaticMarkup(
+      <CompactThreadRow {...shared} expanded={false} onToggleExpanded={onToggleExpanded} />,
+    );
+    const expand = harness.pressables.find((item) => item.accessibilityLabel?.startsWith("Expand"));
+    expect(expand?.accessibilityLabel).toContain("Expand 1 subchat");
+    // A collapsed group keeps its Related entry point for the hidden rows.
+    expect(
+      harness.pressables.some((item) => item.accessibilityLabel?.startsWith("Related chats")),
+    ).toBe(true);
+  });
+
+  it("hides the chevron without a toggle handler or children", () => {
+    renderToStaticMarkup(
+      <CompactThreadRow title={parent.title} timestamp="2m" status="ready" onPress={() => {}} />,
+    );
+    expect(
+      harness.pressables.some(
+        (item) =>
+          item.accessibilityLabel?.startsWith("Collapse") ||
+          item.accessibilityLabel?.startsWith("Expand"),
+      ),
+    ).toBe(false);
+  });
+
   it("does not repeat the parent's status on quiet inline children", () => {
     const working = { ...parent, hasPendingQueuedTurn: true };
     const rows = mobileThreadTreeRows(

@@ -246,6 +246,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly canMovePinnedDown?: boolean;
   readonly onSwipeableWillOpen: (methods: SwipeableMethods) => void;
   readonly onSwipeableClose: (methods: SwipeableMethods) => void;
+  /** Collapses/expands the inline subchat group. Absent on screens without
+      collapse state (related-group view keeps every group open). */
+  readonly onToggleExpanded?: (threadKey: string) => void;
   readonly searchMatch?: EnvironmentThreadSearchMatch;
   readonly searchQuery?: string;
   readonly simultaneousSwipeGesture?: ComponentProps<
@@ -321,6 +324,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const handleSelect = useCallback(
     () => (thread.virtualAgentRun ? nesting.openParent() : onSelectThread(thread)),
     [nesting.openParent, onSelectThread, thread],
+  );
+  const hierarchyKey = props.hierarchy?.threadKey ?? `${thread.environmentId}:${thread.id}`;
+  const handleToggleExpanded = useCallback(
+    () => props.onToggleExpanded?.(hierarchyKey),
+    [hierarchyKey, props.onToggleExpanded],
   );
 
   // Swipe: the v2 primary action is the lifecycle transition. Un-settling a
@@ -594,6 +602,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       depth={props.hierarchy?.depth}
       isAgentRun={thread.virtualAgentRun !== undefined}
       showDivider={props.showTrailingDivider !== false}
+      expanded={props.hierarchy?.isExpanded ?? true}
+      onToggleExpanded={props.onToggleExpanded ? handleToggleExpanded : undefined}
       related={props.hideRelated ? undefined : { thread, hierarchy: props.hierarchy }}
       pullRequest={pullRequest}
       searchMatch={props.searchMatch}

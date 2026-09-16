@@ -389,6 +389,9 @@ export function buildThreadListV2Items(input: {
   readonly dismissedAgentRunKeys?: readonly string[];
   readonly threadChildReadAt?: NestedThreadReadMarkers;
   readonly threadCompletionReadAt?: Readonly<Record<string, string>>;
+  /** Thread keys whose inline subchats stay hidden behind the parent
+      chevron. Search suspends collapse so matches never hide. */
+  readonly collapsedThreadKeys?: ReadonlySet<string>;
 }): ThreadListV2Layout {
   const now = input.now;
   const query = input.searchQuery.trim().toLocaleLowerCase();
@@ -442,6 +445,7 @@ export function buildThreadListV2Items(input: {
             ? new Set([...searchKeys, ...nestedVirtualAgentKeys([node]).values()])
             : nestedThreadRevealKeys([node], input.threadChildReadAt ?? {}),
         includeAllDescendants: query.length === 0,
+        collapsedKeys: query.length === 0 ? input.collapsedThreadKeys : undefined,
       }),
     ]),
   );
