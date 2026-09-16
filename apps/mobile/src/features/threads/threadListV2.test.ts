@@ -181,6 +181,14 @@ describe("mobile nested threads", () => {
     });
   });
 
+  it("lets an explicit collapse win over active children", () => {
+    const workingChild = { ...child, hasPendingQueuedTurn: true };
+    const collapsed = new Set([`${environmentId}:parent`]);
+    const result = layout([parent, workingChild], { collapsedThreadKeys: collapsed });
+    expect(result.items.map((item) => item.thread.id)).toEqual(["parent"]);
+    expect(result.items[0]?.hierarchy).toMatchObject({ isExpanded: false, childCount: 1 });
+  });
+
   it("forces collapsed ancestors open for the selected conversation", () => {
     const collapsed = new Set([`${environmentId}:parent`]);
     const items = layout([leaf, parent, child], {
