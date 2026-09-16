@@ -8,6 +8,7 @@
  */
 import type {
   OrchestrationCheckpointSummary,
+  OrchestrationGetSnapshotError,
   OrchestrationGetThreadActivitiesInput,
   OrchestrationGetThreadActivitiesResult,
   OrchestrationProject,
@@ -17,6 +18,7 @@ import type {
   OrchestrationThread,
   OrchestrationThreadShell,
   OrchestrationReadThreadInput,
+  OrchestrationReadThreadInputError,
   OrchestrationReadThreadResult,
   OrchestrationSearchTranscriptResult,
   ProjectId,
@@ -83,7 +85,7 @@ export interface ProjectionSnapshotQueryShape {
     input: OrchestrationReadThreadInput,
   ) => Effect.Effect<
     OrchestrationReadThreadResult,
-    ProjectionRepositoryError | import("@t3tools/contracts").OrchestrationGetSnapshotError
+    OrchestrationReadThreadInputError | OrchestrationGetSnapshotError
   >;
   /**
    * Read the latest orchestration projection snapshot.

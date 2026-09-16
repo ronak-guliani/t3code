@@ -216,6 +216,34 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
     runCliWithRuntime(["--no-log-websocket-events", "--version"]),
   );
 
+  it.effect("rejects conflicting chat history views and full-view pagination before reading", () =>
+    Effect.gen(function* () {
+      for (const flags of [
+        ["--messages", "--activities"],
+        ["--full", "--messages"],
+        ["--full", "--activities"],
+        ["--full", "--limit", "1"],
+        ["--full", "--before", "cursor"],
+      ]) {
+        const error = yield* runCliWithRuntime([
+          "chat",
+          "show",
+          "unused",
+          "--url",
+          "http://127.0.0.1:1",
+          "--token",
+          "unused",
+          ...flags,
+        ]).pipe(Effect.flip);
+        assert.deepInclude(error, {
+          _tag: "CliPayloadError",
+          message:
+            "Choose --messages, --activities, or --full; pagination cannot be used with --full.",
+        });
+      }
+    }),
+  );
+
   it.effect("keeps invalid-argument help on stderr and requested help on stdout", () =>
     Effect.gen(function* () {
       const entrypoint = fileURLToPath(new URL("./bin.ts", import.meta.url));

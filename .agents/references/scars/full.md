@@ -69,6 +69,7 @@
 - Agent CLI stdout is a data boundary: send logs and failures to stderr, use the server-matched launcher rather than ambient PATH, and never infer matching protocol contracts from equal package versions.
 - Pending CLI approvals/questions must combine `activityContext` with the recent activity window and honor terminal lifecycle events; a request outside the window is not resolved.
 - Thread history reads must filter and limit in SQL before decoding, omit unrelated checkpoints, and bind pagination cursors to thread/view. Unary RPC deadlines must not cap stream lifetime or imply that timed-out mutations were rejected.
+- Preserve typed thread-read input failures through HTTP and RPC; missing/ambiguous threads and invalid cursors are client errors, not error-logged repository failures.
 
 - Keep local provider health checks process-free when their contract promises CLI-only probing; workspace-specific discovery belongs in the explicit cwd refresh path, not an empty-inventory fallback that silently starts a temporary server.
 - Child processes terminated by a signal surface through Effect as `Unknown: ChildProcess.exitCode` with the signal only in the nested cause; preserve that cause before wrapping provider diagnostics.

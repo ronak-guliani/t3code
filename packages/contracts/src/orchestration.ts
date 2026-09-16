@@ -2716,6 +2716,13 @@ export const OrchestrationRpcSchemas = {
   },
 } as const;
 
+export class OrchestrationReadThreadInputError extends Schema.TaggedErrorClass<OrchestrationReadThreadInputError>()(
+  "OrchestrationReadThreadInputError",
+  {
+    message: TrimmedNonEmptyString,
+  },
+) {}
+
 export class OrchestrationGetSnapshotError extends Schema.TaggedErrorClass<OrchestrationGetSnapshotError>()(
   "OrchestrationGetSnapshotError",
   {

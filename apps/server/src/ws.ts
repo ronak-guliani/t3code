@@ -1219,16 +1219,7 @@ const makeWsRpcLayer = (
         [ORCHESTRATION_WS_METHODS.readThread]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.readThread,
-            projectionSnapshotQuery.readThread(input).pipe(
-              Effect.mapError((cause) =>
-                isOrchestrationGetSnapshotError(cause)
-                  ? cause
-                  : new OrchestrationGetSnapshotError({
-                      message: "Failed to read thread.",
-                      cause,
-                    }),
-              ),
-            ),
+            projectionSnapshotQuery.readThread(input),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.getThreadSnapshot]: (input) =>

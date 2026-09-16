@@ -99,32 +99,36 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.equal(third.page.before, null);
         assert.notProperty(first, "checkpoints");
         assert.notProperty(first, view === "messages" ? "activities" : "messages");
-        const wrongView = yield* Effect.result(
-          query.readThread({
+        const wrongView = yield* query
+          .readThread({
             thread: "cli-read-thread",
             view: view === "messages" ? "activities" : "messages",
             before: first.page.before!,
-          }),
-        );
-        assert.equal(wrongView._tag, "Failure");
+          })
+          .pipe(Effect.flip);
+        assert.equal(wrongView._tag, "OrchestrationReadThreadInputError");
       }
-      const ambiguous = yield* Effect.result(
-        query.readThread({ thread: "CLI history", view: "summary" }),
-      );
-      assert.equal(ambiguous._tag, "Failure");
-      const invalidCursor = yield* Effect.result(
-        query.readThread({
+      const ambiguous = yield* query
+        .readThread({ thread: "CLI history", view: "summary" })
+        .pipe(Effect.flip);
+      assert.equal(ambiguous._tag, "OrchestrationReadThreadInputError");
+      const invalidCursor = yield* query
+        .readThread({
           thread: "cli-read-thread",
           view: "messages",
           before: "not-a-cursor",
-        }),
-      );
-      assert.equal(invalidCursor._tag, "Failure");
+        })
+        .pipe(Effect.flip);
+      assert.equal(invalidCursor._tag, "OrchestrationReadThreadInputError");
+      const corruptProjection = yield* query
+        .readThread({ thread: "cli-read-unrelated", view: "summary" })
+        .pipe(Effect.flip);
+      assert.equal(corruptProjection._tag, "OrchestrationGetSnapshotError");
       yield* sql`UPDATE projection_threads SET deleted_at = ${now} WHERE thread_id = 'cli-read-thread'`;
-      const deleted = yield* Effect.result(
-        query.readThread({ thread: "cli-read-thread", view: "summary" }),
-      );
-      assert.equal(deleted._tag, "Failure");
+      const deleted = yield* query
+        .readThread({ thread: "cli-read-thread", view: "summary" })
+        .pipe(Effect.flip);
+      assert.equal(deleted._tag, "OrchestrationReadThreadInputError");
       yield* sql`DELETE FROM projection_thread_messages WHERE thread_id = 'cli-read-thread'`;
       yield* sql`DELETE FROM projection_thread_activities WHERE thread_id = 'cli-read-thread'`;
       yield* sql`DELETE FROM projection_threads WHERE project_id = 'cli-read-project'`;

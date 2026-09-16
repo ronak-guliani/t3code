@@ -97,6 +97,9 @@ Pages expose `page.hasMore` and `page.before`; cursors are bound to the thread a
 view. The maximum page size is 200. `--full` preserves the previous detail shape, including
 checkpoints, recent activities, and pending-request context. It is also the explicit legacy
 read for older servers without the targeted-read API. Archived threads remain readable.
+The three history view flags are mutually exclusive, and pagination is unavailable with `--full`.
+The targeted HTTP API returns 400 for invalid requests, ambiguous/missing threads, and invalid
+cursors; internal repository failures remain 500.
 Use `--full` instead of `--messages` in scripts that require the previous combined detail
 shape. Pending approval and question listings include requests outside the recent activity window.
 

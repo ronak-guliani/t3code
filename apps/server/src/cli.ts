@@ -1662,7 +1662,10 @@ const chatShowCommand = Command.make("show", {
       if (
         (flags.messages && flags.activities) ||
         (flags.full &&
-          (flags.activities || Option.isSome(flags.limit) || Option.isSome(flags.before)))
+          (flags.messages ||
+            flags.activities ||
+            Option.isSome(flags.limit) ||
+            Option.isSome(flags.before)))
       ) {
         return yield* new CliPayloadError({
           message:

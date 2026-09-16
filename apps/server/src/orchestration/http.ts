@@ -5,12 +5,13 @@ import {
   OrchestrationDispatchCommandError,
   OrchestrationGetSnapshotError,
   OrchestrationReadThreadInput,
+  OrchestrationReadThreadInputError,
   type OrchestrationReadModel,
   type OrchestrationShellSnapshot,
   type OrchestrationThreadDetailSnapshot,
   ThreadId,
 } from "@t3tools/contracts";
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import { requireSessionScope, respondToAuthError } from "../auth/http.ts";
@@ -37,12 +38,16 @@ const isDefinitiveCommandRejection = (error: OrchestrationDispatchCommandError):
     cause._tag === "OrchestrationCommandPreviouslyRejectedError"
   );
 };
-const isOrchestrationGetSnapshotError = Schema.is(OrchestrationGetSnapshotError);
-
 const respondToOrchestrationHttpError = (
-  error: OrchestrationDispatchCommandError | OrchestrationGetSnapshotError,
+  error:
+    | OrchestrationDispatchCommandError
+    | OrchestrationGetSnapshotError
+    | OrchestrationReadThreadInputError,
 ) =>
   Effect.gen(function* () {
+    if (error._tag === "OrchestrationReadThreadInputError") {
+      return HttpServerResponse.jsonUnsafe({ error: error.message }, { status: 400 });
+    }
     if (error._tag === "OrchestrationGetSnapshotError") {
       yield* Effect.logError("orchestration http route failed", {
         message: error.message,
@@ -167,23 +172,16 @@ export const orchestrationThreadReadRouteLayer = HttpRouter.add(
     yield* authorizeClientSession(AuthOrchestrationReadScope);
     const input = yield* HttpServerRequest.schemaBodyJson(OrchestrationReadThreadInput).pipe(
       Effect.mapError(
-        () => new OrchestrationGetSnapshotError({ message: "Invalid thread read request." }),
+        () => new OrchestrationReadThreadInputError({ message: "Invalid thread read request." }),
       ),
     );
     const query = yield* ProjectionSnapshotQuery;
-    const result = yield* query
-      .readThread(input)
-      .pipe(
-        Effect.mapError((cause) =>
-          isOrchestrationGetSnapshotError(cause)
-            ? cause
-            : new OrchestrationGetSnapshotError({ message: "Failed to read thread.", cause }),
-        ),
-      );
+    const result = yield* query.readThread(input);
     return HttpServerResponse.jsonUnsafe(result);
   }).pipe(
     Effect.catchTags({
       AuthError: respondToAuthError,
+      OrchestrationReadThreadInputError: respondToOrchestrationHttpError,
       OrchestrationGetSnapshotError: respondToOrchestrationHttpError,
     }),
   ),

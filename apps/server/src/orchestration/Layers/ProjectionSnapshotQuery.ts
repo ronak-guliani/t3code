@@ -12,6 +12,7 @@ import {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationGetSnapshotError,
+  OrchestrationReadThreadInputError,
   ProviderInteractionMode,
   ProjectScript,
   RuntimeMode,
@@ -75,7 +76,7 @@ import { projectActivityPayload } from "../ActivityPayloadProjection.ts";
 const decodeReadModel = Schema.decodeUnknownEffect(OrchestrationReadModel);
 const decodeShellSnapshot = Schema.decodeUnknownEffect(OrchestrationShellSnapshot);
 const decodeThread = Schema.decodeUnknownEffect(OrchestrationThread);
-const isOrchestrationGetSnapshotError = Schema.is(OrchestrationGetSnapshotError);
+const isOrchestrationReadThreadInputError = Schema.is(OrchestrationReadThreadInputError);
 const decodeHistoryCursor = Schema.decodeUnknownSync(
   Schema.Struct({
     threadId: ThreadId,
@@ -3022,7 +3023,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       })(input.thread);
       const candidate = candidates[0];
       if (!candidate || (candidate.threadId !== input.thread && candidates.length > 1)) {
-        return yield* new OrchestrationGetSnapshotError({
+        return yield* new OrchestrationReadThreadInputError({
           message: candidate
             ? "Multiple threads have that title. Use the thread ID."
             : `Thread '${input.thread}' was not found.`,
@@ -3030,7 +3031,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       }
       const thread = yield* getThreadShellById(candidate.threadId);
       if (Option.isNone(thread)) {
-        return yield* new OrchestrationGetSnapshotError({ message: "Thread was not found." });
+        return yield* new OrchestrationReadThreadInputError({ message: "Thread was not found." });
       }
       const cursor = input.before
         ? yield* Effect.try({
@@ -3038,11 +3039,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               decodeHistoryCursor(
                 JSON.parse(Buffer.from(input.before!, "base64url").toString("utf8")),
               ),
-            catch: () => new OrchestrationGetSnapshotError({ message: "Invalid history cursor." }),
+            catch: () =>
+              new OrchestrationReadThreadInputError({ message: "Invalid history cursor." }),
           })
         : null;
       if (cursor && (cursor.threadId !== thread.value.id || cursor.view !== input.view)) {
-        return yield* new OrchestrationGetSnapshotError({
+        return yield* new OrchestrationReadThreadInputError({
           message: "History cursor belongs to a different thread or view.",
         });
       }
@@ -3118,7 +3120,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     }).pipe(
       sql.withTransaction,
       Effect.mapError((cause) =>
-        isOrchestrationGetSnapshotError(cause)
+        isOrchestrationReadThreadInputError(cause)
           ? cause
           : new OrchestrationGetSnapshotError({ message: "Failed to read thread history.", cause }),
       ),

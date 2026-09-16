@@ -23,6 +23,8 @@ import {
   MOBILE_V1_SERVER_CAPABILITIES,
   MobileServerMessage,
   OpenError,
+  OrchestrationGetSnapshotError,
+  OrchestrationReadThreadInputError,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
   type OrchestrationThread,
@@ -60,6 +62,7 @@ import {
   Exit,
   FileSystem,
   Layer,
+  Logger,
   ManagedRuntime,
   Option,
   Path,
@@ -2579,6 +2582,76 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepStrictEqual(rpcResult, expected);
       assert.equal(reads, 2);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "distinguishes thread-read input failures from repository failures over HTTP and RPC",
+    () => {
+      const loggedErrors: unknown[] = [];
+      const logger = Logger.make(({ logLevel, message }) => {
+        if (logLevel === "Error") loggedErrors.push(message);
+      });
+      return Effect.gen(function* () {
+        yield* buildAppUnderTest({
+          layers: {
+            projectionSnapshotQuery: {
+              readThread: (input) =>
+                Effect.fail(
+                  input.thread === "repository-failure"
+                    ? new OrchestrationGetSnapshotError({
+                        message: "Failed to read thread history.",
+                        cause: new Error("Repository unavailable"),
+                      })
+                    : new OrchestrationReadThreadInputError({ message: "Invalid history cursor." }),
+                ),
+            },
+          },
+        });
+        const origin = yield* getHttpServerUrl();
+        const bearerToken = yield* getAuthenticatedBearerSessionToken();
+        loggedErrors.length = 0;
+        for (const input of [
+          { thread: defaultThreadId, view: "messages", before: "invalid-cursor" },
+          { thread: defaultThreadId, view: "messages", limit: 201 },
+        ]) {
+          const response = yield* HttpClient.post("/api/orchestration/thread-read", {
+            headers: { authorization: `Bearer ${bearerToken}` },
+            body: HttpBody.text(JSON.stringify(input), "application/json"),
+          });
+          assert.equal(response.status, 400);
+          assert.deepStrictEqual(yield* response.json, {
+            error: input.limit === 201 ? "Invalid thread read request." : "Invalid history cursor.",
+          });
+        }
+        assert.deepStrictEqual(loggedErrors, []);
+        const response = yield* HttpClient.post("/api/orchestration/thread-read", {
+          headers: { authorization: `Bearer ${bearerToken}` },
+          body: HttpBody.text(
+            JSON.stringify({ thread: "repository-failure", view: "messages" }),
+            "application/json",
+          ),
+        });
+        assert.equal(response.status, 500);
+        assert.deepStrictEqual(yield* response.json, { error: "Failed to read thread history." });
+        assert.equal(loggedErrors.length, 1);
+        for (const [thread, expectedTag] of [
+          [defaultThreadId, "OrchestrationReadThreadInputError"],
+          ["repository-failure", "OrchestrationGetSnapshotError"],
+        ] as const) {
+          const error = yield* withRpcClientForBearerToken(origin, bearerToken, (client) =>
+            client[ORCHESTRATION_WS_METHODS.readThread]({ thread, view: "messages" }),
+          ).pipe(Effect.provide(FetchHttpClient.layer), Effect.flip);
+          assert.deepInclude(error, { _tag: expectedTag });
+        }
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeHttpServer.layerTest,
+            Logger.layer([logger], { mergeWithExisting: false }),
+          ),
+        ),
+      );
+    },
   );
 
   it.effect("loads a thread detail without hydrating the shell snapshot", () =>

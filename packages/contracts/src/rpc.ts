@@ -94,6 +94,7 @@ import {
   OrchestrationGetFullThreadDiffStateError,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetSnapshotError,
+  OrchestrationReadThreadInputError,
   OrchestrationGetThreadActivitiesError,
   OrchestrationGetThreadActivitiesInput,
   OrchestrationGetTurnDiffError,
@@ -1311,7 +1312,7 @@ export const WsRpcGroup = RpcGroup.make(
   Rpc.make(ORCHESTRATION_WS_METHODS.readThread, {
     payload: OrchestrationRpcSchemas.readThread.input,
     success: OrchestrationRpcSchemas.readThread.output,
-    error: OrchestrationGetSnapshotError,
+    error: Schema.Union([OrchestrationReadThreadInputError, OrchestrationGetSnapshotError]),
   }),
   WsServerProbeRpc,
   WsServerReportClientActivityRpc,
