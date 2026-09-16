@@ -180,6 +180,8 @@ import {
 import {
   deriveAssistantMetadataInvalidationKey,
   deriveTerminalAssistantMessageIds,
+  shouldCollapseUserMessageText,
+  USER_MESSAGE_COLLAPSED_LINE_LIMIT,
 } from "./threadFeedPresentation";
 
 const WIDE_MARKDOWN_BLOCK_OPTIONS = {
@@ -1528,14 +1530,20 @@ function renderFeedEntry(
             }}
           >
             {message.text.trim().length > 0 ? (
-              <UserMessageContent
+              <CollapsibleUserMessage
                 text={renderedText}
-                markdownStyles={styles}
-                reviewCommentColors={props.reviewCommentColors}
-                skills={props.skills}
-                linkHandlers={props.markdownLinkHandlers}
-                renderImage={props.renderMarkdownImage}
-              />
+                lineHeight={styles.nativeTextStyle.lineHeight}
+                toggleColor={styles.nativeTextStyle.mutedColor}
+              >
+                <UserMessageContent
+                  text={renderedText}
+                  markdownStyles={styles}
+                  reviewCommentColors={props.reviewCommentColors}
+                  skills={props.skills}
+                  linkHandlers={props.markdownLinkHandlers}
+                  renderImage={props.renderMarkdownImage}
+                />
+              </CollapsibleUserMessage>
             ) : null}
             {attachments.map((attachment) => {
               const { id, name } = attachment;
@@ -1665,6 +1673,59 @@ function renderFeedEntry(
     />
   );
 }
+
+/**
+ * Collapsed preview for long user-sent messages, mirroring web's
+ * CollapsibleUserMessageBody. Web clamps rendered output with max-height in
+ * line units plus a fade mask; React Native has neither, so the clamp uses
+ * the markdown line height in points and skips the fade. Long-press copy
+ * still copies the full text because nothing is truncated, only clipped.
+ */
+const CollapsibleUserMessage = memo(function CollapsibleUserMessage(props: {
+  readonly text: string;
+  readonly lineHeight: number;
+  readonly toggleColor: string | ColorValue;
+  readonly children: ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const collapsible = shouldCollapseUserMessageText(props.text);
+  if (!collapsible) {
+    return <>{props.children}</>;
+  }
+  const collapsed = !expanded;
+  return (
+    <View className="w-full">
+      <View
+        style={
+          collapsed
+            ? {
+                maxHeight: USER_MESSAGE_COLLAPSED_LINE_LIMIT * props.lineHeight,
+                overflow: "hidden",
+              }
+            : undefined
+        }
+      >
+        {props.children}
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={collapsed ? "Show full message" : "Show less"}
+        accessibilityHint="Toggles the full message text"
+        accessibilityState={{ expanded }}
+        hitSlop={8}
+        onPress={() => setExpanded((current) => !current)}
+        className="self-start py-1"
+      >
+        <Text
+          className="text-xs font-t3-medium"
+          style={{ color: props.toggleColor, opacity: 0.75 }}
+        >
+          {collapsed ? "Show full message" : "Show less"}
+        </Text>
+      </Pressable>
+    </View>
+  );
+});
 
 function UserMessageContent(props: {
   readonly text: string;
