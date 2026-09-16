@@ -622,21 +622,24 @@ export function deriveWorkLogEntries(
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const agentRuns = deriveAgentRuns(ordered, latestTurnId);
   const agentActivityIds = new Set(agentRuns.flatMap((run) => run.activityIds));
+  // Single filter pass: the previous seven chained filters re-scanned the
+  // full activity list per predicate on every streaming chunk.
   const entries = ordered
-    .filter((activity) =>
-      activity.kind.startsWith("child.lifecycle.")
-        ? true
-        : latestTurnId
-          ? activity.turnId === latestTurnId
-          : true,
+    .filter(
+      (activity) =>
+        (activity.kind.startsWith("child.lifecycle.")
+          ? true
+          : latestTurnId
+            ? activity.turnId === latestTurnId
+            : true) &&
+        !agentActivityIds.has(activity.id) &&
+        activity.kind !== "tool.started" &&
+        activity.kind !== "task.started" &&
+        activity.kind !== "context-window.updated" &&
+        !isTurnLifecycleInsightActivity(activity) &&
+        activity.summary !== "Checkpoint captured" &&
+        !isPlanBoundaryToolActivity(activity),
     )
-    .filter((activity) => !agentActivityIds.has(activity.id))
-    .filter((activity) => activity.kind !== "tool.started")
-    .filter((activity) => activity.kind !== "task.started")
-    .filter((activity) => activity.kind !== "context-window.updated")
-    .filter((activity) => !isTurnLifecycleInsightActivity(activity))
-    .filter((activity) => activity.summary !== "Checkpoint captured")
-    .filter((activity) => !isPlanBoundaryToolActivity(activity))
     .map(toDerivedWorkLogEntry);
   const workEntries = collapseDerivedWorkLogEntries(entries).map(
     ({ activityKind: _activityKind, collapseKey: _collapseKey, ...entry }) => entry,
@@ -1369,11 +1372,20 @@ function extractChangedFiles(payload: Record<string, unknown> | null): string[] 
   return extractNormalizedChangedFilePathsFromToolPayload(payload?.data);
 }
 
+function compareIsoTimestamps(left: string, right: string): number {
+  // ISO-8601 timestamps sort chronologically with ordinal comparison, and it
+  // avoids localeCompare's ICU cost inside O(n log n) sort comparators that
+  // run on every streaming chunk.
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 function compareActivitiesByOrder(
   left: OrchestrationThreadActivity,
   right: OrchestrationThreadActivity,
 ): number {
-  const createdAtComparison = left.createdAt.localeCompare(right.createdAt);
+  const createdAtComparison = compareIsoTimestamps(left.createdAt, right.createdAt);
   if (createdAtComparison !== 0) {
     return createdAtComparison;
   }
@@ -1445,7 +1457,7 @@ export function deriveTimelineEntries(
     if (a.kind === "message" && b.kind === "message") {
       return (messageOrderById.get(a.message.id) ?? 0) - (messageOrderById.get(b.message.id) ?? 0);
     }
-    return a.createdAt.localeCompare(b.createdAt);
+    return compareIsoTimestamps(a.createdAt, b.createdAt);
   });
 }
 

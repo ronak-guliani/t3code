@@ -54,6 +54,7 @@ interface EnvironmentConnectionInput extends OrchestrationHandlers {
   readonly resolveDeviceHubAccess?: EnvironmentConnection["resolveDeviceHubAccess"];
   readonly refreshMetadata?: () => Promise<void>;
   readonly onConfigSnapshot?: (config: ServerConfig) => void;
+  readonly onSettingsUpdated?: (settings: ServerConfig["settings"]) => void;
   readonly onWelcome?: (payload: ServerLifecycleWelcomePayload) => void;
 }
 
@@ -176,6 +177,11 @@ export function createEnvironmentConnection(
 
   const unsubConfig = input.client.server.subscribeConfig(
     (event: Parameters<Parameters<WsRpcClient["server"]["subscribeConfig"]>[0]>[0]) => {
+      if (disposed) return;
+      if (event.type === "settingsUpdated") {
+        input.onSettingsUpdated?.(event.payload.settings);
+        return;
+      }
       if (event.type !== "snapshot") {
         return;
       }

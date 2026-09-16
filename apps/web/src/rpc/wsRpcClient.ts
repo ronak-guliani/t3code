@@ -102,6 +102,7 @@ export interface WsRpcClient {
   readonly device: {
     readonly configure: RpcUnaryMethod<typeof WS_METHODS.deviceConfigure>;
     readonly list: RpcUnaryMethod<typeof WS_METHODS.deviceList>;
+    readonly testHost: RpcUnaryMethod<typeof WS_METHODS.deviceTestHost>;
     readonly open: RpcUnaryMethod<typeof WS_METHODS.deviceOpen>;
     readonly close: RpcUnaryMethod<typeof WS_METHODS.deviceClose>;
     readonly shutdown: RpcUnaryMethod<typeof WS_METHODS.deviceShutdown>;
@@ -308,6 +309,7 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       configure: (input) =>
         transport.request((client) => client[WS_METHODS.deviceConfigure](input)),
       list: (input) => transport.request((client) => client[WS_METHODS.deviceList](input)),
+      testHost: (input) => transport.request((client) => client[WS_METHODS.deviceTestHost](input)),
       open: (input) => transport.request((client) => client[WS_METHODS.deviceOpen](input)),
       close: (input) => transport.request((client) => client[WS_METHODS.deviceClose](input)),
       shutdown: (input) => transport.request((client) => client[WS_METHODS.deviceShutdown](input)),

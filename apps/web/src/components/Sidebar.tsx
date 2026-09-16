@@ -181,6 +181,7 @@ import {
   resolveExistingThreadDraftPreview,
   shouldRenderSidebarDraft,
   resolveThreadRowClassName,
+  resolveSidebarThreadClickKind,
   resolveThreadStatusPill,
   orderItemsByPreferredIds,
   shouldClearThreadSelectionOnMouseDown,
@@ -546,16 +547,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         });
         return;
       }
-      const isMac = isMacPlatform(navigator.platform);
-      const isModKey = isMac ? event.metaKey : event.ctrlKey;
-
-      if (event.shiftKey && !isModKey) {
-        event.preventDefault();
-        event.stopPropagation();
-        setThreadPinned(projectKey, threadKey, !isPinned);
-        return;
-      }
-
+      // Modifier clicks are selection gestures owned by handleThreadClick
+      // (Ctrl/Cmd toggles, Shift extends a range). Pinning stays on the row's
+      // overflow menu so Shift+Click can select.
       handleParentThreadSelected(threadKey, props.hasChildren);
       handleThreadClick(event, threadRef, orderedProjectThreadKeys);
     },
@@ -564,11 +558,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       handleThreadClick,
       handleParentThreadSelected,
       clearSelection,
-      isPinned,
       navigate,
       orderedProjectThreadKeys,
-      projectKey,
-      setThreadPinned,
       threadKey,
       threadRef,
       virtualAgentRun,
@@ -2175,19 +2166,22 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       threadRef: ScopedThreadRef,
       orderedProjectThreadKeys: readonly string[],
     ) => {
-      const isMac = isMacPlatform(navigator.platform);
-      const isModClick = isMac ? event.metaKey : event.ctrlKey;
-      const isShiftClick = event.shiftKey;
       const threadKey = scopedThreadKey(threadRef);
       const currentSelectionCount = useThreadSelectionStore.getState().selectedThreadKeys.size;
+      const clickKind = resolveSidebarThreadClickKind({
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
+        isMac: isMacPlatform(navigator.platform),
+      });
 
-      if (isModClick) {
+      if (clickKind === "toggle") {
         event.preventDefault();
         toggleThreadSelection(threadKey);
         return;
       }
 
-      if (isShiftClick) {
+      if (clickKind === "range") {
         event.preventDefault();
         rangeSelectTo(threadKey, orderedProjectThreadKeys);
         return;

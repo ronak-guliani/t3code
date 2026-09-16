@@ -14,7 +14,9 @@ import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime";
 import { threadRaisedHandWhileSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 
 import type { ProviderInstanceEntry } from "../providerInstances";
+import { sidebarThreadKey } from "../sidebarThreadTree";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
+import { useThreadSelectionStore } from "../threadSelectionStore";
 import { formatRelativeTimeLabel, formatRelativeTimeUntilLabel } from "../timestampFormat";
 import type { SidebarThreadSummary } from "../types";
 import { useUiStateStore } from "../uiStateStore";
@@ -89,7 +91,9 @@ export interface SidebarV2RowProps {
   readonly childCount: number;
   readonly onToggleExpanded: (thread: SidebarThreadSummary, isExpanded: boolean) => void;
   readonly onDismissAgentRun: (thread: SidebarThreadSummary) => void;
-  readonly onOpen: (thread: SidebarThreadSummary) => void;
+  // The click event drives multi-select: Ctrl/Cmd toggles and Shift extends a
+  // range, while keyboard activation passes none and always opens the thread.
+  readonly onOpen: (thread: SidebarThreadSummary, event?: React.MouseEvent) => void;
   readonly onSetPinned: (thread: SidebarThreadSummary, pinned: boolean) => void;
   readonly onSettle: (thread: SidebarThreadSummary) => void;
   readonly onUnsettle: (thread: SidebarThreadSummary) => void;
@@ -138,6 +142,11 @@ export const SidebarV2Row = memo(function SidebarV2Row({
   sortable,
 }: SidebarV2RowProps) {
   const prewarmThreadKey = getSidebarThreadPrewarmKey(thread);
+  // Subscribed inside the memoized row (rather than passed as a prop) so only
+  // rows whose selection actually changes re-render.
+  const isSelected = useThreadSelectionStore((state) =>
+    state.selectedThreadKeys.has(sidebarThreadKey(thread)),
+  );
   const raisedHand = threadRaisedHandWhileSnoozed(thread);
   const lastVisitedAt = useUiStateStore(
     (state) =>
@@ -166,7 +175,10 @@ export const SidebarV2Row = memo(function SidebarV2Row({
     hasPendingTurn: displayStatus === "working",
   });
 
-  const handleOpen = useCallback(() => onOpen(thread), [onOpen, thread]);
+  const handleOpen = useCallback(
+    (event: React.MouseEvent) => onOpen(thread, event),
+    [onOpen, thread],
+  );
   const handleToggleExpanded = useCallback(
     (event: React.SyntheticEvent) => {
       event.preventDefault();
@@ -363,7 +375,11 @@ export const SidebarV2Row = memo(function SidebarV2Row({
   if (variant === "slim") {
     return (
       <SidebarMenuItem
-        className={cn("group/thread", active && ACTIVE_ROW_ELEVATION)}
+        className={cn(
+          "group/thread",
+          active && ACTIVE_ROW_ELEVATION,
+          isSelected && "rounded-lg ring-1 ring-primary/30",
+        )}
         data-thread-prewarm-key={prewarmThreadKey}
       >
         <Tooltip>
@@ -371,13 +387,23 @@ export const SidebarV2Row = memo(function SidebarV2Row({
             delay={200}
             render={
               <SidebarMenuButton
-                className="h-auto min-h-0 items-start px-[var(--app-sidebar-row-padding-x)] py-[calc(var(--app-sidebar-row-padding-y)*0.75)] text-[length:var(--app-sidebar-font-size)] transition-none"
+                className={cn(
+                  "h-auto min-h-0 items-start px-[var(--app-sidebar-row-padding-x)] py-[calc(var(--app-sidebar-row-padding-y)*0.75)] text-[length:var(--app-sidebar-font-size)] transition-none",
+                  isSelected && "bg-primary/10 hover:bg-primary/15",
+                )}
                 isActive={active}
                 onClick={handleOpen}
                 onKeyDown={handleRowKeyDown}
                 // Same reason as the card variant: the expand chevron is its
                 // own control and may not be nested inside a native <button>.
-                render={<div role="button" tabIndex={0} />}
+                render={
+                  <div
+                    aria-selected={isSelected}
+                    data-selected={isSelected ? "true" : undefined}
+                    role="button"
+                    tabIndex={0}
+                  />
+                }
               />
             }
           >
@@ -436,6 +462,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
       className={cn(
         "group/thread [contain-intrinsic-size:auto_4rem] [content-visibility:auto]",
         active && ACTIVE_ROW_ELEVATION,
+        isSelected && "rounded-lg ring-1 ring-primary/30",
         // Group-level drag surfaces already dim the wrapper; keep row-level
         // opacity only when this item owns the transform.
         sortable?.style !== undefined && sortable.isDragging && "z-20 opacity-80",
@@ -450,14 +477,24 @@ export const SidebarV2Row = memo(function SidebarV2Row({
               // Height is padding-driven rather than fixed so the row tracks
               // the UI density scale and the sidebar font-size setting instead
               // of locking every user to one hard-coded card height.
-              className="h-auto min-h-0 items-stretch gap-0 px-[var(--app-sidebar-row-padding-x)] py-[var(--app-sidebar-row-padding-y)] text-[length:var(--app-sidebar-font-size)] transition-none"
+              className={cn(
+                "h-auto min-h-0 items-stretch gap-0 px-[var(--app-sidebar-row-padding-x)] py-[var(--app-sidebar-row-padding-y)] text-[length:var(--app-sidebar-font-size)] transition-none",
+                isSelected && "bg-primary/10 hover:bg-primary/15",
+              )}
               isActive={active}
               onClick={handleOpen}
               onKeyDown={handleRowKeyDown}
               // A native <button> may not contain focusable descendants, and
               // the card's PR badge is its own control. Rendering the surface
               // as a role="button" div keeps both as independent focus targets.
-              render={<div role="button" tabIndex={0} />}
+              render={
+                <div
+                  aria-selected={isSelected}
+                  data-selected={isSelected ? "true" : undefined}
+                  role="button"
+                  tabIndex={0}
+                />
+              }
             />
           }
         >

@@ -15,7 +15,10 @@ installed, the setup screen says so and reuses it.
 
 Choose a running device to watch it, or choose **Start** next to a stopped
 device to boot it. The panel shows when you or an agent starts a device.
-Turn off the device hub in **Settings → Integrations → Devices** to stop the
+Each device opens in its own tab. Use **+ → Device** to open another, and
+double-click a tab name or choose **Rename** from its context menu to rename it.
+Only the visible tab streams video; switching tabs keeps both devices running.
+Turn off device support in **Settings → Devices** to stop the
 helper processes; simulators and emulators keep running until you power them
 off.
 
@@ -29,7 +32,8 @@ After installing them, restart the environment server and refresh devices.
 The screen is interactive: click and drag to touch, type while the screen is
 focused, and use the toolbar for Home, Back, and Recents on Android, rotate on
 iOS, and power off. Close the tab to stop watching; the device keeps running
-unless you power it off.
+unless you power it off. Closed tabs stay closed after a reload. To watch the
+device again, choose it from **+ → Device**.
 
 ## Tools
 
@@ -52,7 +56,7 @@ once per server. Restart an existing agent session after granting access so it
 receives the device CLI environment.
 
 To keep agents away from simulators, turn off **Agent device access** in
-**Settings → Integrations → Devices**. This hides the device tools from agents
+**Settings → Devices**. This hides the device tools from agents
 started from then on; your own Device panel is unaffected.
 
 ## Remote connections
@@ -61,3 +65,36 @@ The device stream goes through the environment server, so it works over the
 local network, Tailscale, and T3 Connect. Live video needs a secure page
 (HTTPS or localhost); on a plain-HTTP remote origin iOS falls back to a slower
 still-image stream and Android cannot show video.
+
+## SSH device hosts
+
+In **Settings → Devices**, select a connected environment (or **All environments**)
+and add a host under **Device hosts**. Enter an SSH alias or `user@host`, with
+an optional identity file and port. These resolve on the environment server,
+so use the SSH configuration and keys available there. Password prompts are
+not supported.
+
+**Test connection** checks SSH, Node, npm, and platform tools without installing
+anything. The editor reports each selected environment independently, including
+disconnected environments. Test and Save use the same validated SSH settings.
+Targets resolving to an environment's own machine are treated as its local host
+and are not saved as duplicate remote hosts; forwarded ports and proxies are kept.
+Saving and editing preserve each environment's other hosts. Partial failures
+are reported by environment and can be retried.
+
+The first device listing installs pinned Device Hub tools on the host only when
+device support is enabled. Agent tools require separate agent-access permission.
+Node 22 or newer and npm must be available to non-interactive SSH commands.
+T3 checks common Homebrew and Android SDK locations; custom installations need
+the appropriate PATH and ANDROID_HOME on the host.
+
+The picker identifies devices by host when several hosts are configured.
+Connections recover after interruptions. Removing a host closes its device
+sessions and stops its T3 helpers when reachable; simulators keep running.
+If the host is unreachable during removal, remote helper cleanup cannot be
+confirmed; check that host before abandoning its runtime.
+
+T3 provides discovery, streaming, and control. Arrange app builds,
+installation, and connectivity to development servers such as Metro separately.
+A simulator on another machine cannot reach Metro through your environment's
+localhost without forwarding or another reachable address.

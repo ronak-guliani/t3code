@@ -1,10 +1,13 @@
 import type {
+  ChildNudgeUpdate,
   DispatchReportVerdict,
-  OrchestrationThread,
+  QueuedTurnId,
   ThreadDelegation,
 } from "@t3tools/contracts";
 
 export type DispatchVerdict = DispatchReportVerdict;
+export type RecordedReportOutcome = Extract<DispatchVerdict, "accepted" | "stale">;
+export type DelegationExecutionReason = "assigned" | "continued" | "replaced";
 
 export function activeDispatchId(delegation: ThreadDelegation): string | null {
   return delegation.dispatchId ?? null;
@@ -24,8 +27,6 @@ export function activeDispatchTurnId(delegation: ThreadDelegation): string | nul
  * execution's context — the classifier never substitutes live thread state.
  *
  * - `accepted`: authoritative execution (or genuinely pre-fence history).
- * - `already-recorded`: the assignment closed and this exact report has a
- *   durable receipt. Acknowledge without a second wake.
  * - `stale`: superseded execution, missing proof, unminted claim, or novel
  *   report on closed work. No task, wait, or queue mutation.
  */
@@ -34,10 +35,13 @@ export function classifyChildReport(input: {
   readonly claimedDispatchId: string | null | undefined;
   readonly claimedTurnId: string | null | undefined;
   readonly kind: "progress" | "decision-needed" | "important-update";
-  readonly hasReceipt: boolean;
+  readonly recordedOutcome?: RecordedReportOutcome | undefined;
 }): DispatchVerdict {
+  if (input.recordedOutcome !== undefined) {
+    return input.recordedOutcome;
+  }
   if (input.delegation.completedAt !== null) {
-    return input.hasReceipt ? "already-recorded" : "stale";
+    return "stale";
   }
   const activeTurn = activeDispatchTurnId(input.delegation);
   if (activeTurn === null) {
@@ -96,9 +100,55 @@ export function mintDispatchRecord(previousSequence?: number | null | undefined)
   readonly dispatchId: string;
   readonly dispatchSequence: number;
   readonly dispatchTurnId: null;
+  readonly dispatchReason: "assigned";
 } {
   const [dispatchId, dispatchSequence] = mintDispatch(previousSequence);
-  return { dispatchId, dispatchSequence, dispatchTurnId: null };
+  return { dispatchId, dispatchSequence, dispatchTurnId: null, dispatchReason: "assigned" };
+}
+
+export function transitionDelegationExecution(
+  delegation: ThreadDelegation,
+  reason: Exclude<DelegationExecutionReason, "assigned">,
+): {
+  readonly delegation: ThreadDelegation;
+  readonly retiredPendingResponseQueuedTurnId: QueuedTurnId | null;
+} {
+  const previousDispatchId = delegation.dispatchId;
+  const previousSequence = delegation.dispatchSequence ?? (delegation.dispatchId ? 1 : 0);
+  const [dispatchId, dispatchSequence] = mintDispatch(previousSequence);
+  return {
+    delegation: {
+      ...delegation,
+      dispatchId,
+      dispatchSequence,
+      dispatchTurnId: null,
+      dispatchReason: reason,
+      ...(previousDispatchId ? { previousDispatchId } : {}),
+      decision: null,
+      pendingResponse: null,
+      outcome: undefined,
+    },
+    retiredPendingResponseQueuedTurnId: delegation.pendingResponse?.queuedTurnId ?? null,
+  };
+}
+
+export function bindDelegationExecution(
+  delegation: ThreadDelegation,
+  turnId: NonNullable<ThreadDelegation["dispatchTurnId"]>,
+): ThreadDelegation {
+  return { ...delegation, dispatchTurnId: turnId };
+}
+
+export function reportBelongsToDelegation(
+  report: ChildNudgeUpdate,
+  delegation: ThreadDelegation,
+): boolean {
+  return (
+    report.assignmentId === delegation.assignmentId &&
+    (report.dispatchId === undefined ||
+      delegation.dispatchId === undefined ||
+      report.dispatchId === delegation.dispatchId)
+  );
 }
 /**
  * Idempotency key for a logical report. The exact pre-fence format is kept
@@ -108,10 +158,14 @@ export function mintDispatchRecord(previousSequence?: number | null | undefined)
 export function childReportDedupeKey(input: {
   readonly childThreadId: string;
   readonly dispatchId: string | null | undefined;
+  readonly originTurnId?: string | null | undefined;
   readonly assignmentId: string;
   readonly reportId: string;
 }): string {
   if (input.dispatchId === null || input.dispatchId === undefined) {
+    if (input.originTurnId !== null && input.originTurnId !== undefined) {
+      return `report:${input.childThreadId}:turn:${input.originTurnId}:${input.assignmentId}:${input.reportId}`;
+    }
     return `report:${input.childThreadId}:${input.assignmentId}:${input.reportId}`;
   }
   return `report:${input.childThreadId}:${input.dispatchId}:${input.assignmentId}:${input.reportId}`;
@@ -137,53 +191,4 @@ export function legacyUpdateId(input: {
     return null;
   }
   return `report:${input.childThreadId}:${input.assignmentId}:${input.id.slice(prefix.length)}`;
-}
-
-function isDelegationReportedActivity(
-  activity: OrchestrationThread["activities"][number],
-): boolean {
-  return (activity as { readonly kind?: unknown }).kind === "delegation.reported";
-}
-
-/**
- * Recovers whether this exact logical report already has a durable receipt,
- * so retried deliveries are acknowledged without re-mutating. Pre-fence
- * receipts carry no dispatch/assignment fields and match legacy queries.
- */
-export function hasReportReceipt(
-  thread: OrchestrationThread,
-  input: {
-    readonly reportId: string;
-    readonly assignmentId: string | null | undefined;
-    readonly dispatchId: string | null | undefined;
-  },
-): boolean {
-  return thread.activities.some((activity) => {
-    if (!isDelegationReportedActivity(activity)) {
-      return false;
-    }
-    const payload = (activity.payload ?? {}) as {
-      readonly reportId?: unknown;
-      readonly assignmentId?: unknown;
-      readonly dispatchId?: unknown;
-    };
-    if (payload.reportId !== input.reportId) {
-      return false;
-    }
-    const receiptAssignment =
-      typeof payload.assignmentId === "string" ? payload.assignmentId : null;
-    const receiptDispatch = typeof payload.dispatchId === "string" ? payload.dispatchId : null;
-    if (
-      receiptAssignment !== null &&
-      input.assignmentId !== null &&
-      input.assignmentId !== undefined &&
-      receiptAssignment !== input.assignmentId
-    ) {
-      return false;
-    }
-    if (receiptDispatch !== (input.dispatchId ?? null)) {
-      return false;
-    }
-    return true;
-  });
 }

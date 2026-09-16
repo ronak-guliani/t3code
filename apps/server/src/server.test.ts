@@ -83,6 +83,7 @@ import { vi } from "vitest";
 import type { ServerConfigShape } from "./config.ts";
 import { deriveServerPaths, ServerConfig } from "./config.ts";
 import { CloudHttpRuntimeLayerLive, RemoteAccessLayerLive, makeRoutesLayer } from "./server.ts";
+import * as ServerAdvertisedEndpoints from "./remoteAccess/ServerAdvertisedEndpoints.ts";
 import { CheckoutCoordinatorLive } from "./git/CheckoutCoordinator.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import { attachmentRelativePath } from "./attachmentStore.ts";
@@ -628,6 +629,7 @@ const buildAppUnderTest = (options?: {
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
+          listThreadProjectIds: () => Effect.die("unused"),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
@@ -716,9 +718,17 @@ const buildAppUnderTest = (options?: {
           ...options?.layers?.diffStateQuery,
         }),
       ),
-    );
+    ) as unknown as Layer.Layer<never>;
 
-    const appLayer = servedRoutesLayer.pipe(
+    const servedRoutesWithDiscoveryLayer = servedRoutesLayer.pipe(
+      Layer.provide(
+        Layer.succeed(ServerAdvertisedEndpoints.ServerAdvertisedEndpoints, {
+          getEndpoints: Effect.succeed([]),
+        }),
+      ),
+    ) as unknown as Layer.Layer<never>;
+
+    const appLayer = servedRoutesWithDiscoveryLayer.pipe(
       Layer.provide(
         Layer.mock(BrowserTraceCollector)({
           record: () => Effect.void,
@@ -1138,24 +1148,24 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         namedCurve: "P-256",
       });
       let credential = "";
+      let relayCredential = "";
       yield* buildAppUnderTest({
         onAuthReady: (auth) =>
-          auth
-            .issuePairingCredential({
+          Effect.gen(function* () {
+            const proofKeyThumbprint = computeDpopJwkThumbprint(
+              publicKey.export({ format: "jwk" }) as DpopPublicJwk,
+            );
+            const first = yield* auth.issuePairingCredential({
               label: "Cross-origin DPoP test",
-              proofKeyThumbprint: computeDpopJwkThumbprint(
-                publicKey.export({ format: "jwk" }) as DpopPublicJwk,
-              ),
-            })
-            .pipe(
-              Effect.tap((issued) =>
-                Effect.sync(() => {
-                  credential = issued.credential;
-                }),
-              ),
-              Effect.orDie,
-              Effect.asVoid,
-            ),
+              proofKeyThumbprint,
+            });
+            const second = yield* auth.issuePairingCredential({
+              label: "Cross-origin DPoP discovery test",
+              proofKeyThumbprint,
+            });
+            credential = first.credential;
+            relayCredential = second.credential;
+          }).pipe(Effect.orDie),
       });
       const tokenUrl = yield* getHttpServerUrl("/oauth/token");
       const ticketUrl = yield* getHttpServerUrl("/api/auth/websocket-ticket");
@@ -1173,7 +1183,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.equal(preflight.status, 204);
         assertBrowserApiCorsHeaders(preflight.headers);
       }
-      const proof = (url: string, accessToken?: string) => {
+      const proof = (url: string, accessToken?: string, method = "POST") => {
         const header = Buffer.from(
           JSON.stringify({
             typ: "dpop+jwt",
@@ -1183,7 +1193,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ).toString("base64url");
         const payload = Buffer.from(
           JSON.stringify({
-            htm: "POST",
+            htm: method,
             htu: url,
             iat: Math.floor(Date.now() / 1_000),
             jti: NodeCrypto.randomUUID(),
@@ -1214,6 +1224,31 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const replay = yield* Effect.promise(() => fetch(ticketUrl, { method: "POST", headers }));
       assert.equal(replay.status, 401);
       assertBrowserApiCorsHeaders(replay.headers);
+      const discoveryUrl = yield* getHttpServerUrl("/api/remote-access/endpoints");
+      const deniedDiscovery = yield* Effect.promise(() =>
+        fetch(discoveryUrl, {
+          headers: {
+            authorization: `DPoP ${accessToken}`,
+            dpop: proof(discoveryUrl, accessToken, "GET"),
+          },
+        }),
+      );
+      assert.equal(deniedDiscovery.status, 403);
+      const relayAccessToken = yield* exchangeAccessToken(
+        ["relay:read"],
+        relayCredential,
+        proof(tokenUrl),
+      );
+      const discovered = yield* Effect.promise(() =>
+        fetch(discoveryUrl, {
+          headers: {
+            authorization: `DPoP ${relayAccessToken}`,
+            dpop: proof(discoveryUrl, relayAccessToken, "GET"),
+          },
+        }),
+      );
+      assert.equal(discovered.status, 200);
+      assert.isTrue(Array.isArray(yield* Effect.promise(() => discovered.json())));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
   it.effect(
@@ -1437,6 +1472,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         const body = yield* Effect.promise(() => status.text());
         assert.notInclude(body, "connectorToken");
         assert.include(body, '"enabled":false');
+        const discoveryUrl = yield* getHttpServerUrl("/api/remote-access/endpoints");
+        const discovered = yield* Effect.promise(() =>
+          fetch(discoveryUrl, { headers: { authorization: headers.authorization } }),
+        );
+        const discoveredText = yield* Effect.promise(() => discovered.text());
+        assert.equal(discovered.status, 200, discoveredText);
+        assert.equal(discovered.headers.get("cache-control"), "no-store");
+        const discoveredBody: unknown = JSON.parse(discoveredText);
+        assert.isTrue(Array.isArray(discoveredBody));
         const pairingTokenUrl = yield* getHttpServerUrl("/api/auth/pairing-token");
         const createClientCredential = Effect.promise(async () => {
           const response = await fetch(pairingTokenUrl, {
@@ -1518,6 +1562,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         const url = yield* getHttpServerUrl("/api/remote-access");
         const operations = [
           { method: "GET", url, requiredScope: "relay:read", allowedStatus: 200 },
+          {
+            method: "GET",
+            url: `${url}/endpoints`,
+            requiredScope: "relay:read",
+            allowedStatus: 200,
+          },
           { method: "POST", url, requiredScope: "relay:write", allowedStatus: 400 },
           { method: "POST", url: `${url}/pair`, requiredScope: "access:write", allowedStatus: 400 },
         ];
@@ -5722,6 +5772,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   it.effect("routes websocket rpc orchestration methods", () =>
     Effect.gen(function* () {
       const now = new Date().toISOString();
+      // Records search enrichment lookups: searchThreads must resolve
+      // projects with a single batched call, never per-match hydration.
+      const projectLookupCalls: ThreadId[][] = [];
       const snapshot = {
         snapshotSequence: 1,
         updatedAt: now,
@@ -5766,7 +5819,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           projectionSnapshotQuery: {
             getSnapshot: () => Effect.succeed(snapshot),
-            getThreadDetailById: () => Effect.succeed(Option.some(snapshot.threads[0]!)),
+            getThreadDetailById: () => Effect.die("searchThreads must not hydrate thread details"),
+            listThreadProjectIds: (threadIds) => {
+              projectLookupCalls.push([...threadIds]);
+              return Effect.succeed(
+                new Map([[ThreadId.make("thread-1"), ProjectId.make("project-a")]]),
+              );
+            },
             searchTranscript: () =>
               Effect.succeed({
                 matches: [
@@ -5866,6 +5925,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           messageCreatedAt: now,
         },
       ]);
+      assert.deepStrictEqual(projectLookupCalls, [[ThreadId.make("thread-1")]]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

@@ -3,8 +3,7 @@
 The environment server owns simulators and emulators the way it owns
 terminals: discovery, streaming, and agent access all run there, and every
 client reaches them through the environment connection. This is what makes the
-Device panel work over Tailscale and T3 Connect, and what will let a device
-host on another machine slot in later.
+Device panel work over Tailscale and T3 Connect, including when an SSH host runs the devices.
 
 ## Two external tools, one seam
 
@@ -21,8 +20,8 @@ native addon, and a crash there must not take the server down.
 Everything platform-specific sits behind
 [`DeviceHost`](../../apps/server/src/device/DeviceHost.ts). The service, the
 proxy, and the MCP tools only see a hub origin and an agent-device endpoint.
-An SSH or cloud host would forward those two things to the server and change
-nothing above it.
+SSH hosts forward both endpoints to server loopback. Every proxied request
+also carries the host id; device ids alone are not unique across hosts.
 
 ## The hub is never exposed
 
@@ -57,16 +56,41 @@ screenshot capture and stream tuning.
 The `device_*` toolkit is deliberately four tools: list, open, screenshot, and
 close. Driving happens through the `agent-device` CLI, which has the semantic
 snapshot model agents need and stays current with its own releases. T3 prepends
-a shim directory to the provider's PATH and sets
-`AGENT_DEVICE_DAEMON_BASE_URL` and `AGENT_DEVICE_DAEMON_AUTH_TOKEN` so the
-agent never handles the endpoint or token.
+a shim directory to the provider's PATH. The CLI installs on the environment
+server even when that server cannot run simulators. Hosts start on demand.
 
-That environment is fixed when the provider subprocess spawns, so
-[`prepareMcpSession`](../../apps/server/src/provider/Layers/ProviderService.ts)
-starts agent-device only when device support and agent access have both been
-enabled, the session has the `device` capability, and the machine can run at
-least one platform. Starting it later from `device_open` would leave the
-already-running agent without the CLI.
+[`device_open`](../../apps/server/src/mcp/toolkits/device/handlers.ts) returns an
+absolute launcher path and explicit per-host `--config` and per-thread/device
+`--session` arguments. It does not depend on an already-running provider's PATH
+or mutate another thread's target. Reconnecting an SSH host rewrites only that
+host's daemon configuration.
+
+## SSH lifecycle and settings
+
+[`SshDeviceHost`](../../apps/server/src/device/SshDeviceHost.ts) runs batch-mode
+SSH with the environment's keys and config. Its pinned bootstrap script uses an
+environment/state-directory/host-specific ownership key, atomic install locks,
+and loopback-only endpoints. Tunnel exits and failed health checks trigger
+bounded exponential backoff; scope teardown stops owned forwards and attempts
+remote helper cleanup without shutting down simulators.
+
+Host startup locks are per host, so a slow SSH install cannot block a healthy
+host. The service coordinates configuration replacement and agent-config writes,
+and checks access again before writing. Endpoint persistence uses the host adapter's
+lifecycle lock and its current agent endpoint, not an earlier readiness snapshot,
+so an in-flight target request cannot overwrite a reconnect's new port and token.
+Known unsupported hosts skip readiness; empty SSH platform lists still allow initial discovery.
+Testing a saved destination refreshes its cached platform availability after toolchain changes.
+Settings subscriptions reconcile host
+additions, replacements, and removals. `device.testHost` requires orchestration
+operate scope and performs a non-installing probe.
+
+Settings fan out from the selected environments using each environment's current
+host list. IDs are environment-local: edits and removals match the original SSH
+destination as well as the ID, and refuse unrelated ID collisions on insertion.
+SSH config resolution detects self-targets without connecting;
+forwarded ports and proxied destinations are retained. Saved clients consume
+incremental settings events so their controls reflect server-confirmed changes.
 
 How to drive a device is returned from `device_open`, not kept in an
 always-loaded prompt or skill: it costs nothing in threads that never open a
