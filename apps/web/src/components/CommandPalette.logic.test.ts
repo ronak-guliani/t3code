@@ -275,6 +275,7 @@ it.each([
   "10839",
   "pingdotgg/t3code#10839",
   "https://github.com/pingdotgg/t3code/pull/10839",
+  "https://github.com/pingdotgg/t3code/pull/10839?tab=files#diff-123",
 ])("finds linked threads from PR query %s", (query) => {
   const items = buildThreadActionItems({
     threads: [

@@ -1,5 +1,13 @@
 import type { GitPullRequestAssociation, ThreadPullRequestLink } from "@t3tools/contracts";
 
+const PULL_REQUEST_PATH_MARKERS = [
+  "pull",
+  "pulls",
+  "pullrequest",
+  "merge_requests",
+  "pull-requests",
+] as const;
+
 export interface ThreadPullRequestIdentity {
   readonly host: string;
   readonly repository: string;
@@ -13,8 +21,8 @@ export function threadPullRequestIdentity(
     const url = new URL(pullRequest.url);
     const parts = url.pathname.split("/").filter(Boolean);
     const markerIndex = parts.findLastIndex((part) =>
-      ["pull", "pulls", "pullrequest", "merge_requests", "pull-requests"].includes(
-        part.toLowerCase(),
+      PULL_REQUEST_PATH_MARKERS.includes(
+        part.toLowerCase() as (typeof PULL_REQUEST_PATH_MARKERS)[number],
       ),
     );
     const repository = markerIndex > 0 ? parts.slice(0, markerIndex).join("/") : "";
@@ -92,24 +100,52 @@ export function upsertLegacyThreadPullRequestLink(
     : existingLinks.map((link, index) => (index === existingIndex ? nextLink : link));
 }
 
+function pullRequestsForSearch(thread: {
+  readonly pullRequests?: ReadonlyArray<ThreadPullRequestLink> | undefined;
+  readonly pullRequest?: GitPullRequestAssociation | null | undefined;
+}): GitPullRequestAssociation[] {
+  const linked = (thread.pullRequests ?? []).map((link) => link.pullRequest);
+  const legacy = thread.pullRequest;
+  if (
+    legacy === null ||
+    legacy === undefined ||
+    linked.some((pullRequest) => sameThreadPullRequest(pullRequest, legacy))
+  ) {
+    return linked;
+  }
+  return [...linked, legacy];
+}
+
+export function normalizeThreadPullRequestSearchQuery(query: string): string | null {
+  try {
+    const url = new URL(query.trim());
+    const parts = url.pathname.split("/").filter(Boolean);
+    const markerIndex = parts.findLastIndex((part) =>
+      PULL_REQUEST_PATH_MARKERS.includes(
+        part.toLowerCase() as (typeof PULL_REQUEST_PATH_MARKERS)[number],
+      ),
+    );
+    const number = Number(parts[markerIndex + 1]);
+    if (markerIndex <= 0 || !Number.isSafeInteger(number) || number <= 0) return null;
+    return `${url.host.toLowerCase()}/${parts.slice(0, markerIndex).join("/").toLowerCase()}#${number}`;
+  } catch {
+    return null;
+  }
+}
+
 /** Search terms for linked PRs, including the legacy single-PR projection. */
 export function threadPullRequestSearchTerms(thread: {
   readonly pullRequests?: ReadonlyArray<ThreadPullRequestLink> | undefined;
   readonly pullRequest?: GitPullRequestAssociation | null | undefined;
 }): string[] {
-  if (thread.pullRequests !== undefined && thread.pullRequests.length > 0) {
-    return thread.pullRequests.flatMap(({ pullRequest }) => {
-      const identity = threadPullRequestIdentity(pullRequest);
-      return [
-        `#${pullRequest.number}`,
-        `${identity.repository}#${pullRequest.number}`,
-        pullRequest.url,
-        pullRequest.title,
-      ];
-    });
-  }
-  const legacy = thread.pullRequest;
-  if (legacy === null || legacy === undefined) return [];
-  const identity = threadPullRequestIdentity(legacy);
-  return [`#${legacy.number}`, `${identity.repository}#${legacy.number}`, legacy.url, legacy.title];
+  return pullRequestsForSearch(thread).flatMap((pullRequest) => {
+    const identity = threadPullRequestIdentity(pullRequest);
+    return [
+      `#${pullRequest.number}`,
+      `${identity.repository}#${pullRequest.number}`,
+      `${identity.host}/${identity.repository}#${pullRequest.number}`,
+      pullRequest.url,
+      pullRequest.title,
+    ];
+  });
 }

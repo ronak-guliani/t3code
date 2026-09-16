@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  normalizeThreadPullRequestSearchQuery,
   sameThreadPullRequest,
   sameThreadPullRequestAssociation,
   threadPullRequestKey,
@@ -39,27 +40,48 @@ describe("thread pull request identity", () => {
       ).toEqual([
         "#42",
         "acme/app#42",
+        "github.com/acme/app#42",
         "https://github.com/acme/app/pull/42",
         "Find linked PR threads",
       ]);
     });
 
-    it("falls back to the legacy association only when no links exist", () => {
+    it("includes a distinct legacy association alongside explicit links", () => {
       expect(
         threadPullRequestSearchTerms({ pullRequests: [], pullRequest: association }),
       ).toContain("#42");
+      const terms = threadPullRequestSearchTerms({
+        pullRequests: [
+          {
+            pullRequest: { ...association, number: 43 },
+            source: "manual",
+            linkedAt: "2026-09-08",
+          },
+        ],
+        pullRequest: association,
+      });
+      expect(terms).toContain("#42");
+      expect(terms).toContain("#43");
+    });
+
+    it("does not duplicate the legacy association when it is already linked", () => {
       expect(
         threadPullRequestSearchTerms({
-          pullRequests: [
-            {
-              pullRequest: { ...association, number: 43 },
-              source: "manual",
-              linkedAt: "2026-09-08",
-            },
-          ],
+          pullRequests: [{ pullRequest: association, source: "manual", linkedAt: "2026-09-08" }],
           pullRequest: association,
-        }),
-      ).not.toContain("#42");
+        }).filter((term) => term === "#42"),
+      ).toEqual(["#42"]);
+    });
+
+    it("normalizes copied PR URLs to repository-qualified search terms", () => {
+      expect(
+        normalizeThreadPullRequestSearchQuery(
+          "https://github.com/acme/app/pull/42?tab=files#diff-123",
+        ),
+      ).toBe("github.com/acme/app#42");
+      expect(normalizeThreadPullRequestSearchQuery("https://github.com/acme/app/issues/42")).toBe(
+        null,
+      );
     });
   });
 

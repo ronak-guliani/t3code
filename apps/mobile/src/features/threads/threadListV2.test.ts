@@ -1380,7 +1380,7 @@ describe("buildThreadListV2Items", () => {
         makeThread({ id: ThreadId.make("miss"), title: "Other work" }),
       ],
       environmentId: null,
-      searchQuery: "#10839",
+      searchQuery: "https://github.com/pingdotgg/t3code/pull/10839?tab=files",
       now: NOW,
     });
 

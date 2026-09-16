@@ -1,4 +1,7 @@
-import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
+import {
+  normalizeThreadPullRequestSearchQuery,
+  threadPullRequestSearchTerms,
+} from "@t3tools/shared/threadPullRequests";
 import {
   type KeybindingCommand,
   type FilesystemBrowseEntry,
@@ -308,7 +311,9 @@ export function filterCommandPaletteGroups(input: {
 }): CommandPaletteGroup[] {
   const isActionsFilter = input.query.startsWith(">");
   const searchQuery = isActionsFilter ? input.query.slice(1) : input.query;
-  const normalizedQuery = normalizeSearchText(searchQuery);
+  const normalizedQuery = normalizeSearchText(
+    normalizeThreadPullRequestSearchQuery(searchQuery) ?? searchQuery,
+  );
 
   if (normalizedQuery.length === 0) {
     if (isActionsFilter) {

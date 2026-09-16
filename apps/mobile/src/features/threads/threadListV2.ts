@@ -1,4 +1,7 @@
-import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
+import {
+  normalizeThreadPullRequestSearchQuery,
+  threadPullRequestSearchTerms,
+} from "@t3tools/shared/threadPullRequests";
 import {
   effectiveSnoozed,
   hasQueuedTurnStart,
@@ -395,7 +398,8 @@ export function buildThreadListV2Items(input: {
   readonly collapsedThreadKeys?: ReadonlySet<string>;
 }): ThreadListV2Layout {
   const now = input.now;
-  const query = input.searchQuery.trim().toLocaleLowerCase();
+  const rawQuery = input.searchQuery.trim();
+  const query = (normalizeThreadPullRequestSearchQuery(rawQuery) ?? rawQuery).toLocaleLowerCase();
   const projectKeys = input.projectRefs
     ? new Set(input.projectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`))
     : null;
