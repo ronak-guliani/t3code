@@ -78,11 +78,14 @@ describe("useMemoEqual", () => {
   });
 
   it("recomputes when an item ref or scalar dep changes", () => {
-    const probe = renderProbe({ items: [{ id: 1 }], turnId: "turn-1" });
+    const item = { id: 1 };
+    const nextItem = { id: 1 };
+    const probe = renderProbe({ items: [item], turnId: "turn-1" });
     try {
-      probe.rerender({ items: [{ id: 1 }], turnId: "turn-1" });
+      probe.rerender({ items: [nextItem], turnId: "turn-1" });
       expect(probe.factoryCalls.count).toBe(2);
-      probe.rerender({ items: [{ id: 1 }], turnId: "turn-2" });
+      // Same item refs, new scalar: isolates the scalar path.
+      probe.rerender({ items: [nextItem], turnId: "turn-2" });
       expect(probe.factoryCalls.count).toBe(3);
     } finally {
       probe.unmount();
