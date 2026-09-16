@@ -3,6 +3,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
 import * as ConnectionResolver from "./resolver.ts";
+import * as ConnectionPromotion from "./promotion.ts";
 import * as ConnectionDriver from "./driver.ts";
 import * as EnvironmentRegistry from "./registry.ts";
 import * as ConnectionOnboarding from "./onboarding.ts";
@@ -12,14 +13,16 @@ import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import * as RpcSession from "../rpc/session.ts";
 
 const resolverLayer = ConnectionResolver.layer.pipe(
-  Layer.provide(RemoteEnvironmentAuthorization.layer),
+  Layer.provide(Layer.mergeAll(RemoteEnvironmentAuthorization.layer, ConnectionPromotion.layer)),
 );
 
 const driverLayer = ConnectionDriver.layer.pipe(
   Layer.provide(Layer.mergeAll(resolverLayer, RpcSession.layer)),
 );
 
-const registryLayer = EnvironmentRegistry.layer.pipe(Layer.provide(driverLayer));
+const registryLayer = EnvironmentRegistry.layer.pipe(
+  Layer.provide(Layer.mergeAll(driverLayer, ConnectionPromotion.layer)),
+);
 
 const onboardingLayer = ConnectionOnboarding.layer.pipe(Layer.provide(registryLayer));
 

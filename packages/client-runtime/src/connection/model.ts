@@ -117,6 +117,8 @@ export type PreparedHttpAuthorization =
       ) => Effect.Effect<string, ConnectionAttemptError>;
     };
 
+export type ConnectionRouteKind = "relay" | "lan" | "tailscale";
+
 export interface PreparedConnection {
   readonly environmentId: EnvironmentId;
   readonly label: string;
@@ -124,6 +126,7 @@ export interface PreparedConnection {
   readonly socketUrl: string;
   readonly httpAuthorization: PreparedHttpAuthorization | null;
   readonly target: ConnectionTarget;
+  readonly routeKind?: ConnectionRouteKind;
 }
 
 export type SupervisorConnectionPhase =
@@ -145,6 +148,8 @@ export interface SupervisorConnectionState {
   readonly generation: number;
   readonly lastFailure: ConnectionAttemptError | null;
   readonly retryAt: number | null;
+  readonly routeKind?: ConnectionRouteKind;
+  readonly routeSwitching?: boolean;
 }
 
 export type ConnectionProjectionPhase = "disconnected" | "synchronizing" | "ready";

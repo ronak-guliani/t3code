@@ -3,7 +3,7 @@ import type { ServerConfig } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 
 import type { ConnectionCatalogEntry } from "./catalog.ts";
-import type { NetworkStatus, SupervisorConnectionState } from "./model.ts";
+import type { ConnectionRouteKind, NetworkStatus, SupervisorConnectionState } from "./model.ts";
 
 export type EnvironmentConnectionPhase =
   | "available"
@@ -18,6 +18,8 @@ export interface EnvironmentConnectionPresentation {
   readonly phase: EnvironmentConnectionPhase;
   readonly error: string | null;
   readonly traceId: string | null;
+  readonly routeKind?: ConnectionRouteKind | null;
+  readonly routeSwitching?: boolean;
 }
 
 export interface EnvironmentPresentation {
@@ -26,38 +28,66 @@ export interface EnvironmentPresentation {
   readonly serverConfig: ServerConfig | null;
 }
 
+function routePresentation(state: SupervisorConnectionState) {
+  return {
+    ...(state.routeKind === undefined ? {} : { routeKind: state.routeKind }),
+    ...(state.routeSwitching === true ? { routeSwitching: true } : {}),
+  };
+}
+
 export function presentConnectionState(
   state: SupervisorConnectionState,
 ): EnvironmentConnectionPresentation {
   switch (state.phase) {
     case "available":
-      return { phase: "available", error: null, traceId: null };
+      return {
+        phase: "available",
+        error: null,
+        traceId: null,
+        ...routePresentation(state),
+      };
     case "offline":
-      return { phase: "offline", error: null, traceId: null };
+      return {
+        phase: "offline",
+        error: null,
+        traceId: null,
+        ...routePresentation(state),
+      };
     case "connecting":
       return {
         phase: state.attempt <= 1 && state.lastFailure === null ? "connecting" : "reconnecting",
         error: state.lastFailure?.message ?? null,
         traceId: state.lastFailure?.traceId ?? null,
+        ...routePresentation(state),
       };
     case "connected":
-      return { phase: "connected", error: null, traceId: null };
+      return {
+        phase: "connected",
+        error: null,
+        traceId: null,
+        ...routePresentation(state),
+      };
     case "backoff":
       return {
         phase: "reconnecting",
         error: state.lastFailure?.message ?? null,
         traceId: state.lastFailure?.traceId ?? null,
+        ...routePresentation(state),
       };
     case "blocked":
       return {
         phase: state.lastFailure?.reason === "unsupported" ? "unsupported" : "error",
         error: state.lastFailure?.message ?? null,
         traceId: state.lastFailure?.traceId ?? null,
+        ...routePresentation(state),
       };
   }
 }
 
 export function connectionStatusText(connection: EnvironmentConnectionPresentation): string {
+  if (connection.routeSwitching) {
+    return "Switching connection route...";
+  }
   switch (connection.phase) {
     case "available":
       return "Available";
