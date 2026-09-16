@@ -137,6 +137,96 @@ export function stabilizeReadonlyStringSet(
   return previous;
 }
 
+/** Reuse the previous map when string key/value entries are unchanged. */
+export function stabilizeStringMap(
+  next: ReadonlyMap<string, string>,
+  previous: ReadonlyMap<string, string> | undefined,
+): ReadonlyMap<string, string> {
+  if (previous === undefined || previous === next) {
+    return next;
+  }
+  if (previous.size !== next.size) {
+    return next;
+  }
+  for (const [key, value] of next) {
+    if (previous.get(key) !== value) {
+      return next;
+    }
+  }
+  return previous;
+}
+
+export interface StabilizableAssistantResponseMeta {
+  readonly model?: string | undefined;
+  readonly usedTokens?: number | undefined;
+  readonly cost?: { readonly amount: number; readonly currency: string } | undefined;
+}
+
+/** Shallow value equality for per-turn response metadata entries. */
+export function isAssistantResponseMetaEqual(
+  a: StabilizableAssistantResponseMeta,
+  b: StabilizableAssistantResponseMeta,
+): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (a.model !== b.model || a.usedTokens !== b.usedTokens) {
+    return false;
+  }
+  if (a.cost === b.cost) {
+    return true;
+  }
+  if (a.cost === undefined || b.cost === undefined) {
+    return false;
+  }
+  return a.cost.amount === b.cost.amount && a.cost.currency === b.cost.currency;
+}
+
+/**
+ * Reuse previous per-turn entry objects (and the map itself) when values are
+ * unchanged. Producers rebuild fresh `{...existing}` objects on every
+ * `threadActivities` change, which would otherwise defeat the memoized
+ * assistant presentational below even for untouched settled turns.
+ */
+export function stabilizeResponseMetaByTurnId<
+  TurnKey,
+  Meta extends StabilizableAssistantResponseMeta,
+>(
+  next: ReadonlyMap<TurnKey, Meta>,
+  previous: ReadonlyMap<TurnKey, Meta> | undefined,
+): ReadonlyMap<TurnKey, Meta> {
+  if (previous === undefined || previous === next) {
+    return next;
+  }
+  if (previous.size !== next.size) {
+    return next;
+  }
+  // Reuse previous entry objects when values are equal so memoized consumers
+  // below keep stable props across streaming chunks, even while the active
+  // turn's entry changes every chunk. When every entry is already identical,
+  // return the previous map itself.
+  let identical = true;
+  let changed = false;
+  const result = new Map<TurnKey, Meta>();
+  for (const [key, value] of next) {
+    const previousValue = previous.get(key);
+    if (previousValue === undefined || !isAssistantResponseMetaEqual(previousValue, value)) {
+      result.set(key, value);
+      identical = false;
+      changed = true;
+      continue;
+    }
+    result.set(key, previousValue);
+    if (previousValue !== value) {
+      identical = false;
+    }
+  }
+  if (changed) {
+    return result;
+  }
+  return identical ? previous : result;
+}
+
 export function computeMessageDurationStart(
   messages: ReadonlyArray<TimelineDurationMessage>,
 ): Map<string, string> {

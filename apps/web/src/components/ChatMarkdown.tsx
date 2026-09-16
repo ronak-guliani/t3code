@@ -23,6 +23,7 @@ import ReactMarkdown from "react-markdown";
 import { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useShallow } from "zustand/react/shallow";
+import { stabilizeStringMap } from "./chat/MessagesTimeline.logic";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -1185,6 +1186,10 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
     ],
     [environmentIds, primaryEnvironmentId, savedEnvironmentById],
   );
+  // Stabilize the map identity when streaming text grows without adding new
+  // references: a fresh Map per chunk would otherwise rebuild remarkPlugins
+  // and force react-markdown to re-tokenize the active row every chunk.
+  const githubReferencesRef = useRef<ReadonlyMap<string, string> | undefined>(undefined);
   const githubReferences = useMemo(() => {
     const references = new Map<string, string>();
     const navigation = currentThread?.pullRequest?.url
@@ -1227,7 +1232,9 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
       );
     }
 
-    return references;
+    const stabilized = stabilizeStringMap(references, githubReferencesRef.current);
+    githubReferencesRef.current = stabilized;
+    return stabilized;
   }, [
     currentProject?.repositoryIdentity?.canonicalKey,
     currentProject?.repositoryIdentity?.name,
@@ -1379,23 +1386,30 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
     }),
     [markdownAnchor, markdownCode, markdownPre],
   );
+  // Stable plugin array: react-markdown re-tokenizes when the array identity
+  // changes, so factory plugins must be memoized across streaming renders.
+  // threadRef is a stable context object upstream; depend on its primitives.
+  const remarkPlugins = useMemo(
+    () => [
+      remarkGfm,
+      remarkClassifyChatLinks({
+        ...(threadRef ? { environmentId: threadRef.environmentId } : {}),
+        baseOrigin:
+          typeof window === "undefined"
+            ? "http://localhost"
+            : (window.location?.origin ?? "http://localhost"),
+        trustedOrigins,
+        githubReferences,
+      }),
+      remarkTagInlineCode(cwd),
+    ],
+    [cwd, githubReferences, threadRef?.environmentId, trustedOrigins],
+  );
 
   return (
     <div className="chat-markdown w-full min-w-0 leading-relaxed text-foreground/80">
       <ReactMarkdown
-        remarkPlugins={[
-          remarkGfm,
-          remarkClassifyChatLinks({
-            ...(threadRef ? { environmentId: threadRef.environmentId } : {}),
-            baseOrigin:
-              typeof window === "undefined"
-                ? "http://localhost"
-                : (window.location?.origin ?? "http://localhost"),
-            trustedOrigins,
-            githubReferences,
-          }),
-          remarkTagInlineCode(cwd),
-        ]}
+        remarkPlugins={remarkPlugins}
         components={markdownComponents}
         urlTransform={markdownUrlTransform}
       >

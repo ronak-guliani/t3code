@@ -14,6 +14,8 @@ import {
   resolveExternalActionUrl,
   shouldHandleInternalActionClick,
   stabilizeReadonlyStringSet,
+  stabilizeResponseMetaByTurnId,
+  stabilizeStringMap,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 
@@ -1420,6 +1422,66 @@ describe("stabilizeReadonlyStringSet", () => {
     const second = stabilizeReadonlyStringSet(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS, first);
     expect(second).toBe(first);
     expect(second).toBe(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS);
+  });
+});
+
+describe("stabilizeStringMap", () => {
+  it("reuses the previous map when entries are unchanged", () => {
+    const previous = new Map([
+      ["#1", "https://example.com/1"],
+      ["#2", "https://example.com/2"],
+    ]);
+    const next = new Map([
+      ["#1", "https://example.com/1"],
+      ["#2", "https://example.com/2"],
+    ]);
+
+    expect(stabilizeStringMap(next, previous)).toBe(previous);
+  });
+
+  it("returns the next map when an entry value changes", () => {
+    const previous = new Map([["#1", "https://example.com/1"]]);
+    const next = new Map([["#1", "https://example.com/other"]]);
+
+    expect(stabilizeStringMap(next, previous)).toBe(next);
+  });
+});
+
+describe("stabilizeResponseMetaByTurnId", () => {
+  const settled = TurnId.make("turn-settled");
+  const active = TurnId.make("turn-active");
+
+  it("reuses settled entry objects when only the active turn changes", () => {
+    const settledEntry = { model: "mock-model", usedTokens: 100 };
+    const previous = new Map([
+      [settled, settledEntry],
+      [active, { model: "mock-model", usedTokens: 1 }],
+    ]);
+    // Fresh objects with equal settled values, as rebuilt from threadActivities.
+    const next = new Map([
+      [settled, { model: "mock-model", usedTokens: 100 }],
+      [active, { model: "mock-model", usedTokens: 2 }],
+    ]);
+
+    const stabilized = stabilizeResponseMetaByTurnId(next, previous);
+    expect(stabilized).not.toBe(next);
+    expect(stabilized.get(settled)).toBe(settledEntry);
+    expect(stabilized.get(active)).toEqual({ model: "mock-model", usedTokens: 2 });
+  });
+
+  it("returns the previous map when every entry is identical", () => {
+    const previous = new Map([[settled, { model: "mock-model" }]]);
+    const next = new Map(previous);
+
+    expect(stabilizeResponseMetaByTurnId(next, previous)).toBe(previous);
+  });
+
+  it("uses the new value when a settled entry value changes", () => {
+    const previous = new Map([[settled, { model: "mock-model", usedTokens: 100 }]]);
+    const next = new Map([[settled, { model: "mock-model", usedTokens: 101 }]]);
+
+    const stabilized = stabilizeResponseMetaByTurnId(next, previous);
+    expect(stabilized.get(settled)).toBe(next.get(settled));
   });
 });
 
