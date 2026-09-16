@@ -190,7 +190,7 @@ export interface ProjectionSnapshotQueryShape {
    * discards. Soft-deleted threads are excluded, matching
    * `getThreadDetailById` filtering; unknown ids are simply absent.
    */
-  readonly listThreadProjectIds?: (
+  readonly listThreadProjectIds: (
     threadIds: ReadonlyArray<ThreadId>,
   ) => Effect.Effect<ReadonlyMap<ThreadId, ProjectId>, ProjectionRepositoryError>;
 }

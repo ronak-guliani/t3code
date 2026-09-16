@@ -1182,28 +1182,26 @@ const makeWsRpcLayer = (
                 // project id per match. Hydrating full thread details here
                 // cost ~9 heavy queries per match (messages, activities,
                 // plans, turns) decoding payloads the caller discards.
-                return (
-                  projectionSnapshotQuery.listThreadProjectIds?.(
-                    matches.map((match) => match.threadId),
-                  ) ?? Effect.succeed(new Map<ThreadId, ProjectId>())
-                ).pipe(
-                  Effect.map((projectIds) => ({
-                    matches: matches.flatMap((match) => {
-                      const projectId = projectIds.get(match.threadId);
-                      return projectId === undefined
-                        ? []
-                        : [
-                            {
-                              threadId: match.threadId,
-                              projectId,
-                              source: match.role,
-                              snippet: match.excerpt.slice(0, 240),
-                              messageCreatedAt: match.updatedAt,
-                            },
-                          ];
-                    }),
-                  })),
-                );
+                return projectionSnapshotQuery
+                  .listThreadProjectIds(matches.map((match) => match.threadId))
+                  .pipe(
+                    Effect.map((projectIds) => ({
+                      matches: matches.flatMap((match) => {
+                        const projectId = projectIds.get(match.threadId);
+                        return projectId === undefined
+                          ? []
+                          : [
+                              {
+                                threadId: match.threadId,
+                                projectId,
+                                source: match.role,
+                                snippet: match.excerpt.slice(0, 240),
+                                messageCreatedAt: match.updatedAt,
+                              },
+                            ];
+                      }),
+                    })),
+                  );
               }),
               Effect.mapError(
                 (cause) =>

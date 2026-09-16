@@ -258,6 +258,7 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
           getThreadShellProjectContextById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
+          listThreadProjectIds: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
         }),
         Effect.provideService(AnalyticsService, {
@@ -321,6 +322,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         getThreadShellProjectContextById: () => Effect.die("unused"),
         getThreadDetailById: () => Effect.die("unused"),
         getThreadDetailSnapshotById: () => Effect.die("unused"),
+        listThreadProjectIds: () => Effect.die("unused"),
         getThreadActivitiesPage: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {
@@ -368,6 +370,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
         getThreadShellProjectContextById: () => Effect.die("unused"),
         getThreadDetailById: () => Effect.die("unused"),
         getThreadDetailSnapshotById: () => Effect.die("unused"),
+        listThreadProjectIds: () => Effect.die("unused"),
         getThreadActivitiesPage: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {
