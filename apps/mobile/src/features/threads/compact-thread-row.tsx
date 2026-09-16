@@ -201,13 +201,6 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
         {isNested ? (
           <View className="items-center" style={styles.nestedRail}>
             <View className="bg-border-subtle" style={styles.nestedRailLine} />
-            <SymbolView
-              name="arrow.turn.left.up"
-              size={11}
-              tintColorClassName={
-                selected ? "accent-user-bubble-foreground" : "accent-foreground-tertiary"
-              }
-            />
           </View>
         ) : null}
         <View className="w-3 items-center">
