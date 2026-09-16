@@ -1267,6 +1267,42 @@ export function useSettingsRestore(onRestored?: () => void) {
   };
 }
 
+function HeaderSidebarToggleRows({
+  rows,
+  settings,
+  updateSettings,
+}: {
+  readonly rows: ReadonlyArray<{
+    readonly key: HeaderSidebarToggleKey;
+    readonly title: string;
+    readonly description: string;
+  }>;
+  readonly settings: UnifiedSettings;
+  readonly updateSettings: (patch: Partial<UnifiedSettings>) => void;
+}) {
+  return rows.map((row) => (
+    <SettingsRow
+      key={row.key}
+      title={row.title}
+      description={row.description}
+      resetAction={
+        settings[row.key] !== HEADER_SIDEBAR_DEFAULTS[row.key] ? (
+          <SettingResetButton
+            label={row.title.toLowerCase()}
+            onClick={() => updateSettings({ [row.key]: HEADER_SIDEBAR_DEFAULTS[row.key] })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={settings[row.key]}
+          onCheckedChange={(checked) => updateSettings({ [row.key]: Boolean(checked) })}
+        />
+      }
+    />
+  ));
+}
+
 export function GeneralSettingsPanel() {
   const browserEnvironmentId = usePrimaryEnvironmentId();
   const { theme, setTheme } = useTheme();
@@ -2031,90 +2067,26 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection title="Header & sidebar buttons">
-        {HEADER_VISIBILITY_ROWS.map((row) => (
-          <SettingsRow
-            key={row.key}
-            title={row.title}
-            description={row.description}
-            resetAction={
-              settings[row.key] !== HEADER_SIDEBAR_DEFAULTS[row.key] ? (
-                <SettingResetButton
-                  label={row.title.toLowerCase()}
-                  onClick={() => updateSettings({ [row.key]: HEADER_SIDEBAR_DEFAULTS[row.key] })}
-                />
-              ) : null
-            }
-            control={
-              <Switch
-                checked={settings[row.key]}
-                onCheckedChange={(checked) => updateSettings({ [row.key]: Boolean(checked) })}
-              />
-            }
-          />
-        ))}
-        {PANEL_TOGGLE_ROWS.map((row) => (
-          <SettingsRow
-            key={row.key}
-            title={row.title}
-            description={row.description}
-            resetAction={
-              settings[row.key] !== HEADER_SIDEBAR_DEFAULTS[row.key] ? (
-                <SettingResetButton
-                  label={row.title.toLowerCase()}
-                  onClick={() => updateSettings({ [row.key]: HEADER_SIDEBAR_DEFAULTS[row.key] })}
-                />
-              ) : null
-            }
-            control={
-              <Switch
-                checked={settings[row.key]}
-                onCheckedChange={(checked) => updateSettings({ [row.key]: Boolean(checked) })}
-              />
-            }
-          />
-        ))}
-        {SIDEBAR_VISIBILITY_ROWS.map((row) => (
-          <SettingsRow
-            key={row.key}
-            title={row.title}
-            description={row.description}
-            resetAction={
-              settings[row.key] !== HEADER_SIDEBAR_DEFAULTS[row.key] ? (
-                <SettingResetButton
-                  label={row.title.toLowerCase()}
-                  onClick={() => updateSettings({ [row.key]: HEADER_SIDEBAR_DEFAULTS[row.key] })}
-                />
-              ) : null
-            }
-            control={
-              <Switch
-                checked={settings[row.key]}
-                onCheckedChange={(checked) => updateSettings({ [row.key]: Boolean(checked) })}
-              />
-            }
-          />
-        ))}
-        {HEADER_BEHAVIOR_ROWS.map((row) => (
-          <SettingsRow
-            key={row.key}
-            title={row.title}
-            description={row.description}
-            resetAction={
-              settings[row.key] !== HEADER_SIDEBAR_DEFAULTS[row.key] ? (
-                <SettingResetButton
-                  label={row.title.toLowerCase()}
-                  onClick={() => updateSettings({ [row.key]: HEADER_SIDEBAR_DEFAULTS[row.key] })}
-                />
-              ) : null
-            }
-            control={
-              <Switch
-                checked={settings[row.key]}
-                onCheckedChange={(checked) => updateSettings({ [row.key]: Boolean(checked) })}
-              />
-            }
-          />
-        ))}
+        <HeaderSidebarToggleRows
+          rows={HEADER_VISIBILITY_ROWS}
+          settings={settings}
+          updateSettings={updateSettings}
+        />
+        <HeaderSidebarToggleRows
+          rows={PANEL_TOGGLE_ROWS}
+          settings={settings}
+          updateSettings={updateSettings}
+        />
+        <HeaderSidebarToggleRows
+          rows={SIDEBAR_VISIBILITY_ROWS}
+          settings={settings}
+          updateSettings={updateSettings}
+        />
+        <HeaderSidebarToggleRows
+          rows={HEADER_BEHAVIOR_ROWS}
+          settings={settings}
+          updateSettings={updateSettings}
+        />
       </SettingsSection>
 
       <SettingsSection title="Fonts">

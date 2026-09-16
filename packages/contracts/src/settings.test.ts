@@ -418,7 +418,7 @@ describe("ClientSettings.headerSidebarButtons", () => {
     expect(decodeClientSettings({}).sidebarShowNewThread).toBe(true);
   });
 
-  it("defaults per-button behaviors to non-blocking values", () => {
+  it("defaults confirms off except the default-branch git guard", () => {
     expect(decodeClientSettings({}).headerExportConfirm).toBe(false);
     expect(decodeClientSettings({}).projectScriptsConfirmRun).toBe(false);
     expect(decodeClientSettings({}).openInUpdatePreferred).toBe(true);

@@ -126,15 +126,19 @@ export const ChatHeader = memo(function ChatHeader({
     onExportThread();
   }, [headerExportConfirm, onExportThread]);
   const handlePrewarmProviderSession = useCallback(() => {
-    if (!workflowPrewarmOnHover) return;
+    // A confirmed workflow must not leak speculative work: the PR-review
+    // click path captures before onRun fires, so canceling the confirm
+    // would otherwise still launch the capture and consume its single-use
+    // prewarm without the paired run.
+    if (!workflowPrewarmOnHover || workflowConfirmRun) return;
     onPrewarmProviderSession();
-  }, [onPrewarmProviderSession, workflowPrewarmOnHover]);
+  }, [onPrewarmProviderSession, workflowConfirmRun, workflowPrewarmOnHover]);
   const handlePrewarmReviewPullRequest = useCallback(
     (pullRequestNumber: number) => {
-      if (!workflowPrewarmOnHover) return;
+      if (!workflowPrewarmOnHover || workflowConfirmRun) return;
       onPrewarmReviewPullRequest(pullRequestNumber);
     },
-    [onPrewarmReviewPullRequest, workflowPrewarmOnHover],
+    [onPrewarmReviewPullRequest, workflowConfirmRun, workflowPrewarmOnHover],
   );
 
   return (
