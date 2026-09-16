@@ -70,6 +70,7 @@ import {
   pullRequestCheckSummaryLabel,
   pullRequestLabelColor,
   pullRequestReviewVerdictPresentation,
+  resolvePullRequestMergeSelection,
   summarizePullRequestChecks,
   toRenderablePullRequestMarkdown,
 } from "./pullRequestPresentation";
@@ -617,7 +618,11 @@ function CodeTab({
               {page.reason}
             </p>
             <pre
-              className="max-h-120 overflow-auto p-3 leading-5"
+              className={
+                diffWordWrap
+                  ? "max-h-120 overflow-auto p-3 leading-5 whitespace-pre-wrap wrap-break-word"
+                  : "max-h-120 overflow-auto p-3 leading-5"
+              }
               style={{ fontSize: pullRequestsCodeFontSize }}
             >
               {page.text}
@@ -824,15 +829,13 @@ export function PullRequestDetailPanel({
   // Merge strategies the host allows for this pull request. The choice is
   // the reviewer's, not the first allowed method's: squash and merge land
   // very different history.
-  const allowedMergeMethods = detail.capabilities.mergeMethods.filter(
-    (method) => detail.mergeCapabilities[method],
-  );
-  const selectedMergeMethod =
-    (mergeMethodOverride && allowedMergeMethods.includes(mergeMethodOverride)
-      ? mergeMethodOverride
-      : allowedMergeMethods[0]) ?? null;
-  const showMergeMethodPicker =
-    availableActions.includes("merge") && allowedMergeMethods.length > 1;
+  const { allowedMergeMethods, selectedMergeMethod, showMergeMethodPicker } =
+    resolvePullRequestMergeSelection({
+      canMerge: availableActions.includes("merge"),
+      mergeMethods: detail.capabilities.mergeMethods,
+      mergeCapabilities: detail.mergeCapabilities,
+      override: mergeMethodOverride,
+    });
   const checkSummary = summarizePullRequestChecks(detail.checks);
   const checkIndicatorClassName =
     checkSummary.failing > 0 || checkSummary.cancelled > 0

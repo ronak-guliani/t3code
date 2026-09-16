@@ -194,7 +194,7 @@ function PullRequestsRoute() {
     [entriesWithStats],
   );
   const filterCount =
-    (effectiveState === "open" ? 0 : 1) +
+    (effectiveState === defaultListState ? 0 : 1) +
     (search.involvement === "all" ? 0 : 1) +
     (search.projectId ? 1 : 0);
   const explicitSelection = useMemo(

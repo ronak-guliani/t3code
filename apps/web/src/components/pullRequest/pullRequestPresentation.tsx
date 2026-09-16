@@ -2,6 +2,7 @@ import type {
   PullRequestActor,
   PullRequestCheckStatus,
   PullRequestMergeability,
+  PullRequestMergeMethod,
   PullRequestState,
 } from "@t3tools/contracts";
 import {
@@ -485,4 +486,38 @@ export function pullRequestActionLabel(
     case "reopen":
       return "Reopen";
   }
+}
+
+export interface PullRequestMergeSelection {
+  readonly allowedMergeMethods: readonly PullRequestMergeMethod[];
+  readonly selectedMergeMethod: PullRequestMergeMethod | null;
+  readonly showMergeMethodPicker: boolean;
+}
+
+/**
+ * Merge-strategy selection for the PR summary actions. The host reports every
+ * method it knows plus per-method availability; the picker offers only the
+ * allowed ones and falls back to the first allowed method when the reviewer's
+ * override is missing or no longer allowed. The picker shows only when merge
+ * itself is available and there is a real choice to make. The selected method
+ * is the `mergeMethod` sent with the destructive merge request.
+ */
+export function resolvePullRequestMergeSelection(input: {
+  readonly canMerge: boolean;
+  readonly mergeMethods: readonly PullRequestMergeMethod[];
+  readonly mergeCapabilities: Record<PullRequestMergeMethod, boolean>;
+  readonly override: PullRequestMergeMethod | null;
+}): PullRequestMergeSelection {
+  const allowedMergeMethods = input.mergeMethods.filter(
+    (method) => input.mergeCapabilities[method],
+  );
+  const selectedMergeMethod =
+    (input.override && allowedMergeMethods.includes(input.override)
+      ? input.override
+      : allowedMergeMethods[0]) ?? null;
+  return {
+    allowedMergeMethods,
+    selectedMergeMethod,
+    showMergeMethodPicker: input.canMerge && allowedMergeMethods.length > 1,
+  };
 }
