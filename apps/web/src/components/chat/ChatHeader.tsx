@@ -7,7 +7,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import { memo, type ReactNode } from "react";
+import { memo, type ReactNode, useCallback } from "react";
 import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";
 import { FileDownIcon, LoaderIcon } from "lucide-react";
@@ -26,6 +26,7 @@ import {
 import { WorkflowRunsButton, type WorkflowRunPresentation } from "./WorkflowRunSummary";
 import { EnvironmentIdentity } from "../EnvironmentIdentity";
 import { ProjectEnvironmentNotice } from "../ProjectEnvironmentNotice";
+import { useSettings } from "../../hooks/useSettings";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -91,6 +92,50 @@ export const ChatHeader = memo(function ChatHeader({
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const isRemoteEnvironment =
     primaryEnvironmentId !== null && activeThreadEnvironmentId !== primaryEnvironmentId;
+  const headerShowProjectScripts = useSettings((s) => s.headerShowProjectScripts);
+  const headerShowOpenIn = useSettings((s) => s.headerShowOpenIn);
+  const headerShowGitActions = useSettings((s) => s.headerShowGitActions);
+  const headerShowWorkflows = useSettings((s) => s.headerShowWorkflows);
+  const headerShowWorkflowRuns = useSettings((s) => s.headerShowWorkflowRuns);
+  const headerShowExportChat = useSettings((s) => s.headerShowExportChat);
+  const headerExportConfirm = useSettings((s) => s.headerExportConfirm);
+  const projectScriptsConfirmRun = useSettings((s) => s.projectScriptsConfirmRun);
+  const gitConfirmDefaultBranch = useSettings((s) => s.gitConfirmDefaultBranch);
+  const gitShowQuickAction = useSettings((s) => s.gitShowQuickAction);
+  const workflowConfirmRun = useSettings((s) => s.workflowConfirmRun);
+  const workflowPrewarmOnHover = useSettings((s) => s.workflowPrewarmOnHover);
+  const workflowRunsShowBadge = useSettings((s) => s.workflowRunsShowBadge);
+  const openInUpdatePreferred = useSettings((s) => s.openInUpdatePreferred);
+
+  const handleRunProjectScript = useCallback(
+    (script: ProjectScript) => {
+      if (projectScriptsConfirmRun && !window.confirm(`Run "${script.name}"?`)) return;
+      onRunProjectScript(script);
+    },
+    [onRunProjectScript, projectScriptsConfirmRun],
+  );
+  const handleRunWorkflow = useCallback(
+    (request: AgentWorkflowRunRequest) => {
+      if (workflowConfirmRun && !window.confirm("Run this workflow?")) return;
+      onRunWorkflow(request);
+    },
+    [onRunWorkflow, workflowConfirmRun],
+  );
+  const handleExportThread = useCallback(() => {
+    if (headerExportConfirm && !window.confirm("Export this chat?")) return;
+    onExportThread();
+  }, [headerExportConfirm, onExportThread]);
+  const handlePrewarmProviderSession = useCallback(() => {
+    if (!workflowPrewarmOnHover) return;
+    onPrewarmProviderSession();
+  }, [onPrewarmProviderSession, workflowPrewarmOnHover]);
+  const handlePrewarmReviewPullRequest = useCallback(
+    (pullRequestNumber: number) => {
+      if (!workflowPrewarmOnHover) return;
+      onPrewarmReviewPullRequest(pullRequestNumber);
+    },
+    [onPrewarmReviewPullRequest, workflowPrewarmOnHover],
+  );
 
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
@@ -117,62 +162,76 @@ export const ChatHeader = memo(function ChatHeader({
         )}
       </div>
       <div className="flex shrink-0 items-center justify-end gap-1">
-        {activeProjectScripts && (
+        {activeProjectScripts && headerShowProjectScripts ? (
           <ProjectScriptsControl
             scripts={activeProjectScripts}
             keybindings={keybindings}
             preferredScriptId={preferredScriptId}
-            onRunScript={onRunProjectScript}
+            onRunScript={handleRunProjectScript}
             onAddScript={onAddProjectScript}
             onUpdateScript={onUpdateProjectScript}
             onDeleteScript={onDeleteProjectScript}
           />
-        )}
-        {activeProjectName && !isRemoteEnvironment && (
+        ) : null}
+        {activeProjectName && !isRemoteEnvironment && headerShowOpenIn ? (
           <OpenInPicker
             keybindings={keybindings}
             availableEditors={availableEditors}
             openInCwd={openInCwd}
+            updatePreferredOnSelect={openInUpdatePreferred}
           />
-        )}
-        {activeProjectName && (
+        ) : null}
+        {activeProjectName && headerShowGitActions ? (
           <GitActionsControl
             gitCwd={gitCwd}
             activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
+            confirmOnDefaultBranch={gitConfirmDefaultBranch}
+            showQuickAction={gitShowQuickAction}
             {...(draftId ? { draftId } : {})}
           />
-        )}
-        <AgentWorkflowHeaderActions
-          actions={workflowActions}
-          onRun={onRunWorkflow}
-          onListOpenPullRequests={onListOpenPullRequests}
-          onPrewarmProviderSession={onPrewarmProviderSession}
-          onPrewarmReviewPullRequest={onPrewarmReviewPullRequest}
-        />
-        <WorkflowRunsButton runs={workflowRuns} onNavigateThread={onNavigateThread} />
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                className="shrink-0 border-transparent shadow-none hover:border-input hover:shadow-xs/5"
-                variant="outline"
-                size="icon-xs"
-                onClick={onExportThread}
-                aria-label="Export chat"
-                disabled={exportingThread || exportThreadDisabledReason !== null}
-              >
-                {exportingThread ? (
-                  <LoaderIcon className="size-3 animate-spin" />
-                ) : (
-                  <FileDownIcon className="size-3" />
-                )}
-              </Button>
-            }
+        ) : null}
+        {headerShowWorkflows ? (
+          <AgentWorkflowHeaderActions
+            actions={workflowActions}
+            onRun={handleRunWorkflow}
+            onListOpenPullRequests={onListOpenPullRequests}
+            onPrewarmProviderSession={handlePrewarmProviderSession}
+            onPrewarmReviewPullRequest={handlePrewarmReviewPullRequest}
           />
-          <TooltipPopup side="bottom">
-            {exportThreadDisabledReason ?? (exportingThread ? "Exporting chat..." : "Export chat")}
-          </TooltipPopup>
-        </Tooltip>
+        ) : null}
+        {headerShowWorkflowRuns ? (
+          <WorkflowRunsButton
+            runs={workflowRuns}
+            onNavigateThread={onNavigateThread}
+            showBadge={workflowRunsShowBadge}
+          />
+        ) : null}
+        {headerShowExportChat ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  className="shrink-0 border-transparent shadow-none hover:border-input hover:shadow-xs/5"
+                  variant="outline"
+                  size="icon-xs"
+                  onClick={handleExportThread}
+                  aria-label="Export chat"
+                  disabled={exportingThread || exportThreadDisabledReason !== null}
+                >
+                  {exportingThread ? (
+                    <LoaderIcon className="size-3 animate-spin" />
+                  ) : (
+                    <FileDownIcon className="size-3" />
+                  )}
+                </Button>
+              }
+            />
+            <TooltipPopup side="bottom">
+              {exportThreadDisabledReason ??
+                (exportingThread ? "Exporting chat..." : "Export chat")}
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
         {panelToggles}
         {paneActions}
       </div>
