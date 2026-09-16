@@ -4328,7 +4328,11 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
 
         const queuedSnapshot = yield* snapshotQuery.getSnapshot();
         const queuedThread = queuedSnapshot.threads.find((entry) => entry.id === threadId);
-        assert.deepEqual(queuedThread?.queuedTurns?.[0]?.origin, origin);
+        const persistedOrigin = queuedThread?.queuedTurns?.[0]?.origin;
+        assert.deepEqual(persistedOrigin, {
+          ...origin,
+          workspaceBinding: queuedThread?.workspaceBinding,
+        });
         assert.equal(queuedThread?.branch, "feature/handoff");
 
         yield* engine.dispatch({
@@ -4349,9 +4353,16 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         );
 
         assert.equal(marker?.role, "system");
-        assert.deepEqual(marker?.origin, { ...origin, role: "marker" });
+        assert.deepEqual(marker?.origin, {
+          ...origin,
+          role: "marker",
+          workspaceBinding: thread?.workspaceBinding,
+        });
         assert.equal(continuation?.role, "user");
-        assert.deepEqual(continuation?.origin, origin);
+        assert.deepEqual(continuation?.origin, {
+          ...origin,
+          workspaceBinding: thread?.workspaceBinding,
+        });
       }),
   );
 });

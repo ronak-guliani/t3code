@@ -1493,6 +1493,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           updatedAt: occurredAt,
         },
       };
@@ -1501,6 +1504,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         role: "marker",
         branch: command.branch,
         worktreePath: command.worktreePath,
+        ...(command.workspaceBinding !== undefined
+          ? { workspaceBinding: command.workspaceBinding }
+          : {}),
       } as const;
       // The marker is the invariant of a handoff: it records the workspace move
       // whether the thread continues on a generated continuation or on a turn

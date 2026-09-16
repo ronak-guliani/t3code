@@ -415,12 +415,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           "This legacy or non-Git workspace has no durable isolated checkout. Choose an explicit exclusive directory and retry; T3 will not fall back to the project root.",
       });
     }
-    const branch =
-      createThread?.branch ??
-      thread?.branch ??
-      `t3/thread/${threadId.replace(/[^A-Za-z0-9._/-]/g, "-")}`;
     const repositoryKey = createHash("sha256").update(gitRoot).digest("hex").slice(0, 16);
     const threadWorkspaceKey = createHash("sha256").update(threadId).digest("hex");
+    const sourceBranch =
+      createThread?.sourceBranch ?? createThread?.branch ?? thread?.branch ?? "HEAD";
+    const branch = `t3/thread/${threadWorkspaceKey.slice(0, 24)}`;
     const worktreePath = path.join(
       path.dirname(gitRoot),
       ".t3-thread-workspaces",
@@ -476,11 +475,43 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }
           return;
         }
-        const result = await runProcess(
+        const sourceRevision =
+          createThread?.sourceWorktreePath === undefined
+            ? sourceBranch
+            : (
+                await runProcess(
+                  "git",
+                  ["-C", createThread.sourceWorktreePath, "rev-parse", "HEAD"],
+                  {
+                    allowNonZeroExit: true,
+                    maxBufferBytes: 16 * 1024,
+                    timeoutMs: 5_000,
+                  },
+                )
+              ).stdout.trim();
+        if (!sourceRevision) {
+          throw new Error(
+            `could not resolve source revision from '${createThread?.sourceWorktreePath ?? sourceBranch}'`,
+          );
+        }
+        const existingBranch = await runProcess(
           "git",
-          ["-C", gitRoot, "worktree", "add", "-b", branch, worktreePath, "HEAD"],
-          { allowNonZeroExit: true, maxBufferBytes: 64 * 1024, timeoutMs: 30_000 },
+          ["-C", gitRoot, "show-ref", "--verify", `refs/heads/${branch}`],
+          {
+            allowNonZeroExit: true,
+            maxBufferBytes: 16 * 1024,
+            timeoutMs: 5_000,
+          },
         );
+        const worktreeArguments =
+          existingBranch.code === 0
+            ? ["-C", gitRoot, "worktree", "add", worktreePath, branch]
+            : ["-C", gitRoot, "worktree", "add", "-b", branch, worktreePath, sourceRevision];
+        const result = await runProcess("git", worktreeArguments, {
+          allowNonZeroExit: true,
+          maxBufferBytes: 64 * 1024,
+          timeoutMs: 30_000,
+        });
         if (result.code !== 0) {
           throw new Error(
             result.stderr.trim() || `git worktree add failed with code ${result.code}`,
@@ -515,8 +546,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     switch (command.type) {
       case "thread.create":
       case "thread.turn.start":
+      case "thread.workspace.handoff":
       case "thread.meta.update":
       case "thread.delete":
+      case "thread.queued-turn.dispatch":
         thread = readModel.threads.find(
           (entry) => entry.id === (command as { readonly threadId: string }).threadId,
         );
@@ -662,6 +695,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
+        const previousWorkspaceBinding =
+          command.type === "thread.workspace.handoff"
+            ? readModel.threads.find((thread) => thread.id === command.threadId)?.workspaceBinding
+            : undefined;
         const admittedCommand = yield* admitWorkspace(command);
         const worktreePath = cleanupWorktreePath(admittedCommand, readModel);
         if (worktreePath !== null && (yield* isWorktreeCleanupPending(worktreePath))) {
@@ -830,8 +867,23 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           );
 
         readModel = committedCommand.nextReadModel;
-        if (admittedCommand.type === "thread.delete") {
-          yield* workspaceOwnership.release(admittedCommand.threadId);
+        if (
+          admittedCommand.type === "thread.workspace.handoff" &&
+          previousWorkspaceBinding !== undefined &&
+          admittedCommand.workspaceBinding !== undefined &&
+          previousWorkspaceBinding.canonicalPath !== admittedCommand.workspaceBinding.canonicalPath
+        ) {
+          yield* workspaceOwnership
+            .release(admittedCommand.threadId, previousWorkspaceBinding.canonicalPath)
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logError("workspace handoff committed but old ownership remains held", {
+                  threadId: admittedCommand.threadId,
+                  canonicalPath: previousWorkspaceBinding.canonicalPath,
+                  error,
+                }),
+              ),
+            );
         }
         yield* Effect.forEach(committedCommand.projectionReceipts, (receipt) => receipt.reconcile, {
           concurrency: 1,

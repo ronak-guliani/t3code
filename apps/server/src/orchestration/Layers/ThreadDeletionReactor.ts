@@ -19,6 +19,7 @@ import {
   type WorktreeCleanupJob,
   WorktreeCleanupJobRepository,
 } from "../../persistence/Services/WorktreeCleanupJobs.ts";
+import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { isRemovableArchiveWorktreePath } from "../archiveWorktreeCleanup.ts";
@@ -195,6 +196,7 @@ const make = Effect.gen(function* () {
   const gitStatusBroadcaster = yield* GitStatusBroadcaster;
   const fileSystem = yield* FileSystem.FileSystem;
   const worktreeCleanupJobs = yield* WorktreeCleanupJobRepository;
+  const workspaceOwnership = yield* WorkspaceOwnershipRepository;
 
   const stopActiveProviderSession = Effect.fn("stopActiveProviderSession")(function* (
     threadId: ThreadDeletedEvent["payload"]["threadId"],
@@ -218,6 +220,17 @@ const make = Effect.gen(function* () {
       message: "thread deletion cleanup skipped terminal close",
       threadId,
     });
+
+  const releaseThreadOwnership = Effect.fn("releaseThreadOwnership")(function* (
+    threadId: ThreadId,
+  ) {
+    const ownerships = yield* workspaceOwnership.getByThreadId(threadId);
+    yield* Effect.forEach(
+      ownerships,
+      (ownership) => workspaceOwnership.release(threadId, ownership.canonicalPath),
+      { concurrency: 1, discard: true },
+    );
+  });
 
   const cleanupNow = Effect.fn("cleanupNow")(function* () {
     return new Date(yield* Clock.currentTimeMillis).toISOString();
@@ -667,7 +680,16 @@ const make = Effect.gen(function* () {
         runAfterThreadRuntimeTeardown(
           stopActiveProviderSession(threadId),
           closeThreadTerminalsEffect(threadId),
-          runReservedCleanup(reservation),
+          runReservedCleanup(reservation).pipe(
+            Effect.flatMap(() => worktreeCleanupJobs.getByThreadId(threadId)),
+            Effect.flatMap(
+              Option.match({
+                onNone: () => Effect.void,
+                onSome: (job) =>
+                  job.status === "completed" ? releaseThreadOwnership(threadId) : Effect.void,
+              }),
+            ),
+          ),
         ),
     );
   });
@@ -885,10 +907,18 @@ const make = Effect.gen(function* () {
     // Always tear down archived/deleted threads, even without a cleanup reservation.
     // Otherwise a sibling that reserved cleanup can delete a shared checkout
     // while this thread's provider/terminals are still attached.
-    yield* Effect.all([stopProviderSession(threadId), closeThreadTerminals(threadId)], {
-      concurrency: "unbounded",
-      discard: true,
-    });
+    if (event.type === "thread.deleted") {
+      yield* runAfterThreadRuntimeTeardown(
+        stopActiveProviderSession(threadId),
+        closeThreadTerminalsEffect(threadId),
+        releaseThreadOwnership(threadId),
+      );
+    } else {
+      yield* Effect.all([stopProviderSession(threadId), closeThreadTerminals(threadId)], {
+        concurrency: "unbounded",
+        discard: true,
+      });
+    }
 
     if (event.type === "thread.archived") {
       yield* enqueueArchiveCleanupIntent(threadId, true);

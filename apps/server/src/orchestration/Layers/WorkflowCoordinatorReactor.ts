@@ -174,11 +174,27 @@ const makeWorkflowCoordinatorReactor = Effect.gen(function* () {
       modelSelection: input.workerConfig.modelSelection,
       runtimeMode: input.workerConfig.runtimeMode,
       interactionMode: input.workerConfig.interactionMode,
-      // Workflow workers are independent writers. The orchestration admission
-      // path allocates a fresh branch/worktree instead of reusing the parent
-      // or a PR checkout supplied in the workflow config.
+      // Workflow workers are independent writers. Preserve the configured
+      // source revision while letting orchestration allocate a fresh task
+      // branch/worktree for the child.
       branch: null,
       worktreePath: null,
+      ...(input.workerConfig.branch !== null
+        ? { sourceBranch: input.workerConfig.branch }
+        : input.workerConfig.pullRequest?.headBranch !== undefined
+          ? { sourceBranch: input.workerConfig.pullRequest.headBranch }
+          : parent.branch !== null
+            ? { sourceBranch: parent.branch }
+            : {}),
+      ...(input.workerConfig.worktreePath !== null
+        ? { sourceWorktreePath: input.workerConfig.worktreePath }
+        : input.workerConfig.workspaceBinding !== undefined
+          ? { sourceWorktreePath: input.workerConfig.workspaceBinding.worktreePath }
+          : parent.workspaceBinding !== undefined
+            ? { sourceWorktreePath: parent.workspaceBinding.worktreePath }
+            : parent.worktreePath !== null
+              ? { sourceWorktreePath: parent.worktreePath }
+              : {}),
       ...(input.workerConfig.pullRequest !== undefined
         ? { pullRequest: input.workerConfig.pullRequest }
         : {}),

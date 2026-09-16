@@ -21,6 +21,7 @@ import { Effect, Option, Schema } from "effect";
 
 import type { TestTurnResponse } from "./TestProviderAdapter.integration.ts";
 import {
+  gitHead,
   gitRefExists,
   gitShowFileAtRef,
   makeOrchestrationIntegrationHarness,
@@ -160,6 +161,56 @@ const seedProjectAndThread = (harness: OrchestrationIntegrationHarness) =>
       createdAt,
     });
   });
+
+it.live("allocates a unique task branch from an existing main checkout", () =>
+  withHarness((harness) =>
+    Effect.gen(function* () {
+      const createdAt = nowIso();
+      const provider = harness.adapterHarness?.provider ?? CODEX_PROVIDER;
+      const defaultModel = DEFAULT_MODEL_BY_PROVIDER[provider] ?? DEFAULT_MODEL;
+      const instanceId = defaultInstanceIdForDriver(provider);
+      const projectId = asProjectId("default-allocation-project");
+      const threadId = ThreadId.make("default-allocation-thread");
+
+      yield* harness.engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("default-allocation-project-create"),
+        projectId,
+        title: "Default allocation project",
+        workspaceRoot: harness.workspaceDir,
+        defaultModelSelection: {
+          instanceId,
+          model: defaultModel,
+        },
+        createdAt,
+      });
+      yield* harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("default-allocation-thread-create"),
+        threadId,
+        projectId,
+        title: "Default allocation thread",
+        modelSelection: {
+          instanceId,
+          model: defaultModel,
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: "main",
+        worktreePath: null,
+        createdAt,
+      });
+
+      const thread = (yield* harness.engine.getReadModel()).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      assert.equal(thread !== undefined, true);
+      assert.equal(thread?.worktreePath === harness.workspaceDir, false);
+      assert.equal(thread?.branch?.startsWith("t3/thread/"), true);
+      assert.equal(gitHead(thread!.worktreePath!), gitHead(harness.workspaceDir));
+    }),
+  ),
+);
 
 const startTurn = (input: {
   readonly harness: OrchestrationIntegrationHarness;

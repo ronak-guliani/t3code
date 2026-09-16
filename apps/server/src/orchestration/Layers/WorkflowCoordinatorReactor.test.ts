@@ -204,6 +204,7 @@ describe("WorkflowCoordinatorReactor", () => {
       interactionMode: run.workerConfig.interactionMode,
       branch: run.workerConfig.branch,
       worktreePath: run.workerConfig.worktreePath,
+      sourceBranch: run.workerConfig.pullRequest?.headBranch,
       pullRequest: run.workerConfig.pullRequest,
     });
 

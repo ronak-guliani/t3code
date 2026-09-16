@@ -110,6 +110,10 @@ export function gitRefExists(cwd: string, ref: string): boolean {
   }
 }
 
+export function gitHead(cwd: string): string {
+  return runGit(cwd, ["rev-parse", "HEAD"]).trim();
+}
+
 export function gitShowFileAtRef(cwd: string, ref: string, filePath: string): string {
   return runGit(cwd, ["show", `${ref}:${filePath}`]);
 }

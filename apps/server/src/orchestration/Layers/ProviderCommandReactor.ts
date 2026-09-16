@@ -379,10 +379,6 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
-    if (thread.workspaceBinding !== undefined) {
-      yield* workspaceOwnership.assertOwned(thread.workspaceBinding, thread.id);
-    }
-
     const cwd = resolveThreadWorkspaceCwd({
       thread,
       projects: readModel.projects,
@@ -417,6 +413,16 @@ const make = Effect.gen(function* () {
         : {}),
     });
   });
+
+  const assertWorkspaceOwnershipForThread = Effect.fn("assertWorkspaceOwnershipForThread")(
+    function* (threadId: ThreadId) {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const thread = readModel.threads.find((entry) => entry.id === threadId);
+      if (thread?.workspaceBinding !== undefined) {
+        yield* workspaceOwnership.assertOwned(thread.workspaceBinding, thread.id);
+      }
+    },
+  );
 
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
@@ -970,22 +976,6 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const isFirstUserMessageTurn =
-      thread.messages.filter((entry) => entry.role === "user").length === 1;
-    if (isFirstUserMessageTurn) {
-      const generationInput = {
-        messageText: message.text,
-        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-      };
-
-      yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
-        threadId: event.payload.threadId,
-        branch: thread.branch,
-        worktreePath: thread.worktreePath,
-        ...generationInput,
-      }).pipe(Effect.forkScoped);
-    }
-
     const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
       if (Cause.hasInterruptsOnly(cause)) {
         return Effect.void;
@@ -1022,6 +1012,32 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+
+    const ownershipIsCurrent = yield* assertWorkspaceOwnershipForThread(
+      event.payload.threadId,
+    ).pipe(
+      Effect.as(true),
+      Effect.catchCause((cause) => recoverTurnStartFailure(cause).pipe(Effect.as(false))),
+    );
+    if (!ownershipIsCurrent) {
+      return;
+    }
+
+    const isFirstUserMessageTurn =
+      thread.messages.filter((entry) => entry.role === "user").length === 1;
+    if (isFirstUserMessageTurn) {
+      const generationInput = {
+        messageText: message.text,
+        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+      };
+
+      yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
+        threadId: event.payload.threadId,
+        branch: thread.branch,
+        worktreePath: thread.worktreePath,
+        ...generationInput,
+      }).pipe(Effect.forkScoped);
+    }
 
     yield* ensurePreTurnBaselineForThread(event.payload.threadId).pipe(
       Effect.catch((error) =>

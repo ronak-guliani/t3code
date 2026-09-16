@@ -135,6 +135,7 @@ async function createOrchestrationSystem(
     engine: testEngine,
     snapshots,
     coordinator,
+    workspaceOwnership,
     worktreeCleanupJobs,
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     dispose: async () => {
@@ -779,6 +780,14 @@ describe("OrchestrationEngine", () => {
           cleanupWorktree: true,
         }),
       );
+      const deletedOwnership = await system.run(
+        system.workspaceOwnership.getByThreadId(deletedThreadId),
+      );
+      for (const ownership of deletedOwnership) {
+        await system.run(
+          system.workspaceOwnership.release(deletedThreadId, ownership.canonicalPath),
+        );
+      }
 
       const retryableCommand = {
         type: "thread.create",

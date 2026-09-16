@@ -30,6 +30,8 @@ import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
+import { WorkspaceOwnershipRepositoryLive } from "../../persistence/Layers/WorkspaceOwnership.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -90,7 +92,10 @@ async function waitFor(
 
 describe("ProviderCommandReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderCommandReactor | ThreadTitleReactor,
+    | OrchestrationEngineService
+    | ProviderCommandReactor
+    | ThreadTitleReactor
+    | WorkspaceOwnershipRepository,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -365,7 +370,7 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(RepositoryIdentityResolverLive),
       Layer.provide(SqlitePersistenceMemory),
     );
-    const layer = Layer.merge(ProviderCommandReactorLive, ThreadTitleReactorLive).pipe(
+    const providedLayer = Layer.merge(ProviderCommandReactorLive, ThreadTitleReactorLive).pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
@@ -390,9 +395,16 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(NodeServices.layer),
     );
+    const layer = Layer.merge(providedLayer, WorkspaceOwnershipRepositoryLive).pipe(
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(NodeServices.layer),
+    );
     runtime = ManagedRuntime.make(layer);
 
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    const workspaceOwnership = await runtime.runPromise(
+      Effect.service(WorkspaceOwnershipRepository),
+    );
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
     const titleReactor = await runtime.runPromise(Effect.service(ThreadTitleReactor));
     scope = await Effect.runPromise(Scope.make("sequential"));
@@ -454,6 +466,7 @@ describe("ProviderCommandReactor", () => {
       modelSelection,
       stateDir,
       drain,
+      workspaceOwnership,
     };
   }
 
@@ -521,6 +534,49 @@ describe("ProviderCommandReactor", () => {
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+  });
+
+  it("does not start or send a provider turn after workspace ownership is released", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const ownerships = await Effect.runPromise(harness.workspaceOwnership.getByThreadId(threadId));
+    for (const ownership of ownerships) {
+      await Effect.runPromise(
+        harness.workspaceOwnership.release(threadId, ownership.canonicalPath),
+      );
+      await Effect.runPromise(
+        harness.workspaceOwnership.claim({
+          threadId: ThreadId.make("foreign-owner"),
+          worktreePath: ownership.worktreePath,
+          branch: ownership.branch,
+          commandId: CommandId.make("cmd-foreign-claim"),
+          now: new Date().toISOString(),
+        }),
+      );
+    }
+
+    await expect(
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-stale-turn-start"),
+          threadId,
+          message: {
+            messageId: asMessageId("stale-user-message"),
+            role: "user",
+            text: "must be rejected",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: new Date().toISOString(),
+        }),
+      ),
+    ).rejects.toThrow("owned by thread 'foreign-owner'");
+    await harness.drain();
+
+    expect(harness.startSession).not.toHaveBeenCalled();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
   });
 
   it("allows a follow-up turn after the provider rejects a turn before acknowledgement", async () => {
