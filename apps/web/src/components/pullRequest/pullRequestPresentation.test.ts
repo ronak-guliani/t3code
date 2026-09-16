@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  pullRequestReviewVerdictPresentation,
+  resolvePullRequestMergeSelection,
   summarizePullRequestChecks,
   toRenderablePullRequestMarkdown,
 } from "./pullRequestPresentation";
@@ -85,6 +87,35 @@ describe("toRenderablePullRequestMarkdown", () => {
   });
 });
 
+describe("pullRequestReviewVerdictPresentation", () => {
+  it("badges verdicts and leaves plain reviews unbadged", () => {
+    expect(pullRequestReviewVerdictPresentation("APPROVED")).toEqual({
+      label: "Approved",
+      variant: "success",
+    });
+    expect(pullRequestReviewVerdictPresentation("approved")).toEqual({
+      label: "Approved",
+      variant: "success",
+    });
+    expect(pullRequestReviewVerdictPresentation("CHANGES_REQUESTED")).toEqual({
+      label: "Changes requested",
+      variant: "error",
+    });
+    expect(pullRequestReviewVerdictPresentation("DISMISSED")).toEqual({
+      label: "Review dismissed",
+      variant: "outline",
+    });
+    expect(pullRequestReviewVerdictPresentation("COMMENTED")).toEqual({
+      label: "Review",
+      variant: null,
+    });
+    expect(pullRequestReviewVerdictPresentation(null)).toEqual({
+      label: "Review",
+      variant: null,
+    });
+  });
+});
+
 describe("summarizePullRequestChecks", () => {
   it("buckets statuses with server readiness semantics", () => {
     expect(
@@ -97,5 +128,67 @@ describe("summarizePullRequestChecks", () => {
         { status: "failure" },
       ]),
     ).toEqual({ passing: 3, failing: 1, pending: 1, cancelled: 1, total: 6 });
+  });
+});
+
+describe("resolvePullRequestMergeSelection", () => {
+  it("offers only host-allowed methods and defaults to the first one", () => {
+    expect(
+      resolvePullRequestMergeSelection({
+        canMerge: true,
+        mergeMethods: ["merge", "squash", "rebase"],
+        mergeCapabilities: { merge: true, squash: true, rebase: false },
+        override: null,
+      }),
+    ).toEqual({
+      allowedMergeMethods: ["merge", "squash"],
+      selectedMergeMethod: "merge",
+      showMergeMethodPicker: true,
+    });
+  });
+
+  it("honors a still-allowed override and drops one that is no longer allowed", () => {
+    const base = {
+      canMerge: true,
+      mergeMethods: ["merge", "squash", "rebase"] as const,
+      mergeCapabilities: { merge: true, squash: true, rebase: false },
+    };
+    expect(
+      resolvePullRequestMergeSelection({ ...base, override: "squash" }).selectedMergeMethod,
+    ).toBe("squash");
+    expect(
+      resolvePullRequestMergeSelection({ ...base, override: "rebase" }).selectedMergeMethod,
+    ).toBe("merge");
+  });
+
+  it("hides the picker without merge permission or without a real choice", () => {
+    expect(
+      resolvePullRequestMergeSelection({
+        canMerge: false,
+        mergeMethods: ["merge", "squash"],
+        mergeCapabilities: { merge: true, squash: true, rebase: false },
+        override: null,
+      }).showMergeMethodPicker,
+    ).toBe(false);
+    expect(
+      resolvePullRequestMergeSelection({
+        canMerge: true,
+        mergeMethods: ["merge", "squash"],
+        mergeCapabilities: { merge: true, squash: false, rebase: false },
+        override: null,
+      }),
+    ).toEqual({
+      allowedMergeMethods: ["merge"],
+      selectedMergeMethod: "merge",
+      showMergeMethodPicker: false,
+    });
+    expect(
+      resolvePullRequestMergeSelection({
+        canMerge: true,
+        mergeMethods: ["merge"],
+        mergeCapabilities: { merge: false, squash: false, rebase: false },
+        override: null,
+      }),
+    ).toEqual({ allowedMergeMethods: [], selectedMergeMethod: null, showMergeMethodPicker: false });
   });
 });

@@ -9,6 +9,7 @@ import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
 import { AgentWorkflowDestinationMode, ReviewChangesScope } from "./agentWorkflows.ts";
 import { AgentWorkflowSettings, CustomAgentWorkflowAutomationSettings } from "./workflowRuntime.ts";
+import { PullRequestListState } from "./pullRequest.ts";
 import { ThreadEnvMode, EnvironmentMachineKind } from "./environment.ts";
 import {
   DEFAULT_PREVIEW_APPEARANCE,
@@ -162,6 +163,11 @@ export type SidebarThreadSortOrder = typeof SidebarThreadSortOrder.Type;
 export const DEFAULT_SIDEBAR_THREAD_SORT_ORDER: SidebarThreadSortOrder = "updated_at";
 export const DEFAULT_SIDEBAR_V2_ENABLED = false;
 
+/** Initial state filter for the pull requests page when the URL names none. */
+export const DEFAULT_PULL_REQUESTS_DEFAULT_STATE: PullRequestListState = "open";
+/** Code font size for pull request diffs, independent of the global code size. */
+export const DEFAULT_PULL_REQUESTS_CODE_FONT_SIZE: FontSize = 12 as FontSize;
+
 export const ThreadCompletionNotificationMode = Schema.Literals(["off", "background-only", "all"]);
 export type ThreadCompletionNotificationMode = typeof ThreadCompletionNotificationMode.Type;
 export const DEFAULT_THREAD_COMPLETION_NOTIFICATION_MODE: ThreadCompletionNotificationMode =
@@ -237,6 +243,12 @@ export const ClientSettingsSchema = Schema.Struct({
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   codeFont: CodeFont.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_CODE_FONT))),
   diffWordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  pullRequestsDefaultState: PullRequestListState.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PULL_REQUESTS_DEFAULT_STATE)),
+  ),
+  pullRequestsCodeFontSize: FontSize.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PULL_REQUESTS_CODE_FONT_SIZE)),
+  ),
   // Model favorites. Historically keyed by provider kind, now
   // widened to `ProviderInstanceId` so users can favorite a specific model
   // on a custom provider instance (e.g. "Codex Personal · gpt-5") without
@@ -649,6 +661,8 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   codeFont: Schema.optionalKey(CodeFont),
   diffWordWrap: Schema.optionalKey(Schema.Boolean),
+  pullRequestsDefaultState: Schema.optionalKey(PullRequestListState),
+  pullRequestsCodeFontSize: Schema.optionalKey(FontSize),
   favorites: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({

@@ -33,11 +33,12 @@ import {
 } from "../lib/pullRequestReactQuery";
 import { findGitHubPullRequestProject } from "../lib/openPullRequestLink";
 import { cn } from "../lib/utils";
+import { useSettings } from "../hooks/useSettings";
 import { selectProjectsAcrossEnvironments, useStore } from "../store";
 import type { Project } from "../types";
 
 export interface PullRequestsSearch {
-  readonly state: PullRequestListState;
+  readonly state?: PullRequestListState;
   readonly involvement: PullRequestInvolvement;
   readonly projectId?: ProjectId;
   readonly q?: string;
@@ -78,7 +79,7 @@ function isInvolvement(value: unknown): value is PullRequestInvolvement {
 
 export const Route = createFileRoute("/_chat/pull-requests")({
   validateSearch: (search: Record<string, unknown>): PullRequestsSearch => ({
-    state: isListState(search.state) ? search.state : "open",
+    ...(isListState(search.state) ? { state: search.state } : {}),
     involvement: isInvolvement(search.involvement) ? search.involvement : "all",
     ...(typeof search.projectId === "string" && search.projectId
       ? { projectId: search.projectId as ProjectId }
@@ -115,12 +116,14 @@ function PullRequestsRoute() {
     [allProjects, environmentId],
   );
   const supported = descriptor?.capabilities.pullRequests === true;
+  const defaultListState = useSettings((s) => s.pullRequestsDefaultState);
+  const effectiveState = search.state ?? defaultListState;
   const deferredQuery = useDeferredValue(search.q ?? "");
   const listQuery = useInfiniteQuery(
     pullRequestListInfiniteQueryOptions({
       environmentId: supported ? environmentId : null,
       request: {
-        state: search.state,
+        state: effectiveState,
         involvement: search.involvement,
         limit: PAGE_SIZE,
         ...(search.projectId ? { projectId: search.projectId } : {}),
@@ -191,7 +194,7 @@ function PullRequestsRoute() {
     [entriesWithStats],
   );
   const filterCount =
-    (search.state === "open" ? 0 : 1) +
+    (effectiveState === defaultListState ? 0 : 1) +
     (search.involvement === "all" ? 0 : 1) +
     (search.projectId ? 1 : 0);
   const explicitSelection = useMemo(
@@ -224,7 +227,7 @@ function PullRequestsRoute() {
       search: (previous: PullRequestsSearch) => {
         const next = { ...previous, ...patch };
         return {
-          state: next.state ?? "open",
+          ...(next.state ? { state: next.state } : {}),
           involvement: next.involvement ?? "all",
           ...(next.projectId ? { projectId: next.projectId } : {}),
           ...(next.q ? { q: next.q } : {}),
@@ -342,7 +345,7 @@ function PullRequestsRoute() {
                   <MenuPopup align="end">
                     <MenuGroupLabel>State</MenuGroupLabel>
                     <MenuRadioGroup
-                      value={search.state}
+                      value={effectiveState}
                       onValueChange={(value) =>
                         updateSearch({ state: value as PullRequestListState }, true)
                       }

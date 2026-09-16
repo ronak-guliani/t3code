@@ -13,7 +13,6 @@ import type { useSortable } from "@dnd-kit/sortable";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime";
 import { threadRaisedHandWhileSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 
-import { openPullRequestLink } from "../lib/openPullRequestLink";
 import type { ProviderInstanceEntry } from "../providerInstances";
 import { sidebarThreadKey } from "../sidebarThreadTree";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
@@ -40,10 +39,10 @@ import {
   ThreadBrowserOpenStatus,
   ThreadStatusLabel,
   WorkingDuration,
-  prStatusIndicator,
   resolveTerminalThreadRef,
   terminalStatusFromRunningIds,
 } from "./ThreadStatusIndicators";
+import { ThreadPullRequestsPopover, resolveThreadPullRequests } from "./ThreadPullRequestsPopover";
 import { Button } from "./ui/button";
 import { SidebarMenuButton, SidebarMenuItem } from "./ui/sidebar";
 import { Tooltip, TooltipTrigger } from "./ui/tooltip";
@@ -164,7 +163,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
   );
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
 
-  const prStatus = prStatusIndicator(thread.pullRequest);
+  const pullRequests = resolveThreadPullRequests(thread.pullRequests, thread.pullRequest);
 
   const statusLabel = resolveSidebarV2StatusLabel({
     status: displayStatus,
@@ -235,13 +234,6 @@ export const SidebarV2Row = memo(function SidebarV2Row({
     },
     [onSetPinned, pinned, thread],
   );
-  const handlePrClick = useCallback(
-    (event: React.MouseEvent<HTMLElement>) => {
-      if (prStatus) openPullRequestLink(event, prStatus.url);
-    },
-    [prStatus],
-  );
-
   // A role="button" div is not natively activatable, so the card surface
   // restores keyboard activation itself — and only for its own key events, so
   // Enter on the nested PR badge does not also open the thread.
@@ -346,7 +338,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
   // Branch, terminals, PR and the remote marker share the third line; with
   // none of them the line is pure blank height.
   const hasMetadataLine =
-    thread.branch !== null || terminalIcon !== null || prStatus !== null || isRemote;
+    thread.branch !== null || terminalIcon !== null || pullRequests.length > 0 || isRemote;
 
   const tooltip = (
     <ThreadDetailsTooltip
@@ -426,6 +418,10 @@ export const SidebarV2Row = memo(function SidebarV2Row({
                 <span className="min-w-0 flex-1 truncate text-[length:var(--app-sidebar-title-font-size)] font-medium text-foreground">
                   {thread.title}
                 </span>
+                <ThreadPullRequestsPopover
+                  links={thread.pullRequests}
+                  fallbackPullRequest={thread.pullRequest}
+                />
                 <ThreadBrowserOpenStatus
                   environmentId={thread.environmentId}
                   threadId={thread.id}
@@ -562,19 +558,10 @@ export const SidebarV2Row = memo(function SidebarV2Row({
                   <span className="flex-1" />
                 )}
                 {terminalIcon}
-                {prStatus ? (
-                  <button
-                    aria-label={prStatus.tooltip}
-                    className={cn(
-                      "shrink-0 cursor-pointer font-mono transition-none hover:underline",
-                      prStatus.colorClass,
-                    )}
-                    onClick={handlePrClick}
-                    type="button"
-                  >
-                    #{prStatus.number}
-                  </button>
-                ) : null}
+                <ThreadPullRequestsPopover
+                  links={thread.pullRequests}
+                  fallbackPullRequest={thread.pullRequest}
+                />
                 <SidebarThreadEnvironmentIcon environmentLabel={environmentLabel} />
               </span>
             ) : null}

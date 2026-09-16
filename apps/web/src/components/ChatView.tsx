@@ -3,7 +3,6 @@ import {
   DEFAULT_MODEL,
   defaultInstanceIdForDriver,
   type EnvironmentId,
-  type GitPullRequestAssociation,
   type MessageId,
   type ModelSelection,
   type ProjectScript,
@@ -1120,13 +1119,6 @@ function ChatViewBody(
   );
   const isServerThread = routeKind === "server" && serverThread !== undefined;
   const activeThread = isServerThread ? serverThread : localDraftThread;
-  const threadPullRequestLinkingSupported = useSavedEnvironmentRuntimeStore(
-    useMemo(
-      () => (state) =>
-        state.byId[environmentId]?.descriptor?.capabilities.threadPullRequestLinking === true,
-      [environmentId],
-    ),
-  );
   const workflowRuns = useStore(
     useShallow((state) =>
       selectWorkflowRunsForParentThread(state, routeKind === "server" ? routeThreadRef : null),
@@ -4430,38 +4422,6 @@ function ChatViewBody(
     return (await api.git.listOpenPullRequests({ cwd: gitCwd })).pullRequests;
   }, [environmentId, gitCwd]);
 
-  const linkActiveThreadPullRequest = useCallback(
-    async (reference: string) => {
-      if (!activeThread || !gitCwd) throw new Error("No active Git repository.");
-      const api = readEnvironmentApi(activeThread.environmentId);
-      if (!api) throw new Error("Environment is unavailable.");
-      const resolved = await api.git.resolvePullRequest({ cwd: gitCwd, reference });
-      await api.orchestration.dispatchCommand({
-        type: "thread.pull-request.link",
-        commandId: newCommandId(),
-        threadId: activeThread.id,
-        pullRequest: resolved.pullRequest,
-        source: "manual",
-      });
-    },
-    [activeThread, gitCwd],
-  );
-
-  const unlinkActiveThreadPullRequest = useCallback(
-    async (pullRequest: GitPullRequestAssociation) => {
-      if (!activeThread) throw new Error("No active thread.");
-      const api = readEnvironmentApi(activeThread.environmentId);
-      if (!api) throw new Error("Environment is unavailable.");
-      await api.orchestration.dispatchCommand({
-        type: "thread.pull-request.unlink",
-        commandId: newCommandId(),
-        threadId: activeThread.id,
-        pullRequest,
-      });
-    },
-    [activeThread],
-  );
-
   // A pull-request capture spends ~700ms in `gh pr view` + `gh pr diff` before
   // the review thread can even be created. Firing it on hover lets the server
   // park that work so the click that follows claims it. The RPC acknowledges
@@ -4855,12 +4815,6 @@ function ChatViewBody(
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
           onExportThread={onExportThread}
-          linkedPullRequests={activeThread.pullRequests ?? []}
-          canLinkPullRequests={
-            isServerThread && threadPullRequestLinkingSupported && gitCwd !== null
-          }
-          onLinkPullRequest={linkActiveThreadPullRequest}
-          onUnlinkPullRequest={unlinkActiveThreadPullRequest}
           {...(headerPanelToggles ? { panelToggles: headerPanelToggles } : {})}
           paneActions={paneActions}
         />
