@@ -44,9 +44,7 @@ export function SidebarTopActions({
           <SidebarMenuButton
             size="sm"
             className="gap-2 px-2 py-1 text-[length:var(--app-sidebar-font-size)] text-muted-foreground/70 hover:bg-accent hover:text-foreground focus-visible:ring-0"
-            onClick={() =>
-              void navigate({ to: "/pull-requests", search: { state: "open", involvement: "all" } })
-            }
+            onClick={() => void navigate({ to: "/pull-requests", search: { involvement: "all" } })}
           >
             <GitPullRequestIcon className="size-3.5" />
             <span className="flex-1 truncate text-left">Pull Requests</span>
