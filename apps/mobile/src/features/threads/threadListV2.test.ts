@@ -18,6 +18,7 @@ import {
   nestedThreadCompletionMarker,
   nestedThreadParentError,
   relatedThreadRows,
+  type MobileThreadTreeRow,
 } from "./mobile-thread-hierarchy";
 import { applyShellStreamEvent } from "@t3tools/client-runtime";
 import {
@@ -29,6 +30,9 @@ import {
   resolveThreadListV2Status,
   resolveThreadListV2SwipeActions,
   sortThreadsForListV2,
+  threadListV2ItemsAreEqual,
+  type ThreadListV2Item,
+  type ThreadListV2ListItem,
 } from "./threadListV2";
 
 const environmentId = EnvironmentId.make("environment-1");
@@ -1633,5 +1637,76 @@ describe("buildThreadListV2ListItems", () => {
       "v2-settled-shelf",
       "v2-thread",
     ]);
+  });
+});
+
+describe("threadListV2ItemsAreEqual", () => {
+  const thread = makeThread({ id: ThreadId.make("equal-row"), title: "Row" });
+  const hierarchy = (overrides: Partial<MobileThreadTreeRow> = {}): MobileThreadTreeRow => ({
+    thread,
+    threadKey: "environment-1:equal-row",
+    depth: 0,
+    hasChildren: true,
+    isExpanded: true,
+    childCount: 1,
+    displayStatus: "ready",
+    archiveBlocked: false,
+    ...overrides,
+  });
+  const threadItem = (
+    hierarchyOverrides: Partial<MobileThreadTreeRow> = {},
+    itemOverrides: Partial<ThreadListV2Item> = {},
+  ): ThreadListV2ListItem => ({
+    type: "v2-thread",
+    key: "v2-thread:environment-1:equal-row",
+    item: {
+      thread,
+      hierarchy: hierarchy(hierarchyOverrides),
+      status: "ready",
+      variant: "card",
+      snoozed: false,
+      pinned: false,
+      isLast: false,
+      ...itemOverrides,
+    },
+    snoozeWakeLabelText: undefined,
+  });
+
+  it("treats fresh-but-identical rows as equal so toggles skip unchanged rows", () => {
+    // Layout rebuilds mint new objects on every toggle; the equality must
+    // see through that to the consumed fields.
+    expect(threadListV2ItemsAreEqual(threadItem(), threadItem())).toBe(true);
+  });
+
+  it("notices collapse, status, and thread changes", () => {
+    expect(threadListV2ItemsAreEqual(threadItem(), threadItem({ isExpanded: false }))).toBe(false);
+    expect(threadListV2ItemsAreEqual(threadItem(), threadItem({}, { status: "working" }))).toBe(
+      false,
+    );
+    expect(
+      threadListV2ItemsAreEqual(
+        threadItem(),
+        threadItem(
+          {},
+          {
+            thread: makeThread({ id: ThreadId.make("other-row"), title: "Other" }),
+          },
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it("compares shelves and pending rows by their consumed fields", () => {
+    const shelf: ThreadListV2ListItem = {
+      type: "v2-snoozed-shelf",
+      key: "v2-snoozed-shelf",
+      count: 2,
+      expanded: false,
+    };
+    expect(threadListV2ItemsAreEqual(shelf, { ...shelf })).toBe(true);
+    expect(threadListV2ItemsAreEqual(shelf, { ...shelf, count: 3 })).toBe(false);
+    expect(threadListV2ItemsAreEqual(shelf, { ...shelf, expanded: true })).toBe(false);
+    expect(threadListV2ItemsAreEqual(threadItem(), shelf)).toBe(false);
+    expect(threadListV2ItemsAreEqual(shelf, threadItem())).toBe(false);
   });
 });
