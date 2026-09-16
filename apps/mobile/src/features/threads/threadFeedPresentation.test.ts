@@ -7,6 +7,7 @@ import { buildThreadFeed } from "../../lib/threadActivity";
 import {
   deriveAssistantMetadataInvalidationKey,
   deriveTerminalAssistantMessageIds,
+  shouldCollapseUserMessageText,
 } from "./threadFeedPresentation";
 
 describe("thread feed assistant presentation", () => {
@@ -61,5 +62,18 @@ describe("thread feed assistant presentation", () => {
 
     expect(terminalIds.has("assistant-first")).toBe(false);
     expect(terminalIds.has("assistant-terminal")).toBe(true);
+  });
+});
+
+describe("user message collapse", () => {
+  it("collapses at the web parity thresholds", () => {
+    expect(shouldCollapseUserMessageText("")).toBe(false);
+    expect(shouldCollapseUserMessageText("   \n  ")).toBe(false);
+    expect(shouldCollapseUserMessageText("short message")).toBe(false);
+    expect(shouldCollapseUserMessageText(Array(11).fill("line").join("\n"))).toBe(true);
+    expect(shouldCollapseUserMessageText(Array(10).fill("line").join("\n"))).toBe(false);
+    expect(shouldCollapseUserMessageText("a".repeat(899))).toBe(false);
+    expect(shouldCollapseUserMessageText("a".repeat(900))).toBe(true);
+    expect(shouldCollapseUserMessageText("a\r\n".repeat(11))).toBe(true);
   });
 });
