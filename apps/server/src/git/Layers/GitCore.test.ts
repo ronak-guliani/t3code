@@ -2795,7 +2795,10 @@ describe("git short-command process pool", () => {
     }),
   );
 
-  const runBypassScenario = (operation: string, slowTimeoutMs: number | null) =>
+  const runBypassScenario = (
+    operation: string,
+    slowOptions: { timeoutMs?: number | null; bypassProcessPool?: boolean },
+  ) =>
     Effect.gen(function* () {
       const slowGate = yield* Deferred.make<void>();
       const fastGate = yield* Deferred.make<void>();
@@ -2813,7 +2816,7 @@ describe("git short-command process pool", () => {
           operation,
           cwd: "/repo",
           args: ["push"],
-          timeoutMs: slowTimeoutMs,
+          ...slowOptions,
         })
         .pipe(Effect.forkScoped);
       yield* Queue.take(starts);
@@ -2838,11 +2841,17 @@ describe("git short-command process pool", () => {
     });
 
   it.effect("keeps all slots free while a timeout-free command is pending", () =>
-    runBypassScenario("test.gitPoolBypassNull", null),
+    runBypassScenario("test.gitPoolBypassNull", { timeoutMs: null }),
   );
 
   it.effect("keeps all slots free while a 30,001ms command is pending", () =>
-    runBypassScenario("test.gitPoolBypassLong", 30_001),
+    runBypassScenario("test.gitPoolBypassLong", { timeoutMs: 30_001 }),
+  );
+
+  it.effect("keeps all slots free for a default-timeout command marked to bypass", () =>
+    // Same input shape the network paths (push/fetch/pull) produce: no
+    // explicit timeout, so the 30s default applies, plus the bypass flag.
+    runBypassScenario("test.gitPoolBypassFlag", { bypassProcessPool: true }),
   );
 
   it.effect("releases the slot after failures", () =>

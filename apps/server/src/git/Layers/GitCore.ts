@@ -52,17 +52,20 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 // Short-lived Git commands (status polls, rev-parse, diff reads) can burst by
 // the dozens across projects and WebSocket sessions, starving connection
 // heartbeats. Bound them with a process-wide pool shared by every GitCore
-// instance (per-session drivers included). Commands with no timeout or a
-// timeout above the 30s default (fetch/clone/commit-with-hooks) bypass the
-// pool so slow network-bound work cannot monopolize polling capacity.
+// instance (per-session drivers included). Commands with no timeout, a timeout
+// above the 30s default, or an explicit opt-out (network-bound push/fetch/pull,
+// whose 30s deadlines are unchanged) bypass the pool so slow transfers cannot
+// monopolize polling capacity.
 const GIT_SHORT_COMMAND_CONCURRENCY = 8;
 const gitProcesses = Semaphore.makeUnsafe(GIT_SHORT_COMMAND_CONCURRENCY);
 
-function shouldBypassGitProcessPool(timeoutMs: number | null | undefined): boolean {
-  if (timeoutMs === null) {
+function shouldBypassGitProcessPool(
+  input: Pick<ExecuteGitInput, "timeoutMs" | "bypassProcessPool">,
+): boolean {
+  if (input.bypassProcessPool === true || input.timeoutMs === null) {
     return true;
   }
-  return (timeoutMs ?? DEFAULT_TIMEOUT_MS) > DEFAULT_TIMEOUT_MS;
+  return (input.timeoutMs ?? DEFAULT_TIMEOUT_MS) > DEFAULT_TIMEOUT_MS;
 }
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const REVIEW_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
@@ -135,6 +138,7 @@ class StatusRemoteRefreshCacheKey extends Data.Class<{
 interface ExecuteGitOptions {
   stdin?: string | undefined;
   timeoutMs?: number | null | undefined;
+  bypassProcessPool?: boolean | undefined;
   allowNonZeroExit?: boolean | undefined;
   fallbackErrorMessage?: string | undefined;
   maxOutputBytes?: number | undefined;
@@ -837,9 +841,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       // Interruption while queued never spawns a process; the permit releases
       // on success, failure, or interruption via withPermits.
       (execution) =>
-        shouldBypassGitProcessPool(input.timeoutMs)
-          ? execution
-          : gitProcesses.withPermits(1)(execution),
+        shouldBypassGitProcessPool(input) ? execution : gitProcesses.withPermits(1)(execution),
       Effect.withSpan(input.operation, {
         kind: "client",
         attributes: {
@@ -863,6 +865,9 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
       allowNonZeroExit: true,
       ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      ...(options.bypassProcessPool !== undefined
+        ? { bypassProcessPool: options.bypassProcessPool }
+        : {}),
       ...(options.maxOutputBytes !== undefined ? { maxOutputBytes: options.maxOutputBytes } : {}),
       ...(options.truncateOutputAtMaxBytes !== undefined
         ? { truncateOutputAtMaxBytes: options.truncateOutputAtMaxBytes }
@@ -898,8 +903,9 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     cwd: string,
     args: readonly string[],
     allowNonZeroExit = false,
+    options: Pick<ExecuteGitOptions, "bypassProcessPool"> = {},
   ): Effect.Effect<void, GitCommandError> =>
-    executeGit(operation, cwd, args, { allowNonZeroExit }).pipe(Effect.asVoid);
+    executeGit(operation, cwd, args, { allowNonZeroExit, ...options }).pipe(Effect.asVoid);
 
   const runGitStdout = (
     operation: string,
@@ -1966,12 +1972,13 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
             "Cannot push because no git remote is configured for this repository.",
           );
         }
-        yield* runGit("GitCore.pushCurrentBranch.pushWithUpstream", cwd, [
-          "push",
-          "-u",
-          publishRemoteName,
-          `HEAD:refs/heads/${branch}`,
-        ]);
+        yield* runGit(
+          "GitCore.pushCurrentBranch.pushWithUpstream",
+          cwd,
+          ["push", "-u", publishRemoteName, `HEAD:refs/heads/${branch}`],
+          false,
+          { bypassProcessPool: true },
+        );
         return {
           status: "pushed" as const,
           branch,
@@ -1984,11 +1991,13 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
         Effect.catch(() => Effect.succeed(null)),
       );
       if (currentUpstream) {
-        yield* runGit("GitCore.pushCurrentBranch.pushUpstream", cwd, [
-          "push",
-          currentUpstream.remoteName,
-          `HEAD:${currentUpstream.upstreamBranch}`,
-        ]);
+        yield* runGit(
+          "GitCore.pushCurrentBranch.pushUpstream",
+          cwd,
+          ["push", currentUpstream.remoteName, `HEAD:${currentUpstream.upstreamBranch}`],
+          false,
+          { bypassProcessPool: true },
+        );
         return {
           status: "pushed" as const,
           branch,
@@ -1997,7 +2006,9 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
         };
       }
 
-      yield* runGit("GitCore.pushCurrentBranch.push", cwd, ["push"]);
+      yield* runGit("GitCore.pushCurrentBranch.push", cwd, ["push"], false, {
+        bypassProcessPool: true,
+      });
       return {
         status: "pushed" as const,
         branch,
@@ -2035,6 +2046,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       ).pipe(Effect.map((stdout) => stdout.trim()));
       yield* executeGit("GitCore.pullCurrentBranch.pull", cwd, ["pull", "--ff-only"], {
         timeoutMs: 30_000,
+        bypassProcessPool: true,
         fallbackErrorMessage: "git pull failed",
       });
       const afterSha = yield* runGitStdout(
@@ -2512,19 +2524,26 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       ],
       {
         fallbackErrorMessage: "git fetch pull request branch failed",
+        bypassProcessPool: true,
       },
     );
   });
 
   const fetchRemoteBranch: GitCoreShape["fetchRemoteBranch"] = Effect.fn("fetchRemoteBranch")(
     function* (input) {
-      yield* runGit("GitCore.fetchRemoteBranch.fetch", input.cwd, [
-        "fetch",
-        "--quiet",
-        "--no-tags",
-        input.remoteName,
-        `+refs/heads/${input.remoteBranch}:refs/remotes/${input.remoteName}/${input.remoteBranch}`,
-      ]);
+      yield* runGit(
+        "GitCore.fetchRemoteBranch.fetch",
+        input.cwd,
+        [
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          input.remoteName,
+          `+refs/heads/${input.remoteBranch}:refs/remotes/${input.remoteName}/${input.remoteBranch}`,
+        ],
+        false,
+        { bypassProcessPool: true },
+      );
 
       const localBranchAlreadyExists = yield* branchExists(input.cwd, input.localBranch);
       const targetRef = `${input.remoteName}/${input.remoteBranch}`;
