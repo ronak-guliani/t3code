@@ -242,6 +242,7 @@
 - Effect RPC request IDs changed wire types across mobile releases; accept safe numeric and decimal-string IDs, normalize them internally, and echo each connection's original representation in chunks, exits, and defects.
 - Mobile capability flags are executable protocol promises: advertise a feature only when every current RPC it gates is implemented, and send explicit `false` when current clients distinguish disabled behavior from legacy absence.
 - Official `wsTicket` credentials are single-use while legacy `wsToken` credentials remain replayable; keep the ticket replay guard process-wide because HTTP issuance and WebSocket upgrade routes may materialize separate auth layer instances.
+- Port upstream connection gates through the fork's post-connect `ConnectionCompatibility.validate` path (driver calls it after session ready) rather than rewiring resolver brokers: a resolver descriptor fetch adds HttpClient layer requirements and a new failure mode to every platform. Widening `EnvironmentConnectionPhase` breaks exhaustive mobile switches (composer pill, status dot, tone, notices); fix every switch in the same change and let `tsc` on `@t3tools/mobile` prove it.
 
 ## Migration repairs
 

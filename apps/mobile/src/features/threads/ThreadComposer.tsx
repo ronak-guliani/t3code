@@ -258,6 +258,8 @@ function composerConnectionStatus(input: {
           ? `Failed to connect to ${environmentLabel}: ${input.connectionError}`
           : `Failed to connect to ${environmentLabel}`,
       };
+    case "unsupported":
+      return { kind: "unavailable", label: "Client not supported" };
     case "available":
       return { kind: "unavailable", label: `${environmentLabel} is not connected` };
     case "connected":
