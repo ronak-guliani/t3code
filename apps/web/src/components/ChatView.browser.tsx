@@ -533,6 +533,7 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
+    pullRequests: thread.pullRequests ?? [],
     latestTurn: thread.latestTurn,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
@@ -4420,11 +4421,12 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("opens an associated pull request from the sidebar title mark without selecting the thread", async () => {
+  it("opens linked pull request details from the sidebar without selecting the thread", async () => {
     const secondaryThreadId = ThreadId.make("thread-secondary-project");
     // Non-GitHub host so openPullRequestLink takes the external path instead of
     // the in-app pull-request route, which would also change location.
     const prUrl = "https://example.test/pr/205";
+    const supportingPrUrl = "https://example.test/pr/206";
     // Browser LocalApi falls back to window.open when desktopBridge is absent.
     const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
 
@@ -4445,6 +4447,32 @@ describe("ChatView timeline estimator parity (full app)", () => {
                 headBranch: "feat/sidebar-v1-title-pr-link",
                 state: "open",
               },
+              pullRequests: [
+                {
+                  pullRequest: {
+                    number: 205,
+                    title: "feat(web): clickable PR number after sidebar v1 titles",
+                    url: prUrl,
+                    baseBranch: "main",
+                    headBranch: "feat/sidebar-v1-title-pr-link",
+                    state: "open",
+                  },
+                  source: "created",
+                  linkedAt: "2026-03-04T12:00:00.000Z",
+                },
+                {
+                  pullRequest: {
+                    number: 206,
+                    title: "fix(web): preserve linked PR popup interactions",
+                    url: supportingPrUrl,
+                    baseBranch: "main",
+                    headBranch: "fix/sidebar-v1-title-pr-link",
+                    state: "merged",
+                  },
+                  source: "manual",
+                  linkedAt: "2026-03-04T12:01:00.000Z",
+                },
+              ],
             }
           : thread,
       ),
@@ -4459,25 +4487,38 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       expect(mounted.router.state.location.pathname).toBe(serverThreadPath(secondaryThreadId));
 
-      const prLink = await waitForElement(
+      const prTrigger = await waitForElement(
         () =>
-          document.querySelector<HTMLButtonElement>(`[data-testid="thread-pr-link-${THREAD_ID}"]`),
+          document.querySelector<HTMLButtonElement>(
+            `[data-testid="thread-pr-link-${THREAD_ID}"] button`,
+          ),
         "Unable to find sidebar title PR mark.",
       );
-      expect(prLink.textContent?.trim()).toBe("#205");
+      expect(prTrigger.textContent?.trim()).toBe("#205 + 1");
 
-      await page.getByTestId(`thread-pr-link-${THREAD_ID}`).click();
-      await vi.waitFor(
-        () => {
-          expect(openSpy).toHaveBeenCalledWith(prUrl, "_blank", "noopener,noreferrer");
-        },
-        { timeout: 4_000, interval: 16 },
-      );
-      expect(mounted.router.state.location.pathname).toBe(serverThreadPath(secondaryThreadId));
-
-      openSpy.mockClear();
-      prLink.focus();
+      prTrigger.focus();
       await userEvent.keyboard("{Enter}");
+
+      await expect
+        .element(page.getByRole("dialog", { name: "Linked pull requests" }))
+        .toBeVisible();
+      const primaryPrLink = page.getByRole("link", {
+        name: /#205\s+open\s+Primary\s+feat\(web\): clickable PR number/i,
+      });
+      await expect.element(primaryPrLink).toBeVisible();
+      await expect
+        .element(
+          page.getByRole("link", {
+            name: /#206\s+merged\s+fix\(web\): preserve linked PR popup interactions/i,
+          }),
+        )
+        .toBeVisible();
+
+      const primaryPrAnchor = await waitForElement(
+        () => document.querySelector<HTMLAnchorElement>(`a[href="${prUrl}"]`),
+        "Unable to find primary linked pull request.",
+      );
+      primaryPrAnchor.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await vi.waitFor(
         () => {
           expect(openSpy).toHaveBeenCalledWith(prUrl, "_blank", "noopener,noreferrer");

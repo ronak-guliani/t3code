@@ -2,7 +2,6 @@ import {
   type EnvironmentId,
   type EditorId,
   type GitResolvedPullRequest,
-  type GitPullRequestAssociation,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
   type ThreadId,
@@ -27,8 +26,6 @@ import {
 import { WorkflowRunsButton, type WorkflowRunPresentation } from "./WorkflowRunSummary";
 import { EnvironmentIdentity } from "../EnvironmentIdentity";
 import { ProjectEnvironmentNotice } from "../ProjectEnvironmentNotice";
-import { ThreadPullRequestsPanel } from "./ThreadPullRequestsPanel";
-import type { ThreadPullRequestLink } from "@t3tools/contracts";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -57,10 +54,6 @@ interface ChatHeaderProps {
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
   onExportThread: () => void;
-  linkedPullRequests: ReadonlyArray<ThreadPullRequestLink>;
-  canLinkPullRequests: boolean;
-  onLinkPullRequest: (reference: string) => Promise<void>;
-  onUnlinkPullRequest: (pullRequest: GitPullRequestAssociation) => Promise<void>;
   panelToggles?: ReactNode;
   paneActions?: ReactNode;
 }
@@ -92,10 +85,6 @@ export const ChatHeader = memo(function ChatHeader({
   onUpdateProjectScript,
   onDeleteProjectScript,
   onExportThread,
-  linkedPullRequests,
-  canLinkPullRequests,
-  onLinkPullRequest,
-  onUnlinkPullRequest,
   panelToggles,
   paneActions,
 }: ChatHeaderProps) {
@@ -153,12 +142,6 @@ export const ChatHeader = memo(function ChatHeader({
             {...(draftId ? { draftId } : {})}
           />
         )}
-        <ThreadPullRequestsPanel
-          pullRequests={linkedPullRequests}
-          enabled={canLinkPullRequests}
-          onLink={onLinkPullRequest}
-          onUnlink={onUnlinkPullRequest}
-        />
         <AgentWorkflowHeaderActions
           actions={workflowActions}
           onRun={onRunWorkflow}
