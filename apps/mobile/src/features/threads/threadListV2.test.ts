@@ -1735,3 +1735,65 @@ describe("threadListV2ItemsAreEqual", () => {
     expect(threadListV2ItemsAreEqual(shelf, threadItem())).toBe(false);
   });
 });
+
+describe("threadListV2 toggle invalidation scope", () => {
+  const top = makeThread({ id: ThreadId.make("scope-top"), title: "Top" });
+  const mid = makeThread({ id: ThreadId.make("scope-mid"), title: "Mid" });
+  const childA = makeThread({
+    id: ThreadId.make("scope-child-a"),
+    title: "Child A",
+    parentThreadId: mid.id,
+  });
+  const childB = makeThread({
+    id: ThreadId.make("scope-child-b"),
+    title: "Child B",
+    parentThreadId: mid.id,
+  });
+  const bottom = makeThread({ id: ThreadId.make("scope-bottom"), title: "Bottom" });
+  const threads = [top, mid, childA, childB, bottom];
+  const toListItems = (collapsedThreadKeys: ReadonlySet<string>): ThreadListV2ListItem[] => {
+    const scoped = buildThreadListV2Items({
+      threads,
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      collapsedThreadKeys,
+    });
+    return buildThreadListV2ListItems({
+      items: scoped.items,
+      pendingTasks: [],
+      snoozedCount: scoped.snoozedCount,
+      snoozedShelfHeaderIndex: scoped.snoozedShelfHeaderIndex,
+      settledCount: scoped.settledCount,
+      settledShelfHeaderIndex: scoped.settledShelfHeaderIndex,
+    });
+  };
+
+  it("invalidates only the toggled parent row on collapse", () => {
+    const before = toListItems(new Set());
+    const after = toListItems(new Set([`${environmentId}:scope-mid`]));
+    expect(before.map((item) => item.key)).toEqual([
+      // Same timestamps sort by id: bottom, mid (+ children), top.
+      "v2-thread:environment-1:scope-bottom",
+      "v2-thread:environment-1:scope-mid",
+      "v2-thread:environment-1:scope-child-a",
+      "v2-thread:environment-1:scope-child-b",
+      "v2-thread:environment-1:scope-top",
+    ]);
+    expect(after.map((item) => item.key)).toEqual([
+      "v2-thread:environment-1:scope-bottom",
+      "v2-thread:environment-1:scope-mid",
+      "v2-thread:environment-1:scope-top",
+    ]);
+    const beforeByKey = new Map(before.map((item) => [item.key, item]));
+    for (const item of after) {
+      const previous = beforeByKey.get(item.key);
+      expect(previous).toBeDefined();
+      // Only the collapsed parent flips equality; siblings above and below
+      // keep every consumed field, so the recycled list reuses their views.
+      expect(threadListV2ItemsAreEqual(previous as ThreadListV2ListItem, item)).toBe(
+        item.key !== "v2-thread:environment-1:scope-mid",
+      );
+    }
+  });
+});
