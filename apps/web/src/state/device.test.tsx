@@ -2,6 +2,10 @@ import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { EnvironmentId } from "@t3tools/contracts";
 import { afterEach, expect, it, vi } from "vite-plus/test";
+import * as Cause from "effect/Cause";
+import { AtomRegistry } from "effect/unstable/reactivity";
+
+const testHost = vi.fn();
 
 const resolveDeviceHubAccess = vi.fn(async (_hubBasePath: string) => {
   const ticket = `ticket-${resolveDeviceHubAccess.mock.calls.length}`;
@@ -15,16 +19,35 @@ const resolveDeviceHubAccess = vi.fn(async (_hubBasePath: string) => {
 });
 
 vi.mock("~/environments/runtime", () => ({
-  readEnvironmentConnection: () => ({ resolveDeviceHubAccess }),
+  readEnvironmentConnection: () => ({ resolveDeviceHubAccess, client: { device: { testHost } } }),
 }));
 
-import { useDeviceHubAccess } from "./device";
+import { deviceEnvironment, useDeviceHubAccess } from "./device";
 
 let renderer: ReactTestRenderer | undefined;
 
 afterEach(async () => {
   await act(async () => renderer?.unmount());
   resolveDeviceHubAccess.mockClear();
+  testHost.mockReset();
+});
+
+it("returns failed SSH probes as expected errors rather than application defects", async () => {
+  const registry = AtomRegistry.make();
+  try {
+    testHost.mockRejectedValueOnce(new Error("SSH connection refused"));
+    const result = await deviceEnvironment.testHost.run(registry, {
+      environmentId: EnvironmentId.make("remote"),
+      input: { id: "host", label: "Host", target: "127.0.0.1", port: 9 },
+    });
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") {
+      expect(Cause.hasDies(result.cause)).toBe(false);
+      expect(Cause.pretty(result.cause)).toContain("SSH connection refused");
+    }
+  } finally {
+    registry.dispose();
+  }
 });
 
 it("mints fresh stream tickets after a hidden device tab is reactivated", async () => {

@@ -87,8 +87,7 @@ import { TraitsPicker } from "../chat/TraitsPicker";
 import { resolveAndPersistPreferredEditor } from "../../editorPreferences";
 import { isElectron } from "../../env";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
-import { deviceEnvironment } from "../../state/device";
-import { useAtomCommand } from "../../state/use-atom-command";
+import { DeviceSettings } from "./DeviceSettings";
 import { useTheme } from "../../hooks/useTheme";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
@@ -983,7 +982,6 @@ export function useSettingsRestore(onRestored?: () => void) {
 
 export function GeneralSettingsPanel() {
   const browserEnvironmentId = usePrimaryEnvironmentId();
-  const configureDevice = useAtomCommand(deviceEnvironment.configure);
   const { theme, setTheme } = useTheme();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -2283,48 +2281,7 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
-      <SettingsSection title="Devices">
-        <SettingsRow
-          title="Local device support"
-          description="Discover and control local iOS Simulators and Android Emulators. Device Hub tools are installed and started only after you enable this setting."
-          control={
-            <Switch
-              checked={settings.enableDeviceSupport}
-              onCheckedChange={(checked) => {
-                if (!browserEnvironmentId) return;
-                const enabled = Boolean(checked);
-                void configureDevice({
-                  environmentId: browserEnvironmentId,
-                  input: {
-                    enabled,
-                    ...(enabled ? {} : { agentAccessEnabled: false }),
-                  },
-                });
-              }}
-              aria-label="Enable local device support"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Agent device access"
-          description="Let newly started agent sessions list, open, capture, and close devices. This permission is separate from access to the Device panel."
-          control={
-            <Switch
-              checked={settings.enableAgentDeviceAccess}
-              disabled={!settings.enableDeviceSupport}
-              onCheckedChange={(checked) => {
-                if (!browserEnvironmentId) return;
-                void configureDevice({
-                  environmentId: browserEnvironmentId,
-                  input: { agentAccessEnabled: Boolean(checked) },
-                });
-              }}
-              aria-label="Allow agent device access"
-            />
-          }
-        />
-      </SettingsSection>
+      <DeviceSettings />
 
       <SettingsSection title="Preferences">
         <SettingsRow
