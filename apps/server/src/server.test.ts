@@ -628,6 +628,7 @@ const buildAppUnderTest = (options?: {
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
+          listThreadProjectIds: () => Effect.die("unused"),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
@@ -5722,6 +5723,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   it.effect("routes websocket rpc orchestration methods", () =>
     Effect.gen(function* () {
       const now = new Date().toISOString();
+      // Records search enrichment lookups: searchThreads must resolve
+      // projects with a single batched call, never per-match hydration.
+      const projectLookupCalls: ThreadId[][] = [];
       const snapshot = {
         snapshotSequence: 1,
         updatedAt: now,
@@ -5766,7 +5770,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           projectionSnapshotQuery: {
             getSnapshot: () => Effect.succeed(snapshot),
-            getThreadDetailById: () => Effect.succeed(Option.some(snapshot.threads[0]!)),
+            getThreadDetailById: () => Effect.die("searchThreads must not hydrate thread details"),
+            listThreadProjectIds: (threadIds) => {
+              projectLookupCalls.push([...threadIds]);
+              return Effect.succeed(
+                new Map([[ThreadId.make("thread-1"), ProjectId.make("project-a")]]),
+              );
+            },
             searchTranscript: () =>
               Effect.succeed({
                 matches: [
@@ -5866,6 +5876,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           messageCreatedAt: now,
         },
       ]);
+      assert.deepStrictEqual(projectLookupCalls, [[ThreadId.make("thread-1")]]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
