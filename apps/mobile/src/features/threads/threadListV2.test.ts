@@ -203,6 +203,16 @@ describe("mobile nested threads", () => {
     expect(items[0]?.hierarchy?.isExpanded).toBe(true);
   });
 
+  it("lets a selected parent stay collapsed so its chevron responds", () => {
+    const collapsed = new Set([`${environmentId}:parent`]);
+    const items = layout([leaf, parent, child], {
+      collapsedThreadKeys: collapsed,
+      selectedThreadKey: `${environmentId}:parent`,
+    }).items;
+    expect(items.map((item) => item.thread.id)).toEqual(["parent"]);
+    expect(items[0]?.hierarchy).toMatchObject({ isExpanded: false, childCount: 2 });
+  });
+
   it("suspends collapse while searching so matches never hide", () => {
     const collapsed = new Set([`${environmentId}:parent`]);
     expect(
