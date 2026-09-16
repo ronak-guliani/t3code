@@ -346,8 +346,11 @@ export function mobileThreadTreeRows(
     readonly collapsedKeys?: ReadonlySet<string> | undefined;
   } = {},
 ): MobileThreadTreeRow[] {
-  // Forced paths ignore collapse: the selected conversation, explicit
-  // reveals, and every ancestor above them stay visible together.
+  // An explicit collapse always wins, except for the selected
+  // conversation: the selected thread and every ancestor above it force
+  // open so navigation targets never vanish. Active/unread reveal matches
+  // stay reachable through the Related pill and the rolled-up group status
+  // instead of overriding the user's collapse.
   const parentByKey = new Map<string, string>();
   {
     const pending = [...nodes];
@@ -368,7 +371,6 @@ export function mobileThreadTreeRows(
     }
   };
   forceLine(options.selectedThreadKey);
-  options.revealThreadKeys?.forEach(forceLine);
   const rows: MobileThreadTreeRow[] = [];
   const pending: Array<{ node: MobileThreadTreeNode; depth: number; ancestorsOpen: boolean }> = [];
   for (let index = nodes.length - 1; index >= 0; index--) {
