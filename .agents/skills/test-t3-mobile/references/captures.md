@@ -8,7 +8,11 @@ revisions. Capture both sides from one build:
 1. **After**: current PR code in the worktree, Metro bundled, app
    relaunched cold, fixture synced, screenshot (`<name>-after.png`).
 2. **Before**: check out the base revisions of the changed source files
-   only — `git checkout <merge-base> -- <paths>`, never a branch switch:
+   only — `git checkout <merge-base> -- <paths>`, never a branch switch.
+   The safety net below captures only the committed delta, so the selected
+   paths must be fully clean first (no staged, unstaged, or untracked
+   edits — verify with `git status --porcelain -- <paths>` and shelve
+   anything present, or the checkout destroys it):
    ```bash
    BASE=$(git merge-base HEAD origin/main)
    git diff $BASE HEAD -- <paths> > /tmp/pr-changes.patch  # safety net

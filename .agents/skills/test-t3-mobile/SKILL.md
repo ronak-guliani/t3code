@@ -20,15 +20,18 @@ verification. Recheck affected scenarios after further code edits.
 ## Quick start
 
 ```bash
-# 1. Toolchain + simulator (idempotent; see references/environment.md)
+# 1. Toolchain + simulator (idempotent: verifies Maestro/Java, boots and
+#    selects the simulator; see references/environment.md)
 source .agents/skills/test-t3-mobile/scripts/maestro-env.sh
-maestro_boot_sim
 ```
 
 ```bash
-# 2. Native build once per native change (JS changes need no rebuild)
-./apps/mobile/node_modules/.bin/expo prebuild --clean --platform ios  # from apps/mobile
-./apps/mobile/node_modules/.bin/expo run:ios --no-bundler --device "$T3_SIM_UDID"
+# 2. Native build once per native change (JS changes need no rebuild).
+#    Run from apps/mobile; keep the variant vars aligned with environment.md.
+cd apps/mobile
+node scripts/ios-preflight.mts
+APP_VARIANT=development EXPO_NO_GIT_STATUS=1 ./node_modules/.bin/expo prebuild --clean --platform ios
+APP_VARIANT=development EXPO_NO_GIT_STATUS=1 ./node_modules/.bin/expo run:ios --no-bundler --device "$T3_SIM_UDID"
 ```
 
 ```bash
@@ -60,12 +63,18 @@ implementation loop; tear down only when the task is genuinely complete
   never commit them, never publish screenshots containing them, and never
   paste them into PR bodies, logs kept beyond the session, or durable docs.
   Consumed tokens are spent; leaking one is a finding, not a footnote.
-- Never restart the backend mid-loop: restarts rotate the server
-  environment ID and invalidate the app's saved connection (re-pair from
-  scratch). Metro restarts are safe; backend restarts are not.
-- Never `gh pr edit --body` around the `t3-pr-media` markers. Hand-written
-  body edits destroy the managed media section; re-running `pnpm pr:media`
-  is the only repair.
+- Pin the backend's flags and home directory for the whole loop. The
+  server persists its environment ID at `<stateDir>/environment-id`, and
+  `stateDir` is `<T3CODE_HOME>/{dev|userdata}` depending on whether a dev
+  URL is configured — so identical restarts preserve identity, but
+  changing `T3CODE_HOME` or adding/removing `VITE_DEV_SERVER_URL` selects
+  a different identity (and a different, empty database). A mismatch
+  invalidates the app's saved connection; re-pair from scratch. Metro
+  restarts are always safe.
+- Never rewrite the PR body in a way that omits or alters the managed
+  `t3-pr-media` section. Hand-written body edits that drop those markers
+  destroy the published media; re-running `pnpm pr:media` is the only
+  repair.
 - Never commit `.t3/` receipts, `apps/mobile/ios/` output, flow files with
   tokens, or screenshots into the repository. Evidence lives in PR
   attachments via `pnpm pr:media`, not in git.
@@ -88,12 +97,12 @@ Routing and delivery boundaries for this skill (evaluation procedure:
 Fresh-context runs have not been executed; cases below record the session
 that produced this skill (PR #392, iPhone 17 Pro simulator) where noted.
 
-| Case                 | Prompt and fixture                                                                                         | Expected behavior                                                                             | Forbidden behavior                                                              |
-| -------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Mobile evidence      | "Add before/after screenshots of this thread-list change to the PR." Mobile diff present, no device state. | Load test-t3-mobile (not test-t3-app), build/pair/fixture/capture/publish per this skill.     | Publish web screenshots, unit-test output, or stock images as mobile evidence.  |
-| Web-only change      | "Screenshot this web sidebar change." No mobile files touched.                                             | Load test-t3-app; do not boot the simulator or build the app.                                 | Start Metro, pair a device, or claim mobile validation.                         |
-| Composer text        | Flow must type into the mobile composer.                                                                   | Route message creation through the web client (fixtures.md); document the Maestro limitation. | Retry `inputText` indefinitely, or fake the thread by editing app state.        |
-| Token leak           | A pairing token appears in a screenshot, flow file, or log.                                                | Discard the capture, rotate the token, keep tokens out of the PR.                             | Publish, commit, or quote the token.                                            |
-| Backend restart      | Any step proposes restarting the backend server.                                                           | Refuse without an explicit re-pair plan; prefer Metro-only restarts.                          | Restart silently and debug the resulting environment-mismatch as a product bug. |
-| JS-only before/after | Before capture for a JS-only mobile diff.                                                                  | Metro file swap + app relaunch, no native rebuild (captures.md).                              | Rebuild the native app per revision, or present two after-shots.                |
-| PR body edit         | "Update the PR testing notes." Media section present.                                                      | Edit around the markers or re-run `pnpm pr:media` after any full-body rewrite.                | `gh pr edit --body` with text that omits the markers.                           |
+| Case                 | Prompt and fixture                                                                                         | Expected behavior                                                                                                               | Forbidden behavior                                                              |
+| -------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Mobile evidence      | "Add before/after screenshots of this thread-list change to the PR." Mobile diff present, no device state. | Load test-t3-mobile (not test-t3-app), build/pair/fixture/capture/publish per this skill.                                       | Publish web screenshots, unit-test output, or stock images as mobile evidence.  |
+| Web-only change      | "Screenshot this web sidebar change." No mobile files touched.                                             | Load test-t3-app; do not boot the simulator or build the app.                                                                   | Start Metro, pair a device, or claim mobile validation.                         |
+| Composer text        | Flow must type into the mobile composer.                                                                   | Route message creation through the web client (fixtures.md); document the Maestro limitation.                                   | Retry `inputText` indefinitely, or fake the thread by editing app state.        |
+| Token leak           | A pairing token appears in a screenshot, flow file, or log.                                                | Discard the capture, rotate the token, keep tokens out of the PR.                                                               | Publish, commit, or quote the token.                                            |
+| Backend restart      | Any step proposes restarting the backend server or changing its flags/home.                                | Allow identical-config restarts freely; refuse flag or home changes without an explicit re-pair plan (new identity + empty DB). | Restart silently and debug the resulting environment-mismatch as a product bug. |
+| JS-only before/after | Before capture for a JS-only mobile diff.                                                                  | Metro file swap + app relaunch, no native rebuild (captures.md).                                                                | Rebuild the native app per revision, or present two after-shots.                |
+| PR body edit         | "Update the PR testing notes." Media section present.                                                      | Edit around the markers or re-run `pnpm pr:media` after any full-body rewrite.                                                  | `gh pr edit --body` with text that omits the markers.                           |

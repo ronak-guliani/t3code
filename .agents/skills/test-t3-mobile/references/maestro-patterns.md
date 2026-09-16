@@ -57,5 +57,7 @@ Every flow starts with `appId: com.ronakguliani.t3code.dev`.
   the bundle URL was lost: relaunch with the manifest URL from
   environment.md, or tap the `RECENTLY OPENED` entry.
 - "No threads yet" on cold start is normal until sync populates (~60s);
-  "Environment unavailable ... does not match ..." means the backend was
-  restarted — re-pair from scratch, do not debug it as a product bug.
+  "Environment unavailable ... does not match ..." means the live backend
+  serves a different state directory than the paired era (different
+  `T3CODE_HOME` or dev-URL flag — same-config restarts preserve identity).
+  Verify the flags first, then re-pair; do not debug it as a product bug.

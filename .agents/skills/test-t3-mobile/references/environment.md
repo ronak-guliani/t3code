@@ -91,11 +91,18 @@ T3CODE_HOME=/tmp/t3code-<test> T3CODE_PORT=13776 T3CODE_NO_BROWSER=1 \
   `/tmp` path), never the shared home.
 - `VITE_DEV_SERVER_URL` is required: without it `/pair` returns 503
   ("No static directory configured and no dev URL set").
-- **Never restart the backend mid-loop.** Restarts rotate the server
-  environment ID; the app's saved connection then fails with
-  `Connected environment <actual> does not match <expected>` and only a
-  full re-pair recovers. Metro restarts are safe.
-- Fresh pairing token (single-use, rotates on each issue):
+- **Pin the backend's flags and home for the whole loop.** The server
+  persists its environment ID at `<stateDir>/environment-id`, where
+  `stateDir` is `<T3CODE_HOME>/{dev|userdata}` depending on whether a dev
+  URL is configured — so restarts with identical config preserve identity,
+  but changing `T3CODE_HOME` or adding/removing `VITE_DEV_SERVER_URL`
+  selects a different identity (and a different, empty database). Settle
+  these values before the first boot and pairing. If the app reports
+  `Connected environment <actual> does not match <expected>`, the live
+  server is serving a different state directory than the paired era:
+  verify the flags/home, then re-pair from scratch (and recreate fixtures
+  if the database differs). Metro restarts are always safe.
+- Fresh pairing token (single-use; issue immediately before use):
   `node apps/server/src/bin.ts pair --base-dir <same-home-dir>`
 
 Default ports are server 13773 / web 5733 / Metro 8081; derive offsets per

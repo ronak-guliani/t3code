@@ -3,11 +3,16 @@
 # Usage: source .agents/skills/test-t3-mobile/scripts/maestro-env.sh [udid-or-name-substring]
 # Sets JAVA_HOME, PATH, MAESTRO_CLI_NO_ANALYTICS, T3_SIM_UDID (boots the
 # simulator if needed). Fails with a clear message when the toolchain or
-# simulator is unavailable. Safe to source repeatedly.
-set -u
-
+# simulator is unavailable. Safe to source repeatedly. Deliberately avoids
+# `set -u` and bare globs so sourcing never alters the caller's shell
+# options or aborts it under either bash or zsh.
 MAESTRO_DIR="$HOME/.local/maestro/maestro"
-JAVA_HOME_CANDIDATE=$(echo "$HOME"/.local/java/jdk-*-jre/Contents/Home "$HOME"/.local/java/jdk-*/Contents/Home 2>/dev/null | tr ' ' '\n' | head -1)
+_java_bin=$(find "$HOME/.local/java" -maxdepth 5 -path "*Contents/Home/bin/java" 2>/dev/null | head -1)
+if [ -n "$_java_bin" ]; then
+  JAVA_HOME_CANDIDATE=$(dirname "$(dirname "$_java_bin")")
+else
+  JAVA_HOME_CANDIDATE=""
+fi
 
 if [ ! -x "$MAESTRO_DIR/bin/maestro" ]; then
   echo "maestro-env: Maestro CLI not found at $MAESTRO_DIR." >&2
@@ -21,11 +26,14 @@ if [ ! -x "$JAVA_HOME_CANDIDATE/bin/java" ]; then
 fi
 
 export JAVA_HOME="$JAVA_HOME_CANDIDATE"
-export PATH="$MAESTRO_DIR/bin:$PATH"
+case ":$PATH:" in
+  *":$MAESTRO_DIR/bin:"*) ;;
+  *) export PATH="$MAESTRO_DIR/bin:$PATH" ;;
+esac
 export MAESTRO_CLI_NO_ANALYTICS=1
 
 _want="${1:-}"
-if [ -z "${_want:-}" ]; then
+if [ -z "$_want" ]; then
   _udid=$(xcrun simctl list devices 2>/dev/null | grep -E "\(Booted\)" | head -1 | grep -oE "[0-9A-F-]{36}" | head -1)
   if [ -z "$_udid" ]; then
     _udid=$(xcrun simctl list devices available 2>/dev/null | grep -m1 "iPhone 17 Pro (" | grep -oE "[0-9A-F-]{36}" | head -1)
@@ -33,19 +41,21 @@ if [ -z "${_want:-}" ]; then
       echo "maestro-env: no booted or iPhone 17 Pro simulator found." >&2
       return 1 2>/dev/null || exit 1
     fi
-    xcrun simctl boot "$_udid" >/dev/null 2>&1
-    sleep 15
   fi
 else
-  _udid=$(xcrun simctl list devices 2>/dev/null | grep -i "$_want" | head -1 | grep -oE "[0-9A-F-]{36}" | head -1)
+  # Fixed-string match with option terminator: substrings like `[` or
+  # leading `-` must not reach grep as regex or flags.
+  _udid=$(xcrun simctl list devices 2>/dev/null | grep -i -F -- "$_want" | head -1 | grep -oE "[0-9A-F-]{36}" | head -1)
   if [ -z "$_udid" ]; then
     echo "maestro-env: no simulator matching '$_want'." >&2
     return 1 2>/dev/null || exit 1
   fi
-  if ! xcrun simctl list devices 2>/dev/null | grep "$_udid" | grep -q Booted; then
-    xcrun simctl boot "$_udid" >/dev/null 2>&1
-    sleep 15
-  fi
+fi
+# Block on SpringBoard readiness instead of sleeping a fixed delay; a cold
+# simulator routinely needs longer than any reasonable constant.
+if ! xcrun simctl bootstatus "$_udid" -b >/dev/null 2>&1; then
+  echo "maestro-env: simulator $_udid did not finish booting." >&2
+  return 1 2>/dev/null || exit 1
 fi
 
 export T3_SIM_UDID="$_udid"

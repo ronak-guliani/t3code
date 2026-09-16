@@ -12,15 +12,21 @@ The Add Environment sheet needs an **IP-literal host**: `pairing.ts`
 `buildPairingUrl` forces `https://` for hostnames, which fails against the
 plain-HTTP dev server. `127.0.0.1:<server-port>` yields `http://`.
 
-1. Fresh token: `node apps/server/src/bin.ts pair --base-dir <home>` (each
-   issue may invalidate the previous one; generate immediately before use).
+1. Fresh token: `node apps/server/src/bin.ts pair --base-dir <home>`.
+   Pairing links are independent rows — issuing a new one does not revoke
+   earlier unconsumed links — but generate-then-submit promptly anyway:
+   interleaved generations make it ambiguous which credential was
+   submitted, and each success consumes its link.
 2. Maestro: open Add Environment, tap the HOST placeholder, `eraseText`,
    type `127.0.0.1:<server-port>`; tap the code placeholder, `eraseText`,
    type the token; `hideKeyboard`; tap submit with `index: 1`.
 3. Gate on the sheet dismissing (`notVisible: "PAIRING CODE"`), then confirm
    the Environments screen shows green `Connected` for the new entry.
-4. A stale red entry from a pre-restart pairing is expected if the backend
-   was ever restarted; leave it (it contributes no rows).
+4. A stale red entry means the app holds a connection for a different
+   server identity (different state directory — e.g. flags changed
+   mid-loop), not merely a restarted process. Leave it (it contributes no
+   rows); its presence is a signal to double-check flag stability, not to
+   rebuild anything.
 
 ## Parent + subchat via the web client
 
@@ -42,5 +48,7 @@ Pair Playwright at `http://localhost:<web-port>/pair#token=<fresh-token>`
 
 Relaunch the app cold (`simctl terminate` + tap the icon) and wait out the
 ~60s sync; assert the parent title is visible, then screenshot. If only
-stale rows appear, the saved connection predates a backend restart —
-re-pair rather than rebuilding anything.
+stale rows appear, the saved connection targets a different server
+identity than the live backend (different `T3CODE_HOME` or dev-URL flag
+than the paired era) — verify the flags, then re-pair rather than
+rebuilding anything.

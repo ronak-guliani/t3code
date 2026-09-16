@@ -49,14 +49,24 @@ before improvising; every item below cost a real debugging cycle.
   hostnames must match exactly (`localhost` vs `127.0.0.1` mismatch
   re-triggers CORS even with the variable set).
 - Server `/pair` → 503 `No static directory configured and no dev URL
-set` → server lacks `VITE_DEV_SERVER_URL`; restart it with the variable.
-- `The environment credential is invalid` on submit → stale/consumed
-  single-use token. Generate exactly one fresh token and submit once;
-  repeated `pair` invocations invalidate earlier tokens.
+set` → server lacks `VITE_DEV_SERVER_URL`; restart it with the variable —
+  but only before the first pairing. Adding the variable later flips the
+  state directory (`userdata/` → `dev/`), which changes the server identity
+  and orphans existing pairings and fixtures (see environment mismatch
+  entry); prefer getting the flags right at first boot.
+- `The environment credential is invalid` on submit → stale, consumed, or
+  expired single-use token. Generate one fresh token and submit it once
+  (pairing links are independent rows — a new issue does not revoke
+  earlier unconsumed links — but interleaved generations make failures
+  ambiguous, so keep generation and submission adjacent).
 - Mobile `Connected environment <a> does not match <b>` (or red
-  `Connection failed` in Environments) → backend was restarted and its
-  environment ID rotated. Never restart mid-loop; recover by adding a new
-  pairing, not by debugging sync.
+  `Connection failed` in Environments) → the live backend serves a
+  different state directory than the paired era: the identity lives at
+  `<stateDir>/environment-id` with
+  `stateDir = <T3CODE_HOME>/{dev|userdata}` selected by dev-URL presence,
+  so restarts are safe but flag/home changes are not. Verify `T3CODE_HOME`
+  and the dev-URL flag match the paired era, then add a new pairing (and
+  recreate fixtures if the database differs) — do not debug sync.
 
 ## Maestro driving
 
