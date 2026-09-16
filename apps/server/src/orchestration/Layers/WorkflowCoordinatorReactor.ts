@@ -190,9 +190,13 @@ const makeWorkflowCoordinatorReactor = Effect.gen(function* () {
         ? { sourceWorktreePath: input.workerConfig.worktreePath }
         : input.workerConfig.workspaceBinding !== undefined
           ? { sourceWorktreePath: input.workerConfig.workspaceBinding.worktreePath }
-          : parent.workspaceBinding !== undefined
+          : input.workerConfig.branch === null &&
+              input.workerConfig.pullRequest?.headBranch === undefined &&
+              parent.workspaceBinding !== undefined
             ? { sourceWorktreePath: parent.workspaceBinding.worktreePath }
-            : parent.worktreePath !== null
+            : input.workerConfig.branch === null &&
+                input.workerConfig.pullRequest?.headBranch === undefined &&
+                parent.worktreePath !== null
               ? { sourceWorktreePath: parent.worktreePath }
               : {}),
       ...(input.workerConfig.pullRequest !== undefined

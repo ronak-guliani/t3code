@@ -176,4 +176,44 @@ describe("WorkspaceOwnershipRepository", () => {
       await runtime.dispose();
     }
   });
+
+  it("releases the original filesystem ledger after a Git worktree is removed", async () => {
+    const runtime = await makeRuntime();
+    const repo = await runtime.runPromise(Effect.service(WorkspaceOwnershipRepository));
+    const now = new Date().toISOString();
+    try {
+      const repositoryRoot = trackTempDir(createGitRepository());
+      const worktreePath = path.join(repositoryRoot, "worker");
+      runGit(repositoryRoot, ["worktree", "add", "-b", "worker", worktreePath, "HEAD"]);
+
+      const first = ThreadId.make("ownership-removed-first");
+      const second = ThreadId.make("ownership-removed-second");
+      const binding = await runtime.runPromise(
+        repo.claim({
+          threadId: first,
+          worktreePath,
+          branch: "worker",
+          commandId: "cmd-ownership-removed-first",
+          now,
+        }),
+      );
+
+      runGit(repositoryRoot, ["worktree", "remove", "--force", worktreePath]);
+      await runtime.runPromise(repo.release(first, binding.canonicalPath));
+
+      runGit(repositoryRoot, ["worktree", "add", worktreePath, "worker"]);
+      const retry = await runtime.runPromise(
+        repo.claim({
+          threadId: second,
+          worktreePath,
+          branch: "worker",
+          commandId: "cmd-ownership-removed-second",
+          now,
+        }),
+      );
+      expect(retry.canonicalPath).toBe(binding.canonicalPath);
+    } finally {
+      await runtime.dispose();
+    }
+  });
 });

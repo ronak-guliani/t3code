@@ -876,6 +876,7 @@ const make = Effect.gen(function* () {
         commandId: CommandId.make(crypto.randomUUID()),
         threadId,
         worktreePath: null,
+        workspaceBinding: null,
       })
       .pipe(
         Effect.catch((error) =>

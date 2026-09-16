@@ -216,6 +216,75 @@ describe("WorkflowCoordinatorReactor", () => {
     await Effect.runPromise(Scope.close(scope, Exit.void));
   });
 
+  it("does not inherit the parent worktree when a worker branch is explicit", async () => {
+    const commands: OrchestrationCommand[] = [];
+    const { pullRequest: _pullRequest, ...workerConfigWithoutPullRequest } = run.workerConfig;
+    const explicitRun: ProjectionWorkflowRun = {
+      ...run,
+      workerConfig: {
+        ...workerConfigWithoutPullRequest,
+        branch: "feature/worker",
+      },
+    };
+    const explicitModel: OrchestrationReadModel = {
+      ...readModel,
+      workflowRuns: [explicitRun],
+      threads: readModel.threads.map((thread) => ({
+        ...thread,
+        workspaceBinding: {
+          canonicalPath: "/repo",
+          worktreePath: "/repo/.t3-thread-workspaces/parent",
+          branch: "feature/parent",
+          generation: 3,
+        },
+      })),
+    };
+    const engine: OrchestrationEngineShape = {
+      getReadModel: () => Effect.succeed(explicitModel),
+      readEvents: () => Stream.empty,
+      dispatch: (command) =>
+        Effect.sync(() => {
+          commands.push(command);
+          return { sequence: commands.length };
+        }),
+      withWorktreeLock: (effect) => effect,
+      streamDomainEvents: Stream.empty,
+      acquireDomainEventSubscription: Effect.never,
+    };
+    const workflows: ProjectionWorkflowRepositoryShape = {
+      upsertRun: () => Effect.void,
+      getByRunId: () => Effect.succeed(Option.some(explicitRun)),
+      listIncomplete: () => Effect.succeed([explicitRun]),
+      listAll: () => Effect.succeed([explicitRun]),
+      listShellSnapshot: () => Effect.succeed({ runs: [], artifacts: [] }),
+      upsertArtifact: () => Effect.void,
+      getArtifactById: () => Effect.succeed(Option.some(inputArtifact)),
+      listAllArtifacts: () => Effect.succeed([inputArtifact]),
+      setNodeInputArtifact: () => Effect.void,
+      startNode: () => Effect.void,
+      recordNodeResult: () => Effect.void,
+      finalizeRun: () => Effect.void,
+    };
+
+    runtime = ManagedRuntime.make(
+      WorkflowCoordinatorReactorLive.pipe(
+        Layer.provideMerge(Layer.succeed(OrchestrationEngineService, engine)),
+        Layer.provideMerge(Layer.succeed(ProjectionWorkflowRepository, workflows)),
+      ),
+    );
+    const coordinator = await runtime.runPromise(Effect.service(WorkflowCoordinatorReactor));
+    const scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(coordinator.start().pipe(Scope.provide(scope)));
+
+    expect(commands[0]).toMatchObject({
+      type: "thread.create",
+      sourceBranch: "feature/worker",
+    });
+    expect(commands[0]).not.toHaveProperty("sourceWorktreePath");
+
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+  });
+
   it("starts a requested run inline without waiting for the event-stream pass", async () => {
     const commands: OrchestrationCommand[] = [];
     const engine: OrchestrationEngineShape = {

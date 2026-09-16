@@ -34,6 +34,15 @@ type FilesystemOwnershipState = {
   readonly attemptId: string | null;
 };
 
+const filesystemOwnershipPathsForRegistry = (canonicalPath: string, registryDir: string) => {
+  const key = createHash("sha256").update(canonicalPath).digest("hex");
+  return {
+    registryDir,
+    statePath: path.join(registryDir, `${key}.json`),
+    mutexPath: path.join(registryDir, `${key}.mutex`),
+  };
+};
+
 const filesystemOwnershipStatePath = (canonicalPath: string) =>
   Effect.tryPromise({
     try: async () => {
@@ -52,13 +61,9 @@ const filesystemOwnershipStatePath = (canonicalPath: string) =>
               path.resolve(canonicalPath, commonDirResult.stdout.trim()),
             )
           : path.dirname(canonicalPath);
-      const key = createHash("sha256").update(canonicalPath).digest("hex");
       const registryDir = path.join(commonDir, "t3-workspace-ownership");
       await mkdir(registryDir, { recursive: true });
-      return {
-        statePath: path.join(registryDir, `${key}.json`),
-        mutexPath: path.join(registryDir, `${key}.mutex`),
-      };
+      return filesystemOwnershipPathsForRegistry(canonicalPath, registryDir);
     },
     catch: (cause) => new WorkspaceOwnershipRepositoryError({ cause }),
   });
@@ -144,6 +149,7 @@ const make = Effect.gen(function* () {
     sql<{
       readonly canonical_path: string;
       readonly worktree_path: string;
+      readonly filesystem_registry_dir: string | null;
       readonly owner_thread_id: string;
       readonly branch: string | null;
       readonly generation: number;
@@ -265,7 +271,8 @@ const make = Effect.gen(function* () {
             yield* sql`
             INSERT INTO workspace_ownership (
               canonical_path, worktree_path, owner_thread_id, branch,
-              generation, command_id, attempt_id, claimed_at, updated_at
+              generation, command_id, attempt_id, filesystem_registry_dir,
+              claimed_at, updated_at
             ) VALUES (
               ${canonicalPath},
               ${canonicalWorktreePath},
@@ -274,6 +281,7 @@ const make = Effect.gen(function* () {
               ${nextGeneration},
               ${input.commandId},
               ${attemptId},
+              ${filesystemPaths.registryDir},
               ${input.now},
               ${input.now}
             )
@@ -283,6 +291,7 @@ const make = Effect.gen(function* () {
               generation = excluded.generation,
               command_id = excluded.command_id,
               attempt_id = excluded.attempt_id,
+              filesystem_registry_dir = excluded.filesystem_registry_dir,
               updated_at = excluded.updated_at
           `;
             return yield* getRow(canonicalPath);
@@ -364,15 +373,22 @@ const make = Effect.gen(function* () {
 
   const release: WorkspaceOwnershipRepositoryShape["release"] = (threadId, canonicalPath) =>
     Effect.gen(function* () {
-      const rows = yield* sql<{ readonly canonical_path: string; readonly worktree_path: string }>`
-        SELECT canonical_path, worktree_path
+      const rows = yield* sql<{
+        readonly canonical_path: string;
+        readonly worktree_path: string;
+        readonly filesystem_registry_dir: string | null;
+      }>`
+        SELECT canonical_path, worktree_path, filesystem_registry_dir
         FROM workspace_ownership
         WHERE owner_thread_id = ${threadId}
         ${canonicalPath ? sql`AND canonical_path = ${canonicalPath}` : sql``}
       `;
       const clearedPaths = new Set<string>();
       for (const row of rows) {
-        const filesystemPaths = yield* filesystemOwnershipStatePath(row.canonical_path);
+        const filesystemPaths =
+          row.filesystem_registry_dir === null
+            ? yield* filesystemOwnershipStatePath(row.canonical_path)
+            : filesystemOwnershipPathsForRegistry(row.canonical_path, row.filesystem_registry_dir);
         yield* withFilesystemOwnershipLock(filesystemPaths, async (state) => {
           if (state !== null && state.ownerThreadId !== null && state.ownerThreadId !== threadId) {
             throw new Error(`workspace ownership changed for ${row.canonical_path}`);
