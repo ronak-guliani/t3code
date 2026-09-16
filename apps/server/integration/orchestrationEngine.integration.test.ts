@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 import {
   ApprovalRequestId,
@@ -208,6 +209,77 @@ it.live("allocates a unique task branch from an existing main checkout", () =>
       assert.equal(thread?.worktreePath === harness.workspaceDir, false);
       assert.equal(thread?.branch?.startsWith("t3/thread/"), true);
       assert.equal(gitHead(thread!.worktreePath!), gitHead(harness.workspaceDir));
+    }),
+  ),
+);
+
+it.live("stores the allocated task branch when an existing thread is re-isolated for a turn", () =>
+  withHarness((harness) =>
+    Effect.gen(function* () {
+      const createdAt = nowIso();
+      const provider = harness.adapterHarness?.provider ?? CODEX_PROVIDER;
+      const defaultModel = DEFAULT_MODEL_BY_PROVIDER[provider] ?? DEFAULT_MODEL;
+      const instanceId = defaultInstanceIdForDriver(provider);
+      const projectId = asProjectId("turn-branch-binding-project");
+      const threadId = ThreadId.make("turn-branch-binding-thread");
+
+      yield* harness.engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("turn-branch-binding-project-create"),
+        projectId,
+        title: "Turn branch binding project",
+        workspaceRoot: harness.workspaceDir,
+        defaultModelSelection: {
+          instanceId,
+          model: defaultModel,
+        },
+        createdAt,
+      });
+      yield* harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("turn-branch-binding-thread-create"),
+        threadId,
+        projectId,
+        title: "Turn branch binding thread",
+        modelSelection: {
+          instanceId,
+          model: defaultModel,
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: "main",
+        worktreePath: null,
+        createdAt,
+      });
+      yield* harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("turn-branch-binding-clear"),
+        threadId,
+        branch: null,
+        worktreePath: null,
+        workspaceBinding: null,
+      });
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("turn-branch-binding-turn"),
+        threadId,
+        message: {
+          messageId: asMessageId("turn-branch-binding-message"),
+          role: "user",
+          text: "re-isolate",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: nowIso(),
+      });
+
+      const ownership = yield* harness.workspaceOwnership.getByThreadId(threadId);
+      const binding = ownership.find((entry) => entry.canonicalPath !== harness.workspaceDir);
+      assert.equal(
+        binding?.branch,
+        `t3/thread/${createHash("sha256").update(threadId).digest("hex").slice(0, 24)}`,
+      );
     }),
   ),
 );

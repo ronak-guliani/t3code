@@ -578,15 +578,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               thread?.workspaceBinding?.worktreePath ??
               thread?.worktreePath ??
               project?.workspaceRoot)
-            : ((command.type === "thread.turn.start"
-                ? command.bootstrap?.createThread?.worktreePath
-                : undefined) ??
-              prepared.worktreePath ??
-              thread?.workspaceBinding?.worktreePath ??
-              thread?.worktreePath ??
-              project?.workspaceRoot);
+            : command.type === "thread.meta.update"
+              ? command.worktreePath
+              : ((command.type === "thread.turn.start"
+                  ? command.bootstrap?.createThread?.worktreePath
+                  : undefined) ??
+                prepared.worktreePath ??
+                thread?.workspaceBinding?.worktreePath ??
+                thread?.worktreePath ??
+                project?.workspaceRoot);
     if (
       requestedPath === undefined ||
+      requestedPath === null ||
       !("threadId" in command) ||
       command.type === "thread.delete" ||
       command.type === "thread.archive"
@@ -602,7 +605,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             ? command.branch
             : command.type === "thread.workspace.handoff"
               ? command.branch
-              : (thread?.branch ?? null),
+              : (prepared.branch ?? thread?.workspaceBinding?.branch ?? thread?.branch ?? null),
         commandId: command.commandId,
         now: new Date().toISOString(),
       })

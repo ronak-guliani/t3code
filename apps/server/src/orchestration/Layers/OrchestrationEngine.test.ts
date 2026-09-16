@@ -173,6 +173,75 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("does not claim the project checkout for workspace-less metadata updates", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "t3-meta-workspace-"));
+    const system = await createOrchestrationSystem();
+    const projectId = ProjectId.make("meta-workspace-project");
+    const threadId = ThreadId.make("meta-workspace-thread");
+    const at = now();
+
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("meta-workspace-project-create"),
+          projectId,
+          title: "Metadata workspace",
+          workspaceRoot: directory,
+          createdAt: at,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("meta-workspace-thread-create"),
+          threadId,
+          projectId,
+          title: "Metadata workspace",
+          modelSelection: { instanceId: ProviderInstanceId.make("copilot"), model: "test-model" },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt: at,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("meta-workspace-clear"),
+          threadId,
+          title: "Cleared workspace",
+          worktreePath: null,
+          workspaceBinding: null,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("meta-workspace-title"),
+          threadId,
+          title: "Title only",
+        }),
+      );
+
+      const thread = (await system.run(system.engine.getReadModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(thread?.title).toBe("Title only");
+      expect(thread?.worktreePath).toBeNull();
+      expect(thread?.workspaceBinding).toBeUndefined();
+      expect(
+        (await system.run(system.workspaceOwnership.getByThreadId(threadId))).some(
+          (ownership) => ownership.canonicalPath === directory,
+        ),
+      ).toBe(false);
+    } finally {
+      await system.dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("atomically records child updates, recovers paused batches, and never recreates dismissed reports", async () => {
     const directory = await mkdtemp(join(tmpdir(), "t3-nudging-restart-"));
     const dbPath = join(directory, "state.sqlite");
