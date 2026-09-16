@@ -65,23 +65,33 @@ const jsonFlag = Flag.boolean("json").pipe(
 );
 
 const headlessFlag = Flag.boolean("headless").pipe(
-  Flag.withDescription("Authorize without a local browser using an authorization code."),
+  Flag.withDescription("Authorize without a local browser using the OAuth device flow."),
   Flag.withDefault(false),
 );
 
+/**
+ * Inside an SSH session there is no local browser to complete the loopback
+ * OAuth callback, so the device authorization grant is the only flow that
+ * can work.
+ */
 export function isHeadlessConnectEnvironment(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
   return Boolean(env.SSH_CONNECTION?.trim() || env.SSH_TTY?.trim());
 }
 
-export function formatHeadlessAuthorizationPrompt(authorizeUrl: string): string {
+export function formatDeviceAuthorizationPrompt(
+  prompt: CliTokenManager.DeviceAuthorizationPrompt,
+): string {
+  const minutes = Math.max(1, Math.round(Duration.toMinutes(prompt.expiresIn)));
   return [
     "Headless authorization",
     "Open this URL on a device with a browser:",
-    `  ${authorizeUrl}`,
+    `  ${prompt.verificationUriComplete ?? prompt.verificationUri}`,
     "",
-    "After signing in, return here and enter the code shown in your browser.",
+    `Confirm this code when asked: ${prompt.userCode}`,
+    "",
+    `Waiting for approval (expires in ${minutes} min). Press Ctrl+C to cancel.`,
   ].join("\n");
 }
 
@@ -118,27 +128,27 @@ const requireCloudPublicConfig = (() => {
   return message ? Effect.fail(new Error(message)) : Effect.void;
 })();
 
-const promptForOutOfBandOAuthCode = Effect.fn("cloud.cli.prompt_out_of_band_code")(function* (
-  input: CliTokenManager.OutOfBandOAuthPromptInput,
-) {
-  yield* Console.log(formatHeadlessAuthorizationPrompt(input.authorizeUrl));
-  return yield* Prompt.run(
-    Prompt.text({ message: "Authorization code", validate: input.validate }),
-  );
-});
+const showDeviceAuthorizationPrompt = (prompt: CliTokenManager.DeviceAuthorizationPrompt) =>
+  Console.log(formatDeviceAuthorizationPrompt(prompt));
 
-export const authorizeCliWith = Effect.fn("cloud.cli.authorize_with")(function* (
+export const authorizeCliWith = Effect.fn("cloud.cli.authorize_with")(function* <E, R>(
   options: { readonly headless: boolean; readonly sshSession?: boolean },
   tokens: CliTokenManager.CloudCliTokenManager["Service"],
-  loginOutOfBand: Effect.Effect<{
-    readonly token: CliTokenManager.PersistedToken;
-    readonly identity: string | null;
-  }>,
+  loginOutOfBand: Effect.Effect<
+    {
+      readonly token: CliTokenManager.PersistedToken;
+      readonly identity: string | null;
+    },
+    E,
+    R
+  >,
 ) {
   if (!options.headless && !options.sshSession) {
     const token = yield* tokens.get;
     return token.identity ?? null;
   }
+  // A stored credential whose refresh fails (revoked, expired grant) must
+  // fall through to a fresh device authorization, not dead-end the command.
   const existing = yield* tokens.getExisting.pipe(
     Effect.catchTag("CloudCliCredentialRefreshError", () =>
       Console.log(
@@ -160,7 +170,7 @@ const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
   return yield* authorizeCliWith(
     { ...options, sshSession: isHeadlessConnectEnvironment() },
     tokens,
-    CliTokenManager.outOfBandOAuthLogin(promptForOutOfBandOAuthCode),
+    CliTokenManager.deviceAuthorizationLogin(showDeviceAuthorizationPrompt),
   );
 });
 function bytesToString(value: Uint8Array): string {
