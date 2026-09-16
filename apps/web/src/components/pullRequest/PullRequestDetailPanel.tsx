@@ -4,6 +4,7 @@ import type {
   PullRequestActivity,
   PullRequestDetail,
   PullRequestDiffSide,
+  PullRequestMergeMethod,
   PullRequestRef,
   PullRequestReviewThread,
   PullRequestReviewVerdict,
@@ -24,6 +25,7 @@ import {
 import { useMemo, useState, type CSSProperties } from "react";
 
 import ChatMarkdown from "../ChatMarkdown";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
@@ -67,6 +69,7 @@ import {
   pullRequestCheckStatusLabel,
   pullRequestCheckSummaryLabel,
   pullRequestLabelColor,
+  pullRequestReviewVerdictPresentation,
   summarizePullRequestChecks,
   toRenderablePullRequestMarkdown,
 } from "./pullRequestPresentation";
@@ -82,6 +85,26 @@ const TABS: readonly { readonly value: DetailTab; readonly label: string }[] = [
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "The request could not be completed.";
+}
+
+/**
+ * The verdict a submitted review carries. Delegates wording and tone to the
+ * shared presentation helper so every surface reads a verdict the same way.
+ */
+function ReviewVerdictBadge({ reviewState }: { readonly reviewState: string | null }) {
+  const presentation = pullRequestReviewVerdictPresentation(reviewState);
+  if (presentation.variant === null) {
+    return (
+      <span className="rounded bg-accent px-1 py-px font-medium text-foreground">
+        {presentation.label}
+      </span>
+    );
+  }
+  return (
+    <Badge size="sm" variant={presentation.variant}>
+      {presentation.label}
+    </Badge>
+  );
 }
 
 function isAvailableAction(detail: PullRequestDetailView, action: PullRequestAction): boolean {
@@ -127,6 +150,41 @@ function toDetailView(
     author: activity?.author ?? detail.author,
     reviewers: activity?.reviewers ?? detail.reviewers,
   };
+}
+
+function CommentComposer({
+  value,
+  disabled,
+  onChange,
+  onSubmit,
+}: {
+  readonly value: string;
+  readonly disabled: boolean;
+  readonly onChange: (value: string) => void;
+  readonly onSubmit: () => void;
+}) {
+  return (
+    <section>
+      <h2 className="text-sm font-medium">Comment</h2>
+      <Textarea
+        className="mt-2"
+        placeholder="Leave a comment"
+        value={value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && value.trim()) {
+            event.preventDefault();
+            onSubmit();
+          }
+        }}
+      />
+      <div className="mt-2 flex justify-end">
+        <Button disabled={disabled || !value.trim()} size="xs" onClick={onSubmit}>
+          Comment
+        </Button>
+      </div>
+    </section>
+  );
 }
 
 function ReviewThread({
@@ -609,6 +667,9 @@ export function PullRequestDetailPanel({
   );
   const [comment, setComment] = useState("");
   const [actionPending, setActionPending] = useState<PullRequestAction | null>(null);
+  const [mergeMethodOverride, setMergeMethodOverride] = useState<PullRequestMergeMethod | null>(
+    null,
+  );
   const detail = toDetailView(detailQuery.data, activityQuery.data);
   const owner = useStore((state) =>
     findPullRequestBrowserThread(
@@ -660,7 +721,10 @@ export function PullRequestDetailPanel({
       }),
     );
   };
-  const performAction = async (action: PullRequestAction) => {
+  const performAction = async (
+    action: PullRequestAction,
+    input?: { mergeMethod?: PullRequestMergeMethod },
+  ) => {
     if (!detail || actionPending) return;
     if (
       action === "close" &&
@@ -673,7 +737,8 @@ export function PullRequestDetailPanel({
     try {
       const mergeMethod =
         action === "merge"
-          ? (detail.capabilities.mergeMethods.find((method) => detail.mergeCapabilities[method]) ??
+          ? (input?.mergeMethod ??
+            detail.capabilities.mergeMethods.find((method) => detail.mergeCapabilities[method]) ??
             undefined)
           : undefined;
       await runAction.mutateAsync({
@@ -720,6 +785,20 @@ export function PullRequestDetailPanel({
       }),
     );
   };
+  const submitComment = () => {
+    const submittedComment = comment.trim();
+    if (postComment.isPending || !submittedComment) return;
+    void postComment
+      .mutateAsync({ ...reference, body: submittedComment })
+      .then(() => setComment((current) => (current === submittedComment ? "" : current)))
+      .catch((error) =>
+        toastManager.add({
+          type: "error",
+          title: "Could not post comment",
+          description: errorMessage(error),
+        }),
+      );
+  };
 
   if (detailQuery.isPending) {
     return (
@@ -742,6 +821,18 @@ export function PullRequestDetailPanel({
   const availableActions = detail.capabilities.actions.filter((action) =>
     isAvailableAction(detail, action),
   );
+  // Merge strategies the host allows for this pull request. The choice is
+  // the reviewer's, not the first allowed method's: squash and merge land
+  // very different history.
+  const allowedMergeMethods = detail.capabilities.mergeMethods.filter(
+    (method) => detail.mergeCapabilities[method],
+  );
+  const selectedMergeMethod =
+    (mergeMethodOverride && allowedMergeMethods.includes(mergeMethodOverride)
+      ? mergeMethodOverride
+      : allowedMergeMethods[0]) ?? null;
+  const showMergeMethodPicker =
+    availableActions.includes("merge") && allowedMergeMethods.length > 1;
   const checkSummary = summarizePullRequestChecks(detail.checks);
   const checkIndicatorClassName =
     checkSummary.failing > 0 || checkSummary.cancelled > 0
@@ -868,30 +959,57 @@ export function PullRequestDetailPanel({
             {availableActions
               .filter((action) => action !== "close")
               .map((action) => (
-                <Button
-                  aria-label={pullRequestActionLabel(action)}
-                  disabled={actionPending !== null}
-                  key={action}
-                  size="xs"
-                  title={
-                    action === "merge"
-                      ? `Merge ${detail.headBranch} into ${detail.baseBranch}`
-                      : pullRequestActionLabel(action)
-                  }
-                  variant={action === "merge" ? "default" : "outline"}
-                  onClick={() => void performAction(action)}
-                >
-                  {actionPending === action ? (
-                    "Working…"
-                  ) : action === "merge" ? (
-                    <>
-                      <GitMergeIcon className="size-3" />
-                      Merge
-                    </>
-                  ) : (
-                    pullRequestActionLabel(action)
-                  )}
-                </Button>
+                <span className="inline-flex items-center gap-1" key={action}>
+                  {action === "merge" && showMergeMethodPicker && selectedMergeMethod ? (
+                    <select
+                      aria-label="Merge method"
+                      className="h-6 rounded border border-input bg-background px-1 text-xs"
+                      disabled={actionPending !== null}
+                      value={selectedMergeMethod}
+                      onChange={(event) =>
+                        setMergeMethodOverride(event.currentTarget.value as PullRequestMergeMethod)
+                      }
+                    >
+                      {allowedMergeMethods.map((method) => (
+                        <option key={method} value={method}>
+                          {method === "merge" ? "Merge" : method === "squash" ? "Squash" : "Rebase"}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
+                  <Button
+                    aria-label={pullRequestActionLabel(action)}
+                    disabled={actionPending !== null}
+                    size="xs"
+                    title={
+                      action === "merge"
+                        ? `Merge ${detail.headBranch} into ${detail.baseBranch}${
+                            selectedMergeMethod ? ` via ${selectedMergeMethod}` : ""
+                          }`
+                        : pullRequestActionLabel(action)
+                    }
+                    variant={action === "merge" ? "default" : "outline"}
+                    onClick={() =>
+                      void performAction(
+                        action,
+                        action === "merge" && selectedMergeMethod
+                          ? { mergeMethod: selectedMergeMethod }
+                          : undefined,
+                      )
+                    }
+                  >
+                    {actionPending === action ? (
+                      "Working…"
+                    ) : action === "merge" ? (
+                      <>
+                        <GitMergeIcon className="size-3" />
+                        Merge
+                      </>
+                    ) : (
+                      pullRequestActionLabel(action)
+                    )}
+                  </Button>
+                </span>
               ))}
             {availableActions.includes("close") ? (
               <Button
@@ -1059,38 +1177,12 @@ export function PullRequestDetailPanel({
               </section>
             ) : null}
             {detail.capabilities.comment && detail.viewerPermissions.comment ? (
-              <section>
-                <h2 className="text-sm font-medium">Comment</h2>
-                <Textarea
-                  className="mt-2"
-                  placeholder="Leave a comment"
-                  value={comment}
-                  onChange={(event) => setComment(event.currentTarget.value)}
-                />
-                <div className="mt-2 flex justify-end">
-                  <Button
-                    disabled={postComment.isPending || !comment.trim()}
-                    size="xs"
-                    onClick={() => {
-                      const submittedComment = comment.trim();
-                      void postComment
-                        .mutateAsync({ ...reference, body: submittedComment })
-                        .then(() =>
-                          setComment((current) => (current === submittedComment ? "" : current)),
-                        )
-                        .catch((error) =>
-                          toastManager.add({
-                            type: "error",
-                            title: "Could not post comment",
-                            description: errorMessage(error),
-                          }),
-                        );
-                    }}
-                  >
-                    Comment
-                  </Button>
-                </div>
-              </section>
+              <CommentComposer
+                value={comment}
+                disabled={postComment.isPending}
+                onChange={setComment}
+                onSubmit={submitComment}
+              />
             ) : null}
           </div>
         ) : null}
@@ -1123,9 +1215,7 @@ export function PullRequestDetailPanel({
                     </span>
                   ) : null}
                   {item.kind === "review" ? (
-                    <span className="rounded bg-accent px-1 py-px font-medium text-foreground">
-                      Review
-                    </span>
+                    <ReviewVerdictBadge reviewState={item.reviewState} />
                   ) : null}
                 </div>
                 <div className="mt-2 text-sm">
@@ -1159,6 +1249,16 @@ export function PullRequestDetailPanel({
             ) : null}
             {conversationItems.length === 0 ? (
               <p className="text-sm text-muted-foreground">No conversation yet.</p>
+            ) : null}
+            {detail.capabilities.comment && detail.viewerPermissions.comment ? (
+              <div className="sticky bottom-0 -mx-4 border-t border-border bg-background px-4 pt-3 pb-4">
+                <CommentComposer
+                  value={comment}
+                  disabled={postComment.isPending}
+                  onChange={setComment}
+                  onSubmit={submitComment}
+                />
+              </div>
             ) : null}
           </div>
         ) : null}

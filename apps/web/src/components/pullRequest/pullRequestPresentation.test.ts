@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  pullRequestReviewVerdictPresentation,
   summarizePullRequestChecks,
   toRenderablePullRequestMarkdown,
 } from "./pullRequestPresentation";
@@ -82,6 +83,35 @@ describe("toRenderablePullRequestMarkdown", () => {
     expect(toRenderablePullRequestMarkdown("See `` <details> `` done")).toBe(
       "See `` <details> `` done",
     );
+  });
+});
+
+describe("pullRequestReviewVerdictPresentation", () => {
+  it("badges verdicts and leaves plain reviews unbadged", () => {
+    expect(pullRequestReviewVerdictPresentation("APPROVED")).toEqual({
+      label: "Approved",
+      variant: "success",
+    });
+    expect(pullRequestReviewVerdictPresentation("approved")).toEqual({
+      label: "Approved",
+      variant: "success",
+    });
+    expect(pullRequestReviewVerdictPresentation("CHANGES_REQUESTED")).toEqual({
+      label: "Changes requested",
+      variant: "error",
+    });
+    expect(pullRequestReviewVerdictPresentation("DISMISSED")).toEqual({
+      label: "Review dismissed",
+      variant: "outline",
+    });
+    expect(pullRequestReviewVerdictPresentation("COMMENTED")).toEqual({
+      label: "Review",
+      variant: null,
+    });
+    expect(pullRequestReviewVerdictPresentation(null)).toEqual({
+      label: "Review",
+      variant: null,
+    });
   });
 });
 

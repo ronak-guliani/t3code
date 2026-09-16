@@ -230,6 +230,28 @@ export function PullRequestMetaLine({
 }
 
 /**
+ * The verdict a submitted review carries, read the way the host reports it.
+ * Approvals and change requests must not wear the same badge: a timeline
+ * where they do makes every review read as mere discussion. A null variant
+ * means the plain "Review" label rather than a verdict pill.
+ */
+export function pullRequestReviewVerdictPresentation(reviewState: string | null): {
+  readonly label: string;
+  readonly variant: "success" | "error" | "outline" | null;
+} {
+  switch (reviewState?.toUpperCase()) {
+    case "APPROVED":
+      return { label: "Approved", variant: "success" };
+    case "CHANGES_REQUESTED":
+      return { label: "Changes requested", variant: "error" };
+    case "DISMISSED":
+      return { label: "Review dismissed", variant: "outline" };
+    default:
+      return { label: "Review", variant: null };
+  }
+}
+
+/**
  * Normalizes a label color to a CSS color, or null when it is absent. Label
  * colors arrive as bare hex without the leading `#`.
  */
