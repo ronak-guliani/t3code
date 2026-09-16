@@ -151,6 +151,7 @@ export const RPC_REQUIRED_SCOPES = {
   [ORCHESTRATION_WS_METHODS.searchTranscript]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getShellSnapshot]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getThreadSnapshot]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_WS_METHODS.readThread]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.subscribeShell]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.subscribeThread]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: AuthOrchestrationReadScope,

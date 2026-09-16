@@ -2,6 +2,7 @@ import { Effect, Layer } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 
 import { ServerConfig } from "./config.ts";
+import { installAgentCliEnvironment } from "./cli/agentEnvironment.ts";
 import { ServerStartupClaimLive } from "./serverStartupClaim.ts";
 import {
   assetRouteLayer,
@@ -86,6 +87,7 @@ import {
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
+  orchestrationThreadReadRouteLayer,
   worktreeCleanupInventoryRouteLayer,
   worktreeCleanupKeepRouteLayer,
   worktreeCleanupRetryRouteLayer,
@@ -447,6 +449,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
+  orchestrationThreadReadRouteLayer,
   worktreeCleanupInventoryRouteLayer,
   worktreeCleanupKeepRouteLayer,
   worktreeCleanupRetryRouteLayer,
@@ -469,6 +472,7 @@ export const makeServerLayer = Layer.unwrap(
     const config = yield* ServerConfig;
 
     fixPath();
+    yield* installAgentCliEnvironment(config.baseDir, config.baseDir);
 
     const httpListeningLayer = Layer.effectDiscard(
       Effect.gen(function* () {

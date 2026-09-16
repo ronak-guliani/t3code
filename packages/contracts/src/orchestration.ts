@@ -41,6 +41,7 @@ export const ORCHESTRATION_WS_METHODS = {
   replayEvents: "orchestration.replayEvents",
   getShellSnapshot: "orchestration.getShellSnapshot",
   getThreadSnapshot: "orchestration.getThreadSnapshot",
+  readThread: "orchestration.readThread",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
@@ -815,6 +816,25 @@ export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   ),
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;
+
+export const OrchestrationReadThreadInput = Schema.Struct({
+  thread: TrimmedNonEmptyString,
+  view: Schema.Literals(["summary", "messages", "activities"]),
+  limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),
+  before: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(2048))),
+});
+export type OrchestrationReadThreadInput = typeof OrchestrationReadThreadInput.Type;
+
+export const OrchestrationReadThreadResult = Schema.Struct({
+  thread: OrchestrationThreadShell,
+  messages: Schema.optionalKey(Schema.Array(OrchestrationMessage)),
+  activities: Schema.optionalKey(Schema.Array(OrchestrationThreadActivity)),
+  page: Schema.Struct({
+    hasMore: Schema.Boolean,
+    before: Schema.NullOr(Schema.String),
+  }),
+});
+export type OrchestrationReadThreadResult = typeof OrchestrationReadThreadResult.Type;
 
 export const ProjectCreateCommand = Schema.Struct({
   type: Schema.Literal("project.create"),
@@ -2634,6 +2654,10 @@ const OrchestrationReplayEventsResult = Schema.Array(OrchestrationEvent);
 export type OrchestrationReplayEventsResult = typeof OrchestrationReplayEventsResult.Type;
 
 export const OrchestrationRpcSchemas = {
+  readThread: {
+    input: OrchestrationReadThreadInput,
+    output: OrchestrationReadThreadResult,
+  },
   dispatchCommand: {
     input: ClientOrchestrationCommand,
     output: DispatchResult,
@@ -2691,6 +2715,13 @@ export const OrchestrationRpcSchemas = {
     output: OrchestrationShellStreamItem,
   },
 } as const;
+
+export class OrchestrationReadThreadInputError extends Schema.TaggedErrorClass<OrchestrationReadThreadInputError>()(
+  "OrchestrationReadThreadInputError",
+  {
+    message: TrimmedNonEmptyString,
+  },
+) {}
 
 export class OrchestrationGetSnapshotError extends Schema.TaggedErrorClass<OrchestrationGetSnapshotError>()(
   "OrchestrationGetSnapshotError",

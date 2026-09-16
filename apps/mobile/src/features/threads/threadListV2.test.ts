@@ -1384,6 +1384,31 @@ describe("buildThreadListV2Items", () => {
     ]);
   });
 
+  it("filters by linked pull request", () => {
+    const { items } = buildThreadListV2Items({
+      threads: [
+        makeThread({
+          id: ThreadId.make("match"),
+          title: "Unrelated title",
+          pullRequest: {
+            number: 10839,
+            url: "https://github.com/pingdotgg/t3code/pull/10839",
+            title: "Find linked PR threads",
+            baseBranch: "main",
+            headBranch: "feat/search",
+            state: "open",
+          },
+        }),
+        makeThread({ id: ThreadId.make("miss"), title: "Other work" }),
+      ],
+      environmentId: null,
+      searchQuery: "https://github.com/pingdotgg/t3code/pull/10839?tab=files",
+      now: NOW,
+    });
+
+    expect(items.map((item) => item.thread.id)).toEqual(["match"]);
+  });
+
   it("includes a thread matched by message content", () => {
     const thread = makeThread({
       id: ThreadId.make("content-match"),

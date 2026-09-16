@@ -1,4 +1,8 @@
 import {
+  normalizeThreadPullRequestSearchQuery,
+  threadPullRequestSearchTerms,
+} from "@t3tools/shared/threadPullRequests";
+import {
   buildProjectGroups,
   derivePhysicalProjectKey,
   deriveProjectGroupLabel,
@@ -289,7 +293,8 @@ export function buildHomeThreadGroups(input: {
     groups.get(groupKey)?.threads.push(thread);
   }
 
-  const query = input.searchQuery.trim().toLocaleLowerCase();
+  const rawQuery = input.searchQuery.trim();
+  const query = (normalizeThreadPullRequestSearchQuery(rawQuery) ?? rawQuery).toLocaleLowerCase();
   const result: HomeThreadGroup[] = [];
 
   for (const group of groups.values()) {
@@ -314,6 +319,9 @@ export function buildHomeThreadGroups(input: {
               .filter(
                 (thread) =>
                   thread.title.toLocaleLowerCase().includes(query) ||
+                  threadPullRequestSearchTerms(thread).some((term) =>
+                    term.toLocaleLowerCase().includes(query),
+                  ) ||
                   input.matchedThreadKeys?.has(
                     threadSearchMatchKey({
                       environmentId: thread.environmentId,
