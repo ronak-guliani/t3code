@@ -111,10 +111,5 @@ export function threadPullRequestSearchTerms(thread: {
   const legacy = thread.pullRequest;
   if (legacy === null || legacy === undefined) return [];
   const identity = threadPullRequestIdentity(legacy);
-  return [
-    `#${legacy.number}`,
-    `${identity.repository}#${legacy.number}`,
-    legacy.url,
-    legacy.title,
-  ];
+  return [`#${legacy.number}`, `${identity.repository}#${legacy.number}`, legacy.url, legacy.title];
 }

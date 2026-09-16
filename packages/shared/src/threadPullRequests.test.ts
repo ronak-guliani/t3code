@@ -45,9 +45,9 @@ describe("thread pull request identity", () => {
     });
 
     it("falls back to the legacy association only when no links exist", () => {
-      expect(threadPullRequestSearchTerms({ pullRequests: [], pullRequest: association })).toContain(
-        "#42",
-      );
+      expect(
+        threadPullRequestSearchTerms({ pullRequests: [], pullRequest: association }),
+      ).toContain("#42");
       expect(
         threadPullRequestSearchTerms({
           pullRequests: [
