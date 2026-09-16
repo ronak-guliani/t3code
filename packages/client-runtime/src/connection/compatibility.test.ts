@@ -44,7 +44,7 @@ describe("orchestration protocol compatibility", () => {
     }
   });
 
-  it("blocks a different protocol before connecting", () => {
+  it("reports a mismatched protocol as unsupported", () => {
     const error = orchestrationProtocolCompatibilityError(
       descriptor(ORCHESTRATION_PROTOCOL_VERSION + 1),
     );
