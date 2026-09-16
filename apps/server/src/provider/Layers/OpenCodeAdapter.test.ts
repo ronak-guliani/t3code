@@ -1,5 +1,6 @@
 import assert, * as NodeAssert from "node:assert/strict";
 
+import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { Context, Effect, Exit, Fiber, Layer, Option, Schema, Scope, Stream } from "effect";
@@ -10,6 +11,7 @@ import type { Event as OpenCodeEvent, ToolPart } from "@opencode-ai/sdk/v2";
 
 import {
   ApprovalRequestId,
+  EnvironmentId,
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -17,6 +19,8 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { ServerConfig } from "../../config.ts";
+import { ServerEnvironment } from "../../environment/Services/ServerEnvironment.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
@@ -81,6 +85,7 @@ const runtimeMock = {
     forkCalls: [] as Array<{ sessionID: string; directory?: string }>,
     sessionChildren: new Map<string, Array<{ id: string }>>(),
     sessionChildrenCalls: [] as string[],
+    mcpAddCalls: [] as Array<Record<string, unknown>>,
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -114,6 +119,7 @@ const runtimeMock = {
     this.state.forkCalls.length = 0;
     this.state.sessionChildren.clear();
     this.state.sessionChildrenCalls.length = 0;
+    this.state.mcpAddCalls.length = 0;
   },
 };
 
@@ -281,6 +287,12 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           }
         },
       },
+      mcp: {
+        add: async (input: Record<string, unknown>) => {
+          runtimeMock.state.mcpAddCalls.push(input);
+          return { data: { status: "connected" } };
+        },
+      },
     }) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
   loadOpenCodeInventory: () =>
     Effect.fail(
@@ -343,12 +355,82 @@ const OpenCodeAdapterTestLayer = Layer.effect(
   Layer.provideMerge(NodeServices.layer),
 );
 
+const OpenCodeLocalMcpAdapterTestLayer = Layer.effect(
+  OpenCodeAdapter,
+  makeOpenCodeAdapter(
+    Schema.decodeSync(OpenCodeSettings)({
+      binaryPath: "fake-opencode",
+    }),
+  ),
+).pipe(
+  Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+  Layer.provideMerge(ServerSettingsService.layerTest()),
+  Layer.provideMerge(providerSessionDirectoryTestLayer),
+  Layer.provideMerge(NodeServices.layer),
+);
+
+const mcpSessionRegistryTestLayer = McpSessionRegistry.layer.pipe(
+  Layer.provideMerge(
+    Layer.succeed(
+      ServerEnvironment,
+      ServerEnvironment.of({
+        getEnvironmentId: Effect.succeed(EnvironmentId.make("opencode-adapter-test")),
+        getDescriptor: Effect.die("unused"),
+      }),
+    ),
+  ),
+  Layer.provideMerge(NodeHttpServer.layerTest),
+  Layer.provideMerge(NodeServices.layer),
+);
+
 beforeEach(() => {
   runtimeMock.reset();
 });
 
 const sleep = (ms: number) =>
   Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+it.layer(Layer.merge(OpenCodeLocalMcpAdapterTestLayer, mcpSessionRegistryTestLayer))(
+  "OpenCodeAdapterLive MCP routing",
+  (it) => {
+    it.effect("adds the thread MCP server to the requested OpenCode directory", () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-opencode-mcp-directory");
+        const directory = "/tmp/thread-opencode-mcp-directory";
+        yield* McpSessionRegistry.issueActiveMcpCredential({
+          threadId,
+          providerInstanceId: ProviderInstanceId.make("opencode"),
+        });
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          cwd: directory,
+          runtimeMode: "full-access",
+        });
+
+        assert.equal(runtimeMock.state.mcpAddCalls.length, 1);
+        const call = runtimeMock.state.mcpAddCalls[0];
+        assert.equal(call?.directory, directory);
+        assert.equal(call?.name, "t3-code");
+        const config = call?.config as
+          | {
+              type?: unknown;
+              url?: unknown;
+              headers?: { Authorization?: unknown };
+              oauth?: unknown;
+            }
+          | undefined;
+        assert.equal(config?.type, "remote");
+        assert.match(String(config?.url), /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+        assert.match(String(config?.headers?.Authorization), /^Bearer \S+$/);
+        assert.equal(config?.oauth, false);
+      }),
+    );
+  },
+);
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
   for (const runtimeMode of ["full-access", "approval-required", "auto-accept-edits"] as const) {

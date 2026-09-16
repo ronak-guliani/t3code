@@ -1425,6 +1425,7 @@ export function makeOpenCodeAdapter(
                 } else {
                   yield* runOpenCodeSdk("mcp.add", () =>
                     client.mcp.add({
+                      directory,
                       name: "t3-code",
                       config: {
                         type: "remote",
