@@ -76,12 +76,19 @@ remote helper cleanup without shutting down simulators.
 
 Host startup locks are per host, so a slow SSH install cannot block a healthy
 host. The service coordinates configuration replacement and agent-config writes,
-and checks access again after startup. Settings subscriptions reconcile host
+and checks access again before writing. Endpoint persistence uses the host adapter's
+lifecycle lock and its current agent endpoint, not an earlier readiness snapshot,
+so an in-flight target request cannot overwrite a reconnect's new port and token.
+Known unsupported hosts skip readiness; empty SSH platform lists still allow initial discovery.
+Testing a saved destination refreshes its cached platform availability after toolchain changes.
+Settings subscriptions reconcile host
 additions, replacements, and removals. `device.testHost` requires orchestration
 operate scope and performs a non-installing probe.
 
 Settings fan out from the selected environments using each environment's current
-host list. SSH config resolution detects self-targets without connecting;
+host list. IDs are environment-local: edits and removals match the original SSH
+destination as well as the ID, and refuse unrelated ID collisions on insertion.
+SSH config resolution detects self-targets without connecting;
 forwarded ports and proxied destinations are retained. Saved clients consume
 incremental settings events so their controls reflect server-confirmed changes.
 

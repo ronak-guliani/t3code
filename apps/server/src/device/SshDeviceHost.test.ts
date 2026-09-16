@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Net from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -27,9 +28,14 @@ it.effect(
       let forwards = 0;
       let failForward = true;
       let rejectConfig = true;
+      let platformAvailable = true;
+      let failProbe = false;
       const exits: Array<Deferred.Deferred<ChildProcessSpawner.ExitCode>> = [];
       const reconnecting = yield* Deferred.make<void>();
       const reconnected = yield* Deferred.make<void>();
+      const agentReconnecting = yield* Deferred.make<void>();
+      const agentReconnected = yield* Deferred.make<void>();
+      let savedEndpoint: string | undefined;
       let readyCount = 0;
       const spawner = ChildProcessSpawner.make((command) =>
         Effect.gen(function* () {
@@ -72,9 +78,16 @@ it.effect(
             );
             const mode = /const mode = "([^"]+)"/.exec(script)?.[1] ?? "";
             modes.push(mode);
+            if (mode === "probe" && failProbe)
+              return yield* PlatformError.systemError({
+                _tag: "Unknown",
+                module: "ChildProcess",
+                method: "spawn",
+                description: "Probe connection refused",
+              });
             output = JSON.stringify({
               nodePath: "/node",
-              platforms: [{ platform: "ios", available: true }],
+              platforms: [{ platform: "ios", available: platformAvailable }],
               hubPort: 1234,
               helpers: { serveSimAxSettings: null, serveSimCli: null },
               ...(mode === "agent-start"
@@ -101,7 +114,7 @@ it.effect(
       );
       const host = yield* SshDeviceHost.make(
         { id: "test", label: "Test", target: "test.example" },
-        () =>
+        (ready) =>
           rejectConfig
             ? Effect.fail(
                 new DeviceHost.DeviceHostError({
@@ -110,13 +123,19 @@ it.effect(
                   cause: new Error("fixture failure"),
                 }),
               )
-            : Effect.void,
+            : Effect.sync(() => {
+                savedEndpoint = ready.agentDevice.baseUrl;
+              }),
         (status, detail) =>
           Effect.gen(function* () {
-            if (detail?.startsWith("Reconnecting"))
+            if (detail?.startsWith("Reconnecting")) {
               yield* Deferred.succeed(reconnecting, undefined);
+              if (readyCount >= 3) yield* Deferred.succeed(agentReconnecting, undefined);
+            }
             if (status === "ready" && ++readyCount === 2)
               yield* Deferred.succeed(reconnected, undefined);
+            if (status === "ready" && readyCount === 4)
+              yield* Deferred.succeed(agentReconnected, undefined);
           }),
       ).pipe(
         Effect.provide(Layer.mergeAll(ServerConfig.layerTest(home, home), Net.NetService.layer)),
@@ -148,8 +167,44 @@ it.effect(
       yield* host.ensureAgentReady(() => Effect.void);
       yield* host.platformAvailability("ios");
       expect((yield* host.summary).agentDeviceInstalled).toBe(true);
+      platformAvailable = false;
+      expect((yield* host.testConnection).platforms[0]?.available).toBe(false);
+      expect((yield* host.summary).platforms[0]?.available).toBe(false);
+      platformAvailable = true;
+      expect((yield* host.testConnection).platforms[0]?.available).toBe(true);
+      expect((yield* host.summary).agentDeviceInstalled).toBe(true);
+      failProbe = true;
+      expect((yield* host.testConnection.pipe(Effect.result))._tag).toBe("Failure");
+      failProbe = false;
+      const oldEndpoint = savedEndpoint;
+      const writeStarted = yield* Deferred.make<void>();
+      const finishWrite = yield* Deferred.make<void>();
+      const writing = yield* host
+        .withCurrentAgent((ready) =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(writeStarted, undefined);
+            yield* Deferred.await(finishWrite);
+            savedEndpoint = ready.agentDevice.baseUrl;
+          }),
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(writeStarted);
+      yield* Deferred.succeed(exits.at(-1)!, ChildProcessSpawner.ExitCode(255));
+      yield* Deferred.await(agentReconnecting);
+      yield* TestClock.adjust("1 second");
+      expect(modes.filter((mode) => mode === "agent-start")).toHaveLength(2);
+      yield* Deferred.succeed(finishWrite, undefined);
+      yield* Fiber.join(writing);
+      yield* Deferred.await(agentReconnected);
+      expect(savedEndpoint).not.toBe(oldEndpoint);
+      expect(
+        yield* host.withCurrentAgent((ready) => Effect.succeed(ready.agentDevice.baseUrl)),
+      ).toBe(savedEndpoint);
       yield* host.stopAgent;
       expect(forwards).toBe(1);
+      expect((yield* host.withCurrentAgent(() => Effect.void).pipe(Effect.result))._tag).toBe(
+        "Failure",
+      );
       yield* host.stop;
       expect(forwards).toBe(0);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),

@@ -15,7 +15,7 @@ describe("device host changes across environments", () => {
   it("edits and removes the shared host while preserving unrelated hosts", () => {
     const edited = { ...shared, target: "julius@new-address" };
     const saved = [[shared], [local, shared]].map((hosts) =>
-      updateDeviceHosts(hosts, edited, false),
+      updateDeviceHosts(hosts, edited, false, shared),
     );
     expect(saved).toEqual([[edited], [local, edited]]);
     expect(saved.map((hosts) => updateDeviceHosts(hosts, edited, true))).toEqual([[], [local]]);
@@ -53,5 +53,31 @@ describe("device host changes across environments", () => {
     const sibling = { ...shared, id: "sibling" };
     expect(() => updateDeviceHosts([remote, sibling], shared, true)).toThrow("Multiple hosts");
     expect(() => updateDeviceHosts([remote, sibling], shared, false)).toThrow("Multiple hosts");
+  });
+
+  it("does not trust IDs shared by unrelated destinations on different environments", () => {
+    const collision = { ...local, id: shared.id };
+    const remote = { ...shared, id: "remote-id" };
+    const edited = { ...shared, target: "julius@new-address" };
+    expect(updateDeviceHosts([collision, remote], edited, false, shared)).toEqual([
+      collision,
+      { ...edited, id: remote.id },
+    ]);
+    expect(updateDeviceHosts([collision, remote], shared, true)).toEqual([collision]);
+    expect(updateDeviceHosts([collision], shared, true)).toEqual([collision]);
+    expect(() => updateDeviceHosts([collision], edited, false, shared)).toThrow(
+      "another SSH destination",
+    );
+    expect(() => updateDeviceHosts([collision], shared, false)).toThrow("another SSH destination");
+  });
+
+  it("retries an edit by its updated destination without overwriting an ID collision", () => {
+    const collision = { ...local, id: shared.id };
+    const edited = { ...shared, target: "julius@new-address" };
+    const saved = { ...edited, id: "remote-id" };
+    expect(updateDeviceHosts([collision, saved], edited, false, shared)).toEqual([
+      collision,
+      saved,
+    ]);
   });
 });

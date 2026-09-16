@@ -23,10 +23,17 @@ export function updateDeviceHosts(
   // A retry can encounter the updated destination on an environment that
   // already saved, including one with a different environment-local host ID.
   const existing =
-    hosts.find((candidate) => candidate.id === original.id) ??
+    hosts.find(
+      (candidate) => candidate.id === original.id && sameDestination(candidate, original),
+    ) ??
     findDestination(original) ??
     (remove ? undefined : findDestination(host));
   if (remove) return hosts.filter((candidate) => candidate.id !== existing?.id);
+  if (!existing && hosts.some((candidate) => candidate.id === host.id)) {
+    throw new Error(
+      "This host ID belongs to another SSH destination. Select the environment and add the host separately.",
+    );
+  }
   return existing
     ? hosts.map((candidate) =>
         candidate.id === existing.id ? { ...host, id: existing.id } : candidate,

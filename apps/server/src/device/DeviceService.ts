@@ -160,6 +160,10 @@ interface ServiceState {
 const vendorPrefix = (platform: DevicePlatform) =>
   platform === "ios" ? "/vendor/serve-sim" : "/vendor/serve-emu";
 
+const isUnsupportedHost = (summary: DeviceHostSummary) =>
+  (summary.kind === "local" || summary.platforms.length > 0) &&
+  !summary.platforms.some((platform) => platform.available);
+
 export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* (
   hosts: ReadonlyMap<DeviceHostId, DeviceHost.DeviceHost["Service"]>,
   testHost: DeviceService["Service"]["testHost"] = (host) =>
@@ -340,8 +344,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     if (!(yield* readDeviceSettings).enabled) return null;
     const host = yield* resolveHost(hostId);
     const summary = yield* host.summary;
-    if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available))
-      return null;
+    if (isUnsupportedHost(summary)) return null;
     return yield* readiness(host.id);
   });
 
@@ -351,8 +354,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       if (!deviceSettings.enabled || !deviceSettings.agentAccessEnabled) return null;
       const host = yield* resolveHost(hostId);
       const summary = yield* host.summary;
-      if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available))
-        return null;
+      if (isUnsupportedHost(summary)) return null;
       const ready = yield* host
         .ensureAgentReady((phase) => setHostStatus(host.id, { status: phase }).pipe(Effect.asVoid))
         .pipe(
@@ -884,12 +886,21 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
             });
           const configPath = yield* lifecycleLock.withPermit(
             Effect.gen(function* () {
-              if (hosts.get(host.id) !== host)
+              const access = yield* readDeviceSettings;
+              if (hosts.get(host.id) !== host || !access.enabled || !access.agentAccessEnabled)
                 return yield* new DeviceHostUnavailableError({
                   hostId: host.id,
-                  reason: "Host configuration changed. Retry the operation.",
+                  reason: "Host configuration or agent access changed. Retry the operation.",
                 });
-              return yield* configureAgent(input.hostId, ready);
+              return yield* host
+                .withCurrentAgent((current) => configureAgent(input.hostId, current))
+                .pipe(
+                  Effect.mapError((error) =>
+                    Schema.is(DeviceHost.DeviceHostError)(error)
+                      ? new DeviceHostUnavailableError({ hostId: host.id, reason: error.message })
+                      : error,
+                  ),
+                );
             }),
           );
           return [
@@ -955,6 +966,14 @@ export const make = Effect.gen(function* () {
   const hosts = new Map<DeviceHostId, DeviceHost.DeviceHost["Service"]>([
     [localHost.id, localHost],
   ]);
+  const configured = new Map<
+    string,
+    {
+      config: SshDeviceHostConfig;
+      scope: Scope.Closeable;
+      testConnection: Effect.Effect<DeviceHostSummary, DeviceHost.DeviceHostError>;
+    }
+  >();
   const configureAgent = (hostId: DeviceHostId, ready: DeviceHost.DeviceHostAgentReady) => {
     const file = agentDeviceConfigPath(config.stateDir, hostId, path);
     return writeAgentDeviceConfig(file, ready.agentDevice).pipe(
@@ -982,6 +1001,15 @@ export const make = Effect.gen(function* () {
         if (yield* isLocalSshDeviceHost(host).pipe(Effect.provide(localTargetContext))) {
           return yield* localHost.summary;
         }
+        const saved = configured.get(host.id);
+        if (
+          saved &&
+          saved.config.target === host.target &&
+          saved.config.port === host.port &&
+          saved.config.identityFile === host.identityFile
+        ) {
+          return yield* saved.testConnection;
+        }
         return yield* SshDeviceHost.probe(host).pipe(Effect.provide(probeContext));
       }).pipe(
         Effect.mapError(
@@ -996,7 +1024,6 @@ export const make = Effect.gen(function* () {
   );
   const hostContext =
     yield* Effect.context<Effect.Services<ReturnType<typeof SshDeviceHost.make>>>();
-  const configured = new Map<string, { config: SshDeviceHostConfig; scope: Scope.Closeable }>();
   const reconcile = (configuredHosts: ReadonlyArray<SshDeviceHostConfig>) =>
     Effect.gen(function* () {
       const next = yield* remoteSshDeviceHosts(configuredHosts).pipe(
@@ -1062,7 +1089,11 @@ export const make = Effect.gen(function* () {
                   .pipe(Effect.asVoid),
             ).pipe(Effect.provideService(Scope.Scope, hostScope), Effect.provide(hostContext));
             hosts.set(host.id, instance);
-            configured.set(host.id, { config: host, scope: hostScope });
+            configured.set(host.id, {
+              config: host,
+              scope: hostScope,
+              testConnection: instance.testConnection,
+            });
           }
           yield* service.refreshHosts;
         }),

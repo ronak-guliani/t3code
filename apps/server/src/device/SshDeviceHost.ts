@@ -420,10 +420,28 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
       }),
     );
   yield* Effect.addFinalizer(() => stop);
-  return {
+  const testConnection = provide(probe(config)).pipe(
+    Effect.map((value) => {
+      summary = { ...summary, platforms: value.platforms };
+      return summary;
+    }),
+  );
+  const host = {
     id: config.id,
     summary: Effect.sync(() => summary),
     current: Effect.sync(() => ready),
+    withCurrentAgent: (use) =>
+      lock.withPermit(
+        Effect.gen(function* () {
+          if (!ready?.agentDevice)
+            return yield* new DeviceHost.DeviceHostError({
+              hostId: config.id,
+              step: "using agent tools; the host is disconnected or agent access has stopped",
+              cause: new Error("No current agent endpoint. Retry after the host reconnects."),
+            });
+          return yield* use({ ...ready, agentDevice: ready.agentDevice });
+        }),
+      ),
     ensureReady,
     ensureAgentReady: (onPhase) =>
       onPhase("installing").pipe(
@@ -455,11 +473,8 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
     ),
     stop,
     platformAvailability: (platform) =>
-      provide(probe(config)).pipe(
-        Effect.map((value) => {
-          summary = { ...summary, platforms: value.platforms };
-          return value.platforms.find((p) => p.platform === platform)!;
-        }),
+      testConnection.pipe(
+        Effect.map((value) => value.platforms.find((p) => p.platform === platform)!),
         Effect.orElseSucceed(() => ({
           platform,
           available: false,
@@ -467,4 +482,5 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
         })),
       ),
   } satisfies DeviceHost.DeviceHost["Service"];
+  return { ...host, testConnection };
 });

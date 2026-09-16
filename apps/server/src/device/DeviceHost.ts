@@ -99,6 +99,10 @@ export class DeviceHost extends Context.Service<
     readonly ensureAgentReady: (
       onPhase: (phase: "installing" | "starting") => Effect.Effect<void>,
     ) => Effect.Effect<DeviceHostAgentReady, DeviceHostError | DeviceHostTimeoutError>;
+    /** Uses the current agent endpoint while excluding reconnects and agent teardown. Never starts tools. */
+    readonly withCurrentAgent: <A, E, R>(
+      use: (ready: DeviceHostAgentReady) => Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | DeviceHostError, R>;
     /** Current endpoints when already running, without starting anything. */
     readonly current: Effect.Effect<DeviceHostReady | null>;
     /** Stops only agent-device. Manual viewing through the hub stays available. */

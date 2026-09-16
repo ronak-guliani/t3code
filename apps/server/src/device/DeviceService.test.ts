@@ -101,6 +101,11 @@ const fixture = Effect.fn("fixture")(function* (
           agentDevice: { baseUrl: "http://agent.test", token: "test", entryPath: "/agent" },
         };
       }),
+    withCurrentAgent: (use) =>
+      use({
+        ...ready,
+        agentDevice: { baseUrl: "http://agent.test", token: "test", entryPath: "/agent" },
+      }),
     current: Effect.succeed(null),
     stopAgent: Effect.sync(() => {
       agentStops.push("stop");
