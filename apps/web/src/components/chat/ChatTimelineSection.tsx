@@ -41,6 +41,7 @@ import { revokeBlobPreviewUrl } from "../../pendingTurnStore";
 import {
   deriveMessagesTimelineRows,
   deriveRevertTurnCountByUserMessageId,
+  stabilizeResponseMetaByTurnId,
 } from "./MessagesTimeline.logic";
 import { MessagesTimeline, type AssistantResponseMeta } from "./MessagesTimeline";
 import { FindInChatBar } from "./FindInChatBar";
@@ -378,6 +379,13 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       return byMessageId;
     }, [timelineMessages, turnDiffSummaries]);
 
+    // Stabilize entry identity: the loop below rebuilds fresh `{...existing}`
+    // objects on every `threadActivities` change, which would otherwise give
+    // settled turns a new identity per chunk and defeat the memoized assistant
+    // presentational in MessagesTimeline.
+    const responseMetaByTurnIdRef = useRef<ReadonlyMap<TurnId, AssistantResponseMeta> | undefined>(
+      undefined,
+    );
     const responseMetaByTurnId = useMemo(() => {
       const metadata = new Map<TurnId, AssistantResponseMeta>();
       for (const activity of threadActivities) {
@@ -426,7 +434,9 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
           });
         }
       }
-      return metadata;
+      const stabilized = stabilizeResponseMetaByTurnId(metadata, responseMetaByTurnIdRef.current);
+      responseMetaByTurnIdRef.current = stabilized;
+      return stabilized;
     }, [threadActivities]);
 
     const revertTurnCountByUserMessageId = useMemo(

@@ -23,6 +23,7 @@ import ReactMarkdown from "react-markdown";
 import { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useShallow } from "zustand/react/shallow";
+import { stabilizeStringMap } from "./chat/MessagesTimeline.logic";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -1185,6 +1186,10 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
     ],
     [environmentIds, primaryEnvironmentId, savedEnvironmentById],
   );
+  // Stabilize the map identity when streaming text grows without adding new
+  // references: a fresh Map per chunk would otherwise rebuild remarkPlugins
+  // and force react-markdown to re-tokenize the active row every chunk.
+  const githubReferencesRef = useRef<ReadonlyMap<string, string> | undefined>(undefined);
   const githubReferences = useMemo(() => {
     const references = new Map<string, string>();
     const navigation = currentThread?.pullRequest?.url
@@ -1227,7 +1232,9 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
       );
     }
 
-    return references;
+    const stabilized = stabilizeStringMap(references, githubReferencesRef.current);
+    githubReferencesRef.current = stabilized;
+    return stabilized;
   }, [
     currentProject?.repositoryIdentity?.canonicalKey,
     currentProject?.repositoryIdentity?.name,
