@@ -11,6 +11,20 @@ describe("arraysRefEqual", () => {
     expect(arraysRefEqual([item], [item, item])).toBe(false);
     expect(arraysRefEqual([], [])).toBe(true);
   });
+
+  it("uses Object.is semantics for elements", () => {
+    expect(arraysRefEqual([Number.NaN], [Number.NaN])).toBe(true);
+    expect(arraysRefEqual([0], [-0])).toBe(false);
+  });
+
+  it("does not skip sparse holes", () => {
+    // eslint-disable-next-line no-sparse-arrays
+    expect(arraysRefEqual([,], [,])).toBe(true);
+    // eslint-disable-next-line no-sparse-arrays
+    expect(arraysRefEqual([,], [undefined])).toBe(false);
+    // eslint-disable-next-line no-sparse-arrays
+    expect(arraysRefEqual([undefined], [,])).toBe(false);
+  });
 });
 
 describe("useMemoEqual", () => {
