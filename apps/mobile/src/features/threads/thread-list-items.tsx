@@ -183,6 +183,9 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly titleRegenerationSupported: boolean;
   readonly onSwipeableWillOpen: (methods: SwipeableMethods) => void;
   readonly onSwipeableClose: (methods: SwipeableMethods) => void;
+  /** Collapses/expands the inline subchat group. Absent on screens without
+      collapse state (related-group view keeps every group open). */
+  readonly onToggleExpanded?: (threadKey: string) => void;
   readonly simultaneousSwipeGesture?: ComponentProps<
     typeof ThreadSwipeable
   >["simultaneousWithExternalGesture"];
@@ -204,6 +207,11 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const handleSelect = useCallback(
     () => (thread.virtualAgentRun ? nesting.openParent() : onSelectThread(thread)),
     [nesting.openParent, onSelectThread, thread],
+  );
+  const hierarchyKey = props.hierarchy?.threadKey ?? `${thread.environmentId}:${thread.id}`;
+  const handleToggleExpanded = useCallback(
+    () => props.onToggleExpanded?.(hierarchyKey),
+    [hierarchyKey, props.onToggleExpanded],
   );
   const menuActions = useMemo<MenuAction[]>(
     () => [
@@ -276,8 +284,11 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
           status={props.status}
           sidebar={props.variant === "sidebar"}
           depth={props.hierarchy?.depth}
+          isAgentRun={thread.virtualAgentRun !== undefined}
           selected={props.selected}
           showDivider={!props.isLast}
+          expanded={props.hierarchy?.isExpanded ?? true}
+          onToggleExpanded={props.onToggleExpanded ? handleToggleExpanded : undefined}
           related={props.hideRelated ? undefined : { thread, hierarchy: props.hierarchy }}
           pullRequest={pullRequest}
           searchMatch={props.searchMatch}
