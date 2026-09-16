@@ -868,6 +868,14 @@ const make = Effect.gen(function* () {
         : {}),
     });
 
+    // Re-check ownership at the restore mutation boundary. The assertion
+    // above only covers guard capture: a concurrent handoff can
+    // release/reassign the checkout in between, and the restore below would
+    // then rewrite the index and working tree of the new owner. This sits
+    // outside the restore effect on purpose so a stale claim skips the
+    // guard-restore compensation as well.
+    yield* assertThreadWorkspaceOwned(thread);
+
     let providerRolledBack = false;
     let revertCommitted = false;
     let guardRestored = false;
