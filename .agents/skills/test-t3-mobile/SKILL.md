@@ -29,7 +29,7 @@ source .agents/skills/test-t3-mobile/scripts/maestro-env.sh
 # 2. Native client: verify the installed dev client matches the
 #    checkout's native fingerprint, rebuilding only when stale.
 #    Run from the repo root; JS-only changes report "skipped", never rebuild.
-node .agents/skills/test-t3-mobile/scripts/mobile-native-client.mts ensure
+node apps/mobile/scripts/mobile-native-client.mts ensure
 ```
 
 ```bash

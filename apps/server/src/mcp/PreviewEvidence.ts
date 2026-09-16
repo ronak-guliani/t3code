@@ -34,8 +34,11 @@ export const saveBrowserEvidenceFile = async (input: {
   const directory = resolveBrowserEvidenceDir(input.directory);
   const name = `${sanitizePrefix(input.prefix)}-${Date.now().toString(36)}-${randomBytes(6).toString("hex")}.${input.extension}`;
   const path = join(directory, name);
-  await mkdir(directory, { recursive: true });
-  await writeFile(path, input.bytes);
+  // Evidence may capture credentials or private user data: restrict the
+  // directory and file to the owner. Names are unique per write, so creation
+  // never overwrites an existing artifact.
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await writeFile(path, input.bytes, { mode: 0o600 });
   return path;
 };
 

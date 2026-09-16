@@ -172,6 +172,24 @@ it("omits screenshotPath without save and enforces the final text budget", async
   expect((await stat(screenshotPath)).isFile()).toBe(true);
 });
 
+it("never trusts a host-provided screenshotPath", async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), "t3-snapshot-host-path-test-"));
+  const result = await McpHttpServer.encodePreviewSnapshotResult(
+    {
+      url: "https://example.com",
+      title: "Example",
+      visibleText: "hello",
+      screenshotPath: "/host-only/evil.png",
+      screenshot: { mimeType: "image/png", data: png.toString("base64"), width: 1, height: 1 },
+    },
+    { evidenceDir },
+  );
+  expect(result.isError).toBe(false);
+  expect(result.structuredContent).not.toHaveProperty("screenshotPath");
+  const text = result.content.find((item) => item.type === "text") as { text: string };
+  expect(text.text).not.toContain("/host-only/evil.png");
+});
+
 it("returns an actionable expired-session response with a Bearer challenge", () => {
   expect(McpHttpServer.invalidMcpCredentialResponse.status).toBe(401);
   expect(McpHttpServer.invalidMcpCredentialResponse.headers["www-authenticate"]).toBe("Bearer");

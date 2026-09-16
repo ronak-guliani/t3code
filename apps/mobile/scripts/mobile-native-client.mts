@@ -21,21 +21,24 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 const VARIANTS = {
   development: {
     bundleId: "com.ronakguliani.t3code.dev",
-    // Proven manifest URL from references/environment.md. The config scheme
-    // for this variant is t3code-rg-dev (app.config.ts VARIANT_CONFIG); keep
-    // this default aligned with environment.md and override via --manifest-url.
+    scheme: "t3code-rg-dev",
+    // Proven manifest URL from the test-t3-mobile skill references. This uses
+    // the generated exp+ scheme, which expo-dev-client registers for
+    // development only (app.config.ts addGeneratedScheme).
     manifestUrl: "exp+t3-code-rg://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081%2F",
   },
   preview: {
     bundleId: "com.ronakguliani.t3code.preview",
-    manifestUrl: "exp+t3-code-rg://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081%2F",
+    scheme: "t3code-rg-preview",
+    // Non-development builds omit the generated exp+ scheme, so launch via
+    // the variant's registered custom scheme instead.
+    manifestUrl:
+      "t3code-rg-preview://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081%2F",
   },
 } as const;
-
 type Variant = keyof typeof VARIANTS;
 type Reason = "fresh" | "missing-app" | "no-stamp" | "device-changed" | "native-dirty";
 
@@ -72,7 +75,11 @@ function findRepoRoot(start: string): string {
   }
 }
 
-function parseArgs(argv: ReadonlyArray<string>): {
+export function manifestUrlFor(variant: Variant, override: string | undefined): string {
+  return override ?? VARIANTS[variant].manifestUrl;
+}
+
+export function parseArgs(argv: ReadonlyArray<string>): {
   command: "check" | "ensure";
   variant: Variant;
   udid: string | undefined;
@@ -148,11 +155,11 @@ function currentFingerprint(projectRoot: string, variant: Variant): string {
   }
 }
 
-function stampPath(projectRoot: string, variant: Variant): string {
+export function stampPath(projectRoot: string, variant: Variant): string {
   return join(projectRoot, "ios", `.native-fingerprint-${variant}.json`);
 }
 
-function readStamp(path: string): Stamp | null {
+export function readStamp(path: string): Stamp | null {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<Stamp>;
     if (
@@ -176,7 +183,7 @@ function isInstalled(udid: string, bundleId: string): boolean {
   return result.status === 0;
 }
 
-function checkVariant(projectRoot: string, variant: Variant, udid: string): CheckResult {
+export function checkVariant(projectRoot: string, variant: Variant, udid: string): CheckResult {
   const { bundleId } = VARIANTS[variant];
   const fingerprint = currentFingerprint(projectRoot, variant);
   const installed = isInstalled(udid, bundleId);
@@ -254,7 +261,23 @@ function pointAtMetro(udid: string, bundleId: string, manifestUrl: string): void
   execFileSync("xcrun", ["simctl", "openurl", udid, manifestUrl], { stdio: "ignore" });
 }
 
-function ensureVariant(
+/**
+ * Status after a successful rebuild/install: the stamp was just written with
+ * the current fingerprint for this device, so every field must describe the
+ * fresh state rather than the pre-build check that triggered the rebuild.
+ */
+export function rebuiltStatus(checked: CheckResult): CheckResult {
+  return {
+    ...checked,
+    fresh: true,
+    installed: true,
+    fingerprintMatch: true,
+    reason: "fresh",
+    storedFingerprint: checked.currentFingerprint,
+  };
+}
+
+export function ensureVariant(
   projectRoot: string,
   variant: Variant,
   udid: string,
@@ -266,9 +289,9 @@ function ensureVariant(
     if (launch) pointAtMetro(udid, VARIANTS[variant].bundleId, manifestUrl);
     return { ...checked, action: "skipped" };
   }
-  const env = { APP_VARIANT: variant, EXPO_NO_GIT_STATUS: "1" };
   runInherited("node", [join(projectRoot, "scripts", "ios-preflight.mts")], projectRoot);
   const { cmd } = expoBin(projectRoot);
+  const env = { APP_VARIANT: variant, EXPO_NO_GIT_STATUS: "1" };
   runInherited(cmd, ["prebuild", "--clean", "--platform", "ios"], projectRoot, env);
   runInherited(cmd, ["run:ios", "--no-bundler", "--device", udid], projectRoot, env);
   const stamp: Stamp = {
@@ -282,7 +305,7 @@ function ensureVariant(
   mkdirSync(dirname(stampPath(projectRoot, variant)), { recursive: true });
   writeFileSync(stampPath(projectRoot, variant), `${JSON.stringify(stamp, null, 2)}\n`);
   if (launch) pointAtMetro(udid, VARIANTS[variant].bundleId, manifestUrl);
-  return { ...checked, fresh: true, action: "rebuilt" };
+  return { ...rebuiltStatus(checked), action: "rebuilt" };
 }
 
 if (import.meta.main) {
@@ -295,7 +318,7 @@ if (import.meta.main) {
       throw new Error("No simulator UDID: pass --udid or source maestro-env.sh (T3_SIM_UDID).");
     }
     execFileSync("xcrun", ["simctl", "bootstatus", udid, "-b"], { stdio: "ignore" });
-    const manifestUrl = args.manifestUrl ?? VARIANTS[args.variant].manifestUrl;
+    const manifestUrl = manifestUrlFor(args.variant, args.manifestUrl);
     const result =
       args.command === "check"
         ? checkVariant(projectRoot, args.variant, udid)

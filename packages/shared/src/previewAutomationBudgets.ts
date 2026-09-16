@@ -178,11 +178,32 @@ const textEncoder = new TextEncoder();
 const serializedByteLength = (value: unknown): number =>
   textEncoder.encode(JSON.stringify(value) ?? "").length;
 
+/** Cap for page-controlled identity strings before the ceiling gives up. */
+const MAX_IDENTITY_STRING = 500;
+/** Cap for interactive-element name/selector strings under budget pressure. */
+const MAX_ELEMENT_STRING = 200;
+
+const truncateRecordStrings = (
+  record: Record<string, unknown>,
+  keys: ReadonlyArray<string>,
+  max: number,
+): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (!(key in record)) continue;
+    const value = record[key];
+    out[key] = typeof value === "string" && value.length > max ? `${value.slice(0, max)}…` : value;
+  }
+  return out;
+};
+
 /**
  * Enforce the final serialized-output ceiling on snapshot metadata (screenshot
- * bytes already stripped). Trims the largest diagnostics first and never
- * touches identity fields (`tabId`, `url`, `title`, `screenshot`,
- * `screenshotPath`, `error`). Returns the input unchanged when it fits.
+ * bytes already stripped). Trims the largest diagnostics first, then
+ * page-controlled strings (element names, title, url, error message), and
+ * never drops identity keys (`tabId`, `url`, `title`, `screenshot`,
+ * `screenshotPath`, `error`) — oversized values are truncated in place.
+ * Returns the input unchanged when it fits.
  */
 export function enforceFinalSnapshotTextBudget<T extends Record<string, unknown>>(
   metadata: T,
@@ -211,9 +232,51 @@ export function enforceFinalSnapshotTextBudget<T extends Record<string, unknown>
       trimmed["diagnosticsSummary"] = keep > 0 ? `${summary.slice(0, keep)}…` : "";
       return true;
     }
+    const elements = trimmed["interactiveElements"];
+    if (Array.isArray(elements) && elements.length > 0) {
+      const truncated = elements.map((element) =>
+        typeof element === "object" && element !== null
+          ? {
+              ...(element as Record<string, unknown>),
+              ...truncateRecordStrings(
+                element as Record<string, unknown>,
+                ["name", "selector"],
+                MAX_ELEMENT_STRING,
+              ),
+            }
+          : element,
+      );
+      if (JSON.stringify(truncated).length < JSON.stringify(elements).length) {
+        trimmed["interactiveElements"] = truncated;
+        return true;
+      }
+      trimmed["interactiveElements"] =
+        elements.length > 1 ? elements.slice(0, Math.ceil(elements.length / 2)) : [];
+      return true;
+    }
+    for (const key of ["title", "url"] as const) {
+      const value = trimmed[key];
+      // +1 for the ellipsis: without it a 501-char string re-truncates to
+      // itself and burns the iteration guard without progress.
+      if (typeof value === "string" && value.length > MAX_IDENTITY_STRING + 1) {
+        trimmed[key] = `${value.slice(0, MAX_IDENTITY_STRING)}…`;
+        return true;
+      }
+    }
+    const error = trimmed["error"];
+    if (typeof error === "object" && error !== null) {
+      const message = (error as Record<string, unknown>)["message"];
+      if (typeof message === "string" && message.length > MAX_IDENTITY_STRING + 1) {
+        trimmed["error"] = {
+          ...(error as Record<string, unknown>),
+          message: `${message.slice(0, MAX_IDENTITY_STRING)}…`,
+        };
+        return true;
+      }
+    }
     return false;
   };
-  let guard = 32;
+  let guard = 64;
   while (serializedByteLength(trimmed) > maxBytes && guard-- > 0) {
     if (!shrink(serializedByteLength(trimmed) - maxBytes)) break;
   }

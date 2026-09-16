@@ -197,7 +197,9 @@ export const encodePreviewSnapshotResult = async (
     };
     readonly [key: string]: unknown;
   };
-  const { screenshot, ...page } = snapshot;
+  // A host-provided screenshotPath is never trusted: only the path returned
+  // by saveBrowserEvidenceFile below is presented as server-persisted evidence.
+  const { screenshot, screenshotPath: _hostScreenshotPath, ...page } = snapshot;
   const bytes = Buffer.from(screenshot.data, "base64");
   const boundedPng =
     screenshot.width > 0 &&
@@ -240,26 +242,29 @@ export const encodePreviewSnapshotResult = async (
     decoded.height !== screenshot.height ||
     decoded.data.length !== screenshot.width * screenshot.height * 4
   ) {
-    const budgeted = enforceFinalSnapshotTextBudget(metadata);
+    // Budget the exact payloads returned below, after their error fields are
+    // appended, so neither can exceed the ceiling.
+    const structured = enforceFinalSnapshotTextBudget({
+      ...metadata,
+      error: {
+        _tag: "PreviewScreenshotInvalid",
+        operation: "snapshot",
+        message:
+          "The browser returned an empty, oversized, or undecodable screenshot. Page text is diagnostic only; visual validation did not pass. Reveal the browser, wait for rendering, and retry the snapshot.",
+      },
+    });
+    const textPayload = enforceFinalSnapshotTextBudget({
+      ...metadata,
+      error:
+        "Visual capture failed. Reveal the browser and retry; do not publish this capture as evidence.",
+    });
     return new McpSchema.CallToolResult({
       isError: true,
-      structuredContent: {
-        ...budgeted,
-        error: {
-          _tag: "PreviewScreenshotInvalid",
-          operation: "snapshot",
-          message:
-            "The browser returned an empty, oversized, or undecodable screenshot. Page text is diagnostic only; visual validation did not pass. Reveal the browser, wait for rendering, and retry the snapshot.",
-        },
-      },
+      structuredContent: structured,
       content: [
         {
           type: "text",
-          text: JSON.stringify({
-            ...budgeted,
-            error:
-              "Visual capture failed. Reveal the browser and retry; do not publish this capture as evidence.",
-          }),
+          text: JSON.stringify(textPayload),
         },
       ],
     });

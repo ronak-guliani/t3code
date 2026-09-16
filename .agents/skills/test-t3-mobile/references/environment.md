@@ -70,7 +70,7 @@ installed client is missing or its native fingerprint is stale, and just
 re-points Metro at the current bundle otherwise:
 
 ```bash
-node .agents/skills/test-t3-mobile/scripts/mobile-native-client.mts ensure
+node apps/mobile/scripts/mobile-native-client.mts ensure
 ```
 
 Manual equivalent (what `ensure` runs when stale), from `apps/mobile`:

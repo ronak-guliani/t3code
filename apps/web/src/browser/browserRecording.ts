@@ -159,7 +159,22 @@ interface SavedBrowserRecordingBytes {
 const savedBrowserRecordingBytes = new Map<string, SavedBrowserRecordingBytes>();
 const MAX_SAVED_BROWSER_RECORDING_BYTES = 3;
 
-const retainSavedBrowserRecordingBytes = (saved: SavedBrowserRecordingBytes): void => {
+const retainSavedBrowserRecordingBytes = (
+  saved: SavedBrowserRecordingBytes,
+  tabId: string,
+): void => {
+  // Recording duration is unbounded: reject empty/oversized entries at
+  // admission so the cache can never pin renderer memory that
+  // readSavedBrowserRecordingTransfer could never serve.
+  if (saved.bytes.byteLength === 0) return;
+  if (saved.bytes.byteLength > PREVIEW_RECORDING_TRANSFER_MAX_BYTES) {
+    reportClientError("[preview] Discarded oversized browser recording bytes", {
+      tabId,
+      recordingId: saved.id,
+      sizeBytes: saved.bytes.byteLength,
+    });
+    return;
+  }
   savedBrowserRecordingBytes.delete(saved.id);
   savedBrowserRecordingBytes.set(saved.id, saved);
   while (savedBrowserRecordingBytes.size > MAX_SAVED_BROWSER_RECORDING_BYTES) {
@@ -751,14 +766,17 @@ const finalizeBrowserRecording = async (
         const blob = new Blob(recording.chunks, { type: mimeType });
         const bytes = new Uint8Array(await blob.arrayBuffer());
         const artifact = await bridge.recording.save(tabId, mimeType, bytes);
-        retainSavedBrowserRecordingBytes({
-          id: artifact.id,
-          serverTabId: recording.serverTabId,
-          mimeType: artifact.mimeType,
-          sizeBytes: artifact.sizeBytes,
-          createdAt: artifact.createdAt,
-          bytes,
-        });
+        retainSavedBrowserRecordingBytes(
+          {
+            id: artifact.id,
+            serverTabId: recording.serverTabId,
+            mimeType: artifact.mimeType,
+            sizeBytes: artifact.sizeBytes,
+            createdAt: artifact.createdAt,
+            bytes,
+          },
+          tabId,
+        );
         result = { _tag: "Success", artifact };
       } catch (cause) {
         throw new BrowserRecordingOperationError({

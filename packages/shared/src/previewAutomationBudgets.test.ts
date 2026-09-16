@@ -148,4 +148,40 @@ describe("previewAutomationBudgets", () => {
     expect(trimmed.screenshot).toEqual({ mimeType: "image/png", width: 10, height: 10 });
     expect(trimmed.accessibilityTree).toBeNull();
   });
+
+  it("bounds page-controlled strings that other budgets leave untouched", () => {
+    const metadata = {
+      tabId: "tab-1",
+      url: `https://example.com/${"p".repeat(10_000)}`,
+      title: "t".repeat(10_000),
+      visibleText: "",
+      interactiveElements: Array.from({ length: 10 }, (_, i) => ({
+        tag: "button",
+        role: "button",
+        name: `B${i}${"n".repeat(2_000)}`,
+        selector: `#b${i}${"s".repeat(2_000)}`,
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+      })),
+      accessibilityTree: null,
+      consoleEntries: [],
+      networkEntries: [],
+      actionTimeline: [],
+      screenshot: { mimeType: "image/png", width: 10, height: 10 },
+      diagnosticsSummary: "",
+      error: {
+        _tag: "PreviewScreenshotInvalid",
+        operation: "snapshot",
+        message: "m".repeat(10_000),
+      },
+    };
+    const trimmed = enforceFinalSnapshotTextBudget(metadata, 4_000);
+    expect(JSON.stringify(trimmed).length).toBeLessThanOrEqual(4_000);
+    expect(trimmed.tabId).toBe("tab-1");
+    expect(typeof trimmed.url).toBe("string");
+    expect(typeof trimmed.title).toBe("string");
+    expect((trimmed.error as { _tag: string })._tag).toBe("PreviewScreenshotInvalid");
+  });
 });
