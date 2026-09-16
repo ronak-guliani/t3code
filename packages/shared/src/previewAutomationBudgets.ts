@@ -5,6 +5,7 @@ import {
   DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES,
   DEFAULT_SNAPSHOT_MAX_SCREENSHOT_EDGE,
   DEFAULT_SNAPSHOT_MAX_VISIBLE_TEXT,
+  PREVIEW_SNAPSHOT_FINAL_TEXT_BUDGET_BYTES,
   type PreviewAutomationConsoleEntry,
   type PreviewAutomationElement,
   type PreviewAutomationNetworkEntry,
@@ -170,6 +171,53 @@ export function applySnapshotBudgets(
     networkEntries,
     diagnosticsSummary,
   };
+}
+
+const textEncoder = new TextEncoder();
+
+const serializedByteLength = (value: unknown): number =>
+  textEncoder.encode(JSON.stringify(value) ?? "").length;
+
+/**
+ * Enforce the final serialized-output ceiling on snapshot metadata (screenshot
+ * bytes already stripped). Trims the largest diagnostics first and never
+ * touches identity fields (`tabId`, `url`, `title`, `screenshot`,
+ * `screenshotPath`, `error`). Returns the input unchanged when it fits.
+ */
+export function enforceFinalSnapshotTextBudget<T extends Record<string, unknown>>(
+  metadata: T,
+  maxBytes: number = PREVIEW_SNAPSHOT_FINAL_TEXT_BUDGET_BYTES,
+): T {
+  if (serializedByteLength(metadata) <= maxBytes) return metadata;
+  const trimmed: Record<string, unknown> = { ...metadata, accessibilityTree: null };
+  if (serializedByteLength(trimmed) <= maxBytes) return trimmed as T;
+  const shrink = (overflow: number): boolean => {
+    const visibleText = trimmed["visibleText"];
+    if (typeof visibleText === "string" && visibleText.length > 0) {
+      const keep = Math.max(0, visibleText.length - overflow - 128);
+      trimmed["visibleText"] = keep > 0 ? `${visibleText.slice(0, keep)}…` : "";
+      return true;
+    }
+    for (const key of ["consoleEntries", "networkEntries", "actionTimeline"] as const) {
+      const entries = trimmed[key];
+      if (Array.isArray(entries) && entries.length > 0) {
+        trimmed[key] = entries.slice(Math.ceil(entries.length / 2));
+        return true;
+      }
+    }
+    const summary = trimmed["diagnosticsSummary"];
+    if (typeof summary === "string" && summary.length > 0) {
+      const keep = Math.max(0, summary.length - overflow - 64);
+      trimmed["diagnosticsSummary"] = keep > 0 ? `${summary.slice(0, keep)}…` : "";
+      return true;
+    }
+    return false;
+  };
+  let guard = 32;
+  while (serializedByteLength(trimmed) > maxBytes && guard-- > 0) {
+    if (!shrink(serializedByteLength(trimmed) - maxBytes)) break;
+  }
+  return trimmed as T;
 }
 
 export type LocatorCandidateSource = {

@@ -1,4 +1,7 @@
-import { DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER } from "@t3tools/contracts";
+import {
+  DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER,
+  PREVIEW_RECORDING_TRANSFER_MAX_BYTES,
+} from "@t3tools/contracts";
 import type { DesktopPreviewRecordingArtifact, ScopedThreadRef } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
@@ -138,6 +141,77 @@ export function useActiveBrowserRecordingTabIds(): ReadonlySet<string> {
 
 const activeRecordings = new Map<string, ActiveRecording>();
 let displayMediaGrantTail = Promise.resolve();
+
+/**
+ * Finished-recording bytes retained so the agent environment can pull an
+ * agent-readable copy over the automation channel. Keyed by artifact id;
+ * bounded because recordings can be tens of megabytes.
+ */
+interface SavedBrowserRecordingBytes {
+  readonly id: string;
+  readonly serverTabId: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+  readonly createdAt: string;
+  readonly bytes: Uint8Array;
+}
+
+const savedBrowserRecordingBytes = new Map<string, SavedBrowserRecordingBytes>();
+const MAX_SAVED_BROWSER_RECORDING_BYTES = 3;
+
+const retainSavedBrowserRecordingBytes = (saved: SavedBrowserRecordingBytes): void => {
+  savedBrowserRecordingBytes.delete(saved.id);
+  savedBrowserRecordingBytes.set(saved.id, saved);
+  while (savedBrowserRecordingBytes.size > MAX_SAVED_BROWSER_RECORDING_BYTES) {
+    const oldest = savedBrowserRecordingBytes.keys().next();
+    if (oldest.done) break;
+    savedBrowserRecordingBytes.delete(oldest.value);
+  }
+};
+
+export interface BrowserRecordingTransferPayload {
+  readonly id: string;
+  readonly tabId: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+  readonly createdAt: string;
+  readonly data: string;
+}
+
+const bytesToBase64 = (bytes: Uint8Array): string => {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+};
+
+/**
+ * Read retained bytes for a finished recording. Returns null when the
+ * recording is unknown (e.g. after a renderer reload evicted the cache) or
+ * outside the single-transfer size bound.
+ */
+export function readSavedBrowserRecordingTransfer(
+  recordingId: string,
+): BrowserRecordingTransferPayload | null {
+  const saved = savedBrowserRecordingBytes.get(recordingId);
+  if (!saved) return null;
+  if (
+    saved.bytes.byteLength === 0 ||
+    saved.bytes.byteLength > PREVIEW_RECORDING_TRANSFER_MAX_BYTES
+  ) {
+    return null;
+  }
+  return {
+    id: saved.id,
+    tabId: saved.serverTabId,
+    mimeType: saved.mimeType,
+    sizeBytes: saved.sizeBytes,
+    createdAt: saved.createdAt,
+    data: bytesToBase64(saved.bytes),
+  };
+}
 
 const makeStartingBrowserRecordingLifecycle = (): StartingBrowserRecordingLifecycle => {
   let signalCancellation!: () => void;
@@ -675,11 +749,16 @@ const finalizeBrowserRecording = async (
       }
       try {
         const blob = new Blob(recording.chunks, { type: mimeType });
-        const artifact = await bridge.recording.save(
-          tabId,
-          mimeType,
-          new Uint8Array(await blob.arrayBuffer()),
-        );
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const artifact = await bridge.recording.save(tabId, mimeType, bytes);
+        retainSavedBrowserRecordingBytes({
+          id: artifact.id,
+          serverTabId: recording.serverTabId,
+          mimeType: artifact.mimeType,
+          sizeBytes: artifact.sizeBytes,
+          createdAt: artifact.createdAt,
+          bytes,
+        });
         result = { _tag: "Success", artifact };
       } catch (cause) {
         throw new BrowserRecordingOperationError({

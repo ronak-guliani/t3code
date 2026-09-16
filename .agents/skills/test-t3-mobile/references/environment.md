@@ -64,7 +64,16 @@ Two Metro behaviors that waste hours if unknown:
    `exp+t3-code-rg://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081%2F`
 
 Build, install, and launch once per native change (10–20 min first run;
-JS-only changes never need this):
+JS-only changes never need this). Prefer the fingerprint-gated entrypoint
+from the repo root — it runs the same prebuild/run below only when the
+installed client is missing or its native fingerprint is stale, and just
+re-points Metro at the current bundle otherwise:
+
+```bash
+node .agents/skills/test-t3-mobile/scripts/mobile-native-client.mts ensure
+```
+
+Manual equivalent (what `ensure` runs when stale), from `apps/mobile`:
 
 ```bash
 # from apps/mobile

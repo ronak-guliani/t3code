@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   applySnapshotBudgets,
   candidateLocatorsFromElements,
+  enforceFinalSnapshotTextBudget,
   filterConsoleEntries,
   filterNetworkEntries,
   resolveSnapshotBudgets,
@@ -106,5 +107,45 @@ describe("previewAutomationBudgets", () => {
     expect(snapshot.networkEntries.map((e) => e.url)).toEqual(["/bad"]);
     expect(snapshot.diagnosticsSummary).toContain("console: 1 error(s), 1 warn(s)");
     expect(snapshot.diagnosticsSummary).toContain("latestError: boom");
+  });
+
+  it("returns small metadata unchanged by the final text budget", () => {
+    const metadata = { url: "https://example.com", visibleText: "hello" };
+    expect(enforceFinalSnapshotTextBudget(metadata, 60_000)).toBe(metadata);
+  });
+
+  it("enforces the final text budget while preserving identity fields", () => {
+    const metadata = {
+      tabId: "tab-1",
+      url: "https://example.com",
+      title: "Example",
+      visibleText: "x".repeat(10_000),
+      interactiveElements: [],
+      accessibilityTree: { huge: "y".repeat(10_000) },
+      consoleEntries: Array.from({ length: 20 }, (_, i) => ({
+        level: "error",
+        text: `boom ${i} ${"z".repeat(200)}`,
+        timestamp: "t",
+      })),
+      networkEntries: Array.from({ length: 20 }, (_, i) => ({
+        url: `/bad-${i}?${"q".repeat(200)}`,
+        method: "GET",
+        status: 500,
+        failed: false,
+        timestamp: "t",
+      })),
+      actionTimeline: Array.from({ length: 20 }, (_, i) => ({ id: `${i}` })),
+      screenshot: { mimeType: "image/png", width: 10, height: 10 },
+      screenshotPath: "/tmp/t3code-browser-evidence/shot.png",
+      diagnosticsSummary: "s".repeat(5_000),
+    };
+    const trimmed = enforceFinalSnapshotTextBudget(metadata, 4_000);
+    expect(JSON.stringify(trimmed).length).toBeLessThanOrEqual(4_000);
+    expect(trimmed.tabId).toBe("tab-1");
+    expect(trimmed.url).toBe("https://example.com");
+    expect(trimmed.title).toBe("Example");
+    expect(trimmed.screenshotPath).toBe("/tmp/t3code-browser-evidence/shot.png");
+    expect(trimmed.screenshot).toEqual({ mimeType: "image/png", width: 10, height: 10 });
+    expect(trimmed.accessibilityTree).toBeNull();
   });
 });

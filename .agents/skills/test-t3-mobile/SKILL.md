@@ -26,12 +26,10 @@ source .agents/skills/test-t3-mobile/scripts/maestro-env.sh
 ```
 
 ```bash
-# 2. Native build once per native change (JS changes need no rebuild).
-#    Run from apps/mobile; keep the variant vars aligned with environment.md.
-cd apps/mobile
-node scripts/ios-preflight.mts
-APP_VARIANT=development EXPO_NO_GIT_STATUS=1 ./node_modules/.bin/expo prebuild --clean --platform ios
-APP_VARIANT=development EXPO_NO_GIT_STATUS=1 ./node_modules/.bin/expo run:ios --no-bundler --device "$T3_SIM_UDID"
+# 2. Native client: verify the installed dev client matches the
+#    checkout's native fingerprint, rebuilding only when stale.
+#    Run from the repo root; JS-only changes report "skipped", never rebuild.
+node .agents/skills/test-t3-mobile/scripts/mobile-native-client.mts ensure
 ```
 
 ```bash
