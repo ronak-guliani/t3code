@@ -1,4 +1,8 @@
 import {
+  normalizeThreadPullRequestSearchQuery,
+  threadPullRequestSearchTerms,
+} from "@t3tools/shared/threadPullRequests";
+import {
   type KeybindingCommand,
   type FilesystemBrowseEntry,
   type EnvironmentId,
@@ -179,7 +183,15 @@ export function buildProjectActionItems(input: {
 
 export type BuildThreadActionItemsThread = Pick<
   SidebarThreadSummary,
-  "archivedAt" | "branch" | "createdAt" | "environmentId" | "id" | "projectId" | "title"
+  | "archivedAt"
+  | "branch"
+  | "createdAt"
+  | "environmentId"
+  | "id"
+  | "projectId"
+  | "pullRequest"
+  | "pullRequests"
+  | "title"
 > & {
   updatedAt?: string | undefined;
   latestUserMessageAt?: string | null;
@@ -222,6 +234,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
     const trailingContent = input.renderTrailingContent?.(thread);
     const searchTerms = [
       thread.title,
+      ...threadPullRequestSearchTerms(thread),
       projectTitle ?? ``,
       thread.branch ?? ``,
       thread.environmentId,
@@ -298,7 +311,9 @@ export function filterCommandPaletteGroups(input: {
 }): CommandPaletteGroup[] {
   const isActionsFilter = input.query.startsWith(">");
   const searchQuery = isActionsFilter ? input.query.slice(1) : input.query;
-  const normalizedQuery = normalizeSearchText(searchQuery);
+  const normalizedQuery = normalizeSearchText(
+    normalizeThreadPullRequestSearchQuery(searchQuery) ?? searchQuery,
+  );
 
   if (normalizedQuery.length === 0) {
     if (isActionsFilter) {

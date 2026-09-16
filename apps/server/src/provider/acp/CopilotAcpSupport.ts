@@ -149,6 +149,12 @@ export function buildCopilotAcpSpawnInput(
     : configuredInstructionsDirs;
   const t3Home = environment.T3CODE_HOME?.trim();
   const spawnEnvironment = {
+    ...(environment.T3CODE_AGENT_CLI_DIR
+      ? {
+          PATH: environment.PATH,
+          T3CODE_AGENT_CLI_DIR: environment.T3CODE_AGENT_CLI_DIR,
+        }
+      : {}),
     ...(instructionsDirs && instructionsDirs.length > 0
       ? { COPILOT_CUSTOM_INSTRUCTIONS_DIRS: instructionsDirs.join(",") }
       : {}),

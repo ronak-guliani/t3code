@@ -944,6 +944,7 @@ describe("OrchestrationEngine", () => {
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
+          readThread: () => Effect.die("unused"),
         }),
       ),
       Layer.provide(
