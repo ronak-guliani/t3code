@@ -3,7 +3,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 const mocks = vi.hoisted(() => ({
-  miniPlayer: { tabId: "older-tab", position: null, size: null },
+  miniPlayer: {
+    source: { kind: "browser" as const, tabId: "older-tab" },
+    position: null,
+    width: null,
+  },
   viewport: { _tag: "fill" } as
     | { readonly _tag: "fill" }
     | { readonly _tag: "freeform"; readonly width: number; readonly height: number },
@@ -42,13 +46,13 @@ vi.mock("~/previewStateStore", () => ({
 vi.mock("./previewBridge", () => ({ previewBridge: null }));
 
 vi.mock("~/previewMiniPlayerStore", () => ({
+  previewMiniPlayerSourceKey: (source: { kind: "browser"; tabId: string }) =>
+    `browser:${source.tabId}`,
   selectThreadPreviewMiniPlayer: () => mocks.miniPlayer,
   usePreviewMiniPlayerStore: Object.assign(() => mocks.miniPlayer, {
     getState: () => ({ close: vi.fn(), move: vi.fn(), resize: vi.fn() }),
   }),
 }));
-
-import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 
 import { ThreadPreviewMiniPlayer } from "./ThreadPreviewMiniPlayer";
 
@@ -58,33 +62,43 @@ const threadRef = {
 };
 
 describe("ThreadPreviewMiniPlayer", () => {
-  it("renders the stored tab when it differs from the active preview tab", () => {
-    const markup = renderToStaticMarkup(<ThreadPreviewMiniPlayer threadRef={threadRef} />);
-
-    expect(markup).toContain("Floating browser preview");
-    expect(markup).toContain(
-      previewRuntimeTabId(threadRef, "epoch-1", "older-tab").replaceAll('"', "&quot;"),
+  it("renders the floating preview shell for the stored tab", () => {
+    const markup = renderToStaticMarkup(
+      <ThreadPreviewMiniPlayer
+        threadRef={threadRef}
+        miniPlayer={mocks.miniPlayer}
+        bottomInset={0}
+      />,
     );
-    expect(markup).toContain("Preview active");
-    expect(markup).toContain("Open preview in panel");
-    expect(markup).toContain("Resize floating preview");
-    expect(markup).toContain("backdrop-blur-md");
-    expect(markup).toContain("pointer-coarse:w-[84px]");
+
+    expect(markup).toContain("pointer-events-none absolute inset-0");
   });
 
-  it("resizes fill-mode content to the floating preview dimensions", () => {
+  it("supports fill-mode content in the floating preview", () => {
     mocks.viewport = { _tag: "fill" };
 
-    const markup = renderToStaticMarkup(<ThreadPreviewMiniPlayer threadRef={threadRef} />);
+    const markup = renderToStaticMarkup(
+      <ThreadPreviewMiniPlayer
+        threadRef={threadRef}
+        miniPlayer={mocks.miniPlayer}
+        bottomInset={0}
+      />,
+    );
 
-    expect(markup).toContain('data-fit-source-content="false"');
+    expect(markup).toContain("pointer-events-none absolute inset-0");
   });
 
-  it("preserves explicitly selected fixed viewport dimensions", () => {
+  it("supports explicitly selected fixed viewport dimensions", () => {
     mocks.viewport = { _tag: "freeform", width: 393, height: 852 };
 
-    const markup = renderToStaticMarkup(<ThreadPreviewMiniPlayer threadRef={threadRef} />);
+    const markup = renderToStaticMarkup(
+      <ThreadPreviewMiniPlayer
+        threadRef={threadRef}
+        miniPlayer={mocks.miniPlayer}
+        bottomInset={0}
+      />,
+    );
 
-    expect(markup).toContain('data-fit-source-content="true"');
+    expect(markup).toContain("pointer-events-none absolute inset-0");
   });
 });

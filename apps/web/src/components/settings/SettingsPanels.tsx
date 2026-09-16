@@ -2447,7 +2447,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Agent browser preview"
-          description="Show a floating browser preview when an agent uses browser automation."
+          description="Show a floating browser or device preview when an agent uses automation."
           resetAction={
             settings.browserAutoShowFloatingPreview !==
             DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview ? (
@@ -2468,7 +2468,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ browserAutoShowFloatingPreview: Boolean(checked) })
               }
-              aria-label="Show a floating preview during agent browser automation"
+              aria-label="Show a floating preview during agent browser or device automation"
             />
           }
         />

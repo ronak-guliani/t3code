@@ -135,11 +135,18 @@ import { PreviewPanel } from "./preview/PreviewPanel";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
-import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
+import {
+  browserMiniPlayerSource,
+  previewMiniPlayerSourceKey,
+  selectThreadPreviewMiniPlayer,
+  usePreviewMiniPlayerStore,
+  type PreviewMiniPlayerSource,
+} from "~/previewMiniPlayerStore";
 import {
   setThreadPlanSidebarOpen,
   useBrowserPanelState,
   useRightPanelStore,
+  type RightPanelSurface,
 } from "~/rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
 import { DevicePanel } from "./device/DevicePanel";
@@ -254,12 +261,23 @@ export function shouldClosePreviewMiniPlayer(input: {
 }
 
 export function shouldRenderPreviewMiniPlayer(input: {
-  readonly floatingTabId: string | null;
+  readonly source: PreviewMiniPlayerSource | null;
   readonly panelOpen: boolean;
-  readonly panelTabId: string | null;
+  readonly panelSurface: RightPanelSurface | null;
 }): boolean {
-  return (
-    input.floatingTabId !== null && !(input.panelOpen && input.panelTabId === input.floatingTabId)
+  if (input.source === null) return false;
+  if (input.source.kind === "browser") {
+    return !(
+      input.panelOpen &&
+      input.panelSurface?.kind === "preview" &&
+      input.panelSurface.resourceId === input.source.tabId
+    );
+  }
+  return !(
+    input.panelOpen &&
+    input.panelSurface?.kind === "device" &&
+    input.panelSurface.target?.hostId === input.source.hostId &&
+    input.panelSurface.target.deviceId === input.source.deviceId
   );
 }
 
@@ -1873,7 +1891,21 @@ function ChatViewBody(
     setTerminalOpen(!terminalState.terminalOpen);
   }, [activeThreadRef, setTerminalOpen, terminalState.terminalOpen]);
   const closeBrowserPreview = useCallback(() => {
-    if (activeThreadRef) useRightPanelStore.getState().close(activeThreadRef);
+    if (!activeThreadRef) return;
+    const state = useRightPanelStore.getState();
+    const panel = state.byThreadKey[scopedThreadKey(activeThreadRef)];
+    const activeSurface = panel?.surfaces.find((surface) => surface.id === panel.activeSurfaceId);
+    if (activeSurface?.kind === "preview" && activeSurface.resourceId) {
+      usePreviewMiniPlayerStore
+        .getState()
+        .open(activeThreadRef, browserMiniPlayerSource(activeSurface.resourceId));
+    } else if (activeSurface?.kind === "device" && activeSurface.target) {
+      usePreviewMiniPlayerStore.getState().open(activeThreadRef, {
+        kind: "device",
+        ...activeSurface.target,
+      });
+    }
+    state.close(activeThreadRef);
   }, [activeThreadRef]);
   const closeTerminal = useCallback(
     (terminalId: string) => {
@@ -1944,38 +1976,78 @@ function ChatViewBody(
     );
   }, [activeThreadKey]);
   const previewState = useThreadPreviewState(activeThreadRef);
-  const { state: deviceState } = useDeviceState(environmentId);
-  const reconciledDeviceSessionsRef = useRef(new Set<string>());
+  const { state: deviceState, loaded: deviceStateLoaded } = useDeviceState(environmentId);
+  const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
+    activeThreadRef ? selectThreadPreviewMiniPlayer(state.byThreadKey, activeThreadRef) : null,
+  );
+  const previousDeviceSessionsRef = useRef(new Map<string, Set<string>>());
   useEffect(() => {
-    if (!activeThreadRef) return;
+    if (!activeThreadRef || !deviceStateLoaded) return;
     const sessions = deviceState.sessions.filter(
       (session) => session.threadId === activeThreadRef.threadId,
     );
-    const currentKeys = new Set(
-      sessions.map(
-        (session) => `${session.threadId}\u0000${session.hostId}\u0000${session.deviceId}`,
-      ),
-    );
-    for (const session of sessions) {
-      const key = `${session.threadId}\u0000${session.hostId}\u0000${session.deviceId}`;
-      if (reconciledDeviceSessionsRef.current.has(key)) continue;
-      const device = deviceState.devices.find(
+    const threadKey = scopedThreadKey(activeThreadRef);
+    const key = (session: (typeof sessions)[number]) =>
+      `${session.hostId}\u0000${session.deviceId}`;
+    const deviceFor = (session: (typeof sessions)[number]) =>
+      deviceState.devices.find(
         (candidate) => candidate.hostId === session.hostId && candidate.id === session.deviceId,
       );
+    const previous = previousDeviceSessionsRef.current.get(threadKey);
+    previousDeviceSessionsRef.current.set(
+      threadKey,
+      new Set(sessions.filter((session) => deviceFor(session) !== undefined).map(key)),
+    );
+    if (!previous || shouldUseRightPanelSheet) return;
+    for (const session of sessions) {
+      if (previous.has(key(session))) continue;
+      const device = deviceFor(session);
       if (!device) continue;
-      useRightPanelStore.getState().openDevice(activeThreadRef, {
+      const target = {
         hostId: session.hostId,
         deviceId: session.deviceId,
         platform: session.platform,
         name: device.name,
         ...(deviceState.serverEpoch ? { serverEpoch: deviceState.serverEpoch } : {}),
-      });
+      };
+      if (settings.browserAutoShowFloatingPreview) {
+        usePreviewMiniPlayerStore.getState().open(activeThreadRef, {
+          kind: "device",
+          ...target,
+        });
+      } else {
+        const existing = useRightPanelStore
+          .getState()
+          .byThreadKey[threadKey]?.surfaces.some(
+            (surface) =>
+              surface.kind === "device" &&
+              surface.target?.hostId === session.hostId &&
+              surface.target.deviceId === session.deviceId,
+          );
+        if (!existing) useRightPanelStore.getState().openDevice(activeThreadRef, target);
+      }
     }
-    reconciledDeviceSessionsRef.current = currentKeys;
-  }, [activeThreadRef, deviceState.devices, deviceState.serverEpoch, deviceState.sessions]);
-  const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
-    activeThreadRef ? selectThreadPreviewMiniPlayer(state.byThreadKey, activeThreadRef) : null,
-  );
+  }, [
+    activeThreadRef,
+    deviceState.devices,
+    deviceState.serverEpoch,
+    deviceState.sessions,
+    deviceStateLoaded,
+    settings.browserAutoShowFloatingPreview,
+    shouldUseRightPanelSheet,
+  ]);
+  useEffect(() => {
+    if (!activeThreadRef || !deviceStateLoaded) return;
+    const source = activePreviewMiniPlayer?.source;
+    if (source?.kind !== "device") return;
+    const sessionStillExists = deviceState.sessions.some(
+      (session) =>
+        session.threadId === activeThreadRef.threadId &&
+        session.hostId === source.hostId &&
+        session.deviceId === source.deviceId,
+    );
+    if (!sessionStillExists) usePreviewMiniPlayerStore.getState().close(activeThreadRef);
+  }, [activePreviewMiniPlayer, activeThreadRef, deviceState.sessions, deviceStateLoaded]);
   const [composerInsetElement, setComposerInsetElement] = useState<HTMLDivElement | null>(null);
   const [composerBottomInset, setComposerBottomInset] = useState(0);
   useLayoutEffect(() => {
@@ -2009,7 +2081,16 @@ function ChatViewBody(
       activeThreadRef,
     );
     if (floatingPreview) {
-      state.openBrowser(activeThreadRef, floatingPreview.tabId);
+      if (floatingPreview.source.kind === "browser") {
+        state.openBrowser(activeThreadRef, floatingPreview.source.tabId);
+      } else {
+        state.openDevice(activeThreadRef, {
+          hostId: floatingPreview.source.hostId,
+          deviceId: floatingPreview.source.deviceId,
+          platform: floatingPreview.source.platform,
+          name: floatingPreview.source.name,
+        });
+      }
       planSidebarDismissedForTurnRef.current =
         activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
       return;
@@ -2025,13 +2106,14 @@ function ChatViewBody(
     planSidebarDismissedForTurnRef.current =
       activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
   }, [activePlan?.turnId, activeThreadRef, openPreview, sidebarProposedPlan?.turnId]);
-  const activeBrowserSurface = browserPanel.surfaces.find(
+  const activePanelSurface = browserPanel.surfaces.find(
     (surface) => surface.id === browserPanel.activeSurfaceId,
   );
+  const activeBrowserSurface = activePanelSurface;
   const previewMiniPlayerVisible = shouldRenderPreviewMiniPlayer({
-    floatingTabId: activePreviewMiniPlayer?.tabId ?? null,
+    source: activePreviewMiniPlayer?.source ?? null,
     panelOpen: browserPanel.isOpen,
-    panelTabId: activeBrowserSurface?.kind === "preview" ? activeBrowserSurface.resourceId : null,
+    panelSurface: activePanelSurface ?? null,
   });
   const terminalLabels = useMemo(
     () => terminalLabelsById(terminalState.terminalIds),
@@ -2052,8 +2134,8 @@ function ChatViewBody(
       .reconcileBrowserSurfaces(activeThreadRef, Object.keys(previewState.sessions));
   }, [activeThreadRef, previewState.sessions]);
   useEffect(() => {
-    if (!activeThreadRef || !activePreviewMiniPlayer) return;
-    const floatingTabId = activePreviewMiniPlayer.tabId;
+    if (!activeThreadRef || activePreviewMiniPlayer?.source.kind !== "browser") return;
+    const floatingTabId = activePreviewMiniPlayer.source.tabId;
     const sameTabOpenInPanel =
       browserPanel.isOpen &&
       activeBrowserSurface?.kind === "preview" &&
@@ -5050,9 +5132,9 @@ function ChatViewBody(
 
               {activeThreadRef && activePreviewMiniPlayer && previewMiniPlayerVisible ? (
                 <ThreadPreviewMiniPlayer
-                  key={`${activeThreadKey}:${activePreviewMiniPlayer.tabId}`}
+                  key={`${activeThreadKey}:${previewMiniPlayerSourceKey(activePreviewMiniPlayer.source)}`}
                   threadRef={activeThreadRef}
-                  tabId={activePreviewMiniPlayer.tabId}
+                  miniPlayer={activePreviewMiniPlayer}
                   bottomInset={composerBottomInset}
                 />
               ) : null}

@@ -4,7 +4,9 @@ import { scopedThreadKey } from "@t3tools/client-runtime";
 import { createJSONStorage } from "zustand/middleware";
 
 import {
+  browserMiniPlayerSource,
   normalizePersistedPreviewMiniPlayerState,
+  previewMiniPlayerSourceKey,
   usePreviewMiniPlayerStore,
 } from "./previewMiniPlayerStore";
 import { createMemoryStorage } from "./lib/storage";
@@ -20,54 +22,93 @@ beforeEach(() => usePreviewMiniPlayerStore.setState({ byThreadKey: {} }));
 describe("previewMiniPlayerStore", () => {
   it("keeps player state scoped to its thread and preserves its layout across tab changes", () => {
     const store = usePreviewMiniPlayerStore.getState();
-    store.open(first, "tab-a");
-    store.move(first, "tab-a", { x: 20, y: 30 });
-    store.resize(first, "tab-a", { width: 360, height: 220 });
-    store.open(first, "tab-b");
-    store.open(second, "tab-c");
+    store.open(first, browserMiniPlayerSource("tab-a"));
+    store.move(first, previewMiniPlayerSourceKey(browserMiniPlayerSource("tab-a")), {
+      x: 20,
+      y: 30,
+    });
+    store.resize(first, previewMiniPlayerSourceKey(browserMiniPlayerSource("tab-a")), 360);
+    store.open(first, browserMiniPlayerSource("tab-b"));
+    store.open(second, browserMiniPlayerSource("tab-c"));
 
     const entries = usePreviewMiniPlayerStore.getState().byThreadKey;
     expect(Object.values(entries)).toEqual(
       expect.arrayContaining([
-        { tabId: "tab-b", position: { x: 20, y: 30 }, size: { width: 360, height: 220 } },
-        { tabId: "tab-c", position: null, size: null },
+        {
+          source: browserMiniPlayerSource("tab-b"),
+          position: { x: 20, y: 30 },
+          width: 360,
+        },
+        { source: browserMiniPlayerSource("tab-c"), position: null, width: null },
       ]),
     );
   });
 
   it("drops stale tab drag and resize events", () => {
     const store = usePreviewMiniPlayerStore.getState();
-    store.open(first, "tab-current");
-    store.move(first, "tab-stale", { x: 20, y: 30 });
-    store.resize(first, "tab-stale", { width: 360, height: 220 });
+    store.open(first, browserMiniPlayerSource("tab-current"));
+    store.move(first, previewMiniPlayerSourceKey(browserMiniPlayerSource("tab-stale")), {
+      x: 20,
+      y: 30,
+    });
+    store.resize(first, previewMiniPlayerSourceKey(browserMiniPlayerSource("tab-stale")), 360);
 
     expect(Object.values(usePreviewMiniPlayerStore.getState().byThreadKey)).toEqual([
-      { tabId: "tab-current", position: null, size: null },
+      { source: browserMiniPlayerSource("tab-current"), position: null, width: null },
     ]);
   });
 
   it("removes only the deleted thread's floating preview", () => {
     const store = usePreviewMiniPlayerStore.getState();
-    store.open(first, "tab-a");
-    store.open(second, "tab-b");
+    store.open(first, browserMiniPlayerSource("tab-a"));
+    store.open(second, browserMiniPlayerSource("tab-b"));
     store.removeThread(first);
 
     expect(Object.values(usePreviewMiniPlayerStore.getState().byThreadKey)).toEqual([
-      { tabId: "tab-b", position: null, size: null },
+      { source: browserMiniPlayerSource("tab-b"), position: null, width: null },
     ]);
   });
 
   it("no-ops equal move and resize values", () => {
     const store = usePreviewMiniPlayerStore.getState();
-    store.open(first, "tab-a");
-    store.move(first, "tab-a", { x: 20, y: 30 });
-    store.resize(first, "tab-a", { width: 360, height: 220 });
+    store.open(first, browserMiniPlayerSource("tab-a"));
+    store.move(first, previewMiniPlayerSourceKey(browserMiniPlayerSource("tab-a")), {
+      x: 20,
+      y: 30,
+    });
+    store.resize(first, previewMiniPlayerSourceKey(browserMiniPlayerSource("tab-a")), 360);
     const before = usePreviewMiniPlayerStore.getState().byThreadKey;
 
-    store.move(first, "tab-a", { x: 20, y: 30 });
-    store.resize(first, "tab-a", { width: 360, height: 220 });
+    store.move(first, previewMiniPlayerSourceKey(browserMiniPlayerSource("tab-a")), {
+      x: 20,
+      y: 30,
+    });
+    store.resize(first, previewMiniPlayerSourceKey(browserMiniPlayerSource("tab-a")), 360);
 
     expect(usePreviewMiniPlayerStore.getState().byThreadKey).toBe(before);
+  });
+
+  it("keeps device identity scoped by host when replacing the source", () => {
+    const store = usePreviewMiniPlayerStore.getState();
+    const firstDevice = {
+      kind: "device" as const,
+      hostId: "local",
+      deviceId: "sim-1",
+      platform: "ios" as const,
+      name: "iPhone",
+    };
+    const secondDevice = { ...firstDevice, hostId: "ssh-host" };
+    store.open(first, firstDevice);
+    store.open(first, secondDevice);
+
+    expect(usePreviewMiniPlayerStore.getState().byThreadKey[scopedThreadKey(first)]).toEqual({
+      source: secondDevice,
+      position: null,
+      width: null,
+    });
+    expect(previewMiniPlayerSourceKey(firstDevice)).not.toBe(
+      previewMiniPlayerSourceKey(secondDevice),
+    );
   });
 
   it("persists only valid thread-scoped floating preview state", () => {
@@ -75,28 +116,28 @@ describe("previewMiniPlayerStore", () => {
       normalizePersistedPreviewMiniPlayerState({
         byThreadKey: {
           [scopedThreadKey(first)]: {
-            tabId: "tab-a",
+            source: browserMiniPlayerSource("tab-a"),
             position: { x: 20, y: 30 },
-            size: { width: 360, height: 220 },
+            width: 360,
           },
           invalid: {
-            tabId: "tab-b",
+            source: browserMiniPlayerSource("tab-b"),
             position: null,
-            size: null,
+            width: null,
           },
           [scopedThreadKey(second)]: {
-            tabId: "",
+            source: browserMiniPlayerSource(""),
             position: null,
-            size: null,
+            width: null,
           },
         },
       }),
     ).toEqual({
       byThreadKey: {
         [scopedThreadKey(first)]: {
-          tabId: "tab-a",
+          source: browserMiniPlayerSource("tab-a"),
           position: { x: 20, y: 30 },
-          size: { width: 360, height: 220 },
+          width: 360,
         },
       },
     });
@@ -112,9 +153,9 @@ describe("previewMiniPlayerStore", () => {
         state: {
           byThreadKey: {
             [scopedThreadKey(first)]: {
-              tabId: "tab-a",
+              source: browserMiniPlayerSource("tab-a"),
               position: { x: 20, y: 30 },
-              size: { width: 360, height: 220 },
+              width: 360,
             },
           },
         },
@@ -132,9 +173,9 @@ describe("previewMiniPlayerStore", () => {
 
       expect(usePreviewMiniPlayerStore.getState().byThreadKey).toEqual({
         [scopedThreadKey(first)]: {
-          tabId: "tab-a",
+          source: browserMiniPlayerSource("tab-a"),
           position: { x: 20, y: 30 },
-          size: { width: 360, height: 220 },
+          width: 360,
         },
       });
     } finally {

@@ -1,5 +1,5 @@
 import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { DevicePlatform, ScopedThreadRef } from "@t3tools/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
@@ -17,24 +17,49 @@ export interface PreviewMiniPlayerSize {
   readonly height: number;
 }
 
+export type PreviewMiniPlayerSource =
+  | { readonly kind: "browser"; readonly tabId: string }
+  | {
+      readonly kind: "device";
+      readonly hostId: string;
+      readonly deviceId: string;
+      readonly platform: DevicePlatform;
+      readonly name: string;
+    };
+
 export interface PreviewMiniPlayerState {
-  readonly tabId: string;
+  readonly source: PreviewMiniPlayerSource;
   readonly position: PreviewMiniPlayerPosition | null;
-  readonly size: PreviewMiniPlayerSize | null;
+  readonly width: number | null;
 }
 
-interface PreviewMiniPlayerStore {
+interface PreviewMiniPlayerStoreState {
   readonly byThreadKey: Readonly<Record<string, PreviewMiniPlayerState>>;
-  readonly open: (ref: ScopedThreadRef, tabId: string) => void;
+  readonly open: (ref: ScopedThreadRef, source: PreviewMiniPlayerSource) => void;
   readonly close: (ref: ScopedThreadRef) => void;
+  readonly move: (
+    ref: ScopedThreadRef,
+    sourceKey: string,
+    position: PreviewMiniPlayerPosition,
+  ) => void;
+  readonly resize: (ref: ScopedThreadRef, sourceKey: string, width: number) => void;
   readonly removeThread: (ref: ScopedThreadRef) => void;
-  readonly move: (ref: ScopedThreadRef, tabId: string, position: PreviewMiniPlayerPosition) => void;
-  readonly resize: (ref: ScopedThreadRef, tabId: string, size: PreviewMiniPlayerSize) => void;
 }
 
 interface PersistedPreviewMiniPlayerState {
   readonly byThreadKey: Readonly<Record<string, PreviewMiniPlayerState>>;
 }
+
+export function previewMiniPlayerSourceKey(source: PreviewMiniPlayerSource): string {
+  return source.kind === "browser"
+    ? `browser:${source.tabId}`
+    : `device:${encodeURIComponent(source.hostId)}:${encodeURIComponent(source.deviceId)}`;
+}
+
+export const browserMiniPlayerSource = (tabId: string): PreviewMiniPlayerSource => ({
+  kind: "browser",
+  tabId,
+});
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -48,18 +73,33 @@ const parsePosition = (value: unknown): PreviewMiniPlayerPosition | null | undef
   return { x: value.x, y: value.y };
 };
 
-const parseSize = (value: unknown): PreviewMiniPlayerSize | null | undefined => {
+const parseWidth = (value: unknown): number | null | undefined => {
   if (value === null) return null;
-  if (
-    !isRecord(value) ||
-    !isFiniteNumber(value.width) ||
-    !isFiniteNumber(value.height) ||
-    value.width <= 0 ||
-    value.height <= 0
-  ) {
-    return undefined;
+  return isFiniteNumber(value) && value > 0 ? value : undefined;
+};
+
+const parseSource = (value: unknown): PreviewMiniPlayerSource | undefined => {
+  if (!isRecord(value) || (value.kind !== "browser" && value.kind !== "device")) return undefined;
+  if (value.kind === "browser") {
+    return typeof value.tabId === "string" && value.tabId.length > 0
+      ? { kind: "browser", tabId: value.tabId }
+      : undefined;
   }
-  return { width: value.width, height: value.height };
+  return typeof value.hostId === "string" &&
+    value.hostId.length > 0 &&
+    typeof value.deviceId === "string" &&
+    value.deviceId.length > 0 &&
+    (value.platform === "ios" || value.platform === "android") &&
+    typeof value.name === "string" &&
+    value.name.length > 0
+    ? {
+        kind: "device",
+        hostId: value.hostId,
+        deviceId: value.deviceId,
+        platform: value.platform,
+        name: value.name,
+      }
+    : undefined;
 };
 
 export function normalizePersistedPreviewMiniPlayerState(
@@ -69,11 +109,17 @@ export function normalizePersistedPreviewMiniPlayerState(
   const byThreadKey: Record<string, PreviewMiniPlayerState> = {};
   for (const [threadKey, candidate] of Object.entries(value.byThreadKey)) {
     if (parseScopedThreadKey(threadKey) === null || !isRecord(candidate)) continue;
-    if (typeof candidate.tabId !== "string" || candidate.tabId.length === 0) continue;
+    const source =
+      parseSource(candidate.source) ??
+      (typeof candidate.tabId === "string" && candidate.tabId.length > 0
+        ? browserMiniPlayerSource(candidate.tabId)
+        : undefined);
     const position = parsePosition(candidate.position);
-    const size = parseSize(candidate.size);
-    if (position === undefined || size === undefined) continue;
-    byThreadKey[threadKey] = { tabId: candidate.tabId, position, size };
+    const width = parseWidth(
+      candidate.width ?? (isRecord(candidate.size) ? candidate.size.width : null),
+    );
+    if (!source || position === undefined || width === undefined) continue;
+    byThreadKey[threadKey] = { source, position, width };
   }
   return { byThreadKey };
 }
@@ -81,19 +127,28 @@ export function normalizePersistedPreviewMiniPlayerState(
 const createPreviewMiniPlayerStorage = () =>
   resolveStorage(typeof window !== "undefined" ? window.localStorage : undefined);
 
-export const usePreviewMiniPlayerStore = create<PreviewMiniPlayerStore>()(
+export const usePreviewMiniPlayerStore = create<PreviewMiniPlayerStoreState>()(
   persist(
     (set) => ({
       byThreadKey: {},
-      open: (ref, tabId) =>
+      open: (ref, source) =>
         set((state) => {
           const key = scopedThreadKey(ref);
           const current = state.byThreadKey[key];
-          if (current?.tabId === tabId) return state;
+          if (
+            current &&
+            previewMiniPlayerSourceKey(current.source) === previewMiniPlayerSourceKey(source)
+          ) {
+            return state;
+          }
           return {
             byThreadKey: {
               ...state.byThreadKey,
-              [key]: { tabId, position: current?.position ?? null, size: current?.size ?? null },
+              [key]: {
+                source,
+                position: current?.position ?? null,
+                width: current?.width ?? null,
+              },
             },
           };
         }),
@@ -104,29 +159,33 @@ export const usePreviewMiniPlayerStore = create<PreviewMiniPlayerStore>()(
           const { [key]: _closed, ...byThreadKey } = state.byThreadKey;
           return { byThreadKey };
         }),
+      move: (ref, sourceKey, position) =>
+        set((state) => {
+          const key = scopedThreadKey(ref);
+          const current = state.byThreadKey[key];
+          if (!current || previewMiniPlayerSourceKey(current.source) !== sourceKey) return state;
+          if (current.position?.x === position.x && current.position.y === position.y) return state;
+          return { byThreadKey: { ...state.byThreadKey, [key]: { ...current, position } } };
+        }),
+      resize: (ref, sourceKey, width) =>
+        set((state) => {
+          const key = scopedThreadKey(ref);
+          const current = state.byThreadKey[key];
+          if (
+            !current ||
+            previewMiniPlayerSourceKey(current.source) !== sourceKey ||
+            current.width === width
+          ) {
+            return state;
+          }
+          return { byThreadKey: { ...state.byThreadKey, [key]: { ...current, width } } };
+        }),
       removeThread: (ref) =>
         set((state) => {
           const key = scopedThreadKey(ref);
           if (!(key in state.byThreadKey)) return state;
           const { [key]: _removed, ...byThreadKey } = state.byThreadKey;
           return { byThreadKey };
-        }),
-      move: (ref, tabId, position) =>
-        set((state) => {
-          const key = scopedThreadKey(ref);
-          const current = state.byThreadKey[key];
-          if (!current || current.tabId !== tabId) return state;
-          if (current.position?.x === position.x && current.position.y === position.y) return state;
-          return { byThreadKey: { ...state.byThreadKey, [key]: { ...current, position } } };
-        }),
-      resize: (ref, tabId, size) =>
-        set((state) => {
-          const key = scopedThreadKey(ref);
-          const current = state.byThreadKey[key];
-          if (!current || current.tabId !== tabId) return state;
-          if (current.size?.width === size.width && current.size.height === size.height)
-            return state;
-          return { byThreadKey: { ...state.byThreadKey, [key]: { ...current, size } } };
         }),
     }),
     {
@@ -144,7 +203,16 @@ export const usePreviewMiniPlayerStore = create<PreviewMiniPlayerStore>()(
 
 export function selectThreadPreviewMiniPlayer(
   byThreadKey: Readonly<Record<string, PreviewMiniPlayerState>>,
-  ref: ScopedThreadRef,
+  ref: ScopedThreadRef | null | undefined,
 ): PreviewMiniPlayerState | null {
+  if (!ref) return null;
   return byThreadKey[scopedThreadKey(ref)] ?? null;
+}
+
+export function selectThreadPreviewMiniPlayerTabId(
+  byThreadKey: Readonly<Record<string, PreviewMiniPlayerState>>,
+  ref: ScopedThreadRef | null | undefined,
+): string | null {
+  const source = selectThreadPreviewMiniPlayer(byThreadKey, ref)?.source;
+  return source?.kind === "browser" ? source.tabId : null;
 }

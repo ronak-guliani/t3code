@@ -7,6 +7,7 @@ import type {
 import {
   ChevronLeft,
   Home,
+  PictureInPicture2,
   Power,
   RotateCcw,
   SlidersHorizontal,
@@ -17,6 +18,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useRightPanelStore, type RightPanelSurface } from "~/rightPanelStore";
+import { usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
 import { Button } from "~/components/ui/button";
 import { DiscoveryList, DiscoveryListRow } from "~/components/ui/discovery-list";
 import { Dialog } from "~/components/ui/dialog";
@@ -209,6 +211,18 @@ export function DevicePanel(props: {
     });
   };
 
+  const floatActive = () => {
+    if (!activeDevice) return;
+    usePreviewMiniPlayerStore.getState().open(props.threadRef, {
+      kind: "device",
+      hostId: activeDevice.hostId,
+      deviceId: activeDevice.id,
+      platform: activeDevice.platform,
+      name: activeDevice.name,
+    });
+    useRightPanelStore.getState().close(props.threadRef);
+  };
+
   const bootingDevices =
     state.bootingDevices?.filter((device) => device.threadId === threadId) ?? [];
   const hostReady = Object.values(state.hostStatuses).some((host) => host.status === "ready");
@@ -290,6 +304,9 @@ export function DevicePanel(props: {
             >
               <SlidersHorizontal />
             </Toggle>
+            <DeviceButton label="Float device over chat" onClick={floatActive}>
+              <PictureInPicture2 />
+            </DeviceButton>
             <DeviceButton label="Power off" onClick={() => closeActive(true)}>
               <Power />
             </DeviceButton>
