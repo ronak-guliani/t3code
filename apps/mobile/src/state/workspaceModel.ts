@@ -65,6 +65,9 @@ function overallConnectionState(
   if (environments.some((environment) => environment.connectionState === "connecting")) {
     return "connecting";
   }
+  if (environments.some((environment) => environment.connectionState === "unsupported")) {
+    return "unsupported";
+  }
   if (environments.some((environment) => environment.connectionState === "error")) {
     return "error";
   }
@@ -88,6 +91,13 @@ export function projectWorkspaceState(input: {
       environment.connectionState === "connecting" ||
       environment.connectionState === "reconnecting",
   );
+  const connectionState = overallConnectionState(activeEnvironments, input.networkStatus);
+  // Prefer the error belonging to the aggregate phase so mixed states cannot
+  // pair one environment's phase title with another's failure detail.
+  const phaseError = activeEnvironments.find(
+    (environment) =>
+      environment.connectionState === connectionState && environment.connectionError !== null,
+  )?.connectionError;
 
   return {
     isLoadingConnections: !input.isReady,
@@ -99,10 +109,12 @@ export function projectWorkspaceState(input: {
       activeEnvironments.some((environment) => environment.connectionState === "connected"),
     hasConnectingEnvironment: connectingEnvironments.length > 0,
     connectingEnvironments,
-    connectionState: overallConnectionState(activeEnvironments, input.networkStatus),
+    connectionState,
     connectionError:
+      phaseError ??
       activeEnvironments.find((environment) => environment.connectionError !== null)
-        ?.connectionError ?? null,
+        ?.connectionError ??
+      null,
     shellSnapshotError: input.shellSummary.firstError,
     latestCachedSnapshotReceivedAt: input.shellSummary.latestSnapshotUpdatedAt,
     networkStatus: input.networkStatus,

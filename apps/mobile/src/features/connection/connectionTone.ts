@@ -27,6 +27,12 @@ export function connectionTone(state: RemoteClientConnectionState): StatusTone {
         pillClassName: "bg-adaptive-rose-500-a12-a16",
         textClassName: "text-adaptive-rose-700-300",
       };
+    case "unsupported":
+      return {
+        label: "Client not supported",
+        pillClassName: "bg-adaptive-rose-500-a12-a16",
+        textClassName: "text-adaptive-rose-700-300",
+      };
     case "offline":
       return {
         label: "Offline",

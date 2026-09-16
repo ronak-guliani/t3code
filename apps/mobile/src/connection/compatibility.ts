@@ -1,4 +1,7 @@
-import { ConnectionBlockedError } from "@t3tools/client-runtime/connection";
+import {
+  ConnectionBlockedError,
+  orchestrationProtocolCompatibilityError,
+} from "@t3tools/client-runtime/connection";
 import type { ServerConfig } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
@@ -15,6 +18,10 @@ export function mobileCompatibility(
   >,
 ): MobileCompatibility {
   const protocolVersion = config.environment.capabilities.ownedMobileProtocolVersion;
+  const orchestrationError = orchestrationProtocolCompatibilityError(config.environment);
+  if (orchestrationError !== null) {
+    return { status: "unsupported", message: orchestrationError.detail };
+  }
   if (protocolVersion !== undefined && protocolVersion !== OWNED_MOBILE_PROTOCOL_VERSION) {
     return {
       status: "unsupported",
