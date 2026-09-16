@@ -420,11 +420,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       thread?.branch ??
       `t3/thread/${threadId.replace(/[^A-Za-z0-9._/-]/g, "-")}`;
     const repositoryKey = createHash("sha256").update(gitRoot).digest("hex").slice(0, 16);
+    const threadWorkspaceKey = createHash("sha256").update(threadId).digest("hex");
     const worktreePath = path.join(
       path.dirname(gitRoot),
       ".t3-thread-workspaces",
       repositoryKey,
-      threadId,
+      threadWorkspaceKey,
     );
     yield* Effect.tryPromise({
       try: async () => {
@@ -438,7 +439,43 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             timeoutMs: 5_000,
           },
         );
-        if (existing.code === 0) return;
+        if (existing.code === 0) {
+          const [existingCommonDir, expectedCommonDir, existingBranch] = await Promise.all([
+            runProcess("git", ["-C", worktreePath, "rev-parse", "--git-common-dir"], {
+              allowNonZeroExit: true,
+              maxBufferBytes: 16 * 1024,
+              timeoutMs: 5_000,
+            }),
+            runProcess("git", ["-C", gitRoot, "rev-parse", "--git-common-dir"], {
+              allowNonZeroExit: false,
+              maxBufferBytes: 16 * 1024,
+              timeoutMs: 5_000,
+            }),
+            runProcess("git", ["-C", worktreePath, "symbolic-ref", "--short", "-q", "HEAD"], {
+              allowNonZeroExit: true,
+              maxBufferBytes: 16 * 1024,
+              timeoutMs: 5_000,
+            }),
+          ]);
+          if (existingCommonDir.code !== 0 || existingBranch.code !== 0) {
+            throw new Error("existing workspace is not a checked-out Git worktree");
+          }
+          const canonicalCommonDir = await canonicalizeWorktreePath(
+            path.resolve(worktreePath, existingCommonDir.stdout.trim()),
+          );
+          const canonicalExpectedCommonDir = await canonicalizeWorktreePath(
+            path.resolve(gitRoot, expectedCommonDir.stdout.trim()),
+          );
+          if (
+            canonicalCommonDir !== canonicalExpectedCommonDir ||
+            existingBranch.stdout.trim() !== branch
+          ) {
+            throw new Error(
+              `existing workspace belongs to common Git directory '${canonicalCommonDir}' and branch '${existingBranch.stdout.trim()}', expected '${canonicalExpectedCommonDir}' and '${branch}'`,
+            );
+          }
+          return;
+        }
         const result = await runProcess(
           "git",
           ["-C", gitRoot, "worktree", "add", "-b", branch, worktreePath, "HEAD"],

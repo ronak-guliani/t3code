@@ -19,6 +19,7 @@ import type {
   OrchestrationSearchTranscriptResult,
   ProjectId,
   ThreadId,
+  WorkspaceBinding,
 } from "@t3tools/contracts";
 import { Context } from "effect";
 import type { Option } from "effect";
@@ -36,6 +37,7 @@ export interface ProjectionThreadCheckpointContext {
   readonly projectId: ProjectId;
   readonly workspaceRoot: string;
   readonly worktreePath: string | null;
+  readonly workspaceBinding?: WorkspaceBinding | null;
   readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
 }
 

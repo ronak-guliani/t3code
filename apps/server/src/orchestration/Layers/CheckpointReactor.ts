@@ -38,6 +38,8 @@ import { isGitRepository } from "../../git/Utils.ts";
 import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
 import { WorkspaceEntries } from "../../workspace/Services/WorkspaceEntries.ts";
 import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
+import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
+import { WorkspaceOwnershipRepositoryLive } from "../../persistence/Layers/WorkspaceOwnership.ts";
 
 type ReactorInput =
   | {
@@ -98,6 +100,20 @@ const make = Effect.gen(function* () {
   const workspaceEntries = yield* WorkspaceEntries;
   const gitStatusBroadcaster = yield* GitStatusBroadcaster;
   const coordinator = yield* CheckoutCoordinator;
+  const workspaceOwnership = yield* WorkspaceOwnershipRepository;
+
+  const assertThreadWorkspaceOwned = (thread: {
+    readonly id: ThreadId;
+    readonly workspaceBinding?: {
+      readonly canonicalPath: string;
+      readonly worktreePath: string;
+      readonly branch: string | null;
+      readonly generation: number;
+    };
+  }) =>
+    thread.workspaceBinding === undefined
+      ? Effect.void
+      : workspaceOwnership.assertOwned(thread.workspaceBinding, thread.id);
 
   const appendRevertFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -241,6 +257,7 @@ const make = Effect.gen(function* () {
     readonly assistantMessageId: MessageId | undefined;
     readonly createdAt: string;
   }) {
+    yield* assertThreadWorkspaceOwned(input.thread);
     const fromTurnCount = Math.max(0, input.turnCount - 1);
     const baselineCheckpointRef = checkpointBaselineRefForThreadTurn(
       input.threadId,
@@ -283,6 +300,9 @@ const make = Effect.gen(function* () {
         fromCheckpointRef,
         toCheckpointRef: targetCheckpointRef,
         fallbackFromToHead: false,
+        ...(input.workspaceBinding !== undefined
+          ? { workspaceBinding: input.workspaceBinding }
+          : {}),
       })
       .pipe(
         Effect.map(toCheckpointFiles),
@@ -321,6 +341,9 @@ const make = Effect.gen(function* () {
               fromCheckpointRef: snapshotBaselineRef,
               toCheckpointRef: targetCheckpointRef,
               fallbackFromToHead: false,
+              ...(input.workspaceBinding !== undefined
+                ? { workspaceBinding: input.workspaceBinding }
+                : {}),
             })
             .pipe(
               Effect.map(toCheckpointFiles),
@@ -474,6 +497,7 @@ const make = Effect.gen(function* () {
       if (!thread) {
         return;
       }
+      yield* assertThreadWorkspaceOwned(thread);
 
       // When a primary turn is active, only that turn may produce completion checkpoints.
       if (thread.session?.activeTurnId && !sameId(thread.session.activeTurnId, turnId)) {
@@ -1100,4 +1124,5 @@ const make = Effect.gen(function* () {
 
 export const CheckpointReactorLive = Layer.effect(CheckpointReactor, make).pipe(
   Layer.provideMerge(CheckoutCoordinatorLive),
+  Layer.provideMerge(WorkspaceOwnershipRepositoryLive),
 );

@@ -20,7 +20,8 @@ export default Effect.gen(function* () {
     CREATE INDEX IF NOT EXISTS idx_workspace_ownership_owner
     ON workspace_ownership(owner_thread_id)
   `;
-  yield* sql`
-    ALTER TABLE projection_threads ADD COLUMN workspace_binding_json TEXT
-  `.pipe(Effect.catch(() => Effect.succeed(undefined)));
+  const columns = yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_threads)`;
+  if (!columns.some(({ name }) => name === "workspace_binding_json")) {
+    yield* sql`ALTER TABLE projection_threads ADD COLUMN workspace_binding_json TEXT`;
+  }
 });

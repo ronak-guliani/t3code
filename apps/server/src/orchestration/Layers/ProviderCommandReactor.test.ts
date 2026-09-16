@@ -387,6 +387,7 @@ describe("ProviderCommandReactor", () => {
       ),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
+      Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(NodeServices.layer),
     );
     runtime = ManagedRuntime.make(layer);

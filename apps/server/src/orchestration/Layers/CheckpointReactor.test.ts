@@ -441,6 +441,7 @@ describe("CheckpointReactor", () => {
       Layer.provideMerge(WorkspaceEntriesLive.pipe(Layer.provide(WorkspacePathsLive))),
       Layer.provideMerge(WorkspacePathsLive),
       Layer.provideMerge(GitCoreLive),
+      Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(ServerConfigLayer),
       Layer.provideMerge(NodeServices.layer),
     );

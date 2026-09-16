@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { Effect, Layer } from "effect";
+import { Effect, Exit, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { canonicalizeWorktreePath, resolveGitWorktreeRoot } from "../../git/worktreePaths.ts";
 import { runProcess } from "../../processRunner.ts";
@@ -71,14 +71,51 @@ const withFilesystemOwnershipLock = <A>(
 ) =>
   Effect.tryPromise({
     try: async () => {
+      const lockStaleAfterMs = 30_000;
+      const lockOwnerPath = path.join(paths.mutexPath, "owner.json");
+      const isProcessAlive = (pid: number) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch (error) {
+          return (error as NodeJS.ErrnoException).code === "EPERM";
+        }
+      };
+      const reclaimStaleLock = async () => {
+        try {
+          const lockStat = await stat(paths.mutexPath);
+          if (Date.now() - lockStat.mtimeMs < lockStaleAfterMs) return false;
+          try {
+            const owner = JSON.parse(await readFile(lockOwnerPath, "utf8")) as {
+              readonly pid?: number;
+            };
+            if (typeof owner.pid === "number" && isProcessAlive(owner.pid)) return false;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+              throw error;
+            }
+          }
+          await rm(paths.mutexPath, { recursive: true, force: true });
+          return true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+          throw error;
+        }
+      };
       for (let attempt = 0; attempt < 100; attempt += 1) {
         try {
           await mkdir(paths.mutexPath);
+          await writeFile(
+            lockOwnerPath,
+            JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }),
+            { mode: 0o600 },
+          );
           break;
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt === 99) {
             throw error;
           }
+          if (await reclaimStaleLock()) continue;
           await sleep(10);
         }
       }
@@ -190,8 +227,8 @@ const make = Effect.gen(function* () {
             AND generation = ${filesystemBinding.generation}
         `;
       });
-      const rows = yield* sql
-        .withTransaction(
+      const claimResult = yield* Effect.exit(
+        sql.withTransaction(
           Effect.gen(function* () {
             const existing = yield* getRow(canonicalPath);
             if (existing.length > 0 && existing[0]!.owner_thread_id !== input.threadId) {
@@ -227,21 +264,18 @@ const make = Effect.gen(function* () {
           `;
             return yield* getRow(canonicalPath);
           }),
-        )
-        .pipe(
-          Effect.catch((cause) =>
-            compensateClaim.pipe(
-              Effect.flatMap(() => Effect.fail(cause)),
-              Effect.catch((compensationError) =>
-                Effect.fail(
-                  new WorkspaceOwnershipRepositoryError({
-                    cause: { claimError: cause, compensationError },
-                  }),
-                ),
-              ),
-            ),
-          ),
-        );
+        ),
+      );
+      if (Exit.isFailure(claimResult)) {
+        const compensationResult = yield* Effect.exit(compensateClaim);
+        if (Exit.isFailure(compensationResult)) {
+          return yield* new WorkspaceOwnershipRepositoryError({
+            cause: { claimError: claimResult.cause, compensationError: compensationResult.cause },
+          });
+        }
+        return yield* Effect.failCause(claimResult.cause);
+      }
+      const rows = claimResult.value;
       const row = rows[0];
       if (!row)
         return yield* Effect.fail(
@@ -315,7 +349,7 @@ const make = Effect.gen(function* () {
       for (const row of rows) {
         const filesystemPaths = yield* filesystemOwnershipStatePath(row.canonical_path);
         yield* withFilesystemOwnershipLock(filesystemPaths, async (state) => {
-          if (state?.ownerThreadId !== null && state?.ownerThreadId !== threadId) {
+          if (state !== null && state.ownerThreadId !== null && state.ownerThreadId !== threadId) {
             throw new Error(`workspace ownership changed for ${row.canonical_path}`);
           }
           return {

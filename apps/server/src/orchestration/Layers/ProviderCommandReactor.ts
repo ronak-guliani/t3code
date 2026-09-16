@@ -37,6 +37,8 @@ import {
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
+import { WorkspaceOwnershipRepositoryLive } from "../../persistence/Layers/WorkspaceOwnership.ts";
 
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -182,6 +184,7 @@ const make = Effect.gen(function* () {
   const gitStatusBroadcaster = yield* GitStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const workspaceOwnership = yield* WorkspaceOwnershipRepository;
   const handledTurnStartKeys = yield* Cache.make<string, true>({
     capacity: HANDLED_TURN_START_KEY_MAX,
     timeToLive: HANDLED_TURN_START_KEY_TTL,
@@ -375,6 +378,9 @@ const make = Effect.gen(function* () {
     const thread = readModel.threads.find((entry) => entry.id === threadId);
     if (!thread) {
       return;
+    }
+    if (thread.workspaceBinding !== undefined) {
+      yield* workspaceOwnership.assertOwned(thread.workspaceBinding, thread.id);
     }
 
     const cwd = resolveThreadWorkspaceCwd({
@@ -1412,4 +1418,5 @@ const make = Effect.gen(function* () {
 
 export const ProviderCommandReactorLive = Layer.effect(ProviderCommandReactor, make).pipe(
   Layer.provideMerge(CheckoutCoordinatorLive),
+  Layer.provideMerge(WorkspaceOwnershipRepositoryLive),
 );
