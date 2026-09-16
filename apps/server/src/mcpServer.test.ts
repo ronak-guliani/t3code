@@ -126,6 +126,9 @@ describe("MCP Streamable HTTP server", () => {
         "create_nested_thread",
         "create_nested_threads",
         "associate_pull_request",
+        "link_pull_request",
+        "unlink_pull_request",
+        "list_thread_pull_requests",
       ]),
       threadId: "thread-1",
       cliCommand: "t3-test",
@@ -157,6 +160,9 @@ describe("MCP Streamable HTTP server", () => {
             { name: "create_nested_thread" },
             { name: "create_nested_threads" },
             { name: "associate_pull_request" },
+            { name: "link_pull_request" },
+            { name: "unlink_pull_request" },
+            { name: "list_thread_pull_requests" },
           ],
         },
       });
@@ -282,6 +288,8 @@ describe("send_to_thread MCP tool", () => {
         summary: "Choose the migration approach.",
         thread: "untrusted-target",
         originTurnId: "turn-a",
+        assignmentId: "assignment-a",
+        dispatchId: "dispatch-a",
       }),
     );
     expect(output).toEqual([
@@ -293,6 +301,10 @@ describe("send_to_thread MCP tool", () => {
       "decision-needed",
       "--report-id",
       "decision-1",
+      "--assignment-id",
+      "assignment-a",
+      "--dispatch-id",
+      "dispatch-a",
       "--turn-id",
       "turn-a",
       "--cross-thread-capability",
@@ -306,6 +318,8 @@ describe("send_to_thread MCP tool", () => {
         kind: "completion",
         summary: "Done",
         originTurnId: "turn-a",
+        assignmentId: "assignment-a",
+        dispatchId: "dispatch-a",
       }),
     ).rejects.toThrow("valid kind");
     await expect(
@@ -316,6 +330,8 @@ describe("send_to_thread MCP tool", () => {
           kind: "progress",
           summary: "Working",
           originTurnId: "turn-a",
+          assignmentId: "assignment-a",
+          dispatchId: "dispatch-a",
         },
       ),
     ).rejects.toThrow("requires a T3 provider session");
@@ -324,6 +340,8 @@ describe("send_to_thread MCP tool", () => {
         reportId: "missing-turn",
         kind: "progress",
         summary: "Working",
+        assignmentId: "assignment-a",
+        dispatchId: "dispatch-a",
       }),
     ).rejects.toThrow("requires originTurnId");
   });

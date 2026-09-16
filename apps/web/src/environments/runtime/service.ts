@@ -1201,6 +1201,11 @@ async function createSavedEnvironmentConnection(
         serverConfig: config,
       });
     },
+    onSettingsUpdated: (settings) => {
+      const store = useSavedEnvironmentRuntimeStore.getState();
+      const current = store.byId[record.environmentId]?.serverConfig;
+      if (current) store.patch(record.environmentId, { serverConfig: { ...current, settings } });
+    },
     onWelcome: (payload) => {
       useSavedEnvironmentRuntimeStore.getState().patch(record.environmentId, {
         descriptor: payload.environment,

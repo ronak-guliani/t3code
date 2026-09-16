@@ -38,6 +38,7 @@ import {
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
+  type PullRequestListState,
   type ReviewChangesScope,
 } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime";
@@ -87,8 +88,7 @@ import { TraitsPicker } from "../chat/TraitsPicker";
 import { resolveAndPersistPreferredEditor } from "../../editorPreferences";
 import { isElectron } from "../../env";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
-import { deviceEnvironment } from "../../state/device";
-import { useAtomCommand } from "../../state/use-atom-command";
+import { DeviceSettings } from "./DeviceSettings";
 import { useTheme } from "../../hooks/useTheme";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
@@ -396,6 +396,20 @@ function formatMessagePreviewLineCount(lineCount: MessagePreviewLineCount): stri
 
 function isFontSize(value: unknown): value is FontSize {
   return FONT_SIZE_OPTIONS.some((option) => String(option.value) === String(value));
+}
+
+const PULL_REQUESTS_STATE_OPTIONS: ReadonlyArray<{
+  readonly value: PullRequestListState;
+  readonly label: string;
+}> = [
+  { value: "open", label: "Open" },
+  { value: "all", label: "All states" },
+  { value: "closed", label: "Closed" },
+  { value: "merged", label: "Merged" },
+];
+
+function isPullRequestListState(value: unknown): value is PullRequestListState {
+  return PULL_REQUESTS_STATE_OPTIONS.some((option) => option.value === value);
 }
 
 function isReviewChangesScope(value: unknown): value is ReviewChangesScope {
@@ -889,6 +903,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap
         ? ["Diff line wrapping"]
         : []),
+      ...(settings.pullRequestsDefaultState !== DEFAULT_UNIFIED_SETTINGS.pullRequestsDefaultState
+        ? ["Pull requests default state"]
+        : []),
+      ...(settings.pullRequestsCodeFontSize !== DEFAULT_UNIFIED_SETTINGS.pullRequestsCodeFontSize
+        ? ["Pull requests code font size"]
+        : []),
       ...(settings.browserAutoShowFloatingPreview !==
       DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview
         ? ["Agent browser preview"]
@@ -945,6 +965,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.codeFont,
       settings.defaultThreadEnvMode,
       settings.diffWordWrap,
+      settings.pullRequestsDefaultState,
+      settings.pullRequestsCodeFontSize,
       settings.enableAssistantStreaming,
       settings.agentWorkflows,
       settings.sidebarFontSize,
@@ -983,7 +1005,6 @@ export function useSettingsRestore(onRestored?: () => void) {
 
 export function GeneralSettingsPanel() {
   const browserEnvironmentId = usePrimaryEnvironmentId();
-  const configureDevice = useAtomCommand(deviceEnvironment.configure);
   const { theme, setTheme } = useTheme();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -2283,48 +2304,118 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
-      <SettingsSection title="Devices">
+      <SettingsSection title="Pull requests">
         <SettingsRow
-          title="Local device support"
-          description="Discover and control local iOS Simulators and Android Emulators. Device Hub tools are installed and started only after you enable this setting."
+          title="Default list state"
+          description="State filter the pull requests page starts with when the URL names none."
+          resetAction={
+            settings.pullRequestsDefaultState !==
+            DEFAULT_UNIFIED_SETTINGS.pullRequestsDefaultState ? (
+              <SettingResetButton
+                label="pull requests default state"
+                onClick={() =>
+                  updateSettings({
+                    pullRequestsDefaultState: DEFAULT_UNIFIED_SETTINGS.pullRequestsDefaultState,
+                  })
+                }
+              />
+            ) : null
+          }
           control={
-            <Switch
-              checked={settings.enableDeviceSupport}
-              onCheckedChange={(checked) => {
-                if (!browserEnvironmentId) return;
-                const enabled = Boolean(checked);
-                void configureDevice({
-                  environmentId: browserEnvironmentId,
-                  input: {
-                    enabled,
-                    ...(enabled ? {} : { agentAccessEnabled: false }),
-                  },
-                });
+            <Select
+              value={settings.pullRequestsDefaultState}
+              onValueChange={(value) => {
+                if (isPullRequestListState(value)) {
+                  updateSettings({ pullRequestsDefaultState: value });
+                }
               }}
-              aria-label="Enable local device support"
-            />
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Pull requests default state">
+                <SelectValue>
+                  {PULL_REQUESTS_STATE_OPTIONS.find(
+                    (option) => option.value === settings.pullRequestsDefaultState,
+                  )?.label ?? "Open"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {PULL_REQUESTS_STATE_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
           }
         />
-
         <SettingsRow
-          title="Agent device access"
-          description="Let newly started agent sessions list, open, capture, and close devices. This permission is separate from access to the Device panel."
+          title="Diff code font size"
+          description="Font size for code in pull request diffs."
+          resetAction={
+            settings.pullRequestsCodeFontSize !==
+            DEFAULT_UNIFIED_SETTINGS.pullRequestsCodeFontSize ? (
+              <SettingResetButton
+                label="pull requests code font size"
+                onClick={() =>
+                  updateSettings({
+                    pullRequestsCodeFontSize: DEFAULT_UNIFIED_SETTINGS.pullRequestsCodeFontSize,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={String(settings.pullRequestsCodeFontSize)}
+              onValueChange={(value) => {
+                const num = Number(value);
+                if (isFontSize(num)) {
+                  updateSettings({ pullRequestsCodeFontSize: num });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Pull requests code font size">
+                <SelectValue>
+                  {FONT_SIZE_OPTIONS.find(
+                    (option) => option.value === settings.pullRequestsCodeFontSize,
+                  )?.label ?? "12px"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {FONT_SIZE_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={String(option.value)}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Wrap long diff lines"
+          description="Wrap instead of horizontally scrolling long lines in pull request diffs."
+          resetAction={
+            settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap ? (
+              <SettingResetButton
+                label="pull requests diff line wrapping"
+                onClick={() =>
+                  updateSettings({
+                    diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
+                  })
+                }
+              />
+            ) : null
+          }
           control={
             <Switch
-              checked={settings.enableAgentDeviceAccess}
-              disabled={!settings.enableDeviceSupport}
-              onCheckedChange={(checked) => {
-                if (!browserEnvironmentId) return;
-                void configureDevice({
-                  environmentId: browserEnvironmentId,
-                  input: { agentAccessEnabled: Boolean(checked) },
-                });
-              }}
-              aria-label="Allow agent device access"
+              checked={settings.diffWordWrap}
+              onCheckedChange={(checked) => updateSettings({ diffWordWrap: Boolean(checked) })}
+              aria-label="Wrap long lines in pull request diffs"
             />
           }
         />
       </SettingsSection>
+
+      <DeviceSettings />
 
       <SettingsSection title="Preferences">
         <SettingsRow

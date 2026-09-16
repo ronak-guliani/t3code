@@ -181,6 +181,7 @@ import {
   resolveExistingThreadDraftPreview,
   shouldRenderSidebarDraft,
   resolveThreadRowClassName,
+  resolveSidebarThreadClickKind,
   resolveThreadStatusPill,
   orderItemsByPreferredIds,
   shouldClearThreadSelectionOnMouseDown,
@@ -223,6 +224,7 @@ import {
 } from "../sidebarThreadTree";
 import { compactSidebarTimeLabel } from "./SidebarV2.logic";
 import { SidebarHoverThreadPrewarmer } from "./SidebarThreadPrewarmer";
+import { resolveThreadPullRequests, ThreadPullRequestsPopover } from "./ThreadPullRequestsPopover";
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -475,7 +477,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     (state) =>
       selectThreadTerminalState(state.terminalStateByThreadKey, threadRef).runningTerminalIds,
   );
-  const prStatus = prStatusIndicator(thread.pullRequest);
+  const pullRequests = resolveThreadPullRequests(thread.pullRequests, thread.pullRequest);
+  const prStatus = prStatusIndicator(pullRequests[0]);
   const handleOpenDiscoveredPort = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       const port = discoveredPorts[0];
@@ -544,16 +547,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         });
         return;
       }
-      const isMac = isMacPlatform(navigator.platform);
-      const isModKey = isMac ? event.metaKey : event.ctrlKey;
-
-      if (event.shiftKey && !isModKey) {
-        event.preventDefault();
-        event.stopPropagation();
-        setThreadPinned(projectKey, threadKey, !isPinned);
-        return;
-      }
-
+      // Modifier clicks are selection gestures owned by handleThreadClick
+      // (Ctrl/Cmd toggles, Shift extends a range). Pinning stays on the row's
+      // overflow menu so Shift+Click can select.
       handleParentThreadSelected(threadKey, props.hasChildren);
       handleThreadClick(event, threadRef, orderedProjectThreadKeys);
     },
@@ -562,11 +558,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       handleThreadClick,
       handleParentThreadSelected,
       clearSelection,
-      isPinned,
       navigate,
       orderedProjectThreadKeys,
-      projectKey,
-      setThreadPinned,
       threadKey,
       threadRef,
       virtualAgentRun,
@@ -880,7 +873,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   · {composerDraftPreview}
                 </span>
               ) : null}
-              {prStatus ? (
+              {pullRequests.length > 0 ? (
                 <>
                   <span
                     aria-hidden="true"
@@ -889,24 +882,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   >
                     ·
                   </span>
-                  <button
-                    type="button"
-                    data-thread-selection-safe
+                  <span
                     data-testid={`thread-pr-link-${thread.id}`}
-                    aria-label={prStatus.tooltip}
-                    title={prStatus.tooltip}
-                    className={cn(
-                      "shrink-0 cursor-pointer font-mono tabular-nums outline-hidden transition-colors hover:underline focus-visible:ring-1 focus-visible:ring-ring",
-                      prStatus.colorClass,
-                    )}
                     style={{ fontSize: "var(--app-sidebar-font-size)" }}
-                    // Pinned rows put dnd-kit listeners on the parent <li>; without
-                    // this guard a slight move while clicking starts a drag.
-                    onPointerDown={stopPropagationOnPointerDown}
-                    onClick={handleOpenPrSelected}
                   >
-                    #{prStatus.number}
-                  </button>
+                    <ThreadPullRequestsPopover
+                      links={thread.pullRequests}
+                      fallbackPullRequest={thread.pullRequest}
+                    />
+                  </span>
                 </>
               ) : null}
             </span>
@@ -2182,19 +2166,22 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       threadRef: ScopedThreadRef,
       orderedProjectThreadKeys: readonly string[],
     ) => {
-      const isMac = isMacPlatform(navigator.platform);
-      const isModClick = isMac ? event.metaKey : event.ctrlKey;
-      const isShiftClick = event.shiftKey;
       const threadKey = scopedThreadKey(threadRef);
       const currentSelectionCount = useThreadSelectionStore.getState().selectedThreadKeys.size;
+      const clickKind = resolveSidebarThreadClickKind({
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
+        isMac: isMacPlatform(navigator.platform),
+      });
 
-      if (isModClick) {
+      if (clickKind === "toggle") {
         event.preventDefault();
         toggleThreadSelection(threadKey);
         return;
       }
 
-      if (isShiftClick) {
+      if (clickKind === "range") {
         event.preventDefault();
         rangeSelectTo(threadKey, orderedProjectThreadKeys);
         return;

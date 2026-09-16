@@ -1,11 +1,11 @@
-import { MessageId, TurnId, type OrchestrationThread } from "@t3tools/contracts";
+import { MessageId, QueuedTurnId, ThreadId, TurnId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import {
   childReportDedupeKey,
   classifyChildReport,
-  hasReportReceipt,
   mintDispatch,
   mintDispatchRecord,
+  transitionDelegationExecution,
 } from "./dispatchAuthority.ts";
 
 const assignmentId = MessageId.make("assignment-1");
@@ -28,8 +28,6 @@ function delegation(overrides: {
   };
 }
 
-const noReceipt = false;
-
 describe("dispatchAuthority", () => {
   it("mints ordered generations", () => {
     const [firstId, firstSequence] = mintDispatch(null);
@@ -50,7 +48,6 @@ describe("dispatchAuthority", () => {
         claimedDispatchId: undefined,
         claimedTurnId: undefined,
         kind: "important-update",
-        hasReceipt: noReceipt,
       }),
     ).toBe("accepted");
   });
@@ -62,7 +59,6 @@ describe("dispatchAuthority", () => {
         claimedDispatchId: undefined,
         claimedTurnId: TurnId.make("turn-a"),
         kind: "important-update",
-        hasReceipt: noReceipt,
       }),
     ).toBe("stale");
     expect(
@@ -71,7 +67,6 @@ describe("dispatchAuthority", () => {
         claimedDispatchId: "d1",
         claimedTurnId: TurnId.make("turn-a"),
         kind: "progress",
-        hasReceipt: noReceipt,
       }),
     ).toBe("accepted");
   });
@@ -91,7 +86,6 @@ describe("dispatchAuthority", () => {
         claimedDispatchId: "d1",
         claimedTurnId: TurnId.make("turn-a"),
         kind: "important-update",
-        hasReceipt: noReceipt,
       }),
     ).toBe("stale");
     // Turn-only state-changing reports stay diagnostic-only until the
@@ -102,7 +96,6 @@ describe("dispatchAuthority", () => {
         claimedDispatchId: undefined,
         claimedTurnId: TurnId.make("turn-a"),
         kind: "important-update",
-        hasReceipt: noReceipt,
       }),
     ).toBe("stale");
     expect(
@@ -111,7 +104,6 @@ describe("dispatchAuthority", () => {
         claimedDispatchId: undefined,
         claimedTurnId: TurnId.make("turn-a"),
         kind: "progress",
-        hasReceipt: noReceipt,
       }),
     ).toBe("accepted");
     expect(
@@ -120,7 +112,6 @@ describe("dispatchAuthority", () => {
         claimedDispatchId: "d2",
         claimedTurnId: TurnId.make("turn-b"),
         kind: "important-update",
-        hasReceipt: noReceipt,
       }),
     ).toBe("stale");
   });
@@ -132,7 +123,6 @@ describe("dispatchAuthority", () => {
         claimedDispatchId: "dX",
         claimedTurnId: undefined,
         kind: "important-update",
-        hasReceipt: noReceipt,
       }),
     ).toBe("stale");
   });
@@ -150,7 +140,6 @@ describe("dispatchAuthority", () => {
           claimedDispatchId,
           claimedTurnId: TurnId.make("turn-a"),
           kind: "decision-needed",
-          hasReceipt: noReceipt,
         }),
       ).toBe("accepted");
     }
@@ -167,7 +156,6 @@ describe("dispatchAuthority", () => {
         claimedDispatchId: "d1",
         claimedTurnId: TurnId.make("turn-a"),
         kind: "important-update",
-        hasReceipt: noReceipt,
       }),
     ).toBe("stale");
   });
@@ -183,7 +171,6 @@ describe("dispatchAuthority", () => {
         claimedDispatchId: "d2",
         claimedTurnId: TurnId.make("turn-a"),
         kind: "important-update",
-        hasReceipt: noReceipt,
       }),
     ).toBe("stale");
   });
@@ -200,7 +187,6 @@ describe("dispatchAuthority", () => {
         claimedDispatchId: undefined,
         claimedTurnId: undefined,
         kind: "progress",
-        hasReceipt: noReceipt,
       }),
     ).toBe("accepted");
     expect(
@@ -209,12 +195,11 @@ describe("dispatchAuthority", () => {
         claimedDispatchId: undefined,
         claimedTurnId: undefined,
         kind: "important-update",
-        hasReceipt: noReceipt,
       }),
     ).toBe("stale");
   });
 
-  it("acknowledges exact duplicates on closed work but fences novel reports", () => {
+  it("replays the original durable outcome before current authority checks", () => {
     const closed = delegation({
       dispatchId: "d2",
       dispatchSequence: 2,
@@ -227,16 +212,16 @@ describe("dispatchAuthority", () => {
         claimedDispatchId: "d2",
         claimedTurnId: TurnId.make("turn-b"),
         kind: "important-update",
-        hasReceipt: true,
+        recordedOutcome: "accepted",
       }),
-    ).toBe("already-recorded");
+    ).toBe("accepted");
     expect(
       classifyChildReport({
         delegation: closed,
         claimedDispatchId: "d1",
         claimedTurnId: TurnId.make("turn-a"),
         kind: "important-update",
-        hasReceipt: false,
+        recordedOutcome: "stale",
       }),
     ).toBe("stale");
   });
@@ -244,14 +229,14 @@ describe("dispatchAuthority", () => {
   it("keeps the exact legacy key when no dispatch is involved", () => {
     expect(
       childReportDedupeKey({
-        childThreadId: "child",
+        childThreadId: ThreadId.make("child"),
         dispatchId: undefined,
         assignmentId: "assignment-1",
         reportId: "r1",
       }),
     ).toBe("report:child:assignment-1:r1");
     const fenced = childReportDedupeKey({
-      childThreadId: "child",
+      childThreadId: ThreadId.make("child"),
       dispatchId: "d1",
       assignmentId: "assignment-1",
       reportId: "r1",
@@ -265,41 +250,55 @@ describe("dispatchAuthority", () => {
         reportId: "r1",
       }),
     ).toBe(fenced);
+    expect(
+      childReportDedupeKey({
+        childThreadId: "child",
+        dispatchId: undefined,
+        originTurnId: "turn-a",
+        assignmentId: "assignment-1",
+        reportId: "r1",
+      }),
+    ).toBe("report:child:turn:turn-a:assignment-1:r1");
   });
-  it("recovers receipts for exact logical reports only", () => {
-    const thread = {
-      activities: [
-        {
-          id: "cmd-1",
-          kind: "delegation.reported",
-          tone: "info",
-          summary: "done",
-          payload: { reportId: "r1", assignmentId: "assignment-1", dispatchId: "d1" },
-          turnId: null,
-          createdAt: "2026-09-12T00:00:00.000Z",
+
+  it("retires execution-scoped decisions and pending answers on replacement", () => {
+    const current = {
+      ...delegation({
+        dispatchId: "d1",
+        dispatchSequence: 1,
+        dispatchTurnId: TurnId.make("turn-a"),
+      }),
+      decision: {
+        id: "decision-a",
+        childThreadId: ThreadId.make("child"),
+        childTitle: "Child",
+        assignmentId,
+        dispatchId: "d1",
+        kind: "decision-needed" as const,
+        summary: "Choose",
+      },
+      pendingResponse: {
+        queuedTurnId: QueuedTurnId.make("answer-a"),
+        report: {
+          id: "decision-a",
+          childThreadId: ThreadId.make("child"),
+          childTitle: "Child",
+          assignmentId,
+          dispatchId: "d1",
+          kind: "decision-needed" as const,
+          summary: "Choose",
         },
-        {
-          id: "cmd-legacy",
-          kind: "delegation.reported",
-          tone: "info",
-          summary: "old",
-          payload: { reportId: "r0" },
-          turnId: null,
-          createdAt: "2026-09-12T00:00:00.000Z",
-        },
-      ],
-    } as unknown as OrchestrationThread;
-    expect(
-      hasReportReceipt(thread, { reportId: "r1", assignmentId: "assignment-1", dispatchId: "d1" }),
-    ).toBe(true);
-    expect(
-      hasReportReceipt(thread, { reportId: "r1", assignmentId: "assignment-1", dispatchId: "d2" }),
-    ).toBe(false);
-    expect(hasReportReceipt(thread, { reportId: "r0", assignmentId: null, dispatchId: null })).toBe(
-      true,
-    );
-    expect(
-      hasReportReceipt(thread, { reportId: "missing", assignmentId: null, dispatchId: null }),
-    ).toBe(false);
+      },
+    };
+    const replacement = transitionDelegationExecution(current, "replaced");
+    expect(replacement.delegation).toMatchObject({
+      previousDispatchId: "d1",
+      dispatchReason: "replaced",
+      dispatchTurnId: null,
+      decision: null,
+      pendingResponse: null,
+    });
+    expect(replacement.delegation.dispatchId).not.toBe("d1");
+    expect(replacement.retiredPendingResponseQueuedTurnId).toBe("answer-a");
   });
 });

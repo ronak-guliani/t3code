@@ -654,6 +654,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
 
   const toReady = (running: RunningHost): DeviceHost.DeviceHostReady => ({
     hub: { origin: running.hub.origin } satisfies DeviceHost.DeviceHubEndpoint,
+    nodePath: process.execPath,
     run,
     helpers: running.helpers,
   });
@@ -689,6 +690,19 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
     platformAvailability,
     ensureReady,
     ensureAgentReady,
+    withCurrentAgent: (use) =>
+      startLock.withPermits(1)(
+        Effect.gen(function* () {
+          const running = yield* Ref.get(runningRef);
+          if (!running?.agentDevice)
+            return yield* new DeviceHost.DeviceHostError({
+              hostId,
+              step: "using agent tools; agent access has stopped",
+              cause: new Error("No current agent endpoint."),
+            });
+          return yield* use({ ...toReady(running), agentDevice: running.agentDevice });
+        }),
+      ),
     current,
     stopAgent,
     stop,

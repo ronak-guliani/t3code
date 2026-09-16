@@ -6,6 +6,10 @@ import {
   OrchestrationThread,
 } from "@t3tools/contracts";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
+import {
+  sameThreadPullRequest,
+  upsertLegacyThreadPullRequestLink,
+} from "@t3tools/shared/threadPullRequests";
 import { Effect, Schema } from "effect";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
@@ -23,6 +27,9 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadPullRequestLinkedPayload,
+  ThreadPullRequestRekeyedPayload,
+  ThreadPullRequestUnlinkedPayload,
   ThreadPendingRuntimeModeSetPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadQueuedTurnCreatedPayload,
@@ -349,6 +356,8 @@ export function projectEvent(
           "payload",
         );
         const legacyReviewPullRequest = pullRequestFromReviewSnapshot(payload.reviewSnapshot);
+        const initialPullRequest =
+          payload.pullRequest !== undefined ? payload.pullRequest : legacyReviewPullRequest;
         const thread: OrchestrationThread = yield* decodeForEvent(
           OrchestrationThread,
           {
@@ -365,11 +374,21 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
-            ...(payload.pullRequest !== undefined
-              ? { pullRequest: payload.pullRequest }
-              : legacyReviewPullRequest !== undefined
-                ? { pullRequest: legacyReviewPullRequest }
-                : {}),
+            ...(initialPullRequest !== undefined ? { pullRequest: initialPullRequest } : {}),
+            ...(initialPullRequest !== undefined && initialPullRequest !== null
+              ? {
+                  pullRequests: [
+                    {
+                      pullRequest: initialPullRequest,
+                      source:
+                        payload.pullRequest !== undefined
+                          ? ("created" as const)
+                          : ("recovered" as const),
+                      linkedAt: payload.createdAt,
+                    },
+                  ],
+                }
+              : {}),
             ...(payload.reviewSnapshot !== undefined
               ? { reviewSnapshot: payload.reviewSnapshot }
               : {}),
@@ -533,22 +552,129 @@ export function projectEvent(
 
     case "thread.meta-updated":
       return decodeForEvent(ThreadMetaUpdatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const existingThread = nextBase.threads.find((thread) => thread.id === payload.threadId);
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              ...(payload.nudging !== undefined ? { nudging: payload.nudging } : {}),
+              ...(payload.title !== undefined ? { title: payload.title } : {}),
+              ...(payload.titleRegeneration !== undefined
+                ? { titleRegeneration: payload.titleRegeneration }
+                : {}),
+              ...(payload.modelSelection !== undefined
+                ? { modelSelection: payload.modelSelection }
+                : {}),
+              ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
+              ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
+              ...(payload.pullRequest !== undefined
+                ? {
+                    pullRequest: payload.pullRequest,
+                    ...(payload.pullRequest !== null
+                      ? {
+                          pullRequests: upsertLegacyThreadPullRequestLink(
+                            existingThread?.pullRequests,
+                            payload.pullRequest,
+                            payload.updatedAt,
+                            payload.pullRequestSource,
+                          ),
+                        }
+                      : {}),
+                  }
+                : {}),
+              updatedAt: payload.updatedAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.pull-request-linked":
+      return decodeForEvent(
+        ThreadPullRequestLinkedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
-            ...(payload.nudging !== undefined ? { nudging: payload.nudging } : {}),
-            ...(payload.title !== undefined ? { title: payload.title } : {}),
-            ...(payload.titleRegeneration !== undefined
-              ? { titleRegeneration: payload.titleRegeneration }
-              : {}),
-            ...(payload.modelSelection !== undefined
-              ? { modelSelection: payload.modelSelection }
-              : {}),
-            ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
-            ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
-            ...(payload.pullRequest !== undefined ? { pullRequest: payload.pullRequest } : {}),
+            pullRequests: (() => {
+              const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              if (!thread) return [];
+              const existing = thread.pullRequests ?? [];
+              const index = existing.findIndex((link) =>
+                sameThreadPullRequest(link.pullRequest, payload.link.pullRequest),
+              );
+              return index < 0
+                ? [...existing, payload.link]
+                : existing.map((link, linkIndex) => (linkIndex === index ? payload.link : link));
+            })(),
             updatedAt: payload.updatedAt,
           }),
+        })),
+      );
+
+    case "thread.pull-request-unlinked":
+      return decodeForEvent(
+        ThreadPullRequestUnlinkedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            (() => {
+              const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              return {
+                ...(thread?.pullRequest &&
+                sameThreadPullRequest(thread.pullRequest, payload.pullRequest)
+                  ? { pullRequest: null }
+                  : {}),
+                pullRequests: (thread?.pullRequests ?? []).filter(
+                  (link) => !sameThreadPullRequest(link.pullRequest, payload.pullRequest),
+                ),
+                updatedAt: payload.updatedAt,
+              };
+            })(),
+          ),
+        })),
+      );
+
+    case "thread.pull-request-rekeyed":
+      return decodeForEvent(
+        ThreadPullRequestRekeyedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            (() => {
+              const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              const pullRequests = [
+                ...(thread?.pullRequests ?? []).filter(
+                  (link) =>
+                    !sameThreadPullRequest(link.pullRequest, payload.previousPullRequest) &&
+                    !sameThreadPullRequest(link.pullRequest, payload.link.pullRequest),
+                ),
+                payload.link,
+              ];
+              return {
+                ...(thread?.pullRequest &&
+                sameThreadPullRequest(thread.pullRequest, payload.previousPullRequest)
+                  ? { pullRequest: payload.link.pullRequest }
+                  : {}),
+                pullRequests,
+                updatedAt: payload.updatedAt,
+              };
+            })(),
+          ),
         })),
       );
 

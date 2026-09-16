@@ -1,4 +1,8 @@
-import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ORCHESTRATION_PROTOCOL_VERSION,
+  type ExecutionEnvironmentDescriptor,
+} from "@t3tools/contracts";
 import { Effect, FileSystem, Layer, Path } from "effect";
 
 import { ServerConfig } from "../../config.ts";
@@ -93,11 +97,13 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       arch: platformArch(),
     },
     serverVersion: packageJson.version,
+    orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     capabilities: {
       ownedMobileProtocolVersion: 1,
       repositoryIdentity: true,
       connectionProbe: true,
       pullRequests: true,
+      threadPullRequestLinking: true,
       threadSettlement: true,
       threadSnooze: true,
       threadPinning: true,

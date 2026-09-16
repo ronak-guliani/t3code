@@ -76,6 +76,8 @@ const clientSettings: ClientSettings = {
   confirmThreadDelete: false,
   codeFont: "jetbrains-mono",
   diffWordWrap: true,
+  pullRequestsDefaultState: "open",
+  pullRequestsCodeFontSize: 12,
   favorites: [],
   providerModelPreferences: {},
   sidebarProjectGroupingMode: "repository_path",

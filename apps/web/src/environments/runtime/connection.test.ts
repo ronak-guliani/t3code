@@ -1,4 +1,4 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, EnvironmentId, type ServerSettings } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { createEnvironmentConnection } from "./connection";
@@ -120,6 +120,11 @@ function createTestClient() {
 
   return {
     client,
+    emitSettings: (settings: ServerSettings) => {
+      for (const listener of configListeners) {
+        listener({ version: 1, type: "settingsUpdated", payload: { settings } });
+      }
+    },
     emitWelcome: (environmentId: EnvironmentId) => {
       for (const listener of lifecycleListeners) {
         listener({
@@ -170,6 +175,40 @@ function createTestClient() {
 }
 
 describe("createEnvironmentConnection", () => {
+  it("forwards live settings to the owning environment and stops after disposal", async () => {
+    const environmentId = EnvironmentId.make("env-1");
+    const { client, emitSettings } = createTestClient();
+    const onSettingsUpdated = vi.fn();
+    const connection = createEnvironmentConnection({
+      kind: "saved",
+      knownEnvironment: {
+        id: "env-1",
+        label: "Remote env",
+        source: "manual",
+        target: { httpBaseUrl: "http://example.test", wsBaseUrl: "ws://example.test" },
+        environmentId,
+      },
+      client,
+      onSettingsUpdated,
+      applyShellEvent: vi.fn(),
+      syncShellSnapshot: vi.fn(),
+      applyTerminalEvent: vi.fn(),
+      applySidebarStateSnapshot: vi.fn(),
+      readLegacyPinnedThreads: vi.fn(() => ({})),
+      markLegacySidebarPinsMigrated: vi.fn(),
+    });
+    await connection.ensureBootstrapped();
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      deviceHosts: [{ id: "lab", label: "Lab", target: "lab" }],
+    };
+    emitSettings(settings);
+    expect(onSettingsUpdated).toHaveBeenCalledExactlyOnceWith(settings);
+    await connection.dispose();
+    emitSettings(DEFAULT_SERVER_SETTINGS);
+    expect(onSettingsUpdated).toHaveBeenCalledTimes(1);
+  });
+
   it("does not refresh metadata when a pending reconnect completes after disposal", async () => {
     const environmentId = EnvironmentId.make("env-1");
     const { client } = createTestClient();

@@ -176,6 +176,49 @@ export function resolveAssistantMessageCopyState({
   };
 }
 
+/**
+ * Maps each user message to the checkpoint turn count of the turn that
+ * answered it (minus one, for revert targeting). Each user message resolves
+ * against the first following assistant message carrying a numeric
+ * checkpoint turn count; assistants without summaries are skipped, while a
+ * non-numeric summary or a following user message discards the pending user.
+ *
+ * Single forward pass over already-ordered entries.
+ */
+export function deriveRevertTurnCountByUserMessageId(input: {
+  timelineEntries: ReadonlyArray<TimelineEntry>;
+  turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
+  inferredCheckpointTurnCountByTurnId: Record<TurnId, number>;
+}): Map<MessageId, number> {
+  const byUserMessageId = new Map<MessageId, number>();
+  let pendingUserMessageId: MessageId | null = null;
+  for (const entry of input.timelineEntries) {
+    if (!entry || entry.kind !== "message") {
+      continue;
+    }
+    if (entry.message.role === "user") {
+      pendingUserMessageId = entry.message.id;
+      continue;
+    }
+    if (pendingUserMessageId === null) {
+      continue;
+    }
+    const summary = input.turnDiffSummaryByAssistantMessageId.get(entry.message.id);
+    if (!summary) {
+      continue;
+    }
+    const turnCount =
+      summary.checkpointTurnCount ?? input.inferredCheckpointTurnCountByTurnId[summary.turnId];
+    const userMessageId = pendingUserMessageId;
+    pendingUserMessageId = null;
+    if (typeof turnCount !== "number") {
+      continue;
+    }
+    byUserMessageId.set(userMessageId, Math.max(0, turnCount - 1));
+  }
+  return byUserMessageId;
+}
+
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   completionDividerBeforeEntryId: string | null;

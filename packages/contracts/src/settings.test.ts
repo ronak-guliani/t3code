@@ -9,6 +9,8 @@ import {
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_CODE_FONT,
   DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS,
+  DEFAULT_PULL_REQUESTS_CODE_FONT_SIZE,
+  DEFAULT_PULL_REQUESTS_DEFAULT_STATE,
   DEFAULT_SIDEBAR_FONT_SIZE,
   DEFAULT_SIDEBAR_META_FONT_SIZE,
   DEFAULT_SIDEBAR_ROW_SPACING,
@@ -121,6 +123,31 @@ describe("ClientSettings.uiFont", () => {
 
   it("rejects unknown interface font options in patches", () => {
     expect(() => decodeClientSettingsPatch({ uiFont: "not-a-font" })).toThrow();
+  });
+});
+
+describe("ClientSettings.pullRequests", () => {
+  it("defaults the list state to open and the diff code size to 12px", () => {
+    expect(DEFAULT_CLIENT_SETTINGS.pullRequestsDefaultState).toBe(
+      DEFAULT_PULL_REQUESTS_DEFAULT_STATE,
+    );
+    expect(decodeClientSettings({}).pullRequestsDefaultState).toBe("open");
+    expect(DEFAULT_CLIENT_SETTINGS.pullRequestsCodeFontSize).toBe(
+      DEFAULT_PULL_REQUESTS_CODE_FONT_SIZE,
+    );
+    expect(decodeClientSettings({}).pullRequestsCodeFontSize).toBe(12);
+  });
+
+  it("accepts valid pull request patches and rejects unknown states", () => {
+    expect(
+      decodeClientSettingsPatch({
+        pullRequestsDefaultState: "merged",
+        pullRequestsCodeFontSize: 14,
+      }),
+    ).toEqual({ pullRequestsDefaultState: "merged", pullRequestsCodeFontSize: 14 });
+
+    expect(() => decodeClientSettingsPatch({ pullRequestsDefaultState: "draft" })).toThrow();
+    expect(() => decodeClientSettingsPatch({ pullRequestsCodeFontSize: 99 })).toThrow();
   });
 });
 
@@ -370,4 +397,17 @@ describe("RECOMMENDED_FONT_SIZES_BY_UI_DENSITY", () => {
       expect(sizes.sidebarMetaFontSize).toBeLessThan(sizes.sidebarFontSize);
     }
   });
+});
+
+const decodeDeviceHostSettings = Schema.decodeSync(ServerSettings);
+
+it("validates remote device hosts and rejects ambiguous host ids", () => {
+  const host = { id: "mini", label: "Mac mini", target: "user@mini", port: 2222 };
+  expect(decodeDeviceHostSettings({ deviceHosts: [host] }).deviceHosts).toEqual([host]);
+  expect(() => decodeDeviceHostSettings({ deviceHosts: [host, host] })).toThrow();
+  expect(() => decodeDeviceHostSettings({ deviceHosts: [{ ...host, id: "local" }] })).toThrow();
+  expect(() =>
+    decodeDeviceHostSettings({ deviceHosts: [{ ...host, target: "-oProxyCommand=bad" }] }),
+  ).toThrow();
+  expect(() => decodeDeviceHostSettings({ deviceHosts: [{ ...host, port: 0 }] })).toThrow();
 });
