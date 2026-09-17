@@ -1320,6 +1320,7 @@ const ThreadValidationRunPlanCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   runId: TrimmedNonEmptyString,
+  executorId: TrimmedNonEmptyString,
   target: ValidationTarget,
   createdAt: IsoDateTime,
 });
@@ -1329,6 +1330,8 @@ const ThreadValidationGateUpdateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   runId: TrimmedNonEmptyString,
+  executorId: TrimmedNonEmptyString,
+  target: ValidationTarget,
   gateId: ValidationGateId,
   status: ValidationGateStatus,
   command: Schema.NullOr(TrimmedNonEmptyString),
@@ -1483,8 +1486,6 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
-  ThreadValidationRunPlanCommand,
-  ThreadValidationGateUpdateCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -1525,8 +1526,6 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
-  ThreadValidationRunPlanCommand,
-  ThreadValidationGateUpdateCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
@@ -1630,7 +1629,7 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
 });
 
-const InternalOrchestrationCommand = Schema.Union([
+export const InternalOrchestrationCommand = Schema.Union([
   ChatArchiveImportCommand,
   ThreadSessionSetCommand,
   ThreadDispatchReplaceCommand,
@@ -1648,6 +1647,8 @@ const InternalOrchestrationCommand = Schema.Union([
   WorkflowNodeWorkerStartCommand,
   WorkflowWorkerResultRecordCommand,
   WorkflowRunFinalizeCommand,
+  ThreadValidationRunPlanCommand,
+  ThreadValidationGateUpdateCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
 

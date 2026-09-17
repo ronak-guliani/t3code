@@ -54,6 +54,7 @@ export type ValidationGate = typeof ValidationGate.Type;
 export const ValidationRun = Schema.Struct({
   id: TrimmedNonEmptyString,
   threadId: ThreadId,
+  executorId: Schema.optional(TrimmedNonEmptyString),
   target: ValidationTarget,
   gates: Schema.Array(ValidationGate),
   createdAt: IsoDateTime,
@@ -83,11 +84,13 @@ const gateLabel: Record<ValidationGateId, string> = {
 export const planValidationRun = (input: {
   readonly id: string;
   readonly threadId: ThreadId;
+  readonly executorId?: string | undefined;
   readonly target: ValidationTarget;
   readonly requestedAt: IsoDateTime;
 }): ValidationRun => ({
   id: input.id,
   threadId: input.threadId,
+  ...(input.executorId !== undefined ? { executorId: input.executorId } : {}),
   target: input.target,
   gates: [
     {
@@ -196,6 +199,7 @@ export const validationRunEquals = (
   if (
     left.id !== right.id ||
     left.threadId !== right.threadId ||
+    left.executorId !== right.executorId ||
     left.createdAt !== right.createdAt ||
     left.updatedAt !== right.updatedAt ||
     !validationTargetEquals(left.target, right.target) ||

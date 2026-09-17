@@ -99,6 +99,8 @@ const RANGE_COMMIT_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
 const RANGE_DIFF_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
 const RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES = 59_000;
 const WORKSPACE_FILES_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
+const DIRTY_STATE_DIFF_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
+const DIRTY_STATE_UNTRACKED_MAX_BYTES = 64 * 1024 * 1024;
 const GIT_CHECK_IGNORE_MAX_STDIN_BYTES = 256 * 1024;
 const WORKSPACE_GIT_HARDENED_CONFIG_ARGS = [
   "-c",
@@ -929,6 +931,109 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       ),
     );
 
+  const readDirtyStateFingerprint = Effect.fn("GitCore.readDirtyStateFingerprint")(function* (
+    cwd: string,
+  ) {
+    const [unstagedPatch, stagedPatch, untrackedPathsStdout] = yield* Effect.all(
+      [
+        runGitStdoutWithOptions(
+          "GitCore.statusDetails.unstagedContent",
+          cwd,
+          ["diff", "--no-ext-diff", "--binary", "--full-index", "--no-renames", "--no-color"],
+          { maxOutputBytes: DIRTY_STATE_DIFF_MAX_OUTPUT_BYTES },
+        ),
+        runGitStdoutWithOptions(
+          "GitCore.statusDetails.stagedContent",
+          cwd,
+          [
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--binary",
+            "--full-index",
+            "--no-renames",
+            "--no-color",
+          ],
+          { maxOutputBytes: DIRTY_STATE_DIFF_MAX_OUTPUT_BYTES },
+        ),
+        runGitStdoutWithOptions(
+          "GitCore.statusDetails.untrackedPaths",
+          cwd,
+          ["ls-files", "--others", "--exclude-standard", "-z"],
+          { maxOutputBytes: DIRTY_STATE_DIFF_MAX_OUTPUT_BYTES },
+        ),
+      ],
+      { concurrency: "unbounded" },
+    );
+
+    const fingerprint = createHash("sha256");
+    const updateText = (label: string, value: string) => {
+      fingerprint.update(`${label}\u0000${value.length}\u0000`);
+      fingerprint.update(value);
+      fingerprint.update("\u0000");
+    };
+    updateText("unstaged", unstagedPatch);
+    updateText("staged", stagedPatch);
+
+    const untrackedPaths = untrackedPathsStdout
+      .split("\u0000")
+      .filter((filePath) => filePath.length > 0)
+      .toSorted();
+    const fileSystemError = (filePath: string, cause: unknown) =>
+      new GitCommandError({
+        operation: "GitCore.statusDetails.untrackedContent",
+        command: `inspect ${filePath}`,
+        cwd,
+        detail: cause instanceof Error ? cause.message : "Failed to inspect untracked content.",
+        cause,
+      });
+    let untrackedBytes = 0;
+    for (const relativePath of untrackedPaths) {
+      const absolutePath = path.join(cwd, relativePath);
+      const info = yield* fileSystem
+        .stat(absolutePath)
+        .pipe(Effect.mapError((cause) => fileSystemError(relativePath, cause)));
+      const linkTarget = yield* fileSystem.readLink(absolutePath).pipe(
+        Effect.map((target) => Option.some(target)),
+        Effect.catch(() => Effect.succeed(Option.none<string>())),
+      );
+
+      fingerprint.update("untracked\u0000");
+      updateText("path", relativePath);
+      updateText("type", linkTarget._tag === "Some" ? "SymbolicLink" : info.type);
+      updateText("mode", String(info.mode));
+      if (Option.isSome(linkTarget)) {
+        updateText("target", linkTarget.value);
+        continue;
+      }
+      if (info.type !== "File") {
+        continue;
+      }
+      const size = Number(info.size);
+      if (
+        !Number.isSafeInteger(size) ||
+        size < 0 ||
+        size > DIRTY_STATE_UNTRACKED_MAX_BYTES ||
+        untrackedBytes > DIRTY_STATE_UNTRACKED_MAX_BYTES - size
+      ) {
+        return yield* new GitCommandError({
+          operation: "GitCore.statusDetails.untrackedContent",
+          command: `inspect ${relativePath}`,
+          cwd,
+          detail: `Untracked content exceeds the ${DIRTY_STATE_UNTRACKED_MAX_BYTES}-byte fingerprint bound.`,
+        });
+      }
+      const contents = yield* fileSystem
+        .readFile(absolutePath)
+        .pipe(Effect.mapError((cause) => fileSystemError(relativePath, cause)));
+      untrackedBytes += contents.byteLength;
+      fingerprint.update(`content\u0000${contents.byteLength}\u0000`);
+      fingerprint.update(contents);
+      fingerprint.update("\u0000");
+    }
+    return fingerprint.digest("hex");
+  });
+
   const branchExists = (cwd: string, branch: string): Effect.Effect<boolean, GitCommandError> =>
     executeGit(
       "GitCore.branchExists",
@@ -1293,6 +1398,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     const [
       unstagedNumstatStdout,
       stagedNumstatStdout,
+      dirtyStateFingerprint,
       revisionResult,
       defaultRefResult,
       hasOriginRemote,
@@ -1300,6 +1406,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       [
         runGitStdout("GitCore.statusDetails.unstagedNumstat", cwd, ["diff", "--numstat"]),
         runGitStdout("GitCore.statusDetails.stagedNumstat", cwd, ["diff", "--cached", "--numstat"]),
+        readDirtyStateFingerprint(cwd),
         executeGit("GitCore.statusDetails.revision", cwd, ["rev-parse", "HEAD"], {
           allowNonZeroExit: true,
         }),
@@ -1324,16 +1431,6 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       revisionResult.code === 0 && revisionResult.stdout.trim().length > 0
         ? revisionResult.stdout.trim()
         : undefined;
-    const dirtyStateFingerprint = createHash("sha256")
-      .update(
-        JSON.stringify({
-          status: statusResult.stdout,
-          stagedNumstat: stagedNumstatStdout,
-          unstagedNumstat: unstagedNumstatStdout,
-        }),
-      )
-      .digest("hex");
-
     let branch: string | null = null;
     let upstreamRef: string | null = null;
     let aheadCount = 0;

@@ -8,6 +8,7 @@ import {
   PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
   isProviderSendTurnSupportedImageMimeType,
   ClientOrchestrationCommand,
+  InternalOrchestrationCommand,
   DiffState,
   ModelSelection,
   MessageOrigin,
@@ -42,6 +43,7 @@ const decodeProjectCreatedPayload = Schema.decodeUnknownEffect(ProjectCreatedPay
 const decodeProjectMetaUpdatedPayload = Schema.decodeUnknownEffect(ProjectMetaUpdatedPayload);
 const decodeThreadTurnStartCommand = Schema.decodeUnknownEffect(ThreadTurnStartCommand);
 const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
+const decodeInternalOrchestrationCommand = Schema.decodeUnknownEffect(InternalOrchestrationCommand);
 const decodeMessageOrigin = Schema.decodeUnknownEffect(MessageOrigin);
 const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
   ThreadTurnStartRequestedPayload,
@@ -829,6 +831,32 @@ it.effect("accepts a cross-thread source id but not derived provenance from clie
       assert.strictEqual(parsed.crossThreadDispatchCapability, "capability");
       assert.strictEqual("origin" in parsed, false);
     }
+  }),
+);
+
+it.effect("keeps validation mutations on the internal executor command path", () =>
+  Effect.gen(function* () {
+    const command = {
+      type: "thread.validation-run.plan",
+      commandId: "command-validation-plan",
+      threadId: "thread-validation",
+      runId: "run-validation",
+      executorId: "executor-validation",
+      target: {
+        workspaceRoot: "/workspace",
+        worktreePath: null,
+        branch: "main",
+        revision: "revision-1",
+        dirtyStateFingerprint: "dirty-1",
+        environmentIdentity: "environment-1",
+      },
+      createdAt: "2026-09-17T00:00:00.000Z",
+    } as const;
+
+    const clientResult = yield* Effect.result(decodeClientOrchestrationCommand(command));
+    assert.equal(clientResult._tag, "Failure");
+    const internal = yield* decodeInternalOrchestrationCommand(command);
+    assert.equal(internal.type, "thread.validation-run.plan");
   }),
 );
 

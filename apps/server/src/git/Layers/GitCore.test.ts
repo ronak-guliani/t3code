@@ -1150,7 +1150,10 @@ it.layer(TestLayer)("git integration", (it) => {
           }
           if (
             input.operation === "GitCore.statusDetails.unstagedNumstat" ||
-            input.operation === "GitCore.statusDetails.stagedNumstat"
+            input.operation === "GitCore.statusDetails.stagedNumstat" ||
+            input.operation === "GitCore.statusDetails.unstagedContent" ||
+            input.operation === "GitCore.statusDetails.stagedContent" ||
+            input.operation === "GitCore.statusDetails.untrackedPaths"
           ) {
             return ok();
           }
@@ -1231,7 +1234,10 @@ it.layer(TestLayer)("git integration", (it) => {
             }
             if (
               input.operation === "GitCore.statusDetails.unstagedNumstat" ||
-              input.operation === "GitCore.statusDetails.stagedNumstat"
+              input.operation === "GitCore.statusDetails.stagedNumstat" ||
+              input.operation === "GitCore.statusDetails.unstagedContent" ||
+              input.operation === "GitCore.statusDetails.stagedContent" ||
+              input.operation === "GitCore.statusDetails.untrackedPaths"
             ) {
               return ok();
             }
@@ -1982,6 +1988,40 @@ it.layer(TestLayer)("git integration", (it) => {
         yield* writeTextFile(path.join(tmp, "README.md"), "updated\n");
         const dirty = yield* core.statusDetails(tmp);
         expect(dirty.hasWorkingTreeChanges).toBe(true);
+      }),
+    );
+
+    it.effect("binds dirty state to staged, unstaged, untracked, and mode content", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const core = yield* GitCore;
+        const readFingerprint = () =>
+          core.statusDetailsLocal(tmp).pipe(Effect.map((details) => details.dirtyStateFingerprint));
+
+        yield* writeTextFile(path.join(tmp, "README.md"), "changed-a\n");
+        const firstBytes = yield* readFingerprint();
+        yield* writeTextFile(path.join(tmp, "README.md"), "changed-b\n");
+        const secondBytes = yield* readFingerprint();
+        expect(secondBytes).not.toBe(firstBytes);
+
+        yield* git(tmp, ["add", "README.md"]);
+        const staged = yield* readFingerprint();
+        expect(staged).not.toBe(secondBytes);
+        yield* writeTextFile(path.join(tmp, "README.md"), "changed-c\n");
+        const stagedAndUnstaged = yield* readFingerprint();
+        expect(stagedAndUnstaged).not.toBe(staged);
+
+        yield* writeTextFile(path.join(tmp, "untracked.txt"), "untracked-a\n");
+        const untrackedBytes = yield* readFingerprint();
+        yield* writeTextFile(path.join(tmp, "untracked.txt"), "untracked-b\n");
+        expect(yield* readFingerprint()).not.toBe(untrackedBytes);
+
+        const fileSystem = yield* FileSystem.FileSystem;
+        yield* fileSystem.chmod(path.join(tmp, "untracked.txt"), 0o755);
+        const executable = yield* readFingerprint();
+        yield* fileSystem.chmod(path.join(tmp, "untracked.txt"), 0o644);
+        expect(yield* readFingerprint()).not.toBe(executable);
       }),
     );
 
