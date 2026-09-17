@@ -6,6 +6,7 @@ import { ServerConfig } from "../../config.ts";
 
 type RuntimeSqliteLayerConfig = {
   readonly filename: string;
+  readonly readonly?: boolean;
   readonly disableWAL?: boolean;
   readonly spanAttributes?: Record<string, unknown>;
 };
