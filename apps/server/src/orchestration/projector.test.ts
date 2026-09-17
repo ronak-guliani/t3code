@@ -368,6 +368,92 @@ describe("orchestration projector", () => {
     ]);
   });
 
+  it("recovers a legacy-only pull request before projecting a newly created one", async () => {
+    const createdAt = "2026-09-17T00:00:00.000Z";
+    const updatedAt = "2026-09-17T00:01:00.000Z";
+    const firstPullRequest = {
+      number: 399,
+      title: "First pull request",
+      url: "https://github.com/acme/app/pull/399",
+      baseBranch: "main",
+      headBranch: "feature/first",
+      state: "open" as const,
+    };
+    const secondPullRequest = {
+      ...firstPullRequest,
+      number: 400,
+      title: "Second pull request",
+      url: "https://github.com/acme/app/pull/400",
+      headBranch: "feature/second",
+    };
+    const withLegacyOnly = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(createdAt),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-multiple-prs",
+          occurredAt: createdAt,
+          commandId: "cmd-thread-multiple-prs",
+          payload: {
+            threadId: "thread-multiple-prs",
+            projectId: "project-1",
+            title: "Multiple PRs",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            branch: "feature/first",
+            worktreePath: null,
+            pullRequest: firstPullRequest,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    ).then((readModel) => ({
+      ...readModel,
+      threads: readModel.threads.map((thread) =>
+        thread.id === "thread-multiple-prs" ? { ...thread, pullRequests: [] } : thread,
+      ),
+    }));
+    const projected = await Effect.runPromise(
+      projectEvent(
+        withLegacyOnly,
+        makeEvent({
+          sequence: 2,
+          type: "thread.meta-updated",
+          aggregateKind: "thread",
+          aggregateId: "thread-multiple-prs",
+          occurredAt: updatedAt,
+          commandId: "cmd-second-pr",
+          payload: {
+            threadId: "thread-multiple-prs",
+            pullRequest: secondPullRequest,
+            pullRequestSource: "created",
+            updatedAt,
+          },
+        }),
+      ),
+    );
+    const thread = projected.threads.find((entry) => entry.id === "thread-multiple-prs");
+
+    expect(thread?.pullRequests).toEqual([
+      {
+        pullRequest: firstPullRequest,
+        source: "recovered",
+        linkedAt: createdAt,
+      },
+      {
+        pullRequest: secondPullRequest,
+        source: "created",
+        linkedAt: updatedAt,
+      },
+    ]);
+  });
+
   it("recovers explicit PR review provenance from legacy thread.created events", async () => {
     const now = new Date().toISOString();
     const projected = await Effect.runPromise(

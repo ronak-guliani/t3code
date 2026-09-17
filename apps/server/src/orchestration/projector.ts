@@ -13,6 +13,7 @@ import {
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 import {
   sameThreadPullRequest,
+  seedLegacyThreadPullRequestLink,
   upsertLegacyThreadPullRequestLink,
 } from "@t3tools/shared/threadPullRequests";
 import { Effect, Schema } from "effect";
@@ -598,7 +599,11 @@ export function projectEvent(
                     ...(payload.pullRequest !== null
                       ? {
                           pullRequests: upsertLegacyThreadPullRequestLink(
-                            existingThread?.pullRequests,
+                            seedLegacyThreadPullRequestLink(
+                              existingThread?.pullRequests,
+                              existingThread?.pullRequest,
+                              existingThread?.createdAt ?? payload.updatedAt,
+                            ),
                             payload.pullRequest,
                             payload.updatedAt,
                             payload.pullRequestSource,

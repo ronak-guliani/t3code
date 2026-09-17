@@ -10,6 +10,7 @@ import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrat
 import {
   legacyThreadPullRequestLink,
   sameThreadPullRequest,
+  seedLegacyThreadPullRequestLink,
 } from "@t3tools/shared/threadPullRequests";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
@@ -628,7 +629,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               threadId: event.payload.threadId,
             });
             if (event.payload.pullRequest !== null) {
-              const existingLink = existingLinks.find((link) =>
+              const linksWithLegacy = seedLegacyThreadPullRequestLink(
+                existingLinks,
+                existingRow.value.pullRequest,
+                existingRow.value.createdAt,
+              );
+              const recoveredLegacyLink =
+                linksWithLegacy.length > existingLinks.length ? linksWithLegacy[0] : undefined;
+              if (recoveredLegacyLink) {
+                yield* projectionThreadPullRequestRepository.upsert({
+                  threadId: event.payload.threadId,
+                  ...recoveredLegacyLink,
+                });
+              }
+              const existingLink = linksWithLegacy.find((link) =>
                 sameThreadPullRequest(link.pullRequest, event.payload.pullRequest!),
               );
               yield* projectionThreadPullRequestRepository.upsert({
