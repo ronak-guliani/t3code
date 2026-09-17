@@ -10,6 +10,7 @@
  * @module CheckpointStoreLive
  */
 import { randomUUID } from "node:crypto";
+import nodePath from "node:path";
 
 import { Cache, Data, Duration, Effect, Exit, Layer, FileSystem, Path } from "effect";
 
@@ -18,7 +19,7 @@ import { GitCommandError } from "@t3tools/contracts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
-import { CheckpointRef } from "@t3tools/contracts";
+import { CheckpointRef, type WorkspaceBinding } from "@t3tools/contracts";
 import { normalizeChangedFilePath } from "@t3tools/shared/toolChangedFiles";
 import {
   parseTurnDiffFilesFromNumstat,
@@ -160,6 +161,77 @@ const makeCheckpointStore = Effect.gen(function* () {
       })
       .pipe(Effect.map((result) => result.stdout.trim()));
 
+  const foreignNestedWorktreeExclusions = Effect.fn("foreignNestedWorktreeExclusions")(function* (
+    cwd: string,
+  ) {
+    const root = yield* resolveWorktreeRoot(cwd);
+    const result = yield* git.execute({
+      operation: "CheckpointStore.foreignNestedWorktreeExclusions",
+      cwd,
+      args: ["worktree", "list", "--porcelain"],
+    });
+    const exclusions: string[] = [];
+    for (const line of result.stdout.split("\n")) {
+      if (!line.startsWith("worktree ")) continue;
+      const candidate = line.slice("worktree ".length).trim();
+      const relative = nodePath.relative(root, candidate);
+      if (
+        relative.length > 0 &&
+        relative !== ".." &&
+        !relative.startsWith(`..${nodePath.sep}`) &&
+        !nodePath.isAbsolute(relative)
+      ) {
+        const normalized = relative.split(nodePath.sep).join("/");
+        exclusions.push(`:(exclude)${normalized}`, `:(exclude)${normalized}/**`);
+      }
+    }
+    return exclusions;
+  });
+
+  const foreignNestedWorktreePaths = Effect.fn("foreignNestedWorktreePaths")(function* (
+    cwd: string,
+  ) {
+    const root = yield* resolveWorktreeRoot(cwd);
+    const result = yield* git.execute({
+      operation: "CheckpointStore.foreignNestedWorktreePaths",
+      cwd,
+      args: ["worktree", "list", "--porcelain"],
+    });
+    return result.stdout
+      .split("\n")
+      .filter((line) => line.startsWith("worktree "))
+      .map((line) => line.slice("worktree ".length).trim())
+      .map((candidate) => nodePath.relative(root, candidate))
+      .filter(
+        (relative) =>
+          relative.length > 0 &&
+          relative !== ".." &&
+          !relative.startsWith(`..${nodePath.sep}`) &&
+          !nodePath.isAbsolute(relative),
+      )
+      .map((relative) => relative.split(nodePath.sep).join("/"));
+  });
+
+  const checkpointHasForeignNestedWorktreeEntries = Effect.fn(
+    "checkpointHasForeignNestedWorktreeEntries",
+  )(function* (cwd: string, commitOid: string) {
+    const [foreignPaths, tree] = yield* Effect.all(
+      [
+        foreignNestedWorktreePaths(cwd),
+        git.execute({
+          operation: "CheckpointStore.checkpointForeignNestedWorktreeEntries",
+          cwd,
+          args: ["ls-tree", "-r", "--name-only", commitOid],
+        }),
+      ],
+      { concurrency: "unbounded" },
+    );
+    const entries = tree.stdout.split("\n").filter((entry) => entry.length > 0);
+    return foreignPaths.some((foreignPath) =>
+      entries.some((entry) => entry === foreignPath || entry.startsWith(`${foreignPath}/`)),
+    );
+  });
+
   const isGitRepository: CheckpointStoreShape["isGitRepository"] = (cwd) =>
     git
       .execute({
@@ -200,7 +272,13 @@ const makeCheckpointStore = Effect.gen(function* () {
             yield* git.execute({
               operation: input.operation,
               cwd: input.cwd,
-              args: ["add", "-A", "--", "."],
+              args: [
+                "add",
+                "-A",
+                "--",
+                ".",
+                ...(yield* foreignNestedWorktreeExclusions(input.cwd)),
+              ],
               env,
             });
             const writeTreeResult = yield* git.execute({
@@ -264,6 +342,12 @@ const makeCheckpointStore = Effect.gen(function* () {
       "",
       `t3-worktree=${worktreeRoot}`,
       `t3-index-tree=${indexTreeOid}`,
+      ...(input.workspaceBinding === undefined
+        ? []
+        : [
+            `t3-workspace-canonical=${input.workspaceBinding.canonicalPath}`,
+            `t3-workspace-generation=${input.workspaceBinding.generation}`,
+          ]),
     ].join("\n");
     const commitTreeResult = yield* git.execute({
       operation,
@@ -341,6 +425,13 @@ const makeCheckpointStore = Effect.gen(function* () {
         );
       return (
         commitMessage.includes(`t3-worktree=${worktreeRoot}\n`) &&
+        (input.workspaceBinding === undefined ||
+          (commitMessage.includes(
+            `t3-workspace-canonical=${input.workspaceBinding.canonicalPath}\n`,
+          ) &&
+            commitMessage.includes(
+              `t3-workspace-generation=${input.workspaceBinding.generation}\n`,
+            ))) &&
         checkpointHead === workspace.headCommit &&
         (input.compareContents === false ||
           (checkpointTree === workspace.treeOid &&
@@ -667,6 +758,7 @@ const makeCheckpointStore = Effect.gen(function* () {
     readonly fallbackFromCheckpointRef?: CheckpointRef;
     readonly toCheckpointRef: CheckpointRef;
     readonly fallbackFromToHead?: boolean;
+    readonly workspaceBinding?: WorkspaceBinding;
   }) {
     const [primaryFromCommitOid, toCommitOid] = yield* Effect.all(
       [
@@ -704,6 +796,35 @@ const makeCheckpointStore = Effect.gen(function* () {
       });
     }
 
+    if (input.workspaceBinding !== undefined) {
+      const validateCommit = (commitOid: string, endpoint: "from" | "to") =>
+        git
+          .execute({
+            operation: "CheckpointStore.validateDiffCheckpointBinding",
+            cwd: input.cwd,
+            args: ["show", "-s", "--format=%B", commitOid],
+          })
+          .pipe(
+            Effect.flatMap((result) =>
+              result.stdout.includes(
+                `t3-workspace-canonical=${input.workspaceBinding!.canonicalPath}\n`,
+              ) &&
+              result.stdout.includes(
+                `t3-workspace-generation=${input.workspaceBinding!.generation}\n`,
+              )
+                ? Effect.succeed(undefined)
+                : Effect.fail(
+                    new CheckpointInvariantError({
+                      operation: "CheckpointStore.diffCheckpoints",
+                      detail: `The ${endpoint} checkpoint does not belong to workspace generation ${input.workspaceBinding!.generation}.`,
+                    }),
+                  ),
+            ),
+          );
+      if (fromCheckpointExists) yield* validateCommit(fromCommitOid, "from");
+      yield* validateCommit(toCommitOid, "to");
+    }
+
     return { fromCommitOid, toCommitOid, fromCheckpointExists };
   });
 
@@ -736,7 +857,8 @@ const makeCheckpointStore = Effect.gen(function* () {
   )(function* (input) {
     const operation = "CheckpointStore.restoreCheckpoint";
 
-    let commitOid = yield* resolveCheckpointCommit(input.cwd, input.checkpointRef);
+    const checkpointCommit = yield* resolveCheckpointCommit(input.cwd, input.checkpointRef);
+    let commitOid = checkpointCommit;
 
     if (!commitOid && input.fallbackToHead === true) {
       commitOid = yield* resolveHeadCommit(input.cwd);
@@ -753,6 +875,25 @@ const makeCheckpointStore = Effect.gen(function* () {
         args: ["show", "-s", "--format=%B", commitOid],
       })
       .pipe(Effect.map((result) => result.stdout));
+    const worktreeRoot = yield* resolveWorktreeRoot(input.cwd);
+    if (checkpointCommit !== null) {
+      if (!commitMessage.includes(`t3-worktree=${worktreeRoot}\n`)) {
+        return false;
+      }
+      if (
+        input.workspaceBinding !== undefined &&
+        (!commitMessage.includes(
+          `t3-workspace-canonical=${input.workspaceBinding.canonicalPath}\n`,
+        ) ||
+          !commitMessage.includes(`t3-workspace-generation=${input.workspaceBinding.generation}\n`))
+      ) {
+        return false;
+      }
+      if (yield* checkpointHasForeignNestedWorktreeEntries(input.cwd, commitOid)) {
+        return false;
+      }
+    }
+    const exclusions = yield* foreignNestedWorktreeExclusions(input.cwd);
     const indexTreeOid = /^t3-index-tree=([0-9a-f]+)$/m.exec(commitMessage)?.[1];
 
     yield* git.execute({
@@ -763,7 +904,7 @@ const makeCheckpointStore = Effect.gen(function* () {
     yield* git.execute({
       operation,
       cwd: input.cwd,
-      args: ["clean", "-fd", "--", "."],
+      args: ["clean", "-fd", "--", ".", ...exclusions],
     });
 
     if (indexTreeOid) {
