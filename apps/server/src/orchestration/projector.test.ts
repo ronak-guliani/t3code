@@ -802,6 +802,28 @@ describe("orchestration projector", () => {
       ),
     );
     expect(unarchived.threads[0]?.archivedAt).toBeNull();
+
+    const cleared = await Effect.runPromise(
+      projectEvent(
+        unarchived,
+        makeEvent({
+          sequence: 4,
+          type: "thread.meta-updated",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: later,
+          commandId: "cmd-clear-worktree",
+          payload: {
+            threadId: "thread-1",
+            worktreePath: null,
+            workspaceBinding: null,
+            updatedAt: later,
+          },
+        }),
+      ),
+    );
+    expect(cleared.threads[0]?.worktreePath).toBeNull();
+    expect(cleared.threads[0]).not.toHaveProperty("workspaceBinding");
   });
 
   it("applies queued turn lifecycle events", async () => {

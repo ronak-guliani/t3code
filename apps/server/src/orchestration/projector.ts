@@ -1,4 +1,9 @@
-import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
+import type {
+  OrchestrationEvent,
+  OrchestrationReadModel,
+  ThreadId,
+  WorkspaceBinding,
+} from "@t3tools/contracts";
 import {
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
@@ -58,7 +63,12 @@ import {
   WorkflowWorkerResultRecordedPayload,
 } from "./Schemas.ts";
 
-type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
+type ThreadPatch = Omit<
+  Partial<Omit<OrchestrationThread, "id" | "projectId">>,
+  "workspaceBinding"
+> & {
+  readonly workspaceBinding?: WorkspaceBinding | null;
+};
 export const MAX_THREAD_MESSAGES = 2_000;
 const MAX_THREAD_CHECKPOINTS = 500;
 export const MAX_THREAD_ACTIVITIES = 500;
@@ -114,7 +124,16 @@ function updateThread(
   threadId: ThreadId,
   patch: ThreadPatch,
 ): OrchestrationThread[] {
-  return threads.map((thread) => (thread.id === threadId ? { ...thread, ...patch } : thread));
+  return threads.map((thread) => {
+    if (thread.id !== threadId) return thread;
+    const { workspaceBinding, ...patchWithoutBinding } = patch;
+    const nextThread = { ...thread, ...patchWithoutBinding };
+    if (workspaceBinding === null) {
+      const { workspaceBinding: _workspaceBinding, ...threadWithoutBinding } = nextThread;
+      return threadWithoutBinding;
+    }
+    return workspaceBinding === undefined ? nextThread : { ...nextThread, workspaceBinding };
+  });
 }
 
 function decodeForEvent<A>(
@@ -375,6 +394,9 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
+            ...(payload.workspaceBinding !== undefined
+              ? { workspaceBinding: payload.workspaceBinding }
+              : {}),
             ...(initialPullRequest !== undefined ? { pullRequest: initialPullRequest } : {}),
             ...(initialPullRequest !== undefined && initialPullRequest !== null
               ? {
@@ -568,6 +590,9 @@ export function projectEvent(
                 : {}),
               ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
               ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
+              ...(payload.workspaceBinding !== undefined
+                ? { workspaceBinding: payload.workspaceBinding }
+                : {}),
               ...(payload.pullRequest !== undefined
                 ? {
                     pullRequest: payload.pullRequest,

@@ -194,6 +194,9 @@ const make = Effect.gen(function* () {
             ? {}
             : { ignoreWhitespace: input.ignoreWhitespace }),
           paths: range.diffPaths,
+          ...(threadContext.value.workspaceBinding == null
+            ? {}
+            : { workspaceBinding: threadContext.value.workspaceBinding }),
         })
         .pipe(
           Effect.catchTag("CheckpointRefUnavailableError", (error) => {

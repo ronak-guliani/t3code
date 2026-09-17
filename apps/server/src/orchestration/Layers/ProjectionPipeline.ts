@@ -357,6 +357,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
+            ...(event.payload.workspaceBinding !== undefined
+              ? { workspaceBinding: event.payload.workspaceBinding }
+              : {}),
             pullRequest: initialPullRequest ?? null,
             reviewSnapshot: event.payload.reviewSnapshot ?? null,
             reviewResult: null,
@@ -431,7 +434,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // this thread (or its path aliases) so unarchive cannot race a remove
           // that treats the restored thread as non-owning.
           // Missing-path clearing is done by ThreadDeletionReactor via
-          // thread.meta.update so the orchestration read model stays in sync.
+          // thread.meta.update so both projections clear the stale binding.
           yield* worktreeCleanupJobRepository.cancelByThreadId(event.payload.threadId);
           const worktreePath = existingRow.value.worktreePath;
           if (worktreePath !== null) {
@@ -612,6 +615,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.branch !== undefined ? { branch: event.payload.branch } : {}),
             ...(event.payload.worktreePath !== undefined
               ? { worktreePath: event.payload.worktreePath }
+              : {}),
+            ...(event.payload.workspaceBinding !== undefined
+              ? { workspaceBinding: event.payload.workspaceBinding }
               : {}),
             ...(event.payload.pullRequest !== undefined
               ? { pullRequest: event.payload.pullRequest }

@@ -37,6 +37,8 @@ import {
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
+import { WorkspaceOwnershipRepositoryLive } from "../../persistence/Layers/WorkspaceOwnership.ts";
 
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -182,6 +184,7 @@ const make = Effect.gen(function* () {
   const gitStatusBroadcaster = yield* GitStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const workspaceOwnership = yield* WorkspaceOwnershipRepository;
   const handledTurnStartKeys = yield* Cache.make<string, true>({
     capacity: HANDLED_TURN_START_KEY_MAX,
     timeToLive: HANDLED_TURN_START_KEY_TTL,
@@ -376,7 +379,6 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
-
     const cwd = resolveThreadWorkspaceCwd({
       thread,
       projects: readModel.projects,
@@ -395,6 +397,9 @@ const make = Effect.gen(function* () {
     const baselineMatchesWorkspace = yield* checkpointStore.checkpointRefMatchesWorkspace({
       cwd,
       checkpointRef,
+      ...(thread.workspaceBinding !== undefined
+        ? { workspaceBinding: thread.workspaceBinding }
+        : {}),
     });
     if (baselineMatchesWorkspace) {
       return;
@@ -403,8 +408,21 @@ const make = Effect.gen(function* () {
     yield* checkpointStore.captureCheckpoint({
       cwd,
       checkpointRef,
+      ...(thread.workspaceBinding !== undefined
+        ? { workspaceBinding: thread.workspaceBinding }
+        : {}),
     });
   });
+
+  const assertWorkspaceOwnershipForThread = Effect.fn("assertWorkspaceOwnershipForThread")(
+    function* (threadId: ThreadId) {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const thread = readModel.threads.find((entry) => entry.id === threadId);
+      if (thread?.workspaceBinding !== undefined) {
+        yield* workspaceOwnership.assertOwned(thread.workspaceBinding, thread.id);
+      }
+    },
+  );
 
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
@@ -958,22 +976,6 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const isFirstUserMessageTurn =
-      thread.messages.filter((entry) => entry.role === "user").length === 1;
-    if (isFirstUserMessageTurn) {
-      const generationInput = {
-        messageText: message.text,
-        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-      };
-
-      yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
-        threadId: event.payload.threadId,
-        branch: thread.branch,
-        worktreePath: thread.worktreePath,
-        ...generationInput,
-      }).pipe(Effect.forkScoped);
-    }
-
     const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
       if (Cause.hasInterruptsOnly(cause)) {
         return Effect.void;
@@ -1010,6 +1012,32 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+
+    const ownershipIsCurrent = yield* assertWorkspaceOwnershipForThread(
+      event.payload.threadId,
+    ).pipe(
+      Effect.as(true),
+      Effect.catchCause((cause) => recoverTurnStartFailure(cause).pipe(Effect.as(false))),
+    );
+    if (!ownershipIsCurrent) {
+      return;
+    }
+
+    const isFirstUserMessageTurn =
+      thread.messages.filter((entry) => entry.role === "user").length === 1;
+    if (isFirstUserMessageTurn) {
+      const generationInput = {
+        messageText: message.text,
+        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+      };
+
+      yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
+        threadId: event.payload.threadId,
+        branch: thread.branch,
+        worktreePath: thread.worktreePath,
+        ...generationInput,
+      }).pipe(Effect.forkScoped);
+    }
 
     yield* ensurePreTurnBaselineForThread(event.payload.threadId).pipe(
       Effect.catch((error) =>
@@ -1406,4 +1434,5 @@ const make = Effect.gen(function* () {
 
 export const ProviderCommandReactorLive = Layer.effect(ProviderCommandReactor, make).pipe(
   Layer.provideMerge(CheckoutCoordinatorLive),
+  Layer.provideMerge(WorkspaceOwnershipRepositoryLive),
 );
