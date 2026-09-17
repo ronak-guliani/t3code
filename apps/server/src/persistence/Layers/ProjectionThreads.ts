@@ -17,6 +17,7 @@ import {
   ReviewResult,
   ReviewSnapshot,
   ThreadNudging,
+  ValidationRun,
 } from "@t3tools/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
@@ -26,6 +27,9 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     pullRequest: Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation)),
     reviewSnapshot: Schema.fromJsonString(Schema.NullOr(ReviewSnapshot)),
     reviewResult: Schema.fromJsonString(Schema.NullOr(ReviewResult)),
+    validationRun: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRun))).pipe(
+      Schema.withDecodingDefault(Effect.succeed(null)),
+    ),
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;
@@ -52,6 +56,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pull_request_json,
           review_snapshot_json,
           review_result_json,
+          validation_run_json,
           latest_turn_id,
           created_at,
           updated_at,
@@ -86,6 +91,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${JSON.stringify(row.pullRequest ?? null)},
           ${JSON.stringify(row.reviewSnapshot ?? null)},
           ${JSON.stringify(row.reviewResult ?? null)},
+          ${JSON.stringify(row.validationRun ?? null)},
           ${row.latestTurnId},
           ${row.createdAt},
           ${row.updatedAt},
@@ -120,6 +126,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pull_request_json = excluded.pull_request_json,
           review_snapshot_json = excluded.review_snapshot_json,
           review_result_json = excluded.review_result_json,
+          validation_run_json = excluded.validation_run_json,
           latest_turn_id = excluded.latest_turn_id,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at,
@@ -161,6 +168,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pull_request_json AS "pullRequest",
           review_snapshot_json AS "reviewSnapshot",
           review_result_json AS "reviewResult",
+          validation_run_json AS "validationRun",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -204,6 +212,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pull_request_json AS "pullRequest",
           review_snapshot_json AS "reviewSnapshot",
           review_result_json AS "reviewResult",
+          validation_run_json AS "validationRun",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",

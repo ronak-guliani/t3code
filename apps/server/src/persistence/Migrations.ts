@@ -92,6 +92,7 @@ import Migration0087 from "./Migrations/087_ProjectionThreadActivityJsonIndexes.
 import Migration0088 from "./Migrations/088_ProjectionProjectKind.ts";
 import Migration0089 from "./Migrations/089_ProjectionThreadPullRequests.ts";
 import Migration0090 from "./Migrations/090_DelegationReportReceipts.ts";
+import Migration0091 from "./Migrations/091_ProjectionThreadValidationRuns.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -183,6 +184,7 @@ export const migrationEntries = [
   [88, "ProjectionProjectKind", Migration0088],
   [89, "ProjectionThreadPullRequests", Migration0089],
   [90, "DelegationReportReceipts", Migration0090],
+  [91, "ProjectionThreadValidationRuns", Migration0091],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

@@ -359,6 +359,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pullRequest: initialPullRequest ?? null,
             reviewSnapshot: event.payload.reviewSnapshot ?? null,
             reviewResult: null,
+            validationRun: null,
             latestTurnId: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -785,6 +786,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
         case "thread.message-sent":
         case "thread.review-result-set":
+        case "thread.validation-run-planned":
+        case "thread.validation-gate-updated":
         case "thread.proposed-plan-upserted":
         case "thread.activity-appended":
         case "thread.approval-response-requested":
@@ -807,7 +810,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   reviewResult: event.payload.result,
                   reviewSnapshot: event.payload.result.snapshot,
                 }
-              : {}),
+              : event.type === "thread.validation-run-planned"
+                ? { validationRun: event.payload.run }
+                : event.type === "thread.validation-gate-updated"
+                  ? {
+                      validationRun:
+                        existingRow.value.validationRun &&
+                        existingRow.value.validationRun.id === event.payload.runId
+                          ? {
+                              ...existingRow.value.validationRun,
+                              gates: existingRow.value.validationRun.gates.map((gate) =>
+                                gate.id === event.payload.gate.id ? event.payload.gate : gate,
+                              ),
+                              updatedAt: event.occurredAt,
+                            }
+                          : existingRow.value.validationRun,
+                    }
+                  : {}),
             updatedAt: event.occurredAt,
           });
           return;

@@ -54,6 +54,7 @@ import {
   transitionDelegationExecution,
   type RecordedReportOutcome,
 } from "./dispatchAuthority.ts";
+import { planValidationRun, transitionValidationGate } from "@t3tools/contracts";
 
 const FORK_TITLE_PREFIX = "Forked: ";
 /**
@@ -2472,6 +2473,82 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return thread.nudging?.paused === true
         ? stopped
         : [stopped, nudgingMetaEvent(thread, stopped, { ...thread.nudging, paused: true })];
+    }
+
+    case "thread.validation-run.plan": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.validationRun !== null && thread.validationRun !== undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A validation run is already planned for this thread.",
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-run-planned",
+        payload: {
+          threadId: command.threadId,
+          run: planValidationRun({
+            id: command.runId,
+            threadId: command.threadId,
+            target: command.target,
+            requestedAt: command.createdAt,
+          }),
+        },
+      };
+    }
+
+    case "thread.validation-gate.update": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (!thread.validationRun || thread.validationRun.id !== command.runId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation gate update does not match the active validation run.",
+        });
+      }
+      const run = transitionValidationGate(
+        thread.validationRun,
+        {
+          gateId: command.gateId,
+          status: command.status,
+          command: command.command,
+          startedAt: command.startedAt,
+          completedAt: command.completedAt,
+          exitCode: command.exitCode,
+          outputRef: command.outputRef,
+          blockerReason: command.blockerReason,
+          diagnostics: command.diagnostics,
+        },
+        command.createdAt,
+      );
+      const gate = run.gates.find((candidate) => candidate.id === command.gateId);
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-gate-updated",
+        payload: {
+          threadId: command.threadId,
+          runId: command.runId,
+          gate,
+        },
+      };
     }
 
     case "thread.session.set": {

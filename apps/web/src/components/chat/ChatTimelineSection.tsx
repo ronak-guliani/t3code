@@ -1,4 +1,6 @@
 import {
+  reduceValidationReadiness,
+  validationGateStatusLabel,
   type EnvironmentId,
   type MessageId,
   type OrchestrationThreadActivity,
@@ -7,6 +9,7 @@ import {
   type TurnDiffScope,
   type TurnId,
   type TimestampFormat,
+  type ValidationRun,
 } from "@t3tools/contracts";
 import type { MessagePreviewLineLimits } from "@t3tools/contracts/settings";
 import { type LegendListRef } from "@legendapp/list/react";
@@ -79,6 +82,7 @@ interface ChatTimelineSectionProps {
   copilotResumeCommand: string | null;
   isRevertingCheckpoint: boolean;
   reviewResultActive: boolean;
+  validationRun: ValidationRun | null | undefined;
   listRef: RefObject<LegendListRef | null>;
   messagesViewportRef: RefObject<HTMLDivElement | null>;
   gitCwd: string | undefined;
@@ -120,6 +124,7 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       copilotResumeCommand,
       isRevertingCheckpoint,
       reviewResultActive,
+      validationRun,
       listRef,
       messagesViewportRef,
       gitCwd,
@@ -593,6 +598,35 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
 
     return (
       <>
+        {validationRun ? (
+          <div className="mx-auto mb-2 w-full max-w-3xl px-4" data-testid="validation-matrix">
+            <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="font-medium">Validation</span>
+                <span className="text-muted-foreground">
+                  {reduceValidationReadiness(validationRun, validationRun.target)}
+                </span>
+              </div>
+              <div className="mb-2 text-muted-foreground">
+                Tested revision <span className="font-mono">{validationRun.target.revision}</span>
+              </div>
+              <div className="grid gap-1.5">
+                {validationRun.gates.map((gate) => (
+                  <div
+                    key={gate.id}
+                    className="flex items-center justify-between gap-3 rounded-md bg-background/60 px-2 py-1.5"
+                  >
+                    <span>{gate.label}</span>
+                    <span className="text-right text-muted-foreground">
+                      {validationGateStatusLabel(gate.status)}
+                      {gate.blockerReason ? ` - ${gate.blockerReason}` : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
         {findController.open ? (
           <FindInChatBar
             inputId={findController.inputId}

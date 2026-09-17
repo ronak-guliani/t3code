@@ -1119,6 +1119,8 @@ function ChatViewBody(
   );
   const isServerThread = routeKind === "server" && serverThread !== undefined;
   const activeThread = isServerThread ? serverThread : localDraftThread;
+  const activeValidationRun =
+    activeThread?.validationRun ?? serverThreadSummary?.validationRun ?? null;
   const workflowRuns = useStore(
     useShallow((state) =>
       selectWorkflowRunsForParentThread(state, routeKind === "server" ? routeThreadRef : null),
@@ -4864,6 +4866,7 @@ function ChatViewBody(
                   copilotResumeCommand={copilotResumeCommand}
                   isRevertingCheckpoint={isRevertingCheckpoint}
                   reviewResultActive={activeThread.reviewResult?.status === "parsed"}
+                  validationRun={activeValidationRun}
                   listRef={legendListRef}
                   messagesViewportRef={messagesViewportRef}
                   gitCwd={gitCwd ?? undefined}

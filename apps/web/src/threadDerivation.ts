@@ -92,7 +92,8 @@ function threadShellContentEqualIgnoringUpdatedAt(
     previous.snoozedAt === next.snoozedAt &&
     previous.branch === next.branch &&
     previous.worktreePath === next.worktreePath &&
-    threadPullRequestEqual(previous.pullRequest, next.pullRequest)
+    threadPullRequestEqual(previous.pullRequest, next.pullRequest) &&
+    previous.validationRun === next.validationRun
   );
 }
 
