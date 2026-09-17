@@ -567,6 +567,7 @@ const withLocalProjectionSnapshotQuery = <A, E, R>(
     const sqliteLayer = makeRuntimeSqliteLayer({
       filename: paths.dbPath,
       readonly: true,
+      disableWAL: true,
       spanAttributes: {
         "db.name": "t3.db",
         "service.name": "t3-cli-read",
