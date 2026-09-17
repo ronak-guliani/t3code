@@ -52,6 +52,7 @@ type CoordinatorOptions = {
   readonly spawnChild?: typeof spawn;
   readonly processAlive?: (pid: number) => boolean;
   readonly processCommand?: (pid: number) => Promise<string>;
+  readonly readRevision?: (rootDirectory: string) => Promise<SelfTestRevision>;
 };
 
 export class SelfTestCoordinatorError extends Error {
@@ -108,6 +109,19 @@ function commandMatches(command: string): boolean {
 function processMatches(manifest: SelfTestManifest, actualCommand: string): boolean {
   if (manifest.process.role === "coordinator") return commandMatches(actualCommand);
   return actualCommand.includes("test:direct-connect-smoke");
+}
+
+function sameManifestState(left: SelfTestManifest, right: SelfTestManifest): boolean {
+  return (
+    left.runId === right.runId &&
+    left.status === right.status &&
+    left.stage === right.stage &&
+    left.startedAt === right.startedAt &&
+    left.completedAt === right.completedAt &&
+    left.process.role === right.process.role &&
+    left.process.pid === right.process.pid &&
+    left.process.startedAt === right.process.startedAt
+  );
 }
 
 function environment(rootDirectory: string): SelfTestEnvironment {
@@ -474,6 +488,7 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
   const spawnChild = options.spawnChild ?? spawn;
   const alive = options.processAlive ?? processAlive;
   const command = options.processCommand ?? processCommand;
+  const readRevision = options.readRevision ?? readSelfTestRevision;
   const lockDirectory = join(stateDirectory, "lock");
 
   const updateManifestFromStage = async (manifest: SelfTestManifest): Promise<SelfTestManifest> => {
@@ -494,7 +509,7 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
     const output = join(stateDirectory, runId);
     const startedAt = now();
     const webTarget = process.env.T3_SELF_TEST_WEB_TARGET ?? resolve(projectRoot, "apps/web/dist");
-    const currentRevision = await readSelfTestRevision(projectRoot);
+    const currentRevision = await readRevision(projectRoot);
     await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
     await acquireLock(lockDirectory, runId, alive, command, () => loadLatest(stateDirectory));
 
@@ -587,8 +602,9 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
         ...manifest,
         process: childProcess("child", child.pid ?? 0, now(), childCommandText),
       };
+      const resultPromise = childExit(child);
       await saveManifest(stateDirectory, manifest);
-      const result = await childExit(child);
+      const result = await resultPromise;
       watching = false;
       await watch;
       manifest = await updateManifestFromStage(manifest);
@@ -679,6 +695,7 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
         throw new SelfTestCoordinatorError("capture", failure, output);
       }
 
+      const completedRevision = await readRevision(projectRoot);
       const candidate: SelfTestManifest = {
         ...manifest,
         status: "passed",
@@ -688,7 +705,7 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
         diagnostics: capture.diagnostics,
         completedAt: now(),
       };
-      const blockers = [...selfTestBlockers(candidate, currentRevision)];
+      const blockers = [...selfTestBlockers(candidate, completedRevision)];
       try {
         await checkArtifacts(stateDirectory, candidate);
       } catch (error) {
@@ -759,7 +776,7 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
       throw new SelfTestCoordinatorError("pending", invalid, stateDirectory);
     }
     if (!manifest) return { status: "never-run", blockers: [] as ReadonlyArray<SelfTestIssue> };
-    const current = await readSelfTestRevision(projectRoot);
+    const current = await readRevision(projectRoot);
     let effective = manifest;
     if (
       (manifest.status === "active" || manifest.status === "pending") &&
@@ -774,14 +791,37 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
         "The self-test coordinator or child process is no longer running.",
         "Inspect retained diagnostics and raw captures, then rerun pnpm test:self.",
       );
-      effective = {
-        ...manifest,
-        status: "interrupted",
-        stage: "interrupted",
-        failure,
-        completedAt: now(),
-      };
-      await saveManifest(stateDirectory, effective);
+      const recoveryRunId = randomUUID();
+      let acquired = false;
+      try {
+        await acquireLock(lockDirectory, recoveryRunId, alive, command, () =>
+          loadLatest(stateDirectory),
+        );
+        acquired = true;
+        const latest = await loadLatest(stateDirectory);
+        if (latest && sameManifestState(latest, manifest)) {
+          effective = {
+            ...latest,
+            status: "interrupted",
+            stage: "interrupted",
+            failure,
+            completedAt: now(),
+          };
+          await saveManifest(stateDirectory, effective);
+        } else if (latest) {
+          effective = latest;
+        }
+      } catch (error) {
+        if (
+          !(error instanceof SelfTestCoordinatorError) ||
+          (error.issue.type !== "lock-contention" && error.issue.type !== "lock-ambiguous")
+        ) {
+          throw error;
+        }
+        effective = (await loadLatest(stateDirectory)) ?? manifest;
+      } finally {
+        if (acquired) await releaseLock(lockDirectory, recoveryRunId);
+      }
     }
     if (effective.status === "passed") {
       try {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { createSelfTestCoordinator, SelfTestCoordinatorError } from "./self-test.ts";
+import type { SelfTestManifest, SelfTestRevision } from "./lib/selfTestEvidence.ts";
 
 const roots: string[] = [];
 
@@ -161,6 +162,125 @@ describe("self-test coordinator", () => {
       child?.release();
       await running.catch(() => undefined);
     }
+  });
+
+  it("observes a child exit that happens before manifest persistence completes", async () => {
+    const stateDirectory = await makeStateDirectory();
+    const child = fakeChild(987655);
+    const coordinator = createSelfTestCoordinator({
+      directory: stateDirectory,
+      spawnChild: (() => {
+        setTimeout(() => child.release(), 0);
+        return child;
+      }) as unknown as typeof import("node:child_process").spawn,
+      processAlive: () => true,
+      processCommand: async (pid) =>
+        pid === process.pid ? "pnpm test:self" : "pnpm test:direct-connect-smoke",
+    });
+
+    await expect(coordinator.run()).rejects.toMatchObject({
+      issue: { type: "capture-invalid" },
+    });
+  });
+
+  it("invalidates a run when the checkout revision changes during execution", async () => {
+    const stateDirectory = await makeStateDirectory();
+    let child: ReturnType<typeof fakeChild> | undefined;
+    let revisionReads = 0;
+    const revisions: SelfTestRevision[] = [
+      { commit: "1111111", contentHash: "before" },
+      { commit: "2222222", contentHash: "after" },
+    ];
+    const coordinator = createSelfTestCoordinator({
+      directory: stateDirectory,
+      readRevision: async () => revisions[Math.min(revisionReads++, revisions.length - 1)]!,
+      spawnChild: (() => {
+        child = fakeChild(987654);
+        void (async () => {
+          let output: string | undefined;
+          for (let attempt = 0; attempt < 20 && !output; attempt += 1) {
+            try {
+              const latest = JSON.parse(
+                await readFile(join(stateDirectory, "latest.json"), "utf8"),
+              ) as { runId: string };
+              output = join(stateDirectory, latest.runId);
+            } catch {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+          if (!output) throw new Error("Coordinator did not persist its run directory.");
+          await validCaptureFiles(output);
+        })();
+        return child;
+      }) as unknown as typeof import("node:child_process").spawn,
+      processAlive: () => true,
+      processCommand: async (pid) =>
+        pid === process.pid ? "pnpm test:self" : "pnpm test:direct-connect-smoke",
+    });
+
+    const running = coordinator.run();
+    try {
+      await waitForRunning(coordinator);
+      child?.release();
+      await expect(running).rejects.toMatchObject({
+        issue: { type: "stale-revision" },
+      });
+    } finally {
+      child?.release();
+      await running.catch(() => undefined);
+    }
+  });
+
+  it("does not overwrite a completed manifest during stale status recovery", async () => {
+    const stateDirectory = await makeStateDirectory();
+    const runId = "11111111-1111-4111-8111-111111111111";
+    const active: SelfTestManifest = {
+      version: 2,
+      runId,
+      revision: { commit: "before", contentHash: "before" },
+      status: "active",
+      stage: "assertions",
+      startedAt: "2026-09-17T00:00:00.000Z",
+      command: "pnpm test:self",
+      process: {
+        role: "child",
+        pid: 987654,
+        command: "pnpm test:direct-connect-smoke",
+        startedAt: "2026-09-17T00:00:01.000Z",
+      },
+      environment: {
+        baseDirectory: stateDirectory,
+        webTarget: join(stateDirectory, "web"),
+      },
+      scenarios: ["pairing"],
+      media: [],
+      artifacts: [],
+    };
+    const passed: SelfTestManifest = {
+      ...active,
+      status: "passed",
+      stage: "passed",
+      completedAt: "2026-09-17T00:01:00.000Z",
+    };
+    await mkdir(stateDirectory, { recursive: true });
+    await writeFile(join(stateDirectory, "latest.json"), JSON.stringify(active));
+
+    const coordinator = createSelfTestCoordinator({
+      directory: stateDirectory,
+      processAlive: () => true,
+      processCommand: async () => {
+        await writeFile(join(stateDirectory, "latest.json"), JSON.stringify(passed));
+        return "unrelated process";
+      },
+    });
+
+    const result = await coordinator.status();
+    expect(result.manifest?.status).toBe("passed");
+    expect(JSON.parse(await readFile(join(stateDirectory, "latest.json"), "utf8"))).toMatchObject({
+      status: "passed",
+      stage: "passed",
+      completedAt: passed.completedAt,
+    });
   });
 
   it("retains failed-run diagnostics and raw captures without creating passed media", async () => {
