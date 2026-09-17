@@ -764,6 +764,10 @@ export const PreviewAutomationPreflightInput = Schema.Struct({
       description: "Optional environment-relative target to inspect without opening a pairing URL.",
     }),
   ),
+  expectedEnvironmentId: Schema.optional(EnvironmentId).annotate({
+    description:
+      "Optional expected identity of the target app. Omit when the target identity is not known in advance.",
+  }),
   open: Schema.optional(
     Schema.Boolean.annotate({
       description:

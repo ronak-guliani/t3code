@@ -72,35 +72,40 @@ it("returns a server tab ID that can target the next command after reading deskt
 it.each([
   {
     name: "missing app target",
-    status: 503,
+    descriptorStatus: 200,
+    appStatus: 503,
     environmentId: null,
     app: "not-configured",
     recovery: "configure-target",
   },
   {
     name: "non-T3 target",
-    status: 200,
+    descriptorStatus: 200,
+    appStatus: 200,
     environmentId: null,
     app: "not-t3-app",
     recovery: "configure-target",
   },
   {
     name: "environment mismatch",
-    status: 200,
+    descriptorStatus: 200,
+    appStatus: 200,
     environmentId: EnvironmentId.make("other-environment"),
     app: "expected-t3-app",
     recovery: "resolve-environment-mismatch",
   },
   {
     name: "healthy target",
-    status: 200,
+    descriptorStatus: 200,
+    appStatus: 200,
     environmentId: EnvironmentId.make("environment"),
     app: "expected-t3-app",
     recovery: "pair-after-preflight",
   },
 ] as const)("classifies $name without exposing pairing URL data", (scenario) => {
   const result = classifyPreviewPreflightTarget({
-    status: scenario.status,
+    descriptorStatus: scenario.descriptorStatus,
+    appStatus: scenario.appStatus,
     origin: "http://localhost:5733",
     environmentId: scenario.environmentId,
     expectedEnvironmentId: EnvironmentId.make("environment"),
@@ -112,7 +117,8 @@ it.each([
 
 it("classifies an unreachable target with retry-target recovery", () => {
   const result = classifyPreviewPreflightTarget({
-    status: null,
+    descriptorStatus: null,
+    appStatus: null,
     origin: "http://localhost:5733",
     environmentId: null,
     expectedEnvironmentId: EnvironmentId.make("environment"),
@@ -121,4 +127,15 @@ it("classifies an unreachable target with retry-target recovery", () => {
     target: { reachability: "unreachable", app: "unknown" },
     recovery: { kind: "retry-target" },
   });
+});
+
+it("accepts an isolated target when no expected target identity was supplied", () => {
+  const result = classifyPreviewPreflightTarget({
+    descriptorStatus: 200,
+    appStatus: 200,
+    origin: "http://localhost:5733",
+    environmentId: EnvironmentId.make("isolated-target"),
+    expectedEnvironmentId: null,
+  });
+  expect(result.recovery.kind).toBe("pair-after-preflight");
 });

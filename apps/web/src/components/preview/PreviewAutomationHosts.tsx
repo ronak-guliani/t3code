@@ -80,12 +80,13 @@ import {
 import { resolveSnapshotBudgets } from "./previewSnapshotBudgets";
 
 export const classifyPreviewPreflightTarget = (input: {
-  readonly status: number | null;
+  readonly descriptorStatus: number | null;
+  readonly appStatus: number | null;
   readonly origin: string;
   readonly environmentId: EnvironmentId | null;
-  readonly expectedEnvironmentId: EnvironmentId;
+  readonly expectedEnvironmentId: EnvironmentId | null;
 }): Pick<PreviewAutomationPreflightResult, "target" | "recovery"> => {
-  if (input.status === null) {
+  if (input.appStatus === null || input.descriptorStatus === null) {
     return {
       target: {
         requested: true,
@@ -101,7 +102,7 @@ export const classifyPreviewPreflightTarget = (input: {
       },
     };
   }
-  if (input.status === 503) {
+  if (input.appStatus === 503) {
     return {
       target: {
         requested: true,
@@ -109,7 +110,7 @@ export const classifyPreviewPreflightTarget = (input: {
         app: "not-configured",
         origin: input.origin,
         environmentId: null,
-        status: input.status,
+        status: input.appStatus,
       },
       recovery: {
         kind: "configure-target",
@@ -117,7 +118,7 @@ export const classifyPreviewPreflightTarget = (input: {
       },
     };
   }
-  if (input.status !== 200 || input.environmentId === null) {
+  if (input.appStatus !== 200 || input.descriptorStatus !== 200 || input.environmentId === null) {
     return {
       target: {
         requested: true,
@@ -125,7 +126,7 @@ export const classifyPreviewPreflightTarget = (input: {
         app: "not-t3-app",
         origin: input.origin,
         environmentId: input.environmentId,
-        status: input.status,
+        status: input.appStatus,
       },
       recovery: {
         kind: "configure-target",
@@ -133,7 +134,7 @@ export const classifyPreviewPreflightTarget = (input: {
       },
     };
   }
-  if (input.environmentId !== input.expectedEnvironmentId) {
+  if (input.expectedEnvironmentId !== null && input.environmentId !== input.expectedEnvironmentId) {
     return {
       target: {
         requested: true,
@@ -141,7 +142,7 @@ export const classifyPreviewPreflightTarget = (input: {
         app: "expected-t3-app",
         origin: input.origin,
         environmentId: input.environmentId,
-        status: input.status,
+        status: input.appStatus,
       },
       recovery: {
         kind: "resolve-environment-mismatch",
@@ -157,7 +158,7 @@ export const classifyPreviewPreflightTarget = (input: {
       app: "expected-t3-app",
       origin: input.origin,
       environmentId: input.environmentId,
-      status: input.status,
+      status: input.appStatus,
     },
     recovery: {
       kind: "pair-after-preflight",
@@ -407,6 +408,7 @@ function PreviewAutomationUnavailableHost(props: { readonly environmentId: Envir
     () => ({
       clientId: automationClientId,
       environmentId,
+      supportedOperations: [],
     }),
     [automationClientId, environmentId],
   );
@@ -574,6 +576,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           case "preflight": {
             const input = request.input as PreviewAutomationPreflightInput;
             const targetRequested = input.url !== undefined || input.target !== undefined;
+            tabId = resolvePreviewAutomationOpenTab(
+              state,
+              request.tabId,
+              input.reuseExistingTab ?? true,
+            );
             const browserStatus = await readPreviewAutomationStatus(threadRef, tabId);
             const makeResult = (
               target: PreviewAutomationPreflightResult["target"],
@@ -714,23 +721,29 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               );
               const probe = await previewBridge.automation.evaluate(activeRuntimeTabId, {
                 expression:
-                  "(async () => { const response = await fetch(location.href, { cache: 'no-store' }); const text = await response.text(); let descriptor = null; try { const parsed = JSON.parse(text); if (parsed && typeof parsed === 'object' && typeof parsed.environmentId === 'string' && typeof parsed.serverVersion === 'string') descriptor = { environmentId: parsed.environmentId, serverVersion: parsed.serverVersion }; } catch {} return { status: response.status, descriptor }; })()",
+                  "(async () => { const descriptorResponse = await fetch(location.href, { cache: 'no-store' }); const appResponse = await fetch(new URL('/', location.origin), { cache: 'no-store' }); const text = await descriptorResponse.text(); let descriptor = null; try { const parsed = JSON.parse(text); if (parsed && typeof parsed === 'object' && typeof parsed.environmentId === 'string' && typeof parsed.serverVersion === 'string') descriptor = { environmentId: parsed.environmentId, serverVersion: parsed.serverVersion }; } catch {} return { descriptorStatus: descriptorResponse.status, appStatus: appResponse.status, descriptor }; })()",
                 awaitPromise: true,
                 returnByValue: true,
               });
               const probeResult =
                 typeof probe === "object" && probe !== null
                   ? (probe as {
-                      readonly status?: unknown;
+                      readonly descriptorStatus?: unknown;
+                      readonly appStatus?: unknown;
                       readonly descriptor?: {
                         readonly environmentId?: unknown;
                         readonly serverVersion?: unknown;
                       } | null;
                     })
                   : {};
-              const responseStatus =
-                typeof probeResult.status === "number" && Number.isInteger(probeResult.status)
-                  ? probeResult.status
+              const descriptorStatus =
+                typeof probeResult.descriptorStatus === "number" &&
+                Number.isInteger(probeResult.descriptorStatus)
+                  ? probeResult.descriptorStatus
+                  : null;
+              const appStatus =
+                typeof probeResult.appStatus === "number" && Number.isInteger(probeResult.appStatus)
+                  ? probeResult.appStatus
                   : null;
               const descriptor = probeResult.descriptor;
               const probedEnvironmentId =
@@ -738,10 +751,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                   ? EnvironmentId.make(descriptor.environmentId)
                   : null;
               const classified = classifyPreviewPreflightTarget({
-                status: responseStatus,
+                descriptorStatus,
+                appStatus,
                 origin: new URL(resolvedUrl).origin,
                 environmentId: probedEnvironmentId,
-                expectedEnvironmentId: environmentId,
+                expectedEnvironmentId: input.expectedEnvironmentId ?? null,
               });
               return makeResult(classified.target, classified.recovery, attachedStatus);
             } catch {

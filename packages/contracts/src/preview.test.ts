@@ -55,6 +55,16 @@ describe("PreviewNavStatus", () => {
     });
   });
 
+  it("accepts an optional expected target environment identity for preflight", () => {
+    expect(
+      decodePreflightInput({
+        expectedEnvironmentId: "target-environment",
+      }),
+    ).toMatchObject({
+      expectedEnvironmentId: "target-environment",
+    });
+  });
+
   it("decodes LoadFailed with code/description", () => {
     expect(
       decodeNavStatus({

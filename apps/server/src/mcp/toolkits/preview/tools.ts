@@ -144,7 +144,7 @@ export const PreviewOpenAndSnapshotTool = safeBrowserTool(
 export const PreviewPreflightTool = safeBrowserTool(
   Tool.make("preview_preflight", {
     description:
-      "Perform one deterministic browser pairing preflight. It reports browser support/visibility/tab attachment, validates this MCP session, and optionally probes a target's token-free T3 environment descriptor. Pairing URLs are never opened, and token-bearing URLs are not returned in diagnostics. Use this before preview_open_and_snapshot or preview_navigate.",
+      "Perform one deterministic browser pairing preflight. It reports browser support/visibility/tab attachment, validates this MCP session, and optionally probes a target's token-free T3 environment descriptor plus app route. Pairing URLs are never opened, and token-bearing URLs are not returned in diagnostics. Use this before preview_open_and_snapshot or preview_navigate.",
     parameters: PreviewAutomationPreflightInput,
     success: PreviewAutomationPreflightResult,
     failure: PreviewAutomationError,
