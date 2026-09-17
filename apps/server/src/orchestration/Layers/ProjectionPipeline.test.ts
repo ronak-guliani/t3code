@@ -305,6 +305,116 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     ),
   );
 
+  it.effect("recovers a legacy-only PR before projecting a newly created PR", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-09-17T00:00:00.000Z";
+      const updatedAt = "2026-09-17T00:01:00.000Z";
+      const projectId = ProjectId.make("project-multiple-prs");
+      const threadId = ThreadId.make("thread-multiple-prs");
+      const firstPullRequest = {
+        number: 399,
+        title: "First pull request",
+        url: "https://github.com/acme/app/pull/399",
+        baseBranch: "main",
+        headBranch: "feature/first",
+        state: "open" as const,
+      };
+      const secondPullRequest = {
+        ...firstPullRequest,
+        number: 400,
+        title: "Second pull request",
+        url: "https://github.com/acme/app/pull/400",
+        headBranch: "feature/second",
+      };
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-multiple-prs-created"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-multiple-prs-created"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-multiple-prs-created"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId,
+          title: "Multiple PRs",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "feature/first",
+          worktreePath: "/tmp/multiple-prs",
+          pullRequest: firstPullRequest,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+      yield* sql`
+        DELETE FROM projection_thread_pull_requests
+        WHERE thread_id = ${threadId}
+      `;
+      yield* appendAndProject({
+        type: "thread.meta-updated",
+        eventId: EventId.make("evt-multiple-prs-second"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: updatedAt,
+        commandId: CommandId.make("cmd-multiple-prs-second"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-multiple-prs-second"),
+        metadata: {},
+        payload: {
+          threadId,
+          pullRequest: secondPullRequest,
+          pullRequestSource: "created",
+          updatedAt,
+        },
+      });
+
+      const rows = yield* sql<{
+        readonly pullRequest: string;
+        readonly source: string;
+        readonly linkedAt: string;
+      }>`
+        SELECT
+          pull_request_json AS "pullRequest",
+          source,
+          linked_at AS "linkedAt"
+        FROM projection_thread_pull_requests
+        WHERE thread_id = ${threadId}
+        ORDER BY linked_at ASC, rowid ASC
+      `;
+      assert.deepStrictEqual(rows, [
+        {
+          pullRequest: JSON.stringify(firstPullRequest),
+          source: "recovered",
+          linkedAt: createdAt,
+        },
+        {
+          pullRequest: JSON.stringify(secondPullRequest),
+          source: "created",
+          linkedAt: updatedAt,
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-multiple-prs-")),
+      ),
+    ),
+  );
+
   it.effect("keeps failed post-commit reconciliation durable for bootstrap recovery", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
