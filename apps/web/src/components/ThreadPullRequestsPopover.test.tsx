@@ -37,4 +37,21 @@ describe("ThreadPullRequestsPopover", () => {
     expect(pullRequests).toEqual([pullRequest(392)]);
     expect(formatThreadPullRequestSummary(pullRequests)).toBe("#392");
   });
+
+  it("keeps a distinct legacy primary before newer links", () => {
+    const pullRequests = resolveThreadPullRequests(
+      [link(393), link(394), link(395)],
+      pullRequest(392),
+    );
+
+    expect(pullRequests.map(({ number }) => number)).toEqual([392, 393, 394, 395]);
+    expect(formatThreadPullRequestSummary(pullRequests)).toBe("#392 + 3");
+  });
+
+  it("does not count the legacy primary twice when it is already linked", () => {
+    const pullRequests = resolveThreadPullRequests([link(392), link(393)], pullRequest(392));
+
+    expect(pullRequests.map(({ number }) => number)).toEqual([392, 393]);
+    expect(formatThreadPullRequestSummary(pullRequests)).toBe("#392 + 1");
+  });
 });
