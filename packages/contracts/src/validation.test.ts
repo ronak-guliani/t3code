@@ -4,6 +4,7 @@ import {
   planValidationRun,
   reduceValidationReadiness,
   transitionValidationGate,
+  validationRunEquals,
   validationTargetEquals,
   type ValidationTarget,
 } from "./validation.ts";
@@ -126,5 +127,19 @@ describe("validation runs", () => {
     expect(
       reduceValidationReadiness(planned, { ...target, dirtyStateFingerprint: "dirty-2" }),
     ).toBe("stale");
+  });
+
+  it("compares decoded validation runs by value", () => {
+    const planned = run();
+    expect(validationRunEquals(planned, structuredClone(planned))).toBe(true);
+    expect(
+      validationRunEquals(
+        planned,
+        structuredClone({
+          ...planned,
+          updatedAt: "2026-09-16T12:01:00.000Z",
+        }),
+      ),
+    ).toBe(false);
   });
 });

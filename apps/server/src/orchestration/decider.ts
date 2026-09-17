@@ -2596,21 +2596,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "Validation gate update does not match the active validation run.",
         });
       }
-      const run = transitionValidationGate(
-        thread.validationRun,
-        {
-          gateId: command.gateId,
-          status: command.status,
-          command: command.command,
-          startedAt: command.startedAt,
-          completedAt: command.completedAt,
-          exitCode: command.exitCode,
-          outputRef: command.outputRef,
-          blockerReason: command.blockerReason,
-          diagnostics: command.diagnostics,
-        },
-        command.createdAt,
-      );
+      const run = yield* Effect.try({
+        try: () =>
+          transitionValidationGate(
+            thread.validationRun,
+            {
+              gateId: command.gateId,
+              status: command.status,
+              command: command.command,
+              startedAt: command.startedAt,
+              completedAt: command.completedAt,
+              exitCode: command.exitCode,
+              outputRef: command.outputRef,
+              blockerReason: command.blockerReason,
+              diagnostics: command.diagnostics,
+            },
+            command.createdAt,
+          ),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: cause instanceof Error ? cause.message : "Invalid validation gate transition.",
+          }),
+      });
       const gate = run.gates.find((candidate) => candidate.id === command.gateId);
       return {
         ...withEventBase({

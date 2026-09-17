@@ -187,6 +187,45 @@ export const validationTargetEquals = (left: ValidationTarget, right: Validation
   left.dirtyStateFingerprint === right.dirtyStateFingerprint &&
   left.environmentIdentity === right.environmentIdentity;
 
+export const validationRunEquals = (
+  left: ValidationRun | null | undefined,
+  right: ValidationRun | null | undefined,
+): boolean => {
+  if (left === right) return true;
+  if (left == null || right == null) return left == null && right == null;
+  if (
+    left.id !== right.id ||
+    left.threadId !== right.threadId ||
+    left.createdAt !== right.createdAt ||
+    left.updatedAt !== right.updatedAt ||
+    !validationTargetEquals(left.target, right.target) ||
+    left.gates.length !== right.gates.length
+  ) {
+    return false;
+  }
+  return left.gates.every((leftGate, index) => {
+    const rightGate = right.gates[index];
+    if (!rightGate) return false;
+    return (
+      leftGate.id === rightGate.id &&
+      leftGate.label === rightGate.label &&
+      leftGate.required === rightGate.required &&
+      leftGate.status === rightGate.status &&
+      leftGate.command === rightGate.command &&
+      leftGate.requestedAt === rightGate.requestedAt &&
+      leftGate.startedAt === rightGate.startedAt &&
+      leftGate.completedAt === rightGate.completedAt &&
+      leftGate.exitCode === rightGate.exitCode &&
+      leftGate.outputRef === rightGate.outputRef &&
+      leftGate.blockerReason === rightGate.blockerReason &&
+      leftGate.diagnostics.length === rightGate.diagnostics.length &&
+      leftGate.diagnostics.every((diagnostic, diagnosticIndex) => {
+        return diagnostic === rightGate.diagnostics[diagnosticIndex];
+      })
+    );
+  });
+};
+
 export const reduceValidationReadiness = (
   run: ValidationRun | null | undefined,
   currentTarget: ValidationTarget,

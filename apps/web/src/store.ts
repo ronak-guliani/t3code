@@ -28,6 +28,7 @@ import {
 } from "@t3tools/client-runtime";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
+import { validationRunEquals } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { resolveModelSlugForProvider } from "@t3tools/shared/model";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
@@ -594,7 +595,7 @@ function sidebarThreadSummariesEqual(
     left.worktreePath === right.worktreePath &&
     pullRequestsEqual(left.pullRequest, right.pullRequest) &&
     threadPullRequestLinksEqual(left.pullRequests ?? [], right.pullRequests ?? []) &&
-    left.validationRun === right.validationRun &&
+    validationRunEquals(left.validationRun, right.validationRun) &&
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.latestChildNotificationAt === right.latestChildNotificationAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
@@ -694,6 +695,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.worktreePath === right.worktreePath &&
     pullRequestsEqual(left.pullRequest, right.pullRequest) &&
     threadPullRequestLinksEqual(left.pullRequests ?? [], right.pullRequests ?? []) &&
+    validationRunEquals(left.validationRun, right.validationRun) &&
     resumeCursorsEqual(left.nudging, right.nudging)
   );
 }
