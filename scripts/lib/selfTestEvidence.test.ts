@@ -1,17 +1,37 @@
 import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
-import { parseSelfTestCommand, selfTestBlockers, SelfTestManifest } from "./selfTestEvidence.ts";
+import {
+  classifySelfTestLock,
+  parseSelfTestCommand,
+  redactSelfTestText,
+  selfTestBlockers,
+  selfTestStatus,
+  SelfTestManifest,
+  type SelfTestManifest as SelfTestManifestType,
+} from "./selfTestEvidence.ts";
 
 const revision = { commit: "abc", contentHash: "def" };
 const decodeManifest = Schema.decodeUnknownSync(SelfTestManifest);
-const manifest: SelfTestManifest = {
-  version: 1,
+const manifest: SelfTestManifestType = {
+  version: 2,
   runId: "run",
   revision,
   status: "passed",
+  stage: "passed",
   startedAt: "2026-09-12T00:00:00Z",
   completedAt: "2026-09-12T00:01:00Z",
   command: "pnpm test:direct-connect-smoke",
+  process: {
+    role: "child",
+    pid: 42,
+    command: "pnpm test:direct-connect-smoke",
+    startedAt: "2026-09-12T00:00:01Z",
+  },
+  environment: {
+    baseDirectory: "/tmp/self-test",
+    webTarget: "/tmp/self-test/web",
+    origin: "http://127.0.0.1:1234",
+  },
   exitCode: 0,
   scenarios: ["One-time pairing survives reload"],
   diagnostics: { pageErrors: 0, failedRequests: 0, consoleErrors: 0, expectedConsoleErrors: 1 },
@@ -27,40 +47,42 @@ const manifest: SelfTestManifest = {
       durationSeconds: 4,
     },
   ],
+  artifacts: [
+    { file: "capture.json", sha256: "c", sizeBytes: 200 },
+    { file: "diagnostics.json", sha256: "d", sizeBytes: 100 },
+  ],
 };
 
-describe("pairing/reconnect baseline", () => {
-  it("requires smoke assertions and diagnostics, not feature reports or publication", () => {
+describe("pairing/reconnect baseline result model", () => {
+  it("requires smoke assertions, diagnostics, and verified media", () => {
     expect(selfTestBlockers(manifest, revision)).toEqual([]);
   });
   it.each(["commit", "contentHash"] as const)("invalidates changed %s", (field) => {
-    expect(selfTestBlockers(manifest, { ...revision, [field]: "new" })).toContainEqual(
-      expect.stringContaining("stale"),
-    );
+    expect(selfTestBlockers(manifest, { ...revision, [field]: "new" })).toEqual([
+      expect.objectContaining({ type: "stale-revision" }),
+    ]);
+    expect(selfTestStatus(manifest, { ...revision, [field]: "new" })).toBe("stale-revision");
   });
-  it.each(["running", "failed"] as const)("never treats %s as verified", (status) => {
-    expect(selfTestBlockers({ ...manifest, status }, revision)).not.toEqual([]);
-  });
+  it.each(["pending", "failed", "interrupted"] as const)(
+    "never treats %s as verified",
+    (status) => {
+      expect(selfTestBlockers({ ...manifest, status }, revision)).not.toEqual([]);
+    },
+  );
   it("rejects missing or undecodable media", () => {
     expect(selfTestBlockers({ ...manifest, media: [] }, revision)).toHaveLength(2);
     expect(
       selfTestBlockers(
-        {
-          ...manifest,
-          media: manifest.media.map((item) => ({ ...item, width: 0 })),
-        },
+        { ...manifest, media: manifest.media.map((item) => ({ ...item, width: 0 })) },
         revision,
       ),
     ).toHaveLength(2);
     expect(
       selfTestBlockers(
-        {
-          ...manifest,
-          media: manifest.media.map((item) => ({ ...item, durationSeconds: 0 })),
-        },
+        { ...manifest, media: manifest.media.map((item) => ({ ...item, durationSeconds: 0 })) },
         revision,
       ),
-    ).toContain("Invalid baseline recording.");
+    ).toContainEqual(expect.objectContaining({ message: "Invalid baseline recording." }));
   });
   it.each(["consoleErrors", "pageErrors", "failedRequests"] as const)(
     "blocks unexpected %s",
@@ -73,7 +95,11 @@ describe("pairing/reconnect baseline", () => {
           },
           revision,
         ),
-      ).toContain("Browser diagnostics are missing or contain unexpected failures.");
+      ).toContainEqual(
+        expect.objectContaining({
+          message: "Browser diagnostics are missing or contain unexpected failures.",
+        }),
+      );
     },
   );
   it("does not interpret missing console counts as zero", () => {
@@ -84,16 +110,27 @@ describe("pairing/reconnect baseline", () => {
       }),
     ).toThrow();
   });
-  it("reads legacy captures without using frame diversity as a test result", () => {
-    const legacy = decodeManifest({
-      ...manifest,
-      media: manifest.media.map((media) => ({ ...media, sampledFrames: 6, distinctFrames: 1 })),
-      feature: { result: "passed" },
-      publication: { pullRequestUrl: "https://github.com/owner/repo/pull/1" },
-    });
-    expect(selfTestBlockers(legacy, revision)).toEqual([]);
-    expect(legacy).not.toHaveProperty("feature");
-    expect(legacy).not.toHaveProperty("publication");
+});
+
+describe("self-test lifecycle and ownership", () => {
+  const owner = {
+    pid: 42,
+    runId: "run",
+    command: "pnpm test:self",
+    startedAt: "2026-09-12T00:00:00Z",
+  };
+  it("only recovers a lock after verifying the owner is dead", () => {
+    expect(classifySelfTestLock(owner, true, true)).toMatchObject({ status: "active" });
+    expect(classifySelfTestLock(owner, false, false)).toMatchObject({ status: "stale" });
+    expect(classifySelfTestLock(owner, true, false)).toMatchObject({ status: "ambiguous" });
+    expect(classifySelfTestLock(undefined, false, false)).toMatchObject({ status: "ambiguous" });
+  });
+  it("redacts credentials from durable error text", () => {
+    expect(
+      redactSelfTestText(
+        "failed at /pair#token=secret with Bearer abc.def and ?access_token=other",
+      ),
+    ).toBe("failed at /pair#token=[redacted] with Bearer [redacted] and ?access_token=[redacted]");
   });
 });
 

@@ -1,10 +1,139 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { access, copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
 import { Effect } from "effect";
 import type { Browser, BrowserContext, Page, Request } from "playwright";
-import type { SelfTestDiagnostics, SelfTestMedia } from "../../../scripts/lib/selfTestEvidence.ts";
+import {
+  type SelfTestIssue,
+  type SelfTestStage,
+  type SelfTestDiagnostics,
+  type SelfTestMedia,
+} from "../../../scripts/lib/selfTestEvidence.ts";
 import { inspectMediaIntegrity } from "../../../scripts/lib/mediaIntegrity.ts";
+
+export class SelfTestPreflightError extends Error {
+  readonly issue: SelfTestIssue;
+
+  constructor(issue: SelfTestIssue) {
+    super(issue.message);
+    this.name = "SelfTestPreflightError";
+    this.issue = issue;
+  }
+}
+
+export async function recordSelfTestStage(
+  output: string | undefined,
+  stage: SelfTestStage,
+  details: { readonly scenarios?: ReadonlyArray<string>; readonly issue?: SelfTestIssue } = {},
+): Promise<void> {
+  if (!output) return;
+  await mkdir(output, { recursive: true });
+  const path = join(output, "lifecycle.json");
+  const temporary = `${path}.tmp`;
+  await writeFile(
+    temporary,
+    `${JSON.stringify({
+      stage,
+      ...(details.scenarios ? { scenarios: details.scenarios } : {}),
+      ...(details.issue
+        ? stage === "blocked"
+          ? { blocker: details.issue }
+          : { failure: details.issue }
+        : {}),
+    })}\n`,
+    { mode: 0o600 },
+  );
+  await rename(temporary, path);
+}
+
+export async function preflightSelfTestEnvironment(input: {
+  readonly baseDirectory: string;
+  readonly configuredBaseDirectory: string;
+  readonly runtimeStatePath: string;
+  readonly staticDirectory: string | undefined;
+  readonly origin: string;
+}): Promise<void> {
+  const baseDirectory = resolve(input.baseDirectory);
+  if (baseDirectory !== resolve(input.configuredBaseDirectory)) {
+    throw new SelfTestPreflightError({
+      type: "environment-mismatch",
+      message: "The self-test server base directory does not match its configured environment.",
+      action: "Use one isolated base directory for server startup and the self-test.",
+    });
+  }
+  const runtimeStatePath = resolve(input.runtimeStatePath);
+  const relativeRuntimeState = relative(baseDirectory, runtimeStatePath);
+  if (
+    relativeRuntimeState.startsWith("..") ||
+    relativeRuntimeState === ".." ||
+    relativeRuntimeState.startsWith("/")
+  ) {
+    throw new SelfTestPreflightError({
+      type: "environment-mismatch",
+      message: "The server runtime state is outside the self-test base directory.",
+      action: "Start the server with the same isolated base directory used by the smoke test.",
+    });
+  }
+  if (!input.staticDirectory) {
+    throw new SelfTestPreflightError({
+      type: "web-target-invalid",
+      message: "No web static target is configured for the self-test server.",
+      action: "Build the web app or configure T3_SELF_TEST_WEB_TARGET before rerunning.",
+    });
+  }
+  const staticDirectory = resolve(input.staticDirectory);
+  try {
+    await access(join(staticDirectory, "index.html"));
+  } catch {
+    throw new SelfTestPreflightError({
+      type: "web-target-missing",
+      message: `The configured web target is missing index.html: ${staticDirectory}.`,
+      action: "Build the web app and verify the configured static target before rerunning.",
+    });
+  }
+
+  let backendResponse: Response;
+  try {
+    backendResponse = await fetch(`${input.origin}/api/auth/session`);
+  } catch {
+    throw new SelfTestPreflightError({
+      type: "backend-unhealthy",
+      message: `The self-test backend is not reachable at ${input.origin}.`,
+      action: "Verify the isolated server is healthy before creating pairing credentials.",
+    });
+  }
+  if (backendResponse.status !== 200 && backendResponse.status !== 401) {
+    throw new SelfTestPreflightError({
+      type: "backend-unhealthy",
+      message: `The self-test backend returned HTTP ${backendResponse.status}.`,
+      action: "Inspect server diagnostics and fix backend readiness before rerunning.",
+    });
+  }
+
+  let appResponse: Response;
+  try {
+    appResponse = await fetch(input.origin);
+  } catch {
+    throw new SelfTestPreflightError({
+      type: "app-not-served",
+      message: `The expected web app is not served at ${input.origin}.`,
+      action: "Verify the static target and server web configuration before rerunning.",
+    });
+  }
+  const contentType = appResponse.headers.get("content-type") ?? "";
+  const body = await appResponse.text();
+  if (
+    appResponse.status !== 200 ||
+    !contentType.includes("text/html") ||
+    !body.includes('id="root"')
+  ) {
+    throw new SelfTestPreflightError({
+      type: "app-not-served",
+      message: `The expected T3 Code app was not served at ${input.origin}.`,
+      action: "Verify the web target contains the built T3 Code app before rerunning.",
+    });
+  }
+}
 
 export function createSelfTestContext(
   browser: Browser,

@@ -42,6 +42,9 @@ import {
   captureSelfTestScreenshot,
   createSelfTestContext,
   finishSelfTestCapture,
+  preflightSelfTestEnvironment,
+  recordSelfTestStage,
+  SelfTestPreflightError,
   trackSelfTestConsole,
   trackSelfTestRequests,
 } from "./selfTestCapture.ts";
@@ -135,7 +138,9 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           cwd: workspaceDir,
           baseDir,
           ...derivedPaths,
-          staticDir: path.resolve(import.meta.dirname, "../../web/dist"),
+          staticDir:
+            process.env.T3_SELF_TEST_WEB_TARGET ??
+            path.resolve(import.meta.dirname, "../../web/dist"),
           devUrl: undefined,
           noBrowser: true,
           startupPresentation: "browser",
@@ -156,6 +161,25 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           "the production HTTP listener",
         );
         const origin = Option.getOrThrow(runtimeState).origin;
+        const captureOutput = process.env.T3_SELF_TEST_OUTPUT;
+        yield* Effect.promise(() => recordSelfTestStage(captureOutput, "preflight"));
+        yield* Effect.promise(async () => {
+          try {
+            await preflightSelfTestEnvironment({
+              baseDirectory: baseDir,
+              configuredBaseDirectory: config.baseDir,
+              runtimeStatePath: config.serverRuntimeStatePath,
+              staticDirectory: config.staticDir,
+              origin,
+            });
+          } catch (error) {
+            if (error instanceof SelfTestPreflightError) {
+              await recordSelfTestStage(captureOutput, "blocked", { issue: error.issue });
+            }
+            throw error;
+          }
+        });
+        yield* Effect.promise(() => recordSelfTestStage(captureOutput, "pairing"));
 
         const ownerBootstrap = yield* fetchJson<{ readonly sessionToken: string }>(
           `${origin}/api/auth/bootstrap/bearer`,
@@ -504,8 +528,8 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(snapshots).toEqual([0, 1]);
         expect(liveProjectSequences).toEqual([1]);
 
+        yield* Effect.promise(() => recordSelfTestStage(captureOutput, "assertions"));
         const browserCredential = yield* createPairingCredential;
-        const captureOutput = process.env.T3_SELF_TEST_OUTPUT;
         const browser = yield* Effect.acquireRelease(
           Effect.promise(() => chromium.launch({ headless: true })),
           (instance) => Effect.promise(() => instance.close()),
@@ -743,6 +767,19 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(revokedSnapshot.status).toBe(401);
 
         yield* Effect.promise(() => transport.dispose()).pipe(Effect.timeout("10 seconds"));
+        yield* Effect.promise(() =>
+          recordSelfTestStage(captureOutput, "capture", {
+            scenarios: [
+              "One-time URL pairing establishes an authenticated browser session.",
+              "Consumed credentials fail visibly and are cleared.",
+              "Malformed pairing links show format-neutral guidance for query and fragment tokens.",
+              "A fresh same-origin pairing link can be pasted into the recovery form.",
+              "The authenticated project remains visible after reload.",
+              "The browser recovers from a forced WebSocket disconnect without reloading and receives live project updates.",
+              "Node client live synchronization and involuntary reconnect preserve project state.",
+            ],
+          }),
+        );
         yield* Effect.promise(() => navigate(() => context.close()));
         if (captureOutput && screenshot) {
           const videoPath = yield* Effect.promise(() => page.video()!.path());
