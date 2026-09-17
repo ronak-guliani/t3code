@@ -184,6 +184,43 @@ it.effect("targets multiple tabs explicitly while retaining a default tab", () =
   ),
 );
 
+it.effect("pins a tab returned by preflight for later untargeted requests", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const openedTabId = PreviewTabId.make("tab-preflight");
+      const routedRequests: RoutedRequest[] = [];
+      const requests = requestsFrom(
+        yield* broker.connect(makeHost({ supportedOperations: ["preflight", "snapshot"] })),
+      );
+      yield* Stream.runForEach(requests, (request) => {
+        routedRequests.push(request);
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result:
+            request.operation === "preflight"
+              ? { tabId: openedTabId, recovery: { kind: "pair-after-preflight" } }
+              : { url: "http://localhost:3200" },
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      yield* broker.invoke({
+        scope,
+        operation: "preflight",
+        input: { open: true },
+      });
+      yield* broker.invoke({ scope, operation: "snapshot", input: {} });
+
+      expect(routedRequests.map((request) => request.tabId)).toEqual([undefined, openedTabId]);
+      expect(routedRequests[1]?.tabIdExplicit).toBe(false);
+    }),
+  ),
+);
+
 it.effect("does not let an older response replace a newer explicit tab target", () =>
   Effect.scoped(
     Effect.gen(function* () {

@@ -587,6 +587,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               recovery: PreviewAutomationPreflightResult["recovery"],
               status = browserStatus,
             ): PreviewAutomationPreflightResult => ({
+              ...(status.tabId === null ? {} : { tabId: status.tabId }),
               browser: {
                 supported: Boolean(previewBridge),
                 available: Boolean(previewBridge),

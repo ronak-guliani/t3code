@@ -839,6 +839,11 @@ export const PreviewAutomationPreflightRecovery = Schema.Literals([
 export type PreviewAutomationPreflightRecovery = typeof PreviewAutomationPreflightRecovery.Type;
 
 export const PreviewAutomationPreflightResult = Schema.Struct({
+  /**
+   * Server tab id when known. The broker uses this to pin the agent session
+   * after preflight opens or reuses a tab.
+   */
+  tabId: Schema.optional(PreviewTabId),
   browser: PreviewAutomationPreflightBrowser,
   mcp: Schema.Struct({
     credential: Schema.Literal("valid"),
