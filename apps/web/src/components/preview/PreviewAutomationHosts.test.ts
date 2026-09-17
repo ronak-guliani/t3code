@@ -17,6 +17,7 @@ import {
   resetPreviewStateForTests,
 } from "~/previewStateStore";
 import {
+  classifyPreviewPreflightProbe,
   classifyPreviewPreflightTarget,
   readPreviewAutomationStatus,
 } from "./PreviewAutomationHosts";
@@ -74,8 +75,16 @@ it.each([
     name: "missing app target",
     descriptorStatus: 200,
     appStatus: 503,
-    environmentId: null,
+    environmentId: EnvironmentId.make("environment"),
     app: "not-configured",
+    recovery: "configure-target",
+  },
+  {
+    name: "503 without a valid descriptor",
+    descriptorStatus: 200,
+    appStatus: 503,
+    environmentId: null,
+    app: "not-t3-app",
     recovery: "configure-target",
   },
   {
@@ -154,4 +163,63 @@ it("accepts an isolated target when no expected target identity was supplied", (
     expectedEnvironmentId: null,
   });
   expect(result.recovery.kind).toBe("pair-after-preflight");
+});
+
+it("classifies a same-origin probe using the descriptor and app responses", () => {
+  const result = classifyPreviewPreflightProbe({
+    requestedOrigin: "http://localhost:5733",
+    finalOrigin: "http://localhost:5733",
+    descriptorStatus: 200,
+    appStatus: 200,
+    environmentId: EnvironmentId.make("environment"),
+    expectedEnvironmentId: EnvironmentId.make("environment"),
+  });
+  expect(result).toMatchObject({
+    target: {
+      reachability: "reachable",
+      app: "expected-t3-app",
+      origin: "http://localhost:5733",
+    },
+    recovery: { kind: "pair-after-preflight" },
+  });
+});
+
+it("rejects a cross-origin redirect before classifying a misleading healthy destination", () => {
+  const result = classifyPreviewPreflightProbe({
+    requestedOrigin: "http://localhost:5733",
+    finalOrigin: "https://unrelated.example",
+    descriptorStatus: 200,
+    appStatus: 200,
+    environmentId: EnvironmentId.make("environment"),
+    expectedEnvironmentId: EnvironmentId.make("environment"),
+  });
+  expect(result).toMatchObject({
+    target: {
+      reachability: "reachable",
+      app: "unknown",
+      origin: "https://unrelated.example",
+      environmentId: null,
+      status: null,
+    },
+    recovery: { kind: "retry-target" },
+  });
+  expect(result.recovery.message).toContain("different origin");
+});
+
+it.each([
+  { name: "missing descriptor", descriptorStatus: null },
+  { name: "invalid descriptor response", descriptorStatus: 404 },
+  { name: "non-T3 descriptor", descriptorStatus: 200 },
+] as const)("does not classify a 503 $name as not-configured", (scenario) => {
+  const result = classifyPreviewPreflightTarget({
+    descriptorStatus: scenario.descriptorStatus,
+    appStatus: 503,
+    origin: "http://localhost:5733",
+    environmentId: null,
+    expectedEnvironmentId: null,
+  });
+  expect(result.target.app).toBe(scenario.descriptorStatus === null ? "unknown" : "not-t3-app");
+  expect(result.recovery.kind).toBe(
+    scenario.descriptorStatus === null ? "retry-target" : "configure-target",
+  );
 });

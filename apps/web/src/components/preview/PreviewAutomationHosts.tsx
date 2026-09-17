@@ -102,6 +102,22 @@ export const classifyPreviewPreflightTarget = (input: {
       },
     };
   }
+  if (input.descriptorStatus !== 200 || input.environmentId === null) {
+    return {
+      target: {
+        requested: true,
+        reachability: "reachable",
+        app: "not-t3-app",
+        origin: input.origin,
+        environmentId: input.environmentId,
+        status: input.appStatus,
+      },
+      recovery: {
+        kind: "configure-target",
+        message: "The target is reachable but does not serve the expected T3 app.",
+      },
+    };
+  }
   if (input.appStatus === 503) {
     return {
       target: {
@@ -109,7 +125,7 @@ export const classifyPreviewPreflightTarget = (input: {
         reachability: "reachable",
         app: "not-configured",
         origin: input.origin,
-        environmentId: null,
+        environmentId: input.environmentId,
         status: input.appStatus,
       },
       recovery: {
@@ -118,7 +134,7 @@ export const classifyPreviewPreflightTarget = (input: {
       },
     };
   }
-  if (input.appStatus !== 200 || input.descriptorStatus !== 200 || input.environmentId === null) {
+  if (input.appStatus !== 200) {
     return {
       target: {
         requested: true,
@@ -166,6 +182,40 @@ export const classifyPreviewPreflightTarget = (input: {
         "The target is the expected T3 environment. Pair only after this preflight and do not reuse the probe URL as a pairing token.",
     },
   };
+};
+
+export const classifyPreviewPreflightProbe = (input: {
+  readonly requestedOrigin: string;
+  readonly finalOrigin: string | null;
+  readonly descriptorStatus: number | null;
+  readonly appStatus: number | null;
+  readonly environmentId: EnvironmentId | null;
+  readonly expectedEnvironmentId: EnvironmentId | null;
+}): Pick<PreviewAutomationPreflightResult, "target" | "recovery"> => {
+  if (input.finalOrigin !== input.requestedOrigin) {
+    return {
+      target: {
+        requested: true,
+        reachability: "reachable",
+        app: "unknown",
+        origin: input.finalOrigin,
+        environmentId: null,
+        status: null,
+      },
+      recovery: {
+        kind: "retry-target",
+        message:
+          "The target redirected to a different origin during preflight; pairing is blocked until the requested target is reached directly.",
+      },
+    };
+  }
+  return classifyPreviewPreflightTarget({
+    descriptorStatus: input.descriptorStatus,
+    appStatus: input.appStatus,
+    origin: input.requestedOrigin,
+    environmentId: input.environmentId,
+    expectedEnvironmentId: input.expectedEnvironmentId,
+  });
 };
 import { createPreviewAutomationRequestConsumerAtom } from "./previewAutomationRequestConsumer";
 import { createPreviewAutomationClientId } from "./previewAutomationClientId";
@@ -752,13 +802,14 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             try {
               const probe = await previewBridge.automation.evaluate(activeRuntimeTabId, {
                 expression:
-                  "(async () => { const descriptorResponse = await fetch(location.href, { cache: 'no-store' }); const appResponse = await fetch(new URL('/', location.origin), { cache: 'no-store' }); const text = await descriptorResponse.text(); let descriptor = null; try { const parsed = JSON.parse(text); if (parsed && typeof parsed === 'object' && typeof parsed.environmentId === 'string' && typeof parsed.serverVersion === 'string') descriptor = { environmentId: parsed.environmentId, serverVersion: parsed.serverVersion }; } catch {} return { descriptorStatus: descriptorResponse.status, appStatus: appResponse.status, descriptor }; })()",
+                  "(async () => { const descriptorResponse = await fetch(location.href, { cache: 'no-store' }); const appResponse = await fetch(new URL('/', location.origin), { cache: 'no-store' }); const text = await descriptorResponse.text(); let descriptor = null; try { const parsed = JSON.parse(text); if (parsed && typeof parsed === 'object' && typeof parsed.environmentId === 'string' && typeof parsed.serverVersion === 'string') descriptor = { environmentId: parsed.environmentId, serverVersion: parsed.serverVersion }; } catch {} return { origin: location.origin, descriptorStatus: descriptorResponse.status, appStatus: appResponse.status, descriptor }; })()",
                 awaitPromise: true,
                 returnByValue: true,
               });
               const probeResult =
                 typeof probe === "object" && probe !== null
                   ? (probe as {
+                      readonly origin?: unknown;
                       readonly descriptorStatus?: unknown;
                       readonly appStatus?: unknown;
                       readonly descriptor?: {
@@ -767,6 +818,8 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                       } | null;
                     })
                   : {};
+              const finalOrigin =
+                typeof probeResult.origin === "string" ? probeResult.origin : null;
               const descriptorStatus =
                 typeof probeResult.descriptorStatus === "number" &&
                 Number.isInteger(probeResult.descriptorStatus)
@@ -783,10 +836,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 descriptor.environmentId.trim().length > 0
                   ? EnvironmentId.make(descriptor.environmentId)
                   : null;
-              const classified = classifyPreviewPreflightTarget({
+              const classified = classifyPreviewPreflightProbe({
+                requestedOrigin: new URL(resolvedUrl).origin,
+                finalOrigin,
                 descriptorStatus,
                 appStatus,
-                origin: new URL(resolvedUrl).origin,
                 environmentId: probedEnvironmentId,
                 expectedEnvironmentId: input.expectedEnvironmentId ?? null,
               });
