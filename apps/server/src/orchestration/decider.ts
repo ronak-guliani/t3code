@@ -54,7 +54,11 @@ import {
   transitionDelegationExecution,
   type RecordedReportOutcome,
 } from "./dispatchAuthority.ts";
-import { planValidationRun, transitionValidationGate } from "@t3tools/contracts";
+import {
+  planValidationRun,
+  transitionValidationGate,
+  validationTargetEquals,
+} from "@t3tools/contracts";
 
 const FORK_TITLE_PREFIX = "Forked: ";
 /**
@@ -2550,7 +2554,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      if (thread.validationRun !== null && thread.validationRun !== undefined) {
+      if (
+        thread.validationRun !== null &&
+        thread.validationRun !== undefined &&
+        validationTargetEquals(thread.validationRun.target, command.target)
+      ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "A validation run is already planned for this thread.",

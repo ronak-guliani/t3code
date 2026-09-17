@@ -17,6 +17,7 @@ import {
   type TurnDiffScope,
   type TurnId,
   type KeybindingCommand,
+  type ValidationTarget,
   OrchestrationThreadActivity,
   ProviderInteractionMode,
   ProviderDriverKind,
@@ -1702,6 +1703,26 @@ function ChatViewBody(
   const activeProjectCwd = activeProject?.cwd ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
+  const currentValidationTarget = useMemo((): ValidationTarget | null => {
+    const status = gitStatusQuery.data;
+    if (
+      !activeProject ||
+      !activeThread ||
+      !status?.isRepo ||
+      !status.revision ||
+      !status.dirtyStateFingerprint
+    ) {
+      return null;
+    }
+    return {
+      workspaceRoot: activeProject.cwd,
+      worktreePath: activeThread.worktreePath,
+      branch: status.branch,
+      revision: status.revision,
+      dirtyStateFingerprint: status.dirtyStateFingerprint,
+      environmentIdentity: environmentId,
+    };
+  }, [activeProject, activeThread, environmentId, gitStatusQuery.data]);
   const activeTerminalLaunchContext =
     terminalLaunchContext?.threadId === activeThreadId
       ? terminalLaunchContext
@@ -4867,6 +4888,7 @@ function ChatViewBody(
                   isRevertingCheckpoint={isRevertingCheckpoint}
                   reviewResultActive={activeThread.reviewResult?.status === "parsed"}
                   validationRun={activeValidationRun}
+                  currentValidationTarget={currentValidationTarget}
                   listRef={legendListRef}
                   messagesViewportRef={messagesViewportRef}
                   gitCwd={gitCwd ?? undefined}

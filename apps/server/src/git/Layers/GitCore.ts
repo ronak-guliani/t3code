@@ -1290,32 +1290,49 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       );
     }
 
-    const [unstagedNumstatStdout, stagedNumstatStdout, defaultRefResult, hasOriginRemote] =
-      yield* Effect.all(
-        [
-          runGitStdout("GitCore.statusDetails.unstagedNumstat", cwd, ["diff", "--numstat"]),
-          runGitStdout("GitCore.statusDetails.stagedNumstat", cwd, [
-            "diff",
-            "--cached",
-            "--numstat",
-          ]),
-          executeGit(
-            "GitCore.statusDetails.defaultRef",
-            cwd,
-            ["symbolic-ref", "refs/remotes/origin/HEAD"],
-            {
-              allowNonZeroExit: true,
-            },
-          ),
-          originRemoteExists(cwd).pipe(Effect.catch(() => Effect.succeed(false))),
-        ],
-        { concurrency: "unbounded" },
-      );
+    const [
+      unstagedNumstatStdout,
+      stagedNumstatStdout,
+      revisionResult,
+      defaultRefResult,
+      hasOriginRemote,
+    ] = yield* Effect.all(
+      [
+        runGitStdout("GitCore.statusDetails.unstagedNumstat", cwd, ["diff", "--numstat"]),
+        runGitStdout("GitCore.statusDetails.stagedNumstat", cwd, ["diff", "--cached", "--numstat"]),
+        executeGit("GitCore.statusDetails.revision", cwd, ["rev-parse", "HEAD"], {
+          allowNonZeroExit: true,
+        }),
+        executeGit(
+          "GitCore.statusDetails.defaultRef",
+          cwd,
+          ["symbolic-ref", "refs/remotes/origin/HEAD"],
+          {
+            allowNonZeroExit: true,
+          },
+        ),
+        originRemoteExists(cwd).pipe(Effect.catch(() => Effect.succeed(false))),
+      ],
+      { concurrency: "unbounded" },
+    );
     const statusStdout = statusResult.stdout;
     const defaultBranch =
       defaultRefResult.code === 0
         ? defaultRefResult.stdout.trim().replace(/^refs\/remotes\/origin\//, "")
         : null;
+    const revision =
+      revisionResult.code === 0 && revisionResult.stdout.trim().length > 0
+        ? revisionResult.stdout.trim()
+        : undefined;
+    const dirtyStateFingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          status: statusResult.stdout,
+          stagedNumstat: stagedNumstatStdout,
+          unstagedNumstat: unstagedNumstatStdout,
+        }),
+      )
+      .digest("hex");
 
     let branch: string | null = null;
     let upstreamRef: string | null = null;
@@ -1390,6 +1407,8 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
         (branch === defaultBranch ||
           (defaultBranch === null && (branch === "main" || branch === "master"))),
       branch,
+      ...(revision ? { revision } : {}),
+      dirtyStateFingerprint,
       upstreamRef,
       hasWorkingTreeChanges,
       workingTree: {
@@ -1438,6 +1457,10 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
         hasOriginRemote: details.hasOriginRemote,
         isDefaultBranch: details.isDefaultBranch,
         branch: details.branch,
+        ...(details.revision ? { revision: details.revision } : {}),
+        ...(details.dirtyStateFingerprint
+          ? { dirtyStateFingerprint: details.dirtyStateFingerprint }
+          : {}),
         hasWorkingTreeChanges: details.hasWorkingTreeChanges,
         workingTree: details.workingTree,
         hasUpstream: details.hasUpstream,

@@ -2603,6 +2603,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               : { workspaceBinding: threadRow.value.workspaceBinding }),
             pullRequest: threadRow.value.pullRequest ?? null,
             pullRequests: threadRow.value.pullRequests,
+            ...(threadRow.value.validationRun !== null &&
+            threadRow.value.validationRun !== undefined
+              ? { validationRun: threadRow.value.validationRun }
+              : {}),
             latestTurn: reconcileLatestTurnWithSession(
               Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
               session,

@@ -41,6 +41,7 @@ import {
   type Thread,
   type TurnDiffSummary,
 } from "../../types";
+import type { ValidationTarget } from "@t3tools/contracts";
 import { revokeBlobPreviewUrl } from "../../pendingTurnStore";
 import {
   deriveMessagesTimelineRows,
@@ -83,6 +84,7 @@ interface ChatTimelineSectionProps {
   isRevertingCheckpoint: boolean;
   reviewResultActive: boolean;
   validationRun: ValidationRun | null | undefined;
+  currentValidationTarget: ValidationTarget | null;
   listRef: RefObject<LegendListRef | null>;
   messagesViewportRef: RefObject<HTMLDivElement | null>;
   gitCwd: string | undefined;
@@ -125,6 +127,7 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       isRevertingCheckpoint,
       reviewResultActive,
       validationRun,
+      currentValidationTarget,
       listRef,
       messagesViewportRef,
       gitCwd,
@@ -604,7 +607,9 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
               <div className="mb-2 flex items-center justify-between gap-2">
                 <span className="font-medium">Validation</span>
                 <span className="text-muted-foreground">
-                  {reduceValidationReadiness(validationRun, validationRun.target)}
+                  {currentValidationTarget
+                    ? reduceValidationReadiness(validationRun, currentValidationTarget)
+                    : "Readiness unavailable"}
                 </span>
               </div>
               <div className="mb-2 text-muted-foreground">

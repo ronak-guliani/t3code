@@ -469,6 +469,9 @@ function toThreadShell(thread: Thread): ThreadShell {
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
     pullRequests: thread.pullRequests ?? [],
+    ...(thread.validationRun !== undefined && thread.validationRun !== null
+      ? { validationRun: thread.validationRun }
+      : {}),
   };
 }
 

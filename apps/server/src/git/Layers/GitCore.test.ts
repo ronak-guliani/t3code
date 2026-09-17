@@ -1143,6 +1143,11 @@ it.layer(TestLayer)("git integration", (it) => {
                 : "# branch.head main\n# branch.upstream origin/main\n# branch.ab +0 -0\n",
             );
           }
+          if (input.operation === "GitCore.statusDetails.revision") {
+            return ok(
+              input.cwd === "/repo/worktrees/pr-123" ? "feature-revision\n" : "main-revision\n",
+            );
+          }
           if (
             input.operation === "GitCore.statusDetails.unstagedNumstat" ||
             input.operation === "GitCore.statusDetails.stagedNumstat"
@@ -1217,6 +1222,11 @@ it.layer(TestLayer)("git integration", (it) => {
                 input.cwd === "/repo/worktrees/pr-123"
                   ? "# branch.head feature/pr-123\n# branch.upstream origin/feature/pr-123\n# branch.ab +0 -0\n"
                   : "# branch.head main\n# branch.upstream origin/main\n# branch.ab +0 -0\n",
+              );
+            }
+            if (input.operation === "GitCore.statusDetails.revision") {
+              return ok(
+                input.cwd === "/repo/worktrees/pr-123" ? "feature-revision\n" : "main-revision\n",
               );
             }
             if (
