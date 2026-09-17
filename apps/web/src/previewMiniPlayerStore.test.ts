@@ -17,6 +17,15 @@ const first = {
 };
 const second = { ...first, threadId: "thread-2" as ScopedThreadRef["threadId"] };
 
+const deviceSource = (serverEpoch?: string) => ({
+  kind: "device" as const,
+  hostId: "local",
+  deviceId: "sim-1",
+  platform: "ios" as const,
+  name: "iPhone",
+  ...(serverEpoch ? { serverEpoch } : {}),
+});
+
 beforeEach(() => usePreviewMiniPlayerStore.setState({ byThreadKey: {} }));
 
 describe("previewMiniPlayerStore", () => {
@@ -90,13 +99,7 @@ describe("previewMiniPlayerStore", () => {
 
   it("keeps device identity scoped by host when replacing the source", () => {
     const store = usePreviewMiniPlayerStore.getState();
-    const firstDevice = {
-      kind: "device" as const,
-      hostId: "local",
-      deviceId: "sim-1",
-      platform: "ios" as const,
-      name: "iPhone",
-    };
+    const firstDevice = deviceSource();
     const secondDevice = { ...firstDevice, hostId: "ssh-host" };
     store.open(first, firstDevice);
     store.open(first, secondDevice);
@@ -181,5 +184,81 @@ describe("previewMiniPlayerStore", () => {
     } finally {
       usePreviewMiniPlayerStore.persist.setOptions(options);
     }
+  });
+
+  it("persists a device serverEpoch through hydration and keeps it authoritative", async () => {
+    const options = usePreviewMiniPlayerStore.persist.getOptions();
+    if (!options.name) throw new Error("Expected preview mini-player persistence to have a name.");
+    const storage = createMemoryStorage();
+    storage.setItem(
+      options.name,
+      JSON.stringify({
+        state: {
+          byThreadKey: {
+            [scopedThreadKey(first)]: {
+              source: deviceSource("server-a"),
+              position: { x: 10, y: 20 },
+              width: 320,
+            },
+          },
+        },
+        version: 1,
+      }),
+    );
+
+    try {
+      usePreviewMiniPlayerStore.setState({ byThreadKey: {} });
+      usePreviewMiniPlayerStore.persist.setOptions({
+        storage: createJSONStorage(() => storage),
+      });
+
+      await usePreviewMiniPlayerStore.persist.rehydrate();
+
+      const source =
+        usePreviewMiniPlayerStore.getState().byThreadKey[scopedThreadKey(first)]?.source;
+      expect(source).toEqual(deviceSource("server-a"));
+    } finally {
+      usePreviewMiniPlayerStore.persist.setOptions(options);
+    }
+  });
+
+  it("updates the retained epoch when the session is acknowledged and closes same-epoch misses", () => {
+    const store = usePreviewMiniPlayerStore.getState();
+    const source = deviceSource("server-a");
+    store.open(first, source);
+
+    store.reconcileDeviceSession(first, source, "server-b", true);
+    expect(
+      usePreviewMiniPlayerStore.getState().byThreadKey[scopedThreadKey(first)]?.source,
+    ).toEqual(deviceSource("server-b"));
+
+    const acknowledged =
+      usePreviewMiniPlayerStore.getState().byThreadKey[scopedThreadKey(first)]!.source;
+    store.reconcileDeviceSession(first, acknowledged, "server-b", false);
+    expect(
+      usePreviewMiniPlayerStore.getState().byThreadKey[scopedThreadKey(first)],
+    ).toBeUndefined();
+  });
+
+  it("keeps a float whose epoch predates the live server so recovery can claim it", () => {
+    const store = usePreviewMiniPlayerStore.getState();
+    store.open(first, deviceSource("server-old"));
+
+    store.reconcileDeviceSession(first, deviceSource("server-old"), "server-new", false);
+    expect(
+      usePreviewMiniPlayerStore.getState().byThreadKey[scopedThreadKey(first)]?.source,
+    ).toEqual(deviceSource("server-old"));
+  });
+
+  it("ignores reconcile calls that do not match the retained source", () => {
+    const store = usePreviewMiniPlayerStore.getState();
+    store.open(first, deviceSource("server-a"));
+
+    store.reconcileDeviceSession(first, deviceSource("server-b"), "server-b", false);
+    store.reconcileDeviceSession(first, deviceSource("server-a"), "", false);
+
+    expect(
+      usePreviewMiniPlayerStore.getState().byThreadKey[scopedThreadKey(first)]?.source,
+    ).toEqual(deviceSource("server-a"));
   });
 });

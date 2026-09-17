@@ -150,11 +150,13 @@ import {
 } from "~/rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
 import { DevicePanel } from "./device/DevicePanel";
+import { reconcileDeviceSessionPresentation } from "./device/reconcileDeviceSessionPresentation";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { useThreadPreviewState } from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
-import { useDeviceState } from "~/state/device";
+import { deviceEnvironment, useDeviceState } from "~/state/device";
+import { useRetainedDeviceSession } from "~/components/device/useRetainedDeviceSession";
 import { useAtomCommand } from "~/state/use-atom-command";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
@@ -1977,56 +1979,24 @@ function ChatViewBody(
   }, [activeThreadKey]);
   const previewState = useThreadPreviewState(activeThreadRef);
   const { state: deviceState, loaded: deviceStateLoaded } = useDeviceState(environmentId);
+  const listDevices = useAtomCommand(deviceEnvironment.list);
+  const openDeviceSession = useAtomCommand(deviceEnvironment.open);
   const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
     activeThreadRef ? selectThreadPreviewMiniPlayer(state.byThreadKey, activeThreadRef) : null,
   );
   const previousDeviceSessionsRef = useRef(new Map<string, Set<string>>());
   useEffect(() => {
-    if (!activeThreadRef || !deviceStateLoaded) return;
-    const sessions = deviceState.sessions.filter(
-      (session) => session.threadId === activeThreadRef.threadId,
-    );
-    const threadKey = scopedThreadKey(activeThreadRef);
-    const key = (session: (typeof sessions)[number]) =>
-      `${session.hostId}\u0000${session.deviceId}`;
-    const deviceFor = (session: (typeof sessions)[number]) =>
-      deviceState.devices.find(
-        (candidate) => candidate.hostId === session.hostId && candidate.id === session.deviceId,
-      );
-    const previous = previousDeviceSessionsRef.current.get(threadKey);
-    previousDeviceSessionsRef.current.set(
-      threadKey,
-      new Set(sessions.filter((session) => deviceFor(session) !== undefined).map(key)),
-    );
-    if (!previous || shouldUseRightPanelSheet) return;
-    for (const session of sessions) {
-      if (previous.has(key(session))) continue;
-      const device = deviceFor(session);
-      if (!device) continue;
-      const target = {
-        hostId: session.hostId,
-        deviceId: session.deviceId,
-        platform: session.platform,
-        name: device.name,
-        ...(deviceState.serverEpoch ? { serverEpoch: deviceState.serverEpoch } : {}),
-      };
-      if (settings.browserAutoShowFloatingPreview) {
-        usePreviewMiniPlayerStore.getState().open(activeThreadRef, {
-          kind: "device",
-          ...target,
-        });
-      } else {
-        const existing = useRightPanelStore
-          .getState()
-          .byThreadKey[threadKey]?.surfaces.some(
-            (surface) =>
-              surface.kind === "device" &&
-              surface.target?.hostId === session.hostId &&
-              surface.target.deviceId === session.deviceId,
-          );
-        if (!existing) useRightPanelStore.getState().openDevice(activeThreadRef, target);
-      }
-    }
+    reconcileDeviceSessionPresentation(previousDeviceSessionsRef.current, {
+      activeThreadRef,
+      deviceState: {
+        sessions: deviceState.sessions,
+        devices: deviceState.devices,
+        serverEpoch: deviceState.serverEpoch,
+      },
+      loaded: deviceStateLoaded,
+      floating: settings.browserAutoShowFloatingPreview,
+      sheet: shouldUseRightPanelSheet,
+    });
   }, [
     activeThreadRef,
     deviceState.devices,
@@ -2036,18 +2006,64 @@ function ChatViewBody(
     settings.browserAutoShowFloatingPreview,
     shouldUseRightPanelSheet,
   ]);
+  const floatingDevice =
+    activePreviewMiniPlayer?.source.kind === "device" ? activePreviewMiniPlayer.source : null;
+  const floatingDeviceSessionExists = deviceState.sessions.some(
+    (session) =>
+      session.threadId === activeThreadRef?.threadId &&
+      session.hostId === floatingDevice?.hostId &&
+      session.deviceId === floatingDevice?.deviceId,
+  );
   useEffect(() => {
-    if (!activeThreadRef || !deviceStateLoaded) return;
-    const source = activePreviewMiniPlayer?.source;
-    if (source?.kind !== "device") return;
-    const sessionStillExists = deviceState.sessions.some(
-      (session) =>
-        session.threadId === activeThreadRef.threadId &&
-        session.hostId === source.hostId &&
-        session.deviceId === source.deviceId,
+    if (!activeThreadRef || !deviceStateLoaded || !floatingDevice) return;
+    usePreviewMiniPlayerStore
+      .getState()
+      .reconcileDeviceSession(
+        activeThreadRef,
+        floatingDevice,
+        deviceState.serverEpoch ?? "",
+        floatingDeviceSessionExists,
+      );
+  }, [
+    activeThreadRef,
+    deviceStateLoaded,
+    floatingDevice,
+    deviceState.serverEpoch,
+    floatingDeviceSessionExists,
+  ]);
+  const floatingDevicePanelVisible =
+    browserPanel.isOpen &&
+    browserPanel.surfaces.some(
+      (surface) =>
+        surface.id === browserPanel.activeSurfaceId &&
+        surface.kind === "device" &&
+        surface.target?.hostId === floatingDevice?.hostId &&
+        surface.target?.deviceId === floatingDevice?.deviceId,
     );
-    if (!sessionStillExists) usePreviewMiniPlayerStore.getState().close(activeThreadRef);
-  }, [activePreviewMiniPlayer, activeThreadRef, deviceState.sessions, deviceStateLoaded]);
+  useRetainedDeviceSession({
+    environmentId,
+    threadId,
+    target: floatingDevice,
+    enabled:
+      Boolean(activeThreadRef) &&
+      deviceStateLoaded &&
+      deviceState.hostStatus !== "disabled" &&
+      !floatingDevicePanelVisible,
+    currentServerEpoch: deviceState.serverEpoch,
+    sessionExists: floatingDeviceSessionExists,
+    listDevices: () =>
+      listDevices({ environmentId, input: { hostId: floatingDevice?.hostId ?? "" } }),
+    openDevice: openDeviceSession,
+    onRecoveryResult: (error) => {
+      if (error)
+        toastManager.add({
+          type: "error",
+          title: "Unable to recover floating device",
+          description: error,
+        });
+    },
+  });
+
   const [composerInsetElement, setComposerInsetElement] = useState<HTMLDivElement | null>(null);
   const [composerBottomInset, setComposerBottomInset] = useState(0);
   useLayoutEffect(() => {
@@ -2084,12 +2100,7 @@ function ChatViewBody(
       if (floatingPreview.source.kind === "browser") {
         state.openBrowser(activeThreadRef, floatingPreview.source.tabId);
       } else {
-        state.openDevice(activeThreadRef, {
-          hostId: floatingPreview.source.hostId,
-          deviceId: floatingPreview.source.deviceId,
-          platform: floatingPreview.source.platform,
-          name: floatingPreview.source.name,
-        });
+        state.openDevice(activeThreadRef, floatingPreview.source);
       }
       planSidebarDismissedForTurnRef.current =
         activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";

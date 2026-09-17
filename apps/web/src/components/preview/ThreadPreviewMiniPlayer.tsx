@@ -179,7 +179,7 @@ function BrowserMiniPlayer({
             visible={desktopOverlay !== null}
             cornerRadius={PREVIEW_MINI_PLAYER_CORNER_RADIUS}
             zIndex={PREVIEW_MINI_PLAYER_WEBVIEW_Z_INDEX}
-            fitSourceContent
+            fitSourceContent={(snapshot.viewport ?? FILL_PREVIEW_VIEWPORT)._tag !== "fill"}
             layoutVersion={`${frame.x}:${frame.y}`}
             className="absolute inset-0"
           />
@@ -215,12 +215,7 @@ function DeviceMiniPlayer({
 
   const openInPanel = () => {
     usePreviewMiniPlayerStore.getState().close(threadRef);
-    useRightPanelStore.getState().openDevice(threadRef, {
-      hostId: source.hostId,
-      deviceId: source.deviceId,
-      platform: source.platform,
-      name: source.name,
-    });
+    useRightPanelStore.getState().openDevice(threadRef, source);
   };
 
   return (

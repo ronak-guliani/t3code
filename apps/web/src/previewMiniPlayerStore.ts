@@ -25,6 +25,7 @@ export type PreviewMiniPlayerSource =
       readonly deviceId: string;
       readonly platform: DevicePlatform;
       readonly name: string;
+      readonly serverEpoch?: string;
     };
 
 export interface PreviewMiniPlayerState {
@@ -37,6 +38,12 @@ interface PreviewMiniPlayerStoreState {
   readonly byThreadKey: Readonly<Record<string, PreviewMiniPlayerState>>;
   readonly open: (ref: ScopedThreadRef, source: PreviewMiniPlayerSource) => void;
   readonly close: (ref: ScopedThreadRef) => void;
+  readonly reconcileDeviceSession: (
+    ref: ScopedThreadRef,
+    source: PreviewMiniPlayerSource,
+    serverEpoch: string,
+    sessionExists: boolean,
+  ) => void;
   readonly move: (
     ref: ScopedThreadRef,
     sourceKey: string,
@@ -98,6 +105,9 @@ const parseSource = (value: unknown): PreviewMiniPlayerSource | undefined => {
         deviceId: value.deviceId,
         platform: value.platform,
         name: value.name,
+        ...(typeof value.serverEpoch === "string" && value.serverEpoch.length > 0
+          ? { serverEpoch: value.serverEpoch }
+          : {}),
       }
     : undefined;
 };
@@ -158,6 +168,25 @@ export const usePreviewMiniPlayerStore = create<PreviewMiniPlayerStoreState>()(
           if (!(key in state.byThreadKey)) return state;
           const { [key]: _closed, ...byThreadKey } = state.byThreadKey;
           return { byThreadKey };
+        }),
+      reconcileDeviceSession: (ref, source, serverEpoch, sessionExists) =>
+        set((state) => {
+          const key = scopedThreadKey(ref);
+          const current = state.byThreadKey[key];
+          if (!serverEpoch || !current || current.source.kind !== "device") return state;
+          if (current.source !== source) return state;
+          if (current.source.serverEpoch === serverEpoch && sessionExists) return state;
+          if (!sessionExists) {
+            if (current.source.serverEpoch !== serverEpoch) return state;
+            const { [key]: _closed, ...byThreadKey } = state.byThreadKey;
+            return { byThreadKey };
+          }
+          return {
+            byThreadKey: {
+              ...state.byThreadKey,
+              [key]: { ...current, source: { ...current.source, serverEpoch } },
+            },
+          };
         }),
       move: (ref, sourceKey, position) =>
         set((state) => {

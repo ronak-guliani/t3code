@@ -1,6 +1,10 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { EnvironmentId, ThreadId, type PreviewViewportSetting } from "@t3tools/contracts";
+import { act, type ReactNode } from "react";
+import { create, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
+import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 
 const mocks = vi.hoisted(() => ({
   miniPlayer: {
@@ -8,9 +12,7 @@ const mocks = vi.hoisted(() => ({
     position: null,
     width: null,
   },
-  viewport: { _tag: "fill" } as
-    | { readonly _tag: "fill" }
-    | { readonly _tag: "freeform"; readonly width: number; readonly height: number },
+  viewport: { _tag: "fill" } as PreviewViewportSetting | undefined,
 }));
 
 vi.mock("~/browser/BrowserSurfaceSlot", () => ({
@@ -43,6 +45,12 @@ vi.mock("~/previewStateStore", () => ({
   }),
 }));
 
+vi.mock("~/components/ui/tooltip", () => ({
+  Tooltip: ({ children }: { children: ReactNode }) => children,
+  TooltipTrigger: ({ render }: { render: ReactNode }) => render,
+  TooltipPopup: () => null,
+}));
+
 vi.mock("./previewBridge", () => ({ previewBridge: null }));
 
 vi.mock("~/previewMiniPlayerStore", () => ({
@@ -61,44 +69,78 @@ const threadRef = {
   threadId: ThreadId.make("thread-1"),
 };
 
+let renderer: ReactTestRenderer | undefined;
+
+beforeEach(() => {
+  mocks.viewport = { _tag: "fill" };
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+});
+
+afterEach(async () => {
+  await act(async () => renderer?.unmount());
+  renderer = undefined;
+  vi.unstubAllGlobals();
+});
+
+const view = () => (
+  <ThreadPreviewMiniPlayer threadRef={threadRef} miniPlayer={mocks.miniPlayer} bottomInset={0} />
+);
+
+async function renderMiniPlayer() {
+  await act(async () => {
+    renderer = create(view(), {
+      createNodeMock: () => ({ clientWidth: 1000, clientHeight: 800 }),
+    });
+  });
+  return renderer!;
+}
+
 describe("ThreadPreviewMiniPlayer", () => {
-  it("renders the floating preview shell for the stored tab", () => {
-    const markup = renderToStaticMarkup(
-      <ThreadPreviewMiniPlayer
-        threadRef={threadRef}
-        miniPlayer={mocks.miniPlayer}
-        bottomInset={0}
-      />,
-    );
+  it("presents the stored tab rather than the active tab", async () => {
+    const player = await renderMiniPlayer();
 
-    expect(markup).toContain("pointer-events-none absolute inset-0");
+    expect(player.root.findAllByType(BrowserSurfaceSlot)).toHaveLength(1);
+    expect(player.root.findByType(BrowserSurfaceSlot).props).toMatchObject({
+      tabId: previewRuntimeTabId(threadRef, "epoch-1", "older-tab"),
+      visible: true,
+    });
   });
 
-  it("supports fill-mode content in the floating preview", () => {
-    mocks.viewport = { _tag: "fill" };
+  it.each([
+    { name: "fill", viewport: { _tag: "fill" } as const, fitSourceContent: false },
+    { name: "missing", viewport: undefined, fitSourceContent: false },
+    {
+      name: "freeform",
+      viewport: { _tag: "freeform", width: 393, height: 852 } as const,
+      fitSourceContent: true,
+    },
+    {
+      name: "device preset",
+      viewport: {
+        _tag: "preset",
+        presetId: "iphone-12-pro",
+        width: 390,
+        height: 844,
+      } as const,
+      fitSourceContent: true,
+    },
+  ])("uses fitSourceContent=$fitSourceContent for $name viewports", async (testCase) => {
+    mocks.viewport = testCase.viewport;
+    const player = await renderMiniPlayer();
 
-    const markup = renderToStaticMarkup(
-      <ThreadPreviewMiniPlayer
-        threadRef={threadRef}
-        miniPlayer={mocks.miniPlayer}
-        bottomInset={0}
-      />,
+    expect(player.root.findByType(BrowserSurfaceSlot).props.fitSourceContent).toBe(
+      testCase.fitSourceContent,
     );
-
-    expect(markup).toContain("pointer-events-none absolute inset-0");
   });
 
-  it("supports explicitly selected fixed viewport dimensions", () => {
+  it("stops fitting source content when switching a fixed viewport to fill", async () => {
     mocks.viewport = { _tag: "freeform", width: 393, height: 852 };
+    const player = await renderMiniPlayer();
+    expect(player.root.findByType(BrowserSurfaceSlot).props.fitSourceContent).toBe(true);
 
-    const markup = renderToStaticMarkup(
-      <ThreadPreviewMiniPlayer
-        threadRef={threadRef}
-        miniPlayer={mocks.miniPlayer}
-        bottomInset={0}
-      />,
-    );
+    mocks.viewport = { _tag: "fill" };
+    await act(async () => player.update(view()));
 
-    expect(markup).toContain("pointer-events-none absolute inset-0");
+    expect(player.root.findByType(BrowserSurfaceSlot).props.fitSourceContent).toBe(false);
   });
 });
