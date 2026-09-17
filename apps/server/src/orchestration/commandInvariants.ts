@@ -39,6 +39,15 @@ export function listThreadsByProjectId(
   return readModel.threads.filter((thread) => thread.projectId === projectId);
 }
 
+/**
+ * Detail for the invariant that blocks turn starts and unrelated queued-turn
+ * dispatches while a child decision is pending. Only the correlated decision
+ * response (pendingResponse) may dispatch. Shared with QueuedTurnReactor so a
+ * reword here cannot silently revert the reactor to failing queued turns.
+ */
+export const CHILD_DECISION_BLOCKED_DETAIL =
+  "Resolve the current child decision through its correlated response before continuing.";
+
 export function requireProject(input: {
   readonly readModel: OrchestrationReadModel;
   readonly command: OrchestrationCommand;
