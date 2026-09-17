@@ -95,7 +95,8 @@ import Migration0090 from "./Migrations/090_DelegationReportReceipts.ts";
 import Migration0091 from "./Migrations/091_WorkspaceOwnership.ts";
 import Migration0092 from "./Migrations/092_WorkspaceOwnershipAttempt.ts";
 import Migration0093 from "./Migrations/093_WorkspaceOwnershipLedger.ts";
-import Migration0094 from "./Migrations/094_ProjectionThreadValidationRuns.ts";
+import Migration0094 from "./Migrations/094_RepairWorkspaceBindingNulls.ts";
+import Migration0095 from "./Migrations/095_ProjectionThreadValidationRuns.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -190,7 +191,8 @@ export const migrationEntries = [
   [91, "WorkspaceOwnership", Migration0091],
   [92, "WorkspaceOwnershipAttempt", Migration0092],
   [93, "WorkspaceOwnershipLedger", Migration0093],
-  [94, "ProjectionThreadValidationRuns", Migration0094],
+  [94, "RepairWorkspaceBindingNulls", Migration0094],
+  [95, "ProjectionThreadValidationRuns", Migration0095],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

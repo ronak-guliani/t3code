@@ -25,13 +25,11 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
   Struct.assign({
     nudging: Schema.fromJsonString(ThreadNudging),
     modelSelection: Schema.fromJsonString(ModelSelection),
-    pullRequest: Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation)),
-    reviewSnapshot: Schema.fromJsonString(Schema.NullOr(ReviewSnapshot)),
-    reviewResult: Schema.fromJsonString(Schema.NullOr(ReviewResult)),
-    validationRun: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRun))).pipe(
-      Schema.withDecodingDefault(Effect.succeed(null)),
-    ),
-    workspaceBinding: Schema.fromJsonString(Schema.NullOr(WorkspaceBinding)),
+    pullRequest: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation))),
+    reviewSnapshot: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewSnapshot))),
+    reviewResult: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewResult))),
+    validationRun: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRun))),
+    workspaceBinding: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(WorkspaceBinding))),
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;

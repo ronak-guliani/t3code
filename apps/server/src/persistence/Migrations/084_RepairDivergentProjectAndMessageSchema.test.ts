@@ -46,7 +46,7 @@ for (const [name, migration] of [
       const executed = yield* runMigrations();
       assert.deepStrictEqual(
         executed.map(([id]) => id),
-        [84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94],
+        [84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95],
       );
       yield* repair;
       assert.deepStrictEqual(
