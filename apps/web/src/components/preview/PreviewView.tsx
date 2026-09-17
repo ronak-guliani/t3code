@@ -53,7 +53,11 @@ import {
   useActiveBrowserRecordingTabIds,
 } from "~/browser/browserRecording";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
-import { usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
+import {
+  browserMiniPlayerSource,
+  selectThreadPreviewMiniPlayerTabId,
+  usePreviewMiniPlayerStore,
+} from "~/previewMiniPlayerStore";
 
 interface Props {
   threadRef: ScopedThreadRef;
@@ -81,8 +85,8 @@ export function PreviewView({
   const pickActiveRef = useRef(false);
   const isMountedRef = useRef(true);
   const previewState = useThreadPreviewState(threadRef);
-  const miniPlayerTabId = usePreviewMiniPlayerStore(
-    (state) => state.byThreadKey[scopedThreadKey(threadRef)]?.tabId ?? null,
+  const miniPlayerTabId = usePreviewMiniPlayerStore((state) =>
+    selectThreadPreviewMiniPlayerTabId(state.byThreadKey, threadRef),
   );
   const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
   const addImage = useComposerDraftStore((store) => store.addImage);
@@ -254,7 +258,7 @@ export function PreviewView({
       usePreviewMiniPlayerStore.getState().close(threadRef);
       return;
     }
-    usePreviewMiniPlayerStore.getState().open(threadRef, tabId);
+    usePreviewMiniPlayerStore.getState().open(threadRef, browserMiniPlayerSource(tabId));
     onClose?.();
   }, [miniPlayerTabId, onClose, tabId, threadRef]);
 
