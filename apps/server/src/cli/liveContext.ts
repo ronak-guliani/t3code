@@ -244,11 +244,12 @@ export const withThreadRpc = <A, E, R>(
     readonly snapshot: CliSnapshot;
     readonly client: WsRpcClient;
   }) => Effect.Effect<A, E, R>,
+  options?: ThreadResolutionOptions,
 ) =>
   withLiveSnapshotAndRpc(flags, ({ getSnapshot, client }) =>
     Effect.gen(function* () {
       const snapshot = yield* getSnapshot;
-      const thread = yield* findThreadForCli(snapshot, identifier);
+      const thread = yield* findThreadForCli(snapshot, identifier, options);
       return yield* run({ thread, snapshot, client });
     }),
   );
@@ -262,11 +263,12 @@ export const withThreadDetailRpc = <A, E, R>(
     readonly snapshot: CliSnapshot;
     readonly client: WsRpcClient;
   }) => Effect.Effect<A, E, R>,
+  options?: ThreadResolutionOptions,
 ) =>
   withLiveSnapshotAndRpc(flags, ({ getSnapshot, getThreadSnapshot, client }) =>
     Effect.gen(function* () {
       const snapshot = yield* getSnapshot;
-      const thread = yield* findThreadForCli(snapshot, identifier);
+      const thread = yield* findThreadForCli(snapshot, identifier, options);
       const detail = yield* getThreadSnapshot(thread.id);
       return yield* run({ thread, detail: detail.thread, snapshot, client });
     }),
