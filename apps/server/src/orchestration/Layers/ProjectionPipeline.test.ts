@@ -50,6 +50,88 @@ const exists = (filePath: string) =>
     return fileInfo._tag === "Success";
   });
 
+const WorkspaceBindingClearTestLayer = makeProjectionPipelinePrefixedTestLayer(
+  "t3-projection-binding-clear-test-",
+);
+
+it.layer(WorkspaceBindingClearTestLayer)("Workspace binding recovery", (it) => {
+  it.effect("clears persisted workspace bindings with missing worktree paths", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-09-16T12:00:00.000Z";
+      const projectId = ProjectId.make("project-binding-clear");
+      const threadId = ThreadId.make("thread-binding-clear");
+      const binding = {
+        canonicalPath: "/repo",
+        worktreePath: "/repo/.t3-thread-workspaces/thread-binding-clear",
+        branch: "feature/binding-clear",
+        generation: 1,
+      };
+      const project = (event: Parameters<typeof projectionPipeline.projectEvent>[0]) =>
+        projectionPipeline.projectEvent(event);
+
+      yield* project({
+        sequence: 1,
+        type: "thread.created",
+        eventId: EventId.make("evt-binding-clear-created"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-binding-clear-created"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-binding-clear-created"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId,
+          title: "Binding clear",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: binding.branch,
+          worktreePath: binding.worktreePath,
+          workspaceBinding: binding,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+      yield* project({
+        sequence: 2,
+        type: "thread.meta-updated",
+        eventId: EventId.make("evt-binding-clear-meta"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-binding-clear-meta"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-binding-clear-meta"),
+        metadata: {},
+        payload: {
+          threadId,
+          worktreePath: null,
+          workspaceBinding: null,
+          updatedAt: createdAt,
+        },
+      });
+
+      const rows = yield* sql<{
+        readonly worktreePath: string | null;
+        readonly binding: string | null;
+      }>`
+        SELECT worktree_path AS "worktreePath", workspace_binding_json AS "binding"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.equal(rows[0]?.worktreePath, null);
+      assert.equal(rows[0]?.binding, "null");
+    }),
+  );
+});
+
 const BaseTestLayer = makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-test-");
 
 it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
@@ -4134,7 +4216,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: null,
+        worktreePath: "/tmp/pinning-pipeline-worktree",
         createdAt,
       });
 
@@ -4222,7 +4304,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: null,
+        worktreePath: "/tmp/title-regeneration-pipeline-worktree",
         createdAt,
       });
 
@@ -4296,7 +4378,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           interactionMode: "default",
           runtimeMode: "full-access",
           branch: null,
-          worktreePath: null,
+          worktreePath: "/tmp/handoff-origin-thread-worktree",
           createdAt,
         });
 
@@ -4328,7 +4410,11 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
 
         const queuedSnapshot = yield* snapshotQuery.getSnapshot();
         const queuedThread = queuedSnapshot.threads.find((entry) => entry.id === threadId);
-        assert.deepEqual(queuedThread?.queuedTurns?.[0]?.origin, origin);
+        const persistedOrigin = queuedThread?.queuedTurns?.[0]?.origin;
+        assert.deepEqual(persistedOrigin, {
+          ...origin,
+          workspaceBinding: queuedThread?.workspaceBinding,
+        });
         assert.equal(queuedThread?.branch, "feature/handoff");
 
         yield* engine.dispatch({
@@ -4349,9 +4435,16 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         );
 
         assert.equal(marker?.role, "system");
-        assert.deepEqual(marker?.origin, { ...origin, role: "marker" });
+        assert.deepEqual(marker?.origin, {
+          ...origin,
+          role: "marker",
+          workspaceBinding: thread?.workspaceBinding,
+        });
         assert.equal(continuation?.role, "user");
-        assert.deepEqual(continuation?.origin, origin);
+        assert.deepEqual(continuation?.origin, {
+          ...origin,
+          workspaceBinding: thread?.workspaceBinding,
+        });
       }),
   );
 });

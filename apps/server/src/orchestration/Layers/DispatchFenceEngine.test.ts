@@ -93,7 +93,7 @@ async function setupDelegatedChild(
       runtimeMode: "approval-required",
       interactionMode: "default",
       branch: null,
-      worktreePath: null,
+      worktreePath: join(directory, "parent-worktree"),
       createdAt: at,
     }),
   );
@@ -109,7 +109,7 @@ async function setupDelegatedChild(
       runtimeMode: "approval-required",
       interactionMode: "default",
       branch: null,
-      worktreePath: null,
+      worktreePath: join(directory, "child-worktree"),
       delegation: {
         assignmentId: MessageId.make("fence-assignment"),
         followUp: "automatic" as const,
