@@ -56,6 +56,16 @@ const defaultModelSelection = {
   model: "gpt-5-codex",
 } as const;
 const productionServerLayer: Layer.Layer<never, unknown, ServerConfig> = makeServerLayer;
+const selfTestScenarios = [
+  "One-time URL pairing establishes an authenticated browser session.",
+  "Consumed credentials fail visibly and are cleared.",
+  "Malformed pairing links show format-neutral guidance for query and fragment tokens.",
+  "A fresh same-origin pairing link can be pasted into the recovery form.",
+  "The authenticated project remains visible after reload.",
+  "The browser recovers from a forced WebSocket disconnect without reloading and receives live project updates.",
+  "Node client live synchronization and involuntary reconnect preserve project state.",
+  "Restart persistence preserves project state, command deduplication, and credential revocation.",
+] as const;
 
 class DirectConnectSmokeError extends Data.TaggedError("DirectConnectSmokeError")<{
   readonly message: string;
@@ -285,6 +295,9 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           fetch(`${origin}/api/orchestration/shell-snapshot`),
         );
         expect(unauthorizedSnapshot.status).toBe(401);
+        yield* Effect.promise(() =>
+          recordSelfTestStage(captureOutput, "assertions", { scenarios: selfTestScenarios }),
+        );
         const clientPairingAttempt = yield* Effect.promise(() =>
           fetch(`${origin}/api/auth/pairing-token`, {
             method: "POST",
@@ -528,7 +541,6 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         expect(snapshots).toEqual([0, 1]);
         expect(liveProjectSequences).toEqual([1]);
 
-        yield* Effect.promise(() => recordSelfTestStage(captureOutput, "assertions"));
         const browserCredential = yield* createPairingCredential;
         const browser = yield* Effect.acquireRelease(
           Effect.promise(() => chromium.launch({ headless: true })),
@@ -766,45 +778,8 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         );
         expect(revokedSnapshot.status).toBe(401);
 
-        yield* Effect.promise(() => transport.dispose()).pipe(Effect.timeout("10 seconds"));
-        yield* Effect.promise(() =>
-          recordSelfTestStage(captureOutput, "capture", {
-            scenarios: [
-              "One-time URL pairing establishes an authenticated browser session.",
-              "Consumed credentials fail visibly and are cleared.",
-              "Malformed pairing links show format-neutral guidance for query and fragment tokens.",
-              "A fresh same-origin pairing link can be pasted into the recovery form.",
-              "The authenticated project remains visible after reload.",
-              "The browser recovers from a forced WebSocket disconnect without reloading and receives live project updates.",
-              "Node client live synchronization and involuntary reconnect preserve project state.",
-            ],
-          }),
-        );
         yield* Effect.promise(() => navigate(() => context.close()));
-        if (captureOutput && screenshot) {
-          const videoPath = yield* Effect.promise(() => page.video()!.path());
-          yield* Effect.promise(() =>
-            finishSelfTestCapture(
-              browser,
-              captureOutput,
-              videoPath,
-              [invalidLinkScreenshot, recoveryScreenshot, screenshot].filter(
-                (item) => item !== undefined,
-              ),
-              [
-                "One-time URL pairing establishes an authenticated browser session.",
-                "Consumed credentials fail visibly and are cleared.",
-                "Malformed pairing links show format-neutral guidance for query and fragment tokens.",
-                "A fresh same-origin pairing link can be pasted into the recovery form.",
-                "The authenticated project remains visible after reload.",
-                "The browser recovers from a forced WebSocket disconnect without reloading and receives live project updates.",
-                "Node client live synchronization and involuntary reconnect preserve project state.",
-              ],
-              diagnostics,
-            ),
-          );
-        }
-        yield* Effect.promise(() => browser.close());
+        yield* Effect.promise(() => transport.dispose()).pipe(Effect.timeout("10 seconds"));
         yield* Scope.close(serverScope, Exit.void);
         yield* retryUntil(
           readPersistedServerRuntimeState(config.serverRuntimeStatePath),
@@ -869,6 +844,27 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           }),
         );
         expect(persistedRevocation.status).toBe(401);
+        yield* Effect.promise(() =>
+          recordSelfTestStage(captureOutput, "capture", {
+            scenarios: selfTestScenarios,
+          }),
+        );
+        if (captureOutput && screenshot) {
+          const videoPath = yield* Effect.promise(() => page.video()!.path());
+          yield* Effect.promise(() =>
+            finishSelfTestCapture(
+              browser,
+              captureOutput,
+              videoPath,
+              [invalidLinkScreenshot, recoveryScreenshot, screenshot].filter(
+                (item) => item !== undefined,
+              ),
+              selfTestScenarios,
+              diagnostics,
+            ),
+          );
+        }
+        yield* Effect.promise(() => browser.close());
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );

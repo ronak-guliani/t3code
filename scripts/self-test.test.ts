@@ -140,7 +140,7 @@ describe("self-test coordinator", () => {
         return child;
       }) as unknown as typeof import("node:child_process").spawn,
       processAlive: () => true,
-      processCommand: async () => "pnpm test:self",
+      processCommand: async () => "pnpm test:direct-connect-smoke",
     });
     const running = coordinator.run();
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -236,13 +236,18 @@ describe("self-test coordinator", () => {
         return child;
       }) as unknown as typeof import("node:child_process").spawn,
     });
-    process.env.T3_SELF_TEST_WEB_TARGET = join(stateDirectory, "missing-web");
-    await expect(stale.run()).rejects.toMatchObject({
-      issue: { type: "web-target-missing" },
-    });
-    expect(await readFile(join(stateDirectory, "latest.json"), "utf8")).toContain(
-      '"status": "blocked"',
-    );
-    delete process.env.T3_SELF_TEST_WEB_TARGET;
+    const previous = process.env.T3_SELF_TEST_WEB_TARGET;
+    try {
+      process.env.T3_SELF_TEST_WEB_TARGET = join(stateDirectory, "missing-web");
+      await expect(stale.run()).rejects.toMatchObject({
+        issue: { type: "web-target-missing" },
+      });
+      expect(await readFile(join(stateDirectory, "latest.json"), "utf8")).toContain(
+        '"status": "blocked"',
+      );
+    } finally {
+      if (previous === undefined) delete process.env.T3_SELF_TEST_WEB_TARGET;
+      else process.env.T3_SELF_TEST_WEB_TARGET = previous;
+    }
   });
 });

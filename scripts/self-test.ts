@@ -7,6 +7,7 @@ import { Schema } from "effect";
 import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 import {
   classifySelfTestLock,
+  parseSelfTestCommand,
   redactSelfTestText,
   selfTestBlockers,
   selfTestStatus,
@@ -34,7 +35,10 @@ const decodeStageUpdate = Schema.decodeUnknownSync(SelfTestStageUpdate);
 const root = resolve(import.meta.dirname, "..");
 const directory = join(root, ".t3", "self-test");
 const commandArgs = ["test:direct-connect-smoke"];
-const commandText = "pnpm test:direct-connect-smoke";
+const coordinatorCommandText = "pnpm test:self";
+const childCommandText = "pnpm test:direct-connect-smoke";
+const runIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[45][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+const atomicWriteQueues = new Map<string, Promise<void>>();
 
 type ChildExit = {
   readonly code: number | null;
@@ -101,6 +105,11 @@ function commandMatches(command: string): boolean {
   return command.includes("scripts/self-test.ts") || command.includes("test:self");
 }
 
+function processMatches(manifest: SelfTestManifest, actualCommand: string): boolean {
+  if (manifest.process.role === "coordinator") return commandMatches(actualCommand);
+  return actualCommand.includes("test:direct-connect-smoke");
+}
+
 function environment(rootDirectory: string): SelfTestEnvironment {
   return {
     baseDirectory: rootDirectory,
@@ -112,22 +121,47 @@ function childProcess(
   role: SelfTestProcess["role"],
   pid: number,
   startedAt: string,
+  command: string,
 ): SelfTestProcess {
   return {
     role,
     pid,
-    command: commandText,
+    command,
     startedAt,
   };
 }
 
 async function writeAtomic(path: string, contents: string): Promise<void> {
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  await writeFile(temporary, contents, { mode: 0o600 });
-  await rename(temporary, path);
+  const previous = atomicWriteQueues.get(path) ?? Promise.resolve();
+  const current = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const temporary = `${path}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(temporary, contents, { mode: 0o600 });
+        try {
+          await rename(temporary, path);
+        } catch (error) {
+          const code =
+            typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+          if (code !== "EPERM" && code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
+          await rm(path, { force: true });
+          await rename(temporary, path);
+        }
+      } finally {
+        await rm(temporary, { force: true });
+      }
+    });
+  atomicWriteQueues.set(path, current);
+  try {
+    await current;
+  } finally {
+    if (atomicWriteQueues.get(path) === current) atomicWriteQueues.delete(path);
+  }
 }
 
 async function saveManifest(baseDirectory: string, manifest: SelfTestManifest): Promise<void> {
+  if (!runIdPattern.test(manifest.runId)) throw new Error("Self-test run ID is invalid.");
   const runDirectory = join(baseDirectory, manifest.runId);
   await mkdir(runDirectory, { recursive: true, mode: 0o700 });
   const data = `${JSON.stringify(manifest, null, 2)}\n`;
@@ -140,6 +174,7 @@ async function readManifest(path: string): Promise<SelfTestManifest> {
   if (raw.version === 1) {
     const revision = decodeRevision(raw.revision);
     const runId = String(raw.runId);
+    if (!runIdPattern.test(runId)) throw new Error("Self-test run ID is invalid.");
     const startedAt = String(raw.startedAt);
     const status = raw.status === "running" ? "active" : raw.status;
     const media = Array.isArray(raw.media) ? decodeMedia(raw.media) : [];
@@ -151,11 +186,11 @@ async function readManifest(path: string): Promise<SelfTestManifest> {
       stage: status === "passed" ? "passed" : status === "failed" ? "failed" : "interrupted",
       startedAt,
       ...(typeof raw.completedAt === "string" ? { completedAt: raw.completedAt } : {}),
-      command: typeof raw.command === "string" ? raw.command : commandText,
+      command: typeof raw.command === "string" ? raw.command : coordinatorCommandText,
       process: {
         role: "coordinator",
         pid: 0,
-        command: typeof raw.command === "string" ? raw.command : commandText,
+        command: typeof raw.command === "string" ? raw.command : coordinatorCommandText,
         startedAt,
       },
       environment: environment(root),
@@ -169,7 +204,9 @@ async function readManifest(path: string): Promise<SelfTestManifest> {
     };
     return migrated;
   }
-  return decodeManifest(raw);
+  const manifest = decodeManifest(raw);
+  if (!runIdPattern.test(manifest.runId)) throw new Error("Self-test run ID is invalid.");
+  return manifest;
 }
 
 async function loadLatest(baseDirectory: string): Promise<SelfTestManifest | undefined> {
@@ -325,15 +362,42 @@ async function acquireLock(
         dirnameForRun(lockDirectory),
       );
     }
-    await rm(lockDirectory, { recursive: true, force: true });
-    await mkdir(lockDirectory, { recursive: false, mode: 0o700 });
+    const quarantine = `${lockDirectory}.stale-${randomUUID()}`;
+    try {
+      await rename(lockDirectory, quarantine);
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        (error.code === "ENOENT" || error.code === "EEXIST")
+      ) {
+        throw new SelfTestCoordinatorError(
+          "pending",
+          issue(
+            "lock-contention",
+            "Another self-test claimed the stale lock before recovery completed.",
+            "Inspect the lock owner and retry after the competing operation finishes.",
+          ),
+          dirnameForRun(lockDirectory),
+        );
+      }
+      throw error;
+    }
+    try {
+      await mkdir(lockDirectory, { recursive: false, mode: 0o700 });
+    } catch (error) {
+      await rename(quarantine, lockDirectory).catch(() => undefined);
+      throw error;
+    }
+    await rm(quarantine, { recursive: true, force: true });
   }
   await writeAtomic(
     join(lockDirectory, "owner.json"),
     `${JSON.stringify({
       pid: process.pid,
       runId,
-      command: commandText,
+      command: coordinatorCommandText,
       startedAt: new Date().toISOString(),
     })}\n`,
   );
@@ -441,8 +505,8 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
       status: "pending",
       stage: "pending",
       startedAt,
-      command: commandText,
-      process: childProcess("coordinator", process.pid, startedAt),
+      command: coordinatorCommandText,
+      process: childProcess("coordinator", process.pid, startedAt, coordinatorCommandText),
       environment: { baseDirectory: projectRoot, webTarget },
       scenarios: [],
       media: [],
@@ -451,6 +515,7 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
     await saveManifest(stateDirectory, manifest);
 
     let child: ChildProcess | undefined;
+    let childStarted = false;
     let requestedSignal: NodeJS.Signals | undefined;
     const onSignal = (signal: NodeJS.Signals) => {
       requestedSignal = signal;
@@ -462,7 +527,9 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
     const watch = (async () => {
       while (true) {
         if (!watching) break;
-        const next = await updateManifestFromStage(manifest);
+        const observed = manifest;
+        const next = await updateManifestFromStage(observed);
+        if (manifest !== observed) continue;
         if (next.stage !== manifest.stage || next.status !== manifest.status) {
           manifest = next;
           await saveManifest(stateDirectory, manifest);
@@ -479,7 +546,7 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
         ...manifest,
         stage: "preflight",
         status: "active",
-        process: childProcess("coordinator", process.pid, startedAt),
+        process: childProcess("coordinator", process.pid, startedAt, coordinatorCommandText),
       };
       await saveManifest(stateDirectory, manifest);
       if (process.env.T3_SELF_TEST_WEB_TARGET) {
@@ -515,9 +582,10 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
         },
         ...(invocation.shell ? { shell: invocation.shell } : {}),
       });
+      childStarted = true;
       manifest = {
         ...manifest,
-        process: childProcess("child", child.pid ?? 0, now()),
+        process: childProcess("child", child.pid ?? 0, now(), childCommandText),
       };
       await saveManifest(stateDirectory, manifest);
       const result = await childExit(child);
@@ -651,9 +719,15 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
       await watch;
       if (error instanceof SelfTestCoordinatorError) throw error;
       const failure = issue(
-        "process-start",
+        childStarted
+          ? manifest.stage === "capture"
+            ? "capture-invalid"
+            : "assertion-failed"
+          : "process-start",
         error instanceof Error ? error.message : "The self-test process could not start.",
-        "Inspect the artifact directory and rerun pnpm test:self.",
+        childStarted
+          ? "Inspect the retained diagnostics and raw captures before rerunning pnpm test:self."
+          : "Inspect the artifact directory and rerun pnpm test:self.",
       );
       manifest = {
         ...manifest,
@@ -690,7 +764,10 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
     if (
       (manifest.status === "active" || manifest.status === "pending") &&
       manifest.process.pid > 0 &&
-      !alive(manifest.process.pid)
+      (!alive(manifest.process.pid) ||
+        !(await command(manifest.process.pid)
+          .then((actual) => processMatches(manifest, actual))
+          .catch(() => false)))
     ) {
       const failure = issue(
         "interrupted",
@@ -736,19 +813,8 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
   return { run, status };
 }
 
-export function parseSelfTestArgs(args: ReadonlyArray<string>): "run" | "status" {
-  const command = args[0] ?? "run";
-  if (args.length > 1 || (command !== "run" && command !== "status")) {
-    throw new Error(
-      "Usage: pnpm test:self -- [run|status]. This command only tests pairing/reconnect. " +
-        "Feature reports and publication flags are no longer supported.",
-    );
-  }
-  return command;
-}
-
 async function main(): Promise<void> {
-  const command = parseSelfTestArgs(process.argv.slice(2).filter((arg) => arg !== "--"));
+  const command = parseSelfTestCommand(process.argv.slice(2).filter((arg) => arg !== "--"));
   const coordinator = createSelfTestCoordinator();
   if (command === "status") {
     const result = await coordinator.status();
