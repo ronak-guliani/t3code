@@ -34,6 +34,18 @@ async function makeStateDirectory() {
   return join(root, "state");
 }
 
+async function useAvailableWebTarget(stateDirectory: string) {
+  const target = join(stateDirectory, "web");
+  await mkdir(target, { recursive: true });
+  await writeFile(join(target, "index.html"), "self-test");
+  const previous = process.env.T3_SELF_TEST_WEB_TARGET;
+  process.env.T3_SELF_TEST_WEB_TARGET = target;
+  return () => {
+    if (previous === undefined) delete process.env.T3_SELF_TEST_WEB_TARGET;
+    else process.env.T3_SELF_TEST_WEB_TARGET = previous;
+  };
+}
+
 async function waitForRunning(coordinator: ReturnType<typeof createSelfTestCoordinator>) {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -150,6 +162,7 @@ describe("self-test coordinator", () => {
 
   it("does not complete from lifecycle output until the child exits", async () => {
     const stateDirectory = await makeStateDirectory();
+    const restoreWebTarget = await useAvailableWebTarget(stateDirectory);
     let child: ReturnType<typeof fakeChild> | undefined;
     const coordinator = createSelfTestCoordinator({
       directory: stateDirectory,
@@ -189,30 +202,37 @@ describe("self-test coordinator", () => {
     } finally {
       child?.release();
       await running.catch(() => undefined);
+      restoreWebTarget();
     }
   });
 
   it("observes a child exit that happens before manifest persistence completes", async () => {
     const stateDirectory = await makeStateDirectory();
+    const restoreWebTarget = await useAvailableWebTarget(stateDirectory);
     const child = fakeChild(987655);
-    const coordinator = createSelfTestCoordinator({
-      directory: stateDirectory,
-      spawnChild: (() => {
-        setTimeout(() => child.release(), 0);
-        return child;
-      }) as unknown as typeof import("node:child_process").spawn,
-      processAlive: () => true,
-      processCommand: async (pid) =>
-        pid === process.pid ? "pnpm test:self" : "pnpm test:direct-connect-smoke",
-    });
+    try {
+      const coordinator = createSelfTestCoordinator({
+        directory: stateDirectory,
+        spawnChild: (() => {
+          setTimeout(() => child.release(), 0);
+          return child;
+        }) as unknown as typeof import("node:child_process").spawn,
+        processAlive: () => true,
+        processCommand: async (pid) =>
+          pid === process.pid ? "pnpm test:self" : "pnpm test:direct-connect-smoke",
+      });
 
-    await expect(coordinator.run()).rejects.toMatchObject({
-      issue: { type: "capture-invalid" },
-    });
+      await expect(coordinator.run()).rejects.toMatchObject({
+        issue: { type: "capture-invalid" },
+      });
+    } finally {
+      restoreWebTarget();
+    }
   });
 
   it("invalidates a run when the checkout revision changes during execution", async () => {
     const stateDirectory = await makeStateDirectory();
+    const restoreWebTarget = await useAvailableWebTarget(stateDirectory);
     let child: ReturnType<typeof fakeChild> | undefined;
     let revisionReads = 0;
     const revisions: SelfTestRevision[] = [
@@ -256,6 +276,7 @@ describe("self-test coordinator", () => {
     } finally {
       child?.release();
       await running.catch(() => undefined);
+      restoreWebTarget();
     }
   });
 
@@ -313,6 +334,7 @@ describe("self-test coordinator", () => {
 
   it("retains failed-run diagnostics and raw captures without creating passed media", async () => {
     const stateDirectory = await makeStateDirectory();
+    const restoreWebTarget = await useAvailableWebTarget(stateDirectory);
     let child: ReturnType<typeof fakeChild> | undefined;
     const coordinator = createSelfTestCoordinator({
       directory: stateDirectory,
@@ -361,6 +383,7 @@ describe("self-test coordinator", () => {
     } finally {
       child?.fail();
       await running.catch(() => undefined);
+      restoreWebTarget();
     }
     const result = await coordinator.status();
     expect(result.status).toBe("failed");
