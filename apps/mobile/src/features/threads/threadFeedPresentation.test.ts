@@ -7,6 +7,7 @@ import { buildThreadFeed } from "../../lib/threadActivity";
 import {
   deriveAssistantMetadataInvalidationKey,
   deriveTerminalAssistantMessageIds,
+  exceedsUserMessagePreviewHeight,
   shouldCollapseUserMessageText,
 } from "./threadFeedPresentation";
 
@@ -75,5 +76,12 @@ describe("user message collapse", () => {
     expect(shouldCollapseUserMessageText("a".repeat(899))).toBe(false);
     expect(shouldCollapseUserMessageText("a".repeat(900))).toBe(true);
     expect(shouldCollapseUserMessageText("a\r\n".repeat(11))).toBe(true);
+  });
+
+  it("flags rendered overflow past the preview height with rounding slop", () => {
+    expect(exceedsUserMessagePreviewHeight(200, 200)).toBe(false);
+    expect(exceedsUserMessagePreviewHeight(201, 200)).toBe(false);
+    expect(exceedsUserMessagePreviewHeight(201.5, 200)).toBe(true);
+    expect(exceedsUserMessagePreviewHeight(150, 200)).toBe(false);
   });
 });

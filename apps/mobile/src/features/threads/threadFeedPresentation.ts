@@ -36,7 +36,9 @@ export const USER_MESSAGE_COLLAPSED_LINE_LIMIT = 10;
  * Whether a user-sent message gets the collapsed preview with a
  * Show full message / Show less toggle. Mirrors web's
  * shouldCollapseUserMessage minus terminal contexts, which mobile renders
- * nowhere in the bubble.
+ * nowhere in the bubble. Rendered overflow (short text that wraps past the
+ * preview height) is measured separately with
+ * exceedsUserMessagePreviewHeight, mirroring web's measured check.
  */
 export function shouldCollapseUserMessageText(
   text: string,
@@ -48,4 +50,16 @@ export function shouldCollapseUserMessageText(
   }
   const lineCount = trimmedText.length === 0 ? 0 : trimmedText.split(/\r\n|\r|\n/).length;
   return lineCount > collapsedLineLimit;
+}
+
+/**
+ * Rendered-overflow check for the collapsed preview. Mirrors web's
+ * exceedsMessagePreviewHeight: the +1pt slop keeps rounding from collapsing
+ * content that exactly fits the preview.
+ */
+export function exceedsUserMessagePreviewHeight(
+  contentHeight: number,
+  previewHeight: number,
+): boolean {
+  return contentHeight > previewHeight + 1;
 }

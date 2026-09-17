@@ -180,6 +180,7 @@ import {
 import {
   deriveAssistantMetadataInvalidationKey,
   deriveTerminalAssistantMessageIds,
+  exceedsUserMessagePreviewHeight,
   shouldCollapseUserMessageText,
   USER_MESSAGE_COLLAPSED_LINE_LIMIT,
 } from "./threadFeedPresentation";
@@ -1680,6 +1681,12 @@ function renderFeedEntry(
  * line units plus a fade mask; React Native has neither, so the clamp uses
  * the markdown line height in points and skips the fade. Long-press copy
  * still copies the full text because nothing is truncated, only clipped.
+ *
+ * Like web, collapse also triggers on measured overflow: short source text
+ * that wraps past the preview height (narrow phones, large fonts) collapses
+ * once layout reports it. The measurement reads the unclipped inner content,
+ * so it stays stable across expand/collapse, and onLayout refires on width
+ * or font changes.
  */
 const CollapsibleUserMessage = memo(function CollapsibleUserMessage(props: {
   readonly text: string;
@@ -1688,41 +1695,52 @@ const CollapsibleUserMessage = memo(function CollapsibleUserMessage(props: {
   readonly children: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const collapsible = shouldCollapseUserMessageText(props.text);
-  if (!collapsible) {
-    return <>{props.children}</>;
-  }
-  const collapsed = !expanded;
+  const [contentHeight, setContentHeight] = useState<number | null>(null);
+  const previewMaxHeight = USER_MESSAGE_COLLAPSED_LINE_LIMIT * props.lineHeight;
+  const handleContentLayout = useCallback((event: LayoutChangeEvent) => {
+    const height = event.nativeEvent.layout.height;
+    setContentHeight((current) => (current === height ? current : height));
+  }, []);
+  const collapsible =
+    shouldCollapseUserMessageText(props.text) ||
+    (contentHeight !== null && exceedsUserMessagePreviewHeight(contentHeight, previewMaxHeight));
+  const collapsed = collapsible && !expanded;
+  // The measuring wrapper stays mounted in every state so short text that
+  // wraps past the preview height can promote itself to collapsible after
+  // layout (width/font changes refire onLayout). Plain Views keep the
+  // bubble content-sized: no width constraint may stretch short messages.
   return (
-    <View className="w-full">
+    <View>
       <View
         style={
           collapsed
             ? {
-                maxHeight: USER_MESSAGE_COLLAPSED_LINE_LIMIT * props.lineHeight,
+                maxHeight: previewMaxHeight,
                 overflow: "hidden",
               }
             : undefined
         }
       >
-        {props.children}
+        <View onLayout={handleContentLayout}>{props.children}</View>
       </View>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={collapsed ? "Show full message" : "Show less"}
-        accessibilityHint="Toggles the full message text"
-        accessibilityState={{ expanded }}
-        hitSlop={8}
-        onPress={() => setExpanded((current) => !current)}
-        className="self-start py-1"
-      >
-        <Text
-          className="text-xs font-t3-medium"
-          style={{ color: props.toggleColor, opacity: 0.75 }}
+      {collapsible ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={collapsed ? "Show full message" : "Show less"}
+          accessibilityHint="Toggles the full message text"
+          accessibilityState={{ expanded }}
+          hitSlop={8}
+          onPress={() => setExpanded((current) => !current)}
+          className="self-start py-1"
         >
-          {collapsed ? "Show full message" : "Show less"}
-        </Text>
-      </Pressable>
+          <Text
+            className="text-xs font-t3-medium"
+            style={{ color: props.toggleColor, opacity: 0.75 }}
+          >
+            {collapsed ? "Show full message" : "Show less"}
+          </Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 });
