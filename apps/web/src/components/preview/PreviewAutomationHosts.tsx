@@ -372,9 +372,9 @@ export function PreviewAutomationHosts() {
        * Host lifetime follows the desktop runtime's environment connections,
        * not the routed thread. This keeps background threads automatable and
        * lets the subscription runtime own reconnects for every saved target.
-       * Browser-served clients still register with only the read-only preflight
-       * operation, so callers can distinguish an unsupported browser from a
-       * closed desktop tab before attempting navigation.
+       * Browser-served clients still register with zero supported operations,
+       * so routing can report an explicitly unsupported host instead of
+       * attempting to send it a request it cannot consume.
        */}
       {environments.map((environment) => (
         <PreviewAutomationEnvironmentHost
@@ -407,7 +407,6 @@ function PreviewAutomationUnavailableHost(props: { readonly environmentId: Envir
     () => ({
       clientId: automationClientId,
       environmentId,
-      supportedOperations: ["preflight"],
     }),
     [automationClientId, environmentId],
   );

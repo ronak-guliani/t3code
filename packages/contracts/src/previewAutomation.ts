@@ -825,7 +825,7 @@ export type PreviewAutomationPreflightTargetApp = typeof PreviewAutomationPrefli
 export const PreviewAutomationPreflightRecovery = Schema.Literals([
   "none",
   "open-browser",
-  "reconnect-mcp",
+  "reconnect-required",
   "configure-target",
   "resolve-environment-mismatch",
   "use-supported-browser",
