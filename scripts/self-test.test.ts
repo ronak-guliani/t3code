@@ -33,6 +33,15 @@ async function makeStateDirectory() {
   return join(root, "state");
 }
 
+async function waitForRunning(coordinator: ReturnType<typeof createSelfTestCoordinator>) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if ((await coordinator.status()).status === "running") return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Coordinator did not become running.");
+}
+
 function validCaptureFiles(output: string) {
   return Promise.all([
     writeFile(
@@ -140,13 +149,18 @@ describe("self-test coordinator", () => {
         return child;
       }) as unknown as typeof import("node:child_process").spawn,
       processAlive: () => true,
-      processCommand: async () => "pnpm test:direct-connect-smoke",
+      processCommand: async (pid) =>
+        pid === process.pid ? "pnpm test:self" : "pnpm test:direct-connect-smoke",
     });
     const running = coordinator.run();
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    expect((await coordinator.status()).status).toBe("running");
-    child?.release();
-    await expect(running).resolves.toMatchObject({ status: "passed" });
+    try {
+      await waitForRunning(coordinator);
+      child?.release();
+      await expect(running).resolves.toMatchObject({ status: "passed" });
+    } finally {
+      child?.release();
+      await running.catch(() => undefined);
+    }
   });
 
   it("retains failed-run diagnostics and raw captures without creating passed media", async () => {
@@ -188,12 +202,18 @@ describe("self-test coordinator", () => {
         return child;
       }) as unknown as typeof import("node:child_process").spawn,
       processAlive: () => true,
-      processCommand: async () => "pnpm test:self",
+      processCommand: async (pid) =>
+        pid === process.pid ? "pnpm test:self" : "pnpm test:direct-connect-smoke",
     });
     const running = coordinator.run();
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    child?.fail();
-    await expect(running).rejects.toBeInstanceOf(SelfTestCoordinatorError);
+    try {
+      await waitForRunning(coordinator);
+      child?.fail();
+      await expect(running).rejects.toBeInstanceOf(SelfTestCoordinatorError);
+    } finally {
+      child?.fail();
+      await running.catch(() => undefined);
+    }
     const result = await coordinator.status();
     expect(result.status).toBe("failed");
     expect(result.manifest?.media).toEqual([]);
