@@ -237,7 +237,7 @@ async function collectArtifacts(
   const entries = await readdir(join(runDirectory, current), { withFileTypes: true });
   const artifacts: SelfTestArtifact[] = [];
   for (const entry of entries) {
-    const file = join(current, entry.name);
+    const file = join(current, entry.name).replaceAll("\\", "/");
     if (file === "manifest.json") continue;
     const absolute = join(runDirectory, file);
     if (entry.isDirectory()) {
