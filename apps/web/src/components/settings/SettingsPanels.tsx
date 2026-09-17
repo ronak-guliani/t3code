@@ -63,6 +63,31 @@ import {
   DEFAULT_UI_DENSITY,
   DEFAULT_UI_FONT,
   DEFAULT_UNIFIED_SETTINGS,
+  DEFAULT_HEADER_SHOW_PROJECT_SCRIPTS,
+  DEFAULT_HEADER_SHOW_OPEN_IN,
+  DEFAULT_HEADER_SHOW_GIT_ACTIONS,
+  DEFAULT_HEADER_SHOW_WORKFLOWS,
+  DEFAULT_HEADER_SHOW_WORKFLOW_RUNS,
+  DEFAULT_HEADER_SHOW_EXPORT_CHAT,
+  DEFAULT_HEADER_SHOW_INSIGHTS_TOGGLE,
+  DEFAULT_HEADER_SHOW_BROWSER_TOGGLE,
+  DEFAULT_HEADER_SHOW_FILES_TOGGLE,
+  DEFAULT_HEADER_SHOW_TERMINAL_TOGGLE,
+  DEFAULT_HEADER_SHOW_DIFF_TOGGLE,
+  DEFAULT_SIDEBAR_SHOW_SEARCH,
+  DEFAULT_SIDEBAR_SHOW_PULL_REQUESTS,
+  DEFAULT_SIDEBAR_SHOW_SKILLS,
+  DEFAULT_SIDEBAR_SHOW_NEW_THREAD,
+  DEFAULT_HEADER_EXPORT_CONFIRM,
+  DEFAULT_PROJECT_SCRIPTS_CONFIRM_RUN,
+  DEFAULT_OPEN_IN_UPDATE_PREFERRED,
+  DEFAULT_GIT_CONFIRM_DEFAULT_BRANCH,
+  DEFAULT_GIT_SHOW_QUICK_ACTION,
+  DEFAULT_WORKFLOW_CONFIRM_RUN,
+  DEFAULT_WORKFLOW_PREWARM_ON_HOVER,
+  DEFAULT_WORKFLOW_RUNS_SHOW_BADGE,
+  DEFAULT_SIDEBAR_SEARCH_SHOW_SHORTCUT,
+  DEFAULT_SIDEBAR_NEW_THREAD_CONFIRM,
   type CodeFont,
   type FontSize,
   type MessagePreviewLineCount,
@@ -71,6 +96,7 @@ import {
   type ThreadCompletionNotificationMode,
   type UiDensity,
   type UiFont,
+  type UnifiedSettings,
 } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
 import { Equal } from "effect";
@@ -219,6 +245,212 @@ const WORKFLOW_DESTINATION_OPTIONS: ReadonlyArray<{
   { value: "new-chat", label: "New chat" },
   { value: "child-chat", label: "Child chat" },
 ];
+
+type HeaderSidebarToggleKey = keyof Pick<
+  UnifiedSettings,
+  | "headerShowProjectScripts"
+  | "headerShowOpenIn"
+  | "headerShowGitActions"
+  | "headerShowWorkflows"
+  | "headerShowWorkflowRuns"
+  | "headerShowExportChat"
+  | "headerShowInsightsToggle"
+  | "headerShowBrowserToggle"
+  | "headerShowFilesToggle"
+  | "headerShowTerminalToggle"
+  | "headerShowDiffToggle"
+  | "sidebarShowSearch"
+  | "sidebarShowPullRequests"
+  | "sidebarShowSkills"
+  | "sidebarShowNewThread"
+  | "headerExportConfirm"
+  | "projectScriptsConfirmRun"
+  | "openInUpdatePreferred"
+  | "gitConfirmDefaultBranch"
+  | "gitShowQuickAction"
+  | "workflowConfirmRun"
+  | "workflowPrewarmOnHover"
+  | "workflowRunsShowBadge"
+  | "sidebarSearchShowShortcut"
+  | "sidebarNewThreadConfirm"
+>;
+
+const HEADER_VISIBILITY_ROWS: ReadonlyArray<{
+  key: HeaderSidebarToggleKey;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: "headerShowProjectScripts",
+    title: "Project scripts",
+    description: "Show project action runner in the chat header.",
+  },
+  {
+    key: "headerShowOpenIn",
+    title: "Open in editor",
+    description: "Show the open-in-editor picker in the chat header.",
+  },
+  {
+    key: "headerShowGitActions",
+    title: "Git actions",
+    description: "Show commit, push, and PR actions in the chat header.",
+  },
+  {
+    key: "headerShowWorkflows",
+    title: "Workflows",
+    description: "Show agent workflow buttons in the chat header.",
+  },
+  {
+    key: "headerShowWorkflowRuns",
+    title: "Workflow runs",
+    description: "Show the workflow runs popover in the chat header.",
+  },
+  {
+    key: "headerShowExportChat",
+    title: "Export chat",
+    description: "Show the export-chat button in the chat header.",
+  },
+];
+
+const PANEL_TOGGLE_ROWS: ReadonlyArray<{
+  key: HeaderSidebarToggleKey;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: "headerShowInsightsToggle",
+    title: "Insights toggle",
+    description: "Show the insights panel toggle.",
+  },
+  {
+    key: "headerShowBrowserToggle",
+    title: "Browser toggle",
+    description: "Show the browser preview toggle.",
+  },
+  {
+    key: "headerShowFilesToggle",
+    title: "Files toggle",
+    description: "Show the file browser toggle.",
+  },
+  {
+    key: "headerShowTerminalToggle",
+    title: "Terminal toggle",
+    description: "Show the terminal drawer toggle.",
+  },
+  { key: "headerShowDiffToggle", title: "Diff toggle", description: "Show the diff panel toggle." },
+];
+
+const SIDEBAR_VISIBILITY_ROWS: ReadonlyArray<{
+  key: HeaderSidebarToggleKey;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: "sidebarShowSearch",
+    title: "Search",
+    description: "Show Search in the sidebar top actions.",
+  },
+  {
+    key: "sidebarShowPullRequests",
+    title: "Pull requests",
+    description: "Show Pull Requests in the sidebar top actions.",
+  },
+  {
+    key: "sidebarShowSkills",
+    title: "Skills",
+    description: "Show Skills in the sidebar top actions.",
+  },
+  {
+    key: "sidebarShowNewThread",
+    title: "New thread",
+    description: "Show New thread in the sidebar top actions.",
+  },
+];
+
+const HEADER_BEHAVIOR_ROWS: ReadonlyArray<{
+  key: HeaderSidebarToggleKey;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: "headerExportConfirm",
+    title: "Confirm before export",
+    description: "Ask for confirmation before exporting a chat.",
+  },
+  {
+    key: "projectScriptsConfirmRun",
+    title: "Confirm script runs",
+    description: "Ask for confirmation before running a project script.",
+  },
+  {
+    key: "openInUpdatePreferred",
+    title: "Remember preferred editor",
+    description: "Update the preferred editor when picking from the Open-in menu.",
+  },
+  {
+    key: "gitConfirmDefaultBranch",
+    title: "Confirm default-branch git actions",
+    description: "Show the default-branch confirmation for push and PR actions.",
+  },
+  {
+    key: "gitShowQuickAction",
+    title: "Git quick action",
+    description: "Show the one-click git quick action beside the git menu.",
+  },
+  {
+    key: "workflowConfirmRun",
+    title: "Confirm workflow runs",
+    description: "Ask for confirmation before running a header workflow.",
+  },
+  {
+    key: "workflowPrewarmOnHover",
+    title: "Prewarm workflows on hover",
+    description: "Prewarm provider sessions and PR data when hovering workflow buttons.",
+  },
+  {
+    key: "workflowRunsShowBadge",
+    title: "Workflow badge count",
+    description: "Show the running-workflow count badge on the runs button.",
+  },
+  {
+    key: "sidebarSearchShowShortcut",
+    title: "Search shortcut hint",
+    description: "Include the keyboard shortcut in the Search tooltip.",
+  },
+  {
+    key: "sidebarNewThreadConfirm",
+    title: "Confirm new thread",
+    description: "Ask for confirmation before creating a thread from the sidebar.",
+  },
+];
+
+const HEADER_SIDEBAR_DEFAULTS: Record<HeaderSidebarToggleKey, boolean> = {
+  headerShowProjectScripts: DEFAULT_HEADER_SHOW_PROJECT_SCRIPTS,
+  headerShowOpenIn: DEFAULT_HEADER_SHOW_OPEN_IN,
+  headerShowGitActions: DEFAULT_HEADER_SHOW_GIT_ACTIONS,
+  headerShowWorkflows: DEFAULT_HEADER_SHOW_WORKFLOWS,
+  headerShowWorkflowRuns: DEFAULT_HEADER_SHOW_WORKFLOW_RUNS,
+  headerShowExportChat: DEFAULT_HEADER_SHOW_EXPORT_CHAT,
+  headerShowInsightsToggle: DEFAULT_HEADER_SHOW_INSIGHTS_TOGGLE,
+  headerShowBrowserToggle: DEFAULT_HEADER_SHOW_BROWSER_TOGGLE,
+  headerShowFilesToggle: DEFAULT_HEADER_SHOW_FILES_TOGGLE,
+  headerShowTerminalToggle: DEFAULT_HEADER_SHOW_TERMINAL_TOGGLE,
+  headerShowDiffToggle: DEFAULT_HEADER_SHOW_DIFF_TOGGLE,
+  sidebarShowSearch: DEFAULT_SIDEBAR_SHOW_SEARCH,
+  sidebarShowPullRequests: DEFAULT_SIDEBAR_SHOW_PULL_REQUESTS,
+  sidebarShowSkills: DEFAULT_SIDEBAR_SHOW_SKILLS,
+  sidebarShowNewThread: DEFAULT_SIDEBAR_SHOW_NEW_THREAD,
+  headerExportConfirm: DEFAULT_HEADER_EXPORT_CONFIRM,
+  projectScriptsConfirmRun: DEFAULT_PROJECT_SCRIPTS_CONFIRM_RUN,
+  openInUpdatePreferred: DEFAULT_OPEN_IN_UPDATE_PREFERRED,
+  gitConfirmDefaultBranch: DEFAULT_GIT_CONFIRM_DEFAULT_BRANCH,
+  gitShowQuickAction: DEFAULT_GIT_SHOW_QUICK_ACTION,
+  workflowConfirmRun: DEFAULT_WORKFLOW_CONFIRM_RUN,
+  workflowPrewarmOnHover: DEFAULT_WORKFLOW_PREWARM_ON_HOVER,
+  workflowRunsShowBadge: DEFAULT_WORKFLOW_RUNS_SHOW_BADGE,
+  sidebarSearchShowShortcut: DEFAULT_SIDEBAR_SEARCH_SHOW_SHORTCUT,
+  sidebarNewThreadConfirm: DEFAULT_SIDEBAR_NEW_THREAD_CONFIRM,
+};
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 
@@ -944,6 +1176,13 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(!Equal.equals(settings.agentWorkflows, DEFAULT_UNIFIED_SETTINGS.agentWorkflows)
         ? ["Agent workflows"]
         : []),
+      ...(Object.keys(HEADER_SIDEBAR_DEFAULTS).some(
+        (key) =>
+          settings[key as HeaderSidebarToggleKey] !==
+          HEADER_SIDEBAR_DEFAULTS[key as HeaderSidebarToggleKey],
+      )
+        ? ["Header & sidebar buttons"]
+        : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
       ...(areProviderSettingsDirty ? ["Providers"] : []),
     ],
@@ -965,19 +1204,44 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.codeFont,
       settings.defaultThreadEnvMode,
       settings.diffWordWrap,
+      settings.gitConfirmDefaultBranch,
+      settings.gitShowQuickAction,
+      settings.headerExportConfirm,
+      settings.headerShowBrowserToggle,
+      settings.headerShowDiffToggle,
+      settings.headerShowExportChat,
+      settings.headerShowFilesToggle,
+      settings.headerShowGitActions,
+      settings.headerShowInsightsToggle,
+      settings.headerShowOpenIn,
+      settings.headerShowProjectScripts,
+      settings.headerShowTerminalToggle,
+      settings.headerShowWorkflowRuns,
+      settings.headerShowWorkflows,
+      settings.openInUpdatePreferred,
+      settings.projectScriptsConfirmRun,
       settings.pullRequestsDefaultState,
       settings.pullRequestsCodeFontSize,
       settings.enableAssistantStreaming,
       settings.agentWorkflows,
       settings.sidebarFontSize,
       settings.sidebarMetaFontSize,
+      settings.sidebarNewThreadConfirm,
       settings.sidebarRowSpacing,
+      settings.sidebarSearchShowShortcut,
+      settings.sidebarShowNewThread,
+      settings.sidebarShowPullRequests,
+      settings.sidebarShowSearch,
+      settings.sidebarShowSkills,
       settings.sidebarTranslucency,
       settings.threadCompletionNotifications,
       settings.timestampFormat,
       settings.toolFontSize,
       settings.uiDensity,
       settings.uiFont,
+      settings.workflowConfirmRun,
+      settings.workflowPrewarmOnHover,
+      settings.workflowRunsShowBadge,
       theme,
     ],
   );
@@ -1001,6 +1265,42 @@ export function useSettingsRestore(onRestored?: () => void) {
     changedSettingLabels,
     restoreDefaults,
   };
+}
+
+function HeaderSidebarToggleRows({
+  rows,
+  settings,
+  updateSettings,
+}: {
+  readonly rows: ReadonlyArray<{
+    readonly key: HeaderSidebarToggleKey;
+    readonly title: string;
+    readonly description: string;
+  }>;
+  readonly settings: UnifiedSettings;
+  readonly updateSettings: (patch: Partial<UnifiedSettings>) => void;
+}) {
+  return rows.map((row) => (
+    <SettingsRow
+      key={row.key}
+      title={row.title}
+      description={row.description}
+      resetAction={
+        settings[row.key] !== HEADER_SIDEBAR_DEFAULTS[row.key] ? (
+          <SettingResetButton
+            label={row.title.toLowerCase()}
+            onClick={() => updateSettings({ [row.key]: HEADER_SIDEBAR_DEFAULTS[row.key] })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={settings[row.key]}
+          onCheckedChange={(checked) => updateSettings({ [row.key]: Boolean(checked) })}
+        />
+      }
+    />
+  ));
 }
 
 export function GeneralSettingsPanel() {
@@ -1763,6 +2063,29 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) => updateSettings({ sidebarV2Enabled: Boolean(checked) })}
             />
           }
+        />
+      </SettingsSection>
+
+      <SettingsSection title="Header & sidebar buttons">
+        <HeaderSidebarToggleRows
+          rows={HEADER_VISIBILITY_ROWS}
+          settings={settings}
+          updateSettings={updateSettings}
+        />
+        <HeaderSidebarToggleRows
+          rows={PANEL_TOGGLE_ROWS}
+          settings={settings}
+          updateSettings={updateSettings}
+        />
+        <HeaderSidebarToggleRows
+          rows={SIDEBAR_VISIBILITY_ROWS}
+          settings={settings}
+          updateSettings={updateSettings}
+        />
+        <HeaderSidebarToggleRows
+          rows={HEADER_BEHAVIOR_ROWS}
+          settings={settings}
+          updateSettings={updateSettings}
         />
       </SettingsSection>
 

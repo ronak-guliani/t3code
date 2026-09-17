@@ -181,6 +181,37 @@ export const SidebarProjectGroupingMode = Schema.Literals([
 export type SidebarProjectGroupingMode = typeof SidebarProjectGroupingMode.Type;
 export const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository";
 
+// ── Header / sidebar button visibility + per-button behavior ──────
+// Client-only UI chrome prefs. Flat keys follow the existing ClientSettings
+// convention so patches, persistence, and reset labels stay trivial.
+
+export const DEFAULT_HEADER_SHOW_PROJECT_SCRIPTS = true;
+export const DEFAULT_HEADER_SHOW_OPEN_IN = true;
+export const DEFAULT_HEADER_SHOW_GIT_ACTIONS = true;
+export const DEFAULT_HEADER_SHOW_WORKFLOWS = true;
+export const DEFAULT_HEADER_SHOW_WORKFLOW_RUNS = true;
+export const DEFAULT_HEADER_SHOW_EXPORT_CHAT = true;
+export const DEFAULT_HEADER_SHOW_INSIGHTS_TOGGLE = true;
+export const DEFAULT_HEADER_SHOW_BROWSER_TOGGLE = true;
+export const DEFAULT_HEADER_SHOW_FILES_TOGGLE = true;
+export const DEFAULT_HEADER_SHOW_TERMINAL_TOGGLE = true;
+export const DEFAULT_HEADER_SHOW_DIFF_TOGGLE = true;
+export const DEFAULT_SIDEBAR_SHOW_SEARCH = true;
+export const DEFAULT_SIDEBAR_SHOW_PULL_REQUESTS = true;
+export const DEFAULT_SIDEBAR_SHOW_SKILLS = true;
+export const DEFAULT_SIDEBAR_SHOW_NEW_THREAD = true;
+
+export const DEFAULT_HEADER_EXPORT_CONFIRM = false;
+export const DEFAULT_PROJECT_SCRIPTS_CONFIRM_RUN = false;
+export const DEFAULT_OPEN_IN_UPDATE_PREFERRED = true;
+export const DEFAULT_GIT_CONFIRM_DEFAULT_BRANCH = true;
+export const DEFAULT_GIT_SHOW_QUICK_ACTION = true;
+export const DEFAULT_WORKFLOW_CONFIRM_RUN = false;
+export const DEFAULT_WORKFLOW_PREWARM_ON_HOVER = true;
+export const DEFAULT_WORKFLOW_RUNS_SHOW_BADGE = true;
+export const DEFAULT_SIDEBAR_SEARCH_SHOW_SHORTCUT = true;
+export const DEFAULT_SIDEBAR_NEW_THREAD_CONFIRM = false;
+
 export const BrowserRecordingFrameRate = Schema.Literals([30, 60]);
 export type BrowserRecordingFrameRate = typeof BrowserRecordingFrameRate.Type;
 export const DEFAULT_BROWSER_RECORDING_FRAME_RATE: BrowserRecordingFrameRate = 30;
@@ -298,6 +329,81 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   uiDensity: UiDensity.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_UI_DENSITY))),
   uiFont: UiFont.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_UI_FONT))),
+  headerShowProjectScripts: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_HEADER_SHOW_PROJECT_SCRIPTS)),
+  ),
+  headerShowOpenIn: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_HEADER_SHOW_OPEN_IN)),
+  ),
+  headerShowGitActions: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_HEADER_SHOW_GIT_ACTIONS)),
+  ),
+  headerShowWorkflows: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_HEADER_SHOW_WORKFLOWS)),
+  ),
+  headerShowWorkflowRuns: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_HEADER_SHOW_WORKFLOW_RUNS)),
+  ),
+  headerShowExportChat: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_HEADER_SHOW_EXPORT_CHAT)),
+  ),
+  headerShowInsightsToggle: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_HEADER_SHOW_INSIGHTS_TOGGLE)),
+  ),
+  headerShowBrowserToggle: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_HEADER_SHOW_BROWSER_TOGGLE)),
+  ),
+  headerShowFilesToggle: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_HEADER_SHOW_FILES_TOGGLE)),
+  ),
+  headerShowTerminalToggle: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_HEADER_SHOW_TERMINAL_TOGGLE)),
+  ),
+  headerShowDiffToggle: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_HEADER_SHOW_DIFF_TOGGLE)),
+  ),
+  sidebarShowSearch: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_SHOW_SEARCH)),
+  ),
+  sidebarShowPullRequests: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_SHOW_PULL_REQUESTS)),
+  ),
+  sidebarShowSkills: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_SHOW_SKILLS)),
+  ),
+  sidebarShowNewThread: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_SHOW_NEW_THREAD)),
+  ),
+  headerExportConfirm: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_HEADER_EXPORT_CONFIRM)),
+  ),
+  projectScriptsConfirmRun: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROJECT_SCRIPTS_CONFIRM_RUN)),
+  ),
+  openInUpdatePreferred: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_OPEN_IN_UPDATE_PREFERRED)),
+  ),
+  gitConfirmDefaultBranch: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_GIT_CONFIRM_DEFAULT_BRANCH)),
+  ),
+  gitShowQuickAction: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_GIT_SHOW_QUICK_ACTION)),
+  ),
+  workflowConfirmRun: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKFLOW_CONFIRM_RUN)),
+  ),
+  workflowPrewarmOnHover: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKFLOW_PREWARM_ON_HOVER)),
+  ),
+  workflowRunsShowBadge: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKFLOW_RUNS_SHOW_BADGE)),
+  ),
+  sidebarSearchShowShortcut: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_SEARCH_SHOW_SHORTCUT)),
+  ),
+  sidebarNewThreadConfirm: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_NEW_THREAD_CONFIRM)),
+  ),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
@@ -694,6 +800,31 @@ export const ClientSettingsPatch = Schema.Struct({
   timestampFormat: Schema.optionalKey(TimestampFormat),
   uiDensity: Schema.optionalKey(UiDensity),
   uiFont: Schema.optionalKey(UiFont),
+  headerShowProjectScripts: Schema.optionalKey(Schema.Boolean),
+  headerShowOpenIn: Schema.optionalKey(Schema.Boolean),
+  headerShowGitActions: Schema.optionalKey(Schema.Boolean),
+  headerShowWorkflows: Schema.optionalKey(Schema.Boolean),
+  headerShowWorkflowRuns: Schema.optionalKey(Schema.Boolean),
+  headerShowExportChat: Schema.optionalKey(Schema.Boolean),
+  headerShowInsightsToggle: Schema.optionalKey(Schema.Boolean),
+  headerShowBrowserToggle: Schema.optionalKey(Schema.Boolean),
+  headerShowFilesToggle: Schema.optionalKey(Schema.Boolean),
+  headerShowTerminalToggle: Schema.optionalKey(Schema.Boolean),
+  headerShowDiffToggle: Schema.optionalKey(Schema.Boolean),
+  sidebarShowSearch: Schema.optionalKey(Schema.Boolean),
+  sidebarShowPullRequests: Schema.optionalKey(Schema.Boolean),
+  sidebarShowSkills: Schema.optionalKey(Schema.Boolean),
+  sidebarShowNewThread: Schema.optionalKey(Schema.Boolean),
+  headerExportConfirm: Schema.optionalKey(Schema.Boolean),
+  projectScriptsConfirmRun: Schema.optionalKey(Schema.Boolean),
+  openInUpdatePreferred: Schema.optionalKey(Schema.Boolean),
+  gitConfirmDefaultBranch: Schema.optionalKey(Schema.Boolean),
+  gitShowQuickAction: Schema.optionalKey(Schema.Boolean),
+  workflowConfirmRun: Schema.optionalKey(Schema.Boolean),
+  workflowPrewarmOnHover: Schema.optionalKey(Schema.Boolean),
+  workflowRunsShowBadge: Schema.optionalKey(Schema.Boolean),
+  sidebarSearchShowShortcut: Schema.optionalKey(Schema.Boolean),
+  sidebarNewThreadConfirm: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
 

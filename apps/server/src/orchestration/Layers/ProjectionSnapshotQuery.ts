@@ -11,6 +11,8 @@ import {
   OrchestrationQueuedTurn,
   OrchestrationShellSnapshot,
   OrchestrationThread,
+  OrchestrationGetSnapshotError,
+  OrchestrationReadThreadInputError,
   ProviderInteractionMode,
   ProjectScript,
   RuntimeMode,
@@ -70,10 +72,20 @@ import {
   type ProjectionThreadShellProjectContext,
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
+import { projectActivityPayload } from "../ActivityPayloadProjection.ts";
 
 const decodeReadModel = Schema.decodeUnknownEffect(OrchestrationReadModel);
 const decodeShellSnapshot = Schema.decodeUnknownEffect(OrchestrationShellSnapshot);
 const decodeThread = Schema.decodeUnknownEffect(OrchestrationThread);
+const isOrchestrationReadThreadInputError = Schema.is(OrchestrationReadThreadInputError);
+const decodeHistoryCursor = Schema.decodeUnknownSync(
+  Schema.Struct({
+    threadId: ThreadId,
+    view: Schema.Literals(["messages", "activities"]),
+    createdAt: IsoDateTime,
+    id: Schema.String,
+  }),
+);
 
 export interface ProjectionSnapshotQueryTestHooksShape {
   readonly beforeShellSnapshotCursorRead: Effect.Effect<void>;
@@ -3017,6 +3029,123 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     );
   };
 
+  const readThread: ProjectionSnapshotQueryShape["readThread"] = (input) =>
+    Effect.gen(function* () {
+      const candidates = yield* SqlSchema.findAll({
+        Request: Schema.String,
+        Result: Schema.Struct({ threadId: ThreadId }),
+        execute: (identifier) => sql`
+          SELECT thread_id AS "threadId" FROM projection_threads
+          WHERE deleted_at IS NULL AND (thread_id = ${identifier} OR title = ${identifier})
+          ORDER BY CASE WHEN thread_id = ${identifier} THEN 0 ELSE 1 END, thread_id
+          LIMIT 2
+        `,
+      })(input.thread);
+      const candidate = candidates[0];
+      if (!candidate || (candidate.threadId !== input.thread && candidates.length > 1)) {
+        return yield* new OrchestrationReadThreadInputError({
+          message: candidate
+            ? "Multiple threads have that title. Use the thread ID."
+            : `Thread '${input.thread}' was not found.`,
+        });
+      }
+      const thread = yield* getThreadShellById(candidate.threadId);
+      if (Option.isNone(thread)) {
+        return yield* new OrchestrationReadThreadInputError({ message: "Thread was not found." });
+      }
+      const cursor = input.before
+        ? yield* Effect.try({
+            try: () =>
+              decodeHistoryCursor(
+                JSON.parse(Buffer.from(input.before!, "base64url").toString("utf8")),
+              ),
+            catch: () =>
+              new OrchestrationReadThreadInputError({ message: "Invalid history cursor." }),
+          })
+        : null;
+      if (cursor && (cursor.threadId !== thread.value.id || cursor.view !== input.view)) {
+        return yield* new OrchestrationReadThreadInputError({
+          message: "History cursor belongs to a different thread or view.",
+        });
+      }
+      const limit = input.limit ?? 50;
+      const pageFor = (
+        rows: ReadonlyArray<{ id: string; createdAt: string }>,
+        hasMore: boolean,
+      ) => ({
+        hasMore,
+        before:
+          hasMore && rows.length > 0
+            ? Buffer.from(
+                JSON.stringify({
+                  threadId: thread.value.id,
+                  view: input.view,
+                  id: rows[0]!.id,
+                  createdAt: rows[0]!.createdAt,
+                }),
+              ).toString("base64url")
+            : null,
+      });
+      if (input.view === "summary") {
+        return { thread: thread.value, page: { hasMore: false, before: null } };
+      }
+      if (input.view === "activities") {
+        const rows = cursor
+          ? yield* listThreadActivityRowsBeforeActivity({
+              threadId: thread.value.id,
+              beforeCreatedAt: cursor.createdAt,
+              beforeActivityId: EventId.make(cursor.id),
+              limit: limit + 1,
+            })
+          : yield* listThreadActivityRowsByThread({ threadId: thread.value.id, limit: limit + 1 });
+        const activities = rows
+          .slice(0, limit)
+          .toReversed()
+          .map(mapThreadActivityRow)
+          .map(projectActivityPayload);
+        return { thread: thread.value, activities, page: pageFor(activities, rows.length > limit) };
+      }
+      const rows = yield* SqlSchema.findAll({
+        Request: Schema.Void,
+        Result: ProjectionThreadMessageDbRowSchema,
+        execute: () => sql`
+          SELECT message_id AS "messageId", thread_id AS "threadId", turn_id AS "turnId",
+            role, text, attachments_json AS "attachments", origin_json AS "origin",
+            is_streaming AS "isStreaming", created_at AS "createdAt", updated_at AS "updatedAt"
+          FROM projection_thread_messages
+          WHERE thread_id = ${thread.value.id} AND (
+            ${cursor === null ? 1 : 0} = 1
+            OR created_at < ${cursor?.createdAt ?? ""}
+            OR (created_at = ${cursor?.createdAt ?? ""} AND message_id < ${cursor?.id ?? ""})
+          )
+          ORDER BY created_at DESC, message_id DESC
+          LIMIT ${limit + 1}
+        `,
+      })(undefined);
+      const messages = rows
+        .slice(0, limit)
+        .toReversed()
+        .map((row) => ({
+          id: row.messageId,
+          role: row.role,
+          text: row.text,
+          turnId: row.turnId,
+          streaming: row.isStreaming === 1,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+          ...(row.attachments !== null ? { attachments: row.attachments } : {}),
+          ...(row.origin !== null ? { origin: row.origin } : {}),
+        }));
+      return { thread: thread.value, messages, page: pageFor(messages, rows.length > limit) };
+    }).pipe(
+      sql.withTransaction,
+      Effect.mapError((cause) =>
+        isOrchestrationReadThreadInputError(cause)
+          ? cause
+          : new OrchestrationGetSnapshotError({ message: "Failed to read thread history.", cause }),
+      ),
+    );
+
   return {
     getSnapshot,
     getShellSnapshot,
@@ -3034,6 +3163,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadActivitiesPage,
     searchTranscript,
     listThreadProjectIds,
+    readThread,
   } satisfies ProjectionSnapshotQueryShape;
 });
 

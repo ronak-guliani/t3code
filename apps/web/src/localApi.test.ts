@@ -1,5 +1,6 @@
 import {
   CommandId,
+  DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   type DesktopBridge,
   EnvironmentId,
@@ -670,6 +671,7 @@ describe("wsApi", () => {
 
   it("reads and writes persistence through the desktop bridge when available", async () => {
     const clientSettings = {
+      ...DEFAULT_CLIENT_SETTINGS,
       autoOpenPlanSidebar: false,
       browserDefaultViewport: { _tag: "fill" as const },
       browserDefaultZoomFactor: 1 as const,
@@ -759,6 +761,7 @@ describe("wsApi", () => {
     const { createLocalApi } = await import("./localApi");
     const api = createLocalApi(rpcClientMock as never);
     const clientSettings = {
+      ...DEFAULT_CLIENT_SETTINGS,
       autoOpenPlanSidebar: false,
       browserDefaultViewport: { _tag: "fill" as const },
       browserDefaultZoomFactor: 1 as const,

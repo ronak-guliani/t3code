@@ -36,6 +36,7 @@ import {
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
+  orchestrationThreadReadRouteLayer,
 } from "./orchestration/http.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { RepositoryIdentityResolverLive } from "./project/Layers/RepositoryIdentityResolver.ts";
@@ -150,6 +151,7 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
       orchestrationSnapshotRouteLayer,
       orchestrationShellSnapshotRouteLayer,
       orchestrationThreadSnapshotRouteLayer,
+      orchestrationThreadReadRouteLayer,
       orchestrationDispatchRouteLayer,
     );
     const appLayer = HttpRouter.serve(routesLayer, {
@@ -222,6 +224,59 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
 
   it.effect("accepts canonical --no-<flag> boolean negation", () =>
     runCliWithRuntime(["--no-log-websocket-events", "--version"]),
+  );
+
+  it.effect("rejects conflicting chat history views and full-view pagination before reading", () =>
+    Effect.gen(function* () {
+      for (const flags of [
+        ["--messages", "--activities"],
+        ["--full", "--messages"],
+        ["--full", "--activities"],
+        ["--full", "--limit", "1"],
+        ["--full", "--before", "cursor"],
+      ]) {
+        const error = yield* runCliWithRuntime([
+          "chat",
+          "show",
+          "unused",
+          "--url",
+          "http://127.0.0.1:1",
+          "--token",
+          "unused",
+          ...flags,
+        ]).pipe(Effect.flip);
+        assert.deepInclude(error, {
+          _tag: "CliPayloadError",
+          message:
+            "Choose --messages, --activities, or --full; pagination cannot be used with --full.",
+        });
+      }
+    }),
+  );
+
+  it.effect("keeps invalid-argument help on stderr and requested help on stdout", () =>
+    Effect.gen(function* () {
+      const entrypoint = fileURLToPath(new URL("./bin.ts", import.meta.url));
+      const failure = yield* Effect.promise(() =>
+        runProcess(process.execPath, [entrypoint, "chat", "show", "unused", "--invalid-cli-flag"], {
+          allowNonZeroExit: true,
+        }),
+      );
+      assert.notEqual(failure.code, 0);
+      assert.equal(failure.stdout, "");
+      assert.include(failure.stderr, "USAGE");
+      const error = JSON.parse(failure.stderr.trim().split("\n").at(-1)!);
+      assert.equal(error.error.code, "CLI_INVALID_ARGUMENT");
+      assert.include(error.error.message, "--invalid-cli-flag");
+      for (const args of [["chat"], ["chat", "show", "--help"]]) {
+        const help = yield* Effect.promise(() =>
+          runProcess(process.execPath, [entrypoint, ...args], { allowNonZeroExit: true }),
+        );
+        assert.equal(help.code, 0, help.stderr);
+        assert.include(help.stdout, "USAGE");
+        assert.equal(help.stderr, "");
+      }
+    }),
   );
 
   it.effect("runs Connect status without parsing an invalid server port", () => {
@@ -1185,8 +1240,6 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
               process.execPath,
               [
                 fileURLToPath(new URL("./bin.ts", import.meta.url)),
-                "--log-level",
-                "error",
                 "chat",
                 "new",
                 "--project",
@@ -1206,6 +1259,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
           );
 
           assert.equal(result.code, 0, result.stderr);
+          assert.include(result.stderr, "Running all migrations");
           assert.deepStrictEqual(JSON.parse(result.stdout), {
             status: "dry-run",
             threadId: null,
@@ -1216,6 +1270,49 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             errorCode: null,
             message: "Nested-thread inputs are valid; no thread or workspace was created.",
           });
+          const history = yield* Effect.promise(() =>
+            runProcess(
+              process.execPath,
+              [
+                fileURLToPath(new URL("./bin.ts", import.meta.url)),
+                "chat",
+                "show",
+                parent.threadId,
+                "--messages",
+                "--limit",
+                "1",
+                "--base-dir",
+                baseDir,
+              ],
+              { allowNonZeroExit: true },
+            ),
+          );
+          assert.equal(history.code, 0, history.stderr);
+          const page = JSON.parse(history.stdout);
+          assert.deepStrictEqual(page.messages, []);
+          assert.deepStrictEqual(page.page, { hasMore: false, before: null });
+          assert.notProperty(page, "checkpoints");
+          assert.notProperty(page, "activities");
+          const failure = yield* Effect.promise(() =>
+            runProcess(
+              process.execPath,
+              [
+                fileURLToPath(new URL("./bin.ts", import.meta.url)),
+                "--log-level",
+                "error",
+                "chat",
+                "show",
+                "missing-thread",
+                "--base-dir",
+                baseDir,
+              ],
+              { allowNonZeroExit: true },
+            ),
+          );
+          assert.notEqual(failure.code, 0);
+          assert.equal(failure.stdout, "");
+          assert.equal(JSON.parse(failure.stderr).error.code, "CliRpcError");
+          assert.include(JSON.parse(failure.stderr).error.message, "was not found");
         }),
       ).pipe(
         Effect.ensuring(
@@ -1297,6 +1394,24 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             },
             createdAt: now,
           });
+
+          for (let index = 0; index < 205; index++) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.activity.append",
+              commandId: CommandId.make(`cli-window-${index}`),
+              threadId: ThreadId.make(created.threadId),
+              activity: {
+                id: EventId.make(`cli-window-${index}`),
+                tone: "info",
+                kind: "runtime.info",
+                summary: "Later activity",
+                payload: {},
+                turnId: null,
+                createdAt: new Date(Date.parse(now) + index + 1).toISOString(),
+              },
+              createdAt: now,
+            });
+          }
 
           const approvalListOutput = yield* captureStdout(
             runCli(["approval", "list", "--thread", created.threadId, "--base-dir", baseDir]),

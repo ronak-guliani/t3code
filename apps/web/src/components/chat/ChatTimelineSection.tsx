@@ -30,6 +30,7 @@ import {
   inferCheckpointTurnCountByTurnId,
 } from "../../session-logic";
 import { useStore } from "../../store";
+import { useMemoEqual } from "../../lib/useMemoEqual";
 import { createThreadMessagesSelectorByRef } from "../../storeSelectors";
 import {
   type ChatMessage,
@@ -337,9 +338,13 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
     }, [attachmentPreviewHandoffByMessageId, optimisticUserMessages, sourceMessages]);
 
-    const workLogEntries = useMemo(
+    // Ref-equality memo: the store rebuilds the activities array on
+    // unrelated updates (e.g. streaming text chunks) with identical item
+    // refs. Reusing the previous derivation skips ~10ms of re-derive per
+    // chunk on large threads; any real change recomputes like useMemo.
+    const workLogEntries = useMemoEqual(
       () => deriveWorkLogEntries(threadActivities, latestTurn?.turnId ?? undefined),
-      [latestTurn?.turnId, threadActivities],
+      [threadActivities, latestTurn?.turnId ?? undefined],
     );
 
     const timelineEntries = useMemo(
@@ -386,7 +391,11 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
     const responseMetaByTurnIdRef = useRef<ReadonlyMap<TurnId, AssistantResponseMeta> | undefined>(
       undefined,
     );
-    const responseMetaByTurnId = useMemo(() => {
+    // Ref-equality fast path around the rebuild: when activities are
+    // ref-identical (e.g. streaming text chunks), reuse the previous map
+    // without rescanning; the stabilization above still preserves settled
+    // entry identity whenever a rebuild actually runs.
+    const responseMetaByTurnId = useMemoEqual(() => {
       const metadata = new Map<TurnId, AssistantResponseMeta>();
       for (const activity of threadActivities) {
         if (activity.turnId === null || typeof activity.payload !== "object" || !activity.payload) {

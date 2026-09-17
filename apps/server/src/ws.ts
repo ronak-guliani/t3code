@@ -1216,6 +1216,12 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.readThread]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.readThread,
+            projectionSnapshotQuery.readThread(input),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.getThreadSnapshot]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getThreadSnapshot,

@@ -4,7 +4,23 @@ import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, Exit, FileSystem, Latch, Layer, PlatformError, Scope } from "effect";
+import {
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  FileSystem,
+  Latch,
+  Layer,
+  Metric,
+  PlatformError,
+  Queue,
+  Scope,
+  Sink,
+  Stream,
+} from "effect";
+import { TestClock } from "effect/testing";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { describe, expect, vi } from "vitest";
 
 import { GitCoreLive, makeGitCore, applyWindowsGitLongPathArgs } from "./GitCore.ts";
@@ -12,6 +28,7 @@ import { GitCore, type GitCoreShape } from "../Services/GitCore.ts";
 import { GitHubCli } from "../Services/GitHubCli.ts";
 import { GitCommandError } from "@t3tools/contracts";
 import { type ProcessRunResult, runProcess } from "../../processRunner.ts";
+import { gitCommandDuration, metricAttributes } from "../../observability/Metrics.ts";
 import { ServerConfig } from "../../config.ts";
 
 // ── Helpers ──
@@ -2653,4 +2670,334 @@ it.layer(TestLayer)("git integration", (it) => {
       }),
     );
   });
+});
+
+// ── Shared short-command process pool ──
+//
+// GitCore.execute is the single `git` subprocess boundary. Short commands
+// (effective timeout <= 30s) share eight process-wide permits across all core
+// instances, including per-session drivers; longer or timeout-free commands
+// bypass the pool so slow network-bound work cannot starve polling.
+
+describe("git short-command process pool", () => {
+  interface PoolBurstState {
+    active: number;
+    peak: number;
+    spawns: number;
+  }
+
+  const makePoolSpawner = (input: {
+    defaultGate: Deferred.Deferred<void>;
+    gateFor?: (args: ReadonlyArray<string>) => Deferred.Deferred<void> | null;
+    failFor?: (args: ReadonlyArray<string>) => string | null;
+    starts: Queue.Queue<void>;
+    state: PoolBurstState;
+  }) =>
+    ChildProcessSpawner.make((command) =>
+      Effect.acquireRelease(
+        Effect.gen(function* () {
+          const args = ChildProcess.isStandardCommand(command) ? command.args : [];
+          input.state.spawns += 1;
+          input.state.active += 1;
+          input.state.peak = Math.max(input.state.peak, input.state.active);
+          yield* Queue.offer(input.starts, undefined);
+          const failDetail = input.failFor?.(args) ?? null;
+          if (failDetail !== null) {
+            return ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(1),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+              isRunning: Effect.succeed(false),
+              kill: () => Effect.void,
+              unref: Effect.succeed(Effect.void),
+              stdin: Sink.drain,
+              stdout: Stream.empty,
+              stderr: Stream.make(new TextEncoder().encode(failDetail)),
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+            });
+          }
+          const gate = input.gateFor?.(args) ?? input.defaultGate;
+          return ChildProcessSpawner.makeHandle({
+            pid: ChildProcessSpawner.ProcessId(1),
+            exitCode: Deferred.await(gate).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
+            isRunning: Effect.succeed(false),
+            kill: () => Effect.void,
+            unref: Effect.succeed(Effect.void),
+            stdin: Sink.drain,
+            stdout: Stream.empty,
+            stderr: Stream.empty,
+            all: Stream.empty,
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+          });
+        }),
+        () =>
+          Effect.sync(() => {
+            input.state.active -= 1;
+          }),
+      ),
+    );
+
+  const makePoolTestCore = (spawner: ReturnType<typeof ChildProcessSpawner.make>) =>
+    makeGitCore().pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provide(Layer.provideMerge(ServerConfigLayer, NodeServices.layer)),
+    );
+
+  const takeStarts = (starts: Queue.Queue<void>, count: number) =>
+    Effect.all(
+      Array.from({ length: count }, () => Queue.take(starts)),
+      { concurrency: "unbounded" },
+    );
+
+  it.effect("bounds short commands to eight processes across independent instances", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const starts = yield* Queue.unbounded<void>();
+      const state: PoolBurstState = { active: 0, peak: 0, spawns: 0 };
+      const spawner = makePoolSpawner({ defaultGate: gate, starts, state });
+      const cores = yield* Effect.all(Array.from({ length: 16 }, () => makePoolTestCore(spawner)));
+      const burst = yield* Effect.forEach(
+        cores,
+        (core, index) =>
+          core.execute({
+            operation: "test.gitPoolBurst",
+            cwd: "/repo",
+            args: ["rev-parse", "HEAD"],
+            // Default and explicit 30s timeouts acquire first; short 1s
+            // timeouts queue behind them, proving queued waits do not consume
+            // execution budget.
+            ...(index < 4 ? {} : { timeoutMs: index < 8 ? 30_000 : 1_000 }),
+          }),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkScoped);
+
+      yield* takeStarts(starts, 8);
+      // Queued commands hold 1s execution timeouts yet must survive a 2s queue:
+      // the execution timeout starts after permit acquisition, not before.
+      yield* TestClock.adjust("2 seconds");
+      expect(yield* Queue.size(starts)).toBe(0);
+      expect(state.peak).toBe(8);
+      yield* Deferred.succeed(gate, undefined);
+      const results = yield* Fiber.join(burst);
+      expect(results).toHaveLength(16);
+      expect(results.every((result) => result.code === 0)).toBe(true);
+      expect(state.peak).toBe(8);
+      expect(state.active).toBe(0);
+      const duration = yield* Metric.value(
+        Metric.withAttributes(
+          gitCommandDuration,
+          metricAttributes({ operation: "test.gitPoolBurst" }),
+        ),
+      );
+      expect(duration.count).toBe(16);
+    }),
+  );
+
+  const runBypassScenario = (
+    operation: string,
+    slowOptions: { timeoutMs?: number | null; bypassProcessPool?: boolean },
+  ) =>
+    Effect.gen(function* () {
+      const slowGate = yield* Deferred.make<void>();
+      const fastGate = yield* Deferred.make<void>();
+      const starts = yield* Queue.unbounded<void>();
+      const state: PoolBurstState = { active: 0, peak: 0, spawns: 0 };
+      const spawner = makePoolSpawner({
+        defaultGate: fastGate,
+        gateFor: (args) => (args[0] === "push" ? slowGate : null),
+        starts,
+        state,
+      });
+      const core = yield* makePoolTestCore(spawner);
+      const slow = yield* core
+        .execute({
+          operation,
+          cwd: "/repo",
+          args: ["push"],
+          ...slowOptions,
+        })
+        .pipe(Effect.forkScoped);
+      yield* Queue.take(starts);
+      const burst = yield* Effect.all(
+        Array.from({ length: 8 }, () =>
+          core.execute({ operation: `${operation}Fast`, cwd: "/repo", args: ["status"] }),
+        ),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkScoped);
+
+      yield* TestClock.adjust("0 seconds");
+      // All eight fast commands start despite the pending slow command: the
+      // slow command holds no pool slot.
+      expect(yield* Queue.size(starts)).toBe(8);
+      expect(state.active).toBe(9);
+      yield* Deferred.succeed(fastGate, undefined);
+      expect(yield* Fiber.join(burst)).toHaveLength(8);
+      expect(state.active).toBe(1);
+      yield* Deferred.succeed(slowGate, undefined);
+      expect((yield* Fiber.join(slow)).code).toBe(0);
+      expect(state.active).toBe(0);
+    });
+
+  it.effect("keeps all slots free while a timeout-free command is pending", () =>
+    runBypassScenario("test.gitPoolBypassNull", { timeoutMs: null }),
+  );
+
+  it.effect("keeps all slots free while a 30,001ms command is pending", () =>
+    runBypassScenario("test.gitPoolBypassLong", { timeoutMs: 30_001 }),
+  );
+
+  it.effect("keeps all slots free for a default-timeout command marked to bypass", () =>
+    // Same input shape the network paths (push/fetch/pull) produce: no
+    // explicit timeout, so the 30s default applies, plus the bypass flag.
+    runBypassScenario("test.gitPoolBypassFlag", { bypassProcessPool: true }),
+  );
+
+  it.effect("releases the slot after failures", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const starts = yield* Queue.unbounded<void>();
+      const state: PoolBurstState = { active: 0, peak: 0, spawns: 0 };
+      const spawner = makePoolSpawner({
+        defaultGate: gate,
+        failFor: (args) => (args[0] === "fail" ? "boom" : null),
+        starts,
+        state,
+      });
+      const core = yield* makePoolTestCore(spawner);
+      const holders = yield* Effect.all(
+        Array.from({ length: 8 }, () =>
+          core.execute({ operation: "test.gitPoolFailure", cwd: "/repo", args: ["status"] }),
+        ),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkScoped);
+      yield* takeStarts(starts, 8);
+      const failing = yield* core
+        .execute({ operation: "test.gitPoolFailure", cwd: "/repo", args: ["fail"] })
+        .pipe(Effect.forkScoped);
+      yield* TestClock.adjust("0 seconds");
+      expect(yield* Queue.size(starts)).toBe(0);
+      yield* Deferred.succeed(gate, undefined);
+      yield* Fiber.join(holders);
+      const error = yield* Fiber.join(failing).pipe(Effect.flip);
+      expect(error.detail).toContain("boom");
+      expect(state.active).toBe(0);
+      // The failed command released its slot: new work proceeds.
+      const after = yield* core.execute({
+        operation: "test.gitPoolFailureAfter",
+        cwd: "/repo",
+        args: ["status"],
+      });
+      expect(after.code).toBe(0);
+      expect(state.active).toBe(0);
+    }),
+  );
+
+  it.effect("never spawns a process for commands interrupted while queued", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const starts = yield* Queue.unbounded<void>();
+      const state: PoolBurstState = { active: 0, peak: 0, spawns: 0 };
+      const spawner = makePoolSpawner({ defaultGate: gate, starts, state });
+      const core = yield* makePoolTestCore(spawner);
+      const holders = yield* Effect.all(
+        Array.from({ length: 8 }, () =>
+          core.execute({ operation: "test.gitPoolCancel", cwd: "/repo", args: ["status"] }),
+        ),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkScoped);
+      yield* takeStarts(starts, 8);
+      const queued = yield* core
+        .execute({ operation: "test.gitPoolCancel", cwd: "/repo", args: ["status"] })
+        .pipe(Effect.forkScoped);
+      // Let the queued fiber reach the pool before interrupting it.
+      yield* TestClock.adjust("1 second");
+      expect(yield* Queue.size(starts)).toBe(0);
+      yield* Fiber.interrupt(queued);
+      expect(state.spawns).toBe(8);
+      yield* Deferred.succeed(gate, undefined);
+      expect(yield* Fiber.join(holders)).toHaveLength(8);
+      expect(state.active).toBe(0);
+      // The interrupted wait released cleanly: new work proceeds.
+      const after = yield* core.execute({
+        operation: "test.gitPoolCancelAfter",
+        cwd: "/repo",
+        args: ["status"],
+      });
+      expect(after.code).toBe(0);
+      expect(state.active).toBe(0);
+    }),
+  );
+
+  it.effect("enforces execution timeouts after acquisition and releases the slot", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const starts = yield* Queue.unbounded<void>();
+      const state: PoolBurstState = { active: 0, peak: 0, spawns: 0 };
+      const spawner = makePoolSpawner({ defaultGate: gate, starts, state });
+      const core = yield* makePoolTestCore(spawner);
+      const fiber = yield* core
+        .execute({
+          operation: "test.gitPoolExecTimeout",
+          cwd: "/repo",
+          args: ["status"],
+          timeoutMs: 1_000,
+        })
+        .pipe(Effect.forkScoped);
+      yield* Queue.take(starts);
+      // The command holds a slot, so this 2s elapses as execution time.
+      yield* TestClock.adjust("2 seconds");
+      const error = yield* Fiber.join(fiber).pipe(Effect.flip);
+      expect(error.detail).toContain("timed out");
+      expect(state.active).toBe(0);
+    }),
+  );
+
+  it.effect("excludes queue waits from execution duration metrics", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const starts = yield* Queue.unbounded<void>();
+      const state: PoolBurstState = { active: 0, peak: 0, spawns: 0 };
+      const spawner = makePoolSpawner({ defaultGate: gate, starts, state });
+      const core = yield* makePoolTestCore(spawner);
+      const holders = yield* Effect.all(
+        Array.from({ length: 8 }, () =>
+          core.execute({
+            operation: "test.gitPoolMetricsHold",
+            cwd: "/repo",
+            args: ["status"],
+          }),
+        ),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkScoped);
+      yield* takeStarts(starts, 8);
+      const queued = yield* core
+        .execute({ operation: "test.gitPoolMetricsQueued", cwd: "/repo", args: ["status"] })
+        .pipe(Effect.forkScoped);
+      // Real-time queue wait: invisible to TestClock, visible to the
+      // Date.now-based duration metric if queue time leaked into it.
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 800)));
+      yield* Deferred.succeed(gate, undefined);
+      yield* Fiber.join(holders);
+      yield* Fiber.join(queued);
+      const holdState = yield* Metric.value(
+        Metric.withAttributes(
+          gitCommandDuration,
+          metricAttributes({ operation: "test.gitPoolMetricsHold" }),
+        ),
+      );
+      const queuedState = yield* Metric.value(
+        Metric.withAttributes(
+          gitCommandDuration,
+          metricAttributes({ operation: "test.gitPoolMetricsQueued" }),
+        ),
+      );
+      expect(holdState.count).toBe(8);
+      expect(queuedState.count).toBe(1);
+      // Holders executed through the ~800ms wait; the queued command waited
+      // the same window outside its measured execution.
+      expect(queuedState.sum).toBeLessThan(holdState.sum / 8 / 2);
+    }),
+  );
 });

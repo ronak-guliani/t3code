@@ -168,6 +168,10 @@ export const ProjectAutoPullLive = Layer.effect(
             "--ff-only",
           ],
           timeoutMs: 30_000,
+          // Network-bound background pull: keep it out of the short-command
+          // pool (deadline unchanged) so concurrent auto-pulls cannot queue
+          // status polls behind network I/O.
+          bypassProcessPool: true,
         });
         yield* PubSub.publish(changes, cwd);
       });

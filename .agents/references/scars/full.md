@@ -54,6 +54,7 @@
 - External-store selectors must return a referentially stable snapshot when their input state is unchanged; fresh arrays or wrapper objects can trigger React error #185 (maximum update depth exceeded).
 - Timeline structural sharing must compare collapsed `reasoning` rows by nested content, not `rows` array identity; `collapseReasoningRows` always allocates a fresh nested array, and reference equality defeats `useStableRows` so every stream chunk re-renders prior reasoning blocks.
 - Timeline row context must keep `reviewOutputMessageIds` referentially stable across stream chunks; a fresh empty/equal `Set` each render rebuilds `TimelineRowCtx` and forces every mounted chat row to re-render.
+- Timeline derivations keyed on store arrays must compare item refs, not array identity: the store rebuilds arrays on unrelated updates (e.g. streaming text chunks) with identical item refs, so plain `useMemo` re-derives per chunk. Reuse the previous result when lengths match and every ref is identical; same refs imply same data under the immutable store contract.
 - Retained thread-detail subscriptions can advance session and turn state before the shell summary refreshes; reconcile those activity fields into the sidebar summary, but keep shell metadata authoritative and preserve summary identity for activity-only events.
 - Finalize checkpoints only after ingesting the matching `turn.completed`; a non-streaming assistant message is one segment, not a terminal turn. Always emit a terminal turn-diff event, including missing/error checkpoint status, so a turn cannot remain running.
 - Snapshot-first thread-detail and shell streams must attach and buffer before loading a lightweight initial snapshot; read cursor and rows in one transaction, then discard buffered events through that cursor. This prevents lost/replayed completions and invisible workers; refresh the shell before navigating when a returned worker is not routable.
@@ -65,6 +66,11 @@
 - Filter archived sidebar hierarchies before tree normalization; archived parents must suppress both real and virtual descendants or stale children are resurrected as roots.
 
 ## Provider tools and workspace ownership
+
+- Agent CLI stdout is a data boundary: send logs and failures to stderr, use the server-matched launcher rather than ambient PATH, and never infer matching protocol contracts from equal package versions.
+- Pending CLI approvals/questions must combine `activityContext` with the recent activity window and honor terminal lifecycle events; a request outside the window is not resolved.
+- Thread history reads must filter and limit in SQL before decoding, omit unrelated checkpoints, and bind pagination cursors to thread/view. Unary RPC deadlines must not cap stream lifetime or imply that timed-out mutations were rejected.
+- Preserve typed thread-read input failures through HTTP and RPC; missing/ambiguous threads and invalid cursors are client errors, not error-logged repository failures.
 
 - Keep local provider health checks process-free when their contract promises CLI-only probing; workspace-specific discovery belongs in the explicit cwd refresh path, not an empty-inventory fallback that silently starts a temporary server.
 - Child processes terminated by a signal surface through Effect as `Unknown: ChildProcess.exitCode` with the signal only in the nested cause; preserve that cause before wrapping provider diagnostics.
@@ -200,6 +206,7 @@
 - Copilot ACP session startup splits into a thread-independent prefix (`spawn` + `initialize` + `authenticate`, ~650ms) and a thread-bound `session/new` (~1.5s) that carries the per-thread MCP bearer credential issued by `McpSessionRegistry`. Only the prefix may be prewarmed: adopting a fully-created session would attribute another thread's MCP tool calls to the wrong thread. Key a warmed process by everything that shapes the spawn (binary, runtime-mode args, cwd, env/custom-instructions dir), verify liveness and TTL before adopting, and apply the adopting thread's `mcpServers` last so no override can reintroduce a foreign credential.
 - Review-capture prewarm is one explicit prewarm/claim pair for one `pull-request` click only; never cache it in the shared resolver or use it for mutable working-tree scopes. A PR head can change, `git status --short` cannot validate an already-modified file's diff, and the post-review verifier needs a fresh snapshot. Park the deferred success value so waiter interruption cannot evict a healthy capture; prewarm RPCs should acknowledge only, not return the capture.
 - Archiving a parent thread archives its nested chats; if the active route is in that subtree, navigate to a new draft. Direct `getShellSnapshot()` reads include non-deleted archived rows, so active-only consumers must filter `archivedAt`; archive screens must query the archived-shell snapshot and web/mobile archive events must emit explicit removals instead of relying on a shell re-query.
+- A process-wide subprocess budget must live in module scope (`Semaphore.makeUnsafe`), never in a per-instance Effect constructor: every WebSocket session builds its own service instance, so a constructor-scoped semaphore multiplies the intended cap per session. Wrap only the single-command execution boundary, outside the execution timeout and duration metric so queue waits neither time out commands nor pollute timings; never wrap a multi-command fan-out or the nested acquisitions deadlock once the pool is saturated.
 
 ## Pairing and environment recovery
 
