@@ -44,6 +44,7 @@ import { resolveCliEnvironmentCandidate, withAccountEnvironment } from "./accoun
 import { readEnvironmentRegistry, type CliEnvironmentCandidate } from "./environmentRegistry.ts";
 import { withRpcDeadlines } from "./rpcDeadline.ts";
 import { buildRevision } from "../buildIdentity.ts";
+import { projectThreadDetailSnapshot } from "../orchestration/ActivityPayloadProjection.ts";
 import { OrchestrationProjectionSnapshotQueryDependenciesLive } from "../orchestration/runtimeLayer.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../orchestration/Layers/ProjectionSnapshotQuery.ts";
 import {
@@ -604,7 +605,7 @@ const getLocalThreadSnapshot = (
     query.getThreadDetailSnapshotById(threadId).pipe(
       Effect.flatMap((snapshot) =>
         Option.isSome(snapshot)
-          ? Effect.succeed(snapshot.value)
+          ? Effect.succeed(projectThreadDetailSnapshot(snapshot.value))
           : Effect.fail(new CliRpcError({ message: `Thread ${threadId} was not found.` })),
       ),
       Effect.mapError((cause) =>
