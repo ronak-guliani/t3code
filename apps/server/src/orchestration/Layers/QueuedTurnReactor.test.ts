@@ -413,6 +413,74 @@ describe("QueuedTurnReactor", () => {
     }
   });
 
+  it("waits (without failing) while a child decision is pending", async () => {
+    const decision = {
+      id: "decision-1",
+      childThreadId: ThreadId.make("child"),
+      childTitle: "Child",
+      assignmentId: MessageId.make("assignment"),
+      kind: "decision-needed" as const,
+      summary: "Which approach?",
+    };
+    const model = queuedReadModel();
+    const waiting = {
+      ...model,
+      threads: model.threads.map((thread) => ({
+        ...thread,
+        nudging: {
+          delegation: {
+            assignmentId: MessageId.make("assignment"),
+            followUp: "automatic" as const,
+            completedAt: null,
+            decision,
+          },
+        },
+      })),
+    };
+    expect(await runReactor(waiting, monitorSnapshot("head-current"))).toEqual([]);
+  });
+
+  it("dispatches the correlated decision response ahead of waiting turns", async () => {
+    const decision = {
+      id: "decision-1",
+      childThreadId: ThreadId.make("child"),
+      childTitle: "Child",
+      assignmentId: MessageId.make("assignment"),
+      kind: "decision-needed" as const,
+      summary: "Which approach?",
+    };
+    const answerId = QueuedTurnId.make("answer");
+    const model = queuedReadModel();
+    const thread = model.threads[0]!;
+    const commands = await runReactor(
+      {
+        ...model,
+        threads: [
+          {
+            ...thread,
+            queuedTurns: [
+              ...(thread.queuedTurns ?? []),
+              { ...thread.queuedTurns![0]!, id: answerId, origin: undefined },
+            ],
+            nudging: {
+              delegation: {
+                assignmentId: MessageId.make("assignment"),
+                followUp: "automatic" as const,
+                completedAt: null,
+                decision,
+                pendingResponse: { queuedTurnId: answerId, report: decision },
+              },
+            },
+          },
+        ],
+      },
+      monitorSnapshot("head-current"),
+    );
+    expect(commands).toMatchObject([
+      { type: "thread.queued-turn.dispatch", queuedTurnId: answerId },
+    ]);
+  });
+
   it("recovers a nudge after restart, but skips it while paused without blocking user work", async () => {
     const ready = queuedReadModel({
       origin: {

@@ -27,6 +27,15 @@ const MONITOR_REVALIDATION_RETRY_INTERVAL = Duration.seconds(20);
 const MAX_MONITOR_REVALIDATION_ATTEMPTS = 3;
 const MONITOR_REVALIDATION_RETRY_BASE_MS = 20_000;
 
+// Matches the decider invariant in decider.ts for both thread.turn.start and
+// thread.queued-turn.dispatch: while a child decision is pending, only its
+// correlated decision response may dispatch. Anything else must wait.
+const CHILD_DECISION_BLOCKED_DETAIL =
+  "Resolve the current child decision through its correlated response before continuing.";
+
+const isChildDecisionBlockedCause = (cause: Cause.Cause<unknown>): boolean =>
+  Cause.pretty(cause).includes(CHILD_DECISION_BLOCKED_DETAIL);
+
 const serverCommandId = (tag: string): CommandId =>
   CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
 
@@ -127,6 +136,23 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         );
       }
       if (!nextQueuedTurn || nextQueuedTurn.failedAt !== null) return;
+
+      // While a child decision is pending, only its correlated decision
+      // response may dispatch. Anything else stays queued (waiting) so the
+      // user can resolve the decision first; failing it here would turn a
+      // transient ordering conflict into a permanent Paused error. A queued
+      // response still jumps ahead of unrelated waiting turns.
+      const activeDelegation =
+        thread.nudging?.delegation?.completedAt === null ? thread.nudging.delegation : undefined;
+      if (activeDelegation?.decision) {
+        const pendingResponseId = activeDelegation.pendingResponse?.queuedTurnId ?? null;
+        if (pendingResponseId === null) return;
+        const responseTurn = eligibleTurns.find(
+          (turn) => turn.id === pendingResponseId && turn.failedAt === null,
+        );
+        if (!responseTurn) return;
+        nextQueuedTurn = responseTurn;
+      }
 
       const origin = nextQueuedTurn.origin;
       if (origin?.kind === "pull-request-monitor" && origin.headSha !== undefined) {
@@ -287,6 +313,17 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         .pipe(
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
+              if (isChildDecisionBlockedCause(cause)) {
+                // Race: a child decision landed between the read model snapshot
+                // and dispatch. Leave the turn queued; the meta-updated event
+                // for the delegation change (or the next drain) retries it
+                // after the decision is resolved.
+                yield* Effect.logWarning("queued turn dispatch waiting on child decision", {
+                  threadId,
+                  queuedTurnId: nextQueuedTurn.id,
+                });
+                return;
+              }
               const latestReadModel = yield* orchestrationEngine.getReadModel();
               const latestThread = latestReadModel.threads.find((entry) => entry.id === threadId);
               if (
