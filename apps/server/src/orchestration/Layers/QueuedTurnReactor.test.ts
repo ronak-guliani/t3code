@@ -452,6 +452,9 @@ describe("QueuedTurnReactor", () => {
     const answerId = QueuedTurnId.make("answer");
     const model = queuedReadModel();
     const thread = model.threads[0]!;
+    // Production shape: the decider clears `decision` atomically when it
+    // creates `pendingResponse`, so a real answer is decision-null plus
+    // pendingResponse set.
     const commands = await runReactor(
       {
         ...model,
@@ -467,7 +470,7 @@ describe("QueuedTurnReactor", () => {
                 assignmentId: MessageId.make("assignment"),
                 followUp: "automatic" as const,
                 completedAt: null,
-                decision,
+                decision: null,
                 pendingResponse: { queuedTurnId: answerId, report: decision },
               },
             },
