@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 import {
   ProviderDriverKind,
@@ -65,6 +66,7 @@ import {
 import {
   checkpointBaselineRefForThreadTurn,
   checkpointRefForThreadTurn,
+  checkpointRevertGuardRefForThread,
 } from "../../checkpointing/Utils.ts";
 import { ServerConfig } from "../../config.ts";
 import { WorkspaceEntriesLive } from "../../workspace/Layers/WorkspaceEntries.ts";
@@ -73,6 +75,8 @@ import { CheckoutCoordinator } from "../../git/CheckoutCoordinator.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
 import { ReviewSnapshotVerifier } from "../Services/ReviewSnapshotVerifier.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
+import { WorkspaceOwnershipRepositoryLive } from "../../persistence/Layers/WorkspaceOwnership.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
@@ -291,7 +295,8 @@ describe("CheckpointReactor", () => {
     | CheckpointReactor
     | CheckpointStore
     | CheckoutCoordinator
-    | ProviderRuntimeIngestionService,
+    | ProviderRuntimeIngestionService
+    | WorkspaceOwnershipRepository,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -329,8 +334,10 @@ describe("CheckpointReactor", () => {
     readonly useRuntimeIngestion?: boolean;
     readonly deferCheckpointStart?: boolean;
   }) {
-    const cwd = createGitRepository();
-    tempDirs.push(cwd);
+    const projectRoot = createGitRepository();
+    const cwd = path.join(path.dirname(projectRoot), `.t3-test-thread-${randomUUID()}`);
+    runGit(projectRoot, ["worktree", "add", "-b", `test/${randomUUID()}`, cwd, "HEAD"]);
+    tempDirs.push(cwd, projectRoot);
     const provider = createProviderServiceHarness(
       cwd,
       options?.hasSession ?? true,
@@ -438,6 +445,10 @@ describe("CheckpointReactor", () => {
       Layer.provideMerge(WorkspaceEntriesLive.pipe(Layer.provide(WorkspacePathsLive))),
       Layer.provideMerge(WorkspacePathsLive),
       Layer.provideMerge(GitCoreLive),
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(
+        WorkspaceOwnershipRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
+      ),
       Layer.provideMerge(ServerConfigLayer),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -446,6 +457,9 @@ describe("CheckpointReactor", () => {
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const reactor = await runtime.runPromise(Effect.service(CheckpointReactor));
     const checkpointStore = await runtime.runPromise(Effect.service(CheckpointStore));
+    const workspaceOwnership = await runtime.runPromise(
+      Effect.service(WorkspaceOwnershipRepository),
+    );
     const coordinator = await runtime.runPromise(Effect.service(CheckoutCoordinator));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
     scope = await Effect.runPromise(Scope.make("sequential"));
@@ -464,7 +478,7 @@ describe("CheckpointReactor", () => {
         commandId: CommandId.make("cmd-project-create"),
         projectId: asProjectId("project-1"),
         title: "Test Project",
-        workspaceRoot: options?.projectWorkspaceRoot ?? cwd,
+        workspaceRoot: options?.projectWorkspaceRoot ?? projectRoot,
         defaultModelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
           model: "gpt-5-codex",
@@ -490,24 +504,53 @@ describe("CheckpointReactor", () => {
         createdAt,
       }),
     );
+    const threadBinding = (await Effect.runPromise(engine.getReadModel())).threads.find(
+      (thread) => thread.id === ThreadId.make("thread-1"),
+    )?.workspaceBinding;
+    const checkpointStoreForHarness = {
+      ...checkpointStore,
+      captureCheckpoint: (input: Parameters<typeof checkpointStore.captureCheckpoint>[0]) =>
+        checkpointStore.captureCheckpoint({
+          ...input,
+          ...(input.workspaceBinding === undefined && threadBinding !== undefined
+            ? { workspaceBinding: threadBinding }
+            : {}),
+        }),
+      checkpointRefMatchesWorkspace: (
+        input: Parameters<typeof checkpointStore.checkpointRefMatchesWorkspace>[0],
+      ) =>
+        checkpointStore.checkpointRefMatchesWorkspace({
+          ...input,
+          ...(input.workspaceBinding === undefined && threadBinding !== undefined
+            ? { workspaceBinding: threadBinding }
+            : {}),
+        }),
+      restoreCheckpoint: (input: Parameters<typeof checkpointStore.restoreCheckpoint>[0]) =>
+        checkpointStore.restoreCheckpoint({
+          ...input,
+          ...(input.workspaceBinding === undefined && threadBinding !== undefined
+            ? { workspaceBinding: threadBinding }
+            : {}),
+        }),
+    };
 
     if (options?.seedFilesystemCheckpoints ?? true) {
       await runtime.runPromise(
-        checkpointStore.captureCheckpoint({
+        checkpointStoreForHarness.captureCheckpoint({
           cwd,
           checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 0),
         }),
       );
       fs.writeFileSync(path.join(cwd, "README.md"), "v2\n", "utf8");
       await runtime.runPromise(
-        checkpointStore.captureCheckpoint({
+        checkpointStoreForHarness.captureCheckpoint({
           cwd,
           checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
         }),
       );
       fs.writeFileSync(path.join(cwd, "README.md"), "v3\n", "utf8");
       await runtime.runPromise(
-        checkpointStore.captureCheckpoint({
+        checkpointStoreForHarness.captureCheckpoint({
           cwd,
           checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2),
         }),
@@ -517,7 +560,8 @@ describe("CheckpointReactor", () => {
     return {
       engine,
       provider,
-      checkpointStore,
+      checkpointStore: checkpointStoreForHarness,
+      workspaceOwnership,
       coordinator,
       ingestion,
       reactor,
@@ -954,12 +998,14 @@ describe("CheckpointReactor", () => {
 
   it("settles turn completion when checkpoints are unavailable outside a git repository", async () => {
     const nonGitCwd = fs.mkdtempSync(path.join(os.tmpdir(), "t3-non-git-workspace-"));
+    const nonGitThreadCwd = fs.mkdtempSync(path.join(os.tmpdir(), "t3-non-git-thread-"));
     tempDirs.push(nonGitCwd);
+    tempDirs.push(nonGitThreadCwd);
     const harness = await createHarness({
       projectWorkspaceRoot: nonGitCwd,
-      providerSessionCwd: nonGitCwd,
+      providerSessionCwd: nonGitThreadCwd,
       seedFilesystemCheckpoints: false,
-      threadWorktreePath: nonGitCwd,
+      threadWorktreePath: nonGitThreadCwd,
     });
     const createdAt = new Date().toISOString();
     const turnId = asTurnId("turn-without-checkpoint");
@@ -1713,7 +1759,7 @@ describe("CheckpointReactor", () => {
     await waitForGitFileAtRef(handoffCwd, baselineRef, "README.md", "v1\n");
   });
 
-  it("captures turn completion checkpoint from project workspace root when provider session cwd is unavailable", async () => {
+  it("does not capture a checkpoint from the project root when provider session cwd is unavailable", async () => {
     const harness = await createHarness({
       hasSession: false,
       seedFilesystemCheckpoints: false,
@@ -1751,17 +1797,10 @@ describe("CheckpointReactor", () => {
       payload: { state: "completed" },
     });
 
-    await waitForEvent(harness.engine, (event) => event.type === "thread.turn-diff-completed");
     expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1)),
-    ).toBe(true);
-    expect(
-      gitShowFileAtRef(
-        harness.cwd,
-        checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
-        "README.md",
-      ),
-    ).toBe("v2\n");
+    ).toBe(false);
+    expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe("v2\n");
   });
 
   it("ignores non-v2 checkpoint.captured runtime events", async () => {
@@ -2014,6 +2053,91 @@ describe("CheckpointReactor", () => {
     expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2)),
     ).toBe(true);
+  });
+
+  it("refuses to restore a checkpoint when ownership changes mid-revert", async () => {
+    const guardRef = String(checkpointRevertGuardRefForThread(ThreadId.make("thread-1")));
+    let harnessRef: Awaited<ReturnType<typeof createHarness>> | undefined;
+    const harness = await createHarness({
+      beforeCheckpointCapture: (ref) => {
+        const harnessValue = harnessRef;
+        if (harnessValue === undefined || String(ref) !== guardRef) {
+          return Effect.void;
+        }
+        return Effect.gen(function* () {
+          // Simulate a concurrent handoff releasing and reassigning the
+          // checkout after the pre-guard ownership check passed. The restore
+          // must observe the reassignment and refuse to mutate the new
+          // owner's tree.
+          yield* harnessValue.workspaceOwnership.release(ThreadId.make("thread-1"));
+          const readModel = yield* harnessValue.engine.getReadModel();
+          const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+          const worktreePath = thread?.workspaceBinding?.worktreePath ?? thread?.worktreePath;
+          if (worktreePath === undefined || worktreePath === null) {
+            return yield* Effect.die(new Error("test thread has no worktree path"));
+          }
+          yield* harnessValue.workspaceOwnership.claim({
+            threadId: ThreadId.make("thread-2"),
+            worktreePath,
+            branch: null,
+            commandId: CommandId.make("cmd-mid-revert-handoff"),
+            now: new Date().toISOString(),
+          });
+        }).pipe(
+          Effect.asVoid,
+          Effect.catchCause((cause) => Effect.die(cause)),
+        );
+      },
+    });
+    harnessRef = harness;
+    const createdAt = new Date().toISOString();
+
+    for (const turnCount of [1, 2]) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-mid-revert-diff-${turnCount}`),
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId(`turn-mid-revert-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), turnCount),
+          status: "ready",
+          files: [],
+          agentTouchedPaths: [],
+          turnFiles: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        }),
+      );
+    }
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "uncommitted before revert\n", "utf8");
+    runGit(harness.cwd, ["add", "README.md"]);
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "unstaged before revert\n", "utf8");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-mid-revert"),
+        threadId: ThreadId.make("thread-1"),
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+    );
+    await harness.drain();
+    expect(runGit(harness.cwd, ["show", ":README.md"])).toBe("uncommitted before revert\n");
+    expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe(
+      "unstaged before revert\n",
+    );
+    expect(thread.checkpoints).toHaveLength(2);
+    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+    const newOwnerships = await Effect.runPromise(
+      harness.workspaceOwnership.getByThreadId(ThreadId.make("thread-2")),
+    );
+    expect(newOwnerships.length).toBe(1);
   });
 
   it("executes provider revert and emits thread.reverted for claude sessions", async () => {

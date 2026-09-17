@@ -100,6 +100,29 @@ export function upsertLegacyThreadPullRequestLink(
     : existingLinks.map((link, index) => (index === existingIndex ? nextLink : link));
 }
 
+export function seedLegacyThreadPullRequestLink(
+  links: ReadonlyArray<ThreadPullRequestLink> | undefined,
+  pullRequest: GitPullRequestAssociation | null | undefined,
+  linkedAt: string,
+): ReadonlyArray<ThreadPullRequestLink> {
+  const existingLinks = links ?? [];
+  if (
+    pullRequest === null ||
+    pullRequest === undefined ||
+    existingLinks.some((link) => sameThreadPullRequest(link.pullRequest, pullRequest))
+  ) {
+    return existingLinks;
+  }
+  return [
+    {
+      pullRequest,
+      source: "recovered",
+      linkedAt,
+    },
+    ...existingLinks,
+  ];
+}
+
 function pullRequestsForSearch(thread: {
   readonly pullRequests?: ReadonlyArray<ThreadPullRequestLink> | undefined;
   readonly pullRequest?: GitPullRequestAssociation | null | undefined;

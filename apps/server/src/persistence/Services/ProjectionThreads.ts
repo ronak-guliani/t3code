@@ -21,6 +21,7 @@ import {
   ThreadNudging,
   TurnId,
   ValidationRun,
+  WorkspaceBinding,
 } from "@t3tools/contracts";
 import { Effect, Option, Schema, Context } from "effect";
 
@@ -40,6 +41,7 @@ export const ProjectionThread = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
+  workspaceBinding: Schema.optionalKey(Schema.NullOr(WorkspaceBinding)),
   pullRequest: Schema.NullOr(GitPullRequestAssociation).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),

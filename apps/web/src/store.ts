@@ -33,6 +33,7 @@ import { resolveModelSlugForProvider } from "@t3tools/shared/model";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 import {
   sameThreadPullRequest,
+  seedLegacyThreadPullRequestLink,
   upsertLegacyThreadPullRequestLink,
 } from "@t3tools/shared/threadPullRequests";
 import { create } from "zustand";
@@ -1976,6 +1977,17 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.pullRequest !== undefined
             ? { pullRequest: event.payload.pullRequest }
             : {}),
+          ...(event.payload.pullRequest !== undefined && event.payload.pullRequest !== null
+            ? {
+                pullRequests: [
+                  {
+                    pullRequest: event.payload.pullRequest,
+                    source: "created" as const,
+                    linkedAt: event.payload.createdAt,
+                  },
+                ],
+              }
+            : {}),
           ...(event.payload.reviewSnapshot !== undefined
             ? { reviewSnapshot: event.payload.reviewSnapshot }
             : {}),
@@ -2069,7 +2081,11 @@ function applyEnvironmentOrchestrationEvent(
         ...(event.payload.pullRequest !== undefined && event.payload.pullRequest !== null
           ? {
               pullRequests: upsertLegacyThreadPullRequestLink(
-                thread.pullRequests,
+                seedLegacyThreadPullRequestLink(
+                  thread.pullRequests,
+                  thread.pullRequest,
+                  thread.createdAt,
+                ),
                 event.payload.pullRequest,
                 event.payload.updatedAt,
                 event.payload.pullRequestSource,

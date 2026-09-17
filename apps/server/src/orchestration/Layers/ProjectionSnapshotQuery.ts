@@ -37,6 +37,7 @@ import {
   ThreadNudging,
   ThreadPullRequestLink,
   ValidationRun,
+  WorkspaceBinding,
 } from "@t3tools/contracts";
 import { Context, Effect, Layer, Option, Schema, Struct } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -128,19 +129,22 @@ const ProjectionQueuedTurnDbRowSchema = ProjectionQueuedTurn.mapFields(
     modelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
   }),
 );
-const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
-  Struct.assign({
-    nudging: Schema.fromJsonString(ThreadNudging),
-    modelSelection: Schema.fromJsonString(ModelSelection),
-    pullRequest: Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation)),
-    reviewSnapshot: Schema.fromJsonString(Schema.NullOr(ReviewSnapshot)),
-    reviewResult: Schema.fromJsonString(Schema.NullOr(ReviewResult)),
-    validationRun: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRun))).pipe(
-      Schema.withDecodingDefault(Effect.succeed(null)),
-    ),
-    pullRequests: Schema.fromJsonString(Schema.Array(ThreadPullRequestLink)),
-  }),
+const WorkspaceBindingDbSchema = Schema.NullOr(
+  Schema.fromJsonString(Schema.NullOr(WorkspaceBinding)),
 );
+const ProjectionThreadDbRowSchema = Schema.Struct({
+  ...ProjectionThread.fields,
+  nudging: Schema.fromJsonString(ThreadNudging),
+  modelSelection: Schema.fromJsonString(ModelSelection),
+  pullRequest: Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation)),
+  reviewSnapshot: Schema.fromJsonString(Schema.NullOr(ReviewSnapshot)),
+  reviewResult: Schema.fromJsonString(Schema.NullOr(ReviewResult)),
+  validationRun: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRun))).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  pullRequests: Schema.fromJsonString(Schema.Array(ThreadPullRequestLink)),
+  workspaceBinding: Schema.optionalKey(WorkspaceBindingDbSchema),
+});
 const ProjectionChatArchiveThreadDbRowSchema = Schema.Struct({
   threadId: ThreadId,
   parentThreadId: Schema.NullOr(ThreadId),
@@ -153,20 +157,20 @@ const ProjectionChatArchiveThreadDbRowSchema = Schema.Struct({
   projectTitle: TrimmedNonEmptyString,
   projectWorkspaceRoot: TrimmedNonEmptyString,
 });
-const ProjectionThreadWithProjectTitleDbRowSchema = ProjectionThread.mapFields(
-  Struct.assign({
-    nudging: Schema.fromJsonString(ThreadNudging),
-    modelSelection: Schema.fromJsonString(ModelSelection),
-    pullRequest: Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation)),
-    reviewSnapshot: Schema.fromJsonString(Schema.NullOr(ReviewSnapshot)),
-    reviewResult: Schema.fromJsonString(Schema.NullOr(ReviewResult)),
-    validationRun: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRun))).pipe(
-      Schema.withDecodingDefault(Effect.succeed(null)),
-    ),
-    pullRequests: Schema.fromJsonString(Schema.Array(ThreadPullRequestLink)),
-    projectTitle: Schema.NullOr(TrimmedNonEmptyString),
-  }),
-);
+const ProjectionThreadWithProjectTitleDbRowSchema = Schema.Struct({
+  ...ProjectionThread.fields,
+  nudging: Schema.fromJsonString(ThreadNudging),
+  modelSelection: Schema.fromJsonString(ModelSelection),
+  pullRequest: Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation)),
+  reviewSnapshot: Schema.fromJsonString(Schema.NullOr(ReviewSnapshot)),
+  reviewResult: Schema.fromJsonString(Schema.NullOr(ReviewResult)),
+  validationRun: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRun))).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  pullRequests: Schema.fromJsonString(Schema.Array(ThreadPullRequestLink)),
+  workspaceBinding: Schema.optionalKey(WorkspaceBindingDbSchema),
+  projectTitle: Schema.NullOr(TrimmedNonEmptyString),
+});
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   Struct.assign({
     payload: Schema.fromJsonString(Schema.Unknown),
@@ -324,6 +328,7 @@ const ProjectionThreadCheckpointContextThreadRowSchema = Schema.Struct({
   projectId: ProjectId,
   workspaceRoot: Schema.String,
   worktreePath: Schema.NullOr(Schema.String),
+  workspaceBinding: WorkspaceBindingDbSchema,
 });
 
 const REQUIRED_SNAPSHOT_PROJECTORS = [
@@ -539,6 +544,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     interaction_mode AS "interactionMode",
     branch,
     worktree_path AS "worktreePath",
+    workspace_binding_json AS "workspaceBinding",
     pull_request_json AS "pullRequest",
     COALESCE((
       SELECT json_group_array(json_object(
@@ -1166,7 +1172,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threads.thread_id AS "threadId",
           threads.project_id AS "projectId",
           projects.workspace_root AS "workspaceRoot",
-          threads.worktree_path AS "worktreePath"
+          threads.worktree_path AS "worktreePath",
+          threads.workspace_binding_json AS "workspaceBinding"
         FROM projection_threads AS threads
         INNER JOIN projection_projects AS projects
           ON projects.project_id = threads.project_id
@@ -1192,6 +1199,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threads.interaction_mode AS "interactionMode",
           threads.branch,
           threads.worktree_path AS "worktreePath",
+          threads.workspace_binding_json AS "workspaceBinding",
           threads.pull_request_json AS "pullRequest",
           COALESCE((
             SELECT json_group_array(json_object(
@@ -2018,6 +2026,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   interactionMode: row.interactionMode,
                   branch: row.branch,
                   worktreePath: row.worktreePath,
+                  ...(row.workspaceBinding == null
+                    ? {}
+                    : { workspaceBinding: row.workspaceBinding }),
                   pullRequest: row.pullRequest ?? null,
                   pullRequests: row.pullRequests,
                   ...(row.reviewSnapshot !== null && row.reviewSnapshot !== undefined
@@ -2496,6 +2507,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         projectId: threadRow.value.projectId,
         workspaceRoot: threadRow.value.workspaceRoot,
         worktreePath: threadRow.value.worktreePath,
+        ...(threadRow.value.workspaceBinding == null
+          ? {}
+          : { workspaceBinding: threadRow.value.workspaceBinding }),
         checkpoints: checkpointRows.map(
           (row): OrchestrationCheckpointSummary => ({
             turnId: row.turnId,
@@ -2584,6 +2598,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             interactionMode: threadRow.value.interactionMode,
             branch: threadRow.value.branch,
             worktreePath: threadRow.value.worktreePath,
+            ...(threadRow.value.workspaceBinding == null
+              ? {}
+              : { workspaceBinding: threadRow.value.workspaceBinding }),
             pullRequest: threadRow.value.pullRequest ?? null,
             pullRequests: threadRow.value.pullRequests,
             latestTurn: reconcileLatestTurnWithSession(
@@ -2772,6 +2789,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
         worktreePath: threadRow.value.worktreePath,
+        ...(threadRow.value.workspaceBinding == null
+          ? {}
+          : { workspaceBinding: threadRow.value.workspaceBinding }),
         pullRequest: threadRow.value.pullRequest ?? null,
         pullRequests: threadRow.value.pullRequests,
         ...(threadRow.value.reviewSnapshot !== null && threadRow.value.reviewSnapshot !== undefined

@@ -18,6 +18,7 @@ import {
   ReviewSnapshot,
   ThreadNudging,
   ValidationRun,
+  WorkspaceBinding,
 } from "@t3tools/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
@@ -30,6 +31,7 @@ const ProjectionThreadDbRow = ProjectionThread.mapFields(
     validationRun: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRun))).pipe(
       Schema.withDecodingDefault(Effect.succeed(null)),
     ),
+    workspaceBinding: Schema.fromJsonString(Schema.NullOr(WorkspaceBinding)),
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;
@@ -53,6 +55,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           interaction_mode,
           branch,
           worktree_path,
+          workspace_binding_json,
           pull_request_json,
           review_snapshot_json,
           review_result_json,
@@ -88,6 +91,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.interactionMode},
           ${row.branch},
           ${row.worktreePath},
+          ${JSON.stringify(row.workspaceBinding ?? null)},
           ${JSON.stringify(row.pullRequest ?? null)},
           ${JSON.stringify(row.reviewSnapshot ?? null)},
           ${JSON.stringify(row.reviewResult ?? null)},
@@ -123,6 +127,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           interaction_mode = excluded.interaction_mode,
           branch = excluded.branch,
           worktree_path = excluded.worktree_path,
+          workspace_binding_json = excluded.workspace_binding_json,
           pull_request_json = excluded.pull_request_json,
           review_snapshot_json = excluded.review_snapshot_json,
           review_result_json = excluded.review_result_json,
@@ -165,6 +170,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          workspace_binding_json AS "workspaceBinding",
           pull_request_json AS "pullRequest",
           review_snapshot_json AS "reviewSnapshot",
           review_result_json AS "reviewResult",
@@ -209,6 +215,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          workspace_binding_json AS "workspaceBinding",
           pull_request_json AS "pullRequest",
           review_snapshot_json AS "reviewSnapshot",
           review_result_json AS "reviewResult",

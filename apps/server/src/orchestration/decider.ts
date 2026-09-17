@@ -383,6 +383,7 @@ function buildTurnStartEvents(input: {
   readonly delegationAssignmentId?: TurnStartRequestedPayload["delegationAssignmentId"];
   readonly delegationDispatchId?: TurnStartRequestedPayload["delegationDispatchId"];
   readonly delegationTransition?: TurnStartRequestedPayload["delegationTransition"];
+  readonly workspaceBinding?: TurnStartRequestedPayload["workspaceBinding"];
   readonly at: string;
 }): {
   readonly userMessageEvent: PlannedOrchestrationEvent;
@@ -435,6 +436,7 @@ function buildTurnStartEvents(input: {
       ...(input.delegationTransition !== undefined
         ? { delegationTransition: input.delegationTransition }
         : {}),
+      ...(input.workspaceBinding !== undefined ? { workspaceBinding: input.workspaceBinding } : {}),
       createdAt: input.at,
     },
   };
@@ -826,6 +828,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           ...(command.pullRequest !== undefined ? { pullRequest: command.pullRequest } : {}),
           ...(command.reviewSnapshot !== undefined
             ? { reviewSnapshot: command.reviewSnapshot }
@@ -1264,6 +1269,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.branch !== undefined ? { branch: command.branch } : {}),
           ...(command.worktreePath !== undefined ? { worktreePath: command.worktreePath } : {}),
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           ...(command.pullRequest !== undefined ? { pullRequest: command.pullRequest } : {}),
           ...(command.pullRequestSource !== undefined
             ? { pullRequestSource: command.pullRequestSource }
@@ -1486,6 +1494,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           updatedAt: occurredAt,
         },
       };
@@ -1494,6 +1505,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         role: "marker",
         branch: command.branch,
         worktreePath: command.worktreePath,
+        ...(command.workspaceBinding !== undefined
+          ? { workspaceBinding: command.workspaceBinding }
+          : {}),
       } as const;
       // The marker is the invariant of a handoff: it records the workspace move
       // whether the thread continues on a generated continuation or on a turn
@@ -1836,6 +1850,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               delegationTransition: turnDelegation.dispatchReason ?? "assigned",
             }
           : {}),
+        ...(command.workspaceBinding !== undefined
+          ? { workspaceBinding: command.workspaceBinding }
+          : {}),
         at: command.createdAt,
       });
       const occurredAt = command.createdAt;
@@ -1881,10 +1898,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               }),
             ]
           : [];
+      const workspaceBindingEvent =
+        command.workspaceBinding !== undefined &&
+        (targetThread.workspaceBinding?.generation !== command.workspaceBinding.generation ||
+          targetThread.workspaceBinding?.canonicalPath !== command.workspaceBinding.canonicalPath)
+          ? [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread",
+                  aggregateId: command.threadId,
+                  occurredAt,
+                  commandId: command.commandId,
+                }),
+                type: "thread.meta-updated" as const,
+                payload: {
+                  threadId: command.threadId,
+                  branch: command.workspaceBinding.branch,
+                  worktreePath: command.workspaceBinding.worktreePath,
+                  workspaceBinding: command.workspaceBinding,
+                  updatedAt: occurredAt,
+                },
+              },
+            ]
+          : [];
       return appendChildLifecycleNotification({
         readModel,
         childThread: targetThread,
         sourceEvents: [
+          ...workspaceBindingEvent,
           userMessageEvent,
           turnStartRequestedEvent,
           ...delegationEvents,
@@ -2240,6 +2281,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
+      // Persist an isolated workspace binding admitted for this dispatch. The
+      // turn-start-requested payload below carries the binding for provenance,
+      // but no projector applies it to the thread; without this meta-updated
+      // event the provider would keep executing in the stale worktree while
+      // the claimed isolated workspace sits unused.
+      if (
+        command.workspaceBinding !== undefined &&
+        (targetThread.workspaceBinding?.generation !== command.workspaceBinding.generation ||
+          targetThread.workspaceBinding?.canonicalPath !== command.workspaceBinding.canonicalPath)
+      ) {
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.dispatchedAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.meta-updated",
+          payload: {
+            threadId: command.threadId,
+            branch: command.workspaceBinding.branch,
+            worktreePath: command.workspaceBinding.worktreePath,
+            workspaceBinding: command.workspaceBinding,
+            updatedAt: command.dispatchedAt,
+          },
+        });
+      }
       const { userMessageEvent, turnStartRequestedEvent } = buildTurnStartEvents({
         commandId: command.commandId,
         threadId: command.threadId,
@@ -2260,6 +2328,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         runtimeMode: isNudge ? targetThread.runtimeMode : queuedTurn.runtimeMode,
         interactionMode: isNudge ? targetThread.interactionMode : queuedTurn.interactionMode,
         sourceProposedPlan: queuedTurn.sourceProposedPlan,
+        workspaceBinding: command.workspaceBinding ?? targetThread.workspaceBinding ?? undefined,
         ...(turnDelegation?.dispatchId
           ? {
               delegationAssignmentId: turnDelegation.assignmentId,
