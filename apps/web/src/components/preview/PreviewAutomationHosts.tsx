@@ -5,7 +5,7 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import {
   FILL_PREVIEW_VIEWPORT,
   PREVIEW_AUTOMATION_OPERATIONS,
-  type EnvironmentId,
+  EnvironmentId,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationOpenAndSnapshotInput,
   type PreviewAutomationOpenInput,
@@ -16,6 +16,8 @@ import {
   type PreviewAutomationOpenAndSnapshotResult,
   type PreviewAutomationSnapshot,
   type PreviewAutomationSnapshotInput,
+  type PreviewAutomationPreflightInput,
+  type PreviewAutomationPreflightResult,
   type PreviewAutomationTabsResult,
   type PreviewAutomationHost as PreviewAutomationHostState,
   type PreviewAutomationRequest,
@@ -80,6 +82,145 @@ import {
   shouldPresentPreview,
 } from "./previewAutomationOpenReadiness";
 import { resolveSnapshotBudgets } from "./previewSnapshotBudgets";
+
+export const classifyPreviewPreflightTarget = (input: {
+  readonly descriptorStatus: number | null;
+  readonly appStatus: number | null;
+  readonly origin: string;
+  readonly environmentId: EnvironmentId | null;
+  readonly expectedEnvironmentId: EnvironmentId | null;
+}): Pick<PreviewAutomationPreflightResult, "target" | "recovery"> => {
+  if (input.appStatus === null || input.descriptorStatus === null) {
+    return {
+      target: {
+        requested: true,
+        reachability: "unreachable",
+        app: "unknown",
+        origin: input.origin,
+        environmentId: null,
+        status: null,
+      },
+      recovery: {
+        kind: "retry-target",
+        message: "The target could not be reached by the collaborative browser.",
+      },
+    };
+  }
+  if (input.descriptorStatus !== 200 || input.environmentId === null) {
+    return {
+      target: {
+        requested: true,
+        reachability: "reachable",
+        app: "not-t3-app",
+        origin: input.origin,
+        environmentId: input.environmentId,
+        status: input.appStatus,
+      },
+      recovery: {
+        kind: "configure-target",
+        message: "The target is reachable but does not serve the expected T3 app.",
+      },
+    };
+  }
+  if (input.appStatus === 503) {
+    return {
+      target: {
+        requested: true,
+        reachability: "reachable",
+        app: "not-configured",
+        origin: input.origin,
+        environmentId: input.environmentId,
+        status: input.appStatus,
+      },
+      recovery: {
+        kind: "configure-target",
+        message: "The target is reachable but has no configured T3 static directory or dev URL.",
+      },
+    };
+  }
+  if (input.appStatus !== 200) {
+    return {
+      target: {
+        requested: true,
+        reachability: "reachable",
+        app: "not-t3-app",
+        origin: input.origin,
+        environmentId: input.environmentId,
+        status: input.appStatus,
+      },
+      recovery: {
+        kind: "configure-target",
+        message: "The target is reachable but does not serve the expected T3 app.",
+      },
+    };
+  }
+  if (input.expectedEnvironmentId !== null && input.environmentId !== input.expectedEnvironmentId) {
+    return {
+      target: {
+        requested: true,
+        reachability: "reachable",
+        app: "expected-t3-app",
+        origin: input.origin,
+        environmentId: input.environmentId,
+        status: input.appStatus,
+      },
+      recovery: {
+        kind: "resolve-environment-mismatch",
+        message:
+          "The target serves a different T3 environment; pairing is blocked until the target and environment are aligned.",
+      },
+    };
+  }
+  return {
+    target: {
+      requested: true,
+      reachability: "reachable",
+      app: "expected-t3-app",
+      origin: input.origin,
+      environmentId: input.environmentId,
+      status: input.appStatus,
+    },
+    recovery: {
+      kind: "pair-after-preflight",
+      message:
+        "The target is the expected T3 environment. Pair only after this preflight and do not reuse the probe URL as a pairing token.",
+    },
+  };
+};
+
+export const classifyPreviewPreflightProbe = (input: {
+  readonly requestedOrigin: string;
+  readonly finalOrigin: string | null;
+  readonly descriptorStatus: number | null;
+  readonly appStatus: number | null;
+  readonly environmentId: EnvironmentId | null;
+  readonly expectedEnvironmentId: EnvironmentId | null;
+}): Pick<PreviewAutomationPreflightResult, "target" | "recovery"> => {
+  if (input.finalOrigin !== input.requestedOrigin) {
+    return {
+      target: {
+        requested: true,
+        reachability: "reachable",
+        app: "unknown",
+        origin: input.finalOrigin,
+        environmentId: null,
+        status: null,
+      },
+      recovery: {
+        kind: "retry-target",
+        message:
+          "The target redirected to a different origin during preflight; pairing is blocked until the requested target is reached directly.",
+      },
+    };
+  }
+  return classifyPreviewPreflightTarget({
+    descriptorStatus: input.descriptorStatus,
+    appStatus: input.appStatus,
+    origin: input.requestedOrigin,
+    environmentId: input.environmentId,
+    expectedEnvironmentId: input.expectedEnvironmentId,
+  });
+};
 import { createPreviewAutomationRequestConsumerAtom } from "./previewAutomationRequestConsumer";
 import { createPreviewAutomationClientId } from "./previewAutomationClientId";
 import {
@@ -286,9 +427,9 @@ export function PreviewAutomationHosts() {
        * Host lifetime follows the desktop runtime's environment connections,
        * not the routed thread. This keeps background threads automatable and
        * lets the subscription runtime own reconnects for every saved target.
-       * Browser-served clients still register, with zero supported operations,
-       * so routing can report "connected but cannot automate" instead of
-       * "nothing is connected".
+       * Browser-served clients still register with zero supported operations,
+       * so routing can report an explicitly unsupported host instead of
+       * attempting to send it a request it cannot consume.
        */}
       {environments.map((environment) => (
         <PreviewAutomationEnvironmentHost
@@ -490,6 +631,246 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           return shouldPresent;
         };
         switch (request.operation) {
+          case "preflight": {
+            const input = request.input as PreviewAutomationPreflightInput;
+            const targetRequested = input.url !== undefined || input.target !== undefined;
+            tabId = resolvePreviewAutomationOpenTab(
+              state,
+              request.tabId,
+              input.reuseExistingTab ?? true,
+            );
+            const browserStatus = await readPreviewAutomationStatus(threadRef, tabId);
+            const unselectedTabStatus =
+              tabId === null && input.reuseExistingTab === false
+                ? {
+                    ...browserStatus,
+                    tabId: null,
+                    url: null,
+                    title: null,
+                    loading: false,
+                  }
+                : browserStatus;
+            const makeResult = (
+              target: PreviewAutomationPreflightResult["target"],
+              recovery: PreviewAutomationPreflightResult["recovery"],
+              status = unselectedTabStatus,
+            ): PreviewAutomationPreflightResult => ({
+              ...(status.tabId === null ? {} : { tabId: status.tabId }),
+              browser: {
+                supported: Boolean(previewBridge),
+                available: Boolean(previewBridge),
+                visible: status.visible,
+                tabAttached: status.tabId !== null,
+                tabId: status.tabId,
+              },
+              mcp: { credential: "valid" },
+              target,
+              recovery,
+            });
+
+            if (!previewBridge) {
+              return makeResult(
+                {
+                  requested: targetRequested,
+                  reachability: targetRequested ? "not-checked" : "not-requested",
+                  app: targetRequested ? "unknown" : "not-requested",
+                  origin: null,
+                  environmentId: null,
+                  status: null,
+                },
+                {
+                  kind: "use-supported-browser",
+                  message:
+                    "This browser host is connected but does not support collaborative preview automation.",
+                },
+              );
+            }
+
+            if (!tabId && input.open !== true) {
+              return makeResult(
+                {
+                  requested: targetRequested,
+                  reachability: targetRequested ? "not-checked" : "not-requested",
+                  app: targetRequested ? "unknown" : "not-requested",
+                  origin: null,
+                  environmentId: null,
+                  status: null,
+                },
+                {
+                  kind: "open-browser",
+                  message:
+                    "No collaborative browser tab is attached. Call preview_preflight with open=true or preview_open before navigating.",
+                },
+              );
+            }
+
+            if (!tabId) {
+              const opened = await open({
+                environmentId,
+                input: { threadId: request.threadId },
+              });
+              if (opened._tag === "Failure") {
+                return raiseAtomCommandFailure(opened);
+              }
+              applyPreviewServerSnapshot(threadRef, opened.value);
+              tabId = opened.value.tabId;
+            }
+
+            const activeTabId = tabId;
+            const activeRuntimeTabId = previewRuntimeTabId(
+              threadRef,
+              readThreadPreviewState(threadRef).serverEpoch,
+              activeTabId,
+            );
+            await waitForDesktopOverlay(
+              threadRef,
+              request.requestId,
+              activeTabId,
+              activeRuntimeTabId,
+              request.operation,
+              hostDeadlineMs,
+            );
+
+            const attachedStatus = await readPreviewAutomationStatus(threadRef, activeTabId);
+            if (!targetRequested) {
+              return makeResult(
+                {
+                  requested: false,
+                  reachability: "not-requested",
+                  app: "not-requested",
+                  origin: null,
+                  environmentId: null,
+                  status: null,
+                },
+                {
+                  kind: "none",
+                  message: "Browser automation is ready; no target was requested.",
+                },
+                attachedStatus,
+              );
+            }
+
+            let resolvedUrl: string;
+            try {
+              const resolution = resolveBrowserNavigationTarget(
+                environmentId,
+                input.target ?? { kind: "url", url: input.url! },
+              );
+              const parsed = new URL(resolution.resolvedUrl);
+              resolvedUrl = new URL("/.well-known/t3/environment", parsed.origin).toString();
+            } catch {
+              return makeResult(
+                {
+                  requested: true,
+                  reachability: "unreachable",
+                  app: "unknown",
+                  origin: null,
+                  environmentId: null,
+                  status: null,
+                },
+                {
+                  kind: "retry-target",
+                  message: "The target URL could not be resolved for a token-free preflight probe.",
+                },
+                attachedStatus,
+              );
+            }
+
+            try {
+              assertPreviewRuntimeCurrent(threadRef, activeTabId, activeRuntimeTabId, request);
+              await previewBridge.navigate(activeRuntimeTabId, resolvedUrl);
+              await waitForNavigationReadiness(
+                threadRef,
+                request.requestId,
+                activeTabId,
+                activeRuntimeTabId,
+                request.operation,
+                "load",
+                input.timeoutMs ?? request.timeoutMs,
+              );
+            } catch {
+              return makeResult(
+                {
+                  requested: true,
+                  reachability: "not-checked",
+                  app: "unknown",
+                  origin: new URL(resolvedUrl).origin,
+                  environmentId: null,
+                  status: null,
+                },
+                {
+                  kind: "retry-browser",
+                  message:
+                    "The collaborative browser could not complete the preflight navigation. Retry the preflight after the browser host settles.",
+                },
+                attachedStatus,
+              );
+            }
+
+            try {
+              const probe = await previewBridge.automation.evaluate(activeRuntimeTabId, {
+                expression:
+                  "(async () => { const descriptorResponse = await fetch(location.href, { cache: 'no-store' }); const appResponse = await fetch(new URL('/', location.origin), { cache: 'no-store' }); const text = await descriptorResponse.text(); let descriptor = null; try { const parsed = JSON.parse(text); if (parsed && typeof parsed === 'object' && typeof parsed.environmentId === 'string' && typeof parsed.serverVersion === 'string') descriptor = { environmentId: parsed.environmentId, serverVersion: parsed.serverVersion }; } catch {} return { origin: location.origin, descriptorStatus: descriptorResponse.status, appStatus: appResponse.status, descriptor }; })()",
+                awaitPromise: true,
+                returnByValue: true,
+              });
+              const probeResult =
+                typeof probe === "object" && probe !== null
+                  ? (probe as {
+                      readonly origin?: unknown;
+                      readonly descriptorStatus?: unknown;
+                      readonly appStatus?: unknown;
+                      readonly descriptor?: {
+                        readonly environmentId?: unknown;
+                        readonly serverVersion?: unknown;
+                      } | null;
+                    })
+                  : {};
+              const finalOrigin =
+                typeof probeResult.origin === "string" ? probeResult.origin : null;
+              const descriptorStatus =
+                typeof probeResult.descriptorStatus === "number" &&
+                Number.isInteger(probeResult.descriptorStatus)
+                  ? probeResult.descriptorStatus
+                  : null;
+              const appStatus =
+                typeof probeResult.appStatus === "number" && Number.isInteger(probeResult.appStatus)
+                  ? probeResult.appStatus
+                  : null;
+              const descriptor = probeResult.descriptor;
+              const probedEnvironmentId =
+                descriptor &&
+                typeof descriptor.environmentId === "string" &&
+                descriptor.environmentId.trim().length > 0
+                  ? EnvironmentId.make(descriptor.environmentId)
+                  : null;
+              const classified = classifyPreviewPreflightProbe({
+                requestedOrigin: new URL(resolvedUrl).origin,
+                finalOrigin,
+                descriptorStatus,
+                appStatus,
+                environmentId: probedEnvironmentId,
+                expectedEnvironmentId: input.expectedEnvironmentId ?? null,
+              });
+              return makeResult(classified.target, classified.recovery, attachedStatus);
+            } catch {
+              return makeResult(
+                {
+                  requested: true,
+                  reachability: "unreachable",
+                  app: "unknown",
+                  origin: new URL(resolvedUrl).origin,
+                  environmentId: null,
+                  status: null,
+                },
+                {
+                  kind: "retry-target",
+                  message: "The target could not be reached by the collaborative browser.",
+                },
+                attachedStatus,
+              );
+            }
+          }
           case "status":
             return await readPreviewAutomationStatus(threadRef, tabId);
           case "open": {
