@@ -6,6 +6,7 @@ import {
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
+  PreviewAutomationNoSupportedHostError,
   PreviewAutomationPinnedHostUnsupportedOperationError,
   PreviewAutomationTargetNotEditableError,
   PreviewTabId,
@@ -771,6 +772,30 @@ it.effect("does not route new operations to legacy hosts that did not advertise 
         environmentHasConnectedClients: true,
       });
       expect(error.message).toContain("no desktop preview automation host is ready");
+    }),
+  ),
+);
+
+it.effect("reports explicit unsupported status for preflight on legacy hosts", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const legacyEvents = yield* broker.connect(makeHost());
+      yield* Stream.runDrain(legacyEvents).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const errorFiber = yield* broker
+        .invoke<void>({ scope, operation: "preflight", input: {}, timeoutMs: 10 })
+        .pipe(Effect.flip, Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("10 millis");
+      const error = yield* Fiber.join(errorFiber);
+
+      expect(error).toBeInstanceOf(PreviewAutomationNoSupportedHostError);
+      expect(error).toMatchObject({
+        operation: "preflight",
+        connectedClientCount: 1,
+      });
     }),
   ),
 );

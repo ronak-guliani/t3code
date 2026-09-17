@@ -7,6 +7,8 @@ import {
   PreviewAutomationOpenAndSnapshotInput,
   PreviewAutomationOpenAndSnapshotResult,
   PreviewAutomationOpenInput,
+  PreviewAutomationPreflightInput,
+  PreviewAutomationPreflightResult,
   PreviewAutomationPressInput,
   PreviewAutomationRecordingArtifact,
   PreviewAutomationRecordingStatus,
@@ -139,6 +141,17 @@ export const PreviewOpenAndSnapshotTool = safeBrowserTool(
   }).annotate(Tool.Title, "Open browser and snapshot"),
 );
 
+export const PreviewPreflightTool = safeBrowserTool(
+  Tool.make("preview_preflight", {
+    description:
+      "Perform one deterministic browser pairing preflight. It reports browser support/visibility/tab attachment, validates this MCP session, and optionally probes a target's token-free T3 environment descriptor. Pairing URLs are never opened, and token-bearing URLs are not returned in diagnostics. Use this before preview_open_and_snapshot or preview_navigate.",
+    parameters: PreviewAutomationPreflightInput,
+    success: PreviewAutomationPreflightResult,
+    failure: PreviewAutomationError,
+    dependencies,
+  }).annotate(Tool.Title, "Preflight preview pairing"),
+);
+
 export const PreviewClickTool = browserTool(
   Tool.make("preview_click", {
     description:
@@ -231,6 +244,7 @@ export const PreviewToolkit = Toolkit.make(
   PreviewTabsTool,
   PreviewOpenTool,
   PreviewOpenAndSnapshotTool,
+  PreviewPreflightTool,
   PreviewNavigateTool,
   PreviewResizeTool,
   PreviewSetAppearanceTool,
@@ -249,6 +263,7 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewStatusTool,
   PreviewTabsTool,
   PreviewOpenTool,
+  PreviewPreflightTool,
   PreviewNavigateTool,
   PreviewResizeTool,
   PreviewSetAppearanceTool,
