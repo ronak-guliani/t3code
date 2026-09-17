@@ -9,7 +9,9 @@ import {
   Schema,
   Stream,
 } from "effect";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
+import * as NodePath from "@effect/platform-node/NodePath";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import * as Socket from "effect/unstable/socket/Socket";
 import {
@@ -28,6 +30,7 @@ import {
   OrchestrationReadThreadInput,
   OrchestrationReadThreadResult,
   OrchestrationShellStreamItem,
+  OrchestrationReadThreadInputError,
   ORCHESTRATION_WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -41,6 +44,13 @@ import { resolveCliEnvironmentCandidate, withAccountEnvironment } from "./accoun
 import { readEnvironmentRegistry, type CliEnvironmentCandidate } from "./environmentRegistry.ts";
 import { withRpcDeadlines } from "./rpcDeadline.ts";
 import { buildRevision } from "../buildIdentity.ts";
+import { OrchestrationProjectionSnapshotQueryDependenciesLive } from "../orchestration/runtimeLayer.ts";
+import { OrchestrationProjectionSnapshotQueryLive } from "../orchestration/Layers/ProjectionSnapshotQuery.ts";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionSnapshotQueryShape,
+} from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { makeRuntimeSqliteLayer } from "../persistence/Layers/Sqlite.ts";
 
 export interface CliLiveTargetFlags {
   readonly url: Option.Option<string>;
@@ -102,6 +112,7 @@ const decodeDispatchResult = HttpClientResponse.schemaBodyJson(DispatchResult);
 const decodeWsToken = HttpClientResponse.schemaBodyJson(AuthWebSocketTokenResult);
 const makeWsRpcClient = RpcClient.make(WsRpcGroup).pipe(Effect.map(withRpcDeadlines));
 const isCliRpcError = Schema.is(CliRpcError);
+const isOrchestrationReadThreadInputError = Schema.is(OrchestrationReadThreadInputError);
 export const isDefinitiveCommandRejectionError = (error: unknown): boolean =>
   isCliRpcError(error) && error.definitiveCommandRejection === true;
 const isCliLiveTargetError = Schema.is(CliLiveTargetError);
@@ -523,6 +534,100 @@ export const fetchLiveOrchestrationThreadSnapshot = (
     }),
   );
 
+const isImplicitLocalReadTarget = (
+  target: ResolvedCliLiveTarget,
+): target is Extract<ResolvedCliLiveTarget, { readonly kind: "bearer" }> & {
+  readonly baseDir: string;
+  readonly token?: undefined;
+} =>
+  target.kind === "bearer" &&
+  target.token === undefined &&
+  target.baseDir !== undefined &&
+  (target.source === "implicit-local" || target.source === "explicit-base-dir");
+
+const withLocalProjectionSnapshotQuery = <A, E, R>(
+  baseDir: string,
+  origin: string,
+  run: (query: ProjectionSnapshotQueryShape) => Effect.Effect<A, E, R>,
+) =>
+  Effect.gen(function* () {
+    const localTarget = yield* resolveLocalRuntimeTarget(baseDir, {
+      source: "explicit-base-dir",
+      selectionReason: "--base-dir",
+    });
+    if (localTarget.origin !== origin) {
+      return yield* new CliLiveTargetError({
+        message:
+          `Refusing to read from '${baseDir}' because its live server origin changed from ` +
+          `'${origin}' to '${localTarget.origin}'.`,
+      });
+    }
+    const paths = yield* deriveServerPaths(baseDir, undefined);
+    const sqliteLayer = makeRuntimeSqliteLayer({
+      filename: paths.dbPath,
+      readonly: true,
+      spanAttributes: {
+        "db.name": "t3.db",
+        "service.name": "t3-cli-read",
+      },
+    });
+    const queryLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
+      Layer.provideMerge(OrchestrationProjectionSnapshotQueryDependenciesLive),
+      Layer.provideMerge(sqliteLayer),
+    );
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        return yield* run(yield* ProjectionSnapshotQuery);
+      }).pipe(Effect.provide(queryLayer)),
+    );
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodePath.layer)));
+
+const mapLocalProjectionReadError = (cause: unknown, subject: string): CliRpcError =>
+  new CliRpcError({
+    message: `Failed to read local ${subject}.`,
+    cause,
+  });
+
+const getLocalShellSnapshot = (baseDir: string, origin: string) =>
+  withLocalProjectionSnapshotQuery(baseDir, origin, (query) =>
+    query
+      .getShellSnapshot()
+      .pipe(Effect.mapError((cause) => mapLocalProjectionReadError(cause, "shell snapshot"))),
+  );
+
+const getLocalThreadSnapshot = (
+  baseDir: string,
+  origin: string,
+  threadId: import("@t3tools/contracts").ThreadId,
+) =>
+  withLocalProjectionSnapshotQuery(baseDir, origin, (query) =>
+    query.getThreadDetailSnapshotById(threadId).pipe(
+      Effect.flatMap((snapshot) =>
+        Option.isSome(snapshot)
+          ? Effect.succeed(snapshot.value)
+          : Effect.fail(new CliRpcError({ message: `Thread ${threadId} was not found.` })),
+      ),
+      Effect.mapError((cause) =>
+        isCliRpcError(cause) ? cause : mapLocalProjectionReadError(cause, "thread snapshot"),
+      ),
+    ),
+  );
+
+const readLocalThread = (baseDir: string, origin: string, input: OrchestrationReadThreadInput) =>
+  withLocalProjectionSnapshotQuery(baseDir, origin, (query) =>
+    query
+      .readThread(input)
+      .pipe(
+        Effect.mapError((cause) =>
+          isOrchestrationReadThreadInputError(cause)
+            ? new CliRpcError({ message: cause.message })
+            : isCliRpcError(cause)
+              ? cause
+              : mapLocalProjectionReadError(cause, "thread history"),
+        ),
+      ),
+  );
+
 const dispatchCommand = (
   origin: string,
   bearerToken: string,
@@ -752,6 +857,9 @@ export const getLiveOrchestrationShellSnapshot = (flags: CliLiveTargetFlags) =>
           ),
       );
     }
+    if (isImplicitLocalReadTarget(target)) {
+      return yield* getLocalShellSnapshot(target.baseDir, target.origin);
+    }
     return yield* withBorrowedBearerTokenForTarget(target, ({ origin, bearerToken }) =>
       fetchLiveOrchestrationShellSnapshot(origin, bearerToken),
     );
@@ -764,6 +872,9 @@ export const readLiveThread = (flags: CliLiveTargetFlags, input: OrchestrationRe
       return yield* withResolvedLiveRpcClient(target, (client) =>
         client[ORCHESTRATION_WS_METHODS.readThread](input),
       );
+    }
+    if (isImplicitLocalReadTarget(target)) {
+      return yield* readLocalThread(target.baseDir, target.origin, input);
     }
     return yield* withBorrowedBearerTokenForTarget(target, ({ origin, bearerToken }) =>
       Effect.gen(function* () {
@@ -858,6 +969,13 @@ export const withLiveSnapshotClient = <A, E, R>(
             }),
           ),
       );
+    }
+    if (isImplicitLocalReadTarget(target)) {
+      return yield* run({
+        getSnapshot: getLocalShellSnapshot(target.baseDir, target.origin),
+        getThreadSnapshot: (threadId) =>
+          getLocalThreadSnapshot(target.baseDir, target.origin, threadId),
+      });
     }
     return yield* withBorrowedBearerTokenForTarget(target, ({ origin, bearerToken }) =>
       run({

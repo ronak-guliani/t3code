@@ -3055,19 +3055,23 @@ const diffTurnCommand = Command.make("turn", {
   scope: Flag.choice("scope", ["turn", "snapshot"]).pipe(Flag.withDefault("snapshot")),
   ignoreWhitespace: ignoreWhitespaceFlag,
 }).pipe(
-  Command.withDescription("Get a turn diff."),
+  Command.withDescription("Get a turn diff for an active or archived thread."),
   Command.withHandler((flags) =>
-    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
-      Effect.gen(function* () {
-        const result = yield* client[ORCHESTRATION_WS_METHODS.getTurnDiff]({
-          threadId: thread.id,
-          fromTurnCount: Math.max(0, flags.turn - 1),
-          toTurnCount: flags.turn,
-          scope: flags.scope,
-          ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-        });
-        yield* printJson(result);
-      }),
+    withThreadRpc(
+      flags,
+      flags.chat,
+      ({ thread, client }) =>
+        Effect.gen(function* () {
+          const result = yield* client[ORCHESTRATION_WS_METHODS.getTurnDiff]({
+            threadId: thread.id,
+            fromTurnCount: Math.max(0, flags.turn - 1),
+            toTurnCount: flags.turn,
+            scope: flags.scope,
+            ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+          });
+          yield* printJson(result);
+        }),
+      { includeArchived: true },
     ),
   ),
 );
@@ -3078,19 +3082,23 @@ const diffThreadCommand = Command.make("thread", {
   toTurn: Flag.integer("to-turn").pipe(Flag.optional),
   ignoreWhitespace: ignoreWhitespaceFlag,
 }).pipe(
-  Command.withDescription("Get the full thread diff."),
+  Command.withDescription("Get the full diff for an active or archived thread."),
   Command.withHandler((flags) =>
-    withThreadDetailRpc(flags, flags.chat, ({ thread, detail, client }) =>
-      Effect.gen(function* () {
-        const toTurnCount =
-          Option.getOrUndefined(flags.toTurn) ?? latestCheckpointTurnCount(detail);
-        const result = yield* client[ORCHESTRATION_WS_METHODS.getFullThreadDiff]({
-          threadId: thread.id,
-          toTurnCount,
-          ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-        });
-        yield* printJson(result);
-      }),
+    withThreadDetailRpc(
+      flags,
+      flags.chat,
+      ({ thread, detail, client }) =>
+        Effect.gen(function* () {
+          const toTurnCount =
+            Option.getOrUndefined(flags.toTurn) ?? latestCheckpointTurnCount(detail);
+          const result = yield* client[ORCHESTRATION_WS_METHODS.getFullThreadDiff]({
+            threadId: thread.id,
+            toTurnCount,
+            ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+          });
+          yield* printJson(result);
+        }),
+      { includeArchived: true },
     ),
   ),
 );
@@ -3102,27 +3110,33 @@ const diffStateCommand = Command.make("state", {
   scope: Flag.choice("scope", ["turn", "snapshot"]).pipe(Flag.withDefault("snapshot")),
   ignoreWhitespace: ignoreWhitespaceFlag,
 }).pipe(
-  Command.withDescription("Get diff loading/error/state metadata."),
+  Command.withDescription(
+    "Get diff loading/error/state metadata for an active or archived thread.",
+  ),
   Command.withHandler((flags) =>
-    withThreadDetailRpc(flags, flags.chat, ({ thread, detail, client }) =>
-      Effect.gen(function* () {
-        const turn = Option.getOrUndefined(flags.turn);
-        const result =
-          turn === undefined
-            ? yield* client[ORCHESTRATION_WS_METHODS.getFullThreadDiffState]({
-                threadId: thread.id,
-                toTurnCount: latestCheckpointTurnCount(detail),
-                ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-              })
-            : yield* client[ORCHESTRATION_WS_METHODS.getTurnDiffState]({
-                threadId: thread.id,
-                fromTurnCount: Math.max(0, turn - 1),
-                toTurnCount: turn,
-                scope: flags.scope,
-                ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-              });
-        yield* printJson(result);
-      }),
+    withThreadDetailRpc(
+      flags,
+      flags.chat,
+      ({ thread, detail, client }) =>
+        Effect.gen(function* () {
+          const turn = Option.getOrUndefined(flags.turn);
+          const result =
+            turn === undefined
+              ? yield* client[ORCHESTRATION_WS_METHODS.getFullThreadDiffState]({
+                  threadId: thread.id,
+                  toTurnCount: latestCheckpointTurnCount(detail),
+                  ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+                })
+              : yield* client[ORCHESTRATION_WS_METHODS.getTurnDiffState]({
+                  threadId: thread.id,
+                  fromTurnCount: Math.max(0, turn - 1),
+                  toTurnCount: turn,
+                  scope: flags.scope,
+                  ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+                });
+          yield* printJson(result);
+        }),
+      { includeArchived: true },
     ),
   ),
 );
@@ -3136,10 +3150,12 @@ const checkpointListCommand = Command.make("list", {
   ...liveTargetFlags,
   chat: Argument.string("thread").pipe(Argument.withDescription("Thread id or title.")),
 }).pipe(
-  Command.withDescription("List thread checkpoints."),
+  Command.withDescription("List checkpoints for an active or archived thread."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      yield* withThreadDetail(flags, flags.chat, ({ detail }) => printJson(detail.checkpoints));
+      yield* withThreadDetail(flags, flags.chat, ({ detail }) => printJson(detail.checkpoints), {
+        includeArchived: true,
+      });
     }),
   ),
 );
