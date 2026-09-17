@@ -71,6 +71,8 @@ export const SelfTestProcess = Schema.Struct({
   pid: Schema.Int,
   command: Schema.String,
   startedAt: Schema.String,
+  startIdentity: Schema.optional(Schema.String),
+  startIdentityStatus: Schema.optional(Schema.Literals(["verified", "unavailable"])),
 });
 export type SelfTestProcess = typeof SelfTestProcess.Type;
 
@@ -149,6 +151,8 @@ export type SelfTestLockOwner = {
   readonly runId: string;
   readonly command: string;
   readonly startedAt: string;
+  readonly startIdentity?: string;
+  readonly startIdentityStatus?: "verified" | "unavailable";
 };
 
 export type SelfTestLockState =
@@ -161,10 +165,21 @@ export function classifySelfTestLock(
   owner: SelfTestLockOwner | undefined,
   processAlive: boolean,
   commandMatches: boolean,
+  startIdentityMatches?: boolean,
 ): SelfTestLockState {
   if (!owner) return { status: "ambiguous", reason: "The lock owner record is missing." };
-  if (processAlive && commandMatches) return { status: "active", owner };
   if (!processAlive) return { status: "stale", owner };
+  if (startIdentityMatches === false) return { status: "stale", owner };
+  if (
+    (owner.startIdentity || owner.startIdentityStatus === "unavailable") &&
+    startIdentityMatches === undefined
+  ) {
+    return {
+      status: "ambiguous",
+      reason: "The lock process start identity could not be verified.",
+    };
+  }
+  if (commandMatches) return { status: "active", owner };
   return {
     status: "ambiguous",
     reason: "The lock PID is alive but does not identify the self-test coordinator.",

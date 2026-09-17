@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { Effect } from "effect";
 import type { Browser, BrowserContext, Page, Request } from "playwright";
@@ -10,6 +10,7 @@ import {
   type SelfTestMedia,
 } from "../../../scripts/lib/selfTestEvidence.ts";
 import { inspectMediaIntegrity } from "../../../scripts/lib/mediaIntegrity.ts";
+import { writeDurableFile } from "../../../scripts/lib/durableFile.ts";
 
 export class SelfTestPreflightError extends Error {
   readonly issue: SelfTestIssue;
@@ -29,9 +30,8 @@ export async function recordSelfTestStage(
   if (!output) return;
   await mkdir(output, { recursive: true });
   const path = join(output, "lifecycle.json");
-  const temporary = `${path}.tmp`;
-  await writeFile(
-    temporary,
+  await writeDurableFile(
+    path,
     `${JSON.stringify({
       stage,
       ...(details.scenarios ? { scenarios: details.scenarios } : {}),
@@ -41,9 +41,7 @@ export async function recordSelfTestStage(
           : { failure: details.issue }
         : {}),
     })}\n`,
-    { mode: 0o600 },
   );
-  await rename(temporary, path);
 }
 
 export async function preflightSelfTestEnvironment(input: {

@@ -2,7 +2,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { closeSelfTestContext, preflightSelfTestEnvironment } from "./selfTestCapture.ts";
+import {
+  closeSelfTestContext,
+  preflightSelfTestEnvironment,
+  recordSelfTestStage,
+} from "./selfTestCapture.ts";
 
 describe("self-test capture finalization", () => {
   let output: string;
@@ -58,6 +62,18 @@ describe("self-test capture finalization", () => {
     await expect(
       closeSelfTestContext({ close: async () => {} }, join(output, "missing"), diagnostics),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("replaces lifecycle records across consecutive stage writes", async () => {
+    await recordSelfTestStage(output, "preflight");
+    await recordSelfTestStage(output, "pairing");
+    await recordSelfTestStage(output, "assertions", { scenarios: ["pairing"] });
+    await recordSelfTestStage(output, "capture", { scenarios: ["pairing"] });
+
+    expect(JSON.parse(await readFile(join(output, "lifecycle.json"), "utf8"))).toMatchObject({
+      stage: "capture",
+      scenarios: ["pairing"],
+    });
   });
 
   it("blocks a missing static target before any backend request", async () => {

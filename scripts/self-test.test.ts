@@ -481,4 +481,56 @@ describe("self-test coordinator", () => {
       else process.env.T3_SELF_TEST_WEB_TARGET = previous;
     }
   });
+
+  it("uses process start identity to classify reused and unverifiable PIDs", async () => {
+    const stateDirectory = await makeStateDirectory();
+    const owner = {
+      pid: 42,
+      runId: "active-run",
+      command: "pnpm test:self",
+      startedAt: "2026-09-16T00:00:00Z",
+      startIdentity: "original",
+    };
+    await mkdir(join(stateDirectory, "lock"), { recursive: true });
+    await writeFile(join(stateDirectory, "lock", "owner.json"), JSON.stringify(owner));
+    const previous = process.env.T3_SELF_TEST_WEB_TARGET;
+    process.env.T3_SELF_TEST_WEB_TARGET = join(stateDirectory, "missing-web");
+    try {
+      const matching = createSelfTestCoordinator({
+        directory: stateDirectory,
+        processAlive: () => true,
+        processCommand: async () => "pnpm test:self",
+        processStartIdentity: async () => "original",
+      });
+      await expect(matching.run()).rejects.toMatchObject({
+        issue: { type: "lock-contention" },
+      });
+
+      const reused = createSelfTestCoordinator({
+        directory: stateDirectory,
+        processAlive: () => true,
+        processCommand: async () => "pnpm test:self",
+        processStartIdentity: async () => "replacement",
+      });
+      await expect(reused.run()).rejects.toMatchObject({
+        issue: { type: "web-target-missing" },
+      });
+
+      await rm(join(stateDirectory, "lock"), { recursive: true, force: true });
+      await mkdir(join(stateDirectory, "lock"), { recursive: true });
+      await writeFile(join(stateDirectory, "lock", "owner.json"), JSON.stringify(owner));
+      const unavailable = createSelfTestCoordinator({
+        directory: stateDirectory,
+        processAlive: () => true,
+        processCommand: async () => "pnpm test:self",
+        processStartIdentity: async () => undefined,
+      });
+      await expect(unavailable.run()).rejects.toMatchObject({
+        issue: { type: "lock-ambiguous" },
+      });
+    } finally {
+      if (previous === undefined) delete process.env.T3_SELF_TEST_WEB_TARGET;
+      else process.env.T3_SELF_TEST_WEB_TARGET = previous;
+    }
+  });
 });

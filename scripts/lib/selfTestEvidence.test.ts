@@ -124,6 +124,15 @@ describe("self-test lifecycle and ownership", () => {
     expect(classifySelfTestLock(owner, false, false)).toMatchObject({ status: "stale" });
     expect(classifySelfTestLock(owner, true, false)).toMatchObject({ status: "ambiguous" });
     expect(classifySelfTestLock(undefined, false, false)).toMatchObject({ status: "ambiguous" });
+    expect(
+      classifySelfTestLock({ ...owner, startIdentity: "same" }, true, true, true),
+    ).toMatchObject({ status: "active" });
+    expect(
+      classifySelfTestLock({ ...owner, startIdentity: "same" }, true, true, false),
+    ).toMatchObject({ status: "stale" });
+    expect(
+      classifySelfTestLock({ ...owner, startIdentity: "same" }, true, true, undefined),
+    ).toMatchObject({ status: "ambiguous" });
   });
   it("redacts credentials from durable error text", () => {
     expect(

@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rename, rm } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Schema } from "effect";
@@ -24,6 +24,7 @@ import {
   type SelfTestProcess,
 } from "./lib/selfTestEvidence.ts";
 import { readSelfTestRevision } from "./lib/selfTestRevision.ts";
+import { readDurableText, writeDurableFile } from "./lib/durableFile.ts";
 
 const exec = promisify(execFile);
 const decodeManifest = Schema.decodeUnknownSync(SelfTestManifest);
@@ -38,8 +39,6 @@ const commandArgs = ["test:direct-connect-smoke"];
 const coordinatorCommandText = "pnpm test:self";
 const childCommandText = "pnpm test:direct-connect-smoke";
 const runIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[45][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
-const atomicWriteQueues = new Map<string, Promise<void>>();
-
 type ChildExit = {
   readonly code: number | null;
   readonly signal: NodeJS.Signals | null;
@@ -52,6 +51,7 @@ type CoordinatorOptions = {
   readonly spawnChild?: typeof spawn;
   readonly processAlive?: (pid: number) => boolean;
   readonly processCommand?: (pid: number) => Promise<string>;
+  readonly processStartIdentity?: (pid: number) => Promise<string | undefined>;
   readonly readRevision?: (rootDirectory: string) => Promise<SelfTestRevision>;
 };
 
@@ -124,13 +124,95 @@ async function processCommand(pid: number): Promise<string> {
   return result.stdout.trim();
 }
 
+async function processStartIdentity(pid: number): Promise<string | undefined> {
+  if (!Number.isInteger(pid) || pid <= 0) return undefined;
+  if (process.platform === "win32") {
+    const args = [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `$process = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'; ` +
+        "if ($null -ne $process) { $process.CreationDate.ToUniversalTime().ToString('o') }",
+    ];
+    try {
+      const started = (await exec("powershell.exe", args, { maxBuffer: 64 * 1024 })).stdout.trim();
+      return started ? `windows:${started}` : undefined;
+    } catch {
+      try {
+        const started = (await exec("pwsh", args, { maxBuffer: 64 * 1024 })).stdout.trim();
+        return started ? `windows:${started}` : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  if (process.platform === "linux") {
+    try {
+      const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+      const fields = stat
+        .slice(stat.lastIndexOf(")") + 1)
+        .trim()
+        .split(/\s+/);
+      return fields[19] ? `linux:${fields[19]}` : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  try {
+    const result = await exec("ps", ["-p", String(pid), "-o", "lstart="], {
+      maxBuffer: 64 * 1024,
+    });
+    const started = result.stdout.trim();
+    return started ? `unix:${started}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function commandMatches(command: string): boolean {
-  return command.includes("scripts/self-test.ts") || command.includes("test:self");
+  return (
+    command.includes("scripts/self-test.ts") ||
+    /\b(?:pnpm|npm|yarn|bun)(?:\s+run)?\s+test:self(?:\s|$)/.test(command)
+  );
 }
 
 function processMatches(manifest: SelfTestManifest, actualCommand: string): boolean {
   if (manifest.process.role === "coordinator") return commandMatches(actualCommand);
-  return actualCommand.includes("test:direct-connect-smoke");
+  return (
+    actualCommand.includes("directConnectSmoke.integration.test.ts") ||
+    /\b(?:pnpm|npm|yarn|bun)(?:\s+run)?\s+test:direct-connect-smoke(?:\s|$)/.test(actualCommand)
+  );
+}
+
+function startIdentityMatches(
+  expected: string | undefined,
+  actual: string | undefined,
+): boolean | undefined {
+  if (!expected) return true;
+  if (!actual) return undefined;
+  return expected === actual;
+}
+
+type ProcessVerification = "matched" | "mismatched" | "unavailable";
+
+async function verifyProcess(
+  manifest: SelfTestManifest,
+  alive: (pid: number) => boolean,
+  command: (pid: number) => Promise<string>,
+  startIdentity: (pid: number) => Promise<string | undefined>,
+): Promise<ProcessVerification> {
+  if (!alive(manifest.process.pid)) return "mismatched";
+  const [actualCommand, actualStartIdentity] = await Promise.all([
+    command(manifest.process.pid).catch(() => undefined),
+    startIdentity(manifest.process.pid).catch(() => undefined),
+  ]);
+  if (!actualCommand) return "unavailable";
+  const identity = startIdentityMatches(manifest.process.startIdentity, actualStartIdentity);
+  if (manifest.process.startIdentityStatus === "unavailable") return "unavailable";
+  if (identity === false) return "mismatched";
+  if (identity === undefined) return "unavailable";
+  if (!processMatches(manifest, actualCommand)) return "mismatched";
+  return "matched";
 }
 
 function sameManifestState(left: SelfTestManifest, right: SelfTestManifest): boolean {
@@ -158,42 +240,16 @@ function childProcess(
   pid: number,
   startedAt: string,
   command: string,
+  startIdentity?: string,
 ): SelfTestProcess {
   return {
     role,
     pid,
     command,
     startedAt,
+    ...(startIdentity ? { startIdentity } : {}),
+    startIdentityStatus: startIdentity ? "verified" : "unavailable",
   };
-}
-
-async function writeAtomic(path: string, contents: string): Promise<void> {
-  const previous = atomicWriteQueues.get(path) ?? Promise.resolve();
-  const current = previous
-    .catch(() => undefined)
-    .then(async () => {
-      const temporary = `${path}.${randomUUID()}.tmp`;
-      try {
-        await writeFile(temporary, contents, { mode: 0o600 });
-        try {
-          await rename(temporary, path);
-        } catch (error) {
-          const code =
-            typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
-          if (code !== "EPERM" && code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
-          await rm(path, { force: true });
-          await rename(temporary, path);
-        }
-      } finally {
-        await rm(temporary, { force: true });
-      }
-    });
-  atomicWriteQueues.set(path, current);
-  try {
-    await current;
-  } finally {
-    if (atomicWriteQueues.get(path) === current) atomicWriteQueues.delete(path);
-  }
 }
 
 async function saveManifest(baseDirectory: string, manifest: SelfTestManifest): Promise<void> {
@@ -201,12 +257,12 @@ async function saveManifest(baseDirectory: string, manifest: SelfTestManifest): 
   const runDirectory = join(baseDirectory, manifest.runId);
   await mkdir(runDirectory, { recursive: true, mode: 0o700 });
   const data = `${JSON.stringify(manifest, null, 2)}\n`;
-  await writeAtomic(join(runDirectory, "manifest.json"), data);
-  await writeAtomic(join(baseDirectory, "latest.json"), data);
+  await writeDurableFile(join(runDirectory, "manifest.json"), data);
+  await writeDurableFile(join(baseDirectory, "latest.json"), data);
 }
 
 async function readManifest(path: string): Promise<SelfTestManifest> {
-  const raw = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  const raw = JSON.parse(await readDurableText(path)) as Record<string, unknown>;
   if (raw.version === 1) {
     const revision = decodeRevision(raw.revision);
     const runId = String(raw.runId);
@@ -312,12 +368,16 @@ async function checkArtifacts(baseDirectory: string, manifest: SelfTestManifest)
 
 async function readLockOwner(path: string): Promise<SelfTestLockOwner | undefined> {
   try {
-    const value = JSON.parse(await readFile(path, "utf8")) as Partial<SelfTestLockOwner>;
+    const value = JSON.parse(await readDurableText(path)) as Partial<SelfTestLockOwner>;
     if (
       typeof value.pid !== "number" ||
       typeof value.runId !== "string" ||
       typeof value.command !== "string" ||
-      typeof value.startedAt !== "string"
+      typeof value.startedAt !== "string" ||
+      (value.startIdentity !== undefined && typeof value.startIdentity !== "string") ||
+      (value.startIdentityStatus !== undefined &&
+        value.startIdentityStatus !== "verified" &&
+        value.startIdentityStatus !== "unavailable")
     ) {
       return undefined;
     }
@@ -331,6 +391,7 @@ async function inspectLock(
   lockDirectory: string,
   alive: (pid: number) => boolean,
   command: (pid: number) => Promise<string>,
+  startIdentity: (pid: number) => Promise<string | undefined>,
 ) {
   try {
     await access(lockDirectory);
@@ -341,7 +402,15 @@ async function inspectLock(
   if (!owner)
     return { status: "ambiguous", reason: "The lock owner record is unreadable." } as const;
   const actualCommand = await command(owner.pid).catch(() => "");
-  return classifySelfTestLock(owner, alive(owner.pid), commandMatches(actualCommand));
+  const actualStartIdentity = await startIdentity(owner.pid).catch(() => undefined);
+  return classifySelfTestLock(
+    owner,
+    alive(owner.pid),
+    commandMatches(actualCommand),
+    owner.startIdentityStatus === "unavailable"
+      ? undefined
+      : startIdentityMatches(owner.startIdentity, actualStartIdentity),
+  );
 }
 
 async function acquireLock(
@@ -349,6 +418,7 @@ async function acquireLock(
   runId: string,
   alive: (pid: number) => boolean,
   command: (pid: number) => Promise<string>,
+  startIdentity: (pid: number) => Promise<string | undefined>,
   loadCurrent: () => Promise<SelfTestManifest | undefined>,
 ): Promise<void> {
   try {
@@ -359,7 +429,7 @@ async function acquireLock(
     ) {
       throw error;
     }
-    const state = await inspectLock(lockDirectory, alive, command);
+    const state = await inspectLock(lockDirectory, alive, command, startIdentity);
     if (state.status === "active") {
       throw new SelfTestCoordinatorError(
         "pending",
@@ -386,7 +456,13 @@ async function acquireLock(
     if (
       current?.status === "active" &&
       current.process.role === "child" &&
-      alive(current.process.pid)
+      alive(current.process.pid) &&
+      current.process.startIdentityStatus !== "unavailable" &&
+      processMatches(current, await command(current.process.pid).catch(() => "")) &&
+      startIdentityMatches(
+        current.process.startIdentity,
+        await startIdentity(current.process.pid).catch(() => undefined),
+      ) === true
     ) {
       throw new SelfTestCoordinatorError(
         "pending",
@@ -428,13 +504,16 @@ async function acquireLock(
     }
     await rm(quarantine, { recursive: true, force: true });
   }
-  await writeAtomic(
+  const ownerStartIdentity = await startIdentity(process.pid).catch(() => undefined);
+  await writeDurableFile(
     join(lockDirectory, "owner.json"),
     `${JSON.stringify({
       pid: process.pid,
       runId,
       command: coordinatorCommandText,
       startedAt: new Date().toISOString(),
+      ...(ownerStartIdentity ? { startIdentity: ownerStartIdentity } : {}),
+      startIdentityStatus: ownerStartIdentity ? "verified" : "unavailable",
     })}\n`,
   );
 }
@@ -472,7 +551,7 @@ function stageStatus(stage: SelfTestManifest["stage"]): SelfTestManifest["status
 async function readStageUpdate(runDirectory: string): Promise<SelfTestStageUpdate | undefined> {
   try {
     return decodeStageUpdate(
-      JSON.parse(await readFile(join(runDirectory, "lifecycle.json"), "utf8")),
+      JSON.parse(await readDurableText(join(runDirectory, "lifecycle.json"))),
     );
   } catch (error) {
     if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
@@ -510,6 +589,7 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
   const spawnChild = options.spawnChild ?? spawn;
   const alive = options.processAlive ?? processAlive;
   const command = options.processCommand ?? processCommand;
+  const getProcessStartIdentity = options.processStartIdentity ?? processStartIdentity;
   const readRevision = options.readRevision ?? readSelfTestRevision;
   const lockDirectory = join(stateDirectory, "lock");
 
@@ -533,7 +613,12 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
     const webTarget = process.env.T3_SELF_TEST_WEB_TARGET ?? resolve(projectRoot, "apps/web/dist");
     const currentRevision = await readRevision(projectRoot);
     await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
-    await acquireLock(lockDirectory, runId, alive, command, () => loadLatest(stateDirectory));
+    await acquireLock(lockDirectory, runId, alive, command, getProcessStartIdentity, () =>
+      loadLatest(stateDirectory),
+    );
+    const coordinatorStartIdentity = await getProcessStartIdentity(process.pid).catch(
+      () => undefined,
+    );
 
     let manifest: SelfTestManifest = {
       version: 2,
@@ -543,7 +628,13 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
       stage: "pending",
       startedAt,
       command: coordinatorCommandText,
-      process: childProcess("coordinator", process.pid, startedAt, coordinatorCommandText),
+      process: childProcess(
+        "coordinator",
+        process.pid,
+        startedAt,
+        coordinatorCommandText,
+        coordinatorStartIdentity,
+      ),
       environment: { baseDirectory: projectRoot, webTarget },
       scenarios: [],
       media: [],
@@ -588,7 +679,13 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
         ...manifest,
         stage: "preflight",
         status: "active",
-        process: childProcess("coordinator", process.pid, startedAt, coordinatorCommandText),
+        process: childProcess(
+          "coordinator",
+          process.pid,
+          startedAt,
+          coordinatorCommandText,
+          coordinatorStartIdentity,
+        ),
       };
       await saveManifest(stateDirectory, manifest);
       try {
@@ -623,11 +720,14 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
         ...(invocation.shell ? { shell: invocation.shell } : {}),
       });
       childStarted = true;
+      const resultPromise = childExit(child);
+      const childStartIdentity = await getProcessStartIdentity(child.pid ?? 0).catch(
+        () => undefined,
+      );
       manifest = {
         ...manifest,
-        process: childProcess("child", child.pid ?? 0, now(), childCommandText),
+        process: childProcess("child", child.pid ?? 0, now(), childCommandText, childStartIdentity),
       };
-      const resultPromise = childExit(child);
       await saveManifest(stateDirectory, manifest);
       const result = await resultPromise;
       watching = false;
@@ -829,14 +929,24 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
     if (!manifest) return { status: "never-run", blockers: [] as ReadonlyArray<SelfTestIssue> };
     const current = await readRevision(projectRoot);
     let effective = manifest;
-    if (
-      (manifest.status === "active" || manifest.status === "pending") &&
-      manifest.process.pid > 0 &&
-      (!alive(manifest.process.pid) ||
-        !(await command(manifest.process.pid)
-          .then((actual) => processMatches(manifest, actual))
-          .catch(() => false)))
-    ) {
+    const processVerification =
+      (manifest.status === "active" || manifest.status === "pending") && manifest.process.pid > 0
+        ? await verifyProcess(manifest, alive, command, getProcessStartIdentity)
+        : "matched";
+    if (processVerification === "unavailable") {
+      return {
+        status: "running",
+        manifest: effective,
+        blockers: [
+          issue(
+            "lock-ambiguous",
+            "The self-test process is alive but its process identity could not be verified.",
+            "Inspect the process metadata and lock owner before retrying; ambiguous state is preserved.",
+          ),
+        ],
+      };
+    }
+    if (processVerification === "mismatched") {
       const failure = issue(
         "interrupted",
         "The self-test coordinator or child process is no longer running.",
@@ -845,8 +955,13 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
       const recoveryRunId = randomUUID();
       let acquired = false;
       try {
-        await acquireLock(lockDirectory, recoveryRunId, alive, command, () =>
-          loadLatest(stateDirectory),
+        await acquireLock(
+          lockDirectory,
+          recoveryRunId,
+          alive,
+          command,
+          getProcessStartIdentity,
+          () => loadLatest(stateDirectory),
         );
         acquired = true;
         const latest = await loadLatest(stateDirectory);
