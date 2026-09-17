@@ -3,6 +3,7 @@ import {
   normalizeThreadPullRequestSearchQuery,
   sameThreadPullRequest,
   sameThreadPullRequestAssociation,
+  seedLegacyThreadPullRequestLink,
   threadPullRequestKey,
   threadPullRequestSearchTerms,
 } from "./threadPullRequests.js";
@@ -131,5 +132,49 @@ describe("thread pull request identity", () => {
         url: "https://github.com/acme/app/pulls/42",
       }),
     ).toBe(false);
+  });
+
+  it("recovers a legacy-only association before newer links", () => {
+    const legacyPullRequest = {
+      ...pullRequest,
+      title: "First PR",
+      baseBranch: "main",
+      headBranch: "feature/first",
+      state: "open" as const,
+    };
+    const newerPullRequest = {
+      ...legacyPullRequest,
+      number: 43,
+      title: "Second PR",
+      url: "https://github.com/acme/app/pull/43",
+      headBranch: "feature/second",
+    };
+    const recovered = seedLegacyThreadPullRequestLink(
+      [
+        {
+          pullRequest: newerPullRequest,
+          source: "created",
+          linkedAt: "2026-09-17T00:01:00.000Z",
+        },
+      ],
+      legacyPullRequest,
+      "2026-09-17T00:00:00.000Z",
+    );
+
+    expect(recovered).toEqual([
+      {
+        pullRequest: legacyPullRequest,
+        source: "recovered",
+        linkedAt: "2026-09-17T00:00:00.000Z",
+      },
+      {
+        pullRequest: newerPullRequest,
+        source: "created",
+        linkedAt: "2026-09-17T00:01:00.000Z",
+      },
+    ]);
+    expect(
+      seedLegacyThreadPullRequestLink(recovered, legacyPullRequest, "2026-09-17T00:02:00.000Z"),
+    ).toBe(recovered);
   });
 });
