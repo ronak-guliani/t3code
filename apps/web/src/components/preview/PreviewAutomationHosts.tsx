@@ -582,10 +582,20 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               input.reuseExistingTab ?? true,
             );
             const browserStatus = await readPreviewAutomationStatus(threadRef, tabId);
+            const unselectedTabStatus =
+              tabId === null && input.reuseExistingTab === false
+                ? {
+                    ...browserStatus,
+                    tabId: null,
+                    url: null,
+                    title: null,
+                    loading: false,
+                  }
+                : browserStatus;
             const makeResult = (
               target: PreviewAutomationPreflightResult["target"],
               recovery: PreviewAutomationPreflightResult["recovery"],
-              status = browserStatus,
+              status = unselectedTabStatus,
             ): PreviewAutomationPreflightResult => ({
               ...(status.tabId === null ? {} : { tabId: status.tabId }),
               browser: {
@@ -720,6 +730,26 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 "load",
                 input.timeoutMs ?? request.timeoutMs,
               );
+            } catch {
+              return makeResult(
+                {
+                  requested: true,
+                  reachability: "not-checked",
+                  app: "unknown",
+                  origin: new URL(resolvedUrl).origin,
+                  environmentId: null,
+                  status: null,
+                },
+                {
+                  kind: "retry-browser",
+                  message:
+                    "The collaborative browser could not complete the preflight navigation. Retry the preflight after the browser host settles.",
+                },
+                attachedStatus,
+              );
+            }
+
+            try {
               const probe = await previewBridge.automation.evaluate(activeRuntimeTabId, {
                 expression:
                   "(async () => { const descriptorResponse = await fetch(location.href, { cache: 'no-store' }); const appResponse = await fetch(new URL('/', location.origin), { cache: 'no-store' }); const text = await descriptorResponse.text(); let descriptor = null; try { const parsed = JSON.parse(text); if (parsed && typeof parsed === 'object' && typeof parsed.environmentId === 'string' && typeof parsed.serverVersion === 'string') descriptor = { environmentId: parsed.environmentId, serverVersion: parsed.serverVersion }; } catch {} return { descriptorStatus: descriptorResponse.status, appStatus: appResponse.status, descriptor }; })()",
@@ -748,7 +778,9 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                   : null;
               const descriptor = probeResult.descriptor;
               const probedEnvironmentId =
-                descriptor && typeof descriptor.environmentId === "string"
+                descriptor &&
+                typeof descriptor.environmentId === "string" &&
+                descriptor.environmentId.trim().length > 0
                   ? EnvironmentId.make(descriptor.environmentId)
                   : null;
               const classified = classifyPreviewPreflightTarget({

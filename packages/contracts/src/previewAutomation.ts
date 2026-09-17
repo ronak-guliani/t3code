@@ -834,6 +834,7 @@ export const PreviewAutomationPreflightRecovery = Schema.Literals([
   "resolve-environment-mismatch",
   "use-supported-browser",
   "retry-target",
+  "retry-browser",
   "pair-after-preflight",
 ]);
 export type PreviewAutomationPreflightRecovery = typeof PreviewAutomationPreflightRecovery.Type;

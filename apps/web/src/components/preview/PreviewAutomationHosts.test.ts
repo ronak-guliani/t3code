@@ -129,6 +129,22 @@ it("classifies an unreachable target with retry-target recovery", () => {
   });
 });
 
+it("treats a blank descriptor environment identity as a non-T3 target", () => {
+  const result = classifyPreviewPreflightTarget({
+    descriptorStatus: 200,
+    appStatus: 200,
+    origin: "http://localhost:5733",
+    environmentId: null,
+    expectedEnvironmentId: null,
+  });
+  expect(result.target).toMatchObject({
+    reachability: "reachable",
+    app: "not-t3-app",
+    environmentId: null,
+  });
+  expect(result.recovery.kind).toBe("configure-target");
+});
+
 it("accepts an isolated target when no expected target identity was supplied", () => {
   const result = classifyPreviewPreflightTarget({
     descriptorStatus: 200,

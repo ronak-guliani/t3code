@@ -248,6 +248,33 @@ describe("PreviewAutomationPreflight", () => {
       }).recovery.kind,
     ).toBe("resolve-environment-mismatch");
   });
+
+  it("accepts a browser-host recovery distinct from target reachability", () => {
+    expect(
+      decodePreflightResult({
+        browser: {
+          supported: true,
+          available: true,
+          visible: true,
+          tabAttached: true,
+          tabId: "tab-1",
+        },
+        mcp: { credential: "valid" },
+        target: {
+          requested: true,
+          reachability: "not-checked",
+          app: "unknown",
+          origin: "http://localhost:5173",
+          environmentId: null,
+          status: null,
+        },
+        recovery: {
+          kind: "retry-browser",
+          message: "Retry the browser preflight.",
+        },
+      }).recovery.kind,
+    ).toBe("retry-browser");
+  });
 });
 
 describe("PreviewAutomationHost", () => {
