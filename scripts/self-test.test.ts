@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { createSelfTestCoordinator, SelfTestCoordinatorError } from "./self-test.ts";
@@ -114,6 +114,34 @@ describe("self-test coordinator", () => {
       const manifest = JSON.parse(await readFile(join(stateDirectory, "latest.json"), "utf8"));
       expect(manifest.stage).toBe("blocked");
       expect(manifest.process.role).toBe("coordinator");
+    } finally {
+      if (previous === undefined) delete process.env.T3_SELF_TEST_WEB_TARGET;
+      else process.env.T3_SELF_TEST_WEB_TARGET = previous;
+    }
+  });
+
+  it("blocks a missing default web target before spawning the smoke child", async () => {
+    const stateDirectory = await makeStateDirectory();
+    const projectRoot = dirname(stateDirectory);
+    const previous = process.env.T3_SELF_TEST_WEB_TARGET;
+    delete process.env.T3_SELF_TEST_WEB_TARGET;
+    let spawned = false;
+    try {
+      const coordinator = createSelfTestCoordinator({
+        root: projectRoot,
+        directory: stateDirectory,
+        readRevision: async () => ({ commit: "1111111", contentHash: "before" }),
+        spawnChild: (() => {
+          spawned = true;
+          throw new Error("must not spawn");
+        }) as typeof import("node:child_process").spawn,
+      });
+      await expect(coordinator.run()).rejects.toMatchObject({
+        issue: { type: "web-target-missing" },
+        stage: "preflight",
+      });
+      expect(spawned).toBe(false);
+      expect((await coordinator.status()).status).toBe("blocked");
     } finally {
       if (previous === undefined) delete process.env.T3_SELF_TEST_WEB_TARGET;
       else process.env.T3_SELF_TEST_WEB_TARGET = previous;
@@ -343,6 +371,46 @@ describe("self-test coordinator", () => {
       expect.objectContaining({ file: "lifecycle.json" }),
       expect.objectContaining({ file: "raw/failed.webm" }),
     ]);
+  });
+
+  it("persists a failed result when the lifecycle watcher cannot decode output", async () => {
+    const stateDirectory = await makeStateDirectory();
+    const projectRoot = dirname(stateDirectory);
+    await mkdir(join(projectRoot, "apps/web/dist"), { recursive: true });
+    await writeFile(join(projectRoot, "apps/web/dist/index.html"), "self-test");
+    let child: ReturnType<typeof fakeChild> | undefined;
+    const coordinator = createSelfTestCoordinator({
+      root: projectRoot,
+      directory: stateDirectory,
+      readRevision: async () => ({ commit: "1111111", contentHash: "before" }),
+      spawnChild: (() => {
+        child = fakeChild(987657);
+        void (async () => {
+          let output: string | undefined;
+          for (let attempt = 0; attempt < 20 && !output; attempt += 1) {
+            try {
+              const latest = JSON.parse(
+                await readFile(join(stateDirectory, "latest.json"), "utf8"),
+              ) as { runId: string };
+              output = join(stateDirectory, latest.runId);
+            } catch {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+          }
+          if (!output) throw new Error("Coordinator did not persist its run directory.");
+          await writeFile(join(output, "lifecycle.json"), "{");
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          child?.fail();
+        })();
+        return child;
+      }) as unknown as typeof import("node:child_process").spawn,
+      processAlive: () => true,
+      processCommand: async (pid) =>
+        pid === process.pid ? "pnpm test:self" : "pnpm test:direct-connect-smoke",
+    });
+
+    await expect(coordinator.run()).rejects.toBeInstanceOf(SelfTestCoordinatorError);
+    expect((await coordinator.status()).status).toBe("failed");
   });
 
   it("rejects active lock contention and recovers only a verified stale owner", async () => {

@@ -96,6 +96,28 @@ function processAlive(pid: number): boolean {
 }
 
 async function processCommand(pid: number): Promise<string> {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error("Process ID is invalid.");
+  if (process.platform === "win32") {
+    const args = [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `$process = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'; ` +
+        "if ($null -ne $process) { $process.CommandLine }",
+    ];
+    try {
+      return (await exec("powershell.exe", args, { maxBuffer: 64 * 1024 })).stdout.trim();
+    } catch {
+      return (await exec("pwsh", args, { maxBuffer: 64 * 1024 })).stdout.trim();
+    }
+  }
+  if (process.platform === "linux") {
+    try {
+      return (await readFile(`/proc/${pid}/cmdline`, "utf8")).replaceAll("\0", " ").trim();
+    } catch {
+      // Fall back for Linux environments without a mounted proc filesystem.
+    }
+  }
   const result = await exec("ps", ["-p", String(pid), "-o", "command="], {
     maxBuffer: 64 * 1024,
   });
@@ -539,20 +561,25 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
     process.once("SIGINT", onSignal);
     process.once("SIGTERM", onSignal);
     let watching = true;
+    let watchFailure: unknown;
     const watch = (async () => {
-      while (true) {
-        if (!watching) break;
-        const observed = manifest;
-        const next = await updateManifestFromStage(observed);
-        if (manifest !== observed) continue;
-        if (next.stage !== manifest.stage || next.status !== manifest.status) {
-          manifest = next;
-          await saveManifest(stateDirectory, manifest);
-        } else if (next.scenarios.length !== manifest.scenarios.length) {
-          manifest = next;
-          await saveManifest(stateDirectory, manifest);
+      try {
+        while (true) {
+          if (!watching) break;
+          const observed = manifest;
+          const next = await updateManifestFromStage(observed);
+          if (manifest !== observed) continue;
+          if (next.stage !== manifest.stage || next.status !== manifest.status) {
+            manifest = next;
+            await saveManifest(stateDirectory, manifest);
+          } else if (next.scenarios.length !== manifest.scenarios.length) {
+            manifest = next;
+            await saveManifest(stateDirectory, manifest);
+          }
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
         }
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+      } catch (error) {
+        watchFailure = error;
       }
     })();
 
@@ -564,26 +591,24 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
         process: childProcess("coordinator", process.pid, startedAt, coordinatorCommandText),
       };
       await saveManifest(stateDirectory, manifest);
-      if (process.env.T3_SELF_TEST_WEB_TARGET) {
-        try {
-          await access(join(resolve(webTarget), "index.html"));
-        } catch {
-          const blocker = issue(
-            "web-target-missing",
-            `The configured web target is missing index.html: ${resolve(webTarget)}.`,
-            "Build the web app and verify T3_SELF_TEST_WEB_TARGET before rerunning.",
-          );
-          manifest = {
-            ...manifest,
-            status: "blocked",
-            stage: "blocked",
-            blocker,
-            completedAt: now(),
-            artifacts: await collectArtifacts(output).catch(() => []),
-          };
-          await saveManifest(stateDirectory, manifest);
-          throw new SelfTestCoordinatorError("preflight", blocker, output);
-        }
+      try {
+        await access(join(resolve(webTarget), "index.html"));
+      } catch {
+        const blocker = issue(
+          "web-target-missing",
+          `The configured web target is missing index.html: ${resolve(webTarget)}.`,
+          "Build the web app and verify T3_SELF_TEST_WEB_TARGET before rerunning.",
+        );
+        manifest = {
+          ...manifest,
+          status: "blocked",
+          stage: "blocked",
+          blocker,
+          completedAt: now(),
+          artifacts: await collectArtifacts(output).catch(() => []),
+        };
+        await saveManifest(stateDirectory, manifest);
+        throw new SelfTestCoordinatorError("preflight", blocker, output);
       }
 
       const invocation = resolveWindowsSpawn("pnpm");
@@ -607,7 +632,13 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
       const result = await resultPromise;
       watching = false;
       await watch;
-      manifest = await updateManifestFromStage(manifest);
+      let stageFailure: unknown;
+      try {
+        manifest = await updateManifestFromStage(manifest);
+      } catch (error) {
+        stageFailure = error;
+      }
+      const watcherFailure = watchFailure ?? stageFailure;
 
       const diagnostics = await readOptionalJson(
         join(output, "diagnostics.json"),
@@ -676,6 +707,26 @@ export function createSelfTestCoordinator(options: CoordinatorOptions = {}): Sel
         };
         await saveManifest(stateDirectory, manifest);
         throw new SelfTestCoordinatorError("failed", failure, output);
+      }
+
+      if (watcherFailure) {
+        const failure = issue(
+          "capture-invalid",
+          watcherFailure instanceof Error
+            ? watcherFailure.message
+            : "The self-test lifecycle watcher failed.",
+          "Inspect the retained lifecycle, diagnostics, and raw capture files, then rerun pnpm test:self.",
+        );
+        manifest = {
+          ...manifest,
+          status: "failed",
+          stage: "failed",
+          failure,
+          completedAt: now(),
+          artifacts,
+        };
+        await saveManifest(stateDirectory, manifest);
+        throw new SelfTestCoordinatorError("capture", failure, output);
       }
 
       if (!capture) {
