@@ -772,12 +772,21 @@ export function createValidationEnvironmentManager(
       }
 
       let record: StoredValidationEnvironment;
-      if (persisted && targetEquals(persisted.target, target)) {
-        record = {
-          ...persisted,
-          backend: validateEndpoint(persisted.backend, "backend"),
-          web: validateEndpoint(persisted.web, "web"),
-        };
+      const persistedRecord = persisted
+        ? {
+            ...persisted,
+            backend: validateEndpoint(persisted.backend, "backend"),
+            web: validateEndpoint(persisted.web, "web"),
+          }
+        : null;
+      if (persistedRecord && persistedRecord.target.stateDirectory !== target.stateDirectory) {
+        throw new ValidationEnvironmentError(
+          "ambiguous-ownership",
+          "Persisted environment state directory does not match the requested state directory.",
+        );
+      }
+      if (persistedRecord && targetEquals(persistedRecord.target, target)) {
+        record = persistedRecord;
         if (
           record.backend.process.ownershipIdentity !== record.ownershipIdentity ||
           record.web.process.ownershipIdentity !== record.ownershipIdentity
@@ -789,6 +798,9 @@ export function createValidationEnvironmentManager(
         }
         await validateAndWait(record, target.environmentIdentity);
       } else {
+        if (persistedRecord) {
+          await cleanupOwned(persistedRecord, { removeState: true });
+        }
         const ownershipIdentity = `${target.environmentIdentity}:${randomUUID()}`;
         let started: StartedValidationEnvironment;
         try {
