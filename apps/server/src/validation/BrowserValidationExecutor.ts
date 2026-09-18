@@ -148,6 +148,11 @@ const errorOutcome = (error: unknown): Exclude<BrowserValidationOutcome, "passed
     ? "interrupted"
     : "failed";
 
+const hasAttachedTab = (result: PreviewAutomationPreflightResult): boolean => {
+  const tabId = result.tabId ?? result.browser.tabId;
+  return result.browser.tabAttached && tabId !== null && tabId !== undefined;
+};
+
 const preflightIsUsable = (
   result: PreviewAutomationPreflightResult,
   environment: ExecutionEnvironmentDescriptor,
@@ -155,6 +160,7 @@ const preflightIsUsable = (
   result.browser.supported &&
   result.browser.available &&
   result.mcp.credential === "valid" &&
+  hasAttachedTab(result) &&
   result.target.requested &&
   result.target.reachability === "reachable" &&
   result.target.app === "expected-t3-app" &&
@@ -165,6 +171,9 @@ const preflightFailureMessage = (result: PreviewAutomationPreflightResult): stri
   if (!result.browser.supported) return "The connected browser does not support automation.";
   if (!result.browser.available) return "No automation-capable browser host is available.";
   if (result.mcp.credential !== "valid") return "The preview automation credential is invalid.";
+  if (!hasAttachedTab(result)) {
+    return "Browser preflight did not attach a controllable tab.";
+  }
   if (result.target.reachability !== "reachable") return "The validation target is unavailable.";
   if (result.target.app !== "expected-t3-app")
     return "The target is not the expected T3 application.";
@@ -189,17 +198,25 @@ const evaluateAssertion = (
   snapshot: PreviewAutomationSnapshot,
   assertion: BrowserValidationScenario["assertions"][number],
 ): BrowserValidationAssertionResult => {
-  const expected = assertion.expected ?? "";
+  const expected = assertion.expected;
+  if (assertion.kind !== "not-loading" && (expected === undefined || expected.trim() === "")) {
+    return {
+      id: assertion.id,
+      passed: false,
+      observed: "missing expected value",
+    };
+  }
+  const expectedText = expected ?? "";
   const passed = (() => {
     switch (assertion.kind) {
       case "visible-text":
-        return snapshot.visibleText.includes(expected);
+        return snapshot.visibleText.includes(expectedText);
       case "url-origin":
-        return originOf(snapshot.url) === originOf(expected);
+        return originOf(snapshot.url) === originOf(expectedText);
       case "url-path":
-        return pathOf(snapshot.url) === expected;
+        return pathOf(snapshot.url) === expectedText;
       case "title":
-        return snapshot.title.includes(expected);
+        return snapshot.title.includes(expectedText);
       case "not-loading":
         return !snapshot.loading;
     }
@@ -348,6 +365,14 @@ const executePromise = async (
   };
 
   try {
+    const invalidAssertion = input.scenario.assertions.find(
+      (assertion) =>
+        assertion.kind !== "not-loading" &&
+        (assertion.expected === undefined || assertion.expected.trim() === ""),
+    );
+    if (invalidAssertion !== undefined) {
+      fail("blocked", "browser", `Assertion ${invalidAssertion.id} requires an expected value.`);
+    }
     if (
       input.target.environmentIdentity !== input.environment.environmentId ||
       scope.environmentId !== input.environment.environmentId

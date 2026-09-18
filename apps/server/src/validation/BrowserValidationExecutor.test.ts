@@ -227,6 +227,34 @@ describe("browser validation executor", () => {
     expect(deps.issueCount).toBe(0);
   });
 
+  it("blocks when browser recovery still has no attached tab", async () => {
+    const noTab = preflight({
+      browser: { ...preflight().browser, tabAttached: false, tabId: null },
+      recovery: { kind: "none", message: "No tab attached." },
+    });
+    const deps = dependencies({ preflights: [noTab, noTab] });
+    const result = await Effect.runPromise(executeBrowserValidation(deps, input()));
+    expect(result.outcome).toBe("blocked");
+    expect(deps.issueCount).toBe(0);
+    expect(deps.calls.map((call) => call.operation)).toEqual(["preflight", "preflight"]);
+  });
+
+  it("blocks assertions that omit an expected value before pairing", async () => {
+    const deps = dependencies({ preflights: [preflight()] });
+    const result = await Effect.runPromise(
+      executeBrowserValidation(
+        deps,
+        input({
+          assertions: [{ id: "missing", kind: "visible-text" }],
+        }),
+      ),
+    );
+    expect(result.outcome).toBe("blocked");
+    expect(result.diagnostics[0]?.message).toContain("requires an expected value");
+    expect(deps.issueCount).toBe(0);
+    expect(deps.calls).toHaveLength(0);
+  });
+
   it("recovers the browser, pairs once after preflight, asserts auth, and returns sanitized evidence", async () => {
     const deps = dependencies({
       preflights: [
