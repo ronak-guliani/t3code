@@ -316,6 +316,24 @@ describe("ValidationEnvironmentManager", () => {
     expect(harness.terminateCount).toBe(2);
   });
 
+  it("terminates the stale persisted owner and launches fresh after failed revalidation", async () => {
+    const harness = makeHarness();
+    const first = await acquire(harness);
+    const staleOwnership = first.ownershipIdentity;
+
+    // Simulate backend death: the persisted processes and listeners vanish.
+    harness.processes.clear();
+    harness.listeners.clear();
+
+    const second = await acquire(harness);
+
+    expect(second.ownershipIdentity).not.toBe(staleOwnership);
+    expect(harness.launchCount).toBe(2);
+    expect(harness.getState()?.ownershipIdentity).toBe(second.ownershipIdentity);
+    expect(second.backend.process.pid).not.toBe(first.backend.process.pid);
+    await second.release();
+  });
+
   it("does not relaunch over mismatched state when old ownership is ambiguous", async () => {
     const harness = makeHarness();
     await acquire(harness);

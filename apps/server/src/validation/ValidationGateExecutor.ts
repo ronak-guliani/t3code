@@ -77,6 +77,12 @@ function outputRefForArtifact(key: string, sha256: string): string {
   return `artifact:${key}:${sha256}`.slice(0, 200);
 }
 
+export function attemptNumberForAttemptId(attemptId: string): number {
+  const match = /:(\d+)$/.exec(attemptId);
+  const parsed = match?.[1] === undefined ? NaN : Number.parseInt(match[1], 10);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : 1;
+}
+
 export function mapRepositoryAttemptToResult(input: {
   readonly runId: string;
   readonly gate: ValidationGate;
@@ -210,10 +216,7 @@ export function mapBrowserResultToStructured(input: {
           ? ("interrupted" as const)
           : ("blocked" as const);
   const mediaRefs = input.evidence.media
-    .map(
-      (media) =>
-        `${media.kind}:${media.sha256.slice(0, 16)}${media.persistedPath ? `:${media.persistedPath}` : ""}`,
-    )
+    .map((media) => `${media.kind}:${media.sha256.slice(0, 16)}`)
     .join(",");
   const extra: string[] = [];
   for (const entry of input.diagnostics) {
@@ -274,6 +277,19 @@ export class ValidationGateExecutor extends Context.Service<
   ValidationGateExecutorShape
 >()("t3/validation/ValidationGateExecutor") {}
 
+export function mediaFileNameForGate(input: {
+  readonly gateId: string;
+  readonly sha256: string;
+  readonly kind: "screenshot" | "recording";
+}): string {
+  const segment = input.gateId.split(":").pop() ?? "";
+  if (!/^[A-Za-z0-9._-]+$/.test(segment) || segment === "." || segment === "..") {
+    throw new Error("Media filename derived from the gate is unsafe.");
+  }
+  const ext = input.kind === "screenshot" ? "png" : "webm";
+  return `${segment}-${input.sha256.slice(0, 16)}.${ext}`;
+}
+
 const makeFileMediaPersistence = (baseDir: string) => ({
   persist: async (input: {
     readonly identity: { readonly runId: string; readonly gateId: string };
@@ -284,9 +300,14 @@ const makeFileMediaPersistence = (baseDir: string) => ({
   }): Promise<string> => {
     const dir = join(baseDir, "validation", input.identity.runId);
     await mkdir(dir, { recursive: true });
-    const ext = input.kind === "screenshot" ? "png" : "webm";
-    const name = `${input.identity.gateId.split(":").pop()}-${input.sha256.slice(0, 16)}.${ext}`;
-    const path = join(dir, name);
+    const path = join(
+      dir,
+      mediaFileNameForGate({
+        gateId: input.identity.gateId,
+        sha256: input.sha256,
+        kind: input.kind,
+      }),
+    );
     await writeFile(path, input.bytes);
     return path;
   },
@@ -312,7 +333,7 @@ export const makeValidationGateExecutor = Effect.gen(function* () {
           {
             id: gateId,
             cwd: input.cwd,
-            attempt: 1,
+            attempt: attemptNumberForAttemptId(input.attemptId),
           },
         ],
       });

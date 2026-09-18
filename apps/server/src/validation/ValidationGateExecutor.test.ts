@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { ValidationGate, ValidationTarget } from "@t3tools/contracts";
 
 import {
+  attemptNumberForAttemptId,
   browserScenarioForGate,
   isBrowserGateKind,
   isRepositoryGateKind,
   mapBrowserResultToStructured,
   mapRepositoryAttemptToResult,
+  mediaFileNameForGate,
   repositoryGateIdForKind,
 } from "./ValidationGateExecutor.ts";
 
@@ -41,6 +43,36 @@ const gate = (overrides: Partial<ValidationGate> = {}): ValidationGate => ({
 });
 
 describe("ValidationGateExecutor mapping", () => {
+  it("derives the runner attempt number from the reactor attempt id", () => {
+    expect(attemptNumberForAttemptId("attempt:validation:req-1:gate:1")).toBe(1);
+    expect(attemptNumberForAttemptId("attempt:validation:req-1:gate:2")).toBe(2);
+    expect(attemptNumberForAttemptId("attempt:1")).toBe(1);
+    expect(attemptNumberForAttemptId("attempt:validation:req-1:gate:0")).toBe(1);
+    expect(attemptNumberForAttemptId("attempt:validation:req-1:gate")).toBe(1);
+    expect(attemptNumberForAttemptId("not-an-attempt-id")).toBe(1);
+  });
+
+  it("rejects unsafe gate-derived media filenames instead of escaping the evidence store", () => {
+    expect(
+      mediaFileNameForGate({
+        gateId: "validation:req-1:browser-scenario:opens-settings",
+        sha256: "b".repeat(64),
+        kind: "screenshot",
+      }),
+    ).toBe(`opens-settings-${"b".repeat(16)}.png`);
+    for (const gateId of [
+      "validation:req-1:../../evil",
+      "validation:req-1:..",
+      "validation:req-1:",
+      "validation:req-1:has space",
+      "validation:req-1:has/slash",
+    ]) {
+      expect(() =>
+        mediaFileNameForGate({ gateId, sha256: "b".repeat(64), kind: "recording" }),
+      ).toThrow("unsafe");
+    }
+  });
+
   it("maps repository kinds without copying runner logic", () => {
     expect(repositoryGateIdForKind("focused-tests")).toBe("focused-tests");
     expect(repositoryGateIdForKind("pairing-self-test")).toBe("pairing-self-test");
@@ -192,7 +224,8 @@ describe("ValidationGateExecutor mapping", () => {
       envSummary: "environment env-1",
     });
     expect(passed.status).toBe("passed");
-    expect(passed.outputRef).toContain("browser:screenshot:");
+    expect(passed.outputRef).toBe(`browser:screenshot:${"b".repeat(16)}`);
+    expect(passed.outputRef).not.toContain("/tmp/shot.png");
     expect(passed.outputRef).not.toContain("token=");
   });
 });

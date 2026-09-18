@@ -429,6 +429,10 @@ const executePromise = async (
     throw new BrowserValidationAbort(outcome, kind, message);
   };
 
+  // Reads the live pairing token: empty before issuance and after revocation,
+  // so every broker failure message is scrubbed of the one-time credential.
+  const safeMessage = (error: unknown): string => safeErrorMessage(error, pairingToken);
+
   try {
     const invalidAssertion = input.scenario.assertions.find(
       (assertion) =>
@@ -459,7 +463,7 @@ const executePromise = async (
       fail(
         errorOutcome(error) === "interrupted" ? "interrupted" : "blocked",
         "browser",
-        safeErrorMessage(error),
+        safeMessage(error),
       ),
     );
 
@@ -478,7 +482,7 @@ const executePromise = async (
         fail(
           errorOutcome(error) === "interrupted" ? "interrupted" : "blocked",
           "browser",
-          safeErrorMessage(error),
+          safeMessage(error),
         ),
       );
     }
@@ -509,7 +513,7 @@ const executePromise = async (
       fail(
         errorOutcome(error) === "interrupted" ? "interrupted" : "blocked",
         "browser",
-        safeErrorMessage(error),
+        safeMessage(error),
       ),
     );
     issuedCredentialId = issued.id;
@@ -533,7 +537,7 @@ const executePromise = async (
       fail(
         errorOutcome(error) === "interrupted" ? "interrupted" : "blocked",
         "browser",
-        safeErrorMessage(error),
+        safeMessage(error),
       ),
     );
     state.tabId = pairing.tabId;
@@ -552,7 +556,7 @@ const executePromise = async (
           input: {},
           tabId: state.tabId,
         }),
-      ).catch((error: unknown) => fail(errorOutcome(error), "media", safeErrorMessage(error)));
+      ).catch((error: unknown) => fail(errorOutcome(error), "media", safeMessage(error)));
       if (!recordingStatus.recording) {
         fail("failed", "media", "Required browser recording did not start.");
       }
@@ -571,7 +575,7 @@ const executePromise = async (
         fail(
           errorOutcome(error),
           "browser",
-          `Scenario action ${action.id} failed: ${safeErrorMessage(error)}`,
+          `Scenario action ${action.id} failed: ${safeMessage(error)}`,
         ),
       );
     }
@@ -614,10 +618,10 @@ const executePromise = async (
           input: {},
           ...(state.tabId === undefined ? {} : { tabId: state.tabId }),
         }),
-      ).catch((error: unknown) => fail(errorOutcome(error), "media", safeErrorMessage(error)));
+      ).catch((error: unknown) => fail(errorOutcome(error), "media", safeMessage(error)));
       recordingStopped = true;
       const bytes = await readRecording(dependencies, artifact).catch((error: unknown) =>
-        fail(errorOutcome(error), "media", safeErrorMessage(error)),
+        fail(errorOutcome(error), "media", safeMessage(error)),
       );
       const decoder =
         dependencies.recordingDecoder ??
@@ -633,7 +637,7 @@ const executePromise = async (
         ...(decoder === undefined ? {} : { decoder }),
       } as const;
       const recording = await validateBrowserValidationMedia(recordingInput).catch(
-        (error: unknown) => fail(errorOutcome(error), "media", safeErrorMessage(error)),
+        (error: unknown) => fail(errorOutcome(error), "media", safeMessage(error)),
       );
       state.media.push(recording);
     }
@@ -651,7 +655,7 @@ const executePromise = async (
         ...(dependencies.mediaPersistence === undefined
           ? {}
           : { persistence: dependencies.mediaPersistence }),
-      }).catch((error: unknown) => fail(errorOutcome(error), "media", safeErrorMessage(error)));
+      }).catch((error: unknown) => fail(errorOutcome(error), "media", safeMessage(error)));
       state.media.push(screenshot);
     }
 
@@ -668,7 +672,7 @@ const executePromise = async (
     const abort =
       error instanceof BrowserValidationAbort
         ? error
-        : new BrowserValidationAbort("failed", "browser", safeErrorMessage(error));
+        : new BrowserValidationAbort("failed", "browser", safeMessage(error));
     if (recordingStarted && !recordingStopped) {
       recordingStopped = true;
       await Effect.runPromise(
@@ -679,7 +683,9 @@ const executePromise = async (
           ...(state.tabId === undefined ? {} : { tabId: state.tabId }),
         }),
       ).catch((stopError: unknown) => {
-        state.extraDiagnostics.push(diagnosticFromError("media", stopError));
+        state.extraDiagnostics.push(
+          diagnosticFromError("media", new Error(safeMessage(stopError))),
+        );
       });
     }
     state.extraDiagnostics.push(diagnosticFromError(abort.kind, abort));

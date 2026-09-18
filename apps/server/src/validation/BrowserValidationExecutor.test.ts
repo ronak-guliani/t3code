@@ -366,6 +366,24 @@ describe("browser validation executor", () => {
     expect(JSON.stringify(result)).not.toContain("secret-token");
   });
 
+  it.each<[string, Array<{ kind: "recording"; required: boolean }> | undefined]>([
+    ["openAndSnapshot", undefined],
+    ["press", undefined],
+    ["recordingStart", [{ kind: "recording", required: true }]],
+    ["recordingStop", [{ kind: "recording", required: true }]],
+  ])("redacts the pairing token from %s broker errors", async (operation, media) => {
+    const deps = dependencies({
+      preflights: [preflight()],
+      failOperation: operation,
+      failureMessage: "broker echoed secret-token",
+    });
+    const result = await Effect.runPromise(
+      executeBrowserValidation(deps, input(media === undefined ? {} : { media })),
+    );
+    expect(["failed", "blocked"]).toContain(result.outcome);
+    expect(JSON.stringify(result)).not.toContain("secret-token");
+  });
+
   it("retains a sanitized diagnostic when credential revocation fails", async () => {
     const deps = dependencies({
       preflights: [preflight()],

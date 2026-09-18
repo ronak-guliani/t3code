@@ -714,6 +714,71 @@ export function createValidationEnvironmentManager(
     return { entry, retain };
   };
 
+  const launchFresh = async (
+    target: ValidationEnvironmentTarget,
+    stale: StoredValidationEnvironment | null,
+  ): Promise<StoredValidationEnvironment> => {
+    if (stale) {
+      await cleanupOwned(stale, { removeState: true });
+    }
+    const ownershipIdentity = `${target.environmentIdentity}:${randomUUID()}`;
+    let started: StartedValidationEnvironment;
+    try {
+      started = await adapters.launcher.start({ target, ownershipIdentity });
+    } catch (cause) {
+      throw errorFromUnknown("launch-failed", "Validation environment launch failed.", cause);
+    }
+    try {
+      if (started.ownershipIdentity !== ownershipIdentity) {
+        throw new ValidationEnvironmentError(
+          "ambiguous-ownership",
+          "Launcher returned a different ownership identity.",
+        );
+      }
+      const record: StoredValidationEnvironment = {
+        version: 1,
+        target,
+        ownershipIdentity,
+        backend: validateEndpoint(started.backend, "backend"),
+        web: validateEndpoint(started.web, "web"),
+      };
+      if (
+        record.backend.process.ownershipIdentity !== ownershipIdentity ||
+        record.web.process.ownershipIdentity !== ownershipIdentity
+      ) {
+        throw new ValidationEnvironmentError(
+          "ambiguous-ownership",
+          "Launched process ownership identities do not agree.",
+        );
+      }
+      await validateAndWait(record, target.environmentIdentity);
+      await adapters.state.write(record);
+      return record;
+    } catch (cause) {
+      try {
+        await cleanupOwned(
+          {
+            version: 1,
+            target,
+            ownershipIdentity,
+            backend: started.backend,
+            web: started.web,
+          },
+          { removeState: false },
+        );
+      } catch (cleanupError) {
+        if (cause instanceof ValidationEnvironmentError) {
+          throw createError(cause, [
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          ]);
+        }
+        throw cleanupError;
+      }
+      if (cause instanceof ValidationEnvironmentError) throw cause;
+      throw errorFromUnknown("launch-failed", "Validation environment startup failed.", cause);
+    }
+  };
+
   const acquire = async (
     target: ValidationEnvironmentTarget,
   ): Promise<ValidationEnvironmentLease> => {
@@ -786,76 +851,30 @@ export function createValidationEnvironmentManager(
         );
       }
       if (persistedRecord && targetEquals(persistedRecord.target, target)) {
-        record = persistedRecord;
         if (
-          record.backend.process.ownershipIdentity !== record.ownershipIdentity ||
-          record.web.process.ownershipIdentity !== record.ownershipIdentity
+          persistedRecord.backend.process.ownershipIdentity !== persistedRecord.ownershipIdentity ||
+          persistedRecord.web.process.ownershipIdentity !== persistedRecord.ownershipIdentity
         ) {
           throw new ValidationEnvironmentError(
             "ambiguous-ownership",
             "Persisted environment ownership identities do not agree.",
           );
         }
-        await validateAndWait(record, target.environmentIdentity);
+        try {
+          await validateAndWait(persistedRecord, target.environmentIdentity);
+          record = persistedRecord;
+        } catch (cause) {
+          // The persisted backend is dead or updated: terminate the stale owner
+          // and launch fresh so the next acquire does not re-read the same
+          // stale state and time out again.
+          await recordDiagnostic(
+            persistedRecord,
+            cause instanceof Error ? cause.message : String(cause),
+          ).catch(() => undefined);
+          record = await launchFresh(target, persistedRecord);
+        }
       } else {
-        if (persistedRecord) {
-          await cleanupOwned(persistedRecord, { removeState: true });
-        }
-        const ownershipIdentity = `${target.environmentIdentity}:${randomUUID()}`;
-        let started: StartedValidationEnvironment;
-        try {
-          started = await adapters.launcher.start({ target, ownershipIdentity });
-        } catch (cause) {
-          throw errorFromUnknown("launch-failed", "Validation environment launch failed.", cause);
-        }
-        try {
-          if (started.ownershipIdentity !== ownershipIdentity) {
-            throw new ValidationEnvironmentError(
-              "ambiguous-ownership",
-              "Launcher returned a different ownership identity.",
-            );
-          }
-          record = {
-            version: 1,
-            target,
-            ownershipIdentity,
-            backend: validateEndpoint(started.backend, "backend"),
-            web: validateEndpoint(started.web, "web"),
-          };
-          if (
-            record.backend.process.ownershipIdentity !== ownershipIdentity ||
-            record.web.process.ownershipIdentity !== ownershipIdentity
-          ) {
-            throw new ValidationEnvironmentError(
-              "ambiguous-ownership",
-              "Launched process ownership identities do not agree.",
-            );
-          }
-          await validateAndWait(record, target.environmentIdentity);
-          await adapters.state.write(record);
-        } catch (cause) {
-          try {
-            await cleanupOwned(
-              {
-                version: 1,
-                target,
-                ownershipIdentity,
-                backend: started.backend,
-                web: started.web,
-              },
-              { removeState: false },
-            );
-          } catch (cleanupError) {
-            if (cause instanceof ValidationEnvironmentError) {
-              throw createError(cause, [
-                cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-              ]);
-            }
-            throw cleanupError;
-          }
-          if (cause instanceof ValidationEnvironmentError) throw cause;
-          throw errorFromUnknown("launch-failed", "Validation environment startup failed.", cause);
-        }
+        record = await launchFresh(target, persistedRecord);
       }
 
       const created = makeLease(key, record, 1);

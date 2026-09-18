@@ -28,12 +28,13 @@ export class ValidationEnvironmentService extends Context.Service<
 
 const STATE_FILE = "validation-environment.json";
 
+// Captured once per process: process/pid-identity probes must observe the same
+// start identity as the launch record, otherwise every readiness revalidation
+// looks like PID reuse.
+const serverStartIdentity = `pid:${process.pid}:start:${process.uptime().toFixed(3)}`;
+
 function safeEnvId(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 64) || "default";
-}
-
-function currentStartIdentity(): string {
-  return `pid:${process.pid}:start:${process.uptime().toFixed(3)}`;
 }
 
 export const makeValidationEnvironmentService = Effect.gen(function* () {
@@ -100,7 +101,7 @@ export const makeValidationEnvironmentService = Effect.gen(function* () {
         const webOrigin = backendOrigin;
         const identity = {
           pid: process.pid,
-          startIdentity: currentStartIdentity(),
+          startIdentity: serverStartIdentity,
           ownershipIdentity,
         };
         const started: StartedValidationEnvironment = {
@@ -116,7 +117,7 @@ export const makeValidationEnvironmentService = Effect.gen(function* () {
         if (identity.pid !== process.pid) return null;
         return {
           pid: process.pid,
-          startIdentity: currentStartIdentity(),
+          startIdentity: serverStartIdentity,
           ownershipIdentity: identity.ownershipIdentity,
         };
       },
@@ -134,7 +135,7 @@ export const makeValidationEnvironmentService = Effect.gen(function* () {
         if (endpoint.port !== config.port) return null;
         return {
           pid: process.pid,
-          startIdentity: currentStartIdentity(),
+          startIdentity: serverStartIdentity,
           ownershipIdentity: endpoint.process.ownershipIdentity,
         };
       },
