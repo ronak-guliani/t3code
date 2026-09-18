@@ -355,6 +355,8 @@ const executePromise = async (
   const scope = scopeOf(input);
   let pairingToken = "";
   let issuedCredentialId: string | undefined;
+  let recordingStarted = false;
+  let recordingStopped = false;
 
   const fail = (
     outcome: Exclude<BrowserValidationOutcome, "passed">,
@@ -471,7 +473,6 @@ const executePromise = async (
         safeErrorMessage(error),
       ),
     );
-    pairingToken = "";
     state.tabId = pairing.tabId;
     state.diagnostics = diagnosticsFromSnapshot(pairing);
     state.authenticated = matchesAuthentication(pairing, input.scenario, validatedOrigin);
@@ -492,6 +493,7 @@ const executePromise = async (
       if (!recordingStatus.recording) {
         fail("failed", "media", "Required browser recording did not start.");
       }
+      recordingStarted = true;
     }
 
     for (const action of input.scenario.actions) {
@@ -547,8 +549,10 @@ const executePromise = async (
           scope,
           operation: "recordingStop",
           input: {},
+          ...(state.tabId === undefined ? {} : { tabId: state.tabId }),
         }),
       ).catch((error: unknown) => fail(errorOutcome(error), "media", safeErrorMessage(error)));
+      recordingStopped = true;
       const bytes = await readRecording(dependencies, artifact).catch((error: unknown) =>
         fail(errorOutcome(error), "media", safeErrorMessage(error)),
       );
@@ -602,6 +606,19 @@ const executePromise = async (
       error instanceof BrowserValidationAbort
         ? error
         : new BrowserValidationAbort("failed", "browser", safeErrorMessage(error));
+    if (recordingStarted && !recordingStopped) {
+      recordingStopped = true;
+      await Effect.runPromise(
+        dependencies.broker.invoke<PreviewAutomationRecordingArtifact>({
+          scope,
+          operation: "recordingStop",
+          input: {},
+          ...(state.tabId === undefined ? {} : { tabId: state.tabId }),
+        }),
+      ).catch((stopError: unknown) => {
+        state.extraDiagnostics.push(diagnosticFromError("media", stopError));
+      });
+    }
     state.extraDiagnostics.push(diagnosticFromError(abort.kind, abort));
     return makeResult(state, abort.outcome);
   } finally {

@@ -116,4 +116,26 @@ describe("browser validation evidence", () => {
     expect(JSON.stringify(diagnostics)).not.toContain("secret");
     expect(browserValidationFinalSnapshot(snapshot).url).toBe("https://example.test/app");
   });
+
+  it("preserves visible text beyond the diagnostic message bound", () => {
+    const visibleText = "visible ".repeat(300);
+    const snapshot = {
+      url: "https://example.test/app",
+      title: "Application",
+      loading: false,
+      visibleText,
+      interactiveElements: [],
+      accessibilityTree: null,
+      consoleEntries: [],
+      networkEntries: [],
+      actionTimeline: [],
+      screenshot: {
+        mimeType: "image/png" as const,
+        data: png.toString("base64"),
+        width: 2,
+        height: 1,
+      },
+    };
+    expect(browserValidationFinalSnapshot(snapshot).visibleText).toBe(visibleText);
+  });
 });
