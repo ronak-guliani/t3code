@@ -79,7 +79,11 @@ function nestedErrorCause(cause: unknown): unknown {
 
 export function openCodeRuntimeErrorDetail(cause: unknown): string {
   if (OpenCodeRuntimeError.is(cause)) return cause.detail;
-  if (cause instanceof Error && cause.message.trim().length > 0) {
+  if (
+    cause instanceof Error &&
+    typeof cause.message === "string" &&
+    cause.message.trim().length > 0
+  ) {
     const message = cause.message.trim();
     if (message.includes("ChildProcess.exitCode")) {
       const nestedCause = nestedErrorCause(cause);
