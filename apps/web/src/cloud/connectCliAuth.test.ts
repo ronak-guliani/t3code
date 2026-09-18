@@ -5,8 +5,6 @@ import {
   connectCliSignInRedirectUrl,
   isConnectCliAuthEnabled,
   isConnectAccountManagementEnabled,
-  prepareConnectCliSignIn,
-  storeConnectCliCallbackState,
 } from "./connectCliAuth";
 
 const TEST_PUBLISHABLE_KEY = `pk_test_${btoa("clerk.example.test$")}`;
@@ -52,23 +50,6 @@ describe("connectCliAuth", () => {
     vi.unstubAllGlobals();
   });
 
-  it("uses the hosted callback for headless authorization", () => {
-    vi.stubEnv("VITE_CLERK_PUBLISHABLE_KEY", TEST_PUBLISHABLE_KEY);
-    vi.stubEnv("VITE_CLERK_CLI_OAUTH_CLIENT_ID", "oauth-client");
-    vi.stubEnv("VITE_HOSTED_APP_URL", "https://hosted.example.test");
-
-    const url = new URL(
-      buildConnectCliAuthorizeUrl({
-        state: "state-1",
-        challenge: "challenge-1",
-      })!,
-    );
-
-    expect(url.searchParams.get("redirect_uri")).toBe(
-      "https://hosted.example.test/connect/callback",
-    );
-  });
-
   it("uses the CLI listener for loopback authorization and sign-in handoff", () => {
     vi.stubEnv("VITE_CLERK_PUBLISHABLE_KEY", TEST_PUBLISHABLE_KEY);
     vi.stubEnv("VITE_CLERK_CLI_OAUTH_CLIENT_ID", "oauth-client");
@@ -89,69 +70,35 @@ describe("connectCliAuth", () => {
     expect(url.searchParams.get("state")).toBe("state-1");
   });
 
-  it("stores state before handing signed-out users to Clerk", () => {
+  it("builds a PKCE authorize URL that redirects to the CLI's loopback listener", () => {
     vi.stubEnv("VITE_CLERK_PUBLISHABLE_KEY", TEST_PUBLISHABLE_KEY);
     vi.stubEnv("VITE_CLERK_CLI_OAUTH_CLIENT_ID", "oauth-client");
-    const stored = new Map<string, string>();
-    vi.stubGlobal("window", {
-      sessionStorage: {
-        setItem: (key: string, value: string) => stored.set(key, value),
-      },
-    });
 
-    const props = prepareConnectCliSignIn(
-      {
+    const url = new URL(
+      buildConnectCliAuthorizeUrl({
         state: "state-1",
         challenge: "challenge-1",
         loopbackPort: 34338,
-      },
-      "https://hosted.example.test/connect",
+      })!,
     );
 
-    expect(stored.get("t3code-connect-cli-auth-state")).toBe("state-1");
-    expect(props).not.toBeNull();
-    if (!props) throw new Error("expected sign-in properties");
-    expect(props.forceRedirectUrl).toBe(props.signUpForceRedirectUrl);
-    expect(new URL(props.forceRedirectUrl).searchParams.get("state")).toBe("state-1");
+    expect(url.pathname).toBe("/oauth/authorize");
+    expect(url.searchParams.get("redirect_uri")).toBe("http://127.0.0.1:34338/callback");
+    expect(url.searchParams.get("state")).toBe("state-1");
+    expect(url.searchParams.get("code_challenge")).toBe("challenge-1");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   });
 
-  it("blocks headless callbacks when state cannot be stored", () => {
+  it("returns null when the CLI OAuth client id is not configured", () => {
     vi.stubEnv("VITE_CLERK_PUBLISHABLE_KEY", TEST_PUBLISHABLE_KEY);
-    vi.stubEnv("VITE_CLERK_CLI_OAUTH_CLIENT_ID", "oauth-client");
-    vi.stubGlobal("window", {
-      sessionStorage: {
-        setItem: () => {
-          throw new Error("storage disabled");
-        },
-      },
-    });
-
-    const headlessRequest = {
-      state: "state-1",
-      challenge: "challenge-1",
-    } as const;
+    vi.stubEnv("VITE_CLERK_CLI_OAUTH_CLIENT_ID", "");
     expect(
-      prepareConnectCliSignIn(headlessRequest, "https://hosted.example.test/connect"),
-    ).toBeNull();
-    expect(storeConnectCliCallbackState(headlessRequest)).toBe(false);
-  });
-
-  it("allows loopback callbacks when state cannot be stored", () => {
-    vi.stubGlobal("window", {
-      sessionStorage: {
-        setItem: () => {
-          throw new Error("storage disabled");
-        },
-      },
-    });
-
-    expect(
-      storeConnectCliCallbackState({
+      buildConnectCliAuthorizeUrl({
         state: "state-1",
         challenge: "challenge-1",
         loopbackPort: 34338,
       }),
-    ).toBe(true);
+    ).toBeNull();
   });
 
   it("enables Clerk only on the configured hosted origin", () => {
