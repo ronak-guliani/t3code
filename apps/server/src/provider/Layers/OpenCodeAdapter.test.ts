@@ -1767,8 +1767,28 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         threadId,
         runtimeMode: "full-access",
       });
-      assert.equal(runtimeMock.state.subscribeCalls, 2);
+      assert.ok(runtimeMock.state.subscribeCalls >= 2);
       yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("bounds initial event connection retries", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-connection-timeout");
+      runtimeMock.state.subscribeFailures = 100;
+
+      const error = yield* adapter
+        .startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error._tag, "ProviderAdapterProcessError");
+      assert.ok(runtimeMock.state.subscribeCalls >= 5);
+      assert.equal(runtimeMock.state.abortCalls.length, 1);
     }),
   );
 
