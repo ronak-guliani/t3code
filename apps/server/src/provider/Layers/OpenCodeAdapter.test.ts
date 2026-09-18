@@ -48,6 +48,8 @@ type MessageEntry = {
   info: {
     id: string;
     role: "user" | "assistant";
+    parentID?: string;
+    error?: unknown;
   };
   parts: Array<unknown>;
 };
@@ -65,6 +67,9 @@ const runtimeMock = {
     promptAsyncError: null as Error | null,
     closeError: null as Error | null,
     messages: [] as MessageEntry[],
+    sessionStatus: "idle" as "busy" | "idle",
+    subscribeFailures: 0,
+    subscribeCalls: 0,
     subscribedEvents: [] as unknown[],
     subscribedEventDelayMs: 0,
     sessionParents: new Map<string, string | undefined>(),
@@ -99,6 +104,9 @@ const runtimeMock = {
     this.state.promptAsyncError = null;
     this.state.closeError = null;
     this.state.messages = [];
+    this.state.sessionStatus = "idle";
+    this.state.subscribeFailures = 0;
+    this.state.subscribeCalls = 0;
     this.state.subscribedEvents = [];
     this.state.subscribedEventDelayMs = 0;
     this.state.sessionParents.clear();
@@ -215,6 +223,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         },
         abort: async ({ sessionID }: { sessionID: string }) => {
           runtimeMock.state.abortCalls.push(sessionID);
+          runtimeMock.state.sessionStatus = "idle";
           if (runtimeMock.state.abortError) {
             throw runtimeMock.state.abortError;
           }
@@ -228,8 +237,14 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           if (runtimeMock.state.promptAsyncError) {
             throw runtimeMock.state.promptAsyncError;
           }
+          runtimeMock.state.sessionStatus = "busy";
         },
         messages: async () => ({ data: runtimeMock.state.messages }),
+        status: async () => ({
+          data: {
+            "http://127.0.0.1:9999/session": { type: runtimeMock.state.sessionStatus },
+          },
+        }),
         revert: async ({ sessionID, messageID }: { sessionID: string; messageID?: string }) => {
           runtimeMock.state.revertCalls.push({
             sessionID,
@@ -250,18 +265,25 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         },
       },
       event: {
-        subscribe: async () => ({
-          stream: (async function* () {
-            for (const event of runtimeMock.state.subscribedEvents) {
-              if (runtimeMock.state.subscribedEventDelayMs > 0) {
-                await new Promise((resolve) =>
-                  setTimeout(resolve, runtimeMock.state.subscribedEventDelayMs),
-                );
+        subscribe: async () => {
+          runtimeMock.state.subscribeCalls += 1;
+          if (runtimeMock.state.subscribeFailures > 0) {
+            runtimeMock.state.subscribeFailures -= 1;
+            throw new Error("event stream disconnected");
+          }
+          return {
+            stream: (async function* () {
+              for (const event of runtimeMock.state.subscribedEvents) {
+                if (runtimeMock.state.subscribedEventDelayMs > 0) {
+                  await new Promise((resolve) =>
+                    setTimeout(resolve, runtimeMock.state.subscribedEventDelayMs),
+                  );
+                }
+                yield event;
               }
-              yield event;
-            }
-          })(),
-        }),
+            })(),
+          };
+        },
       },
       permission: {
         list: async () => {
@@ -1575,7 +1597,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         ),
       });
 
-      assert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
+      const promptCall = { ...(runtimeMock.state.promptCalls.at(-1) as Record<string, unknown>) };
+      assert.equal(typeof promptCall.messageID, "string");
+      delete promptCall.messageID;
+      assert.deepEqual(promptCall, {
         sessionID: "http://127.0.0.1:9999/session",
         model: {
           providerID: "anthropic",
@@ -1607,7 +1632,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         ]),
       });
 
-      assert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
+      const promptCall = { ...(runtimeMock.state.promptCalls.at(-1) as Record<string, unknown>) };
+      assert.equal(typeof promptCall.messageID, "string");
+      delete promptCall.messageID;
+      assert.deepEqual(promptCall, {
         sessionID: "http://127.0.0.1:9999/session",
         model: {
           providerID: "openai",
@@ -1653,7 +1681,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         input: "Fix it",
       });
 
-      assert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
+      const promptCall = { ...(runtimeMock.state.promptCalls.at(-1) as Record<string, unknown>) };
+      assert.equal(typeof promptCall.messageID, "string");
+      delete promptCall.messageID;
+      assert.deepEqual(promptCall, {
         sessionID: "http://127.0.0.1:9999/session",
         model: {
           providerID: "anthropic",
@@ -1663,6 +1694,111 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
     }).pipe(Effect.provide(adapterLayer));
   });
+
+  it.effect("reconciles a completed prompt when SSE has no semantic events", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-silent-sse");
+      const observed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Recover this silent turn",
+        modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+      });
+      const prompt = runtimeMock.state.promptCalls.at(-1) as { messageID: string };
+
+      yield* sleep(150);
+      runtimeMock.state.messages = [
+        {
+          info: { id: prompt.messageID, role: "user" },
+          parts: [{ id: "user-part", type: "text", messageID: prompt.messageID, text: "Recover" }],
+        },
+        {
+          info: {
+            id: "assistant-silent",
+            role: "assistant",
+            parentID: prompt.messageID,
+          },
+          parts: [
+            {
+              id: "assistant-part",
+              messageID: "assistant-silent",
+              type: "text",
+              text: "Recovered output",
+              time: { start: 1, end: 2 },
+            },
+          ],
+        },
+      ];
+      runtimeMock.state.sessionStatus = "idle";
+
+      const events = Array.from(yield* Fiber.join(observed).pipe(Effect.timeout("2 seconds")));
+      const completed = events.filter(
+        (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+      );
+      assert.equal(completed.length, 1);
+      assert.deepEqual(
+        events
+          .filter((event) => event.type === "content.delta")
+          .map((event) => (event.type === "content.delta" ? event.payload.delta : "")),
+        ["Recovered output"],
+      );
+    }),
+  );
+
+  it.effect("waits for an event reconnect before admitting a prompt", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-reconnect");
+      runtimeMock.state.subscribeFailures = 1;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      assert.equal(runtimeMock.state.subscribeCalls, 2);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("rejects a follow-up when the native session remains busy", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-native-busy-follow-up");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "First turn",
+        modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+      });
+      const error = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Follow-up",
+          modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+        })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "ProviderAdapterRequestError");
+      if (error._tag === "ProviderAdapterRequestError") {
+        assert.match(error.detail, /active turn|busy/);
+      }
+    }),
+  );
 
   it.effect("rejects sendTurn model selections for another instance id", () => {
     const customInstanceId = ProviderInstanceId.make("opencode_zen");
