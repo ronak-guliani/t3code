@@ -201,24 +201,23 @@ describe("validation runs", () => {
       requester: { id: "system", kind: "system" },
       requestedAt: "2026-09-16T12:00:00.000Z",
     });
-    expect(() =>
-      acceptValidationResult(current, {
-        id: "result-1",
-        runId: current.id,
-        gateId: current.gates[0]!.id,
-        attemptId: "attempt-1",
-        leaseId: "lease:run-result",
-        executorId: "executor-1",
-        target,
-        status: "passed",
-        observedAt: "2026-09-16T12:00:01.000Z",
-        completedAt: "2026-09-16T12:00:02.000Z",
-        exitCode: 0,
-        outputRef: "output://focused",
-        blockerReason: null,
-        diagnostics: [],
-      }),
-    ).toThrow("is not running");
+    const result = {
+      id: "result-1",
+      runId: current.id,
+      gateId: current.gates[0]!.id,
+      attemptId: "attempt-1",
+      leaseId: "lease:run-result",
+      executorId: "executor-1",
+      target,
+      status: "passed" as const,
+      observedAt: "2026-09-16T12:00:01.000Z",
+      completedAt: "2026-09-16T12:00:02.000Z",
+      exitCode: 0,
+      outputRef: "output://focused",
+      blockerReason: null,
+      diagnostics: [],
+    };
+    expect(() => acceptValidationResult(current, result)).toThrow("run is planned");
 
     current = {
       ...current,
@@ -240,23 +239,14 @@ describe("validation runs", () => {
         expiresAt: "2026-09-16T12:01:00.000Z",
       },
     };
-    const accepted = acceptValidationResult(current, {
-      id: "result-1",
-      runId: current.id,
-      gateId: current.gates[0]!.id,
-      attemptId: "attempt-1",
-      leaseId: "lease:run-result",
-      executorId: "executor-1",
-      target,
-      status: "passed",
-      observedAt: "2026-09-16T12:00:01.000Z",
-      completedAt: "2026-09-16T12:00:02.000Z",
-      exitCode: 0,
-      outputRef: "output://focused",
-      blockerReason: null,
-      diagnostics: [],
-    });
+    const accepted = acceptValidationResult(current, result);
     expect(accepted.gates[0]?.result?.id).toBe("result-1");
     expect(accepted.gates[0]?.status).toBe("passed");
+
+    for (const status of ["preparing", "blocked", "ready", "stale"] as const) {
+      expect(() => acceptValidationResult({ ...current, status }, result)).toThrow(
+        `run is ${status}`,
+      );
+    }
   });
 });

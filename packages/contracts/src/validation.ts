@@ -176,6 +176,13 @@ export const ValidationRequest = Schema.Struct({
 });
 export type ValidationRequest = typeof ValidationRequest.Type;
 
+export const ValidationRequestFailure = Schema.Struct({
+  requestId: TrimmedNonEmptyString,
+  reason: TrimmedNonEmptyString,
+  failedAt: IsoDateTime,
+});
+export type ValidationRequestFailure = typeof ValidationRequestFailure.Type;
+
 export const ValidationRunLifecycleUpdate = Schema.Struct({
   runId: TrimmedNonEmptyString,
   status: ValidationRunStatus,
@@ -479,6 +486,11 @@ export const acceptValidationResult = (
 ): ValidationRun => {
   if (result.runId !== run.id) {
     throw new Error("Validation result does not match the active run.");
+  }
+  if ((run.status ?? "planned") !== "running") {
+    throw new Error(
+      `Validation result cannot be accepted while the run is ${run.status ?? "planned"}.`,
+    );
   }
   if (!validationTargetEquals(run.target, result.target)) {
     throw new Error("Validation result target does not match the planned target.");

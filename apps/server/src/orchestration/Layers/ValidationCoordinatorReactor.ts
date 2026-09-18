@@ -79,7 +79,23 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
     if (!thread || (thread.validationRun !== null && thread.validationRun !== undefined)) {
       return;
     }
-    const target = yield* targetResolver.resolve(request.threadId);
+    const target = yield* targetResolver.resolve(request.threadId).pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.validation.request-failed",
+            commandId: commandId(runIdForRequest(request.requestId), "request-failed"),
+            threadId: request.threadId,
+            failure: {
+              requestId: request.requestId,
+              reason: error.message,
+              failedAt: new Date().toISOString(),
+            },
+          });
+          return yield* Effect.fail(error);
+        }),
+      ),
+    );
     const runId = runIdForRequest(request.requestId);
     yield* orchestrationEngine.dispatch({
       type: "thread.validation.coordinator-plan",
@@ -140,7 +156,8 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
 
     const currentTarget = yield* targetResolver.resolve(thread.id).pipe(
       Effect.catch((error) => {
-        if (run.status === "planned" || run.status === "preparing" || run.status === "running") {
+        const status = run.status ?? "planned";
+        if (status === "planned" || status === "preparing" || status === "running") {
           return orchestrationEngine
             .dispatch({
               type: "thread.validation.lifecycle",

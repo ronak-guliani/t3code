@@ -2250,6 +2250,18 @@ function applyEnvironmentOrchestrationEvent(
         updatedAt: event.occurredAt,
       }));
 
+    case "thread.validation-request-failed":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        if (thread.validationRequest?.requestId !== event.payload.failure.requestId) {
+          return thread;
+        }
+        return {
+          ...thread,
+          validationRequest: null,
+          updatedAt: event.occurredAt,
+        };
+      });
+
     case "thread.validation-lifecycle-updated":
       return updateThreadState(state, event.payload.threadId, (thread) => {
         if (!thread.validationRun || thread.validationRun.id !== event.payload.update.runId) {

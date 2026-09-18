@@ -58,6 +58,7 @@ import {
   ThreadSessionSetPayload,
   ThreadValidationGateUpdatedPayload,
   ThreadValidationRequestedPayload,
+  ThreadValidationRequestFailedPayload,
   ThreadValidationLifecycleUpdatedPayload,
   ThreadValidationLeaseClaimedPayload,
   ThreadValidationLeaseReleasedPayload,
@@ -874,6 +875,32 @@ export function projectEvent(
             validationRequest: payload.request,
             updatedAt: event.occurredAt,
           }),
+        })),
+      );
+
+    case "thread.validation-request-failed":
+      return decodeForEvent(
+        ThreadValidationRequestFailedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            ((): ThreadPatch => {
+              const current = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              if (current?.validationRequest?.requestId !== payload.failure.requestId) {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRequest: null,
+                updatedAt: event.occurredAt,
+              };
+            })(),
+          ),
         })),
       );
 

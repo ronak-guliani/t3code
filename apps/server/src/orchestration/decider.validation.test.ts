@@ -7,6 +7,7 @@ import {
   ThreadId,
   type OrchestrationCommand,
   type OrchestrationReadModel,
+  type ValidationRequest,
   type ValidationTarget,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
@@ -27,7 +28,8 @@ const target: ValidationTarget = {
 };
 
 const readModel = (
-  validationRun: ReturnType<typeof planValidationRun>,
+  validationRun: ReturnType<typeof planValidationRun> | null,
+  validationRequest?: ValidationRequest,
 ): OrchestrationReadModel => ({
   snapshotSequence: 0,
   updatedAt: now,
@@ -57,6 +59,7 @@ const readModel = (
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       branch: target.branch,
       worktreePath: target.worktreePath,
+      ...(validationRequest === undefined ? {} : { validationRequest }),
       validationRun,
       latestTurn: null,
       createdAt: now,
@@ -140,6 +143,39 @@ describe("validation executor authority", () => {
       payload: {
         runId: "run-1",
         gate: { id: "repository-tests", status: "running" },
+      },
+    });
+  });
+
+  it("records target resolution failure and clears the pending request", async () => {
+    const request: ValidationRequest = {
+      requestId: CommandId.make("validation:request-1"),
+      threadId,
+      scenarios: [],
+      scope: "changed-behavior",
+      requester: { id: "user-1", kind: "user" },
+      requestedAt: now,
+    };
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.validation.request-failed",
+          commandId: CommandId.make("validation:request-1:request-failed"),
+          threadId,
+          failure: {
+            requestId: request.requestId,
+            reason: "Workspace is not a repository.",
+            failedAt: now,
+          },
+        },
+        readModel: readModel(null, request),
+      }),
+    );
+    expect(result).toMatchObject({
+      type: "thread.validation-request-failed",
+      payload: {
+        threadId,
+        failure: { requestId: request.requestId },
       },
     });
   });

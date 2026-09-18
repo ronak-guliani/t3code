@@ -596,6 +596,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.validation.request-failed": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.validationRequest?.requestId !== command.failure.requestId) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.failure.failedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-request-failed",
+        payload: {
+          threadId: command.threadId,
+          failure: command.failure,
+        },
+      };
+    }
+
     case "thread.validation.coordinator-plan": {
       const thread = yield* requireThread({
         readModel,

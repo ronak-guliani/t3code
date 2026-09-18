@@ -36,6 +36,7 @@ import {
   ValidationGateStatus,
   ValidationLease,
   ValidationRequest,
+  ValidationRequestFailure,
   ValidationRequester,
   ValidationRunLifecycleUpdate,
   ValidationRun,
@@ -1334,6 +1335,13 @@ const ThreadValidationRequestCommand = Schema.Struct({
   requestedAt: IsoDateTime,
 });
 
+const ThreadValidationRequestFailedCommand = Schema.Struct({
+  type: Schema.Literal("thread.validation.request-failed"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  failure: ValidationRequestFailure,
+});
+
 const ThreadValidationRunPlanCommand = Schema.Struct({
   type: Schema.Literal("thread.validation-run.plan"),
   commandId: CommandId,
@@ -1710,6 +1718,7 @@ export const InternalOrchestrationCommand = Schema.Union([
   WorkflowNodeWorkerStartCommand,
   WorkflowWorkerResultRecordCommand,
   WorkflowRunFinalizeCommand,
+  ThreadValidationRequestFailedCommand,
   ThreadValidationRunPlanCommand,
   ThreadValidationRunPlanCoordinatorCommand,
   ThreadValidationLifecycleUpdateCommand,
@@ -1766,6 +1775,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.session-stop-requested",
   "thread.session-set",
   "thread.validation-requested",
+  "thread.validation-request-failed",
   "thread.validation-run-planned",
   "thread.validation-lifecycle-updated",
   "thread.validation-lease-claimed",
@@ -2100,6 +2110,11 @@ export const ThreadValidationRequestedPayload = Schema.Struct({
   request: ValidationRequest,
 });
 
+export const ThreadValidationRequestFailedPayload = Schema.Struct({
+  threadId: ThreadId,
+  failure: ValidationRequestFailure,
+});
+
 export const ThreadValidationRunPlannedPayload = Schema.Struct({
   threadId: ThreadId,
   run: ValidationRun,
@@ -2408,6 +2423,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.validation-requested"),
     payload: ThreadValidationRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.validation-request-failed"),
+    payload: ThreadValidationRequestFailedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
