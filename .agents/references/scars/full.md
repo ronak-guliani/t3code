@@ -69,6 +69,7 @@
 ## Provider tools and workspace ownership
 
 - Agent CLI stdout is a data boundary: send logs and failures to stderr, use the server-matched launcher rather than ambient PATH, and never infer matching protocol contracts from equal package versions.
+- OpenCode SSE connection success is not semantic progress: admit prompts only after the subscription is established, correlate each prompt with a client message ID, and reconcile transcript plus native status until correlated work is idle before projecting one terminal turn event. Replayed evidence must be idempotent, and interrupt/session replacement remains authoritative over delayed recovery results.
 - Pending CLI approvals/questions must combine `activityContext` with the recent activity window and honor terminal lifecycle events; a request outside the window is not resolved.
 - Thread history reads must filter and limit in SQL before decoding, omit unrelated checkpoints, and bind pagination cursors to thread/view. Unary RPC deadlines must not cap stream lifetime or imply that timed-out mutations were rejected.
 - Preserve typed thread-read input failures through HTTP and RPC; missing/ambiguous threads and invalid cursors are client errors, not error-logged repository failures.

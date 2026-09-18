@@ -14,9 +14,11 @@ import {
 } from "@t3tools/contracts";
 import {
   Cause,
+  Deferred,
   Effect,
   Exit,
   FileSystem,
+  Fiber,
   Path,
   Queue,
   Ref,
@@ -55,6 +57,20 @@ import {
 } from "../opencodeRuntime.ts";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
+const OPENCODE_CONNECTION_TIMEOUT = "5 seconds";
+const OPENCODE_INITIAL_SUBSCRIBE_ATTEMPTS = 5;
+const OPENCODE_RECOVERY_ATTEMPTS = 24;
+const OPENCODE_RECOVERY_DELAY_MS = 100;
+const OPENCODE_ADMISSION_ATTEMPTS = 5;
+const OPENCODE_ADMISSION_DELAY_MS = 100;
+
+const sleepOpenCode = (milliseconds: number) =>
+  Effect.promise(
+    () =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, milliseconds);
+      }),
+  );
 
 /**
  * Version tag stamped into the OpenCode resume cursor. Bump if the cursor
@@ -197,8 +213,14 @@ interface OpenCodeSessionContext {
   // until native removal or session teardown, but do not retain other part payloads.
   readonly textPartsByMessageId: Map<string, Map<string, OpenCodeTextPartState>>;
   activeTurnId: TurnId | undefined;
+  activePromptMessageId: string | undefined;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
+  readonly promptAdmission: Semaphore.Semaphore;
+  readonly connectionReady: Deferred.Deferred<void, OpenCodeRuntimeError>;
+  readonly emittedToolStates: Map<string, string>;
+  readonly terminalTurnIds: Set<TurnId>;
+  recoveryFiber: Fiber.Fiber<void, OpenCodeRuntimeError> | undefined;
   /**
    * One-shot guard flipped by `stopOpenCodeContext` / `emitUnexpectedExit`.
    * The session lifecycle is owned by `sessionScope`; this Ref exists only
@@ -851,6 +873,12 @@ export function makeOpenCodeAdapter(
       return true;
     });
 
+    let reconcileTurn: (
+      context: OpenCodeSessionContext,
+      turnId: TurnId,
+      promptMessageId: string,
+    ) => Effect.Effect<void, OpenCodeRuntimeError>;
+
     const handleSubscribedEvent = Effect.fn("handleSubscribedEvent")(function* (
       context: OpenCodeSessionContext,
       event: OpenCodeSubscribedEvent,
@@ -970,6 +998,10 @@ export function makeOpenCodeAdapter(
           }
 
           if (part.type === "tool") {
+            if (context.emittedToolStates.get(part.id) === part.state.status) {
+              break;
+            }
+            context.emittedToolStates.set(part.id, part.state.status);
             const itemType = toToolLifecycleItemType(part.tool);
             const title =
               part.state.status === "running" ? (part.state.title ?? part.tool) : part.tool;
@@ -1184,20 +1216,12 @@ export function makeOpenCodeAdapter(
             turnId &&
             !context.awaitingBusyAfterInterruption
           ) {
-            context.activeTurnId = undefined;
-            context.interruptedTurnId = undefined;
-            updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
-            yield* emit({
-              ...(yield* buildEventBase({
-                threadId: context.session.threadId,
-                turnId,
-                raw: event,
-              })),
-              type: "turn.completed",
-              payload: {
-                state: "completed",
-              },
-            });
+            const promptMessageId = context.activePromptMessageId;
+            if (promptMessageId !== undefined && context.recoveryFiber === undefined) {
+              context.recoveryFiber = yield* reconcileTurn(context, turnId, promptMessageId).pipe(
+                Effect.forkIn(context.sessionScope),
+              );
+            }
           }
           break;
         }
@@ -1212,28 +1236,8 @@ export function makeOpenCodeAdapter(
           }
           const message = sessionErrorMessage(event.properties.error);
           const activeTurnId = context.activeTurnId;
-          context.activeTurnId = undefined;
-          updateProviderSession(
-            context,
-            {
-              status: "error",
-              lastError: message,
-            },
-            { clearActiveTurnId: true },
-          );
           if (activeTurnId) {
-            yield* emit({
-              ...(yield* buildEventBase({
-                threadId: context.session.threadId,
-                turnId: activeTurnId,
-                raw: event,
-              })),
-              type: "turn.completed",
-              payload: {
-                state: "failed",
-                errorMessage: message,
-              },
-            });
+            yield* finishTurn(context, activeTurnId, "failed", message);
           }
           yield* emit({
             ...(yield* buildEventBase({
@@ -1255,6 +1259,184 @@ export function makeOpenCodeAdapter(
       }
     });
 
+    const finishTurn = Effect.fn("finishTurn")(function* (
+      context: OpenCodeSessionContext,
+      turnId: TurnId,
+      state: "completed" | "failed",
+      errorMessage?: string,
+    ) {
+      if (context.terminalTurnIds.has(turnId)) {
+        return;
+      }
+      context.terminalTurnIds.add(turnId);
+      if (context.activeTurnId !== turnId) {
+        return;
+      }
+      context.activeTurnId = undefined;
+      context.activePromptMessageId = undefined;
+      context.activeAgent = undefined;
+      context.activeVariant = undefined;
+      updateProviderSession(
+        context,
+        {
+          status: state === "completed" ? "ready" : "error",
+          ...(errorMessage ? { lastError: errorMessage } : {}),
+        },
+        { clearActiveTurnId: true, ...(state === "completed" ? { clearLastError: true } : {}) },
+      );
+      yield* emit({
+        ...(yield* buildEventBase({
+          threadId: context.session.threadId,
+          turnId,
+        })),
+        type: "turn.completed",
+        payload: {
+          state,
+          ...(errorMessage ? { errorMessage } : {}),
+        },
+      });
+    });
+
+    reconcileTurn = Effect.fn("reconcileTurn")(function* (
+      context: OpenCodeSessionContext,
+      turnId: TurnId,
+      promptMessageId: string,
+    ) {
+      let lastFailure: string | undefined;
+      for (let attempt = 0; attempt < OPENCODE_RECOVERY_ATTEMPTS; attempt += 1) {
+        if (
+          context.activeTurnId !== turnId ||
+          context.interruptedTurnId === turnId ||
+          (yield* Ref.get(context.stopped))
+        ) {
+          return;
+        }
+
+        const result = yield* Effect.all(
+          {
+            status: runOpenCodeSdk("session.status", () => context.client.session.status()),
+            messages: runOpenCodeSdk("session.messages", () =>
+              context.client.session.messages({ sessionID: context.openCodeSessionId }),
+            ),
+          },
+          { concurrency: 2 },
+        ).pipe(Effect.result);
+
+        if (result._tag === "Failure") {
+          lastFailure = openCodeRuntimeErrorDetail(result.failure);
+          yield* sleepOpenCode(OPENCODE_RECOVERY_DELAY_MS);
+          continue;
+        }
+
+        const status = result.success.status.data?.[context.openCodeSessionId];
+        const messages = result.success.messages.data ?? [];
+        for (const entry of messages) {
+          const info = entry.info as {
+            readonly id: string;
+            readonly role: "user" | "assistant";
+            readonly parentID?: string;
+            readonly error?: unknown;
+          };
+          context.messageRoleById.set(info.id, info.role);
+          yield* handleSubscribedEvent(context, {
+            type: "message.updated",
+            properties: {
+              sessionID: context.openCodeSessionId,
+              info: entry.info,
+            },
+          } as OpenCodeSubscribedEvent);
+          for (const part of entry.parts) {
+            yield* handleSubscribedEvent(context, {
+              type: "message.part.updated",
+              properties: {
+                sessionID: context.openCodeSessionId,
+                part,
+                time: Date.now(),
+              },
+            } as OpenCodeSubscribedEvent);
+          }
+        }
+
+        if (status?.type === "retry") {
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              turnId,
+            })),
+            type: "runtime.warning",
+            payload: {
+              message: status.message,
+              detail: status,
+            },
+          });
+        }
+
+        const promptIndex = messages.findIndex(
+          (candidate) => candidate.info.id === promptMessageId,
+        );
+        const assistant =
+          promptIndex >= 0
+            ? messages.find(
+                (entry) =>
+                  entry.info.role === "assistant" &&
+                  ((entry.info as { readonly parentID?: string }).parentID === promptMessageId ||
+                    messages.findIndex((candidate) => candidate.info.id === entry.info.id) >
+                      promptIndex),
+              )
+            : undefined;
+        if (assistant?.info.role === "assistant" && assistant.info.error !== undefined) {
+          yield* finishTurn(context, turnId, "failed", sessionErrorMessage(assistant.info.error));
+          return;
+        }
+        if (status?.type === "idle" && assistant !== undefined) {
+          yield* finishTurn(context, turnId, "completed");
+          return;
+        }
+
+        yield* sleepOpenCode(OPENCODE_RECOVERY_DELAY_MS);
+      }
+
+      const message =
+        lastFailure ??
+        "OpenCode accepted the prompt but did not provide correlated transcript and idle evidence.";
+      yield* emit({
+        ...(yield* buildEventBase({
+          threadId: context.session.threadId,
+          turnId,
+        })),
+        type: "runtime.warning",
+        payload: {
+          message: "OpenCode turn recovery is degraded.",
+          detail: message,
+        },
+      });
+      yield* finishTurn(context, turnId, "failed", message);
+    });
+
+    const recoverPromptAdmission = Effect.fn("recoverPromptAdmission")(function* (
+      context: OpenCodeSessionContext,
+      promptMessageId: string,
+    ) {
+      for (let attempt = 0; attempt < OPENCODE_ADMISSION_ATTEMPTS; attempt += 1) {
+        const messages = yield* runOpenCodeSdk("session.messages", () =>
+          context.client.session.messages({ sessionID: context.openCodeSessionId }),
+        ).pipe(Effect.result);
+        if (
+          messages._tag === "Success" &&
+          (messages.success.data ?? []).some((entry) => entry.info.id === promptMessageId)
+        ) {
+          return true;
+        }
+        yield* Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              setTimeout(resolve, OPENCODE_ADMISSION_DELAY_MS);
+            }),
+        );
+      }
+      return false;
+    });
+
     const startEventPump = Effect.fn("startEventPump")(function* (context: OpenCodeSessionContext) {
       // One AbortController per session scope. The finalizer fires when
       // the scope closes (explicit stop, unexpected exit, or layer
@@ -1266,43 +1448,130 @@ export function makeOpenCodeAdapter(
         Effect.sync(() => eventsAbortController.abort()),
       );
 
-      // Fibers forked into `context.sessionScope` are interrupted
-      // automatically when the scope closes — no bookkeeping required.
-      yield* Effect.flatMap(
-        runOpenCodeSdk("event.subscribe", () =>
-          context.client.event.subscribe(undefined, {
-            signal: eventsAbortController.signal,
-          }),
-        ),
-        (subscription) =>
-          Stream.fromAsyncIterable(
-            subscription.stream,
-            (cause) =>
-              new OpenCodeRuntimeError({
-                operation: "event.subscribe",
-                detail: openCodeRuntimeErrorDetail(cause),
-                cause,
-              }),
-          ).pipe(Stream.runForEach((event) => handleSubscribedEvent(context, event))),
-      ).pipe(
-        Effect.exit,
-        Effect.flatMap((exit) =>
-          Effect.gen(function* () {
-            // Expected paths: caller aborted the fetch or the session
-            // has already been marked stopped. Treat as a clean exit.
-            if (eventsAbortController.signal.aborted || (yield* Ref.get(context.stopped))) {
+      // Keep the native subscription alive across transport loss. The first
+      // successful subscribe is the admission barrier; later reconnects are
+      // followed by transcript/status reconciliation by the active-turn
+      // watchdog.
+      let initialSubscription:
+        | Awaited<ReturnType<OpencodeClient["event"]["subscribe"]>>
+        | undefined;
+      let initialDelayMs = 100;
+      for (
+        let attempt = 0;
+        attempt < OPENCODE_INITIAL_SUBSCRIBE_ATTEMPTS && initialSubscription === undefined;
+        attempt += 1
+      ) {
+        if (yield* Ref.get(context.stopped) || eventsAbortController.signal.aborted) {
+          return yield* new OpenCodeRuntimeError({
+            operation: "event.subscribe",
+            detail: "OpenCode event connection admission was cancelled.",
+          });
+        }
+        const initialExit = yield* Effect.exit(
+          runOpenCodeSdk("event.subscribe", () =>
+            context.client.event.subscribe(undefined, {
+              signal: eventsAbortController.signal,
+            }),
+          ),
+        );
+        if (Exit.isSuccess(initialExit)) {
+          initialSubscription = initialExit.value;
+          break;
+        }
+        if (attempt + 1 >= OPENCODE_INITIAL_SUBSCRIBE_ATTEMPTS) {
+          return yield* new OpenCodeRuntimeError({
+            operation: "event.subscribe",
+            detail: `OpenCode event connection was not established after ${OPENCODE_INITIAL_SUBSCRIBE_ATTEMPTS} attempts: ${openCodeRuntimeErrorDetail(Cause.squash(initialExit.cause))}`,
+            cause: Cause.squash(initialExit.cause),
+          });
+        }
+        yield* sleepOpenCode(initialDelayMs);
+        initialDelayMs = Math.min(initialDelayMs * 2, 2_000);
+      }
+      if (initialSubscription === undefined) {
+        return yield* new OpenCodeRuntimeError({
+          operation: "event.subscribe",
+          detail: "OpenCode event connection admission did not produce a subscription.",
+        });
+      }
+      yield* Deferred.succeed(context.connectionReady, undefined);
+      yield* Effect.gen(function* () {
+        let subscription = initialSubscription;
+        let reconnectDelayMs = 100;
+        while (!(yield* Ref.get(context.stopped)) && !eventsAbortController.signal.aborted) {
+          const exit = yield* Effect.exit(
+            Stream.fromAsyncIterable(
+              subscription.stream,
+              (cause) =>
+                new OpenCodeRuntimeError({
+                  operation: "event.subscribe",
+                  detail: openCodeRuntimeErrorDetail(cause),
+                  cause,
+                }),
+            ).pipe(
+              Stream.runForEach((event) =>
+                handleSubscribedEvent(context, event).pipe(
+                  Effect.catchCause((cause) =>
+                    emitUnexpectedExit(
+                      context,
+                      openCodeRuntimeErrorDetail(Cause.squash(cause)),
+                    ).pipe(Effect.ignore),
+                  ),
+                ),
+              ),
+            ),
+          );
+          if (yield* Ref.get(context.stopped) || eventsAbortController.signal.aborted) {
+            return;
+          }
+          yield* Effect.logWarning(
+            Exit.isSuccess(exit)
+              ? "OpenCode event stream ended; reconnecting."
+              : "OpenCode event stream disconnected; reconnecting.",
+            {
+              threadId: context.session.threadId,
+              ...(Exit.isFailure(exit)
+                ? { detail: openCodeRuntimeErrorDetail(Cause.squash(exit.cause)) }
+                : {}),
+            },
+          );
+
+          let nextSubscription:
+            | Awaited<ReturnType<OpencodeClient["event"]["subscribe"]>>
+            | undefined;
+          while (
+            nextSubscription === undefined &&
+            !(yield* Ref.get(context.stopped)) &&
+            !eventsAbortController.signal.aborted
+          ) {
+            yield* sleepOpenCode(reconnectDelayMs);
+            if (yield* Ref.get(context.stopped) || eventsAbortController.signal.aborted) {
               return;
             }
-            if (Exit.isFailure(exit)) {
-              yield* emitUnexpectedExit(
-                context,
-                openCodeRuntimeErrorDetail(Cause.squash(exit.cause)),
-              );
+            const nextExit = yield* Effect.exit(
+              runOpenCodeSdk("event.subscribe", () =>
+                context.client.event.subscribe(undefined, {
+                  signal: eventsAbortController.signal,
+                }),
+              ),
+            );
+            if (Exit.isSuccess(nextExit)) {
+              nextSubscription = nextExit.value;
+              reconnectDelayMs = 100;
+              break;
             }
-          }),
-        ),
-        Effect.forkIn(context.sessionScope),
-      );
+            yield* Effect.logWarning("OpenCode event resubscribe failed; retrying.", {
+              threadId: context.session.threadId,
+              detail: openCodeRuntimeErrorDetail(Cause.squash(nextExit.cause)),
+            });
+            reconnectDelayMs = Math.min(reconnectDelayMs * 2, 2_000);
+          }
+          if (nextSubscription === undefined) {
+            return;
+          }
+          subscription = nextSubscription;
+        }
+      }).pipe(Effect.forkIn(context.sessionScope));
 
       if (!context.server.external && context.server.exitCode !== null) {
         yield* context.server.exitCode.pipe(
@@ -1594,13 +1863,44 @@ export function makeOpenCodeAdapter(
           textPartsByMessageId: new Map(),
           messageRoleById: new Map(),
           activeTurnId: undefined,
+          activePromptMessageId: undefined,
           activeAgent: undefined,
           activeVariant: undefined,
+          promptAdmission: Semaphore.makeUnsafe(1),
+          connectionReady: yield* Deferred.make<void, OpenCodeRuntimeError>(),
+          emittedToolStates: new Map(),
+          terminalTurnIds: new Set(),
+          recoveryFiber: undefined,
           stopped: yield* Ref.make(false),
           sessionScope: started.sessionScope,
         };
         sessions.set(input.threadId, context);
-        yield* startEventPump(context);
+        yield* startEventPump(context).pipe(
+          Effect.catchTag("OpenCodeRuntimeError", (cause) =>
+            Effect.gen(function* () {
+              sessions.delete(input.threadId);
+              yield* stopOpenCodeContext(context);
+              return yield* new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: input.threadId,
+                detail: `OpenCode event connection was not established: ${cause.detail}`,
+                cause,
+              });
+            }),
+          ),
+        );
+        yield* Deferred.await(context.connectionReady).pipe(
+          Effect.timeout(OPENCODE_CONNECTION_TIMEOUT),
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: input.threadId,
+                detail: `OpenCode event connection was not established: ${openCodeRuntimeErrorDetail(cause)}`,
+                cause,
+              }),
+          ),
+        );
         yield* recoverPendingRequests(context);
 
         yield* emit({
@@ -1624,7 +1924,15 @@ export function makeOpenCodeAdapter(
 
     const sendTurn: OpenCodeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
       const context = ensureSessionContext(sessions, input.threadId);
+      if (context.activeTurnId !== undefined) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "session.promptAsync",
+          detail: "OpenCode session is still busy with an active turn.",
+        });
+      }
       const turnId = TurnId.make(`opencode-turn-${crypto.randomUUID()}`);
+      const promptMessageId = `t3-${crypto.randomUUID()}`;
       const modelSelection =
         input.modelSelection ??
         (context.session.model
@@ -1667,45 +1975,73 @@ export function makeOpenCodeAdapter(
       const agent = selectedAgent === "plan" ? undefined : selectedAgent;
       const variant = getModelSelectionStringOptionValue(modelSelection, "variant");
 
-      context.activeTurnId = turnId;
-      context.activeAgent = agent;
-      context.activeVariant = variant;
-      updateProviderSession(
-        context,
-        {
-          status: "running",
-          activeTurnId: turnId,
-          model: modelSelection?.model ?? context.session.model,
-        },
-        { clearLastError: true },
-      );
+      let lifecycleStarted = false;
+      const promptRequest = Effect.gen(function* () {
+        const status = yield* runOpenCodeSdk("session.status", () =>
+          context.client.session.status(),
+        );
+        const nativeStatus = status.data?.[context.openCodeSessionId];
+        if (nativeStatus?.type === "busy") {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "session.promptAsync",
+            detail: "OpenCode session is still busy with an active native turn.",
+          });
+        }
+        context.activeTurnId = turnId;
+        context.activePromptMessageId = promptMessageId;
+        context.awaitingBusyAfterInterruption = false;
+        context.activeAgent = agent;
+        context.activeVariant = variant;
+        updateProviderSession(
+          context,
+          {
+            status: "running",
+            activeTurnId: turnId,
+            model: modelSelection?.model ?? context.session.model,
+          },
+          { clearLastError: true },
+        );
 
-      yield* emit({
-        ...(yield* buildEventBase({ threadId: input.threadId, turnId })),
-        type: "turn.started",
-        payload: {
-          model: modelSelection?.model ?? context.session.model,
-          ...(variant ? { effort: variant } : {}),
-        },
+        yield* emit({
+          ...(yield* buildEventBase({ threadId: input.threadId, turnId })),
+          type: "turn.started",
+          payload: {
+            model: modelSelection?.model ?? context.session.model,
+            ...(variant ? { effort: variant } : {}),
+          },
+        });
+        lifecycleStarted = true;
+        yield* runOpenCodeSdk("session.promptAsync", () =>
+          context.client.session.promptAsync({
+            sessionID: context.openCodeSessionId,
+            messageID: promptMessageId,
+            model: parsedModel,
+            ...(context.activeAgent ? { agent: context.activeAgent } : {}),
+            ...(context.activeVariant ? { variant: context.activeVariant } : {}),
+            parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
+          }),
+        ).pipe(
+          Effect.catchTag("OpenCodeRuntimeError", (error) =>
+            recoverPromptAdmission(context, promptMessageId).pipe(
+              Effect.flatMap((admitted) => (admitted ? Effect.void : Effect.fail(error))),
+            ),
+          ),
+        );
       });
-
-      yield* runOpenCodeSdk("session.promptAsync", () =>
-        context.client.session.promptAsync({
-          sessionID: context.openCodeSessionId,
-          model: parsedModel,
-          ...(context.activeAgent ? { agent: context.activeAgent } : {}),
-          ...(context.activeVariant ? { variant: context.activeVariant } : {}),
-          parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
-        }),
-      ).pipe(
-        Effect.mapError(toRequestError),
+      yield* context.promptAdmission.withPermit(promptRequest).pipe(
+        Effect.catchTag("OpenCodeRuntimeError", (cause) => Effect.fail(toRequestError(cause))),
         // On failure: clear active-turn state, flip the session back to ready
         // with lastError set, emit turn.aborted, then let the typed error
         // propagate. We don't need to rebuild the error here — `toRequestError`
         // already produced the right shape.
         Effect.tapError((requestError) =>
           Effect.gen(function* () {
+            if (!lifecycleStarted) {
+              return;
+            }
             context.activeTurnId = undefined;
+            context.activePromptMessageId = undefined;
             context.activeAgent = undefined;
             context.activeVariant = undefined;
             updateProviderSession(
@@ -1729,6 +2065,9 @@ export function makeOpenCodeAdapter(
             });
           }),
         ),
+      );
+      context.recoveryFiber = yield* reconcileTurn(context, turnId, promptMessageId).pipe(
+        Effect.forkIn(context.sessionScope),
       );
 
       return {
@@ -1762,6 +2101,7 @@ export function makeOpenCodeAdapter(
         );
         yield* abortOpenCodeDescendants(context).pipe(Effect.mapError(toRequestError));
         context.activeTurnId = undefined;
+        context.activePromptMessageId = undefined;
         context.interruptedTurnId = interruptedTurnId;
         updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
         if (interruptedTurnId) {
