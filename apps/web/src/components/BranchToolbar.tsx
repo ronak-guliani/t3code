@@ -40,7 +40,6 @@ import {
   MenuTrigger,
 } from "./ui/menu";
 import { Separator } from "./ui/separator";
-import { EnvironmentIdentity } from "./EnvironmentIdentity";
 
 interface BranchToolbarProps {
   environmentId: EnvironmentId;
@@ -245,7 +244,9 @@ export const BranchToolbar = memo(function BranchToolbar({
   return (
     <div
       className={cn(
-        "mx-auto flex w-full max-w-3xl items-center gap-2 pb-3 pt-1",
+        "[--composer-drawer-inset:1.375rem] relative isolate mx-auto -mt-4 flex w-[calc(100%-2*var(--composer-drawer-inset))] max-w-[calc(48rem-2*var(--composer-drawer-inset))] items-center gap-2 overflow-x-clip overflow-y-visible px-1 pt-5 pb-1 text-xs font-normal text-muted-foreground/70",
+        "before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-b-[16px] before:border before:border-border/70 before:mask-[linear-gradient(to_bottom,transparent_0_1rem,black_1rem)] before:shadow-[0_12px_28px_-18px_rgb(0_0_0/40%)]",
+        "dark:before:border-white/7 dark:before:bg-[linear-gradient(to_bottom,transparent_0_1rem,rgb(0_0_0/18%)_1rem,transparent_calc(1rem+10px)),linear-gradient(rgb(255_255_255/1%),rgb(255_255_255/1%))] dark:before:shadow-[0_14px_32px_-18px_rgb(0_0_0/75%)]",
         showGitControls ? "justify-between" : "justify-end",
       )}
       style={{
@@ -253,9 +254,6 @@ export const BranchToolbar = memo(function BranchToolbar({
         paddingRight: "calc(env(safe-area-inset-right) + var(--spacing) * 2.5)",
       }}
     >
-      {!showEnvironmentPicker ? (
-        <EnvironmentIdentity environmentId={environmentId} compact={isMobile} />
-      ) : null}
       {showGitControls ? (
         <>
           {isMobile ? (

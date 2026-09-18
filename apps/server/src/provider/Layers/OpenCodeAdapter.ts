@@ -59,8 +59,8 @@ import {
 const PROVIDER = ProviderDriverKind.make("opencode");
 const OPENCODE_CONNECTION_TIMEOUT = "5 seconds";
 const OPENCODE_INITIAL_SUBSCRIBE_ATTEMPTS = 5;
-const OPENCODE_RECOVERY_ATTEMPTS = 24;
-const OPENCODE_RECOVERY_DELAY_MS = 100;
+const OPENCODE_RECOVERY_DELAY_MS = 250;
+const OPENCODE_RECOVERY_MAX_DELAY_MS = 5_000;
 const OPENCODE_ADMISSION_ATTEMPTS = 5;
 const OPENCODE_ADMISSION_DELAY_MS = 100;
 
@@ -1276,6 +1276,7 @@ export function makeOpenCodeAdapter(
       context.activePromptMessageId = undefined;
       context.activeAgent = undefined;
       context.activeVariant = undefined;
+      context.recoveryFiber = undefined;
       updateProviderSession(
         context,
         {
@@ -1302,8 +1303,8 @@ export function makeOpenCodeAdapter(
       turnId: TurnId,
       promptMessageId: string,
     ) {
-      let lastFailure: string | undefined;
-      for (let attempt = 0; attempt < OPENCODE_RECOVERY_ATTEMPTS; attempt += 1) {
+      let recoveryDelayMs = OPENCODE_RECOVERY_DELAY_MS;
+      while (true) {
         if (
           context.activeTurnId !== turnId ||
           context.interruptedTurnId === turnId ||
@@ -1314,17 +1315,19 @@ export function makeOpenCodeAdapter(
 
         const result = yield* Effect.all(
           {
-            status: runOpenCodeSdk("session.status", () => context.client.session.status()),
+            status: runOpenCodeSdk("session.status", () => context.client.session.status()).pipe(
+              Effect.timeout("1 second"),
+            ),
             messages: runOpenCodeSdk("session.messages", () =>
               context.client.session.messages({ sessionID: context.openCodeSessionId }),
-            ),
+            ).pipe(Effect.timeout("1 second")),
           },
           { concurrency: 2 },
         ).pipe(Effect.result);
 
         if (result._tag === "Failure") {
-          lastFailure = openCodeRuntimeErrorDetail(result.failure);
-          yield* sleepOpenCode(OPENCODE_RECOVERY_DELAY_MS);
+          yield* sleepOpenCode(recoveryDelayMs);
+          recoveryDelayMs = Math.min(recoveryDelayMs * 2, OPENCODE_RECOVERY_MAX_DELAY_MS);
           continue;
         }
 
@@ -1393,24 +1396,9 @@ export function makeOpenCodeAdapter(
           return;
         }
 
-        yield* sleepOpenCode(OPENCODE_RECOVERY_DELAY_MS);
+        yield* sleepOpenCode(recoveryDelayMs);
+        recoveryDelayMs = Math.min(recoveryDelayMs * 2, OPENCODE_RECOVERY_MAX_DELAY_MS);
       }
-
-      const message =
-        lastFailure ??
-        "OpenCode accepted the prompt but did not provide correlated transcript and idle evidence.";
-      yield* emit({
-        ...(yield* buildEventBase({
-          threadId: context.session.threadId,
-          turnId,
-        })),
-        type: "runtime.warning",
-        payload: {
-          message: "OpenCode turn recovery is degraded.",
-          detail: message,
-        },
-      });
-      yield* finishTurn(context, turnId, "failed", message);
     });
 
     const recoverPromptAdmission = Effect.fn("recoverPromptAdmission")(function* (
@@ -1418,12 +1406,16 @@ export function makeOpenCodeAdapter(
       promptMessageId: string,
     ) {
       for (let attempt = 0; attempt < OPENCODE_ADMISSION_ATTEMPTS; attempt += 1) {
-        const messages = yield* runOpenCodeSdk("session.messages", () =>
-          context.client.session.messages({ sessionID: context.openCodeSessionId }),
+        const message = yield* runOpenCodeSdk("session.message", () =>
+          context.client.session.message({
+            sessionID: context.openCodeSessionId,
+            messageID: promptMessageId,
+          }),
         ).pipe(Effect.result);
         if (
-          messages._tag === "Success" &&
-          (messages.success.data ?? []).some((entry) => entry.info.id === promptMessageId)
+          message._tag === "Success" &&
+          message.success.data?.info.id === promptMessageId &&
+          message.success.data.info.role === "user"
         ) {
           return true;
         }
@@ -1932,7 +1924,7 @@ export function makeOpenCodeAdapter(
         });
       }
       const turnId = TurnId.make(`opencode-turn-${crypto.randomUUID()}`);
-      const promptMessageId = `t3-${crypto.randomUUID()}`;
+      const promptMessageId = `msg-${crypto.randomUUID()}`;
       const modelSelection =
         input.modelSelection ??
         (context.session.model
@@ -2116,6 +2108,7 @@ export function makeOpenCodeAdapter(
             },
           });
         }
+        context.recoveryFiber = undefined;
       },
     );
 
@@ -2215,18 +2208,27 @@ export function makeOpenCodeAdapter(
     const readThread: OpenCodeAdapterShape["readThread"] = Effect.fn("readThread")(
       function* (threadId) {
         const context = ensureSessionContext(sessions, threadId);
+        const session = yield* runOpenCodeSdk("session.get", () =>
+          context.client.session.get({ sessionID: context.openCodeSessionId }),
+        ).pipe(Effect.mapError(toRequestError));
         const messages = yield* runOpenCodeSdk("session.messages", () =>
           context.client.session.messages({
             sessionID: context.openCodeSessionId,
           }),
         ).pipe(Effect.mapError(toRequestError));
 
-        const turns = (messages.data ?? [])
-          .filter((entry) => entry.info.role === "assistant")
-          .map((entry) => ({
-            id: TurnId.make(entry.info.id),
-            items: [entry.info, ...entry.parts],
-          }));
+        const turns = [];
+        for (const entry of messages.data ?? []) {
+          if (entry.info.id === session.data?.revert?.messageID) {
+            break;
+          }
+          if (entry.info.role === "assistant") {
+            turns.push({
+              id: TurnId.make(entry.info.id),
+              items: [entry.info, ...entry.parts],
+            });
+          }
+        }
 
         return {
           threadId,
@@ -2238,21 +2240,17 @@ export function makeOpenCodeAdapter(
     const rollbackThread: OpenCodeAdapterShape["rollbackThread"] = Effect.fn("rollbackThread")(
       function* (threadId, numTurns) {
         const context = ensureSessionContext(sessions, threadId);
-        const messages = yield* runOpenCodeSdk("session.messages", () =>
-          context.client.session.messages({
-            sessionID: context.openCodeSessionId,
-          }),
-        ).pipe(Effect.mapError(toRequestError));
+        const snapshot = yield* readThread(threadId);
+        const targetIndex = Math.max(0, snapshot.turns.length - numTurns);
+        const target = snapshot.turns[targetIndex];
+        if (!target) {
+          return snapshot;
+        }
 
-        const assistantMessages = (messages.data ?? []).filter(
-          (entry) => entry.info.role === "assistant",
-        );
-        const targetIndex = assistantMessages.length - numTurns - 1;
-        const target = targetIndex >= 0 ? assistantMessages[targetIndex] : null;
         yield* runOpenCodeSdk("session.revert", () =>
           context.client.session.revert({
             sessionID: context.openCodeSessionId,
-            ...(target ? { messageID: target.info.id } : {}),
+            messageID: target.id,
           }),
         ).pipe(Effect.mapError(toRequestError));
 
