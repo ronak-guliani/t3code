@@ -12,6 +12,8 @@ import {
   PreviewAutomationHost,
   PreviewAutomationError,
   PreviewAutomationOpenInput,
+  PreviewAutomationPreflightInput,
+  PreviewAutomationPreflightResult,
   PreviewAutomationResizeInput,
   PreviewAutomationResizeResult,
   PreviewAutomationStatus,
@@ -24,6 +26,8 @@ const decodeServer = Schema.decodeUnknownSync(DiscoveredLocalServer);
 const decodeViewport = Schema.decodeUnknownSync(PreviewViewportSetting);
 const decodeResizeInput = Schema.decodeUnknownSync(PreviewAutomationResizeInput);
 const decodeOpenInput = Schema.decodeUnknownSync(PreviewAutomationOpenInput);
+const decodePreflightInput = Schema.decodeUnknownSync(PreviewAutomationPreflightInput);
+const decodePreflightResult = Schema.decodeUnknownSync(PreviewAutomationPreflightResult);
 const decodeResizeResult = Schema.decodeUnknownSync(PreviewAutomationResizeResult);
 const decodeAutomationHost = Schema.decodeUnknownSync(PreviewAutomationHost);
 const decodeAutomationError = Schema.decodeUnknownSync(PreviewAutomationError);
@@ -48,6 +52,16 @@ describe("PreviewNavStatus", () => {
       _tag: "Loading",
       url: "http://localhost:5173/",
       title: "",
+    });
+  });
+
+  it("accepts an optional expected target environment identity for preflight", () => {
+    expect(
+      decodePreflightInput({
+        expectedEnvironmentId: "target-environment",
+      }),
+    ).toMatchObject({
+      expectedEnvironmentId: "target-environment",
     });
   });
 
@@ -150,6 +164,116 @@ describe("preview automation tab targeting", () => {
       reuseExistingTab: true,
     });
     expect(() => decodeOpenInput({ tabId: "tab-app", reuseExistingTab: false })).toThrow();
+  });
+});
+
+describe("PreviewAutomationPreflight", () => {
+  it("accepts a token-bearing target input without making it part of the result contract", () => {
+    expect(
+      decodePreflightInput({
+        url: "http://localhost:5173/pair?token=secret-token",
+        open: false,
+      }),
+    ).toMatchObject({ open: false });
+
+    const result = decodePreflightResult({
+      browser: {
+        supported: true,
+        available: true,
+        visible: true,
+        tabAttached: true,
+        tabId: "tab-1",
+      },
+      mcp: { credential: "valid" },
+      target: {
+        requested: true,
+        reachability: "reachable",
+        app: "expected-t3-app",
+        origin: "http://localhost:5173",
+        environmentId: "environment-1",
+        status: 200,
+      },
+      recovery: {
+        kind: "pair-after-preflight",
+        message: "Pair after preflight.",
+      },
+    });
+
+    expect(result.target.origin).toBe("http://localhost:5173");
+    expect(JSON.stringify(result)).not.toContain("secret-token");
+  });
+
+  it("preserves typed recovery states for missing targets and environment mismatches", () => {
+    const base = {
+      browser: {
+        supported: true,
+        available: true,
+        visible: false,
+        tabAttached: true,
+        tabId: "tab-1",
+      },
+      mcp: { credential: "valid" as const },
+      target: {
+        requested: true,
+        reachability: "reachable" as const,
+        app: "not-configured" as const,
+        origin: "http://localhost:5173",
+        environmentId: null,
+        status: 503,
+      },
+    };
+
+    expect(
+      decodePreflightResult({
+        ...base,
+        recovery: {
+          kind: "configure-target",
+          message: "Configure the target.",
+        },
+      }).recovery.kind,
+    ).toBe("configure-target");
+    expect(
+      decodePreflightResult({
+        ...base,
+        target: {
+          ...base.target,
+          app: "expected-t3-app",
+          environmentId: "environment-other",
+          status: 200,
+        },
+        recovery: {
+          kind: "resolve-environment-mismatch",
+          message: "Resolve the environment mismatch.",
+        },
+      }).recovery.kind,
+    ).toBe("resolve-environment-mismatch");
+  });
+
+  it("accepts a browser-host recovery distinct from target reachability", () => {
+    expect(
+      decodePreflightResult({
+        browser: {
+          supported: true,
+          available: true,
+          visible: true,
+          tabAttached: true,
+          tabId: "tab-1",
+        },
+        mcp: { credential: "valid" },
+        target: {
+          requested: true,
+          reachability: "not-checked",
+          app: "unknown",
+          origin: "http://localhost:5173",
+          environmentId: null,
+          status: null,
+        },
+        recovery: {
+          kind: "retry-browser",
+          message: "Retry the browser preflight.",
+        },
+      }).recovery.kind,
+    ).toBe("retry-browser");
   });
 });
 

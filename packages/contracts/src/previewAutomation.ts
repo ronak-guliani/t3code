@@ -45,6 +45,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "setColorScheme",
   "listTabs",
   "openAndSnapshot",
+  "preflight",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -752,6 +753,117 @@ export const PreviewAutomationOpenAndSnapshotInput = Schema.Struct({
 export type PreviewAutomationOpenAndSnapshotInput =
   typeof PreviewAutomationOpenAndSnapshotInput.Type;
 
+export const PreviewAutomationPreflightInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  url: Schema.optional(BoundedUrl).annotate({
+    description:
+      "Optional target or pairing URL to inspect. Pairing paths, query parameters, and fragments are never opened or returned.",
+  }),
+  target: Schema.optional(
+    BrowserNavigationTarget.annotate({
+      description: "Optional environment-relative target to inspect without opening a pairing URL.",
+    }),
+  ),
+  expectedEnvironmentId: Schema.optional(EnvironmentId).annotate({
+    description:
+      "Optional expected identity of the target app. Omit when the target identity is not known in advance.",
+  }),
+  open: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Open or attach a blank collaborative tab when no tab is attached. Defaults to false.",
+    }),
+  ),
+  reuseExistingTab: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Reuse the requested/current tab when true (default); set false to request a new tab.",
+    }),
+  ),
+  timeoutMs: OptionalTimeoutMs,
+})
+  .check(
+    Schema.makeFilter((input) => {
+      if (input.tabId !== undefined && input.reuseExistingTab === false) {
+        return "tabId cannot be combined with reuseExistingTab=false.";
+      }
+      return (
+        !(input.url !== undefined && input.target !== undefined) ||
+        "Provide at most one of url or target."
+      );
+    }),
+  )
+  .annotate({
+    description:
+      "Check browser support/attachment, MCP credential validity, and an optional target before pairing. This operation never opens the supplied URL.",
+  });
+export type PreviewAutomationPreflightInput = typeof PreviewAutomationPreflightInput.Type;
+
+export const PreviewAutomationPreflightBrowser = Schema.Struct({
+  supported: Schema.Boolean,
+  available: Schema.Boolean,
+  visible: Schema.Boolean,
+  tabAttached: Schema.Boolean,
+  tabId: Schema.NullOr(PreviewTabId),
+});
+export type PreviewAutomationPreflightBrowser = typeof PreviewAutomationPreflightBrowser.Type;
+
+export const PreviewAutomationPreflightTargetReachability = Schema.Literals([
+  "not-requested",
+  "not-checked",
+  "reachable",
+  "unreachable",
+]);
+export type PreviewAutomationPreflightTargetReachability =
+  typeof PreviewAutomationPreflightTargetReachability.Type;
+
+export const PreviewAutomationPreflightTargetApp = Schema.Literals([
+  "not-requested",
+  "unknown",
+  "expected-t3-app",
+  "not-t3-app",
+  "not-configured",
+]);
+export type PreviewAutomationPreflightTargetApp = typeof PreviewAutomationPreflightTargetApp.Type;
+
+export const PreviewAutomationPreflightRecovery = Schema.Literals([
+  "none",
+  "open-browser",
+  "reconnect-required",
+  "configure-target",
+  "resolve-environment-mismatch",
+  "use-supported-browser",
+  "retry-target",
+  "retry-browser",
+  "pair-after-preflight",
+]);
+export type PreviewAutomationPreflightRecovery = typeof PreviewAutomationPreflightRecovery.Type;
+
+export const PreviewAutomationPreflightResult = Schema.Struct({
+  /**
+   * Server tab id when known. The broker uses this to pin the agent session
+   * after preflight opens or reuses a tab.
+   */
+  tabId: Schema.optional(PreviewTabId),
+  browser: PreviewAutomationPreflightBrowser,
+  mcp: Schema.Struct({
+    credential: Schema.Literal("valid"),
+  }),
+  target: Schema.Struct({
+    requested: Schema.Boolean,
+    reachability: PreviewAutomationPreflightTargetReachability,
+    app: PreviewAutomationPreflightTargetApp,
+    origin: Schema.NullOr(Schema.String),
+    environmentId: Schema.NullOr(EnvironmentId),
+    status: Schema.NullOr(Schema.Int),
+  }),
+  recovery: Schema.Struct({
+    kind: PreviewAutomationPreflightRecovery,
+    message: Schema.String,
+  }),
+});
+export type PreviewAutomationPreflightResult = typeof PreviewAutomationPreflightResult.Type;
+
 export const PreviewAutomationRecordingStatus = Schema.Struct({
   tabId: PreviewTabId,
   recording: Schema.Boolean,
@@ -918,6 +1030,18 @@ export class PreviewAutomationPinnedHostUnsupportedOperationError extends Schema
 ) {
   override get message(): string {
     return `Pinned preview automation host ${this.clientId} does not support ${this.operation}. Start a new provider session in a desktop runtime that supports it.`;
+  }
+}
+
+export class PreviewAutomationNoSupportedHostError extends Schema.TaggedErrorClass<PreviewAutomationNoSupportedHostError>()(
+  "PreviewAutomationNoSupportedHostError",
+  {
+    ...PreviewAutomationScopeErrorFields,
+    connectedClientCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  },
+) {
+  override get message(): string {
+    return `No connected preview automation host supports ${this.operation}; the browser host may be an older mixed-version client.`;
   }
 }
 
@@ -1102,6 +1226,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationUnavailableError,
   PreviewAutomationNoAvailableHostError,
   PreviewAutomationPinnedHostUnsupportedOperationError,
+  PreviewAutomationNoSupportedHostError,
   PreviewAutomationUnsupportedClientError,
   PreviewAutomationTabNotFoundError,
   PreviewAutomationTimeoutError,

@@ -29,6 +29,7 @@ import {
   threadHasQueuedTurnStart,
   threadHasSettlementOverride,
   threadIsSnoozed,
+  CHILD_DECISION_BLOCKED_DETAIL,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
@@ -1818,8 +1819,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (activeDelegation?.decision) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail:
-            "Resolve the current child decision through its correlated response before continuing.",
+          detail: CHILD_DECISION_BLOCKED_DETAIL,
         });
       }
       const execution =
@@ -2222,8 +2222,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (activeDelegation?.decision && !responseDispatched) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail:
-            "Resolve the current child decision through its correlated response before continuing.",
+          detail: CHILD_DECISION_BLOCKED_DETAIL,
         });
       }
       const execution =

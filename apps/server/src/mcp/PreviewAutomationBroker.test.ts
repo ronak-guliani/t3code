@@ -6,6 +6,7 @@ import {
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
+  PreviewAutomationNoSupportedHostError,
   PreviewAutomationPinnedHostUnsupportedOperationError,
   PreviewAutomationTargetNotEditableError,
   PreviewTabId,
@@ -179,6 +180,43 @@ it.effect("targets multiple tabs explicitly while retaining a default tab", () =
       expect(routedRequests[3]?.tabId).toBe(appTabId);
       expect(routedRequests[3]?.tabIdExplicit).toBe(true);
       expect(routedRequests[4]?.tabId).toBe(appTabId);
+    }),
+  ),
+);
+
+it.effect("pins a tab returned by preflight for later untargeted requests", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const openedTabId = PreviewTabId.make("tab-preflight");
+      const routedRequests: RoutedRequest[] = [];
+      const requests = requestsFrom(
+        yield* broker.connect(makeHost({ supportedOperations: ["preflight", "snapshot"] })),
+      );
+      yield* Stream.runForEach(requests, (request) => {
+        routedRequests.push(request);
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result:
+            request.operation === "preflight"
+              ? { tabId: openedTabId, recovery: { kind: "pair-after-preflight" } }
+              : { url: "http://localhost:3200" },
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      yield* broker.invoke({
+        scope,
+        operation: "preflight",
+        input: { open: true },
+      });
+      yield* broker.invoke({ scope, operation: "snapshot", input: {} });
+
+      expect(routedRequests.map((request) => request.tabId)).toEqual([undefined, openedTabId]);
+      expect(routedRequests[1]?.tabIdExplicit).toBe(false);
     }),
   ),
 );
@@ -771,6 +809,30 @@ it.effect("does not route new operations to legacy hosts that did not advertise 
         environmentHasConnectedClients: true,
       });
       expect(error.message).toContain("no desktop preview automation host is ready");
+    }),
+  ),
+);
+
+it.effect("reports explicit unsupported status for preflight on legacy hosts", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const legacyEvents = yield* broker.connect(makeHost());
+      yield* Stream.runDrain(legacyEvents).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const errorFiber = yield* broker
+        .invoke<void>({ scope, operation: "preflight", input: {}, timeoutMs: 10 })
+        .pipe(Effect.flip, Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("10 millis");
+      const error = yield* Fiber.join(errorFiber);
+
+      expect(error).toBeInstanceOf(PreviewAutomationNoSupportedHostError);
+      expect(error).toMatchObject({
+        operation: "preflight",
+        connectedClientCount: 1,
+      });
     }),
   ),
 );

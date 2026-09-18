@@ -52,11 +52,16 @@ interface RegisteredHost {
  */
 const registerHost = Effect.fn("test.registerHost")(function* (input: {
   readonly clientId: string;
+  readonly supportedOperations?: ReadonlyArray<"status" | "preflight">;
   readonly result: (event: Extract<PreviewAutomationStreamEvent, { type: "request" }>) => unknown;
 }) {
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const received: RegisteredHost["received"] = [];
-  const events = yield* broker.connect({ clientId: input.clientId, environmentId });
+  const events = yield* broker.connect({
+    clientId: input.clientId,
+    environmentId,
+    ...(input.supportedOperations ? { supportedOperations: input.supportedOperations } : {}),
+  });
   const connectionIdDeferred: { current: string | undefined } = { current: undefined };
   yield* Stream.runForEach(events, (event) => {
     if (event.type === "connected") {
@@ -100,21 +105,73 @@ it.effect(
 
         const background = yield* registerHost({
           clientId: "host-background",
+          supportedOperations: ["status"],
           result: () => ({ acknowledged: "background" }),
         });
         const visible = yield* registerHost({
           clientId: "host-visible",
-          result: (event) =>
-            event.request.operation === "status"
-              ? {
-                  available: true,
-                  visible: true,
-                  tabId: visibleTabId,
-                  url: "http://example.test/",
-                  title: "Example",
-                  loading: false,
-                }
-              : { acknowledged: "visible" },
+          supportedOperations: ["status", "preflight"],
+          result: (event) => {
+            if (event.request.operation === "status") {
+              return {
+                available: true,
+                visible: true,
+                tabId: visibleTabId,
+                url: "http://example.test/",
+                title: "Example",
+                loading: false,
+              };
+            }
+            if (event.request.operation === "preflight") {
+              const input = event.request.input as { readonly open?: boolean };
+              return input.open === true
+                ? {
+                    browser: {
+                      supported: true,
+                      available: true,
+                      visible: true,
+                      tabAttached: true,
+                      tabId: visibleTabId,
+                    },
+                    mcp: { credential: "valid" },
+                    target: {
+                      requested: true,
+                      reachability: "reachable",
+                      app: "expected-t3-app",
+                      origin: "http://example.test",
+                      environmentId,
+                      status: 200,
+                    },
+                    recovery: {
+                      kind: "pair-after-preflight",
+                      message: "The target is ready for pairing.",
+                    },
+                  }
+                : {
+                    browser: {
+                      supported: true,
+                      available: true,
+                      visible: false,
+                      tabAttached: false,
+                      tabId: null,
+                    },
+                    mcp: { credential: "valid" },
+                    target: {
+                      requested: true,
+                      reachability: "not-checked",
+                      app: "unknown",
+                      origin: null,
+                      environmentId: null,
+                      status: null,
+                    },
+                    recovery: {
+                      kind: "open-browser",
+                      message: "Open the collaborative browser.",
+                    },
+                  };
+            }
+            return { acknowledged: "visible" };
+          },
         });
 
         // The desktop host reports visibility exactly like `focusHost` does
@@ -200,8 +257,56 @@ it.effect(
           tabId: visibleTabId,
         });
 
+        const preflightClosed = yield* httpClient.post("/mcp", {
+          headers: {
+            accept: "application/json, text/event-stream",
+            authorization,
+            "mcp-session-id": sessionId!,
+          },
+          body: HttpBody.text(
+            `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"preview_preflight","arguments":{"url":"http://example.test/pair?token=secret-token","open":false}}}`,
+            "application/json",
+          ),
+        });
+        const closedPayload = parseMcpBody(yield* preflightClosed.text) as {
+          readonly result?: { readonly structuredContent?: Record<string, unknown> };
+        };
+        expect(closedPayload.result?.structuredContent).toMatchObject({
+          browser: { tabAttached: false },
+          recovery: { kind: "open-browser" },
+        });
+        expect(JSON.stringify(closedPayload)).not.toContain("secret-token");
+
+        const preflightReady = yield* httpClient.post("/mcp", {
+          headers: {
+            accept: "application/json, text/event-stream",
+            authorization,
+            "mcp-session-id": sessionId!,
+          },
+          body: HttpBody.text(
+            `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"preview_preflight","arguments":{"url":"http://example.test/pair?token=secret-token","open":true}}}`,
+            "application/json",
+          ),
+        });
+        const readyPayload = parseMcpBody(yield* preflightReady.text) as {
+          readonly result?: { readonly structuredContent?: Record<string, unknown> };
+        };
+        expect(readyPayload.result?.structuredContent).toMatchObject({
+          browser: { tabAttached: true },
+          target: {
+            app: "expected-t3-app",
+            environmentId,
+          },
+          recovery: { kind: "pair-after-preflight" },
+        });
+        expect(JSON.stringify(readyPayload)).not.toContain("secret-token");
+
         // The visible host is the one that served the provider-scoped request.
-        expect(visible.received.map(({ operation }) => operation)).toEqual(["status"]);
+        expect(visible.received.map(({ operation }) => operation)).toEqual([
+          "status",
+          "preflight",
+          "preflight",
+        ]);
         expect(background.received).toEqual([]);
       }),
     ).pipe(Effect.provide(SupportServicesLive)),

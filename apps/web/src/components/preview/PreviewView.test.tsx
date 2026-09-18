@@ -167,7 +167,11 @@ vi.mock("./useLoadingProgress", () => ({ useLoadingProgress: () => 0 }));
 vi.mock("./usePreviewSession", () => ({ usePreviewSession: vi.fn() }));
 
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
-import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
+import {
+  browserMiniPlayerSource,
+  selectThreadPreviewMiniPlayer,
+  usePreviewMiniPlayerStore,
+} from "~/previewMiniPlayerStore";
 
 import { PreviewView } from "./PreviewView";
 
@@ -200,16 +204,23 @@ describe("PreviewView navigation", () => {
         environmentId: EnvironmentId.make("environment-1"),
         threadId: ThreadId.make("thread-1"),
       };
-      if (floatingTabId) usePreviewMiniPlayerStore.getState().open(threadRef, floatingTabId);
+      if (floatingTabId) {
+        usePreviewMiniPlayerStore
+          .getState()
+          .open(threadRef, browserMiniPlayerSource(floatingTabId));
+      }
 
       for (const visible of [true, false, true]) {
         const markup = renderToStaticMarkup(
           <PreviewView threadRef={threadRef} tabId="tab-1" visible={visible} />,
         );
         expect(markup).toContain(`data-browser-surface-visible="${visible}"`);
+        const floatingPreview = selectThreadPreviewMiniPlayer(
+          usePreviewMiniPlayerStore.getState().byThreadKey,
+          threadRef,
+        );
         expect(
-          selectThreadPreviewMiniPlayer(usePreviewMiniPlayerStore.getState().byThreadKey, threadRef)
-            ?.tabId ?? null,
+          floatingPreview?.source.kind === "browser" ? floatingPreview.source.tabId : null,
         ).toBe(floatingTabId);
       }
     },
@@ -366,7 +377,7 @@ describe("PreviewView navigation", () => {
         environmentId: EnvironmentId.make("environment-1"),
         threadId: ThreadId.make("thread-1"),
       }),
-    ).toMatchObject({ tabId: "tab-1" });
+    ).toMatchObject({ source: { kind: "browser", tabId: "tab-1" } });
   });
 
   it("opens the native separate window from the More menu", async () => {

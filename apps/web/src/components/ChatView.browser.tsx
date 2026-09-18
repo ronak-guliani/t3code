@@ -62,7 +62,7 @@ import { useTerminalStateStore } from "../terminalStateStore";
 import { usePendingTurnStore } from "../pendingTurnStore";
 import { useUiStateStore } from "../uiStateStore";
 import { resetPreviewStateForTests, applyPreviewServerSnapshot } from "../previewStateStore";
-import { usePreviewMiniPlayerStore } from "../previewMiniPlayerStore";
+import { browserMiniPlayerSource, usePreviewMiniPlayerStore } from "../previewMiniPlayerStore";
 import { useRightPanelStore } from "../rightPanelStore";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { createAuthenticatedSessionHandlers } from "../../test/authHttpHandlers";
@@ -7606,7 +7606,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
       });
 
       useRightPanelStore.getState().close(THREAD_REF);
-      usePreviewMiniPlayerStore.getState().open(THREAD_REF, "preview-browser-test");
+      usePreviewMiniPlayerStore
+        .getState()
+        .open(THREAD_REF, browserMiniPlayerSource("preview-browser-test"));
       await vi.waitFor(() => {
         expect(
           document.querySelector('[data-preview-mini-player="preview-browser-test"]'),
@@ -7623,8 +7625,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
         }),
       );
       await vi.waitFor(() => {
-        expect(usePreviewMiniPlayerStore.getState().byThreadKey[THREAD_KEY]?.tabId).toBe(
-          "preview-browser-test",
+        expect(usePreviewMiniPlayerStore.getState().byThreadKey[THREAD_KEY]?.source).toEqual(
+          browserMiniPlayerSource("preview-browser-test"),
         );
         expect(document.querySelector("[data-preview-mini-player]")).toBeNull();
         expect(
@@ -7639,8 +7641,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
         expect(
           document.querySelector('[data-preview-mini-player="preview-browser-test"]'),
         ).not.toBeNull();
-        expect(usePreviewMiniPlayerStore.getState().byThreadKey[THREAD_KEY]?.tabId).toBe(
-          "preview-browser-test",
+        expect(usePreviewMiniPlayerStore.getState().byThreadKey[THREAD_KEY]?.source).toEqual(
+          browserMiniPlayerSource("preview-browser-test"),
         );
         expect(previewOpenCount).toBe(1);
       });

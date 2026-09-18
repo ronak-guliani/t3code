@@ -307,6 +307,7 @@
 - Eager background-service layers must retain construction dependencies with `Layer.provideMerge`; a sibling runtime layer is not enough. Keep a full `makeServerLayer` build test because isolated sublayer tests can pass while packaged startup fails with a missing service.
 - Registries that construct supervisors later must capture and re-provide optional services from construction time; test calls outside the provider layer so an ambient test service cannot mask lost promotion state.
 - Flavor-scoped provider subprocesses must inherit `T3CODE_HOME`, and live CLI commands must honor it; reject runtime-state files owned by dead PIDs before borrowing auth so port reuse cannot surface as a misleading HTTP 401.
+- Implicit local CLI snapshot/history reads may use the running server's projection database through a read-only SQLite connection, but must revalidate runtime-state liveness and origin before opening it; explicit tokens, remote URLs, account environments, and mutation-capable clients stay on authenticated live paths.
 
 ## Test clocks and durable PR monitoring
 
@@ -322,6 +323,7 @@
 ## Projection schemas and checkout reservations
 
 - Projection schema changes must update repository SQL plus every full, shell, and targeted snapshot query and mapper; a passing projection write test does not prove reconnect or CLI reads decode.
+- Archived-thread reads must opt in at the CLI resolution seam; keep checkpoint/diff inspection opt-in and leave dispatch/revert helpers on the default active-thread filter.
 - Keep each `Effect.all` snapshot query tuple position aligned with its destructuring, and define SQL-backed `SqlSchema` queries inside the layer that owns the `SqlClient`; a misplaced query can shift `workflowRuns` to `undefined` or fail only when executed.
 - Automatic Git mutations must check cleanliness with `--untracked-files=all --ignore-submodules=none`; user status preferences can otherwise hide local work. Disable autostash and recheck checkout identity and active turns immediately before pulling.
 - Checkout reservations must never span orchestration dispatch or ingestion receipt waits: the command worker may already be waiting for that checkout to admit a turn. Establish completion exclusion before publishing idle state, keep it through checkpoint finalization, and lock the full HEAD/worktree/index snapshot sequence even when staging uses a temporary index.

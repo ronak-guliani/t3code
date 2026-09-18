@@ -11,6 +11,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { PNG } from "pngjs";
 
 import packageJson from "../../package.json" with { type: "json" };
+import type { McpAuthError } from "@t3tools/contracts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -39,9 +40,10 @@ import {
 
 export const invalidMcpCredentialBody = {
   error: "invalid_mcp_credential",
+  recovery: "reconnect-required",
   message:
     "The T3 Code MCP session credential is invalid or expired. Restart the chat/session to reconnect browser automation.",
-} as const;
+} as const satisfies McpAuthError;
 
 export const invalidMcpCredentialResponse = HttpServerResponse.jsonUnsafe(
   {
