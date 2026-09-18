@@ -8,7 +8,9 @@ import { TurnLifecycleRuntime } from "../Services/TurnLifecycleRuntime.ts";
 import { WorkflowCoordinatorReactor } from "../Services/WorkflowCoordinatorReactor.ts";
 import { ValidationCoordinatorReactor } from "../Services/ValidationCoordinatorReactor.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
+import { isValidationCoordinatorOwnedRun } from "./ValidationCoordinatorReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
+import { planValidationCoordinatorRun, planValidationRun } from "@t3tools/contracts";
 
 describe("OrchestrationReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<OrchestrationReactor, never> | null = null;
@@ -18,6 +20,42 @@ describe("OrchestrationReactor", () => {
       await runtime.dispose();
     }
     runtime = null;
+  });
+
+  it("only treats request-bound runs as coordinator-owned", () => {
+    const target = {
+      workspaceRoot: "/workspace",
+      worktreePath: "/workspace/.worktree",
+      branch: "main",
+      revision: "revision-1",
+      dirtyStateFingerprint: "dirty-1",
+      environmentIdentity: "environment-1",
+    };
+
+    expect(
+      isValidationCoordinatorOwnedRun(
+        planValidationRun({
+          id: "legacy-run",
+          threadId: "thread-1" as never,
+          target,
+          requestedAt: "2026-09-18T00:00:00.000Z",
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isValidationCoordinatorOwnedRun(
+        planValidationCoordinatorRun({
+          id: "coordinator-run",
+          requestId: "request-1",
+          threadId: "thread-1" as never,
+          target,
+          scenarios: [],
+          scope: "changed-behavior",
+          requester: { id: "system", kind: "system" },
+          requestedAt: "2026-09-18T00:00:00.000Z",
+        }),
+      ),
+    ).toBe(true);
   });
 
   it("starts turn lifecycle, workflow, and thread deletion reactors", async () => {

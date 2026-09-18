@@ -5,6 +5,7 @@ import {
   type OrchestrationEvent,
   type ThreadId,
   type ValidationRequest,
+  type ValidationRun,
   type ValidationTarget,
   validationRunEffectiveStatus,
 } from "@t3tools/contracts";
@@ -26,6 +27,8 @@ const commandId = (runId: string, action: string): CommandId =>
 const runIdForRequest = (requestId: string): string => `validation:${requestId}`;
 const executorIdForTarget = (target: ValidationTarget): string =>
   `validation-coordinator:${target.environmentIdentity}`;
+export const isValidationCoordinatorOwnedRun = (run: ValidationRun): boolean =>
+  run.requestId !== undefined;
 
 const isValidationEvent = (event: OrchestrationEvent): boolean =>
   event.type.startsWith("thread.validation-");
@@ -173,7 +176,7 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
     const readModel = yield* orchestrationEngine.getReadModel();
     const thread = readModel.threads.find((entry) => entry.validationRun?.id === runId);
     const run = thread?.validationRun;
-    if (!thread || !run) return;
+    if (!thread || !run || !isValidationCoordinatorOwnedRun(run)) return;
     const status = validationRunEffectiveStatus(run);
     if (isValidationRunTerminal(status)) {
       yield* releaseLease(run);
@@ -327,7 +330,9 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
         );
         yield* Effect.forEach(
           readModel.threads.flatMap((thread) =>
-            thread.validationRun ? [thread.validationRun.id] : [],
+            thread.validationRun && isValidationCoordinatorOwnedRun(thread.validationRun)
+              ? [thread.validationRun.id]
+              : [],
           ),
           reconcileRun,
           { concurrency: 1 },
