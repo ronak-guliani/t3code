@@ -146,6 +146,7 @@ function isSafeRelativeTestFile(value: string): boolean {
   return (
     normalized.length > 0 &&
     !normalized.startsWith("/") &&
+    !/^[A-Za-z]:/.test(normalized) &&
     !normalized.split("/").includes("..") &&
     !/[;&|`$<>]/.test(normalized)
   );
@@ -173,8 +174,7 @@ function failureMessage(cause: Cause.Cause<unknown>): string {
 }
 
 function failureKind(cause: Cause.Cause<unknown>): ValidationFailureKind {
-  const message = failureMessage(cause);
-  if (message.toLowerCase().includes("interrupt")) return "cancelled";
+  if (Cause.hasInterruptsOnly(cause)) return "cancelled";
   return "spawn-error";
 }
 
@@ -195,9 +195,20 @@ function artifactContents(result: {
     .join("\n");
 }
 
+function isSafeArtifactKey(key: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(key);
+}
+
 export const makeFileValidationArtifactStore = (directory: string): ValidationArtifactStore => ({
-  write: ({ key, contents }) =>
-    Effect.tryPromise({
+  write: ({ key, contents }) => {
+    if (!isSafeArtifactKey(key)) {
+      return Effect.fail(
+        new ValidationArtifactWriteError({
+          cause: new Error(`Invalid artifact key: ${key}`),
+        }),
+      );
+    }
+    return Effect.tryPromise({
       try: async () => {
         await mkdir(directory, { recursive: true });
         const filePath = path.join(directory, `${key}.log`);
@@ -214,7 +225,8 @@ export const makeFileValidationArtifactStore = (directory: string): ValidationAr
         new ValidationArtifactWriteError({
           cause: cause instanceof Error ? cause : new Error(String(cause)),
         }),
-    }),
+    });
+  },
 });
 
 export const makeRepositoryValidationRunner = Effect.fn("makeRepositoryValidationRunner")(
@@ -293,7 +305,8 @@ export const makeRepositoryValidationRunner = Effect.fn("makeRepositoryValidatio
               };
         const stdout = boundOutput(processResult.stdout);
         const stderr = boundOutput(processResult.stderr);
-        const cancelled = processExit._tag === "failure";
+        const cancelled =
+          processExit._tag === "failure" && Cause.hasInterruptsOnly(processExit.cause);
         const failure =
           processExit._tag === "failure"
             ? {
