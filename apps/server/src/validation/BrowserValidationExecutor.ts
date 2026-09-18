@@ -1,4 +1,8 @@
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type {
   BrowserValidationAppState,
@@ -52,6 +56,8 @@ export interface BrowserValidationExecutorShape {
     input: BrowserValidationExecutionInput,
   ) => Effect.Effect<BrowserValidationResult>;
 }
+
+const execFileAsync = promisify(execFile);
 
 export class BrowserValidationExecutor extends Context.Service<
   BrowserValidationExecutor,
@@ -336,6 +342,62 @@ const defaultSmallRecordingDecoder = (
   },
 });
 
+export const ffprobeBrowserValidationRecordingDecoder = (
+  executable = process.env.T3CODE_FFPROBE_PATH ?? "ffprobe",
+): BrowserValidationRecordingDecoder => ({
+  decode: async ({ bytes, mimeType }) => {
+    const directory = await mkdtemp(join(tmpdir(), "t3-browser-recording-"));
+    const extension = mimeType.includes("mp4") ? "mp4" : "webm";
+    const path = join(directory, `recording.${extension}`);
+    try {
+      await writeFile(path, bytes, { mode: 0o600 });
+      const { stdout } = await execFileAsync(
+        executable,
+        [
+          "-v",
+          "error",
+          "-show_entries",
+          "stream=width,height,duration:format=duration",
+          "-of",
+          "json",
+          path,
+        ],
+        { timeout: 15_000, maxBuffer: 64 * 1024 },
+      );
+      const parsed = JSON.parse(stdout) as {
+        readonly streams?: ReadonlyArray<{
+          readonly width?: number;
+          readonly height?: number;
+          readonly duration?: string;
+        }>;
+        readonly format?: { readonly duration?: string };
+      };
+      const stream = parsed.streams?.find(
+        (candidate) =>
+          Number.isFinite(candidate.width) &&
+          Number.isFinite(candidate.height) &&
+          candidate.width !== undefined &&
+          candidate.height !== undefined,
+      );
+      const durationSeconds = Number(stream?.duration ?? parsed.format?.duration);
+      if (
+        stream?.width === undefined ||
+        stream.height === undefined ||
+        !Number.isFinite(durationSeconds)
+      ) {
+        throw new Error("ffprobe returned incomplete recording metadata.");
+      }
+      return {
+        width: stream.width,
+        height: stream.height,
+        durationSeconds,
+      };
+    } finally {
+      await rm(directory, { recursive: true, force: true }).catch(() => {});
+    }
+  },
+});
+
 const executePromise = async (
   dependencies: BrowserValidationExecutorDependencies,
   input: BrowserValidationExecutionInput,
@@ -357,6 +419,7 @@ const executePromise = async (
   let issuedCredentialId: string | undefined;
   let recordingStarted = false;
   let recordingStopped = false;
+  let outcome: BrowserValidationOutcome = "failed";
 
   const fail = (
     outcome: Exclude<BrowserValidationOutcome, "passed">,
@@ -600,7 +663,7 @@ const executePromise = async (
     ) {
       fail("failed", "media", "Required browser evidence was not produced.");
     }
-    return makeResult(state, "passed");
+    outcome = "passed";
   } catch (error) {
     const abort =
       error instanceof BrowserValidationAbort
@@ -620,13 +683,21 @@ const executePromise = async (
       });
     }
     state.extraDiagnostics.push(diagnosticFromError(abort.kind, abort));
-    return makeResult(state, abort.outcome);
+    outcome = abort.outcome;
   } finally {
-    pairingToken = "";
     if (issuedCredentialId !== undefined) {
-      await Effect.runPromise(dependencies.credentials.revoke(issuedCredentialId)).catch(() => {});
+      await Effect.runPromise(dependencies.credentials.revoke(issuedCredentialId)).catch(
+        (revokeError: unknown) => {
+          state.extraDiagnostics.push({
+            kind: "persistence",
+            message: safeErrorMessage(revokeError, pairingToken),
+          });
+        },
+      );
     }
+    pairingToken = "";
   }
+  return makeResult(state, outcome);
 };
 
 export const executeBrowserValidation = (
@@ -639,7 +710,15 @@ export const makeBrowserValidationExecutor = Effect.gen(function* () {
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const credentials = yield* BootstrapCredentialService.BootstrapCredentialService;
   return {
-    execute: (input) => executeBrowserValidation({ broker, credentials }, input),
+    execute: (input) =>
+      executeBrowserValidation(
+        {
+          broker,
+          credentials,
+          recordingDecoder: ffprobeBrowserValidationRecordingDecoder(),
+        },
+        input,
+      ),
   } satisfies BrowserValidationExecutorShape;
 });
 

@@ -131,6 +131,7 @@ const dependencies = (input: {
   readonly final?: PreviewAutomationSnapshot;
   readonly failOperation?: string;
   readonly failureMessage?: string;
+  readonly revokeFails?: boolean;
   readonly invoke?: (request: {
     readonly operation: string;
     readonly input: unknown;
@@ -196,6 +197,9 @@ const dependencies = (input: {
     },
     revoke: () => {
       revokeCount += 1;
+      if (input.revokeFails) {
+        return Effect.fail(new Error("credential revoke failed"));
+      }
       return Effect.succeed(true);
     },
   };
@@ -360,6 +364,21 @@ describe("browser validation executor", () => {
     const result = await Effect.runPromise(executeBrowserValidation(deps, input()));
     expect(result.outcome).toBe("failed");
     expect(JSON.stringify(result)).not.toContain("secret-token");
+  });
+
+  it("retains a sanitized diagnostic when credential revocation fails", async () => {
+    const deps = dependencies({
+      preflights: [preflight()],
+      failOperation: "openAndSnapshot",
+      failureMessage: "pairing failed",
+      revokeFails: true,
+    });
+    const result = await Effect.runPromise(executeBrowserValidation(deps, input()));
+    expect(result.outcome).toBe("blocked");
+    expect(result.diagnostics).toContainEqual({
+      kind: "persistence",
+      message: "credential revoke failed",
+    });
   });
 
   it("retains sanitized diagnostics for an interrupted browser operation", async () => {
