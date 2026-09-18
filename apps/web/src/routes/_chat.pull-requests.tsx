@@ -32,6 +32,9 @@ import {
 } from "../components/ui/menu";
 import { SidebarInset, SidebarTrigger } from "../components/ui/sidebar";
 import { Spinner } from "../components/ui/spinner";
+import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
+import { WorkspacePageContainer } from "../components/WorkspacePageContainer";
+import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
 import {
   pullRequestInvalidateMutationOptions,
@@ -317,10 +320,14 @@ function PullRequestsRoute() {
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden bg-background text-foreground">
       <div className="flex min-h-0 flex-1 flex-col">
-        <header className="flex h-13 shrink-0 items-center gap-2 border-b border-border px-3">
+        <WorkspacePageHeader>
           <SidebarTrigger className="size-7" />
-          <h1 className="text-sm font-semibold">Pull Requests</h1>
-        </header>
+          <WorkspaceBreadcrumb ariaLabel="Pull requests breadcrumb">
+            <WorkspaceBreadcrumbItem current>
+              <h1 className="truncate">Pull Requests</h1>
+            </WorkspaceBreadcrumbItem>
+          </WorkspaceBreadcrumb>
+        </WorkspacePageHeader>
         <div
           className={cn(
             "min-h-0 flex-1",
@@ -335,288 +342,305 @@ function PullRequestsRoute() {
               selected ? "border-r border-border max-lg:hidden" : "w-full",
             )}
           >
-            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-7 pb-4 sm:px-8">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <InputGroup className="min-w-0 flex-1">
-                  <InputGroupAddon>
-                    {listQuery.isFetching && !listQuery.isFetchingNextPage ? (
-                      <Spinner aria-hidden />
-                    ) : (
-                      <SearchIcon aria-hidden />
-                    )}
-                  </InputGroupAddon>
-                  <InputGroupInput
-                    type="search"
-                    aria-label="Search pull requests"
-                    autoComplete="off"
-                    name="pull-request-search"
-                    placeholder="Search pull requests, or label:bug"
-                    value={search.q ?? ""}
-                    onChange={(event) =>
-                      updateSearch({ q: event.currentTarget.value || undefined }, true)
-                    }
-                  />
-                </InputGroup>
-                <Menu>
-                  <MenuTrigger
-                    render={
-                      <Button aria-label="Sort pull requests" size="default" variant="outline" />
-                    }
-                  >
-                    <ArrowDownUpIcon aria-hidden />
-                    <span>Sort</span>
-                  </MenuTrigger>
-                  <MenuPopup align="end">
-                    <MenuRadioGroup
-                      value={sort}
-                      onValueChange={(value) =>
-                        updateSearch({ sort: value as PullRequestListSort }, true)
-                      }
-                    >
-                      {SORT_OPTIONS.map(({ value, label, Icon }) => (
-                        <MenuRadioItem key={value} value={value}>
-                          <Icon aria-hidden />
-                          {label}
-                        </MenuRadioItem>
-                      ))}
-                    </MenuRadioGroup>
-                  </MenuPopup>
-                </Menu>
-                <Menu>
-                  <MenuTrigger
-                    className="relative"
-                    render={
-                      <Button
-                        aria-label={`Filter pull requests${filterCount > 0 ? `, ${filterCount} active` : ""}`}
-                        size="default"
-                        variant="outline"
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <WorkspacePageContainer width="expanded" className="min-h-full gap-4">
+                <div className="flex flex-col gap-3">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <InputGroup className="min-w-0 flex-1">
+                      <InputGroupAddon>
+                        {listQuery.isFetching && !listQuery.isFetchingNextPage ? (
+                          <Spinner aria-hidden />
+                        ) : (
+                          <SearchIcon aria-hidden />
+                        )}
+                      </InputGroupAddon>
+                      <InputGroupInput
+                        type="search"
+                        aria-label="Search pull requests"
+                        autoComplete="off"
+                        name="pull-request-search"
+                        placeholder="Search pull requests, or label:bug"
+                        value={search.q ?? ""}
+                        onChange={(event) =>
+                          updateSearch({ q: event.currentTarget.value || undefined }, true)
+                        }
                       />
-                    }
-                  >
-                    <ListFilterIcon aria-hidden />
-                    <span>Filters</span>
-                    {filterCount > 0 ? (
-                      <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-primary text-[10px] font-medium text-primary-foreground tabular-nums">
-                        {filterCount}
-                      </span>
-                    ) : null}
-                  </MenuTrigger>
-                  <MenuPopup align="end">
-                    <MenuGroupLabel>State</MenuGroupLabel>
-                    <MenuRadioGroup
-                      value={effectiveState}
-                      onValueChange={(value) =>
-                        updateSearch({ state: value as PullRequestListState }, true)
-                      }
+                    </InputGroup>
+                    <Menu>
+                      <MenuTrigger
+                        render={
+                          <Button
+                            aria-label="Sort pull requests"
+                            size="default"
+                            variant="outline"
+                          />
+                        }
+                      >
+                        <ArrowDownUpIcon aria-hidden />
+                        <span>Sort</span>
+                      </MenuTrigger>
+                      <MenuPopup align="end">
+                        <MenuRadioGroup
+                          value={sort}
+                          onValueChange={(value) =>
+                            updateSearch({ sort: value as PullRequestListSort }, true)
+                          }
+                        >
+                          {SORT_OPTIONS.map(({ value, label, Icon }) => (
+                            <MenuRadioItem key={value} value={value}>
+                              <Icon aria-hidden />
+                              {label}
+                            </MenuRadioItem>
+                          ))}
+                        </MenuRadioGroup>
+                      </MenuPopup>
+                    </Menu>
+                    <Menu>
+                      <MenuTrigger
+                        className="relative"
+                        render={
+                          <Button
+                            aria-label={`Filter pull requests${filterCount > 0 ? `, ${filterCount} active` : ""}`}
+                            size="default"
+                            variant="outline"
+                          />
+                        }
+                      >
+                        <ListFilterIcon aria-hidden />
+                        <span>Filters</span>
+                        {filterCount > 0 ? (
+                          <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-primary text-[10px] font-medium text-primary-foreground tabular-nums">
+                            {filterCount}
+                          </span>
+                        ) : null}
+                      </MenuTrigger>
+                      <MenuPopup align="end">
+                        <MenuGroupLabel>State</MenuGroupLabel>
+                        <MenuRadioGroup
+                          value={effectiveState}
+                          onValueChange={(value) =>
+                            updateSearch({ state: value as PullRequestListState }, true)
+                          }
+                        >
+                          {LIST_STATES.map((state) => (
+                            <MenuRadioItem key={state} value={state}>
+                              {LIST_STATE_LABELS[state]}
+                            </MenuRadioItem>
+                          ))}
+                        </MenuRadioGroup>
+                        <MenuSeparator />
+                        <MenuGroupLabel>Involvement</MenuGroupLabel>
+                        <MenuRadioGroup
+                          value={search.involvement}
+                          onValueChange={(value) =>
+                            updateSearch({ involvement: value as PullRequestInvolvement }, true)
+                          }
+                        >
+                          {INVOLVEMENTS.map((involvement) => (
+                            <MenuRadioItem key={involvement} value={involvement}>
+                              {INVOLVEMENT_LABELS[involvement]}
+                            </MenuRadioItem>
+                          ))}
+                        </MenuRadioGroup>
+                        <MenuSeparator />
+                        <MenuGroupLabel>Project</MenuGroupLabel>
+                        <MenuRadioGroup
+                          value={search.projectId ?? ALL_PROJECTS_VALUE}
+                          onValueChange={(value) =>
+                            updateSearch(
+                              {
+                                projectId: (value === ALL_PROJECTS_VALUE ? undefined : value) as
+                                  | ProjectId
+                                  | undefined,
+                              },
+                              true,
+                            )
+                          }
+                        >
+                          <MenuRadioItem value={ALL_PROJECTS_VALUE}>All projects</MenuRadioItem>
+                          {projects.map((project) => (
+                            <MenuRadioItem key={project.id} value={project.id}>
+                              {project.name}
+                            </MenuRadioItem>
+                          ))}
+                        </MenuRadioGroup>
+                      </MenuPopup>
+                    </Menu>
+                    <Menu>
+                      <MenuTrigger
+                        render={
+                          <Button
+                            aria-label="Filter by involvement"
+                            size="default"
+                            variant="outline"
+                          />
+                        }
+                      >
+                        <LayersIcon aria-hidden />
+                        <span>
+                          {INVOLVEMENT_LABELS[search.involvement].replace(" involvement", "")}
+                        </span>
+                        <ChevronDownIcon aria-hidden />
+                      </MenuTrigger>
+                      <MenuPopup align="end">
+                        <MenuRadioGroup
+                          value={search.involvement}
+                          onValueChange={(value) =>
+                            updateSearch({ involvement: value as PullRequestInvolvement }, true)
+                          }
+                        >
+                          {INVOLVEMENTS.map((involvement) => (
+                            <MenuRadioItem key={involvement} value={involvement}>
+                              {INVOLVEMENT_LABELS[involvement]}
+                            </MenuRadioItem>
+                          ))}
+                        </MenuRadioGroup>
+                      </MenuPopup>
+                    </Menu>
+                    <Button
+                      aria-label="Refresh pull requests"
+                      disabled={listQuery.isFetching || invalidateMutation.isPending}
+                      size="icon"
+                      variant="outline"
+                      onClick={() => void invalidateMutation.mutateAsync({})}
                     >
-                      {LIST_STATES.map((state) => (
-                        <MenuRadioItem key={state} value={state}>
-                          {LIST_STATE_LABELS[state]}
-                        </MenuRadioItem>
-                      ))}
-                    </MenuRadioGroup>
-                    <MenuSeparator />
-                    <MenuGroupLabel>Involvement</MenuGroupLabel>
-                    <MenuRadioGroup
-                      value={search.involvement}
-                      onValueChange={(value) =>
-                        updateSearch({ involvement: value as PullRequestInvolvement }, true)
-                      }
-                    >
-                      {INVOLVEMENTS.map((involvement) => (
-                        <MenuRadioItem key={involvement} value={involvement}>
-                          {INVOLVEMENT_LABELS[involvement]}
-                        </MenuRadioItem>
-                      ))}
-                    </MenuRadioGroup>
-                    <MenuSeparator />
-                    <MenuGroupLabel>Project</MenuGroupLabel>
-                    <MenuRadioGroup
-                      value={search.projectId ?? ALL_PROJECTS_VALUE}
-                      onValueChange={(value) =>
-                        updateSearch(
-                          {
-                            projectId: (value === ALL_PROJECTS_VALUE ? undefined : value) as
-                              | ProjectId
-                              | undefined,
-                          },
-                          true,
-                        )
-                      }
-                    >
-                      <MenuRadioItem value={ALL_PROJECTS_VALUE}>All projects</MenuRadioItem>
-                      {projects.map((project) => (
-                        <MenuRadioItem key={project.id} value={project.id}>
-                          {project.name}
-                        </MenuRadioItem>
-                      ))}
-                    </MenuRadioGroup>
-                  </MenuPopup>
-                </Menu>
-                <Menu>
-                  <MenuTrigger
-                    render={
-                      <Button aria-label="Filter by involvement" size="default" variant="outline" />
-                    }
-                  >
-                    <LayersIcon aria-hidden />
-                    <span>
-                      {INVOLVEMENT_LABELS[search.involvement].replace(" involvement", "")}
-                    </span>
-                    <ChevronDownIcon aria-hidden />
-                  </MenuTrigger>
-                  <MenuPopup align="end">
-                    <MenuRadioGroup
-                      value={search.involvement}
-                      onValueChange={(value) =>
-                        updateSearch({ involvement: value as PullRequestInvolvement }, true)
-                      }
-                    >
-                      {INVOLVEMENTS.map((involvement) => (
-                        <MenuRadioItem key={involvement} value={involvement}>
-                          {INVOLVEMENT_LABELS[involvement]}
-                        </MenuRadioItem>
-                      ))}
-                    </MenuRadioGroup>
-                  </MenuPopup>
-                </Menu>
-                <Button
-                  aria-label="Refresh pull requests"
-                  disabled={listQuery.isFetching || invalidateMutation.isPending}
-                  size="icon"
-                  variant="outline"
-                  onClick={() => void invalidateMutation.mutateAsync({})}
-                >
-                  <RefreshCwIcon
-                    className={cn(
-                      (listQuery.isFetching || invalidateMutation.isPending) && "animate-spin",
-                    )}
-                  />
-                </Button>
-              </div>
-              <p aria-live="polite" className="sr-only">
-                {entriesWithStats.length} pull request{entriesWithStats.length === 1 ? "" : "s"}
-                {listQuery.hasNextPage ? ", more available" : ""}
-                {listQuery.isFetching && !listQuery.isFetchingNextPage ? ", updating" : ""}
-              </p>
-              <div className="mt-4">
-                {listQuery.isPending ? (
-                  <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
-                    <LoaderCircleIcon className="size-4 animate-spin" /> Loading pull requests…
+                      <RefreshCwIcon
+                        className={cn(
+                          (listQuery.isFetching || invalidateMutation.isPending) && "animate-spin",
+                        )}
+                      />
+                    </Button>
                   </div>
-                ) : null}
-                {listQuery.error ? (
-                  <EmptyState
-                    title="Could not load pull requests"
-                    description={
-                      listQuery.error instanceof Error
-                        ? listQuery.error.message
-                        : "Please try again."
-                    }
-                    action={
-                      <Button size="sm" variant="outline" onClick={() => void listQuery.refetch()}>
-                        Retry
-                      </Button>
-                    }
-                  />
-                ) : null}
-                {!listQuery.isPending && !listQuery.error && entriesWithStats.length === 0 ? (
-                  <EmptyState
-                    title="No pull requests"
-                    description={
-                      search.q
-                        ? "Nothing matches this search."
-                        : "No pull requests match these filters."
-                    }
-                    action={
-                      search.q ? (
+                  <p aria-live="polite" className="sr-only">
+                    {entriesWithStats.length} pull request
+                    {entriesWithStats.length === 1 ? "" : "s"}
+                    {listQuery.hasNextPage ? ", more available" : ""}
+                    {listQuery.isFetching && !listQuery.isFetchingNextPage ? ", updating" : ""}
+                  </p>
+                </div>
+                <div>
+                  {listQuery.isPending ? (
+                    <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
+                      <LoaderCircleIcon className="size-4 animate-spin" /> Loading pull requests…
+                    </div>
+                  ) : null}
+                  {listQuery.error ? (
+                    <EmptyState
+                      title="Could not load pull requests"
+                      description={
+                        listQuery.error instanceof Error
+                          ? listQuery.error.message
+                          : "Please try again."
+                      }
+                      action={
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => updateSearch({ q: undefined }, true)}
+                          onClick={() => void listQuery.refetch()}
                         >
-                          Clear search
+                          Retry
                         </Button>
-                      ) : undefined
-                    }
-                  />
-                ) : null}
-                {reviewRequestedEntries.length > 0 ? (
-                  <h2 className="px-3 pb-1 text-xs font-medium text-muted-foreground/70">
-                    Awaiting your review
-                  </h2>
-                ) : null}
-                {reviewRequestedEntries.map((entry) => (
-                  <PullRequestRow
-                    entry={entry}
-                    key={`${entry.projectId}:${entry.repository}#${entry.number}`}
-                    matchedElsewhere={matchRowElsewhere(entry)}
-                    selected={
-                      selected?.projectId === entry.projectId &&
-                      selected.repository === entry.repository &&
-                      selected.number === entry.number
-                    }
-                    onSelect={(next) =>
-                      updateSearch({
-                        repository: next.repository,
-                        number: next.number,
-                        selectedProjectId: next.projectId,
-                      })
-                    }
-                  />
-                ))}
-                {otherEntries.length > 0 ? (
-                  <h2
-                    className={cn(
-                      "px-3 pb-1 text-xs font-medium text-muted-foreground/70",
-                      reviewRequestedEntries.length > 0 && "pt-3",
-                    )}
-                  >
-                    Others
-                  </h2>
-                ) : null}
-                {otherEntries.map((entry) => (
-                  <PullRequestRow
-                    entry={entry}
-                    key={`${entry.projectId}:${entry.repository}#${entry.number}`}
-                    matchedElsewhere={matchRowElsewhere(entry)}
-                    selected={
-                      selected?.projectId === entry.projectId &&
-                      selected.repository === entry.repository &&
-                      selected.number === entry.number
-                    }
-                    onSelect={(next) =>
-                      updateSearch({
-                        repository: next.repository,
-                        number: next.number,
-                        selectedProjectId: next.projectId,
-                      })
-                    }
-                  />
-                ))}
-                {listQuery.hasNextPage ? (
-                  <div className="flex justify-center p-3">
-                    <Button
-                      disabled={listQuery.isFetchingNextPage}
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void listQuery.fetchNextPage()}
+                      }
+                    />
+                  ) : null}
+                  {!listQuery.isPending && !listQuery.error && entriesWithStats.length === 0 ? (
+                    <EmptyState
+                      title="No pull requests"
+                      description={
+                        search.q
+                          ? "Nothing matches this search."
+                          : "No pull requests match these filters."
+                      }
+                      action={
+                        search.q ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => updateSearch({ q: undefined }, true)}
+                          >
+                            Clear search
+                          </Button>
+                        ) : undefined
+                      }
+                    />
+                  ) : null}
+                  {reviewRequestedEntries.length > 0 ? (
+                    <h2 className="px-3 pb-1 text-xs font-medium text-muted-foreground/70">
+                      Awaiting your review
+                    </h2>
+                  ) : null}
+                  {reviewRequestedEntries.map((entry) => (
+                    <PullRequestRow
+                      entry={entry}
+                      key={`${entry.projectId}:${entry.repository}#${entry.number}`}
+                      matchedElsewhere={matchRowElsewhere(entry)}
+                      selected={
+                        selected?.projectId === entry.projectId &&
+                        selected.repository === entry.repository &&
+                        selected.number === entry.number
+                      }
+                      onSelect={(next) =>
+                        updateSearch({
+                          repository: next.repository,
+                          number: next.number,
+                          selectedProjectId: next.projectId,
+                        })
+                      }
+                    />
+                  ))}
+                  {otherEntries.length > 0 ? (
+                    <h2
+                      className={cn(
+                        "px-3 pb-1 text-xs font-medium text-muted-foreground/70",
+                        reviewRequestedEntries.length > 0 && "pt-3",
+                      )}
                     >
-                      {listQuery.isFetchingNextPage ? "Loading…" : "Load more"}
-                    </Button>
-                  </div>
-                ) : null}
-                {errors.length > 0 ? (
-                  <ul className="space-y-1 p-3 text-xs text-muted-foreground">
-                    {errors.map((error) => (
-                      <li key={error.projectId} className="break-words">
-                        <span className="font-medium text-foreground">{error.projectTitle}:</span>{" "}
-                        {error.message}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
+                      Others
+                    </h2>
+                  ) : null}
+                  {otherEntries.map((entry) => (
+                    <PullRequestRow
+                      entry={entry}
+                      key={`${entry.projectId}:${entry.repository}#${entry.number}`}
+                      matchedElsewhere={matchRowElsewhere(entry)}
+                      selected={
+                        selected?.projectId === entry.projectId &&
+                        selected.repository === entry.repository &&
+                        selected.number === entry.number
+                      }
+                      onSelect={(next) =>
+                        updateSearch({
+                          repository: next.repository,
+                          number: next.number,
+                          selectedProjectId: next.projectId,
+                        })
+                      }
+                    />
+                  ))}
+                  {listQuery.hasNextPage ? (
+                    <div className="flex justify-center p-3">
+                      <Button
+                        disabled={listQuery.isFetchingNextPage}
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void listQuery.fetchNextPage()}
+                      >
+                        {listQuery.isFetchingNextPage ? "Loading…" : "Load more"}
+                      </Button>
+                    </div>
+                  ) : null}
+                  {errors.length > 0 ? (
+                    <ul className="space-y-1 p-3 text-xs text-muted-foreground">
+                      {errors.map((error) => (
+                        <li key={error.projectId} className="break-words">
+                          <span className="font-medium text-foreground">{error.projectTitle}:</span>{" "}
+                          {error.message}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              </WorkspacePageContainer>
             </div>
           </section>
           {selected ? (
