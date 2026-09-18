@@ -9,7 +9,7 @@ import {
   type ValidationEnvironmentLease,
   type ValidationEnvironmentProcessIdentity,
   type ValidationEnvironmentTarget,
-} from "./validationEnvironmentManager.ts";
+} from "./ValidationEnvironmentManager.ts";
 
 const target: ValidationEnvironmentTarget = {
   workspaceRoot: "/repo",

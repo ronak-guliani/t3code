@@ -81,7 +81,12 @@ export const ValidationLease = Schema.Struct({
 });
 export type ValidationLease = typeof ValidationLease.Type;
 
-export const ValidationResultStatus = Schema.Literals(["passed", "failed", "blocked"]);
+export const ValidationResultStatus = Schema.Literals([
+  "passed",
+  "failed",
+  "blocked",
+  "interrupted",
+]);
 export type ValidationResultStatus = typeof ValidationResultStatus.Type;
 
 export const ValidationStructuredResult = Schema.Struct({
@@ -499,6 +504,9 @@ export const acceptValidationResult = (
   if (!gate) {
     throw new Error(`Validation gate ${result.gateId} does not exist.`);
   }
+  if (gate.attempts.some((attempt) => attempt.id === result.attemptId)) {
+    return run;
+  }
   if (gate.status !== "running") {
     throw new Error(`Validation gate ${result.gateId} is not running.`);
   }
@@ -510,9 +518,6 @@ export const acceptValidationResult = (
   }
   if (Date.parse(result.completedAt) > Date.parse(run.lease.expiresAt)) {
     throw new Error("Validation result arrived after the active lease expired.");
-  }
-  if (gate.attempts.some((attempt) => attempt.id === result.attemptId)) {
-    return run;
   }
   const attempt: ValidationAttempt = {
     id: result.attemptId,
@@ -542,14 +547,16 @@ export const acceptValidationResult = (
       ? "failed"
       : result.status === "blocked"
         ? "blocked"
-        : nextGates.every(
-              (candidate) =>
-                !candidate.required ||
-                candidate.status === "passed" ||
-                candidate.status === "not-required",
-            )
-          ? "ready"
-          : "running";
+        : result.status === "interrupted"
+          ? "interrupted"
+          : nextGates.every(
+                (candidate) =>
+                  !candidate.required ||
+                  candidate.status === "passed" ||
+                  candidate.status === "not-required",
+              )
+            ? "ready"
+            : "running";
   return {
     ...run,
     status: nextStatus,

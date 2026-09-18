@@ -1,4 +1,4 @@
-export type ValidationScope = "changed-behavior" | "full";
+import type { ValidationScope } from "@t3tools/contracts";
 
 export type ValidationRequirementId =
   | "focused-tests"

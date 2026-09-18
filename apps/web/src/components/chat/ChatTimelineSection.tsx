@@ -600,6 +600,7 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       [handoffAttachmentPreviews],
     );
 
+    const activeGate = validationRun?.gates.find((gate) => gate.status === "running") ?? null;
     return (
       <>
         {validationRun ? (
@@ -612,22 +613,39 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
                   {currentValidationTarget
                     ? reduceValidationReadiness(validationRun, currentValidationTarget)
                     : "Readiness unavailable"}
+                  {activeGate ? ` · Active: ${activeGate.label}` : ""}
                 </span>
               </div>
               <div className="mb-2 text-muted-foreground">
                 Tested revision <span className="font-mono">{validationRun.target.revision}</span>
+                {validationRun.target.branch ? ` on ${validationRun.target.branch}` : ""} ·{" "}
+                {validationRun.target.environmentIdentity}
               </div>
               <div className="grid gap-1.5">
                 {validationRun.gates.map((gate) => (
                   <div
                     key={gate.id}
-                    className="flex items-center justify-between gap-3 rounded-md bg-background/60 px-2 py-1.5"
+                    className="flex flex-col gap-1 rounded-md bg-background/60 px-2 py-1.5"
                   >
-                    <span>{gate.label}</span>
-                    <span className="text-right text-muted-foreground">
-                      {validationGateStatusLabel(gate.status)}
-                      {gate.blockerReason ? ` - ${gate.blockerReason}` : ""}
-                    </span>
+                    <div className="flex items-center justify-between gap-3">
+                      <span>{gate.label}</span>
+                      <span className="text-right text-muted-foreground">
+                        {validationGateStatusLabel(gate.status)}
+                        {gate.blockerReason ? ` - ${gate.blockerReason}` : ""}
+                      </span>
+                    </div>
+                    {gate.exitCode !== null || gate.outputRef ? (
+                      <div className="text-muted-foreground">
+                        {gate.exitCode !== null ? `exit ${gate.exitCode} ` : ""}
+                        {gate.outputRef ? `· ${gate.outputRef}` : ""}
+                        {gate.attempts.length > 0 ? ` · attempts ${gate.attempts.length}` : ""}
+                      </div>
+                    ) : null}
+                    {gate.diagnostics.length > 0 ? (
+                      <div className="text-muted-foreground">
+                        {gate.diagnostics.slice(0, 3).join(" | ").slice(0, 300)}
+                      </div>
+                    ) : null}
                   </div>
                 ))}
               </div>
