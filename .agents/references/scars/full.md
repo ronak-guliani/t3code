@@ -295,6 +295,7 @@
 - Virtualized row items must own every primitive that changes their rendering. Derive receipt-aware status before list rendering and compare it in item equality; do not hide row state in render closures, whole-map props, or `extraData`, because mounted rows can remain stale after persistence updates.
 - Workspace handoff intentionally ends turn A and queues a continuation before turn B starts. Project non-failed queue presence onto the shell as `hasPendingQueuedTurn` (do not read detail-only `queuedTurnsByThreadId` for sidebar/notify). Treat that flag as still-working in status, archive guards, settle/snooze, and completion notifications so the idle gap does not flash "Done" / "Chat completed"; do not seed `notifiedTurnKeys` while the queue is pending.
 - Completion notifications must prefer a matching `insights.turn.completed` provider state over checkpoint-derived shell/detail state; `missing` checkpoint status and normal shutdown ordering can transiently or permanently misclassify a successful turn as interrupted. Briefly confirm fallback interruptions before notifying.
+- Sidebar expansion derived from the active descendant is not durable state: archiving a nested thread navigates away from its subtree and collapses every parent that was open only by reveal. Pin ancestor `threadExpandedById` overrides before the archive navigation so the visible tree keeps its exact state.
 
 ## Projection performance and service composition
 
