@@ -56,8 +56,10 @@ import {
   type RecordedReportOutcome,
 } from "./dispatchAuthority.ts";
 import {
+  acceptValidationResult,
   planValidationRun,
   transitionValidationGate,
+  transitionValidationRunStatus,
   validationTargetEquals,
 } from "@t3tools/contracts";
 
@@ -548,6 +550,261 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   readonly recordedReportOutcome?: RecordedReportOutcome;
 }): Effect.fn.Return<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
   switch (command.type) {
+    case "thread.validation.request": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.validationRequest?.requestId === command.commandId) {
+        return [];
+      }
+      if (thread.validationRequest !== null && thread.validationRequest !== undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A validation request is already pending for this thread.",
+        });
+      }
+      if (thread.validationRun !== null && thread.validationRun !== undefined) {
+        if (thread.validationRun.requestId === command.commandId) {
+          return [];
+        }
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A validation run already exists for this thread.",
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.requestedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-requested",
+        payload: {
+          threadId: command.threadId,
+          request: {
+            requestId: command.commandId,
+            threadId: command.threadId,
+            scenarios: command.scenarios,
+            scope: command.scope,
+            requester: command.requester,
+            requestedAt: command.requestedAt,
+          },
+        },
+      };
+    }
+
+    case "thread.validation.coordinator-plan": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        thread.validationRun !== null &&
+        thread.validationRun !== undefined &&
+        thread.validationRun.id !== command.run.id
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A validation run is already planned for this thread.",
+        });
+      }
+      if (thread.validationRun?.id === command.run.id) {
+        return [];
+      }
+      if (thread.validationRequest?.requestId !== command.run.requestId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation plan does not match the pending validation request.",
+        });
+      }
+      if (command.run.threadId !== command.threadId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation plan thread does not match the command thread.",
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-run-planned",
+        payload: {
+          threadId: command.threadId,
+          run: command.run,
+        },
+      };
+    }
+
+    case "thread.validation.lifecycle": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const run = thread.validationRun;
+      if (!run || run.id !== command.update.runId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation lifecycle update does not match the active run.",
+        });
+      }
+      const next = yield* Effect.try({
+        try: () =>
+          transitionValidationRunStatus(run, command.update.status, command.update.updatedAt),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail:
+              cause instanceof Error ? cause.message : "Invalid validation lifecycle transition.",
+          }),
+      });
+      if (
+        (run.status ?? "planned") === (next.status ?? "planned") &&
+        run.updatedAt === next.updatedAt
+      ) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.update.updatedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-lifecycle-updated",
+        payload: {
+          threadId: command.threadId,
+          update: command.update,
+        },
+      };
+    }
+
+    case "thread.validation.lease.claim": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const run = thread.validationRun;
+      if (!run || run.id !== command.runId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation lease claim does not match the active run.",
+        });
+      }
+      if (!validationTargetEquals(run.target, command.target)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation lease claim target does not match the planned target.",
+        });
+      }
+      if (command.executorId !== command.lease.executorId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation lease executor does not match the claiming executor.",
+        });
+      }
+      if (run.lease !== null && run.lease.id !== command.lease.id) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation run already has an active lease.",
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.claimedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-lease-claimed",
+        payload: {
+          threadId: command.threadId,
+          runId: command.runId,
+          lease: command.lease,
+        },
+      };
+    }
+
+    case "thread.validation.lease.release": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        !thread.validationRun ||
+        thread.validationRun.id !== command.runId ||
+        thread.validationRun.lease?.id !== command.leaseId
+      ) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.releasedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-lease-released",
+        payload: {
+          threadId: command.threadId,
+          runId: command.runId,
+          leaseId: command.leaseId,
+          releasedAt: command.releasedAt,
+        },
+      };
+    }
+
+    case "thread.validation.result.record": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const run = thread.validationRun;
+      if (!run || run.id !== command.result.runId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation result does not match the active run.",
+        });
+      }
+      if (!run.lease || run.lease.executorId !== command.result.executorId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation result is not authorized by the active lease.",
+        });
+      }
+      yield* Effect.try({
+        try: () => acceptValidationResult(run, command.result),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: cause instanceof Error ? cause.message : "Invalid validation result.",
+          }),
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.result.completedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-result-recorded",
+        payload: {
+          threadId: command.threadId,
+          result: command.result,
+        },
+      };
+    }
+
     case "chat-archive.import": {
       yield* requireProjectAbsent({
         readModel,

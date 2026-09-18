@@ -6,6 +6,7 @@ import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import { ThreadTitleReactor } from "../Services/ThreadTitleReactor.ts";
 import { TurnLifecycleRuntime } from "../Services/TurnLifecycleRuntime.ts";
 import { WorkflowCoordinatorReactor } from "../Services/WorkflowCoordinatorReactor.ts";
+import { ValidationCoordinatorReactor } from "../Services/ValidationCoordinatorReactor.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
 
@@ -69,6 +70,16 @@ describe("OrchestrationReactor", () => {
             drainRun: () => Effect.void,
           }),
         ),
+        Layer.provideMerge(
+          Layer.succeed(ValidationCoordinatorReactor, {
+            request: () => Effect.succeed({ runId: "run-1" }),
+            reconcile: () => Effect.void,
+            start: () => {
+              started.push("validation-coordinator-reactor");
+              return Effect.void;
+            },
+          }),
+        ),
       ),
     );
 
@@ -81,6 +92,7 @@ describe("OrchestrationReactor", () => {
       "thread-title-reactor",
       "queued-turn-reactor",
       "workflow-coordinator-reactor",
+      "validation-coordinator-reactor",
       "thread-deletion-reactor",
     ]);
 

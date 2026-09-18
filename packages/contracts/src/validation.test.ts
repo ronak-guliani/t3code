@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  acceptValidationResult,
+  planValidationCoordinatorRun,
   planValidationRun,
   reduceValidationReadiness,
+  transitionValidationRunStatus,
   transitionValidationGate,
   validationRunEquals,
   validationTargetEquals,
@@ -141,5 +144,119 @@ describe("validation runs", () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  it("plans dynamic gates without trusting a caller-supplied target", () => {
+    const planned = planValidationCoordinatorRun({
+      id: "run-dynamic",
+      requestId: "request-1",
+      threadId: "thread-1" as never,
+      target,
+      scenarios: [{ id: "opens-settings", description: "Opens settings" }],
+      scope: "full",
+      requester: { id: "user-1", kind: "user" },
+      requestedAt: "2026-09-16T12:00:00.000Z",
+    });
+
+    expect(planned.status).toBe("planned");
+    expect(planned.gates.map((gate) => gate.kind)).toEqual([
+      "format",
+      "lint",
+      "typecheck",
+      "full-tests",
+      "browser-scenario",
+      "pairing-self-test",
+    ]);
+    expect(planned.gates[4]?.id).toContain("opens-settings");
+    expect(planned.target).toBe(target);
+  });
+
+  it("accepts only legal run lifecycle transitions", () => {
+    let current = planValidationCoordinatorRun({
+      id: "run-lifecycle",
+      requestId: "request-2",
+      threadId: "thread-1" as never,
+      target,
+      scenarios: [],
+      scope: "changed-behavior",
+      requester: { id: "system", kind: "system" },
+      requestedAt: "2026-09-16T12:00:00.000Z",
+    });
+    current = transitionValidationRunStatus(current, "preparing", "2026-09-16T12:00:01.000Z");
+    current = transitionValidationRunStatus(current, "running", "2026-09-16T12:00:02.000Z");
+    current = transitionValidationRunStatus(current, "blocked", "2026-09-16T12:00:03.000Z");
+    expect(() =>
+      transitionValidationRunStatus(current, "ready", "2026-09-16T12:00:04.000Z"),
+    ).toThrow("cannot transition");
+  });
+
+  it("requires a running gate and structured result before a gate passes", () => {
+    let current = planValidationCoordinatorRun({
+      id: "run-result",
+      requestId: "request-3",
+      threadId: "thread-1" as never,
+      target,
+      scenarios: [],
+      scope: "changed-behavior",
+      requester: { id: "system", kind: "system" },
+      requestedAt: "2026-09-16T12:00:00.000Z",
+    });
+    expect(() =>
+      acceptValidationResult(current, {
+        id: "result-1",
+        runId: current.id,
+        gateId: current.gates[0]!.id,
+        attemptId: "attempt-1",
+        leaseId: "lease:run-result",
+        executorId: "executor-1",
+        target,
+        status: "passed",
+        observedAt: "2026-09-16T12:00:01.000Z",
+        completedAt: "2026-09-16T12:00:02.000Z",
+        exitCode: 0,
+        outputRef: "output://focused",
+        blockerReason: null,
+        diagnostics: [],
+      }),
+    ).toThrow("is not running");
+
+    current = {
+      ...current,
+      status: "running",
+      executorId: "executor-1",
+      gates: current.gates.map((gate, index) =>
+        index === 0
+          ? {
+              ...gate,
+              status: "running" as const,
+              startedAt: "2026-09-16T12:00:01.000Z",
+            }
+          : gate,
+      ),
+      lease: {
+        id: "lease:run-result",
+        executorId: "executor-1",
+        claimedAt: "2026-09-16T12:00:01.000Z",
+        expiresAt: "2026-09-16T12:01:00.000Z",
+      },
+    };
+    const accepted = acceptValidationResult(current, {
+      id: "result-1",
+      runId: current.id,
+      gateId: current.gates[0]!.id,
+      attemptId: "attempt-1",
+      leaseId: "lease:run-result",
+      executorId: "executor-1",
+      target,
+      status: "passed",
+      observedAt: "2026-09-16T12:00:01.000Z",
+      completedAt: "2026-09-16T12:00:02.000Z",
+      exitCode: 0,
+      outputRef: "output://focused",
+      blockerReason: null,
+      diagnostics: [],
+    });
+    expect(accepted.gates[0]?.result?.id).toBe("result-1");
+    expect(accepted.gates[0]?.status).toBe("passed");
   });
 });
