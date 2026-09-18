@@ -1,6 +1,7 @@
 import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  planValidationCoordinatorRun,
   planValidationRun,
   ProjectId,
   ProviderInstanceId,
@@ -177,6 +178,69 @@ describe("validation executor authority", () => {
         threadId,
         failure: { requestId: request.requestId },
       },
+    });
+  });
+
+  it("allows a new request after every terminal validation run state", async () => {
+    for (const status of ["ready", "failed", "blocked", "interrupted", "stale"] as const) {
+      const result = await Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.validation.request",
+            commandId: CommandId.make(`validation:new-request-${status}`),
+            threadId,
+            scenarios: [],
+            scope: "changed-behavior",
+            requester: { id: "user-2", kind: "user" },
+            requestedAt: now,
+          },
+          readModel: readModel({ ...run(), status }),
+        }),
+      );
+      expect(result).toMatchObject({
+        type: "thread.validation-requested",
+        payload: {
+          threadId,
+          request: { scope: "changed-behavior" },
+        },
+      });
+    }
+  });
+
+  it("replaces a terminal run when planning a new request", async () => {
+    const request: ValidationRequest = {
+      requestId: CommandId.make("validation:request-2"),
+      threadId,
+      scenarios: [],
+      scope: "full",
+      requester: { id: "user-2", kind: "user" },
+      requestedAt: now,
+    };
+    const nextRun = planValidationCoordinatorRun({
+      id: "validation:request-2",
+      requestId: request.requestId,
+      threadId,
+      target,
+      scenarios: request.scenarios,
+      scope: request.scope,
+      requester: request.requester,
+      requestedAt: request.requestedAt,
+    });
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.validation.coordinator-plan",
+          commandId: CommandId.make("validation:request-2:plan"),
+          threadId,
+          run: nextRun,
+          createdAt: now,
+        },
+        readModel: readModel({ ...run(), status: "ready" }, request),
+      }),
+    );
+    expect(result).toMatchObject({
+      type: "thread.validation-run-planned",
+      payload: { threadId, run: { id: nextRun.id } },
     });
   });
 });

@@ -45,6 +45,7 @@ import { useRightPanelStore } from "~/rightPanelStore";
 import { resolveBrowserNavigationTarget } from "~/browser/browserTargetResolver";
 import {
   readActiveBrowserRecordingTargets,
+  readSavedBrowserRecordingTransfer,
   startBrowserRecording,
   stopBrowserRecording,
 } from "~/browser/browserRecording";
@@ -1344,6 +1345,26 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               );
             }
             return rewriteBrowserRecordingArtifactTabId(artifact, stopTarget);
+          }
+          case "recordingTransfer": {
+            const { recordingId } = request.input as { readonly recordingId?: unknown };
+            const transfer =
+              typeof recordingId === "string"
+                ? readSavedBrowserRecordingTransfer(recordingId)
+                : null;
+            if (!transfer) {
+              throw PreviewAutomationOperationError.fromCause({
+                requestId: request.requestId,
+                operation: request.operation,
+                environmentId,
+                threadId: request.threadId,
+                tabId,
+                cause: new Error(
+                  `No retained recording bytes for recording ${typeof recordingId === "string" ? recordingId : "(unknown)"}. The renderer may have reloaded since the recording stopped; stop the recording again to retry.`,
+                ),
+              });
+            }
+            return transfer;
           }
         }
       } catch (cause) {

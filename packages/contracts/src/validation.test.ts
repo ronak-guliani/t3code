@@ -144,6 +144,26 @@ describe("validation runs", () => {
         }),
       ),
     ).toBe(false);
+    expect(validationRunEquals(planned, { ...planned, status: "running" })).toBe(false);
+    expect(
+      validationRunEquals(planned, {
+        ...planned,
+        lease: {
+          id: "lease-1",
+          executorId: "executor-1",
+          claimedAt: "2026-09-16T12:00:01.000Z",
+          expiresAt: "2026-09-16T12:01:00.000Z",
+        },
+      }),
+    ).toBe(false);
+    expect(
+      validationRunEquals(planned, {
+        ...planned,
+        gates: planned.gates.map((gate, index) =>
+          index === 0 ? { ...gate, kind: "lint" as const } : gate,
+        ),
+      }),
+    ).toBe(false);
   });
 
   it("plans dynamic gates without trusting a caller-supplied target", () => {

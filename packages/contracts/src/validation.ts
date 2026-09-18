@@ -459,6 +459,27 @@ export const validationRunStatusLabel = (status: ValidationRunStatus): string =>
   }
 };
 
+export const validationRunEffectiveStatus = (run: ValidationRun): ValidationRunStatus => {
+  if (run.status !== undefined) return run.status;
+  if (run.gates.some((gate) => gate.status === "failed")) return "failed";
+  if (run.gates.some((gate) => gate.status === "blocked")) return "blocked";
+  if (
+    run.gates.every(
+      (gate) => !gate.required || gate.status === "passed" || gate.status === "not-required",
+    )
+  ) {
+    return "ready";
+  }
+  return "planned";
+};
+
+export const isValidationRunTerminal = (status: ValidationRunStatus): boolean =>
+  status === "ready" ||
+  status === "failed" ||
+  status === "blocked" ||
+  status === "interrupted" ||
+  status === "stale";
+
 const legalRunTransitions: Record<ValidationRunStatus, ReadonlyArray<ValidationRunStatus>> = {
   planned: ["preparing", "blocked", "interrupted", "stale"],
   preparing: ["running", "failed", "blocked", "interrupted", "stale"],
@@ -475,7 +496,7 @@ export const transitionValidationRunStatus = (
   nextStatus: ValidationRunStatus,
   updatedAt: IsoDateTime,
 ): ValidationRun => {
-  const currentStatus = run.status ?? "planned";
+  const currentStatus = validationRunEffectiveStatus(run);
   if (currentStatus === nextStatus) {
     return { ...run, status: nextStatus, updatedAt };
   }
@@ -492,9 +513,9 @@ export const acceptValidationResult = (
   if (result.runId !== run.id) {
     throw new Error("Validation result does not match the active run.");
   }
-  if ((run.status ?? "planned") !== "running") {
+  if (validationRunEffectiveStatus(run) !== "running") {
     throw new Error(
-      `Validation result cannot be accepted while the run is ${run.status ?? "planned"}.`,
+      `Validation result cannot be accepted while the run is ${validationRunEffectiveStatus(run)}.`,
     );
   }
   if (!validationTargetEquals(run.target, result.target)) {
@@ -582,7 +603,13 @@ export const validationRunEquals = (
   if (
     left.id !== right.id ||
     left.threadId !== right.threadId ||
+    left.requestId !== right.requestId ||
+    left.status !== right.status ||
+    left.scope !== right.scope ||
+    JSON.stringify(left.scenarios) !== JSON.stringify(right.scenarios) ||
+    JSON.stringify(left.requester) !== JSON.stringify(right.requester) ||
     left.executorId !== right.executorId ||
+    JSON.stringify(left.lease) !== JSON.stringify(right.lease) ||
     left.createdAt !== right.createdAt ||
     left.updatedAt !== right.updatedAt ||
     !validationTargetEquals(left.target, right.target) ||
@@ -596,6 +623,8 @@ export const validationRunEquals = (
     return (
       leftGate.id === rightGate.id &&
       leftGate.label === rightGate.label &&
+      leftGate.kind === rightGate.kind &&
+      leftGate.instanceId === rightGate.instanceId &&
       leftGate.required === rightGate.required &&
       leftGate.status === rightGate.status &&
       leftGate.command === rightGate.command &&
@@ -605,6 +634,8 @@ export const validationRunEquals = (
       leftGate.exitCode === rightGate.exitCode &&
       leftGate.outputRef === rightGate.outputRef &&
       leftGate.blockerReason === rightGate.blockerReason &&
+      JSON.stringify(leftGate.attempts) === JSON.stringify(rightGate.attempts) &&
+      JSON.stringify(leftGate.result) === JSON.stringify(rightGate.result) &&
       leftGate.diagnostics.length === rightGate.diagnostics.length &&
       leftGate.diagnostics.every((diagnostic, diagnosticIndex) => {
         return diagnostic === rightGate.diagnostics[diagnosticIndex];
