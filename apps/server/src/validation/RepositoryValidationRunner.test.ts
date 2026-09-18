@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import * as ProcessRunner from "../processRunner.ts";
 import {
+  makeFileValidationArtifactStore,
   RepositoryValidationRunner,
   RepositoryValidationRunnerLive,
   ValidationArtifactStoreService,
@@ -102,6 +103,25 @@ describe("RepositoryValidationRunner", () => {
 
     expect(result?.status).toBe("failed");
     expect(result?.failure?.kind).toBe("spawn-error");
+    expect(result?.cancelled).toBe(false);
+  });
+
+  it("does not misclassify spawn errors mentioning interruption as cancelled", async () => {
+    const result = await Effect.runPromise(
+      makeRunner(() =>
+        Effect.fail(
+          new ProcessRunner.ProcessSpawnError({
+            command: "pnpm",
+            argumentCount: 1,
+            cause: new Error("interrupted system call"),
+          }),
+        ),
+      ),
+    );
+
+    expect(result?.status).toBe("failed");
+    expect(result?.failure?.kind).toBe("spawn-error");
+    expect(result?.cancelled).toBe(false);
   });
 
   it("reports timeouts, signals, and cancellation as interruptions", async () => {
@@ -199,5 +219,40 @@ describe("RepositoryValidationRunner", () => {
 
     expect(run).not.toHaveBeenCalled();
     expect(result.attempts[0]?.failure?.kind).toBe("invalid-spec");
+  });
+
+  it("rejects Windows drive-absolute focused test files without executing", async () => {
+    const run = vi.fn(() => Effect.succeed(baseProcessResult()));
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const runner = yield* RepositoryValidationRunner;
+        return yield* runner.run({
+          gates: [
+            {
+              id: "focused-tests",
+              cwd: "/repo",
+              attempt: 1,
+              testFiles: ["C:/evil/test.ts"],
+            },
+          ],
+        });
+      }).pipe(
+        Effect.provide(RepositoryValidationRunnerLive),
+        Effect.provideService(ProcessRunner.ProcessRunner, { run }),
+        Effect.provideService(ValidationArtifactStoreService, {
+          write: ({ key }) => Effect.succeed(descriptor(key)),
+        }),
+      ),
+    );
+
+    expect(run).not.toHaveBeenCalled();
+    expect(result.attempts[0]?.failure?.kind).toBe("invalid-spec");
+  });
+
+  it("rejects unsafe artifact keys without writing outside the store", async () => {
+    const store = makeFileValidationArtifactStore("/tmp/validation-artifacts-test");
+    await expect(
+      Effect.runPromise(store.write({ key: "../evil", contents: "x" })),
+    ).rejects.toThrow();
   });
 });
