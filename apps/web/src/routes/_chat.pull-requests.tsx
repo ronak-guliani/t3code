@@ -280,7 +280,7 @@ function PullRequestsRoute() {
   }
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden bg-background text-foreground">
+    <SidebarInset className="h-dvh min-h-0 overflow-hidden bg-chat-background text-foreground">
       <div className="flex min-h-0 flex-1 flex-col">
         <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
           <SidebarTrigger className="size-7" />
@@ -302,9 +302,21 @@ function PullRequestsRoute() {
             />
           </Button>
         </header>
-        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(22rem,0.9fr)_minmax(28rem,1.1fr)]">
-          <section className="flex min-h-0 flex-col border-r border-border">
-            <div className="space-y-2 border-b border-border p-3">
+        <div
+          className={cn(
+            "min-h-0 flex-1",
+            selected
+              ? "grid grid-cols-1 lg:grid-cols-[minmax(20rem,0.9fr)_minmax(28rem,1.1fr)]"
+              : "flex flex-col",
+          )}
+        >
+          <section
+            className={cn(
+              "flex min-h-0 flex-col",
+              selected ? "border-r border-border max-lg:hidden" : "mx-auto w-full max-w-3xl",
+            )}
+          >
+            <div className="space-y-2 border-b border-border px-3 py-2.5">
               <div className="flex min-w-0 items-center gap-2">
                 <InputGroup className="min-w-0 flex-1">
                   <InputGroupAddon>
@@ -403,7 +415,7 @@ function PullRequestsRoute() {
                 </p>
               ) : null}
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
               {listQuery.isPending ? (
                 <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
                   <LoaderCircleIcon className="size-4 animate-spin" /> Loading pull requests…
@@ -444,7 +456,7 @@ function PullRequestsRoute() {
                 />
               ) : null}
               {reviewRequestedEntries.length > 0 && otherEntries.length > 0 ? (
-                <p className="px-3 pt-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                <p className="px-2 pt-2 pb-0.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
                   Awaiting your review
                 </p>
               ) : null}
@@ -468,7 +480,7 @@ function PullRequestsRoute() {
                 />
               ))}
               {reviewRequestedEntries.length > 0 && otherEntries.length > 0 ? (
-                <p className="px-3 pt-3 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                <p className="px-2 pt-2.5 pb-0.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
                   Other pull requests
                 </p>
               ) : null}
@@ -515,21 +527,16 @@ function PullRequestsRoute() {
               ) : null}
             </div>
           </section>
-          <section className="min-h-0">
-            {selected ? (
+          {selected ? (
+            <section className="min-h-0">
               <PullRequestDetailPanel
                 environmentId={environmentId!}
                 key={`${selected.projectId}:${selected.repository}#${selected.number}`}
                 reference={selected}
                 onClose={() => updateSearch({}, true)}
               />
-            ) : (
-              <EmptyState
-                title="Select a pull request"
-                description="Choose a pull request to review its details, timeline, and diff."
-              />
-            )}
-          </section>
+            </section>
+          ) : null}
         </div>
       </div>
     </SidebarInset>
@@ -538,7 +545,9 @@ function PullRequestsRoute() {
 
 function Surface({ children }: { readonly children: ReactNode }) {
   return (
-    <SidebarInset className="h-dvh min-h-0 bg-background text-foreground">{children}</SidebarInset>
+    <SidebarInset className="h-dvh min-h-0 bg-chat-background text-foreground">
+      {children}
+    </SidebarInset>
   );
 }
 
