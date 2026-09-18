@@ -129,20 +129,34 @@ const dependencies = (input: {
   readonly preflights: ReadonlyArray<PreviewAutomationPreflightResult>;
   readonly pairing?: PreviewAutomationSnapshot;
   readonly final?: PreviewAutomationSnapshot;
+  readonly failOperation?: string;
+  readonly failureMessage?: string;
   readonly invoke?: (request: {
     readonly operation: string;
     readonly input: unknown;
+    readonly tabId?: unknown;
   }) => Effect.Effect<unknown, unknown>;
 }) => {
-  const calls: Array<{ operation: string; input: unknown }> = [];
+  const calls: Array<{ operation: string; input: unknown; tabId?: unknown }> = [];
   let preflightIndex = 0;
   let issueCount = 0;
   let revokeCount = 0;
   const dependenciesValue = input;
   const invoke =
     input.invoke ??
-    (({ operation, input: requestInput }: { operation: string; input: unknown }) => {
-      calls.push({ operation, input: requestInput });
+    (({
+      operation,
+      input: requestInput,
+      tabId,
+    }: {
+      operation: string;
+      input: unknown;
+      tabId?: unknown;
+    }) => {
+      calls.push({ operation, input: requestInput, ...(tabId === undefined ? {} : { tabId }) });
+      if (operation === input.failOperation) {
+        return Effect.fail(new Error(input.failureMessage ?? "operation failed"));
+      }
       if (operation === "preflight") {
         return Effect.succeed(
           dependenciesValue.preflights[
@@ -155,6 +169,17 @@ const dependencies = (input: {
       }
       if (operation === "snapshot") {
         return Effect.succeed(dependenciesValue.final ?? snapshot());
+      }
+      if (operation === "recordingStart") {
+        return Effect.succeed({ tabId: "tab-1", recording: true, startedAt: "now" });
+      }
+      if (operation === "recordingStop") {
+        return Effect.succeed({
+          id: "recording-1",
+          tabId: "tab-1",
+          path: "/tmp/recording.webm",
+          mimeType: "video/webm",
+        });
       }
       return Effect.succeed(null);
     });
@@ -296,6 +321,26 @@ describe("browser validation executor", () => {
     expect(deps.calls.map((call) => call.operation)).toEqual(["preflight", "openAndSnapshot"]);
   });
 
+  it("stops required recording after an action fails on the validation tab", async () => {
+    const deps = dependencies({
+      preflights: [preflight()],
+      failOperation: "press",
+      failureMessage: "action failed",
+    });
+    const result = await Effect.runPromise(
+      executeBrowserValidation(deps, input({ media: [{ kind: "recording", required: true }] })),
+    );
+    expect(result.outcome).toBe("failed");
+    expect(deps.calls.map((call) => call.operation)).toEqual([
+      "preflight",
+      "openAndSnapshot",
+      "recordingStart",
+      "press",
+      "recordingStop",
+    ]);
+    expect(deps.calls.at(-1)?.tabId).toBe("tab-1");
+  });
+
   it("rejects a cross-origin redirect after actions", async () => {
     const deps = dependencies({
       preflights: [preflight()],
@@ -304,6 +349,17 @@ describe("browser validation executor", () => {
     const result = await Effect.runPromise(executeBrowserValidation(deps, input()));
     expect(result.outcome).toBe("failed");
     expect(result.diagnostics[0]?.message).toContain("another origin");
+  });
+
+  it("redacts the pairing token from post-pair broker errors", async () => {
+    const deps = dependencies({
+      preflights: [preflight()],
+      failOperation: "snapshot",
+      failureMessage: "broker echoed secret-token",
+    });
+    const result = await Effect.runPromise(executeBrowserValidation(deps, input()));
+    expect(result.outcome).toBe("failed");
+    expect(JSON.stringify(result)).not.toContain("secret-token");
   });
 
   it("retains sanitized diagnostics for an interrupted browser operation", async () => {

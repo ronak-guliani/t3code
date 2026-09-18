@@ -57,13 +57,16 @@ export interface BrowserValidationMediaInput {
   readonly durationSeconds?: number;
 }
 
-export const redactBrowserValidationText = (value: string): string =>
+export const redactBrowserValidationText = (
+  value: string,
+  maxLength = MAX_DIAGNOSTIC_LENGTH,
+): string =>
   value
     .replace(SECRET_QUERY, `$1${REDACTED}`)
     .replace(BEARER, `$1${REDACTED}`)
     .replace(PAIRING_HASH, `$1${REDACTED}`)
     .replace(/(cookie|set-cookie|x-api-key|api-key)\s*[:=]\s*[^\s;,]+/gi, `$1: ${REDACTED}`)
-    .slice(0, MAX_DIAGNOSTIC_LENGTH);
+    .slice(0, maxLength);
 
 export const sanitizeBrowserValidationUrl = (value: string): string => {
   try {
@@ -123,7 +126,7 @@ export const browserValidationFinalSnapshot = (
   })(),
   url: sanitizeBrowserValidationUrl(snapshot.url),
   title: redactBrowserValidationText(snapshot.title).slice(0, 512),
-  visibleText: redactBrowserValidationText(snapshot.visibleText).slice(0, MAX_VISIBLE_TEXT_LENGTH),
+  visibleText: redactBrowserValidationText(snapshot.visibleText, MAX_VISIBLE_TEXT_LENGTH),
   loading: snapshot.loading,
 });
 
