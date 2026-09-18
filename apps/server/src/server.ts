@@ -44,6 +44,10 @@ import { TurnLifecycleRuntimeLayerLive } from "./orchestration/Layers/TurnLifecy
 import { ThreadTitleReactorLive } from "./orchestration/Layers/ThreadTitleReactor.ts";
 import { QueuedTurnReactorLive } from "./orchestration/Layers/QueuedTurnReactor.ts";
 import { WorkflowCoordinatorReactorLive } from "./orchestration/Layers/WorkflowCoordinatorReactor.ts";
+import {
+  ValidationCoordinatorReactorLive,
+  ValidationCoordinatorTargetResolverLive,
+} from "./orchestration/Layers/ValidationCoordinatorReactor.ts";
 import { ReviewSnapshotVerifierLive } from "./orchestration/Layers/ReviewSnapshotVerifier.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
@@ -178,6 +182,11 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ThreadTitleReactorLive),
   Layer.provideMerge(QueuedTurnReactorLive),
   Layer.provideMerge(WorkflowCoordinatorReactorLive),
+  Layer.provideMerge(
+    ValidationCoordinatorReactorLive.pipe(
+      Layer.provideMerge(ValidationCoordinatorTargetResolverLive),
+    ),
+  ),
   Layer.provideMerge(ReviewSnapshotVerifierLive),
   Layer.provideMerge(ProjectionWorkflowRepositoryLive),
   Layer.provideMerge(ThreadDeletionReactorLive),

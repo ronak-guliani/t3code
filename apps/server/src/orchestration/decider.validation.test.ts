@@ -1,12 +1,14 @@
 import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  planValidationCoordinatorRun,
   planValidationRun,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   type OrchestrationCommand,
   type OrchestrationReadModel,
+  type ValidationRequest,
   type ValidationTarget,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
@@ -27,7 +29,8 @@ const target: ValidationTarget = {
 };
 
 const readModel = (
-  validationRun: ReturnType<typeof planValidationRun>,
+  validationRun: ReturnType<typeof planValidationRun> | null,
+  validationRequest?: ValidationRequest,
 ): OrchestrationReadModel => ({
   snapshotSequence: 0,
   updatedAt: now,
@@ -57,6 +60,7 @@ const readModel = (
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       branch: target.branch,
       worktreePath: target.worktreePath,
+      ...(validationRequest === undefined ? {} : { validationRequest }),
       validationRun,
       latestTurn: null,
       createdAt: now,
@@ -141,6 +145,102 @@ describe("validation executor authority", () => {
         runId: "run-1",
         gate: { id: "repository-tests", status: "running" },
       },
+    });
+  });
+
+  it("records target resolution failure and clears the pending request", async () => {
+    const request: ValidationRequest = {
+      requestId: CommandId.make("validation:request-1"),
+      threadId,
+      scenarios: [],
+      scope: "changed-behavior",
+      requester: { id: "user-1", kind: "user" },
+      requestedAt: now,
+    };
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.validation.request-failed",
+          commandId: CommandId.make("validation:request-1:request-failed"),
+          threadId,
+          failure: {
+            requestId: request.requestId,
+            reason: "Workspace is not a repository.",
+            failedAt: now,
+          },
+        },
+        readModel: readModel(null, request),
+      }),
+    );
+    expect(result).toMatchObject({
+      type: "thread.validation-request-failed",
+      payload: {
+        threadId,
+        failure: { requestId: request.requestId },
+      },
+    });
+  });
+
+  it("allows a new request after every terminal validation run state", async () => {
+    for (const status of ["ready", "failed", "blocked", "interrupted", "stale"] as const) {
+      const result = await Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.validation.request",
+            commandId: CommandId.make(`validation:new-request-${status}`),
+            threadId,
+            scenarios: [],
+            scope: "changed-behavior",
+            requester: { id: "user-2", kind: "user" },
+            requestedAt: now,
+          },
+          readModel: readModel({ ...run(), status }),
+        }),
+      );
+      expect(result).toMatchObject({
+        type: "thread.validation-requested",
+        payload: {
+          threadId,
+          request: { scope: "changed-behavior" },
+        },
+      });
+    }
+  });
+
+  it("replaces a terminal run when planning a new request", async () => {
+    const request: ValidationRequest = {
+      requestId: CommandId.make("validation:request-2"),
+      threadId,
+      scenarios: [],
+      scope: "full",
+      requester: { id: "user-2", kind: "user" },
+      requestedAt: now,
+    };
+    const nextRun = planValidationCoordinatorRun({
+      id: "validation:request-2",
+      requestId: request.requestId,
+      threadId,
+      target,
+      scenarios: request.scenarios,
+      scope: request.scope,
+      requester: request.requester,
+      requestedAt: request.requestedAt,
+    });
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.validation.coordinator-plan",
+          commandId: CommandId.make("validation:request-2:plan"),
+          threadId,
+          run: nextRun,
+          createdAt: now,
+        },
+        readModel: readModel({ ...run(), status: "ready" }, request),
+      }),
+    );
+    expect(result).toMatchObject({
+      type: "thread.validation-run-planned",
+      payload: { threadId, run: { id: nextRun.id } },
     });
   });
 });

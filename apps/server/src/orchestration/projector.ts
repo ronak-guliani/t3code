@@ -20,6 +20,7 @@ import { Effect, Schema } from "effect";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import { pullRequestFromReviewSnapshot } from "./reviewPullRequest.ts";
+import { acceptValidationResult, transitionValidationRunStatus } from "@t3tools/contracts";
 import {
   MessageSentPayloadSchema,
   ProjectCreatedPayload,
@@ -56,6 +57,12 @@ import {
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadValidationGateUpdatedPayload,
+  ThreadValidationRequestedPayload,
+  ThreadValidationRequestFailedPayload,
+  ThreadValidationLifecycleUpdatedPayload,
+  ThreadValidationLeaseClaimedPayload,
+  ThreadValidationLeaseReleasedPayload,
+  ThreadValidationResultRecordedPayload,
   ThreadValidationRunPlannedPayload,
   ThreadTurnDiffCompletedPayload,
   WorkflowArtifactCreatedPayload,
@@ -849,8 +856,170 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             validationRun: payload.run,
+            validationRequest: null,
             updatedAt: event.occurredAt,
           }),
+        })),
+      );
+
+    case "thread.validation-requested":
+      return decodeForEvent(
+        ThreadValidationRequestedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            validationRequest: payload.request,
+            updatedAt: event.occurredAt,
+          }),
+        })),
+      );
+
+    case "thread.validation-request-failed":
+      return decodeForEvent(
+        ThreadValidationRequestFailedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            ((): ThreadPatch => {
+              const current = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              if (current?.validationRequest?.requestId !== payload.failure.requestId) {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRequest: null,
+                updatedAt: event.occurredAt,
+              };
+            })(),
+          ),
+        })),
+      );
+
+    case "thread.validation-lifecycle-updated":
+      return decodeForEvent(
+        ThreadValidationLifecycleUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            (() => {
+              const current = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              const run = current?.validationRun;
+              if (!run || run.id !== payload.update.runId) {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRun: transitionValidationRunStatus(
+                  run,
+                  payload.update.status,
+                  payload.update.updatedAt,
+                ),
+                updatedAt: event.occurredAt,
+              };
+            })(),
+          ),
+        })),
+      );
+
+    case "thread.validation-lease-claimed":
+      return decodeForEvent(
+        ThreadValidationLeaseClaimedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            ((): ThreadPatch => {
+              const current = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              if (!current?.validationRun || current.validationRun.id !== payload.runId) {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRun: {
+                  ...current.validationRun,
+                  executorId: payload.lease.executorId,
+                  lease: payload.lease,
+                  updatedAt: event.occurredAt,
+                },
+                updatedAt: event.occurredAt,
+              };
+            })(),
+          ),
+        })),
+      );
+
+    case "thread.validation-lease-released":
+      return decodeForEvent(
+        ThreadValidationLeaseReleasedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            ((): ThreadPatch => {
+              const current = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              if (!current?.validationRun || current.validationRun.id !== payload.runId) {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRun: {
+                  ...current.validationRun,
+                  lease: null,
+                  updatedAt: event.occurredAt,
+                },
+                updatedAt: event.occurredAt,
+              };
+            })(),
+          ),
+        })),
+      );
+
+    case "thread.validation-result-recorded":
+      return decodeForEvent(
+        ThreadValidationResultRecordedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            ((): ThreadPatch => {
+              const current = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              const run = current?.validationRun;
+              if (!run || run.id !== payload.result.runId) {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRun: acceptValidationResult(run, payload.result),
+                updatedAt: event.occurredAt,
+              };
+            })(),
+          ),
         })),
       );
 
