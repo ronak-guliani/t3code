@@ -308,6 +308,7 @@
 - Eager background-service layers must retain construction dependencies with `Layer.provideMerge`; a sibling runtime layer is not enough. Keep a full `makeServerLayer` build test because isolated sublayer tests can pass while packaged startup fails with a missing service.
 - Registries that construct supervisors later must capture and re-provide optional services from construction time; test calls outside the provider layer so an ambient test service cannot mask lost promotion state.
 - Flavor-scoped provider subprocesses must inherit `T3CODE_HOME`, and live CLI commands must honor it; reject runtime-state files owned by dead PIDs before borrowing auth so port reuse cannot surface as a misleading HTTP 401.
+- Output-budget truncation loops must converge: truncating a 501-char string to 500 chars plus an ellipsis is a fixed point that burns the iteration guard while larger fields wait. Gate re-truncation past the ellipsis length (or shrink by the measured overflow) and cover oversized page-controlled strings — titles, URLs, element names — with a regression test, or the advertised ceiling silently stops holding.
 - Implicit local CLI snapshot/history reads may use the running server's projection database through a read-only SQLite connection, but must revalidate runtime-state liveness and origin before opening it; explicit tokens, remote URLs, account environments, and mutation-capable clients stay on authenticated live paths.
 
 ## Test clocks and durable PR monitoring

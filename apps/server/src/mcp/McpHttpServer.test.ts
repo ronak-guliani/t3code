@@ -13,6 +13,9 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/unstable/ai";
 import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PNG } from "pngjs";
 
 import * as McpHttpServer from "./McpHttpServer.ts";
@@ -114,6 +117,78 @@ it.each([
     });
   },
 );
+
+it("persists the screenshot when save is requested", async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), "t3-snapshot-save-test-"));
+  const result = await McpHttpServer.encodePreviewSnapshotResult(
+    {
+      url: "https://example.com",
+      title: "Example",
+      visibleText: "hello",
+      screenshot: { mimeType: "image/png", data: png.toString("base64"), width: 1, height: 1 },
+    },
+    { save: true, evidenceDir },
+  );
+  expect(result.isError).toBe(false);
+  const structured = result.structuredContent as { screenshotPath?: unknown };
+  expect(typeof structured.screenshotPath).toBe("string");
+  const screenshotPath = structured.screenshotPath as string;
+  expect(screenshotPath.startsWith(evidenceDir)).toBe(true);
+  const saved = await readFile(screenshotPath);
+  expect(saved.equals(png)).toBe(true);
+});
+
+it("omits screenshotPath without save and enforces the final text budget", async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), "t3-snapshot-budget-test-"));
+  const oversized = "x".repeat(200_000);
+  const unsaved = await McpHttpServer.encodePreviewSnapshotResult(
+    {
+      url: "https://example.com",
+      title: "Example",
+      visibleText: oversized,
+      screenshot: { mimeType: "image/png", data: png.toString("base64"), width: 1, height: 1 },
+    },
+    { evidenceDir },
+  );
+  expect(unsaved.isError).toBe(false);
+  expect(unsaved.structuredContent).not.toHaveProperty("screenshotPath");
+  const text = unsaved.content.find((item) => item.type === "text") as { text: string };
+  expect(text.text.length).toBeLessThanOrEqual(60_000);
+
+  const saved = await McpHttpServer.encodePreviewSnapshotResult(
+    {
+      url: "https://example.com",
+      title: "Example",
+      visibleText: oversized,
+      screenshot: { mimeType: "image/png", data: png.toString("base64"), width: 1, height: 1 },
+    },
+    { save: true, evidenceDir },
+  );
+  expect(saved.isError).toBe(false);
+  expect(saved.structuredContent).toHaveProperty("screenshotPath");
+  const savedText = saved.content.find((item) => item.type === "text") as { text: string };
+  expect(savedText.text.length).toBeLessThanOrEqual(60_000);
+  const screenshotPath = (saved.structuredContent as { screenshotPath: string }).screenshotPath;
+  expect((await stat(screenshotPath)).isFile()).toBe(true);
+});
+
+it("never trusts a host-provided screenshotPath", async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), "t3-snapshot-host-path-test-"));
+  const result = await McpHttpServer.encodePreviewSnapshotResult(
+    {
+      url: "https://example.com",
+      title: "Example",
+      visibleText: "hello",
+      screenshotPath: "/host-only/evil.png",
+      screenshot: { mimeType: "image/png", data: png.toString("base64"), width: 1, height: 1 },
+    },
+    { evidenceDir },
+  );
+  expect(result.isError).toBe(false);
+  expect(result.structuredContent).not.toHaveProperty("screenshotPath");
+  const text = result.content.find((item) => item.type === "text") as { text: string };
+  expect(text.text).not.toContain("/host-only/evil.png");
+});
 
 it("returns an actionable expired-session response with a Bearer challenge", () => {
   expect(McpHttpServer.invalidMcpCredentialResponse.status).toBe(401);
@@ -223,6 +298,124 @@ it.effect("terminates HTTP MCP sessions with DELETE", () =>
       expect(reusedSessionResponse.status).toBe(404);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("transfers finished recordings to the server", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const evidenceDir = yield* Effect.promise(() =>
+        mkdtemp(join(tmpdir(), "t3-recording-transfer-test-")),
+      );
+      process.env["T3CODE_BROWSER_EVIDENCE_DIR"] = evidenceDir;
+      try {
+        const server = yield* McpServer.McpServer;
+        const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+        const recordingBytes = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x01, 0x02]);
+        const artifact = {
+          id: "browser-recording-test",
+          tabId,
+          path: "/host-only/browser-recording-test.webm",
+          mimeType: "video/webm",
+          sizeBytes: recordingBytes.length,
+          createdAt: "2026-09-16T00:00:00.000Z",
+        };
+        const events = yield* broker.connect({
+          clientId: "mcp-recording-client",
+          environmentId,
+          supportedOperations: ["recordingStart", "recordingStop", "recordingTransfer"],
+        });
+        yield* Stream.runForEach(events, (event) => {
+          if (event.type === "connected") return Effect.void;
+          if (event.request.operation === "recordingTransfer") {
+            return broker.respond({
+              clientId: "mcp-recording-client",
+              connectionId: event.connectionId,
+              requestId: event.request.requestId,
+              ok: true,
+              result: { ...artifact, data: recordingBytes.toString("base64") },
+            });
+          }
+          return broker.respond({
+            clientId: "mcp-recording-client",
+            connectionId: event.connectionId,
+            requestId: event.request.requestId,
+            ok: true,
+            result: artifact,
+          });
+        }).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+
+        const stopped = yield* server
+          .callTool({ name: "preview_recording_stop", arguments: {} })
+          .pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+        expect(stopped.isError).toBe(false);
+        const structured = stopped.structuredContent as {
+          path: string;
+          transferred?: boolean;
+        };
+        expect(structured.transferred).toBe(true);
+        expect(structured.path.startsWith(evidenceDir)).toBe(true);
+        expect(structured.path.endsWith(".webm")).toBe(true);
+        const saved = yield* Effect.promise(() => readFile(structured.path));
+        expect(Buffer.from(saved).equals(recordingBytes)).toBe(true);
+      } finally {
+        delete process.env["T3CODE_BROWSER_EVIDENCE_DIR"];
+      }
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("falls back to the host-local recording path when transfer fails", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const artifact = {
+        id: "browser-recording-fallback",
+        tabId,
+        path: "/host-only/browser-recording-fallback.webm",
+        mimeType: "video/webm",
+        sizeBytes: 6,
+        createdAt: "2026-09-16T00:00:00.000Z",
+      };
+      const events = yield* broker.connect({
+        clientId: "mcp-recording-fallback-client",
+        environmentId,
+      });
+      yield* Stream.runForEach(events, (event) => {
+        if (event.type === "connected") return Effect.void;
+        if (event.request.operation === "recordingTransfer") {
+          return broker.respond({
+            clientId: "mcp-recording-fallback-client",
+            connectionId: event.connectionId,
+            requestId: event.request.requestId,
+            ok: false,
+            error: { _tag: "PreviewAutomationExecutionError", message: "gone" },
+          });
+        }
+        return broker.respond({
+          clientId: "mcp-recording-fallback-client",
+          connectionId: event.connectionId,
+          requestId: event.request.requestId,
+          ok: true,
+          result: artifact,
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const stopped = yield* server
+        .callTool({ name: "preview_recording_stop", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(stopped.isError).toBe(false);
+      expect(stopped.structuredContent).toMatchObject({ path: artifact.path });
+    }),
+  ).pipe(Effect.provide(TestLayer)),
 );
 
 it.effect("registers annotated tools and preserves authenticated request context", () =>
