@@ -59,8 +59,8 @@ import {
 const PROVIDER = ProviderDriverKind.make("opencode");
 const OPENCODE_CONNECTION_TIMEOUT = "5 seconds";
 const OPENCODE_INITIAL_SUBSCRIBE_ATTEMPTS = 5;
-const OPENCODE_RECOVERY_ATTEMPTS = 180;
-const OPENCODE_RECOVERY_DELAY_MS = 100;
+const OPENCODE_RECOVERY_DELAY_MS = 250;
+const OPENCODE_RECOVERY_MAX_DELAY_MS = 5_000;
 const OPENCODE_ADMISSION_ATTEMPTS = 5;
 const OPENCODE_ADMISSION_DELAY_MS = 100;
 
@@ -1276,6 +1276,7 @@ export function makeOpenCodeAdapter(
       context.activePromptMessageId = undefined;
       context.activeAgent = undefined;
       context.activeVariant = undefined;
+      context.recoveryFiber = undefined;
       updateProviderSession(
         context,
         {
@@ -1302,9 +1303,8 @@ export function makeOpenCodeAdapter(
       turnId: TurnId,
       promptMessageId: string,
     ) {
-      let lastFailure: string | undefined;
       let recoveryDelayMs = OPENCODE_RECOVERY_DELAY_MS;
-      for (let attempt = 0; attempt < OPENCODE_RECOVERY_ATTEMPTS; attempt += 1) {
+      while (true) {
         if (
           context.activeTurnId !== turnId ||
           context.interruptedTurnId === turnId ||
@@ -1315,17 +1315,19 @@ export function makeOpenCodeAdapter(
 
         const result = yield* Effect.all(
           {
-            status: runOpenCodeSdk("session.status", () => context.client.session.status()),
+            status: runOpenCodeSdk("session.status", () => context.client.session.status()).pipe(
+              Effect.timeout("1 second"),
+            ),
             messages: runOpenCodeSdk("session.messages", () =>
               context.client.session.messages({ sessionID: context.openCodeSessionId }),
-            ),
+            ).pipe(Effect.timeout("1 second")),
           },
           { concurrency: 2 },
         ).pipe(Effect.result);
 
         if (result._tag === "Failure") {
-          lastFailure = openCodeRuntimeErrorDetail(result.failure);
-          yield* sleepOpenCode(OPENCODE_RECOVERY_DELAY_MS);
+          yield* sleepOpenCode(recoveryDelayMs);
+          recoveryDelayMs = Math.min(recoveryDelayMs * 2, OPENCODE_RECOVERY_MAX_DELAY_MS);
           continue;
         }
 
@@ -1395,24 +1397,8 @@ export function makeOpenCodeAdapter(
         }
 
         yield* sleepOpenCode(recoveryDelayMs);
-        recoveryDelayMs = Math.min(recoveryDelayMs * 2, 2_000);
+        recoveryDelayMs = Math.min(recoveryDelayMs * 2, OPENCODE_RECOVERY_MAX_DELAY_MS);
       }
-
-      const message =
-        lastFailure ??
-        "OpenCode accepted the prompt but did not provide correlated transcript and idle evidence.";
-      yield* emit({
-        ...(yield* buildEventBase({
-          threadId: context.session.threadId,
-          turnId,
-        })),
-        type: "runtime.warning",
-        payload: {
-          message: "OpenCode turn recovery is degraded.",
-          detail: message,
-        },
-      });
-      yield* finishTurn(context, turnId, "failed", message);
     });
 
     const recoverPromptAdmission = Effect.fn("recoverPromptAdmission")(function* (
@@ -1420,12 +1406,16 @@ export function makeOpenCodeAdapter(
       promptMessageId: string,
     ) {
       for (let attempt = 0; attempt < OPENCODE_ADMISSION_ATTEMPTS; attempt += 1) {
-        const messages = yield* runOpenCodeSdk("session.messages", () =>
-          context.client.session.messages({ sessionID: context.openCodeSessionId }),
+        const message = yield* runOpenCodeSdk("session.message", () =>
+          context.client.session.message({
+            sessionID: context.openCodeSessionId,
+            messageID: promptMessageId,
+          }),
         ).pipe(Effect.result);
         if (
-          messages._tag === "Success" &&
-          (messages.success.data ?? []).some((entry) => entry.info.id === promptMessageId)
+          message._tag === "Success" &&
+          message.success.data?.info.id === promptMessageId &&
+          message.success.data.info.role === "user"
         ) {
           return true;
         }
@@ -2118,6 +2108,7 @@ export function makeOpenCodeAdapter(
             },
           });
         }
+        context.recoveryFiber = undefined;
       },
     );
 

@@ -245,6 +245,13 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           }
           runtimeMock.state.sessionStatus = "busy";
         },
+        message: async ({ messageID }: { sessionID: string; messageID: string }) => {
+          const message = runtimeMock.state.messages.find((entry) => entry.info.id === messageID);
+          if (!message) {
+            throw new Error("message not found");
+          }
+          return { data: message };
+        },
         messages: async () => ({ data: runtimeMock.state.messages }),
         status: async () => ({
           data: {
