@@ -2,9 +2,16 @@ import type { ProjectId, PullRequestInvolvement, PullRequestListState } from "@t
 import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
+  ArrowDownUpIcon,
+  CalendarArrowDownIcon,
+  CalendarArrowUpIcon,
+  ChevronDownIcon,
   GitPullRequestIcon,
+  LayersIcon,
   ListFilterIcon,
   LoaderCircleIcon,
+  Maximize2Icon,
+  Minimize2Icon,
   RefreshCwIcon,
   SearchIcon,
 } from "lucide-react";
@@ -40,6 +47,7 @@ import type { Project } from "../types";
 export interface PullRequestsSearch {
   readonly state?: PullRequestListState;
   readonly involvement: PullRequestInvolvement;
+  readonly sort?: PullRequestListSort;
   readonly projectId?: ProjectId;
   readonly q?: string;
   readonly host?: string;
@@ -53,6 +61,15 @@ type PullRequestsSearchPatch = {
 
 const LIST_STATES = ["all", "open", "closed", "merged"] as const;
 const INVOLVEMENTS = ["all", "reviewing", "authored"] as const;
+const SORT_OPTIONS = [
+  { value: "ready", label: "Merge readiness", Icon: LayersIcon },
+  { value: "updated", label: "Recently updated", Icon: RefreshCwIcon },
+  { value: "newest", label: "Newest shown", Icon: CalendarArrowDownIcon },
+  { value: "oldest", label: "Oldest shown", Icon: CalendarArrowUpIcon },
+  { value: "largest", label: "Largest shown", Icon: Maximize2Icon },
+  { value: "smallest", label: "Smallest shown", Icon: Minimize2Icon },
+] as const;
+type PullRequestListSort = (typeof SORT_OPTIONS)[number]["value"];
 const LIST_STATE_LABELS: Record<(typeof LIST_STATES)[number], string> = {
   all: "All states",
   open: "Open",
@@ -77,10 +94,15 @@ function isInvolvement(value: unknown): value is PullRequestInvolvement {
   return typeof value === "string" && (INVOLVEMENTS as readonly string[]).includes(value);
 }
 
+function isPullRequestListSort(value: unknown): value is PullRequestListSort {
+  return SORT_OPTIONS.some((option) => option.value === value);
+}
+
 export const Route = createFileRoute("/_chat/pull-requests")({
   validateSearch: (search: Record<string, unknown>): PullRequestsSearch => ({
     ...(isListState(search.state) ? { state: search.state } : {}),
     involvement: isInvolvement(search.involvement) ? search.involvement : "all",
+    ...(isPullRequestListSort(search.sort) ? { sort: search.sort } : {}),
     ...(typeof search.projectId === "string" && search.projectId
       ? { projectId: search.projectId as ProjectId }
       : {}),
@@ -118,6 +140,7 @@ function PullRequestsRoute() {
   const supported = descriptor?.capabilities.pullRequests === true;
   const defaultListState = useSettings((s) => s.pullRequestsDefaultState);
   const effectiveState = search.state ?? defaultListState;
+  const sort = search.sort ?? "ready";
   const deferredQuery = useDeferredValue(search.q ?? "");
   const listQuery = useInfiniteQuery(
     pullRequestListInfiniteQueryOptions({
@@ -185,13 +208,24 @@ function PullRequestsRoute() {
       !entry.repository.toLowerCase().includes(normalizedQuery)
     );
   };
+  const sortedEntries = useMemo(() => {
+    if (sort === "ready") return entriesWithStats;
+    return entriesWithStats.toSorted((left, right) => {
+      if (sort === "updated") return right.updatedAt.localeCompare(left.updatedAt);
+      if (sort === "newest") return right.createdAt.localeCompare(left.createdAt);
+      if (sort === "oldest") return left.createdAt.localeCompare(right.createdAt);
+      const leftSize = left.additions + left.deletions;
+      const rightSize = right.additions + right.deletions;
+      return sort === "largest" ? rightSize - leftSize : leftSize - rightSize;
+    });
+  }, [entriesWithStats, sort]);
   const reviewRequestedEntries = useMemo(
-    () => entriesWithStats.filter((entry) => entry.viewerReviewRequested),
-    [entriesWithStats],
+    () => sortedEntries.filter((entry) => entry.viewerReviewRequested),
+    [sortedEntries],
   );
   const otherEntries = useMemo(
-    () => entriesWithStats.filter((entry) => !entry.viewerReviewRequested),
-    [entriesWithStats],
+    () => sortedEntries.filter((entry) => !entry.viewerReviewRequested),
+    [sortedEntries],
   );
   const filterCount =
     (effectiveState === defaultListState ? 0 : 1) +
@@ -229,6 +263,7 @@ function PullRequestsRoute() {
         return {
           ...(next.state ? { state: next.state } : {}),
           involvement: next.involvement ?? "all",
+          ...(next.sort && next.sort !== "ready" ? { sort: next.sort } : {}),
           ...(next.projectId ? { projectId: next.projectId } : {}),
           ...(next.q ? { q: next.q } : {}),
           ...(!clearSelection && next.repository && next.number && next.selectedProjectId
@@ -280,27 +315,11 @@ function PullRequestsRoute() {
   }
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden bg-chat-background text-foreground">
+    <SidebarInset className="h-dvh min-h-0 overflow-hidden bg-background text-foreground">
       <div className="flex min-h-0 flex-1 flex-col">
-        <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
+        <header className="flex h-13 shrink-0 items-center gap-2 border-b border-border px-3">
           <SidebarTrigger className="size-7" />
-          <GitPullRequestIcon className="size-4" />
           <h1 className="text-sm font-semibold">Pull Requests</h1>
-          <Button
-            aria-label="Refresh pull requests"
-            className="ml-auto"
-            disabled={listQuery.isFetching || invalidateMutation.isPending}
-            size="icon-xs"
-            variant="ghost"
-            onClick={() => void invalidateMutation.mutateAsync({})}
-          >
-            <RefreshCwIcon
-              className={cn(
-                "size-3.5",
-                (listQuery.isFetching || invalidateMutation.isPending) && "animate-spin",
-              )}
-            />
-          </Button>
         </header>
         <div
           className={cn(
@@ -313,11 +332,11 @@ function PullRequestsRoute() {
           <section
             className={cn(
               "flex min-h-0 flex-col",
-              selected ? "border-r border-border max-lg:hidden" : "mx-auto w-full max-w-3xl",
+              selected ? "border-r border-border max-lg:hidden" : "w-full",
             )}
           >
-            <div className="space-y-2 border-b border-border px-3 py-2.5">
-              <div className="flex min-w-0 items-center gap-2">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-7 pb-4 sm:px-8">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <InputGroup className="min-w-0 flex-1">
                   <InputGroupAddon>
                     {listQuery.isFetching && !listQuery.isFetchingNextPage ? (
@@ -329,7 +348,9 @@ function PullRequestsRoute() {
                   <InputGroupInput
                     type="search"
                     aria-label="Search pull requests"
-                    placeholder="Search pull requests"
+                    autoComplete="off"
+                    name="pull-request-search"
+                    placeholder="Search pull requests, or label:bug"
                     value={search.q ?? ""}
                     onChange={(event) =>
                       updateSearch({ q: event.currentTarget.value || undefined }, true)
@@ -338,16 +359,42 @@ function PullRequestsRoute() {
                 </InputGroup>
                 <Menu>
                   <MenuTrigger
+                    render={
+                      <Button aria-label="Sort pull requests" size="default" variant="outline" />
+                    }
+                  >
+                    <ArrowDownUpIcon aria-hidden />
+                    <span>Sort</span>
+                  </MenuTrigger>
+                  <MenuPopup align="end">
+                    <MenuRadioGroup
+                      value={sort}
+                      onValueChange={(value) =>
+                        updateSearch({ sort: value as PullRequestListSort }, true)
+                      }
+                    >
+                      {SORT_OPTIONS.map(({ value, label, Icon }) => (
+                        <MenuRadioItem key={value} value={value}>
+                          <Icon aria-hidden />
+                          {label}
+                        </MenuRadioItem>
+                      ))}
+                    </MenuRadioGroup>
+                  </MenuPopup>
+                </Menu>
+                <Menu>
+                  <MenuTrigger
                     className="relative"
                     render={
                       <Button
                         aria-label={`Filter pull requests${filterCount > 0 ? `, ${filterCount} active` : ""}`}
-                        size="icon-sm"
+                        size="default"
                         variant="outline"
                       />
                     }
                   >
-                    <ListFilterIcon aria-hidden className="size-4" />
+                    <ListFilterIcon aria-hidden />
+                    <span>Filters</span>
                     {filterCount > 0 ? (
                       <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-primary text-[10px] font-medium text-primary-foreground tabular-nums">
                         {filterCount}
@@ -406,125 +453,170 @@ function PullRequestsRoute() {
                     </MenuRadioGroup>
                   </MenuPopup>
                 </Menu>
-              </div>
-              {!listQuery.isPending && !listQuery.error ? (
-                <p aria-live="polite" className="text-xs text-muted-foreground">
-                  {entriesWithStats.length} pull request{entriesWithStats.length === 1 ? "" : "s"}
-                  {listQuery.hasNextPage ? " (more available)" : ""}
-                  {listQuery.isFetching && !listQuery.isFetchingNextPage ? " · Updating…" : ""}
-                </p>
-              ) : null}
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
-              {listQuery.isPending ? (
-                <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
-                  <LoaderCircleIcon className="size-4 animate-spin" /> Loading pull requests…
-                </div>
-              ) : null}
-              {listQuery.error ? (
-                <EmptyState
-                  title="Could not load pull requests"
-                  description={
-                    listQuery.error instanceof Error ? listQuery.error.message : "Please try again."
-                  }
-                  action={
-                    <Button size="sm" variant="outline" onClick={() => void listQuery.refetch()}>
-                      Retry
-                    </Button>
-                  }
-                />
-              ) : null}
-              {!listQuery.isPending && !listQuery.error && entriesWithStats.length === 0 ? (
-                <EmptyState
-                  title="No pull requests"
-                  description={
-                    search.q
-                      ? "Nothing matches this search."
-                      : "No pull requests match these filters."
-                  }
-                  action={
-                    search.q ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => updateSearch({ q: undefined }, true)}
-                      >
-                        Clear search
-                      </Button>
-                    ) : undefined
-                  }
-                />
-              ) : null}
-              {reviewRequestedEntries.length > 0 && otherEntries.length > 0 ? (
-                <p className="px-2 pt-2 pb-0.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-                  Awaiting your review
-                </p>
-              ) : null}
-              {reviewRequestedEntries.map((entry) => (
-                <PullRequestRow
-                  entry={entry}
-                  key={`${entry.projectId}:${entry.repository}#${entry.number}`}
-                  matchedElsewhere={matchRowElsewhere(entry)}
-                  selected={
-                    selected?.projectId === entry.projectId &&
-                    selected.repository === entry.repository &&
-                    selected.number === entry.number
-                  }
-                  onSelect={(next) =>
-                    updateSearch({
-                      repository: next.repository,
-                      number: next.number,
-                      selectedProjectId: next.projectId,
-                    })
-                  }
-                />
-              ))}
-              {reviewRequestedEntries.length > 0 && otherEntries.length > 0 ? (
-                <p className="px-2 pt-2.5 pb-0.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-                  Other pull requests
-                </p>
-              ) : null}
-              {otherEntries.map((entry) => (
-                <PullRequestRow
-                  entry={entry}
-                  key={`${entry.projectId}:${entry.repository}#${entry.number}`}
-                  matchedElsewhere={matchRowElsewhere(entry)}
-                  selected={
-                    selected?.projectId === entry.projectId &&
-                    selected.repository === entry.repository &&
-                    selected.number === entry.number
-                  }
-                  onSelect={(next) =>
-                    updateSearch({
-                      repository: next.repository,
-                      number: next.number,
-                      selectedProjectId: next.projectId,
-                    })
-                  }
-                />
-              ))}
-              {listQuery.hasNextPage ? (
-                <div className="flex justify-center p-3">
-                  <Button
-                    disabled={listQuery.isFetchingNextPage}
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void listQuery.fetchNextPage()}
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <Button aria-label="Filter by involvement" size="default" variant="outline" />
+                    }
                   >
-                    {listQuery.isFetchingNextPage ? "Loading…" : "Load more"}
-                  </Button>
-                </div>
-              ) : null}
-              {errors.length > 0 ? (
-                <ul className="space-y-1 p-3 text-xs text-muted-foreground">
-                  {errors.map((error) => (
-                    <li key={error.projectId} className="break-words">
-                      <span className="font-medium text-foreground">{error.projectTitle}:</span>{" "}
-                      {error.message}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
+                    <LayersIcon aria-hidden />
+                    <span>
+                      {INVOLVEMENT_LABELS[search.involvement].replace(" involvement", "")}
+                    </span>
+                    <ChevronDownIcon aria-hidden />
+                  </MenuTrigger>
+                  <MenuPopup align="end">
+                    <MenuRadioGroup
+                      value={search.involvement}
+                      onValueChange={(value) =>
+                        updateSearch({ involvement: value as PullRequestInvolvement }, true)
+                      }
+                    >
+                      {INVOLVEMENTS.map((involvement) => (
+                        <MenuRadioItem key={involvement} value={involvement}>
+                          {INVOLVEMENT_LABELS[involvement]}
+                        </MenuRadioItem>
+                      ))}
+                    </MenuRadioGroup>
+                  </MenuPopup>
+                </Menu>
+                <Button
+                  aria-label="Refresh pull requests"
+                  disabled={listQuery.isFetching || invalidateMutation.isPending}
+                  size="icon"
+                  variant="outline"
+                  onClick={() => void invalidateMutation.mutateAsync({})}
+                >
+                  <RefreshCwIcon
+                    className={cn(
+                      (listQuery.isFetching || invalidateMutation.isPending) && "animate-spin",
+                    )}
+                  />
+                </Button>
+              </div>
+              <p aria-live="polite" className="sr-only">
+                {entriesWithStats.length} pull request{entriesWithStats.length === 1 ? "" : "s"}
+                {listQuery.hasNextPage ? ", more available" : ""}
+                {listQuery.isFetching && !listQuery.isFetchingNextPage ? ", updating" : ""}
+              </p>
+              <div className="mt-4">
+                {listQuery.isPending ? (
+                  <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
+                    <LoaderCircleIcon className="size-4 animate-spin" /> Loading pull requests…
+                  </div>
+                ) : null}
+                {listQuery.error ? (
+                  <EmptyState
+                    title="Could not load pull requests"
+                    description={
+                      listQuery.error instanceof Error
+                        ? listQuery.error.message
+                        : "Please try again."
+                    }
+                    action={
+                      <Button size="sm" variant="outline" onClick={() => void listQuery.refetch()}>
+                        Retry
+                      </Button>
+                    }
+                  />
+                ) : null}
+                {!listQuery.isPending && !listQuery.error && entriesWithStats.length === 0 ? (
+                  <EmptyState
+                    title="No pull requests"
+                    description={
+                      search.q
+                        ? "Nothing matches this search."
+                        : "No pull requests match these filters."
+                    }
+                    action={
+                      search.q ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => updateSearch({ q: undefined }, true)}
+                        >
+                          Clear search
+                        </Button>
+                      ) : undefined
+                    }
+                  />
+                ) : null}
+                {reviewRequestedEntries.length > 0 ? (
+                  <h2 className="px-3 pb-1 text-xs font-medium text-muted-foreground/70">
+                    Awaiting your review
+                  </h2>
+                ) : null}
+                {reviewRequestedEntries.map((entry) => (
+                  <PullRequestRow
+                    entry={entry}
+                    key={`${entry.projectId}:${entry.repository}#${entry.number}`}
+                    matchedElsewhere={matchRowElsewhere(entry)}
+                    selected={
+                      selected?.projectId === entry.projectId &&
+                      selected.repository === entry.repository &&
+                      selected.number === entry.number
+                    }
+                    onSelect={(next) =>
+                      updateSearch({
+                        repository: next.repository,
+                        number: next.number,
+                        selectedProjectId: next.projectId,
+                      })
+                    }
+                  />
+                ))}
+                {otherEntries.length > 0 ? (
+                  <h2
+                    className={cn(
+                      "px-3 pb-1 text-xs font-medium text-muted-foreground/70",
+                      reviewRequestedEntries.length > 0 && "pt-3",
+                    )}
+                  >
+                    Others
+                  </h2>
+                ) : null}
+                {otherEntries.map((entry) => (
+                  <PullRequestRow
+                    entry={entry}
+                    key={`${entry.projectId}:${entry.repository}#${entry.number}`}
+                    matchedElsewhere={matchRowElsewhere(entry)}
+                    selected={
+                      selected?.projectId === entry.projectId &&
+                      selected.repository === entry.repository &&
+                      selected.number === entry.number
+                    }
+                    onSelect={(next) =>
+                      updateSearch({
+                        repository: next.repository,
+                        number: next.number,
+                        selectedProjectId: next.projectId,
+                      })
+                    }
+                  />
+                ))}
+                {listQuery.hasNextPage ? (
+                  <div className="flex justify-center p-3">
+                    <Button
+                      disabled={listQuery.isFetchingNextPage}
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void listQuery.fetchNextPage()}
+                    >
+                      {listQuery.isFetchingNextPage ? "Loading…" : "Load more"}
+                    </Button>
+                  </div>
+                ) : null}
+                {errors.length > 0 ? (
+                  <ul className="space-y-1 p-3 text-xs text-muted-foreground">
+                    {errors.map((error) => (
+                      <li key={error.projectId} className="break-words">
+                        <span className="font-medium text-foreground">{error.projectTitle}:</span>{" "}
+                        {error.message}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
             </div>
           </section>
           {selected ? (
@@ -545,9 +637,7 @@ function PullRequestsRoute() {
 
 function Surface({ children }: { readonly children: ReactNode }) {
   return (
-    <SidebarInset className="h-dvh min-h-0 bg-chat-background text-foreground">
-      {children}
-    </SidebarInset>
+    <SidebarInset className="h-dvh min-h-0 bg-background text-foreground">{children}</SidebarInset>
   );
 }
 

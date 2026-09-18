@@ -12,37 +12,42 @@ import {
   pullRequestLabelColor,
 } from "./pullRequestPresentation";
 
+const LABEL_SLOTS = [
+  { pill: "", overflow: "@xl/pr-row-meta:hidden" },
+  { pill: "hidden @xl/pr-row-meta:inline-flex", overflow: "@3xl/pr-row-meta:hidden" },
+  { pill: "hidden @3xl/pr-row-meta:inline-flex", overflow: "" },
+] as const;
+
 function PullRequestRowLabels({ labels }: { readonly labels: PullRequestListEntry["labels"] }) {
   if (labels.length === 0) return null;
-  const [first, second] = labels;
-  const remaining = labels.length - (second ? 2 : 1);
   return (
     <span className="flex min-w-0 items-center gap-1">
-      {first ? (
-        <span className="inline-flex min-w-0 items-center gap-1 text-muted-foreground">
+      {LABEL_SLOTS.map((slot, index) => {
+        const label = labels[index];
+        if (!label) return null;
+        const remaining = labels.length - index - 1;
+        return (
           <span
-            aria-hidden
-            className="size-1.5 shrink-0 rounded-full bg-muted-foreground"
-            {...(pullRequestLabelColor(first.color)
-              ? { style: { backgroundColor: pullRequestLabelColor(first.color)! } }
-              : {})}
-          />
-          <span className="truncate">{first.name}</span>
-        </span>
-      ) : null}
-      {second ? (
-        <span className="hidden min-w-0 items-center gap-1 text-muted-foreground @sm/pr-row:inline-flex">
-          <span
-            aria-hidden
-            className="size-1.5 shrink-0 rounded-full bg-muted-foreground"
-            {...(pullRequestLabelColor(second.color)
-              ? { style: { backgroundColor: pullRequestLabelColor(second.color)! } }
-              : {})}
-          />
-          <span className="truncate">{second.name}</span>
-        </span>
-      ) : null}
-      {remaining > 0 ? <span className="shrink-0">+{remaining}</span> : null}
+            key={label.name}
+            className={cn(
+              "inline-flex max-w-40 min-w-0 items-center gap-1 rounded-full border border-border/70 bg-muted/40 py-0 pr-1.5 pl-1 text-[10px] leading-3.5 text-muted-foreground",
+              slot.pill,
+            )}
+          >
+            <span
+              aria-hidden
+              className="size-2 shrink-0 rounded-full bg-muted-foreground"
+              {...(pullRequestLabelColor(label.color)
+                ? { style: { backgroundColor: pullRequestLabelColor(label.color)! } }
+                : {})}
+            />
+            <span className="truncate">{label.name}</span>
+            {remaining > 0 ? (
+              <span className={cn("shrink-0", slot.overflow)}>+{remaining}</span>
+            ) : null}
+          </span>
+        );
+      })}
     </span>
   );
 }
@@ -68,10 +73,10 @@ function PullRequestRowImpl({
       aria-current={selected ? "true" : undefined}
       onClick={() => onSelect(entry)}
       className={cn(
-        "@container/pr-row grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-[7px] text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        "@container/pr-row grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         // Offscreen rows are skipped for style, layout and paint: a long list
         // costs what the viewport shows, not what the pages have loaded.
-        "[contain-intrinsic-block-size:44px] [content-visibility:auto]",
+        "[contain-intrinsic-block-size:66px] [content-visibility:auto]",
         selected ? "bg-accent" : "hover:bg-accent/60",
       )}
     >
@@ -80,30 +85,42 @@ function PullRequestRowImpl({
         isDraft={entry.isDraft}
         mergeability={entry.mergeability}
         baseBranch={entry.baseBranch}
-        className="size-3.5"
       />
-      <span className="grid min-w-0 gap-y-0.5">
-        <span className="block truncate text-[13px] leading-5 font-medium text-foreground">
+      <span className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5">
+        <span className="col-start-1 row-start-1 block truncate text-sm font-medium text-foreground">
           {entry.title}
         </span>
-        <PullRequestMetaLine className="overflow-hidden text-[11px] leading-4 text-muted-foreground">
+        <span className="col-start-2 row-start-1 flex items-center justify-self-end gap-2 text-xs">
+          {entry.viewerReviewRequested ? (
+            <span className="min-w-0 truncate text-amber-600/90 dark:text-amber-400/80">
+              Review requested
+            </span>
+          ) : null}
+          <PullRequestDiffStat
+            additions={entry.additions}
+            deletions={entry.deletions}
+            className="shrink-0 whitespace-nowrap text-[11px]"
+          />
+        </span>
+        <PullRequestMetaLine className="@container/pr-row-meta col-start-1 row-start-2 overflow-hidden text-xs text-muted-foreground/70">
+          {matchedElsewhere ? (
+            <span className="flex min-w-6 shrink-0 items-center gap-1 overflow-hidden rounded-full border border-border/60 px-1 text-[10px]">
+              <span className="hidden truncate @xs/pr-row-meta:block">matched elsewhere</span>
+            </span>
+          ) : null}
           <span className="shrink-0 tabular-nums">#{entry.number}</span>
           <span className="truncate">{entry.repository}</span>
-          <PullRequestActorLabel actor={entry.author} className="min-w-0 max-w-32" />
+          <PullRequestActorLabel
+            actor={entry.author}
+            className="min-w-4 max-w-40"
+            labelClassName="sr-only @xs/pr-row-meta:not-sr-only @xs/pr-row-meta:truncate"
+          />
           {entry.labels.length > 0 ? <PullRequestRowLabels labels={entry.labels} /> : null}
-          {matchedElsewhere ? (
-            <span className="shrink-0 text-[10px]">matched elsewhere</span>
-          ) : null}
         </PullRequestMetaLine>
-      </span>
-      <span className="flex shrink-0 flex-col items-end gap-y-0.5 pl-1">
-        <PullRequestDiffStat
-          additions={entry.additions}
-          deletions={entry.deletions}
-          className="text-[11px] leading-4 whitespace-nowrap"
-        />
-        <span className="text-[10px] leading-4 whitespace-nowrap text-muted-foreground tabular-nums">
-          {formatRelativeTimeLabel(entry.updatedAt)}
+        <span className="col-start-2 row-start-2 flex items-center justify-self-end gap-3 whitespace-nowrap text-[11px] text-muted-foreground/70 tabular-nums">
+          <span className="hidden @sm/pr-row:inline">
+            {formatRelativeTimeLabel(entry.updatedAt)}
+          </span>
         </span>
       </span>
     </button>
