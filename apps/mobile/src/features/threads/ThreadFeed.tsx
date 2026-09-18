@@ -180,6 +180,9 @@ import {
 import {
   deriveAssistantMetadataInvalidationKey,
   deriveTerminalAssistantMessageIds,
+  exceedsUserMessagePreviewHeight,
+  shouldCollapseUserMessageText,
+  USER_MESSAGE_COLLAPSED_LINE_LIMIT,
 } from "./threadFeedPresentation";
 
 const WIDE_MARKDOWN_BLOCK_OPTIONS = {
@@ -1528,14 +1531,20 @@ function renderFeedEntry(
             }}
           >
             {message.text.trim().length > 0 ? (
-              <UserMessageContent
+              <CollapsibleUserMessage
                 text={renderedText}
-                markdownStyles={styles}
-                reviewCommentColors={props.reviewCommentColors}
-                skills={props.skills}
-                linkHandlers={props.markdownLinkHandlers}
-                renderImage={props.renderMarkdownImage}
-              />
+                lineHeight={styles.nativeTextStyle.lineHeight}
+                toggleColor={styles.nativeTextStyle.mutedColor}
+              >
+                <UserMessageContent
+                  text={renderedText}
+                  markdownStyles={styles}
+                  reviewCommentColors={props.reviewCommentColors}
+                  skills={props.skills}
+                  linkHandlers={props.markdownLinkHandlers}
+                  renderImage={props.renderMarkdownImage}
+                />
+              </CollapsibleUserMessage>
             ) : null}
             {attachments.map((attachment) => {
               const { id, name } = attachment;
@@ -1665,6 +1674,76 @@ function renderFeedEntry(
     />
   );
 }
+
+/**
+ * Collapsed preview for long user-sent messages, mirroring web's
+ * CollapsibleUserMessageBody. Web clamps rendered output with max-height in
+ * line units plus a fade mask; React Native has neither, so the clamp uses
+ * the markdown line height in points and skips the fade. Long-press copy
+ * still copies the full text because nothing is truncated, only clipped.
+ *
+ * Like web, collapse also triggers on measured overflow: short source text
+ * that wraps past the preview height (narrow phones, large fonts) collapses
+ * once layout reports it. The measurement reads the unclipped inner content,
+ * so it stays stable across expand/collapse, and onLayout refires on width
+ * or font changes.
+ */
+const CollapsibleUserMessage = memo(function CollapsibleUserMessage(props: {
+  readonly text: string;
+  readonly lineHeight: number;
+  readonly toggleColor: string | ColorValue;
+  readonly children: ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [contentHeight, setContentHeight] = useState<number | null>(null);
+  const previewMaxHeight = USER_MESSAGE_COLLAPSED_LINE_LIMIT * props.lineHeight;
+  const handleContentLayout = useCallback((event: LayoutChangeEvent) => {
+    const height = event.nativeEvent.layout.height;
+    setContentHeight((current) => (current === height ? current : height));
+  }, []);
+  const collapsible =
+    shouldCollapseUserMessageText(props.text) ||
+    (contentHeight !== null && exceedsUserMessagePreviewHeight(contentHeight, previewMaxHeight));
+  const collapsed = collapsible && !expanded;
+  // The measuring wrapper stays mounted in every state so short text that
+  // wraps past the preview height can promote itself to collapsible after
+  // layout (width/font changes refire onLayout). Plain Views keep the
+  // bubble content-sized: no width constraint may stretch short messages.
+  return (
+    <View>
+      <View
+        style={
+          collapsed
+            ? {
+                maxHeight: previewMaxHeight,
+                overflow: "hidden",
+              }
+            : undefined
+        }
+      >
+        <View onLayout={handleContentLayout}>{props.children}</View>
+      </View>
+      {collapsible ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={collapsed ? "Show full message" : "Show less"}
+          accessibilityHint="Toggles the full message text"
+          accessibilityState={{ expanded }}
+          hitSlop={8}
+          onPress={() => setExpanded((current) => !current)}
+          className="self-start py-1"
+        >
+          <Text
+            className="text-xs font-t3-medium"
+            style={{ color: props.toggleColor, opacity: 0.75 }}
+          >
+            {collapsed ? "Show full message" : "Show less"}
+          </Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+});
 
 function UserMessageContent(props: {
   readonly text: string;
