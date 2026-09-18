@@ -53,7 +53,7 @@ function makeHarness(
     readonly exitWebOnStart?: boolean;
   } = {},
 ) {
-  let state: StoredValidationEnvironment | null = null;
+  const states = new Map<string, StoredValidationEnvironment>();
   let nextPid = 10_000;
   let launchCount = 0;
   let activeStarts = 0;
@@ -72,13 +72,14 @@ function makeHarness(
 
   const adapters: ValidationEnvironmentAdapters = {
     state: {
-      read: async () => state,
+      read: async (stateDirectory) => states.get(stateDirectory) ?? null,
       write: async (record) => {
-        state = record;
+        states.set(record.target.stateDirectory, record);
       },
-      removeIfOwned: async (_directory, ownershipIdentity) => {
+      removeIfOwned: async (stateDirectory, ownershipIdentity) => {
+        const state = states.get(stateDirectory);
         if (state?.ownershipIdentity !== ownershipIdentity) return false;
-        state = null;
+        states.delete(stateDirectory);
         return true;
       },
       recordDiagnostic: async (_directory, _ownershipIdentity, diagnostic) => {
@@ -175,9 +176,13 @@ function makeHarness(
 
   return {
     adapters,
-    getState: () => state,
-    setState: (next: StoredValidationEnvironment | null) => {
-      state = next;
+    getState: (stateDirectory = target.stateDirectory) => states.get(stateDirectory),
+    setState: (
+      next: StoredValidationEnvironment | null,
+      stateDirectory = target.stateDirectory,
+    ) => {
+      if (next === null) states.delete(stateDirectory);
+      else states.set(stateDirectory, next);
     },
     processes,
     listeners,
@@ -299,6 +304,32 @@ describe("ValidationEnvironmentManager", () => {
 
     expect(harness.launchCount).toBe(2);
     expect(second.ownershipIdentity).not.toBe(first.ownershipIdentity);
+  });
+
+  it("terminates the exact persisted owner before replacing mismatched state", async () => {
+    const harness = makeHarness();
+    await acquire(harness);
+
+    await acquire(harness, { ...target, revision: "revision-2" });
+
+    expect(harness.launchCount).toBe(2);
+    expect(harness.terminateCount).toBe(2);
+  });
+
+  it("does not relaunch over mismatched state when old ownership is ambiguous", async () => {
+    const harness = makeHarness();
+    await acquire(harness);
+    harness.setProcessIdentityOverride((identity) => ({
+      ...identity,
+      startIdentity: "reused",
+    }));
+
+    await expect(acquire(harness, { ...target, revision: "revision-2" })).rejects.toMatchObject({
+      code: "cleanup-ambiguous",
+    });
+    expect(harness.launchCount).toBe(1);
+    expect(harness.terminateCount).toBe(0);
+    expect(harness.diagnostics.length).toBeGreaterThan(0);
   });
 
   it("keeps backend and web readiness independent when backend is first", async () => {
