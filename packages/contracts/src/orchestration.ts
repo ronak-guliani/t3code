@@ -30,6 +30,13 @@ import {
   WorkflowRun,
   WorkflowRunId,
 } from "./agentWorkflows.ts";
+import {
+  ValidationGate,
+  ValidationGateId,
+  ValidationGateStatus,
+  ValidationRun,
+  ValidationTarget,
+} from "./validation.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -677,6 +684,7 @@ export const OrchestrationThread = Schema.Struct({
   pullRequests: Schema.optionalKey(Schema.Array(ThreadPullRequestLink)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   reviewResult: Schema.optionalKey(Schema.NullOr(ReviewResult)),
+  validationRun: Schema.optionalKey(Schema.NullOr(ValidationRun)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -762,6 +770,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   pullRequests: Schema.optionalKey(Schema.Array(ThreadPullRequestLink)),
+  validationRun: Schema.optionalKey(Schema.NullOr(ValidationRun)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -1306,6 +1315,35 @@ const ThreadSessionStopCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadValidationRunPlanCommand = Schema.Struct({
+  type: Schema.Literal("thread.validation-run.plan"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  runId: TrimmedNonEmptyString,
+  executorId: TrimmedNonEmptyString,
+  target: ValidationTarget,
+  createdAt: IsoDateTime,
+});
+
+const ThreadValidationGateUpdateCommand = Schema.Struct({
+  type: Schema.Literal("thread.validation-gate.update"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  runId: TrimmedNonEmptyString,
+  executorId: TrimmedNonEmptyString,
+  target: ValidationTarget,
+  gateId: ValidationGateId,
+  status: ValidationGateStatus,
+  command: Schema.NullOr(TrimmedNonEmptyString),
+  startedAt: Schema.NullOr(IsoDateTime),
+  completedAt: Schema.NullOr(IsoDateTime),
+  exitCode: Schema.NullOr(Schema.Int),
+  outputRef: Schema.NullOr(TrimmedNonEmptyString),
+  blockerReason: Schema.NullOr(TrimmedNonEmptyString),
+  diagnostics: Schema.Array(TrimmedNonEmptyString),
+  createdAt: IsoDateTime,
+});
+
 /** Durable execution settings for a workflow worker. These are captured when
  * the run is requested so restart recovery never falls back to changed parent
  * settings or a different worktree. */
@@ -1591,7 +1629,7 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
 });
 
-const InternalOrchestrationCommand = Schema.Union([
+export const InternalOrchestrationCommand = Schema.Union([
   ChatArchiveImportCommand,
   ThreadSessionSetCommand,
   ThreadDispatchReplaceCommand,
@@ -1609,6 +1647,8 @@ const InternalOrchestrationCommand = Schema.Union([
   WorkflowNodeWorkerStartCommand,
   WorkflowWorkerResultRecordCommand,
   WorkflowRunFinalizeCommand,
+  ThreadValidationRunPlanCommand,
+  ThreadValidationGateUpdateCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
 
@@ -1657,6 +1697,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.reverted",
   "thread.session-stop-requested",
   "thread.session-set",
+  "thread.validation-run-planned",
+  "thread.validation-gate-updated",
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
@@ -1980,6 +2022,17 @@ export const ThreadSessionSetPayload = Schema.Struct({
   session: OrchestrationSession,
 });
 
+export const ThreadValidationRunPlannedPayload = Schema.Struct({
+  threadId: ThreadId,
+  run: ValidationRun,
+});
+
+export const ThreadValidationGateUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  runId: TrimmedNonEmptyString,
+  gate: ValidationGate,
+});
+
 export const ThreadProposedPlanUpsertedPayload = Schema.Struct({
   threadId: ThreadId,
   proposedPlan: OrchestrationProposedPlan,
@@ -2249,6 +2302,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.session-set"),
     payload: ThreadSessionSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.validation-run-planned"),
+    payload: ThreadValidationRunPlannedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.validation-gate-updated"),
+    payload: ThreadValidationGateUpdatedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

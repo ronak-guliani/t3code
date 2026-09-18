@@ -20,6 +20,7 @@ import {
   ThreadId,
   ThreadNudging,
   TurnId,
+  ValidationRun,
   WorkspaceBinding,
 } from "@t3tools/contracts";
 import { Effect, Option, Schema, Context } from "effect";
@@ -46,6 +47,7 @@ export const ProjectionThread = Schema.Struct({
   ),
   reviewSnapshot: Schema.optionalKey(Schema.NullOr(ReviewSnapshot)),
   reviewResult: Schema.optionalKey(Schema.NullOr(ReviewResult)),
+  validationRun: Schema.optionalKey(Schema.NullOr(ValidationRun)),
   latestTurnId: Schema.NullOr(TurnId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

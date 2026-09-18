@@ -55,6 +55,8 @@ import {
   ThreadPinReorderedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
+  ThreadValidationGateUpdatedPayload,
+  ThreadValidationRunPlannedPayload,
   ThreadTurnDiffCompletedPayload,
   WorkflowArtifactCreatedPayload,
   WorkflowNodeWorkerStartedPayload,
@@ -833,6 +835,55 @@ export function projectEvent(
             reviewSnapshot: payload.result.snapshot,
             updatedAt: event.occurredAt,
           }),
+        })),
+      );
+
+    case "thread.validation-run-planned":
+      return decodeForEvent(
+        ThreadValidationRunPlannedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            validationRun: payload.run,
+            updatedAt: event.occurredAt,
+          }),
+        })),
+      );
+
+    case "thread.validation-gate-updated":
+      return decodeForEvent(
+        ThreadValidationGateUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            (() => {
+              const current = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              const run = current?.validationRun;
+              if (!run || run.id !== payload.runId) {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRun: {
+                  ...run,
+                  gates: run.gates.map((gate) =>
+                    gate.id === payload.gate.id ? payload.gate : gate,
+                  ),
+                  updatedAt: event.occurredAt,
+                },
+                updatedAt: event.occurredAt,
+              };
+            })(),
+          ),
         })),
       );
 

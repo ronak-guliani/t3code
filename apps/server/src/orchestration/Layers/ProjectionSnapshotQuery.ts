@@ -36,6 +36,7 @@ import {
   ReviewSnapshot,
   ThreadNudging,
   ThreadPullRequestLink,
+  ValidationRun,
   WorkspaceBinding,
 } from "@t3tools/contracts";
 import { Context, Effect, Layer, Option, Schema, Struct } from "effect";
@@ -138,6 +139,7 @@ const ProjectionThreadDbRowSchema = Schema.Struct({
   pullRequest: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation))),
   reviewSnapshot: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewSnapshot))),
   reviewResult: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewResult))),
+  validationRun: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRun))),
   pullRequests: Schema.fromJsonString(Schema.Array(ThreadPullRequestLink)),
   workspaceBinding: Schema.optionalKey(WorkspaceBindingDbSchema),
 });
@@ -160,6 +162,7 @@ const ProjectionThreadWithProjectTitleDbRowSchema = Schema.Struct({
   pullRequest: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation))),
   reviewSnapshot: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewSnapshot))),
   reviewResult: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewResult))),
+  validationRun: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRun))),
   pullRequests: Schema.fromJsonString(Schema.Array(ThreadPullRequestLink)),
   workspaceBinding: Schema.optionalKey(WorkspaceBindingDbSchema),
   projectTitle: Schema.NullOr(TrimmedNonEmptyString),
@@ -554,6 +557,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     ), '[]') AS "pullRequests",
     review_snapshot_json AS "reviewSnapshot",
     review_result_json AS "reviewResult",
+    validation_run_json AS "validationRun",
     latest_turn_id AS "latestTurnId",
     created_at AS "createdAt",
     updated_at AS "updatedAt",
@@ -1208,6 +1212,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ), '[]') AS "pullRequests",
           threads.review_snapshot_json AS "reviewSnapshot",
           threads.review_result_json AS "reviewResult",
+          threads.validation_run_json AS "validationRun",
           threads.latest_turn_id AS "latestTurnId",
           threads.created_at AS "createdAt",
           threads.updated_at AS "updatedAt",
@@ -2026,6 +2031,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     ? { reviewSnapshot: row.reviewSnapshot }
                     : {}),
                   reviewResult: row.reviewResult ?? null,
+                  ...(row.validationRun !== null && row.validationRun !== undefined
+                    ? { validationRun: row.validationRun }
+                    : {}),
                   latestTurn: reconcileLatestTurnWithSession(
                     latestTurnByThread.get(row.threadId) ?? null,
                     session,
@@ -2250,6 +2258,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     worktreePath: row.worktreePath,
                     pullRequest: row.pullRequest ?? null,
                     pullRequests: row.pullRequests,
+                    ...(row.validationRun !== null && row.validationRun !== undefined
+                      ? { validationRun: row.validationRun }
+                      : {}),
                     latestTurn: reconcileLatestTurnWithSession(
                       latestTurnByThread.get(row.threadId) ?? null,
                       session,
@@ -2588,6 +2599,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               : { workspaceBinding: threadRow.value.workspaceBinding }),
             pullRequest: threadRow.value.pullRequest ?? null,
             pullRequests: threadRow.value.pullRequests,
+            ...(threadRow.value.validationRun !== null &&
+            threadRow.value.validationRun !== undefined
+              ? { validationRun: threadRow.value.validationRun }
+              : {}),
             latestTurn: reconcileLatestTurnWithSession(
               Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
               session,
@@ -2783,6 +2798,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ? { reviewSnapshot: threadRow.value.reviewSnapshot }
           : {}),
         reviewResult: threadRow.value.reviewResult ?? null,
+        ...(threadRow.value.validationRun !== null && threadRow.value.validationRun !== undefined
+          ? { validationRun: threadRow.value.validationRun }
+          : {}),
         latestTurn,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,

@@ -89,6 +89,8 @@ export function projectionImpactForEvent(event: OrchestrationEvent): ProjectionI
       }
       break;
     case "thread.review-result-set":
+    case "thread.validation-run-planned":
+    case "thread.validation-gate-updated":
     case "thread.proposed-plan-upserted":
     case "thread.approval-response-requested":
     case "thread.user-input-response-requested":
