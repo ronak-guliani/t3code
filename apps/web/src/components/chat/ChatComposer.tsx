@@ -78,7 +78,11 @@ import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPreviewAnnotationCards } from "./ComposerPreviewAnnotationCards";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
-import { CopilotCompletionWarning } from "./CopilotCompletionWarning";
+import {
+  COPILOT_COMPLETION_TOAST_DESCRIPTION,
+  COPILOT_COMPLETION_TOAST_TITLE,
+  hasCopilotPostCompletionWarning,
+} from "./copilotCompletionToast";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { ChildFollowUpPanel } from "./ChildFollowUpPanel";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
@@ -96,7 +100,7 @@ import { Separator } from "../ui/separator";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { toastManager } from "../ui/toast";
+import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
   CircleAlertIcon,
   PaperclipIcon,
@@ -1356,6 +1360,23 @@ export const ChatComposer = memo(
       setIsDragOverComposer(false);
     }, [draftId, activeThreadId, promptRef]);
 
+    const copilotWarningToastShownRef = useRef<Set<string>>(new Set());
+    const activeThreadActivities = activeThread?.activities;
+    useEffect(() => {
+      if (!activeThreadId) return;
+      const threadKey = String(activeThreadId);
+      if (copilotWarningToastShownRef.current.has(threadKey)) return;
+      if (!hasCopilotPostCompletionWarning(activeThreadActivities)) return;
+      copilotWarningToastShownRef.current.add(threadKey);
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: COPILOT_COMPLETION_TOAST_TITLE,
+          description: COPILOT_COMPLETION_TOAST_DESCRIPTION,
+        }),
+      );
+    }, [activeThreadActivities, activeThreadId]);
+
     // ------------------------------------------------------------------
     // Footer compact layout observation
     // ------------------------------------------------------------------
@@ -2172,7 +2193,6 @@ export const ChatComposer = memo(
             onPointerEnter={onComposerIntent}
             onBlurCapture={scheduleComposerCollapseCheck}
           >
-            <CopilotCompletionWarning activities={activeThread?.activities} />
             {activeThread ? (
               <ChildFollowUpPanel
                 key={activeThread.id}
