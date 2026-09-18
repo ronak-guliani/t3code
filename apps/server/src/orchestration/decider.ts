@@ -57,10 +57,12 @@ import {
 } from "./dispatchAuthority.ts";
 import {
   acceptValidationResult,
+  isValidationRunTerminal,
   planValidationRun,
   transitionValidationGate,
   transitionValidationRunStatus,
   validationTargetEquals,
+  validationRunEffectiveStatus,
 } from "@t3tools/contracts";
 
 const FORK_TITLE_PREFIX = "Forked: ";
@@ -569,10 +571,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         if (thread.validationRun.requestId === command.commandId) {
           return [];
         }
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: "A validation run already exists for this thread.",
-        });
+        if (!isValidationRunTerminal(validationRunEffectiveStatus(thread.validationRun))) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A validation run already exists for this thread.",
+          });
+        }
       }
       return {
         ...withEventBase({
@@ -629,7 +633,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         thread.validationRun !== null &&
         thread.validationRun !== undefined &&
-        thread.validationRun.id !== command.run.id
+        thread.validationRun.id !== command.run.id &&
+        !isValidationRunTerminal(validationRunEffectiveStatus(thread.validationRun))
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
