@@ -59,7 +59,7 @@ import {
 const PROVIDER = ProviderDriverKind.make("opencode");
 const OPENCODE_CONNECTION_TIMEOUT = "5 seconds";
 const OPENCODE_INITIAL_SUBSCRIBE_ATTEMPTS = 5;
-const OPENCODE_RECOVERY_ATTEMPTS = 24;
+const OPENCODE_RECOVERY_ATTEMPTS = 180;
 const OPENCODE_RECOVERY_DELAY_MS = 100;
 const OPENCODE_ADMISSION_ATTEMPTS = 5;
 const OPENCODE_ADMISSION_DELAY_MS = 100;
@@ -1303,6 +1303,7 @@ export function makeOpenCodeAdapter(
       promptMessageId: string,
     ) {
       let lastFailure: string | undefined;
+      let recoveryDelayMs = OPENCODE_RECOVERY_DELAY_MS;
       for (let attempt = 0; attempt < OPENCODE_RECOVERY_ATTEMPTS; attempt += 1) {
         if (
           context.activeTurnId !== turnId ||
@@ -1393,7 +1394,8 @@ export function makeOpenCodeAdapter(
           return;
         }
 
-        yield* sleepOpenCode(OPENCODE_RECOVERY_DELAY_MS);
+        yield* sleepOpenCode(recoveryDelayMs);
+        recoveryDelayMs = Math.min(recoveryDelayMs * 2, 2_000);
       }
 
       const message =

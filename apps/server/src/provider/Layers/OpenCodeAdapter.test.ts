@@ -1766,6 +1766,62 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("does not fail a long-running prompt before its transcript is idle", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-long-running-recovery");
+      const observed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Wait for the long-running transcript",
+        modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+      });
+      const prompt = runtimeMock.state.promptCalls.at(-1) as { messageID: string };
+
+      yield* sleep(2_600);
+      runtimeMock.state.messages = [
+        {
+          info: { id: prompt.messageID, role: "user" },
+          parts: [{ id: "user-part", type: "text", messageID: prompt.messageID, text: "Wait" }],
+        },
+        {
+          info: {
+            id: "assistant-long-running",
+            role: "assistant",
+            parentID: prompt.messageID,
+          },
+          parts: [
+            {
+              id: "assistant-part",
+              messageID: "assistant-long-running",
+              type: "text",
+              text: "Completed after a long native turn",
+              time: { start: 1, end: 2 },
+            },
+          ],
+        },
+      ];
+      runtimeMock.state.sessionStatus = "idle";
+
+      const events = Array.from(yield* Fiber.join(observed).pipe(Effect.timeout("5 seconds")));
+      const completed = events.filter(
+        (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+      );
+      assert.equal(completed.length, 1);
+    }),
+  );
+
   it.effect("waits for an event reconnect before admitting a prompt", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
