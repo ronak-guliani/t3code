@@ -8,7 +8,6 @@ import {
   ChevronDownIcon,
   GitPullRequestIcon,
   LayersIcon,
-  ListFilterIcon,
   LoaderCircleIcon,
   Maximize2Icon,
   Minimize2Icon,
@@ -18,18 +17,11 @@ import {
 import { type ReactNode, useDeferredValue, useEffect, useMemo } from "react";
 
 import { PullRequestDetailPanel } from "../components/pullRequest/PullRequestDetailPanel";
+import { PullRequestFiltersMenu } from "../components/pullRequest/PullRequestFiltersMenu";
 import { PullRequestRow } from "../components/pullRequest/PullRequestRow";
 import { Button } from "../components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../components/ui/input-group";
-import {
-  Menu,
-  MenuGroupLabel,
-  MenuPopup,
-  MenuRadioGroup,
-  MenuRadioItem,
-  MenuSeparator,
-  MenuTrigger,
-} from "../components/ui/menu";
+import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../components/ui/menu";
 import { SidebarInset, SidebarTrigger } from "../components/ui/sidebar";
 import { Spinner } from "../components/ui/spinner";
 import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
@@ -70,12 +62,6 @@ const SORT_OPTIONS = [
   { value: "smallest", label: "Smallest shown", Icon: Minimize2Icon },
 ] as const;
 type PullRequestListSort = (typeof SORT_OPTIONS)[number]["value"];
-const LIST_STATE_LABELS: Record<(typeof LIST_STATES)[number], string> = {
-  all: "All states",
-  open: "Open",
-  closed: "Closed",
-  merged: "Merged",
-};
 const INVOLVEMENT_LABELS: Record<(typeof INVOLVEMENTS)[number], string> = {
   all: "All involvement",
   reviewing: "Reviewing",
@@ -84,7 +70,6 @@ const INVOLVEMENT_LABELS: Record<(typeof INVOLVEMENTS)[number], string> = {
 const PAGE_SIZE = 50;
 const STATS_BATCH_SIZE = 500;
 const EMPTY_PROJECTS: readonly Project[] = [];
-const ALL_PROJECTS_VALUE = "all";
 
 function isListState(value: unknown): value is PullRequestListState {
   return typeof value === "string" && (LIST_STATES as readonly string[]).includes(value);
@@ -227,10 +212,6 @@ function PullRequestsRoute() {
     () => sortedEntries.filter((entry) => !entry.viewerReviewRequested),
     [sortedEntries],
   );
-  const filterCount =
-    (effectiveState === defaultListState ? 0 : 1) +
-    (search.involvement === "all" ? 0 : 1) +
-    (search.projectId ? 1 : 0);
   const explicitSelection = useMemo(
     () =>
       search.repository && search.number && search.selectedProjectId
@@ -382,77 +363,16 @@ function PullRequestsRoute() {
                     </MenuRadioGroup>
                   </MenuPopup>
                 </Menu>
-                <Menu>
-                  <MenuTrigger
-                    className="relative"
-                    render={
-                      <Button
-                        aria-label={`Filter pull requests${filterCount > 0 ? `, ${filterCount} active` : ""}`}
-                        size="default"
-                        variant="outline"
-                      />
-                    }
-                  >
-                    <ListFilterIcon aria-hidden />
-                    <span>Filters</span>
-                    {filterCount > 0 ? (
-                      <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-primary text-[10px] font-medium text-primary-foreground tabular-nums">
-                        {filterCount}
-                      </span>
-                    ) : null}
-                  </MenuTrigger>
-                  <MenuPopup align="end">
-                    <MenuGroupLabel>State</MenuGroupLabel>
-                    <MenuRadioGroup
-                      value={effectiveState}
-                      onValueChange={(value) =>
-                        updateSearch({ state: value as PullRequestListState }, true)
-                      }
-                    >
-                      {LIST_STATES.map((state) => (
-                        <MenuRadioItem key={state} value={state}>
-                          {LIST_STATE_LABELS[state]}
-                        </MenuRadioItem>
-                      ))}
-                    </MenuRadioGroup>
-                    <MenuSeparator />
-                    <MenuGroupLabel>Involvement</MenuGroupLabel>
-                    <MenuRadioGroup
-                      value={search.involvement}
-                      onValueChange={(value) =>
-                        updateSearch({ involvement: value as PullRequestInvolvement }, true)
-                      }
-                    >
-                      {INVOLVEMENTS.map((involvement) => (
-                        <MenuRadioItem key={involvement} value={involvement}>
-                          {INVOLVEMENT_LABELS[involvement]}
-                        </MenuRadioItem>
-                      ))}
-                    </MenuRadioGroup>
-                    <MenuSeparator />
-                    <MenuGroupLabel>Project</MenuGroupLabel>
-                    <MenuRadioGroup
-                      value={search.projectId ?? ALL_PROJECTS_VALUE}
-                      onValueChange={(value) =>
-                        updateSearch(
-                          {
-                            projectId: (value === ALL_PROJECTS_VALUE ? undefined : value) as
-                              | ProjectId
-                              | undefined,
-                          },
-                          true,
-                        )
-                      }
-                    >
-                      <MenuRadioItem value={ALL_PROJECTS_VALUE}>All projects</MenuRadioItem>
-                      {projects.map((project) => (
-                        <MenuRadioItem key={project.id} value={project.id}>
-                          {project.name}
-                        </MenuRadioItem>
-                      ))}
-                    </MenuRadioGroup>
-                  </MenuPopup>
-                </Menu>
+                <PullRequestFiltersMenu
+                  defaultListState={defaultListState}
+                  effectiveState={effectiveState}
+                  involvement={search.involvement}
+                  projectId={search.projectId}
+                  projects={projects}
+                  onStateChange={(value) => updateSearch({ state: value }, true)}
+                  onInvolvementChange={(value) => updateSearch({ involvement: value }, true)}
+                  onProjectChange={(value) => updateSearch({ projectId: value }, true)}
+                />
                 <Menu>
                   <MenuTrigger
                     render={
