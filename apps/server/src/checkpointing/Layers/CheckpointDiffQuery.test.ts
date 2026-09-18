@@ -43,7 +43,7 @@ function makeThreadCheckpointContext(input: {
 }
 
 describe("CheckpointDiffQueryLive", () => {
-  it("computes diffs using canonical turn-0 checkpoint refs", async () => {
+  it("falls back to the project workspace when an archived worktree was removed", async () => {
     const projectId = ProjectId.make("project-1");
     const threadId = ThreadId.make("thread-1");
     const toCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
@@ -60,7 +60,7 @@ describe("CheckpointDiffQueryLive", () => {
       projectId,
       threadId,
       workspaceRoot: "/tmp/workspace",
-      worktreePath: null,
+      worktreePath: "/tmp/removed-worktree",
       checkpointTurnCount: 1,
       checkpointRef: toCheckpointRef,
       turnFiles: [
@@ -75,7 +75,7 @@ describe("CheckpointDiffQueryLive", () => {
     });
 
     const checkpointStore: CheckpointStoreShape = {
-      isGitRepository: () => Effect.succeed(true),
+      isGitRepository: (cwd) => Effect.succeed(cwd === "/tmp/workspace"),
       captureCheckpoint: () => Effect.void,
       hasCheckpointRef: () =>
         Effect.die("CheckpointDiffQuery should not preflight checkpoint refs"),
@@ -125,6 +125,7 @@ describe("CheckpointDiffQueryLive", () => {
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
+          readThread: () => Effect.die("unused"),
         }),
       ),
     );
@@ -209,6 +210,7 @@ describe("CheckpointDiffQueryLive", () => {
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
+          readThread: () => Effect.die("unused"),
         }),
       ),
     );
@@ -277,6 +279,7 @@ describe("CheckpointDiffQueryLive", () => {
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
+          readThread: () => Effect.die("unused"),
         }),
       ),
     );
@@ -339,6 +342,7 @@ describe("CheckpointDiffQueryLive", () => {
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
+          readThread: () => Effect.die("unused"),
         }),
       ),
     );
@@ -445,6 +449,7 @@ describe("CheckpointDiffQueryLive", () => {
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
+          readThread: () => Effect.die("unused"),
         }),
       ),
     );
@@ -506,6 +511,7 @@ describe("CheckpointDiffQueryLive", () => {
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
+          readThread: () => Effect.die("unused"),
         }),
       ),
     );

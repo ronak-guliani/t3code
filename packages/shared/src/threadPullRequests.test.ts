@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  normalizeThreadPullRequestSearchQuery,
   sameThreadPullRequest,
   sameThreadPullRequestAssociation,
+  seedLegacyThreadPullRequestLink,
   threadPullRequestKey,
+  threadPullRequestSearchTerms,
 } from "./threadPullRequests.js";
 
 const pullRequest = {
@@ -19,6 +22,68 @@ describe("thread pull request identity", () => {
         url: "https://github.com/acme/app/pulls/42",
       }),
     ).toBe(true);
+  });
+
+  describe("threadPullRequestSearchTerms", () => {
+    const association = {
+      ...pullRequest,
+      title: "Find linked PR threads",
+      baseBranch: "main",
+      headBranch: "feat/search",
+      state: "open" as const,
+    };
+
+    it("includes number, repository-qualified number, URL, and title", () => {
+      expect(
+        threadPullRequestSearchTerms({
+          pullRequests: [{ pullRequest: association, source: "manual", linkedAt: "2026-09-08" }],
+        }),
+      ).toEqual([
+        "#42",
+        "acme/app#42",
+        "github.com/acme/app#42",
+        "https://github.com/acme/app/pull/42",
+        "Find linked PR threads",
+      ]);
+    });
+
+    it("includes a distinct legacy association alongside explicit links", () => {
+      expect(
+        threadPullRequestSearchTerms({ pullRequests: [], pullRequest: association }),
+      ).toContain("#42");
+      const terms = threadPullRequestSearchTerms({
+        pullRequests: [
+          {
+            pullRequest: { ...association, number: 43 },
+            source: "manual",
+            linkedAt: "2026-09-08",
+          },
+        ],
+        pullRequest: association,
+      });
+      expect(terms).toContain("#42");
+      expect(terms).toContain("#43");
+    });
+
+    it("does not duplicate the legacy association when it is already linked", () => {
+      expect(
+        threadPullRequestSearchTerms({
+          pullRequests: [{ pullRequest: association, source: "manual", linkedAt: "2026-09-08" }],
+          pullRequest: association,
+        }).filter((term) => term === "#42"),
+      ).toEqual(["#42"]);
+    });
+
+    it("normalizes copied PR URLs to repository-qualified search terms", () => {
+      expect(
+        normalizeThreadPullRequestSearchQuery(
+          "https://github.com/acme/app/pull/42?tab=files#diff-123",
+        ),
+      ).toBe("github.com/acme/app#42");
+      expect(normalizeThreadPullRequestSearchQuery("https://github.com/acme/app/issues/42")).toBe(
+        null,
+      );
+    });
   });
 
   it("uses the final pull-request marker in repository paths", () => {
@@ -67,5 +132,49 @@ describe("thread pull request identity", () => {
         url: "https://github.com/acme/app/pulls/42",
       }),
     ).toBe(false);
+  });
+
+  it("recovers a legacy-only association before newer links", () => {
+    const legacyPullRequest = {
+      ...pullRequest,
+      title: "First PR",
+      baseBranch: "main",
+      headBranch: "feature/first",
+      state: "open" as const,
+    };
+    const newerPullRequest = {
+      ...legacyPullRequest,
+      number: 43,
+      title: "Second PR",
+      url: "https://github.com/acme/app/pull/43",
+      headBranch: "feature/second",
+    };
+    const recovered = seedLegacyThreadPullRequestLink(
+      [
+        {
+          pullRequest: newerPullRequest,
+          source: "created",
+          linkedAt: "2026-09-17T00:01:00.000Z",
+        },
+      ],
+      legacyPullRequest,
+      "2026-09-17T00:00:00.000Z",
+    );
+
+    expect(recovered).toEqual([
+      {
+        pullRequest: legacyPullRequest,
+        source: "recovered",
+        linkedAt: "2026-09-17T00:00:00.000Z",
+      },
+      {
+        pullRequest: newerPullRequest,
+        source: "created",
+        linkedAt: "2026-09-17T00:01:00.000Z",
+      },
+    ]);
+    expect(
+      seedLegacyThreadPullRequestLink(recovered, legacyPullRequest, "2026-09-17T00:02:00.000Z"),
+    ).toBe(recovered);
   });
 });

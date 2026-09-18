@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as RpcClient from "effect/unstable/rpc/RpcClient";
 import { WsRpcGroup, WS_METHODS } from "@t3tools/contracts";
+import { withRpcDeadlines } from "./rpcDeadline.ts";
 
 import {
   CliRpcError,
@@ -25,6 +26,50 @@ it.effect("provides a Node WebSocket constructor for the CLI RPC protocol", () =
     Layer.build(wsRpcProtocolLayer("ws://127.0.0.1:3100/ws")).pipe(
       Effect.tap(() => Effect.sync(() => assert.isTrue(true))),
     ),
+  ),
+);
+
+it.live("times out an open WebSocket whose unary response never arrives", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = yield* Effect.acquireRelease(
+        Effect.promise(
+          () =>
+            new Promise<NodeSocket.NodeWS.WebSocketServer>((resolve) => {
+              const server: NodeSocket.NodeWS.WebSocketServer =
+                new NodeSocket.NodeWS.WebSocketServer({ host: "127.0.0.1", port: 0 }, () =>
+                  resolve(server),
+                );
+            }),
+        ),
+        (server) =>
+          Effect.promise(
+            () =>
+              new Promise<void>((resolve) => {
+                for (const socket of server.clients) socket.terminate();
+                server.close(() => resolve());
+              }),
+          ),
+      );
+      let requests = 0;
+      server.on("connection", (socket) =>
+        socket.on("message", (raw) => {
+          const message = JSON.parse(raw.toString());
+          if (message._tag === "Ping") socket.send(JSON.stringify({ _tag: "Pong" }));
+          if (message._tag === "Request") requests++;
+        }),
+      );
+      const address = server.address();
+      if (!address || typeof address === "string") return yield* Effect.die("Expected TCP address");
+      const result = yield* RpcClient.make(WsRpcGroup).pipe(
+        Effect.map((client) => withRpcDeadlines(client, "1 second")),
+        Effect.flatMap((client) => Effect.result(client[WS_METHODS.serverProbe]({}))),
+        Effect.provide(wsRpcProtocolLayer(`ws://127.0.0.1:${address.port}/ws`)),
+      );
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") assert.include(String(result.failure), "CLI_RPC_TIMEOUT");
+      assert.equal(requests, 1);
+    }),
   ),
 );
 

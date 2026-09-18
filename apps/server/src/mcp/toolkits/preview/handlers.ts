@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import type {
   PreviewAutomationOperation,
   PreviewAutomationOpenInput,
+  PreviewAutomationPreflightResult,
   PreviewAutomationRecordingArtifact,
   PreviewAutomationRecordingStatus,
   PreviewAutomationRecordingTransferResult,
@@ -139,6 +140,8 @@ const handlers = {
       input.timeoutMs,
     );
   },
+  preview_preflight: (input) =>
+    invokeTargeted<PreviewAutomationPreflightResult>("preflight", input, input.timeoutMs),
   preview_navigate: (input) =>
     invokeTargeted<PreviewAutomationStatus>("navigate", input, input.timeoutMs),
   preview_resize: (input) =>

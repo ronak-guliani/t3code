@@ -165,7 +165,7 @@ divergentLedgerLayer("087_ProjectionThreadActivityJsonIndexes/divergent ledger",
       const executed = yield* runMigrations();
       assert.deepStrictEqual(
         executed.map(([id]) => id),
-        [87, 88, 89, 90],
+        [87, 88, 89, 90, 91, 92, 93, 94, 95],
       );
 
       const columns = yield* sql<{ readonly name: string }>`

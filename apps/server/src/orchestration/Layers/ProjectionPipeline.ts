@@ -10,6 +10,7 @@ import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrat
 import {
   legacyThreadPullRequestLink,
   sameThreadPullRequest,
+  seedLegacyThreadPullRequestLink,
 } from "@t3tools/shared/threadPullRequests";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
@@ -356,9 +357,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
+            ...(event.payload.workspaceBinding !== undefined
+              ? { workspaceBinding: event.payload.workspaceBinding }
+              : {}),
             pullRequest: initialPullRequest ?? null,
             reviewSnapshot: event.payload.reviewSnapshot ?? null,
             reviewResult: null,
+            validationRun: null,
             latestTurnId: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -430,7 +435,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // this thread (or its path aliases) so unarchive cannot race a remove
           // that treats the restored thread as non-owning.
           // Missing-path clearing is done by ThreadDeletionReactor via
-          // thread.meta.update so the orchestration read model stays in sync.
+          // thread.meta.update so both projections clear the stale binding.
           yield* worktreeCleanupJobRepository.cancelByThreadId(event.payload.threadId);
           const worktreePath = existingRow.value.worktreePath;
           if (worktreePath !== null) {
@@ -612,6 +617,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.worktreePath !== undefined
               ? { worktreePath: event.payload.worktreePath }
               : {}),
+            ...(event.payload.workspaceBinding !== undefined
+              ? { workspaceBinding: event.payload.workspaceBinding }
+              : {}),
             ...(event.payload.pullRequest !== undefined
               ? { pullRequest: event.payload.pullRequest }
               : {}),
@@ -622,7 +630,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               threadId: event.payload.threadId,
             });
             if (event.payload.pullRequest !== null) {
-              const existingLink = existingLinks.find((link) =>
+              const linksWithLegacy = seedLegacyThreadPullRequestLink(
+                existingLinks,
+                existingRow.value.pullRequest,
+                existingRow.value.createdAt,
+              );
+              const recoveredLegacyLink =
+                linksWithLegacy.length > existingLinks.length ? linksWithLegacy[0] : undefined;
+              if (recoveredLegacyLink) {
+                yield* projectionThreadPullRequestRepository.upsert({
+                  threadId: event.payload.threadId,
+                  ...recoveredLegacyLink,
+                });
+              }
+              const existingLink = linksWithLegacy.find((link) =>
                 sameThreadPullRequest(link.pullRequest, event.payload.pullRequest!),
               );
               yield* projectionThreadPullRequestRepository.upsert({
@@ -785,6 +806,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
         case "thread.message-sent":
         case "thread.review-result-set":
+        case "thread.validation-run-planned":
+        case "thread.validation-gate-updated":
         case "thread.proposed-plan-upserted":
         case "thread.activity-appended":
         case "thread.approval-response-requested":
@@ -807,7 +830,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   reviewResult: event.payload.result,
                   reviewSnapshot: event.payload.result.snapshot,
                 }
-              : {}),
+              : event.type === "thread.validation-run-planned"
+                ? { validationRun: event.payload.run }
+                : event.type === "thread.validation-gate-updated"
+                  ? {
+                      validationRun:
+                        existingRow.value.validationRun &&
+                        existingRow.value.validationRun.id === event.payload.runId
+                          ? {
+                              ...existingRow.value.validationRun,
+                              gates: existingRow.value.validationRun.gates.map((gate) =>
+                                gate.id === event.payload.gate.id ? event.payload.gate : gate,
+                              ),
+                              updatedAt: event.occurredAt,
+                            }
+                          : existingRow.value.validationRun,
+                    }
+                  : {}),
             updatedAt: event.occurredAt,
           });
           return;

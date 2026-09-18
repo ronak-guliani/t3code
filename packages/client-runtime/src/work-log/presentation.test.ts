@@ -7,6 +7,7 @@ import {
   compactWorkEntryLabel,
   deriveWorkGroupActivity,
   workGroupReceiptLabel,
+  extractRuntimeActivityDetail,
   extractWorkLogToolLifecycleStatus,
   groupConsecutiveWorkEntries,
   groupRepeatedWorkEntries,
@@ -809,6 +810,44 @@ describe("command work-log details", () => {
         data: { command: "pnpm test" },
       }),
     ).toBe(false);
+  });
+});
+
+describe("extractRuntimeActivityDetail", () => {
+  it("surfaces the message when no detail is present", () => {
+    expect(extractRuntimeActivityDetail({ message: "Retrying after 429" })).toBe(
+      "Retrying after 429",
+    );
+  });
+
+  it("falls back to a string detail when the message is missing", () => {
+    expect(extractRuntimeActivityDetail({ detail: "Bash is unusable" })).toBe("Bash is unusable");
+  });
+
+  it("dedupes an identical string detail", () => {
+    expect(extractRuntimeActivityDetail({ message: "Same text", detail: "Same text" })).toBe(
+      "Same text",
+    );
+  });
+
+  it("combines a distinct string detail with the message", () => {
+    expect(extractRuntimeActivityDetail({ message: "Retry 2/5", detail: "rate limited" })).toBe(
+      "Retry 2/5\n\nrate limited",
+    );
+  });
+
+  it("stringifies an object detail alongside the message", () => {
+    const detail = extractRuntimeActivityDetail({
+      message: "Retrying",
+      detail: { type: "retry", attempt: 2 },
+    });
+    expect(detail).toContain("Retrying");
+    expect(detail).toContain('"attempt": 2');
+  });
+
+  it("returns null when neither message nor detail is present", () => {
+    expect(extractRuntimeActivityDetail(null)).toBeNull();
+    expect(extractRuntimeActivityDetail({})).toBeNull();
   });
 });
 

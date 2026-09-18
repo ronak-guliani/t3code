@@ -73,6 +73,19 @@ export const ServerAuthSessionMethod = Schema.Literals([
 ]);
 export type ServerAuthSessionMethod = typeof ServerAuthSessionMethod.Type;
 
+export const McpAuthErrorCode = Schema.Literal("invalid_mcp_credential");
+export type McpAuthErrorCode = typeof McpAuthErrorCode.Type;
+
+export const McpAuthRecovery = Schema.Literal("reconnect-required");
+export type McpAuthRecovery = typeof McpAuthRecovery.Type;
+
+export const McpAuthError = Schema.Struct({
+  error: McpAuthErrorCode,
+  recovery: McpAuthRecovery,
+  message: Schema.String,
+});
+export type McpAuthError = typeof McpAuthError.Type;
+
 export const AuthSessionRole = Schema.Literals(["owner", "client"]);
 export type AuthSessionRole = typeof AuthSessionRole.Type;
 

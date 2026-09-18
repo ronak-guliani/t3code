@@ -21,7 +21,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useFocusEffect } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, Platform, Pressable, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, View } from "react-native";
 import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -51,6 +51,7 @@ import {
 import {
   buildThreadListV2Items,
   buildThreadListV2ListItems,
+  threadListV2ItemsAreEqual,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   type ThreadListV2ListItem,
@@ -655,6 +656,13 @@ export function HomeScreen(props: HomeScreenProps) {
     );
     return pinned.map((thread) => `${thread.environmentId}:${thread.id}`);
   }, [pinReorderEnvironmentIds, props.threads]);
+  // O(1) position flags for the pinned Move up/down menu items. The render
+  // path calls this per row, so an indexOf scan here would make each render
+  // pass O(n^2) in the pinned count.
+  const arrangedPinnedIndexByKey = useMemo(
+    () => new Map(arrangedPinnedKeys.map((key, index) => [key, index] as const)),
+    [arrangedPinnedKeys],
+  );
   const threadListV2Layout = useMemo(() => {
     if (!threadListV2Enabled)
       return {
@@ -823,10 +831,12 @@ export function HomeScreen(props: HomeScreenProps) {
             thread.parentThreadId == null && pinningEnvironmentIds.has(thread.environmentId)
           }
           pinReorderSupported={pinReorderEnvironmentIds.has(thread.environmentId)}
-          canMovePinnedUp={arrangedPinnedKeys.indexOf(`${thread.environmentId}:${thread.id}`) > 0}
+          canMovePinnedUp={
+            (arrangedPinnedIndexByKey.get(`${thread.environmentId}:${thread.id}`) ?? -1) > 0
+          }
           canMovePinnedDown={(() => {
-            const index = arrangedPinnedKeys.indexOf(`${thread.environmentId}:${thread.id}`);
-            return index !== -1 && index < arrangedPinnedKeys.length - 1;
+            const index = arrangedPinnedIndexByKey.get(`${thread.environmentId}:${thread.id}`);
+            return index !== undefined && index < arrangedPinnedIndexByKey.size - 1;
           })()}
           onSnoozeThread={handleSnoozeThread}
           onUnsnoozeThread={handleUnsnoozeThread}
@@ -842,7 +852,7 @@ export function HomeScreen(props: HomeScreenProps) {
     },
     [
       handleDeleteThread,
-      arrangedPinnedKeys,
+      arrangedPinnedIndexByKey,
       handleMovePinnedThread,
       handlePinThread,
       handleRegenerateThreadTitle,
@@ -875,9 +885,9 @@ export function HomeScreen(props: HomeScreenProps) {
   );
   const v2KeyExtractor = useCallback((item: ThreadListV2ListItem) => item.key, []);
 
-  // FlatList treats a changed extraData identity as "re-render every visible
-  // row", so an inline object literal would invalidate all rows on every
-  // HomeScreen render.
+  // A changed extraData identity widens the re-render scope, so an inline
+  // object literal would invalidate all rows on every HomeScreen render.
+  // (Item-level recycling is still gated by threadListV2ItemsAreEqual.)
   const v2ExtraData = useMemo(
     () => ({
       projectCwdByKey,
@@ -1082,10 +1092,15 @@ export function HomeScreen(props: HomeScreenProps) {
     return (
       <View className="flex-1 bg-screen">
         <SwipeableScrollGateProvider enabled={swipeEnabled}>
-          <FlatList
+          <LegendList
             data={threadListV2Items}
             renderItem={renderV2Item}
             keyExtractor={v2KeyExtractor}
+            getItemType={(item) => item.type}
+            itemsAreEqual={threadListV2ItemsAreEqual}
+            drawDistance={500}
+            estimatedItemSize={48}
+            recycleItems
             extraData={v2ExtraData}
             ListHeaderComponent={v2ListHeader}
             ListFooterComponent={

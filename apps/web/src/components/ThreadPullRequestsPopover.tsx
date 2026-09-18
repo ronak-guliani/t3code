@@ -1,4 +1,5 @@
 import type { GitPullRequestAssociation, ThreadPullRequestLink } from "@t3tools/contracts";
+import { sameThreadPullRequest } from "@t3tools/shared/threadPullRequests";
 import { GitPullRequestIcon } from "lucide-react";
 
 import { openPullRequestLink } from "../lib/openPullRequestLink";
@@ -10,10 +11,14 @@ export function resolveThreadPullRequests(
   links: ReadonlyArray<ThreadPullRequestLink> | undefined,
   fallbackPullRequest: GitPullRequestAssociation | null | undefined,
 ): ReadonlyArray<GitPullRequestAssociation> {
-  if (links && links.length > 0) {
-    return links.map((link) => link.pullRequest);
+  const pullRequests = (links ?? []).map((link) => link.pullRequest);
+  if (
+    !fallbackPullRequest ||
+    pullRequests.some((pullRequest) => sameThreadPullRequest(pullRequest, fallbackPullRequest))
+  ) {
+    return pullRequests;
   }
-  return fallbackPullRequest ? [fallbackPullRequest] : [];
+  return [fallbackPullRequest, ...pullRequests];
 }
 
 export function formatThreadPullRequestSummary(

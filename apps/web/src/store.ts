@@ -28,11 +28,13 @@ import {
 } from "@t3tools/client-runtime";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
+import { validationRunEquals } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { resolveModelSlugForProvider } from "@t3tools/shared/model";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 import {
   sameThreadPullRequest,
+  seedLegacyThreadPullRequestLink,
   upsertLegacyThreadPullRequestLink,
 } from "@t3tools/shared/threadPullRequests";
 import { create } from "zustand";
@@ -351,6 +353,9 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pullRequests: thread.pullRequests ?? [],
     ...(thread.reviewSnapshot !== undefined ? { reviewSnapshot: thread.reviewSnapshot } : {}),
     ...(thread.reviewResult !== undefined ? { reviewResult: thread.reviewResult } : {}),
+    ...(thread.validationRun !== undefined && thread.validationRun !== null
+      ? { validationRun: thread.validationRun }
+      : {}),
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
     activities: thread.activities.map((activity) => ({ ...activity })),
     activityContext: thread.activityContext?.map((activity) => ({ ...activity })) ?? [],
@@ -392,6 +397,9 @@ function mapThreadShell(
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
     pullRequests: thread.pullRequests ?? [],
+    ...(thread.validationRun !== undefined && thread.validationRun !== null
+      ? { validationRun: thread.validationRun }
+      : {}),
   };
   const session = thread.session ? mapSession(thread.session) : null;
   const turnState: ThreadTurnState = {
@@ -418,6 +426,9 @@ function mapThreadShell(
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
     pullRequests: thread.pullRequests ?? [],
+    ...(thread.validationRun !== undefined && thread.validationRun !== null
+      ? { validationRun: thread.validationRun }
+      : {}),
     latestUserMessageAt: thread.latestUserMessageAt,
     latestChildNotificationAt: thread.latestChildNotificationAt ?? null,
     hasPendingApprovals: thread.hasPendingApprovals,
@@ -459,6 +470,9 @@ function toThreadShell(thread: Thread): ThreadShell {
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
     pullRequests: thread.pullRequests ?? [],
+    ...(thread.validationRun !== undefined && thread.validationRun !== null
+      ? { validationRun: thread.validationRun }
+      : {}),
   };
 }
 
@@ -581,6 +595,7 @@ function sidebarThreadSummariesEqual(
     left.worktreePath === right.worktreePath &&
     pullRequestsEqual(left.pullRequest, right.pullRequest) &&
     threadPullRequestLinksEqual(left.pullRequests ?? [], right.pullRequests ?? []) &&
+    validationRunEquals(left.validationRun, right.validationRun) &&
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.latestChildNotificationAt === right.latestChildNotificationAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
@@ -680,6 +695,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.worktreePath === right.worktreePath &&
     pullRequestsEqual(left.pullRequest, right.pullRequest) &&
     threadPullRequestLinksEqual(left.pullRequests ?? [], right.pullRequests ?? []) &&
+    validationRunEquals(left.validationRun, right.validationRun) &&
     resumeCursorsEqual(left.nudging, right.nudging)
   );
 }
@@ -1966,6 +1982,17 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.pullRequest !== undefined
             ? { pullRequest: event.payload.pullRequest }
             : {}),
+          ...(event.payload.pullRequest !== undefined && event.payload.pullRequest !== null
+            ? {
+                pullRequests: [
+                  {
+                    pullRequest: event.payload.pullRequest,
+                    source: "created" as const,
+                    linkedAt: event.payload.createdAt,
+                  },
+                ],
+              }
+            : {}),
           ...(event.payload.reviewSnapshot !== undefined
             ? { reviewSnapshot: event.payload.reviewSnapshot }
             : {}),
@@ -2059,7 +2086,11 @@ function applyEnvironmentOrchestrationEvent(
         ...(event.payload.pullRequest !== undefined && event.payload.pullRequest !== null
           ? {
               pullRequests: upsertLegacyThreadPullRequestLink(
-                thread.pullRequests,
+                seedLegacyThreadPullRequestLink(
+                  thread.pullRequests,
+                  thread.pullRequest,
+                  thread.createdAt,
+                ),
                 event.payload.pullRequest,
                 event.payload.updatedAt,
                 event.payload.pullRequestSource,
@@ -2199,6 +2230,31 @@ function applyEnvironmentOrchestrationEvent(
         reviewResult: event.payload.result,
         updatedAt: event.occurredAt,
       }));
+
+    case "thread.validation-run-planned":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        validationRun: event.payload.run,
+        updatedAt: event.occurredAt,
+      }));
+
+    case "thread.validation-gate-updated":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        if (!thread.validationRun || thread.validationRun.id !== event.payload.runId) {
+          return thread;
+        }
+        return {
+          ...thread,
+          validationRun: {
+            ...thread.validationRun,
+            gates: thread.validationRun.gates.map((gate) =>
+              gate.id === event.payload.gate.id ? event.payload.gate : gate,
+            ),
+            updatedAt: event.occurredAt,
+          },
+          updatedAt: event.occurredAt,
+        };
+      });
 
     case "thread.session-set":
       return updateThreadState(state, event.payload.threadId, (thread) => ({

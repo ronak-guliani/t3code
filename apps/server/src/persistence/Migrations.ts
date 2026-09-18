@@ -92,6 +92,11 @@ import Migration0087 from "./Migrations/087_ProjectionThreadActivityJsonIndexes.
 import Migration0088 from "./Migrations/088_ProjectionProjectKind.ts";
 import Migration0089 from "./Migrations/089_ProjectionThreadPullRequests.ts";
 import Migration0090 from "./Migrations/090_DelegationReportReceipts.ts";
+import Migration0091 from "./Migrations/091_WorkspaceOwnership.ts";
+import Migration0092 from "./Migrations/092_WorkspaceOwnershipAttempt.ts";
+import Migration0093 from "./Migrations/093_WorkspaceOwnershipLedger.ts";
+import Migration0094 from "./Migrations/094_RepairWorkspaceBindingNulls.ts";
+import Migration0095 from "./Migrations/095_ProjectionThreadValidationRuns.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -183,6 +188,11 @@ export const migrationEntries = [
   [88, "ProjectionProjectKind", Migration0088],
   [89, "ProjectionThreadPullRequests", Migration0089],
   [90, "DelegationReportReceipts", Migration0090],
+  [91, "WorkspaceOwnership", Migration0091],
+  [92, "WorkspaceOwnershipAttempt", Migration0092],
+  [93, "WorkspaceOwnershipLedger", Migration0093],
+  [94, "RepairWorkspaceBindingNulls", Migration0094],
+  [95, "ProjectionThreadValidationRuns", Migration0095],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

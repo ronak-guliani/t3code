@@ -1,4 +1,9 @@
-import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
+import type {
+  OrchestrationEvent,
+  OrchestrationReadModel,
+  ThreadId,
+  WorkspaceBinding,
+} from "@t3tools/contracts";
 import {
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
@@ -8,6 +13,7 @@ import {
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 import {
   sameThreadPullRequest,
+  seedLegacyThreadPullRequestLink,
   upsertLegacyThreadPullRequestLink,
 } from "@t3tools/shared/threadPullRequests";
 import { Effect, Schema } from "effect";
@@ -49,6 +55,8 @@ import {
   ThreadPinReorderedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
+  ThreadValidationGateUpdatedPayload,
+  ThreadValidationRunPlannedPayload,
   ThreadTurnDiffCompletedPayload,
   WorkflowArtifactCreatedPayload,
   WorkflowNodeWorkerStartedPayload,
@@ -57,7 +65,12 @@ import {
   WorkflowWorkerResultRecordedPayload,
 } from "./Schemas.ts";
 
-type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
+type ThreadPatch = Omit<
+  Partial<Omit<OrchestrationThread, "id" | "projectId">>,
+  "workspaceBinding"
+> & {
+  readonly workspaceBinding?: WorkspaceBinding | null;
+};
 export const MAX_THREAD_MESSAGES = 2_000;
 const MAX_THREAD_CHECKPOINTS = 500;
 export const MAX_THREAD_ACTIVITIES = 500;
@@ -113,7 +126,16 @@ function updateThread(
   threadId: ThreadId,
   patch: ThreadPatch,
 ): OrchestrationThread[] {
-  return threads.map((thread) => (thread.id === threadId ? { ...thread, ...patch } : thread));
+  return threads.map((thread) => {
+    if (thread.id !== threadId) return thread;
+    const { workspaceBinding, ...patchWithoutBinding } = patch;
+    const nextThread = { ...thread, ...patchWithoutBinding };
+    if (workspaceBinding === null) {
+      const { workspaceBinding: _workspaceBinding, ...threadWithoutBinding } = nextThread;
+      return threadWithoutBinding;
+    }
+    return workspaceBinding === undefined ? nextThread : { ...nextThread, workspaceBinding };
+  });
 }
 
 function decodeForEvent<A>(
@@ -374,6 +396,9 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
+            ...(payload.workspaceBinding !== undefined
+              ? { workspaceBinding: payload.workspaceBinding }
+              : {}),
             ...(initialPullRequest !== undefined ? { pullRequest: initialPullRequest } : {}),
             ...(initialPullRequest !== undefined && initialPullRequest !== null
               ? {
@@ -567,13 +592,20 @@ export function projectEvent(
                 : {}),
               ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
               ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
+              ...(payload.workspaceBinding !== undefined
+                ? { workspaceBinding: payload.workspaceBinding }
+                : {}),
               ...(payload.pullRequest !== undefined
                 ? {
                     pullRequest: payload.pullRequest,
                     ...(payload.pullRequest !== null
                       ? {
                           pullRequests: upsertLegacyThreadPullRequestLink(
-                            existingThread?.pullRequests,
+                            seedLegacyThreadPullRequestLink(
+                              existingThread?.pullRequests,
+                              existingThread?.pullRequest,
+                              existingThread?.createdAt ?? payload.updatedAt,
+                            ),
                             payload.pullRequest,
                             payload.updatedAt,
                             payload.pullRequestSource,
@@ -803,6 +835,55 @@ export function projectEvent(
             reviewSnapshot: payload.result.snapshot,
             updatedAt: event.occurredAt,
           }),
+        })),
+      );
+
+    case "thread.validation-run-planned":
+      return decodeForEvent(
+        ThreadValidationRunPlannedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            validationRun: payload.run,
+            updatedAt: event.occurredAt,
+          }),
+        })),
+      );
+
+    case "thread.validation-gate-updated":
+      return decodeForEvent(
+        ThreadValidationGateUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            (() => {
+              const current = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              const run = current?.validationRun;
+              if (!run || run.id !== payload.runId) {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRun: {
+                  ...run,
+                  gates: run.gates.map((gate) =>
+                    gate.id === payload.gate.id ? payload.gate : gate,
+                  ),
+                  updatedAt: event.occurredAt,
+                },
+                updatedAt: event.occurredAt,
+              };
+            })(),
+          ),
         })),
       );
 

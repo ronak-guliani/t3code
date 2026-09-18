@@ -8,6 +8,7 @@
  */
 import type {
   OrchestrationCheckpointSummary,
+  OrchestrationGetSnapshotError,
   OrchestrationGetThreadActivitiesInput,
   OrchestrationGetThreadActivitiesResult,
   OrchestrationProject,
@@ -16,9 +17,13 @@ import type {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadShell,
+  OrchestrationReadThreadInput,
+  OrchestrationReadThreadInputError,
+  OrchestrationReadThreadResult,
   OrchestrationSearchTranscriptResult,
   ProjectId,
   ThreadId,
+  WorkspaceBinding,
 } from "@t3tools/contracts";
 import { Context } from "effect";
 import type { Option } from "effect";
@@ -36,6 +41,7 @@ export interface ProjectionThreadCheckpointContext {
   readonly projectId: ProjectId;
   readonly workspaceRoot: string;
   readonly worktreePath: string | null;
+  readonly workspaceBinding?: WorkspaceBinding | null;
   readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
 }
 
@@ -77,6 +83,12 @@ export interface ProjectionChatArchiveEntry {
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
+  readonly readThread: (
+    input: OrchestrationReadThreadInput,
+  ) => Effect.Effect<
+    OrchestrationReadThreadResult,
+    OrchestrationReadThreadInputError | OrchestrationGetSnapshotError
+  >;
   /**
    * Read the latest orchestration projection snapshot.
    *

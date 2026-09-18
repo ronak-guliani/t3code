@@ -71,6 +71,105 @@ describe("searchProviderSkills", () => {
         },
       ]);
     });
+
+    it("returns opencode-readable skills for the opencode provider", () => {
+      const skills = providerSkillsFromCatalog(
+        [
+          {
+            id: "improve-codebase-architecture",
+            name: "improve-codebase-architecture",
+            displayName: "improve-codebase-architecture",
+            canonicalPath: "/home/test/.agents/skills/improve-codebase-architecture",
+            paths: ["/home/test/.agents/skills/improve-codebase-architecture"],
+            installations: [
+              {
+                agentId: "shared",
+                agentName: "Shared",
+                path: "/home/test/.agents/skills/improve-codebase-architecture",
+                source: "shared",
+              },
+              {
+                agentId: "opencode",
+                agentName: "OpenCode",
+                path: "/home/test/.agents/skills/improve-codebase-architecture",
+                source: "readable",
+              },
+            ],
+            hasPathConflict: false,
+          },
+        ],
+        ProviderDriverKind.make("opencode"),
+      );
+
+      expect(skills).toEqual([
+        {
+          name: "improve-codebase-architecture",
+          displayName: "improve-codebase-architecture",
+          path: "/home/test/.agents/skills/improve-codebase-architecture",
+          enabled: true,
+        },
+      ]);
+    });
+
+    it.each([
+      ["claudeAgent", "claude-code"],
+      ["claude", "claude-code"],
+      ["codex", "codex"],
+      ["copilot", "copilot-cli"],
+      ["copilot-acp-native", "copilot-cli"],
+      ["cursor", "cursor"],
+    ] as const)("maps the %s provider to the %s skill installation", (provider, agentId) => {
+      const skills = providerSkillsFromCatalog(
+        [
+          {
+            id: "example-skill",
+            name: "example-skill",
+            displayName: "Example Skill",
+            canonicalPath: `/home/test/skills/example-skill`,
+            paths: [`/home/test/skills/example-skill`],
+            installations: [
+              {
+                agentId,
+                agentName: "Test Agent",
+                path: `/home/test/skills/example-skill`,
+                source: "primary",
+              },
+            ],
+            hasPathConflict: false,
+          },
+        ],
+        ProviderDriverKind.make(provider),
+      );
+
+      expect(skills).toHaveLength(1);
+      expect(skills[0]?.name).toBe("example-skill");
+    });
+
+    it("returns no skills for providers without a skill installation mapping", () => {
+      const skills = providerSkillsFromCatalog(
+        [
+          {
+            id: "example-skill",
+            name: "example-skill",
+            displayName: "Example Skill",
+            canonicalPath: "/home/test/.agents/skills/example-skill",
+            paths: ["/home/test/.agents/skills/example-skill"],
+            installations: [
+              {
+                agentId: "shared",
+                agentName: "Shared",
+                path: "/home/test/.agents/skills/example-skill",
+                source: "shared",
+              },
+            ],
+            hasPathConflict: false,
+          },
+        ],
+        ProviderDriverKind.make("opencode"),
+      );
+
+      expect(skills).toEqual([]);
+    });
   });
 
   it("uses fuzzy ranking for abbreviated queries", () => {

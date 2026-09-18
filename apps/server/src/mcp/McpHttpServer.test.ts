@@ -195,6 +195,7 @@ it("returns an actionable expired-session response with a Bearer challenge", () 
   expect(McpHttpServer.invalidMcpCredentialResponse.headers["www-authenticate"]).toBe("Bearer");
   expect(McpHttpServer.invalidMcpCredentialBody).toEqual({
     error: "invalid_mcp_credential",
+    recovery: "reconnect-required",
     message:
       "The T3 Code MCP session credential is invalid or expired. Restart the chat/session to reconnect browser automation.",
   });

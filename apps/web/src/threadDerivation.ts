@@ -1,4 +1,5 @@
 import type { MessageId, OrchestrationQueuedTurn, ThreadId, TurnId } from "@t3tools/contracts";
+import { validationRunEquals } from "@t3tools/contracts";
 import type { EnvironmentState } from "./store";
 import type {
   ChatMessage,
@@ -92,7 +93,8 @@ function threadShellContentEqualIgnoringUpdatedAt(
     previous.snoozedAt === next.snoozedAt &&
     previous.branch === next.branch &&
     previous.worktreePath === next.worktreePath &&
-    threadPullRequestEqual(previous.pullRequest, next.pullRequest)
+    threadPullRequestEqual(previous.pullRequest, next.pullRequest) &&
+    validationRunEquals(previous.validationRun, next.validationRun)
   );
 }
 

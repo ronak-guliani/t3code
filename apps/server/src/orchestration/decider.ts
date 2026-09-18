@@ -29,6 +29,7 @@ import {
   threadHasQueuedTurnStart,
   threadHasSettlementOverride,
   threadIsSnoozed,
+  CHILD_DECISION_BLOCKED_DETAIL,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
@@ -54,6 +55,11 @@ import {
   transitionDelegationExecution,
   type RecordedReportOutcome,
 } from "./dispatchAuthority.ts";
+import {
+  planValidationRun,
+  transitionValidationGate,
+  validationTargetEquals,
+} from "@t3tools/contracts";
 
 const FORK_TITLE_PREFIX = "Forked: ";
 /**
@@ -382,6 +388,7 @@ function buildTurnStartEvents(input: {
   readonly delegationAssignmentId?: TurnStartRequestedPayload["delegationAssignmentId"];
   readonly delegationDispatchId?: TurnStartRequestedPayload["delegationDispatchId"];
   readonly delegationTransition?: TurnStartRequestedPayload["delegationTransition"];
+  readonly workspaceBinding?: TurnStartRequestedPayload["workspaceBinding"];
   readonly at: string;
 }): {
   readonly userMessageEvent: PlannedOrchestrationEvent;
@@ -434,6 +441,7 @@ function buildTurnStartEvents(input: {
       ...(input.delegationTransition !== undefined
         ? { delegationTransition: input.delegationTransition }
         : {}),
+      ...(input.workspaceBinding !== undefined ? { workspaceBinding: input.workspaceBinding } : {}),
       createdAt: input.at,
     },
   };
@@ -825,6 +833,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           ...(command.pullRequest !== undefined ? { pullRequest: command.pullRequest } : {}),
           ...(command.reviewSnapshot !== undefined
             ? { reviewSnapshot: command.reviewSnapshot }
@@ -1263,6 +1274,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.branch !== undefined ? { branch: command.branch } : {}),
           ...(command.worktreePath !== undefined ? { worktreePath: command.worktreePath } : {}),
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           ...(command.pullRequest !== undefined ? { pullRequest: command.pullRequest } : {}),
           ...(command.pullRequestSource !== undefined
             ? { pullRequestSource: command.pullRequestSource }
@@ -1485,6 +1499,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           updatedAt: occurredAt,
         },
       };
@@ -1493,6 +1510,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         role: "marker",
         branch: command.branch,
         worktreePath: command.worktreePath,
+        ...(command.workspaceBinding !== undefined
+          ? { workspaceBinding: command.workspaceBinding }
+          : {}),
       } as const;
       // The marker is the invariant of a handoff: it records the workspace move
       // whether the thread continues on a generated continuation or on a turn
@@ -1804,8 +1824,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (activeDelegation?.decision) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail:
-            "Resolve the current child decision through its correlated response before continuing.",
+          detail: CHILD_DECISION_BLOCKED_DETAIL,
         });
       }
       const execution =
@@ -1834,6 +1853,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               delegationDispatchId: turnDelegation.dispatchId,
               delegationTransition: turnDelegation.dispatchReason ?? "assigned",
             }
+          : {}),
+        ...(command.workspaceBinding !== undefined
+          ? { workspaceBinding: command.workspaceBinding }
           : {}),
         at: command.createdAt,
       });
@@ -1880,10 +1902,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               }),
             ]
           : [];
+      const workspaceBindingEvent =
+        command.workspaceBinding !== undefined &&
+        (targetThread.workspaceBinding?.generation !== command.workspaceBinding.generation ||
+          targetThread.workspaceBinding?.canonicalPath !== command.workspaceBinding.canonicalPath)
+          ? [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread",
+                  aggregateId: command.threadId,
+                  occurredAt,
+                  commandId: command.commandId,
+                }),
+                type: "thread.meta-updated" as const,
+                payload: {
+                  threadId: command.threadId,
+                  branch: command.workspaceBinding.branch,
+                  worktreePath: command.workspaceBinding.worktreePath,
+                  workspaceBinding: command.workspaceBinding,
+                  updatedAt: occurredAt,
+                },
+              },
+            ]
+          : [];
       return appendChildLifecycleNotification({
         readModel,
         childThread: targetThread,
         sourceEvents: [
+          ...workspaceBindingEvent,
           userMessageEvent,
           turnStartRequestedEvent,
           ...delegationEvents,
@@ -2181,8 +2227,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (activeDelegation?.decision && !responseDispatched) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail:
-            "Resolve the current child decision through its correlated response before continuing.",
+          detail: CHILD_DECISION_BLOCKED_DETAIL,
         });
       }
       const execution =
@@ -2239,6 +2284,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
+      // Persist an isolated workspace binding admitted for this dispatch. The
+      // turn-start-requested payload below carries the binding for provenance,
+      // but no projector applies it to the thread; without this meta-updated
+      // event the provider would keep executing in the stale worktree while
+      // the claimed isolated workspace sits unused.
+      if (
+        command.workspaceBinding !== undefined &&
+        (targetThread.workspaceBinding?.generation !== command.workspaceBinding.generation ||
+          targetThread.workspaceBinding?.canonicalPath !== command.workspaceBinding.canonicalPath)
+      ) {
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.dispatchedAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.meta-updated",
+          payload: {
+            threadId: command.threadId,
+            branch: command.workspaceBinding.branch,
+            worktreePath: command.workspaceBinding.worktreePath,
+            workspaceBinding: command.workspaceBinding,
+            updatedAt: command.dispatchedAt,
+          },
+        });
+      }
       const { userMessageEvent, turnStartRequestedEvent } = buildTurnStartEvents({
         commandId: command.commandId,
         threadId: command.threadId,
@@ -2259,6 +2331,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         runtimeMode: isNudge ? targetThread.runtimeMode : queuedTurn.runtimeMode,
         interactionMode: isNudge ? targetThread.interactionMode : queuedTurn.interactionMode,
         sourceProposedPlan: queuedTurn.sourceProposedPlan,
+        workspaceBinding: command.workspaceBinding ?? targetThread.workspaceBinding ?? undefined,
         ...(turnDelegation?.dispatchId
           ? {
               delegationAssignmentId: turnDelegation.assignmentId,
@@ -2472,6 +2545,104 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return thread.nudging?.paused === true
         ? stopped
         : [stopped, nudgingMetaEvent(thread, stopped, { ...thread.nudging, paused: true })];
+    }
+
+    case "thread.validation-run.plan": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        thread.validationRun !== null &&
+        thread.validationRun !== undefined &&
+        validationTargetEquals(thread.validationRun.target, command.target)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A validation run is already planned for this thread.",
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-run-planned",
+        payload: {
+          threadId: command.threadId,
+          run: planValidationRun({
+            id: command.runId,
+            threadId: command.threadId,
+            executorId: command.executorId,
+            target: command.target,
+            requestedAt: command.createdAt,
+          }),
+        },
+      };
+    }
+
+    case "thread.validation-gate.update": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (!thread.validationRun || thread.validationRun.id !== command.runId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation gate update does not match the active validation run.",
+        });
+      }
+      if (
+        thread.validationRun.executorId !== command.executorId ||
+        !validationTargetEquals(thread.validationRun.target, command.target)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation gate update is not owned by the active target executor.",
+        });
+      }
+      const run = yield* Effect.try({
+        try: () =>
+          transitionValidationGate(
+            thread.validationRun,
+            {
+              gateId: command.gateId,
+              status: command.status,
+              command: command.command,
+              startedAt: command.startedAt,
+              completedAt: command.completedAt,
+              exitCode: command.exitCode,
+              outputRef: command.outputRef,
+              blockerReason: command.blockerReason,
+              diagnostics: command.diagnostics,
+            },
+            command.createdAt,
+          ),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: cause instanceof Error ? cause.message : "Invalid validation gate transition.",
+          }),
+      });
+      const gate = run.gates.find((candidate) => candidate.id === command.gateId);
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-gate-updated",
+        payload: {
+          threadId: command.threadId,
+          runId: command.runId,
+          gate,
+        },
+      };
     }
 
     case "thread.session.set": {

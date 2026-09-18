@@ -30,6 +30,13 @@ import {
   WorkflowRun,
   WorkflowRunId,
 } from "./agentWorkflows.ts";
+import {
+  ValidationGate,
+  ValidationGateId,
+  ValidationGateStatus,
+  ValidationRun,
+  ValidationTarget,
+} from "./validation.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -41,6 +48,7 @@ export const ORCHESTRATION_WS_METHODS = {
   replayEvents: "orchestration.replayEvents",
   getShellSnapshot: "orchestration.getShellSnapshot",
   getThreadSnapshot: "orchestration.getThreadSnapshot",
+  readThread: "orchestration.readThread",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
@@ -229,6 +237,14 @@ export type ProjectScript = typeof ProjectScript.Type;
 export const OrchestrationProjectKind = Schema.Literals(["workspace", "chat-import"]);
 export type OrchestrationProjectKind = typeof OrchestrationProjectKind.Type;
 
+export const WorkspaceBinding = Schema.Struct({
+  canonicalPath: TrimmedNonEmptyString,
+  worktreePath: TrimmedNonEmptyString,
+  branch: Schema.NullOr(TrimmedNonEmptyString),
+  generation: NonNegativeInt,
+});
+export type WorkspaceBinding = typeof WorkspaceBinding.Type;
+
 export const OrchestrationProject = Schema.Struct({
   kind: Schema.optionalKey(OrchestrationProjectKind),
   autoPull: Schema.optional(Schema.Boolean),
@@ -259,6 +275,7 @@ export const WorkspaceHandoffOrigin = Schema.Struct({
   role: Schema.Literals(["marker", "continuation"]),
   branch: TrimmedNonEmptyString,
   worktreePath: TrimmedNonEmptyString,
+  workspaceBinding: Schema.optional(WorkspaceBinding),
 });
 export type WorkspaceHandoffOrigin = typeof WorkspaceHandoffOrigin.Type;
 
@@ -404,6 +421,7 @@ export const OrchestrationMessage = Schema.Struct({
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   origin: Schema.optional(MessageOrigin),
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -459,6 +477,7 @@ export const OrchestrationQueuedTurn = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   failedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -656,6 +675,7 @@ export const OrchestrationThread = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   /**
    * Durable PR association for this thread. Never inferred from checkout/branch
    * equality — only set by explicit PR checkout/create/open flows.
@@ -664,6 +684,7 @@ export const OrchestrationThread = Schema.Struct({
   pullRequests: Schema.optionalKey(Schema.Array(ThreadPullRequestLink)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   reviewResult: Schema.optionalKey(Schema.NullOr(ReviewResult)),
+  validationRun: Schema.optionalKey(Schema.NullOr(ValidationRun)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -746,8 +767,10 @@ export const OrchestrationThreadShell = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   pullRequests: Schema.optionalKey(Schema.Array(ThreadPullRequestLink)),
+  validationRun: Schema.optionalKey(Schema.NullOr(ValidationRun)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -816,6 +839,25 @@ export const OrchestrationThreadDetailSnapshot = Schema.Struct({
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;
 
+export const OrchestrationReadThreadInput = Schema.Struct({
+  thread: TrimmedNonEmptyString,
+  view: Schema.Literals(["summary", "messages", "activities"]),
+  limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),
+  before: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(2048))),
+});
+export type OrchestrationReadThreadInput = typeof OrchestrationReadThreadInput.Type;
+
+export const OrchestrationReadThreadResult = Schema.Struct({
+  thread: OrchestrationThreadShell,
+  messages: Schema.optionalKey(Schema.Array(OrchestrationMessage)),
+  activities: Schema.optionalKey(Schema.Array(OrchestrationThreadActivity)),
+  page: Schema.Struct({
+    hasMore: Schema.Boolean,
+    before: Schema.NullOr(Schema.String),
+  }),
+});
+export type OrchestrationReadThreadResult = typeof OrchestrationReadThreadResult.Type;
+
 export const ProjectCreateCommand = Schema.Struct({
   type: Schema.Literal("project.create"),
   commandId: CommandId,
@@ -860,6 +902,9 @@ const ThreadCreateCommand = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  sourceBranch: Schema.optional(TrimmedNonEmptyString),
+  sourceWorktreePath: Schema.optional(TrimmedNonEmptyString),
+  workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   createdAt: IsoDateTime,
@@ -950,6 +995,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  workspaceBinding: Schema.optional(Schema.NullOr(WorkspaceBinding)),
   pullRequest: Schema.optional(Schema.NullOr(GitPullRequestAssociation)),
   pullRequestSource: Schema.optional(ThreadPullRequestLinkSource),
   pullRequestOwnership: Schema.optional(Schema.Literal("transfer")),
@@ -967,6 +1013,7 @@ const ThreadWorkspaceHandoffCommand = Schema.Struct({
   threadId: ThreadId,
   branch: TrimmedNonEmptyString,
   worktreePath: TrimmedNonEmptyString,
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   markerMessageId: MessageId,
   continuation: OrchestrationQueuedTurn,
 });
@@ -1067,6 +1114,9 @@ const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  sourceBranch: Schema.optional(TrimmedNonEmptyString),
+  sourceWorktreePath: Schema.optional(TrimmedNonEmptyString),
+  workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   createdAt: IsoDateTime,
@@ -1103,6 +1153,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   origin: Schema.optional(MessageOrigin),
   crossThreadSourceThreadId: Schema.optional(ThreadId),
@@ -1125,6 +1176,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   crossThreadSourceThreadId: Schema.optional(ThreadId),
   crossThreadDispatchCapability: Schema.optional(Schema.String),
@@ -1209,6 +1261,7 @@ const ThreadQueuedTurnDispatchCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   queuedTurnId: QueuedTurnId,
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   dispatchedAt: IsoDateTime,
 });
 
@@ -1262,6 +1315,35 @@ const ThreadSessionStopCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadValidationRunPlanCommand = Schema.Struct({
+  type: Schema.Literal("thread.validation-run.plan"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  runId: TrimmedNonEmptyString,
+  executorId: TrimmedNonEmptyString,
+  target: ValidationTarget,
+  createdAt: IsoDateTime,
+});
+
+const ThreadValidationGateUpdateCommand = Schema.Struct({
+  type: Schema.Literal("thread.validation-gate.update"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  runId: TrimmedNonEmptyString,
+  executorId: TrimmedNonEmptyString,
+  target: ValidationTarget,
+  gateId: ValidationGateId,
+  status: ValidationGateStatus,
+  command: Schema.NullOr(TrimmedNonEmptyString),
+  startedAt: Schema.NullOr(IsoDateTime),
+  completedAt: Schema.NullOr(IsoDateTime),
+  exitCode: Schema.NullOr(Schema.Int),
+  outputRef: Schema.NullOr(TrimmedNonEmptyString),
+  blockerReason: Schema.NullOr(TrimmedNonEmptyString),
+  diagnostics: Schema.Array(TrimmedNonEmptyString),
+  createdAt: IsoDateTime,
+});
+
 /** Durable execution settings for a workflow worker. These are captured when
  * the run is requested so restart recovery never falls back to changed parent
  * settings or a different worktree. */
@@ -1271,6 +1353,7 @@ export const WorkflowWorkerConfig = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
 });
@@ -1546,7 +1629,7 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
 });
 
-const InternalOrchestrationCommand = Schema.Union([
+export const InternalOrchestrationCommand = Schema.Union([
   ChatArchiveImportCommand,
   ThreadSessionSetCommand,
   ThreadDispatchReplaceCommand,
@@ -1564,6 +1647,8 @@ const InternalOrchestrationCommand = Schema.Union([
   WorkflowNodeWorkerStartCommand,
   WorkflowWorkerResultRecordCommand,
   WorkflowRunFinalizeCommand,
+  ThreadValidationRunPlanCommand,
+  ThreadValidationGateUpdateCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
 
@@ -1612,6 +1697,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.reverted",
   "thread.session-stop-requested",
   "thread.session-set",
+  "thread.validation-run-planned",
+  "thread.validation-gate-updated",
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
@@ -1670,6 +1757,7 @@ export const ThreadCreatedPayload = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   createdAt: IsoDateTime,
@@ -1766,6 +1854,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  workspaceBinding: Schema.optionalKey(Schema.NullOr(WorkspaceBinding)),
   pullRequest: Schema.optional(Schema.NullOr(GitPullRequestAssociation)),
   pullRequestSource: Schema.optional(ThreadPullRequestLinkSource),
   pullRequestOwnership: Schema.optional(Schema.Literal("transfer")),
@@ -1846,6 +1935,7 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   delegationAssignmentId: Schema.optional(MessageId),
   delegationDispatchId: Schema.optional(TrimmedNonEmptyString),
   delegationTransition: Schema.optional(Schema.Literals(["assigned", "continued", "replaced"])),
+  workspaceBinding: Schema.optional(WorkspaceBinding),
   createdAt: IsoDateTime,
 });
 
@@ -1930,6 +2020,17 @@ export const ThreadSessionStopRequestedPayload = Schema.Struct({
 export const ThreadSessionSetPayload = Schema.Struct({
   threadId: ThreadId,
   session: OrchestrationSession,
+});
+
+export const ThreadValidationRunPlannedPayload = Schema.Struct({
+  threadId: ThreadId,
+  run: ValidationRun,
+});
+
+export const ThreadValidationGateUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  runId: TrimmedNonEmptyString,
+  gate: ValidationGate,
 });
 
 export const ThreadProposedPlanUpsertedPayload = Schema.Struct({
@@ -2201,6 +2302,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.session-set"),
     payload: ThreadSessionSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.validation-run-planned"),
+    payload: ThreadValidationRunPlannedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.validation-gate-updated"),
+    payload: ThreadValidationGateUpdatedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -2634,6 +2745,10 @@ const OrchestrationReplayEventsResult = Schema.Array(OrchestrationEvent);
 export type OrchestrationReplayEventsResult = typeof OrchestrationReplayEventsResult.Type;
 
 export const OrchestrationRpcSchemas = {
+  readThread: {
+    input: OrchestrationReadThreadInput,
+    output: OrchestrationReadThreadResult,
+  },
   dispatchCommand: {
     input: ClientOrchestrationCommand,
     output: DispatchResult,
@@ -2691,6 +2806,13 @@ export const OrchestrationRpcSchemas = {
     output: OrchestrationShellStreamItem,
   },
 } as const;
+
+export class OrchestrationReadThreadInputError extends Schema.TaggedErrorClass<OrchestrationReadThreadInputError>()(
+  "OrchestrationReadThreadInputError",
+  {
+    message: TrimmedNonEmptyString,
+  },
+) {}
 
 export class OrchestrationGetSnapshotError extends Schema.TaggedErrorClass<OrchestrationGetSnapshotError>()(
   "OrchestrationGetSnapshotError",
