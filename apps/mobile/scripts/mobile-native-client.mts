@@ -55,6 +55,9 @@ interface CheckResult {
 }
 
 interface Stamp {
+  // Records a successful native install only. Launch state is deliberately
+  // excluded: pointing the client at Metro is retried on every ensure, so a
+  // failed launch must never invalidate the stamp and trigger a rebuild.
   readonly version: 1;
   readonly variant: Variant;
   readonly bundleId: string;
@@ -62,7 +65,6 @@ interface Stamp {
   readonly udid: string;
   readonly installedAt: string;
 }
-
 const here = dirname(fileURLToPath(import.meta.url));
 
 function findRepoRoot(start: string): string {
@@ -99,24 +101,32 @@ export function parseArgs(argv: ReadonlyArray<string>): {
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
     if (arg === "--variant") {
-      const value = rest[++i];
+      const value = takeOptionValue(rest, ++i, arg);
       if (value !== "development" && value !== "preview") {
         throw new Error(`Unknown --variant: ${value}. Use development or preview.`);
       }
       variant = value;
     } else if (arg === "--udid") {
-      udid = rest[++i];
+      udid = takeOptionValue(rest, ++i, arg);
     } else if (arg === "--manifest-url") {
-      manifestUrl = rest[++i];
+      manifestUrl = takeOptionValue(rest, ++i, arg);
     } else if (arg === "--no-launch") {
       launch = false;
     } else if (arg === "--project-root") {
-      projectRoot = rest[++i];
+      projectRoot = takeOptionValue(rest, ++i, arg);
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
   }
   return { command, variant, udid, manifestUrl, launch, projectRoot };
+}
+
+function takeOptionValue(args: ReadonlyArray<string>, index: number, flag: string): string {
+  const value = args[index];
+  if (value === undefined || value.startsWith("--")) {
+    throw new Error(`Missing value for ${flag}.`);
+  }
+  return value;
 }
 
 function runQuiet(cmd: string, args: ReadonlyArray<string>, cwd: string, env = {}): string {
@@ -258,7 +268,14 @@ function pointAtMetro(udid: string, bundleId: string, manifestUrl: string): void
   } catch {
     // Cold client; openurl below launches it.
   }
-  execFileSync("xcrun", ["simctl", "openurl", udid, manifestUrl], { stdio: "ignore" });
+  try {
+    execFileSync("xcrun", ["simctl", "openurl", udid, manifestUrl], { stdio: "ignore" });
+  } catch (error) {
+    throw new Error(
+      `Installed ${bundleId} but could not point it at Metro (${manifestUrl}). The native install is recorded as fresh; start Metro and re-run ensure to relaunch.`,
+      { cause: error },
+    );
+  }
 }
 
 /**
@@ -304,6 +321,8 @@ export function ensureVariant(
   };
   mkdirSync(dirname(stampPath(projectRoot, variant)), { recursive: true });
   writeFileSync(stampPath(projectRoot, variant), `${JSON.stringify(stamp, null, 2)}\n`);
+  // Launch after recording the install: a launch failure throws a
+  // relaunchable error and must not invalidate the fresh native install.
   if (launch) pointAtMetro(udid, VARIANTS[variant].bundleId, manifestUrl);
   return { ...rebuiltStatus(checked), action: "rebuilt" };
 }

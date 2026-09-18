@@ -43,6 +43,7 @@ const mockProcesses = (
     fingerprintOutput?: string;
     installed?: boolean;
     runStatus?: number;
+    launchFails?: boolean;
   } = {},
 ) => {
   const spawns: Array<{ cmd: string; args: ReadonlyArray<string> }> = [];
@@ -52,6 +53,9 @@ const mockProcesses = (
     execs.push({ cmd, args: [...args] });
     if (args.includes("fingerprint:generate")) {
       return options.fingerprintOutput ?? JSON.stringify({ hash: fingerprint });
+    }
+    if (args.includes("openurl") && options.launchFails === true) {
+      throw new Error("simctl openurl failed");
     }
     return "";
   }) as typeof execFileSync);
@@ -103,9 +107,21 @@ describe("mobile-native-client args", () => {
   });
 
   it("rejects unknown commands, variants, and options", () => {
+    expect(() => parseArgs(["check", "--variant"])).toThrow("Missing value");
     expect(() => parseArgs(["build"])).toThrow("Usage");
     expect(() => parseArgs(["check", "--variant", "production"])).toThrow("--variant");
     expect(() => parseArgs(["check", "--rebuild"])).toThrow("Unknown option");
+  });
+
+  it("rejects missing option values instead of surfacing them later", () => {
+    expect(() => parseArgs(["check", "--udid"])).toThrow("Missing value for --udid");
+    expect(() => parseArgs(["check", "--udid", "--no-launch"])).toThrow("Missing value for --udid");
+    expect(() => parseArgs(["ensure", "--manifest-url"])).toThrow(
+      "Missing value for --manifest-url",
+    );
+    expect(() => parseArgs(["ensure", "--project-root"])).toThrow(
+      "Missing value for --project-root",
+    );
   });
 });
 
@@ -257,6 +273,41 @@ describe("mobile-native-client ensure", () => {
       ),
     ).toThrow("run:ios");
     expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
+  });
+
+  it("keeps the fresh stamp when the post-build Metro launch fails", () => {
+    mockProcesses({ installed: false, launchFails: true });
+    vi.mocked(readFileSync).mockImplementation(() => {
+      throw Object.assign(new Error("no stamp"), { code: "ENOENT" });
+    });
+    expect(() =>
+      ensureVariant(
+        projectRoot,
+        "development",
+        udid,
+        manifestUrlFor("development", undefined),
+        true,
+      ),
+    ).toThrow("could not point it at Metro");
+    // The native install succeeded, so the stamp stays: the next ensure
+    // relaunches instead of rebuilding.
+    expect(vi.mocked(writeFileSync)).toHaveBeenCalledOnce();
+  });
+
+  it("surfaces a relaunchable error when the fresh-path launch fails", () => {
+    const { spawns } = mockProcesses({ launchFails: true });
+    vi.mocked(readFileSync).mockReturnValue(stamp());
+    expect(() =>
+      ensureVariant(
+        projectRoot,
+        "development",
+        udid,
+        manifestUrlFor("development", undefined),
+        true,
+      ),
+    ).toThrow("could not point it at Metro");
+    const commands = spawns.map((call) => call.args.join(" "));
+    expect(commands.some((args) => args.includes("prebuild"))).toBe(false);
   });
 });
 

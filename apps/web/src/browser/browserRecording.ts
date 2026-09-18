@@ -205,7 +205,9 @@ const bytesToBase64 = (bytes: Uint8Array): string => {
 /**
  * Read retained bytes for a finished recording. Returns null when the
  * recording is unknown (e.g. after a renderer reload evicted the cache) or
- * outside the single-transfer size bound.
+ * outside the single-transfer size bound. sizeBytes is derived from the
+ * retained bytes themselves so it cannot disagree with the encoded data the
+ * server integrity-checks.
  */
 export function readSavedBrowserRecordingTransfer(
   recordingId: string,
@@ -222,7 +224,7 @@ export function readSavedBrowserRecordingTransfer(
     id: saved.id,
     tabId: saved.serverTabId,
     mimeType: saved.mimeType,
-    sizeBytes: saved.sizeBytes,
+    sizeBytes: saved.bytes.byteLength,
     createdAt: saved.createdAt,
     data: bytesToBase64(saved.bytes),
   };
