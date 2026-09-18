@@ -99,6 +99,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import {
   CircleAlertIcon,
+  PaperclipIcon,
   ListTodoIcon,
   type LucideIcon,
   LockIcon,
@@ -843,6 +844,7 @@ export const ChatComposer = memo(
     const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
     const composerFormRef = useRef<HTMLFormElement>(null);
     const composerSurfaceRef = useRef<HTMLDivElement>(null);
+    const composerAttachmentInputRef = useRef<HTMLInputElement>(null);
     const composerFormHeightRef = useRef(0);
     const composerSelectLockRef = useRef(false);
     const composerMenuOpenRef = useRef(false);
@@ -1906,6 +1908,14 @@ export const ChatComposer = memo(
       addComposerImages(imageFiles);
     };
 
+    const onComposerAttachmentInputChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
+      const files = Array.from(event.currentTarget.files ?? []);
+      if (files.length > 0) {
+        addComposerImages(files);
+      }
+      event.currentTarget.value = "";
+    };
+
     const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
       if (!event.dataTransfer.types.includes("Files")) return;
       event.preventDefault();
@@ -2127,7 +2137,7 @@ export const ChatComposer = memo(
       >
         <div
           className={cn(
-            "group rounded-[22px] p-px transition-colors duration-200",
+            "group relative z-10 rounded-[22px] p-px transition-colors duration-200",
             composerProviderState.composerFrameClassName,
           )}
           onDragEnter={editingQueuedTurn ? undefined : onComposerDragEnter}
@@ -2139,8 +2149,8 @@ export const ChatComposer = memo(
             ref={composerSurfaceRef}
             data-chat-composer-mobile-collapsed={isComposerCollapsedMobile ? "true" : "false"}
             className={cn(
-              "rounded-[20px] border bg-card transition-colors duration-200 has-focus-visible:border-ring/45",
-              isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border",
+              "rounded-[20px] bg-card transition-[background-color] duration-200 has-focus-visible:ring-1 has-focus-visible:ring-ring/45",
+              isDragOverComposer ? "bg-accent/45 ring-1 ring-primary/70" : null,
               composerProviderState.composerSurfaceClassName,
             )}
             onFocusCapture={(event) => {
@@ -2499,6 +2509,35 @@ export const ChatComposer = memo(
                   }
                   className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
                 >
+                  {!editingQueuedTurn ? (
+                    <>
+                      <input
+                        ref={composerAttachmentInputRef}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        onChange={onComposerAttachmentInputChange}
+                      />
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              onPointerDown={(event) => event.preventDefault()}
+                              onClick={() => composerAttachmentInputRef.current?.click()}
+                              aria-label="Attach images"
+                            />
+                          }
+                        >
+                          <PaperclipIcon />
+                        </TooltipTrigger>
+                        <TooltipPopup>Attach images</TooltipPopup>
+                      </Tooltip>
+                    </>
+                  ) : null}
                   <ComposerFooterPrimaryActions
                     compact={isComposerPrimaryActionsCompact}
                     pendingAction={pendingPrimaryAction}
