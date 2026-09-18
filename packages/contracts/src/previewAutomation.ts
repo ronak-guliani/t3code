@@ -45,6 +45,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "setColorScheme",
   "listTabs",
   "openAndSnapshot",
+  "recordingTransfer",
   "preflight",
 ] as const;
 
@@ -460,6 +461,15 @@ export const PreviewAutomationEvaluateInput = Schema.Struct({
 });
 export type PreviewAutomationEvaluateInput = typeof PreviewAutomationEvaluateInput.Type;
 
+/**
+ * Object-wrapped evaluation result. The wrapper keeps the MCP output shape
+ * stable when the page returns null, undefined, or a primitive.
+ */
+export const PreviewAutomationEvaluateResult = Schema.Struct({
+  value: Schema.Unknown,
+});
+export type PreviewAutomationEvaluateResult = typeof PreviewAutomationEvaluateResult.Type;
+
 export const PreviewAutomationWaitForInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
   selector: Schema.optional(LegacySelector).annotate({
@@ -559,6 +569,11 @@ const PreviewAutomationSnapshotBodyFields = {
     width: Schema.Int,
     height: Schema.Int,
   }),
+  /**
+   * Server-persisted screenshot location, present only when the snapshot was
+   * requested with `save: true` and the capture was stored as evidence.
+   */
+  screenshotPath: Schema.optional(Schema.String),
   /** Optional compact diagnostic summary for model context. */
   diagnosticsSummary: Schema.optional(Schema.String),
 };
@@ -587,6 +602,12 @@ export const DEFAULT_SNAPSHOT_MAX_SCREENSHOT_EDGE = 1280;
 export const DEFAULT_SNAPSHOT_MAX_CONSOLE_ENTRIES = 40;
 export const DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES = 40;
 export const DEFAULT_LOCATOR_CANDIDATE_LIMIT = 5;
+/**
+ * Hard ceiling for serialized snapshot metadata text returned over MCP.
+ * Per-field budgets keep captures context-safe; this final ceiling guards
+ * the serialized output after hosts apply their own budgets.
+ */
+export const PREVIEW_SNAPSHOT_FINAL_TEXT_BUDGET_BYTES = 60_000;
 
 const OptionalPositiveInt = (description: string, maximum: number) =>
   Schema.optional(
@@ -595,8 +616,16 @@ const OptionalPositiveInt = (description: string, maximum: number) =>
       .annotate({ description }),
   ).annotate({ description });
 
+const PreviewAutomationSnapshotSaveFields = {
+  save: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Persist the screenshot as a server-side evidence file and return its screenshotPath. Defaults to false.",
+  }),
+};
+
 export const PreviewAutomationSnapshotInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
+  ...PreviewAutomationSnapshotSaveFields,
   includeConsole: Schema.optional(Schema.Boolean).annotate({
     description:
       "Include console entries. Defaults to true (errors/warnings preferred when reducing).",
@@ -666,6 +695,7 @@ export type PreviewAutomationListTabsInput = typeof PreviewAutomationListTabsInp
 
 export const PreviewAutomationOpenAndSnapshotInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
+  ...PreviewAutomationSnapshotSaveFields,
   url: Schema.optional(BoundedUrl).annotate({
     description: `Optional initial page URL. ${URL_GUIDANCE} Omit to open a blank tab (or pass target instead).`,
   }),
@@ -878,8 +908,46 @@ export const PreviewAutomationRecordingArtifact = Schema.Struct({
   mimeType: Schema.String,
   sizeBytes: Schema.Int,
   createdAt: Schema.String,
+  /**
+   * True when `path` was transferred to the agent environment's server and is
+   * readable there. Absent/false means `path` is local to the browser host
+   * that recorded it (older hosts, or a failed transfer with graceful
+   * fallback to the host-local path).
+   */
+  transferred: Schema.optional(Schema.Boolean),
 });
 export type PreviewAutomationRecordingArtifact = typeof PreviewAutomationRecordingArtifact.Type;
+
+/**
+ * Maximum recording payload accepted over the automation channel in one
+ * transfer. Mirrors the screenshot bound so a single finished recording can
+ * move without chunking.
+ */
+export const PREVIEW_RECORDING_TRANSFER_MAX_BYTES = 64 * 1024 * 1024;
+
+export const PreviewAutomationRecordingTransferInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  recordingId: Schema.String.annotate({
+    description: "Recording id from a previous preview_recording_stop artifact.",
+  }),
+}).annotate({
+  description:
+    "Fetches finished recording bytes from the browser host so the server can store an agent-readable copy.",
+});
+export type PreviewAutomationRecordingTransferInput =
+  typeof PreviewAutomationRecordingTransferInput.Type;
+
+export const PreviewAutomationRecordingTransferResult = Schema.Struct({
+  id: Schema.String,
+  tabId: PreviewTabId,
+  mimeType: Schema.String,
+  sizeBytes: Schema.Int,
+  createdAt: Schema.String,
+  /** Base64-encoded recording bytes. */
+  data: Schema.String,
+});
+export type PreviewAutomationRecordingTransferResult =
+  typeof PreviewAutomationRecordingTransferResult.Type;
 
 export const PreviewAutomationClientId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 export type PreviewAutomationClientId = typeof PreviewAutomationClientId.Type;
