@@ -121,6 +121,41 @@ export function hasWorkLogToolData(data: unknown): boolean {
   return data !== undefined && data !== null;
 }
 
+/**
+ * Runtime activities carry their human-readable text in `payload.message`,
+ * with optional extra context in `payload.detail` (a string or an object such
+ * as the OpenCode retry status). Tool-detail extraction only reads a string
+ * `detail`, so without this the message never reaches the work-log row and
+ * the row renders with nothing to expand.
+ */
+export function extractRuntimeActivityDetail(
+  payload: Record<string, unknown> | null,
+): string | null {
+  if (!payload) return null;
+  const message = nonEmptyString(payload.message);
+  const detail = payload.detail;
+  if (typeof detail === "string") {
+    const detailText = detail.trim();
+    if (detailText.length > 0) {
+      if (!message) return detailText;
+      if (detailText === message) return message;
+      return `${message}\n\n${detailText}`;
+    }
+    return message;
+  }
+  if (!message) return null;
+  if (detail === undefined || detail === null) return message;
+  let serialized: string | null = null;
+  try {
+    serialized = JSON.stringify(detail, null, 2)?.trim() ?? null;
+  } catch {
+    serialized = null;
+  }
+  if (!serialized || serialized === "{}" || serialized === "[]") return message;
+  if (serialized === message) return message;
+  return `${message}\n\n${serialized}`;
+}
+
 /** Display paths need no Git pathspec normalization: absolute provider paths are valid labels. */
 function workEntryDisplayPath(entry: WorkLogPresentationEntry): string | null {
   const data = asRecord(entry.toolData);

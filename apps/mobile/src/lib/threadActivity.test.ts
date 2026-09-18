@@ -842,6 +842,35 @@ describe("buildThreadFeed", () => {
     expect(row?.canExpand).toBe(input.canExpand);
   });
 
+  it("expands a runtime warning whose message differs from its summary", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-runtime-message"),
+      projectId: ProjectId.make("project-1"),
+      title: "Runtime message",
+      activities: [
+        makeActivity({
+          id: EventId.make("runtime-message"),
+          kind: "runtime.warning",
+          summary: "Runtime warning",
+          createdAt: "2026-09-01T00:00:00.000Z",
+          payload: {
+            message: "Retrying after 429",
+            detail: { type: "retry", attempt: 2 },
+          },
+        }),
+      ],
+    });
+
+    const [group] = buildThreadFeed(thread);
+    expect(group?.type).toBe("activity-group");
+    if (group?.type !== "activity-group") return;
+    const [row] = group.activities;
+    expect(row?.workEntry.detail).toContain("Retrying after 429");
+    expect(row?.workEntry.detail).toContain('"attempt": 2');
+    expect(row?.canExpand).toBe(true);
+    expect(row?.getFullDetail()).toContain("Retrying after 429");
+  });
+
   it("drops a truncated Claude echo of a long command", () => {
     const command = `git add -A && git commit -m "${"x".repeat(200)}"`;
     const thread = makeThread({
