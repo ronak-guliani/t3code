@@ -99,10 +99,10 @@ const isInstalled = Effect.fn("DeviceToolchain.isInstalled")(function* (
   paths: DeviceToolPaths,
   version: string,
 ) {
-  const [entryExists, sentinel] = yield* Effect.all([
-    fs.exists(paths.entryPath),
-    fs.readFileString(paths.sentinelPath).pipe(Effect.option),
-  ]).pipe(Effect.orElseSucceed(() => [false, Option.none<string>()] as const));
+  const [entryExists, sentinel] = yield* Effect.all(
+    [fs.exists(paths.entryPath), fs.readFileString(paths.sentinelPath).pipe(Effect.option)],
+    { concurrency: "unbounded" },
+  ).pipe(Effect.orElseSucceed(() => [false, Option.none<string>()] as const));
   return entryExists && Option.isSome(sentinel) && sentinel.value.trim() === version;
 });
 
