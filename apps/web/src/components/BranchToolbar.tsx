@@ -13,6 +13,7 @@ import { memo, useMemo } from "react";
 import type { ContextWindowSnapshot } from "../lib/contextWindow";
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useIsMobile } from "../hooks/useMediaQuery";
+import { useEnvironment } from "../state/environments";
 import { useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { cn } from "~/lib/utils";
@@ -104,7 +105,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
     <Menu>
       <MenuTrigger
         render={<Button variant="ghost" size="xs" />}
-        className="min-w-0 max-w-[48%] flex-1 justify-start text-muted-foreground/70 hover:text-foreground/80 md:hidden"
+        className="min-w-0 flex-1 justify-start text-muted-foreground/70 hover:text-foreground/80 md:hidden"
       >
         {showEnvironmentPicker ? (
           <>
@@ -176,6 +177,31 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
         </MenuGroup>
       </MenuPopup>
     </Menu>
+  );
+});
+
+const BranchToolbarDeviceLabel = memo(function BranchToolbarDeviceLabel({
+  environmentId,
+  availableEnvironments,
+}: {
+  environmentId: EnvironmentId;
+  availableEnvironments: readonly EnvironmentOption[] | undefined;
+}) {
+  const pickerMatch = useMemo(
+    () => availableEnvironments?.find((env) => env.environmentId === environmentId) ?? null,
+    [availableEnvironments, environmentId],
+  );
+  const connectedEnvironment = useEnvironment(environmentId);
+  const deviceLabel = pickerMatch?.label ?? connectedEnvironment?.label ?? null;
+  if (!deviceLabel) return null;
+  return (
+    <span
+      className="inline-flex min-w-0 max-w-24 shrink items-center truncate border border-transparent px-[calc(--spacing(2)-1px)] text-sm font-medium text-muted-foreground/70 sm:max-w-40 sm:text-xs"
+      title={`Execution environment: ${deviceLabel}`}
+      aria-label={`Execution environment: ${deviceLabel}`}
+    >
+      <span className="truncate">{deviceLabel}</span>
+    </span>
   );
 });
 
@@ -257,17 +283,23 @@ export const BranchToolbar = memo(function BranchToolbar({
       {showGitControls ? (
         <>
           {isMobile ? (
-            <MobileRunContextSelector
-              envLocked={envLocked}
-              envModeLocked={envModeLocked}
-              environmentId={environmentId}
-              availableEnvironments={availableEnvironments}
-              showEnvironmentPicker={showEnvironmentPicker}
-              onEnvironmentChange={onEnvironmentChange}
-              effectiveEnvMode={effectiveEnvMode}
-              activeWorktreePath={activeWorktreePath}
-              onEnvModeChange={onEnvModeChange}
-            />
+            <div className="flex min-w-0 flex-1 items-center gap-1">
+              <MobileRunContextSelector
+                envLocked={envLocked}
+                envModeLocked={envModeLocked}
+                environmentId={environmentId}
+                availableEnvironments={availableEnvironments}
+                showEnvironmentPicker={showEnvironmentPicker}
+                onEnvironmentChange={onEnvironmentChange}
+                effectiveEnvMode={effectiveEnvMode}
+                activeWorktreePath={activeWorktreePath}
+                onEnvModeChange={onEnvModeChange}
+              />
+              <BranchToolbarDeviceLabel
+                environmentId={environmentId}
+                availableEnvironments={availableEnvironments}
+              />
+            </div>
           ) : (
             <div className="flex min-w-0 shrink-0 items-center gap-1">
               {showEnvironmentPicker && availableEnvironments && onEnvironmentChange && (
@@ -286,6 +318,10 @@ export const BranchToolbar = memo(function BranchToolbar({
                 effectiveEnvMode={effectiveEnvMode}
                 activeWorktreePath={activeWorktreePath}
                 onEnvModeChange={onEnvModeChange}
+              />
+              <BranchToolbarDeviceLabel
+                environmentId={environmentId}
+                availableEnvironments={availableEnvironments}
               />
             </div>
           )}
