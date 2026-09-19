@@ -1,4 +1,11 @@
-import type { ProjectId, PullRequestInvolvement, PullRequestListState } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ThreadId,
+  type ProjectId,
+  type PullRequestInvolvement,
+  type PullRequestListState,
+} from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
@@ -19,6 +26,8 @@ import { type ReactNode, useDeferredValue, useEffect, useMemo } from "react";
 import { PullRequestDetailPanel } from "../components/pullRequest/PullRequestDetailPanel";
 import { PullRequestFiltersMenu } from "../components/pullRequest/PullRequestFiltersMenu";
 import { PullRequestRow } from "../components/pullRequest/PullRequestRow";
+import { RightPanelSheet } from "../components/RightPanelSheet";
+import { RightPanelTabs } from "../components/RightPanelTabs";
 import { Button } from "../components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../components/ui/input-group";
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../components/ui/menu";
@@ -35,6 +44,7 @@ import {
 } from "../lib/pullRequestReactQuery";
 import { findGitHubPullRequestProject } from "../lib/openPullRequestLink";
 import { cn } from "../lib/utils";
+import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelStore";
 import { useSettings } from "../hooks/useSettings";
 import { selectProjectsAcrossEnvironments, useStore } from "../store";
 import type { Project } from "../types";
@@ -73,6 +83,10 @@ const INVOLVEMENT_LABELS: Record<(typeof INVOLVEMENTS)[number], string> = {
 const PAGE_SIZE = 50;
 const STATS_BATCH_SIZE = 500;
 const EMPTY_PROJECTS: readonly Project[] = [];
+const PULL_REQUESTS_PANEL_REF = scopeThreadRef(
+  EnvironmentId.make("pull-requests"),
+  ThreadId.make("pull-requests"),
+);
 
 function isListState(value: unknown): value is PullRequestListState {
   return typeof value === "string" && (LIST_STATES as readonly string[]).includes(value);
@@ -240,6 +254,28 @@ function PullRequestsRoute() {
     return project ? { projectId: project.id, repository, number } : null;
   }, [environmentId, explicitSelection, projects, search.host, search.number, search.repository]);
   const selected = explicitSelection ?? inferredSelection;
+  const selectedEntry = useMemo(
+    () =>
+      selected
+        ? entriesWithStats.find(
+            (entry) =>
+              entry.projectId === selected.projectId &&
+              entry.repository === selected.repository &&
+              entry.number === selected.number,
+          )
+        : undefined,
+    [entriesWithStats, selected],
+  );
+  const pullRequestsPanel = useRightPanelStore((state) =>
+    selectThreadRightPanelState(state.byThreadKey, PULL_REQUESTS_PANEL_REF),
+  );
+  const openPullRequest = useRightPanelStore((state) => state.openPullRequest);
+  const activateSurface = useRightPanelStore((state) => state.activateSurface);
+  const closeSurface = useRightPanelStore((state) => state.closeSurface);
+  const closeOtherSurfaces = useRightPanelStore((state) => state.closeOtherSurfaces);
+  const closeSurfacesToRight = useRightPanelStore((state) => state.closeSurfacesToRight);
+  const closeAllSurfaces = useRightPanelStore((state) => state.closeAllSurfaces);
+  const closePanel = useRightPanelStore((state) => state.close);
   const updateSearch = (patch: PullRequestsSearchPatch, clearSelection = false) => {
     void navigate({
       search: (previous: PullRequestsSearch) => {
@@ -275,6 +311,19 @@ function PullRequestsRoute() {
       replace: true,
     });
   }, [inferredSelection, navigate, search.selectedProjectId]);
+  useEffect(() => {
+    if (!environmentId) return;
+    if (!selected) {
+      closePanel(PULL_REQUESTS_PANEL_REF);
+      return;
+    }
+    openPullRequest(PULL_REQUESTS_PANEL_REF, {
+      environmentId,
+      reference: selected,
+      ...(search.host ? { host: search.host } : {}),
+      ...(selectedEntry?.title ? { title: selectedEntry.title } : {}),
+    });
+  }, [closePanel, environmentId, openPullRequest, search.host, selected, selectedEntry?.title]);
   const errors = listQuery.data?.pages.flatMap((page) => page.errors) ?? [];
 
   if (!descriptor) {
@@ -309,20 +358,8 @@ function PullRequestsRoute() {
             </WorkspaceBreadcrumbItem>
           </WorkspaceBreadcrumb>
         </WorkspacePageHeader>
-        <div
-          className={cn(
-            "min-h-0 flex-1",
-            selected
-              ? "grid grid-cols-1 lg:grid-cols-[minmax(20rem,0.9fr)_minmax(28rem,1.1fr)]"
-              : "flex flex-col",
-          )}
-        >
-          <section
-            className={cn(
-              "flex min-h-0 flex-col",
-              selected ? "border-r border-border max-lg:hidden" : "w-full",
-            )}
-          >
+        <div className={cn("min-h-0 flex-1")}>
+          <section className="flex min-h-0 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto">
               <WorkspacePageContainer width="expanded" className="min-h-full gap-4">
                 <div className="flex flex-col gap-3">
@@ -563,18 +600,79 @@ function PullRequestsRoute() {
               </WorkspacePageContainer>
             </div>
           </section>
-          {selected ? (
-            <section className="min-h-0">
-              <PullRequestDetailPanel
-                environmentId={environmentId!}
-                key={`${selected.projectId}:${selected.repository}#${selected.number}`}
-                reference={selected}
-                onClose={() => updateSearch({}, true)}
-              />
-            </section>
-          ) : null}
         </div>
       </div>
+      <RightPanelSheet
+        open={pullRequestsPanel.isOpen}
+        onClose={() => {
+          closePanel(PULL_REQUESTS_PANEL_REF);
+          updateSearch({}, true);
+        }}
+      >
+        <RightPanelTabs
+          mode="sheet"
+          surfaces={pullRequestsPanel.surfaces}
+          activeSurfaceId={pullRequestsPanel.activeSurfaceId}
+          previewSessions={{}}
+          terminalLabels={{}}
+          showAddSurface={false}
+          onActivate={(surface) => {
+            if (surface.kind !== "pull-request") return;
+            activateSurface(PULL_REQUESTS_PANEL_REF, surface.id);
+            updateSearch({
+              projectId: surface.reference.projectId,
+              repository: surface.reference.repository,
+              number: surface.reference.number,
+              ...(surface.host ? { host: surface.host } : {}),
+            });
+          }}
+          onClose={(surface) => {
+            closeSurface(PULL_REQUESTS_PANEL_REF, surface.id);
+            if (
+              surface.kind === "pull-request" &&
+              selected?.projectId === surface.reference.projectId &&
+              selected.repository === surface.reference.repository &&
+              selected.number === surface.reference.number
+            ) {
+              updateSearch({}, true);
+            }
+          }}
+          onCloseOthers={(surface) => closeOtherSurfaces(PULL_REQUESTS_PANEL_REF, surface.id)}
+          onCloseToRight={(surface) => closeSurfacesToRight(PULL_REQUESTS_PANEL_REF, surface.id)}
+          onCloseAll={() => {
+            closeAllSurfaces(PULL_REQUESTS_PANEL_REF);
+            updateSearch({}, true);
+          }}
+          onClosePanel={() => {
+            closePanel(PULL_REQUESTS_PANEL_REF);
+            updateSearch({}, true);
+          }}
+          onCopyPath={() => undefined}
+          onAddBrowserInProfile={() => undefined}
+          onAddTerminal={() => undefined}
+          onAddFiles={() => undefined}
+          onAddDiff={() => undefined}
+          onAddInsights={() => undefined}
+        >
+          {pullRequestsPanel.surfaces.map((surface) => {
+            if (surface.kind !== "pull-request") return null;
+            const visible =
+              pullRequestsPanel.isOpen && surface.id === pullRequestsPanel.activeSurfaceId;
+            return (
+              <div className={cn("min-h-0 flex-1", !visible && "hidden")} key={surface.id}>
+                <PullRequestDetailPanel
+                  environmentId={surface.environmentId}
+                  reference={surface.reference}
+                  onClose={() => {
+                    closeSurface(PULL_REQUESTS_PANEL_REF, surface.id);
+                    updateSearch({}, true);
+                  }}
+                />
+              </div>
+            );
+          })}
+        </RightPanelTabs>
+      </RightPanelSheet>
     </SidebarInset>
   );
 }
