@@ -1331,7 +1331,9 @@ export function makeOpenCodeAdapter(
           continue;
         }
 
-        const status = result.success.status.data?.[context.openCodeSessionId];
+        const statusData = result.success.status.data;
+        const status = statusData?.[context.openCodeSessionId];
+        const isIdle = statusData !== undefined && (status === undefined || status.type === "idle");
         const messages = result.success.messages.data ?? [];
         for (const entry of messages) {
           const info = entry.info as {
@@ -1389,7 +1391,7 @@ export function makeOpenCodeAdapter(
           yield* finishTurn(context, turnId, "failed", sessionErrorMessage(assistant.info.error));
           return;
         }
-        if (status?.type === "idle" && assistant !== undefined) {
+        if (isIdle && assistant !== undefined) {
           yield* finishTurn(context, turnId, "completed");
           return;
         }
