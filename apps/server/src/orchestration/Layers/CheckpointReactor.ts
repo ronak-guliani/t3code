@@ -91,6 +91,23 @@ function isNonAuthoritativeCheckpoint(status: string): boolean {
   return status === "missing" || status === "speculative";
 }
 
+function isWorkspaceGenerationMismatch(error: unknown): boolean {
+  if (error === null || error === undefined || typeof error !== "object") {
+    return false;
+  }
+  const tag = (error as { readonly _tag?: unknown })._tag;
+  const detail =
+    (error as { readonly detail?: unknown }).detail ??
+    (error as { readonly message?: unknown }).message;
+  const isInvariant =
+    tag === "CheckpointInvariantError" || error instanceof CheckpointInvariantError;
+  return (
+    isInvariant &&
+    typeof detail === "string" &&
+    detail.includes("does not belong to workspace generation")
+  );
+}
+
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const runtimeIngestion = yield* ProviderRuntimeIngestionService;
@@ -307,12 +324,19 @@ const make = Effect.gen(function* () {
       .pipe(
         Effect.map(toCheckpointFiles),
         Effect.tapError((error) =>
-          appendCaptureFailureActivity({
-            threadId: input.threadId,
-            turnId: input.turnId,
-            detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
-            createdAt: input.createdAt,
-          }),
+          isWorkspaceGenerationMismatch(error)
+            ? Effect.logWarning("checkpoint turn diff skipped after workspace generation change", {
+                threadId: input.threadId,
+                turnId: input.turnId,
+                turnCount: input.turnCount,
+                detail: error.message,
+              })
+            : appendCaptureFailureActivity({
+                threadId: input.threadId,
+                turnId: input.turnId,
+                detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
+                createdAt: input.createdAt,
+              }),
         ),
         Effect.catch((error) =>
           Effect.logWarning("failed to derive checkpoint file summary", {
@@ -348,12 +372,22 @@ const make = Effect.gen(function* () {
             .pipe(
               Effect.map(toCheckpointFiles),
               Effect.tapError((error) =>
-                appendCaptureFailureActivity({
-                  threadId: input.threadId,
-                  turnId: input.turnId,
-                  detail: `Checkpoint captured, but snapshot diff summary is unavailable: ${error.message}`,
-                  createdAt: input.createdAt,
-                }),
+                isWorkspaceGenerationMismatch(error)
+                  ? Effect.logWarning(
+                      "checkpoint snapshot diff skipped after workspace generation change",
+                      {
+                        threadId: input.threadId,
+                        turnId: input.turnId,
+                        turnCount: input.turnCount,
+                        detail: error.message,
+                      },
+                    )
+                  : appendCaptureFailureActivity({
+                      threadId: input.threadId,
+                      turnId: input.turnId,
+                      detail: `Checkpoint captured, but snapshot diff summary is unavailable: ${error.message}`,
+                      createdAt: input.createdAt,
+                    }),
               ),
               Effect.catch((error) =>
                 Effect.logWarning("failed to derive checkpoint snapshot file summary", {
