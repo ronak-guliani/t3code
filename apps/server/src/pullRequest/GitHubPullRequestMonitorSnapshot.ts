@@ -856,6 +856,15 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
       // A compare that failed leaves the base distance unknown, not zero.
       baseComparisonKnown: compareDecoded.behindBy !== null,
     },
+    requiredCheckCoverage: {
+      expected: [],
+      observed: checkRuns.map((check) => ({
+        name: check.name,
+        status: check.status,
+        headSha: check.headSha,
+      })),
+      completeness: "unknown",
+    },
     reviews: normalizedReviews,
     reviewThreads: normalizedReviewThreads,
     issueComments,

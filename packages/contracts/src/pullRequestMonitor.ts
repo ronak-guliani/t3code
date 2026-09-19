@@ -17,6 +17,12 @@ import {
   PullRequestState,
 } from "./pullRequest.ts";
 import { SourceControlProviderKind } from "./sourceControl.ts";
+import {
+  CollaborativeAcceptanceCandidateId,
+  CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptanceRequestTransportContext,
+  CollaborativeAcceptanceReviewWorkflow,
+} from "./collaborativeAcceptance.ts";
 
 /**
  * Canonical identity for one change request on one host. Monitors are unique per this key so
@@ -52,6 +58,8 @@ export const PullRequestMonitorBlockerKind = Schema.Literals([
   "mergeability",
   /** Provider evidence was incomplete, so absence cannot prove readiness. */
   "evidence-incomplete",
+  /** The provider did not prove the exact required-check identity set. */
+  "required-check-coverage-unknown",
   /** The base comparison failed or was not returned by the provider. */
   "base-comparison-unknown",
   "checks-missing",
@@ -172,6 +180,21 @@ export const PullRequestMonitorCompleteness = Schema.Struct({
 });
 export type PullRequestMonitorCompleteness = typeof PullRequestMonitorCompleteness.Type;
 
+export const PullRequestMonitorRequiredCheck = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  status: PullRequestCheckStatus,
+  headSha: TrimmedNonEmptyString,
+});
+export type PullRequestMonitorRequiredCheck = typeof PullRequestMonitorRequiredCheck.Type;
+
+export const PullRequestMonitorRequiredCheckCoverage = Schema.Struct({
+  expected: Schema.Array(TrimmedNonEmptyString),
+  observed: Schema.Array(PullRequestMonitorRequiredCheck),
+  completeness: Schema.Literals(["complete", "missing", "unknown", "extra"]),
+});
+export type PullRequestMonitorRequiredCheckCoverage =
+  typeof PullRequestMonitorRequiredCheckCoverage.Type;
+
 /**
  * Provider-neutral monitoring snapshot. Stable source IDs and a content revision let the
  * durable monitor diff without depending on UI cache identity.
@@ -193,6 +216,7 @@ export const PullRequestMonitorSnapshot = Schema.Struct({
   fetchedAt: IsoDateTime,
   sourceRevision: TrimmedNonEmptyString,
   completeness: PullRequestMonitorCompleteness,
+  requiredCheckCoverage: Schema.optional(PullRequestMonitorRequiredCheckCoverage),
   reviews: Schema.Array(PullRequestMonitorReview),
   reviewThreads: Schema.Array(PullRequestMonitorReviewThread),
   issueComments: Schema.Array(PullRequestMonitorIssueComment),
@@ -459,6 +483,52 @@ const findingEncoder = new TextEncoder();
 const encodedFindingBytes = (value: unknown) =>
   findingEncoder.encode(JSON.stringify(value)).byteLength;
 
+export const PullRequestMonitorReviewCoverage = Schema.Struct({
+  required: Schema.Array(TrimmedNonEmptyString),
+  covered: Schema.Array(TrimmedNonEmptyString),
+  applicability: Schema.Literals(["known", "unknown"]),
+});
+export type PullRequestMonitorReviewCoverage = typeof PullRequestMonitorReviewCoverage.Type;
+
+const PullRequestMonitorFindingLocation = Schema.Struct({
+  path: TrimmedNonEmptyString,
+  side: Schema.Literals(["new", "old"]),
+  startLine: PositiveInt,
+  endLine: PositiveInt,
+}).check(
+  Schema.makeFilter(
+    (location) =>
+      location.startLine <= location.endLine || "Review finding startLine must not exceed endLine",
+  ),
+);
+
+const PullRequestMonitorFindingProvenance = Schema.Struct({
+  ...PullRequestMonitorFindingLocation.fields,
+  findingId: TrimmedNonEmptyString,
+  reviewedHeadSha: TrimmedNonEmptyString,
+  diffHash: TrimmedNonEmptyString,
+}).check(
+  Schema.makeFilter(
+    (provenance) =>
+      provenance.startLine <= provenance.endLine ||
+      "Review finding startLine must not exceed endLine",
+  ),
+);
+
+export const PullRequestMonitorAcceptanceProvenanceInput = Schema.Struct({
+  caseId: CollaborativeAcceptanceCaseId,
+  candidateId: CollaborativeAcceptanceCandidateId,
+  transportContext: Schema.NullOr(CollaborativeAcceptanceRequestTransportContext),
+  headSha: TrimmedNonEmptyString,
+  sourceRevision: TrimmedNonEmptyString,
+  workflow: CollaborativeAcceptanceReviewWorkflow,
+  requiredCoverage: PullRequestMonitorReviewCoverage,
+  diffHash: TrimmedNonEmptyString,
+  location: Schema.NullOr(PullRequestMonitorFindingLocation),
+});
+export type PullRequestMonitorAcceptanceProvenanceInput =
+  typeof PullRequestMonitorAcceptanceProvenanceInput.Type;
+
 export const PullRequestMonitorFinding = Schema.Struct({
   /** Reviewer-stable key; unchanged content must survive positional reordering. */
   key: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
@@ -467,23 +537,8 @@ export const PullRequestMonitorFinding = Schema.Struct({
   severity: Schema.Literals(["blocker", "major", "minor", "nit"]),
   path: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
   line: Schema.optional(PositiveInt),
-  provenance: Schema.optional(
-    Schema.Struct({
-      findingId: TrimmedNonEmptyString,
-      reviewedHeadSha: TrimmedNonEmptyString,
-      diffHash: TrimmedNonEmptyString,
-      path: TrimmedNonEmptyString,
-      side: Schema.Literals(["new", "old"]),
-      startLine: PositiveInt,
-      endLine: PositiveInt,
-    }).check(
-      Schema.makeFilter(
-        (location) =>
-          location.startLine <= location.endLine ||
-          "Review finding startLine must not exceed endLine",
-      ),
-    ),
-  ),
+  provenance: Schema.optional(PullRequestMonitorFindingProvenance),
+  acceptanceProvenance: Schema.optional(PullRequestMonitorAcceptanceProvenanceInput),
 }).check(
   Schema.makeFilter(
     (finding) =>
@@ -511,6 +566,23 @@ export const PullRequestMonitorFindingDetail = Schema.Struct({
   finding: Schema.NullOr(PullRequestMonitorFinding),
 });
 export type PullRequestMonitorFindingDetail = typeof PullRequestMonitorFindingDetail.Type;
+
+export const PullRequestMonitorAcceptanceProvenance = Schema.Struct({
+  monitorId: PullRequestMonitorId,
+  caseId: CollaborativeAcceptanceCaseId,
+  candidateId: CollaborativeAcceptanceCandidateId,
+  transportContext: Schema.NullOr(CollaborativeAcceptanceRequestTransportContext),
+  headSha: TrimmedNonEmptyString,
+  sourceRevision: TrimmedNonEmptyString,
+  findingId: PullRequestMonitorFeedbackItemId,
+  findingRevisionId: PullRequestMonitorFeedbackRevisionId,
+  workflow: CollaborativeAcceptanceReviewWorkflow,
+  requiredCoverage: PullRequestMonitorReviewCoverage,
+  diffHash: TrimmedNonEmptyString,
+  location: Schema.NullOr(PullRequestMonitorFindingLocation),
+});
+export type PullRequestMonitorAcceptanceProvenance =
+  typeof PullRequestMonitorAcceptanceProvenance.Type;
 
 export const PullRequestMonitorContextInput = Schema.Struct({
   monitorId: Schema.optional(PullRequestMonitorId),
@@ -640,20 +712,24 @@ export type PullRequestMonitorLaunchFallbackResult =
  * Review eligibility is a pure candidate contract. It deliberately contains no turn lifecycle
  * fields: a completed child turn is not evidence that a candidate was reviewed.
  */
-export const PullRequestMonitorReviewCoverage = Schema.Struct({
-  required: Schema.Array(TrimmedNonEmptyString),
-  covered: Schema.Array(TrimmedNonEmptyString),
-  applicability: Schema.Literals(["known", "unknown"]),
+export const PullRequestMonitorPreviousFindingVerification = Schema.Struct({
+  required: Schema.Boolean,
+  complete: Schema.Boolean,
+  verifiedRevisionIds: Schema.Array(PullRequestMonitorFeedbackRevisionId),
+  unresolvedRevisionIds: Schema.Array(PullRequestMonitorFeedbackRevisionId),
 });
-export type PullRequestMonitorReviewCoverage = typeof PullRequestMonitorReviewCoverage.Type;
+export type PullRequestMonitorPreviousFindingVerification =
+  typeof PullRequestMonitorPreviousFindingVerification.Type;
 
 export const PullRequestMonitorReviewCandidate = Schema.Struct({
-  candidateId: TrimmedNonEmptyString,
+  caseId: CollaborativeAcceptanceCaseId,
+  candidateId: CollaborativeAcceptanceCandidateId,
+  reviewEpoch: PositiveInt,
   headSha: TrimmedNonEmptyString,
   contractRevision: TrimmedNonEmptyString,
-  workflowId: TrimmedNonEmptyString,
-  workflowVersion: TrimmedNonEmptyString,
+  reviewWorkflow: CollaborativeAcceptanceReviewWorkflow,
   coverage: PullRequestMonitorReviewCoverage,
+  previousFindingVerification: PullRequestMonitorPreviousFindingVerification,
 });
 export type PullRequestMonitorReviewCandidate = typeof PullRequestMonitorReviewCandidate.Type;
 

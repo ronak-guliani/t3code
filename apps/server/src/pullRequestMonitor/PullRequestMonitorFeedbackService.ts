@@ -53,6 +53,7 @@ import {
   findingContextTurns,
   formatFindingDetail,
 } from "./findingContext.ts";
+import { buildMonitorAcceptanceProvenance } from "./acceptanceProvenance.ts";
 
 /** Debounce window so CI/review bursts batch into one queued delivery. */
 export const FEEDBACK_DEBOUNCE_MS = 15_000;
@@ -342,11 +343,23 @@ export const layer = Layer.effect(
         const headSha = input.reviewedHeadSha ?? input.monitor.headSha ?? "unknown";
         // Findings are scoped to the head they were reviewed against, so a re-review after a
         // push records a new revision instead of colliding with the previous one.
-        const sourceRevision = `review:${headSha}`;
+        const defaultSourceRevision = `review:${headSha}`;
         const submitted: PullRequestMonitorSubmittedFinding[] = [];
         const newRevisionIds: string[] = [];
 
         for (const finding of input.findings) {
+          const acceptanceInput = finding.acceptanceProvenance;
+          if (acceptanceInput !== undefined && acceptanceInput.headSha !== headSha) {
+            return yield* monitorError(
+              "Acceptance provenance head does not match the reviewed finding head.",
+              {
+                cause: {
+                  reviewedHeadSha: headSha,
+                  provenanceHeadSha: acceptanceInput.headSha,
+                },
+              },
+            );
+          }
           const key =
             finding.key ??
             stableHash([finding.title, finding.path ?? "", String(finding.line ?? 0)]);
@@ -404,6 +417,7 @@ export const layer = Layer.effect(
             finding.severity,
             finding.path ?? "",
             String(finding.line ?? 0),
+            ...(acceptanceInput === undefined ? [] : [JSON.stringify(acceptanceInput)]),
             ...(finding.provenance === undefined
               ? []
               : [
@@ -415,7 +429,17 @@ export const layer = Layer.effect(
                   String(finding.provenance.endLine),
                 ]),
           ]);
+          const sourceRevision = acceptanceInput?.sourceRevision ?? defaultSourceRevision;
           const revisionId = stableRevisionId(itemId, sourceRevision, contentHash);
+          const acceptanceProvenance =
+            acceptanceInput === undefined
+              ? undefined
+              : buildMonitorAcceptanceProvenance({
+                  monitorId: input.monitor.id,
+                  findingId: itemId,
+                  findingRevisionId: revisionId,
+                  provenance: acceptanceInput,
+                });
           const inserted = yield* feedbackStore.insertRevision({
             id: revisionId,
             itemId,
@@ -431,6 +455,7 @@ export const layer = Layer.effect(
               reviewThreadId: input.reviewThreadId,
               origin,
               reviewedHeadSha: headSha,
+              ...(acceptanceProvenance === undefined ? {} : { acceptanceProvenance }),
               contentVersion: 1,
             },
           });

@@ -44,3 +44,4 @@ export * from "./usageLimitSourceId.ts";
 export * from "./t3ProjectFile.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./validation.ts";
+export * from "./collaborativeAcceptance.ts";

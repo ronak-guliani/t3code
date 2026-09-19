@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest";
+import {
+  CollaborativeAcceptanceCandidateId,
+  CollaborativeAcceptanceCaseId,
+  PullRequestMonitorFeedbackRevisionId,
+} from "@t3tools/contracts";
 
 import {
   dedupeReviewCandidates,
@@ -9,15 +14,22 @@ import {
 const candidate = (
   overrides: Partial<Parameters<typeof reviewCandidateKey>[0]> = {},
 ): Parameters<typeof reviewCandidateKey>[0] => ({
-  candidateId: "pr-12",
+  caseId: CollaborativeAcceptanceCaseId.make("case-1"),
+  candidateId: CollaborativeAcceptanceCandidateId.make("pr-12"),
+  reviewEpoch: 1,
   headSha: "head-1",
   contractRevision: "contract-1",
-  workflowId: "acceptance",
-  workflowVersion: "1",
+  reviewWorkflow: { identity: "acceptance", version: "1" },
   coverage: {
     required: ["diff", "threads"],
     covered: [],
     applicability: "known",
+  },
+  previousFindingVerification: {
+    required: false,
+    complete: true,
+    verifiedRevisionIds: [],
+    unresolvedRevisionIds: [],
   },
   ...overrides,
 });
@@ -30,6 +42,7 @@ describe("review candidate eligibility", () => {
       eligible: false,
       mode: null,
       reason: "duplicate",
+      previousFindingsVerified: true,
     });
   });
 
@@ -39,7 +52,12 @@ describe("review candidate eligibility", () => {
         previous: candidate(),
         candidate: candidate({ headSha: "head-2" }),
       }),
-    ).toEqual({ eligible: true, mode: "delta", reason: "head-changed" });
+    ).toEqual({
+      eligible: true,
+      mode: "delta",
+      reason: "head-changed",
+      previousFindingsVerified: true,
+    });
   });
 
   it("requires a full review when applicability is unknown or coverage expands", () => {
@@ -55,7 +73,12 @@ describe("review candidate eligibility", () => {
           },
         }),
       }),
-    ).toEqual({ eligible: true, mode: "full", reason: "coverage-expanded" });
+    ).toEqual({
+      eligible: true,
+      mode: "full",
+      reason: "coverage-expanded",
+      previousFindingsVerified: true,
+    });
 
     expect(
       reviewCandidateEligibility({
@@ -69,7 +92,12 @@ describe("review candidate eligibility", () => {
           },
         }),
       }),
-    ).toEqual({ eligible: true, mode: "full", reason: "coverage-unknown" });
+    ).toEqual({
+      eligible: true,
+      mode: "full",
+      reason: "coverage-unknown",
+      previousFindingsVerified: true,
+    });
   });
 
   it("changes identity when contract or workflow revision changes", () => {
@@ -80,8 +108,41 @@ describe("review candidate eligibility", () => {
     expect(
       reviewCandidateEligibility({
         previous: original,
-        candidate: { ...original, workflowVersion: "2" },
+        candidate: { ...original, reviewWorkflow: { identity: "acceptance", version: "2" } },
       }),
-    ).toEqual({ eligible: true, mode: "full", reason: "workflow-changed" });
+    ).toEqual({
+      eligible: true,
+      mode: "full",
+      reason: "workflow-changed",
+      previousFindingsVerified: true,
+    });
+  });
+
+  it("exposes incomplete previous-finding verification without using it as a duplicate key", () => {
+    const first = candidate({
+      previousFindingVerification: {
+        required: true,
+        complete: false,
+        verifiedRevisionIds: [],
+        unresolvedRevisionIds: [PullRequestMonitorFeedbackRevisionId.make("revision-1")],
+      },
+    });
+    expect(
+      reviewCandidateEligibility({
+        previous: first,
+        candidate: { ...first, headSha: "head-2" },
+      }),
+    ).toMatchObject({
+      eligible: true,
+      mode: "delta",
+      reason: "head-changed",
+      previousFindingsVerified: false,
+    });
+    expect(
+      dedupeReviewCandidates([
+        first,
+        { ...first, coverage: { ...first.coverage, covered: ["diff"] } },
+      ]),
+    ).toHaveLength(1);
   });
 });

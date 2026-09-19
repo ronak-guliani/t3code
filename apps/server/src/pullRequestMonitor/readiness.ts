@@ -54,8 +54,29 @@ export function computeReadiness(
   if (!snapshot.completeness.issueCommentsComplete) {
     blockers.push({ kind: "evidence-incomplete", detail: "issue-comments" });
   }
-  if (!snapshot.completeness.checksComplete || !snapshot.completeness.requiredChecksKnown) {
+  if (!snapshot.completeness.checksComplete) {
     blockers.push({ kind: "evidence-incomplete", detail: "checks" });
+  }
+  const requiredCheckCoverage = snapshot.requiredCheckCoverage;
+  if (requiredCheckCoverage === undefined) {
+    blockers.push({ kind: "required-check-coverage-unknown" });
+  } else {
+    const expected = new Set(requiredCheckCoverage.expected);
+    const observed = new Set(requiredCheckCoverage.observed.map((check) => check.name));
+    const missing = [...expected].filter((name) => !observed.has(name));
+    const extra = [...observed].filter((name) => !expected.has(name));
+    if (requiredCheckCoverage.completeness !== "complete" || missing.length > 0) {
+      blockers.push({
+        kind: "required-check-coverage-unknown",
+        detail:
+          missing.length > 0 ? `missing:${missing.join(",")}` : requiredCheckCoverage.completeness,
+      });
+    } else if (extra.length > 0) {
+      blockers.push({
+        kind: "required-check-coverage-unknown",
+        detail: `extra:${extra.join(",")}`,
+      });
+    }
   }
 
   const currentChecks = snapshot.checkRuns.filter((check) => check.headSha === snapshot.headSha);

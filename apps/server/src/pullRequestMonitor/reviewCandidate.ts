@@ -1,4 +1,5 @@
 import type {
+  CollaborativeAcceptanceReviewWorkflow,
   PullRequestMonitorReviewCandidate,
   PullRequestMonitorReviewCoverage,
 } from "@t3tools/contracts";
@@ -19,6 +20,7 @@ export interface ReviewCandidateEligibility {
   readonly eligible: boolean;
   readonly mode: ReviewCandidateMode | null;
   readonly reason: ReviewCandidateEligibilityReason;
+  readonly previousFindingsVerified: boolean;
 }
 
 const sortedUnique = (values: ReadonlyArray<string>): ReadonlyArray<string> =>
@@ -27,7 +29,6 @@ const sortedUnique = (values: ReadonlyArray<string>): ReadonlyArray<string> =>
 function coverageKey(coverage: PullRequestMonitorReviewCoverage): string {
   return JSON.stringify({
     required: sortedUnique(coverage.required),
-    covered: sortedUnique(coverage.covered),
     applicability: coverage.applicability,
   });
 }
@@ -41,14 +42,28 @@ export function reviewCandidateKey(candidate: PullRequestMonitorReviewCandidate)
   digest.update(
     [
       candidate.candidateId,
+      candidate.caseId,
       candidate.headSha,
       candidate.contractRevision,
-      candidate.workflowId,
-      candidate.workflowVersion,
+      candidate.reviewWorkflow.identity,
+      candidate.reviewWorkflow.version,
       coverageKey(candidate.coverage),
     ].join("\0"),
   );
   return `review-candidate:${digest.digest("hex").slice(0, 32)}`;
+}
+
+export function reviewWorkflowKey(workflow: CollaborativeAcceptanceReviewWorkflow): string {
+  return `${workflow.identity}@${workflow.version}`;
+}
+
+export function previousFindingVerificationComplete(
+  candidate: PullRequestMonitorReviewCandidate,
+): boolean {
+  return (
+    !candidate.previousFindingVerification.required ||
+    candidate.previousFindingVerification.complete
+  );
 }
 
 export function dedupeReviewCandidates(
@@ -81,38 +96,77 @@ export function reviewCandidateEligibility(input: {
 }): ReviewCandidateEligibility {
   const previous = input.previous ?? null;
   if (previous === null) {
-    return { eligible: true, mode: "full", reason: "initial" };
+    return {
+      eligible: true,
+      mode: "full",
+      reason: "initial",
+      previousFindingsVerified: previousFindingVerificationComplete(input.candidate),
+    };
   }
 
   if (reviewCandidateKey(previous) === reviewCandidateKey(input.candidate)) {
-    return { eligible: false, mode: null, reason: "duplicate" };
+    return {
+      eligible: false,
+      mode: null,
+      reason: "duplicate",
+      previousFindingsVerified: previousFindingVerificationComplete(input.candidate),
+    };
   }
 
   if (
     input.candidate.coverage.applicability === "unknown" ||
     previous.coverage.applicability === "unknown"
   ) {
-    return { eligible: true, mode: "full", reason: "coverage-unknown" };
+    return {
+      eligible: true,
+      mode: "full",
+      reason: "coverage-unknown",
+      previousFindingsVerified: previousFindingVerificationComplete(input.candidate),
+    };
   }
 
   if (previous.contractRevision !== input.candidate.contractRevision) {
-    return { eligible: true, mode: "full", reason: "contract-changed" };
+    return {
+      eligible: true,
+      mode: "full",
+      reason: "contract-changed",
+      previousFindingsVerified: previousFindingVerificationComplete(input.candidate),
+    };
   }
 
   if (
-    previous.workflowId !== input.candidate.workflowId ||
-    previous.workflowVersion !== input.candidate.workflowVersion
+    reviewWorkflowKey(previous.reviewWorkflow) !== reviewWorkflowKey(input.candidate.reviewWorkflow)
   ) {
-    return { eligible: true, mode: "full", reason: "workflow-changed" };
+    return {
+      eligible: true,
+      mode: "full",
+      reason: "workflow-changed",
+      previousFindingsVerified: previousFindingVerificationComplete(input.candidate),
+    };
   }
 
   if (coverageExpanded(previous.coverage, input.candidate.coverage)) {
-    return { eligible: true, mode: "full", reason: "coverage-expanded" };
+    return {
+      eligible: true,
+      mode: "full",
+      reason: "coverage-expanded",
+      previousFindingsVerified: previousFindingVerificationComplete(input.candidate),
+    };
   }
 
   if (previous.headSha !== input.candidate.headSha) {
-    return { eligible: true, mode: "delta", reason: "head-changed" };
+    return {
+      eligible: true,
+      mode: "delta",
+      reason: "head-changed",
+      previousFindingsVerified: previousFindingVerificationComplete(input.candidate),
+    };
   }
 
-  return { eligible: false, mode: null, reason: "duplicate" };
+  return {
+    eligible: false,
+    mode: null,
+    reason: "duplicate",
+    previousFindingsVerified: previousFindingVerificationComplete(input.candidate),
+  };
 }

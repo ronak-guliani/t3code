@@ -1,6 +1,9 @@
 import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
+  CollaborativeAcceptanceCandidateId,
+  CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptanceExchangeId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -33,7 +36,7 @@ import MigrationFeedback from "../persistence/Migrations/072_PullRequestMonitorF
 import MigrationOwnership from "../persistence/Migrations/073_PullRequestMonitorOwnership.ts";
 import MigrationFallback from "../persistence/Migrations/074_PullRequestMonitorFallback.ts";
 import MigrationRevisionIdentity from "../persistence/Migrations/076_PullRequestMonitorRevisionIdentity.ts";
-import MigrationReviewDisputes from "../persistence/Migrations/096_PullRequestMonitorReviewDisputes.ts";
+import MigrationReviewDisputes from "../persistence/Migrations/097_PullRequestMonitorReviewDisputes.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -90,6 +93,11 @@ function sampleSnapshot(
       checksComplete: true,
       requiredChecksKnown: true,
       baseComparisonKnown: true,
+    },
+    requiredCheckCoverage: {
+      expected: [],
+      observed: [],
+      completeness: "complete",
     },
     reviews: [],
     reviewThreads: [],
@@ -1776,6 +1784,88 @@ layer("PullRequestMonitorService", (it) => {
         }),
       );
       assert.strictEqual(forbidden._tag, "Failure");
+    }),
+  );
+
+  it.effect("persists immutable acceptance provenance with the finding revision", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const owner = ThreadId.make("thr_acceptance_owner");
+      const reviewer = ThreadId.make("thr_acceptance_review");
+      seedThread(owner);
+      seedThread(reviewer);
+
+      const submitted = yield* monitors.submitFindings({
+        reference: { projectId, repository: "acme/app", number: 9069 },
+        reviewThreadId: reviewer,
+        reviewedHeadSha: "deadbeef",
+        ownerThreadId: owner,
+        findings: [
+          {
+            key: "acceptance-finding",
+            title: "Acceptance evidence",
+            detail: "Preserve the exact review provenance.",
+            severity: "major",
+            acceptanceProvenance: {
+              caseId: CollaborativeAcceptanceCaseId.make("case-acceptance"),
+              candidateId: CollaborativeAcceptanceCandidateId.make("candidate-1"),
+              transportContext: {
+                caseId: CollaborativeAcceptanceCaseId.make("case-acceptance"),
+                exchangeId: CollaborativeAcceptanceExchangeId.make("exchange-1"),
+              },
+              headSha: "deadbeef",
+              sourceRevision: "provider-source-1",
+              workflow: { identity: "review-workflow", version: "2" },
+              requiredCoverage: {
+                required: ["diff", "threads"],
+                covered: ["diff"],
+                applicability: "known",
+              },
+              diffHash: "diff-acceptance",
+              location: {
+                path: "src/example.ts",
+                side: "new",
+                startLine: 8,
+                endLine: 9,
+              },
+            },
+          },
+        ],
+      });
+
+      const context = yield* monitors.context({
+        monitorId: submitted.monitor.id,
+        revisionIds: [submitted.findings[0]!.revisionId],
+      });
+      const payload = context.revisions?.[0]?.payload as {
+        readonly acceptanceProvenance?: unknown;
+      };
+      assert.deepStrictEqual(payload.acceptanceProvenance, {
+        monitorId: submitted.monitor.id,
+        caseId: "case-acceptance",
+        candidateId: "candidate-1",
+        transportContext: {
+          caseId: "case-acceptance",
+          exchangeId: "exchange-1",
+        },
+        headSha: "deadbeef",
+        sourceRevision: "provider-source-1",
+        findingId: submitted.findings[0]!.itemId,
+        findingRevisionId: submitted.findings[0]!.revisionId,
+        workflow: { identity: "review-workflow", version: "2" },
+        requiredCoverage: {
+          required: ["diff", "threads"],
+          covered: ["diff"],
+          applicability: "known",
+        },
+        diffHash: "diff-acceptance",
+        location: {
+          path: "src/example.ts",
+          side: "new",
+          startLine: 8,
+          endLine: 9,
+        },
+      });
     }),
   );
 

@@ -28,6 +28,11 @@ function snapshot(overrides: Partial<PullRequestMonitorSnapshot> = {}): PullRequ
       requiredChecksKnown: true,
       baseComparisonKnown: true,
     },
+    requiredCheckCoverage: {
+      expected: ["ci"],
+      observed: [{ name: "ci", status: "success", headSha: "abc123" }],
+      completeness: "complete",
+    },
     reviews: [],
     reviewThreads: [],
     issueComments: [],
@@ -64,14 +69,18 @@ describe("computeReadiness", () => {
           requiredChecksKnown: false,
           baseComparisonKnown: true,
         },
+        requiredCheckCoverage: {
+          expected: ["ci"],
+          observed: [{ name: "ci", status: "success", headSha: "abc123" }],
+          completeness: "unknown",
+        },
       }),
     );
     expect(unknownRequired.label).toBe("blocked");
     expect(unknownRequired.ready).toBe(false);
-    expect(unknownRequired.blockers).toContainEqual({
-      kind: "evidence-incomplete",
-      detail: "checks",
-    });
+    expect(unknownRequired.blockers).toContainEqual(
+      expect.objectContaining({ kind: "required-check-coverage-unknown" }),
+    );
   });
 
   it("blocks on changes-requested and unresolved threads", () => {
@@ -233,5 +242,34 @@ describe("computeReadiness", () => {
     const result = computeReadiness(snapshot({ mergeability: "conflicting" }));
     expect(result.ready).toBe(false);
     expect(result.blockers).toEqual([{ kind: "mergeability", detail: "conflicting" }]);
+  });
+
+  it("fails closed for missing, unknown, and extra required-check identities", () => {
+    for (const requiredCheckCoverage of [
+      {
+        expected: ["ci", "build"],
+        observed: [{ name: "ci", status: "success" as const, headSha: "abc123" }],
+        completeness: "missing" as const,
+      },
+      {
+        expected: ["ci"],
+        observed: [{ name: "ci", status: "success" as const, headSha: "abc123" }],
+        completeness: "unknown" as const,
+      },
+      {
+        expected: ["ci"],
+        observed: [
+          { name: "ci", status: "success" as const, headSha: "abc123" },
+          { name: "extra", status: "success" as const, headSha: "abc123" },
+        ],
+        completeness: "extra" as const,
+      },
+    ]) {
+      const result = computeReadiness(snapshot({ requiredCheckCoverage }));
+      expect(result.ready).toBe(false);
+      expect(result.blockers).toContainEqual(
+        expect.objectContaining({ kind: "required-check-coverage-unknown" }),
+      );
+    }
   });
 });
