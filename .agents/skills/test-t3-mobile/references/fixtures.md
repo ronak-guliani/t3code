@@ -12,7 +12,25 @@ The Add Environment sheet needs an **IP-literal host**: `pairing.ts`
 `buildPairingUrl` forces `https://` for hostnames, which fails against the
 plain-HTTP dev server. `127.0.0.1:<server-port>` yields `http://`.
 
-1. Fresh token: `node apps/server/src/bin.ts pair --base-dir <home>`.
+Preferred — deterministic pairing via AgentDevice (fresh credential per
+attempt, never reused or logged):
+
+```bash
+.agents/skills/test-t3-mobile/scripts/pair-client.sh \
+  <server-port> <base-dir> <device-reachable-backend-origin> \
+  "$agent_device_command" "${agent_device_target_args[@]}"
+```
+
+It mints via `node apps/server/src/bin.ts auth pairing create` (`--ttl
+15m --label agent-mobile`), parses the `Pair URL:` line, and deep-links
+T3 Code Dev to the existing pairing route with `autoConnect=1`. For a
+backend on the device host, use `http://127.0.0.1:<server-port>` on iOS
+or `http://10.0.2.2:<server-port>` on Android.
+
+Fallback — manual Maestro pairing (when AgentDevice is unavailable):
+
+1. Fresh token: `node apps/server/src/bin.ts auth pairing create
+--base-dir <home> --base-url http://127.0.0.1:<server-port>`.
    Pairing links are independent rows — issuing a new one does not revoke
    earlier unconsumed links — but generate-then-submit promptly anyway:
    interleaved generations make it ambiguous which credential was

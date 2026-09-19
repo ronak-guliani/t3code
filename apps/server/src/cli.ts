@@ -54,8 +54,10 @@ import {
   LogLevel,
   Option,
   Path,
+  Redacted,
   References,
   Schema,
+  SchemaIssue,
   Stream,
 } from "effect";
 import { Argument, Command, Flag, GlobalFlag } from "effect/unstable/cli";
@@ -323,6 +325,25 @@ const EnvServerConfig = Config.all({
     Config.map(Option.getOrUndefined),
   ),
   backgroundService: Config.boolean("T3CODE_BACKGROUND_SERVICE").pipe(Config.withDefault(false)),
+  devAuthToken: Config.redacted("T3CODE_DEV_AUTH_TOKEN").pipe(
+    Config.map((token) => Redacted.make(Redacted.value(token).trim())),
+    Config.mapOrFail((token) =>
+      Redacted.value(token).length === 0 || Redacted.value(token).length >= 32
+        ? Effect.succeed(token)
+        : Effect.fail(
+            new Config.ConfigError(
+              new Schema.SchemaError(
+                new SchemaIssue.InvalidValue(Option.none(), {
+                  message: "T3CODE_DEV_AUTH_TOKEN must contain at least 32 characters.",
+                }),
+              ),
+            ),
+          ),
+    ),
+    Config.option,
+    Config.map(Option.filter((token) => Redacted.value(token).length > 0)),
+    Config.map(Option.getOrUndefined),
+  ),
 });
 
 interface CliServerFlags {
@@ -487,6 +508,11 @@ export const resolveServerConfig = (
     );
     const logLevel = Option.getOrElse(cliLogLevel, () => env.logLevel);
 
+    // Reusable dev credential: only honored by web-mode dev servers (devUrl
+    // set). Desktop and non-development servers ignore it. Each environment
+    // seeds its own session row, so worktrees do not share auth state.
+    const devAuthToken = mode === "web" && devUrl !== undefined ? env.devAuthToken : undefined;
+
     const config: ServerConfigShape = {
       logLevel,
       traceMinLevel: env.traceMinLevel,
@@ -513,6 +539,7 @@ export const resolveServerConfig = (
       host,
       staticDir,
       devUrl,
+      devAuthToken,
       noBrowser,
       startupPresentation,
       desktopBootstrapToken,
