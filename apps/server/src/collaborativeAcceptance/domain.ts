@@ -7,17 +7,12 @@ import type {
   CollaborativeAcceptanceEvidence,
   CollaborativeAcceptanceExchange,
   CollaborativeAcceptanceExchangeStatus,
+  CollaborativeAcceptanceExecutionPhase,
   CollaborativeAcceptanceProviderEvidence,
   CollaborativeAcceptanceProjection,
-  CollaborativeAcceptanceStatus,
 } from "@t3tools/contracts";
 
-export type AcceptanceExecutionPhase =
-  | "implementing"
-  | "verifying"
-  | "monitoring"
-  | "paused"
-  | "needs-human";
+export type AcceptanceExecutionPhase = CollaborativeAcceptanceExecutionPhase;
 
 export interface AcceptanceEvaluationInput {
   readonly case: CollaborativeAcceptanceCase;
@@ -117,17 +112,21 @@ const latestCurrentAssessment = (
   return current[0] ?? null;
 };
 
-const currentCriteriaEvidence = (input: AcceptanceEvaluationInput): ReadonlySet<string> => {
+const currentCriteriaEvidence = (
+  input: AcceptanceEvaluationInput,
+  criterionId: string,
+  allowedEvidenceKinds: ReadonlyArray<CollaborativeAcceptanceEvidence["kind"]>,
+): ReadonlySet<string> => {
   const ids = new Set<string>();
   for (const item of input.evidence) {
     if (
       item.caseId === input.case.caseId &&
       item.candidateId === input.candidate.candidateId &&
       item.headSha === input.candidate.headSha &&
+      item.criterionId === criterionId &&
+      allowedEvidenceKinds.includes(item.kind) &&
       item.current &&
-      item.complete &&
-      item.kind === "criterion" &&
-      item.criterionId !== null
+      item.complete
     ) {
       ids.add(item.evidenceId);
     }
@@ -136,26 +135,24 @@ const currentCriteriaEvidence = (input: AcceptanceEvaluationInput): ReadonlySet<
 };
 
 const criteriaAreSatisfied = (input: AcceptanceEvaluationInput): boolean => {
-  const evidenceIds = currentCriteriaEvidence(input);
   return input.case.criteria
     .filter((criterion) => criterion.required)
-    .every((criterion) =>
-      input.assessments.some(
+    .every((criterion) => {
+      const evidenceIds = currentCriteriaEvidence(
+        input,
+        criterion.criterionId,
+        criterion.evidenceKinds,
+      );
+      return input.assessments.some(
         (assessment) =>
           assessment.kind === "attestation" &&
           assessment.outcome === "pass" &&
           assessment.role === "child-implementer" &&
           isCurrentAcceptanceAssessment(input.candidate, assessment) &&
-          assessment.criteriaEvidenceIds.some((id) => evidenceIds.has(id)) &&
           assessment.caseId === input.case.caseId &&
-          input.evidence.some(
-            (evidence) =>
-              evidence.criterionId === criterion.criterionId &&
-              assessment.criteriaEvidenceIds.includes(evidence.evidenceId),
-          ) &&
-          criterion.evidenceKinds.includes("criterion"),
-      ),
-    );
+          assessment.criteriaEvidenceIds.some((id) => evidenceIds.has(id)),
+      );
+    });
 };
 
 const providerEvidenceIsCurrent = (
@@ -220,44 +217,35 @@ export const evaluateAcceptance = (input: AcceptanceEvaluationInput): Acceptance
     parent?.outcome === "inconclusive";
   const reasons: string[] = [];
 
-  let acceptanceStatus: CollaborativeAcceptanceStatus;
-  if (input.executionPhase === "paused") {
-    acceptanceStatus = "paused";
-    reasons.push("execution-paused");
-  } else if (input.executionPhase === "needs-human") {
-    acceptanceStatus = "needs-human";
-    reasons.push("human-input-required");
-  } else if (input.executionPhase === "implementing") {
-    acceptanceStatus = "implementing";
-    reasons.push("implementation-in-progress");
-  } else if (hasAssessmentFailure) {
-    acceptanceStatus = "changes-requested";
+  let acceptanceLifecycle: AcceptanceEvaluation["projection"]["acceptanceLifecycle"];
+  if (hasAssessmentFailure) {
+    acceptanceLifecycle = "changes-requested";
     reasons.push("assessment-did-not-pass");
   } else if (child === null) {
-    acceptanceStatus = "implementing";
+    acceptanceLifecycle = "pending";
     reasons.push("child-assessment-missing");
   } else if (parent === null) {
-    acceptanceStatus = "awaiting-review";
+    acceptanceLifecycle = "awaiting-review";
     reasons.push("parent-assessment-missing");
   } else if (!providerComplete) {
-    acceptanceStatus = "monitoring";
+    acceptanceLifecycle = "monitoring";
     reasons.push("provider-evidence-incomplete");
   } else if (
     currentProviderEvidence.unresolvedActionableFindings > 0 ||
     (input.case.policy.commentPolicy !== "blocking-only" &&
       currentProviderEvidence.unresolvedReviewThreads > 0)
   ) {
-    acceptanceStatus = "changes-requested";
+    acceptanceLifecycle = "changes-requested";
     reasons.push("provider-findings-unresolved");
   } else if (!criteriaSatisfied || !currentAssessmentsPass) {
-    acceptanceStatus = "verifying";
+    acceptanceLifecycle = "verifying";
     if (!criteriaSatisfied) reasons.push("required-criteria-evidence-missing");
     if (!currentAssessmentsPass) reasons.push("current-attestations-incomplete");
   } else if (input.collaborationObligations.length > 0) {
-    acceptanceStatus = "accepted";
+    acceptanceLifecycle = "accepted";
     reasons.push("collaboration-obligations-open");
   } else {
-    acceptanceStatus = "accepted";
+    acceptanceLifecycle = "accepted";
   }
 
   const terminalProviderGates =
@@ -270,19 +258,21 @@ export const evaluateAcceptance = (input: AcceptanceEvaluationInput): Acceptance
     currentProviderEvidence.unresolvedReviewThreads === 0 &&
     requiredChecksPass(currentProviderEvidence);
   const readyNow =
-    acceptanceStatus === "accepted" &&
+    (input.executionPhase === "verifying" || input.executionPhase === "monitoring") &&
+    acceptanceLifecycle === "accepted" &&
     criteriaSatisfied &&
     currentAssessmentsPass &&
     input.collaborationObligations.length === 0 &&
     terminalProviderGates;
 
   if (readyNow) {
-    acceptanceStatus = "ready-now";
   } else if (
-    acceptanceStatus === "accepted" &&
+    acceptanceLifecycle === "accepted" &&
     currentProviderEvidence !== null &&
     providerComplete &&
-    (!terminalProviderGates || input.collaborationObligations.length > 0)
+    (!terminalProviderGates ||
+      input.collaborationObligations.length > 0 ||
+      (input.executionPhase !== "verifying" && input.executionPhase !== "monitoring"))
   ) {
     reasons.push("terminal-readiness-gate-missing");
   }
@@ -294,24 +284,24 @@ export const evaluateAcceptance = (input: AcceptanceEvaluationInput): Acceptance
         ? "child-assessment-pending"
         : parent === null
           ? "parent-assessment-pending"
-          : acceptanceStatus === "changes-requested"
+          : acceptanceLifecycle === "changes-requested"
             ? "changes-requested"
             : "none";
 
-  const readiness =
-    acceptanceStatus === "ready-now"
-      ? "ready-now"
-      : currentProviderEvidence === null || !providerComplete
-        ? "no-known-blockers"
-        : "blocked";
+  const readiness = readyNow
+    ? "ready-now"
+    : currentProviderEvidence === null || !providerComplete
+      ? "no-known-blockers"
+      : "blocked";
 
   return {
     projection: {
       caseId: input.case.caseId,
       candidateId: input.candidate.candidateId,
       headSha: input.candidate.headSha,
-      acceptanceStatus,
+      executionPhase: input.executionPhase,
       collaborationStatus,
+      acceptanceLifecycle,
       readiness,
       reasons,
       staleAssessmentIds,

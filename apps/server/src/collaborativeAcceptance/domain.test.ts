@@ -145,7 +145,7 @@ const input = (overrides: Partial<AcceptanceEvaluationInput> = {}): AcceptanceEv
 describe("evaluateAcceptance", () => {
   it("requires exact current provenance for ready-now", () => {
     const result = evaluateAcceptance(input());
-    assert.strictEqual(result.projection.acceptanceStatus, "ready-now");
+    assert.strictEqual(result.projection.acceptanceLifecycle, "accepted");
     assert.strictEqual(result.projection.readiness, "ready-now");
 
     const movedCandidate = {
@@ -155,8 +155,9 @@ describe("evaluateAcceptance", () => {
       headSha: "sha-b",
     };
     const moved = evaluateAcceptance(input({ candidate: movedCandidate }));
-    assert.notStrictEqual(moved.projection.acceptanceStatus, "ready-now");
-    assert.strictEqual(moved.projection.acceptanceStatus, "implementing");
+    assert.notStrictEqual(moved.projection.readiness, "ready-now");
+    assert.strictEqual(moved.projection.acceptanceLifecycle, "pending");
+    assert.strictEqual(moved.projection.executionPhase, "verifying");
     assert.deepStrictEqual(moved.projection.staleAssessmentIds, [
       childAssessment.assessmentId,
       parentAssessment.assessmentId,
@@ -186,7 +187,7 @@ describe("evaluateAcceptance", () => {
         providerEvidence: { ...providerEvidence, complete: false, checkEvidenceComplete: false },
       }),
     );
-    assert.strictEqual(result.projection.acceptanceStatus, "monitoring");
+    assert.strictEqual(result.projection.acceptanceLifecycle, "monitoring");
     assert.strictEqual(result.projection.readiness, "no-known-blockers");
   });
 
@@ -199,7 +200,8 @@ describe("evaluateAcceptance", () => {
         ],
       }),
     );
-    assert.strictEqual(result.projection.acceptanceStatus, "implementing");
+    assert.strictEqual(result.projection.acceptanceLifecycle, "pending");
+    assert.strictEqual(result.projection.collaborationStatus, "child-assessment-pending");
   });
 
   it("requests changes for current actionable provider findings", () => {
@@ -208,8 +210,111 @@ describe("evaluateAcceptance", () => {
         providerEvidence: { ...providerEvidence, unresolvedActionableFindings: 1 },
       }),
     );
-    assert.strictEqual(result.projection.acceptanceStatus, "changes-requested");
+    assert.strictEqual(result.projection.acceptanceLifecycle, "changes-requested");
     assert.strictEqual(result.projection.readiness, "blocked");
+  });
+
+  const evidenceKinds = [
+    "criterion",
+    "provider-review",
+    "provider-review-thread",
+    "provider-comment",
+    "provider-check",
+    "provider-mergeability",
+    "assessment",
+    "test",
+    "artifact",
+    "manual",
+  ] as const;
+
+  for (const kind of evidenceKinds) {
+    it(`accepts current ${kind} evidence when the criterion allows it`, () => {
+      const evidence = {
+        ...criterionEvidence,
+        evidenceId: CollaborativeAcceptanceEvidenceId.make(`evidence-${kind}`),
+        kind,
+      };
+      const result = evaluateAcceptance(
+        input({
+          case: {
+            ...acceptanceCase,
+            criteria: [{ ...acceptanceCase.criteria[0]!, evidenceKinds: [kind] }],
+          },
+          evidence: [evidence],
+          assessments: [
+            {
+              ...childAssessment,
+              criteriaEvidenceIds: [evidence.evidenceId],
+            },
+            parentAssessment,
+          ],
+        }),
+      );
+      assert.strictEqual(result.projection.acceptanceLifecycle, "accepted");
+      assert.strictEqual(result.projection.readiness, "ready-now");
+    });
+  }
+
+  it("requires evidence for every mixed required criterion kind", () => {
+    const artifactEvidence = {
+      ...criterionEvidence,
+      evidenceId: CollaborativeAcceptanceEvidenceId.make("artifact-evidence"),
+      criterionId: "artifact",
+      kind: "artifact" as const,
+    };
+    const manualEvidence = {
+      ...criterionEvidence,
+      evidenceId: CollaborativeAcceptanceEvidenceId.make("manual-evidence"),
+      criterionId: "manual",
+      kind: "manual" as const,
+    };
+    const result = evaluateAcceptance(
+      input({
+        case: {
+          ...acceptanceCase,
+          criteria: [
+            {
+              ...acceptanceCase.criteria[0]!,
+              criterionId: "artifact",
+              evidenceKinds: ["artifact"],
+            },
+            {
+              ...acceptanceCase.criteria[0]!,
+              criterionId: "manual",
+              evidenceKinds: ["manual"],
+            },
+          ],
+        },
+        evidence: [artifactEvidence, manualEvidence],
+        assessments: [
+          {
+            ...childAssessment,
+            criteriaEvidenceIds: [artifactEvidence.evidenceId, manualEvidence.evidenceId],
+          },
+          parentAssessment,
+        ],
+      }),
+    );
+    assert.strictEqual(result.projection.acceptanceLifecycle, "accepted");
+    assert.strictEqual(result.projection.readiness, "ready-now");
+  });
+
+  it("does not satisfy a criterion with missing or stale candidate evidence", () => {
+    const missing = evaluateAcceptance(
+      input({
+        evidence: [],
+      }),
+    );
+    assert.strictEqual(missing.projection.acceptanceLifecycle, "verifying");
+    assert.strictEqual(missing.projection.readiness, "blocked");
+
+    const stale = evaluateAcceptance(
+      input({
+        evidence: [{ ...criterionEvidence, headSha: "old-head" }],
+      }),
+    );
+    assert.strictEqual(stale.projection.acceptanceLifecycle, "verifying");
+    assert.strictEqual(stale.projection.readiness, "blocked");
   });
 });
 

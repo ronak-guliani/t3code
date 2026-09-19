@@ -33,6 +33,10 @@ it.effect("creates the acceptance aggregate and its provenance tables", () =>
           "collaborative_acceptance_exchanges",
         ],
       );
+      const columns = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(collaborative_acceptance_cases)
+      `;
+      assert.isTrue(columns.some(({ name }) => name === "revision"));
     }),
   ),
 );

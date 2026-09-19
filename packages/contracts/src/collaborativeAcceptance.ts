@@ -16,9 +16,11 @@ import {
 
 const AcceptanceId = (brand: string) => TrimmedNonEmptyString.pipe(Schema.brand(brand));
 
+/** Canonical aggregate identity owned by Collaborative Acceptance. */
 export const CollaborativeAcceptanceCaseId = AcceptanceId("CollaborativeAcceptanceCaseId");
 export type CollaborativeAcceptanceCaseId = typeof CollaborativeAcceptanceCaseId.Type;
 
+/** Canonical immutable review-candidate identity owned by Collaborative Acceptance. */
 export const CollaborativeAcceptanceCandidateId = AcceptanceId(
   "CollaborativeAcceptanceCandidateId",
 );
@@ -32,6 +34,10 @@ export const CollaborativeAcceptanceAssessmentId = AcceptanceId(
 );
 export type CollaborativeAcceptanceAssessmentId = typeof CollaborativeAcceptanceAssessmentId.Type;
 
+/**
+ * Canonical request-exchange identity. Later request-transport modules must reference this
+ * identity instead of defining a second exchange lifecycle.
+ */
 export const CollaborativeAcceptanceExchangeId = AcceptanceId("CollaborativeAcceptanceExchangeId");
 export type CollaborativeAcceptanceExchangeId = typeof CollaborativeAcceptanceExchangeId.Type;
 
@@ -104,6 +110,16 @@ export const CollaborativeAcceptanceCriterion = Schema.Struct({
   evidenceKinds: Schema.Array(CollaborativeAcceptanceEvidenceKind),
 });
 export type CollaborativeAcceptanceCriterion = typeof CollaborativeAcceptanceCriterion.Type;
+
+export const CollaborativeAcceptanceExecutionPhase = Schema.Literals([
+  "implementing",
+  "verifying",
+  "monitoring",
+  "paused",
+  "needs-human",
+]);
+export type CollaborativeAcceptanceExecutionPhase =
+  typeof CollaborativeAcceptanceExecutionPhase.Type;
 
 export const CollaborativeAcceptanceCandidate = Schema.Struct({
   candidateId: CollaborativeAcceptanceCandidateId,
@@ -222,18 +238,15 @@ export const CollaborativeAcceptanceExchange = Schema.Struct({
 });
 export type CollaborativeAcceptanceExchange = typeof CollaborativeAcceptanceExchange.Type;
 
-export const CollaborativeAcceptanceStatus = Schema.Literals([
-  "implementing",
+export const CollaborativeAcceptanceLifecycle = Schema.Literals([
+  "pending",
   "awaiting-review",
   "changes-requested",
   "verifying",
   "monitoring",
-  "paused",
-  "needs-human",
   "accepted",
-  "ready-now",
 ]);
-export type CollaborativeAcceptanceStatus = typeof CollaborativeAcceptanceStatus.Type;
+export type CollaborativeAcceptanceLifecycle = typeof CollaborativeAcceptanceLifecycle.Type;
 
 export const CollaborativeAcceptanceCollaborationStatus = Schema.Literals([
   "none",
@@ -253,12 +266,24 @@ export const CollaborativeAcceptanceReadiness = Schema.Literals([
 ]);
 export type CollaborativeAcceptanceReadiness = typeof CollaborativeAcceptanceReadiness.Type;
 
+/**
+ * Transport integration seam: request correlation carries this case and exchange identity
+ * into the later request/response module. This module owns exchange state; transport does not.
+ */
+export const CollaborativeAcceptanceRequestTransportContext = Schema.Struct({
+  caseId: CollaborativeAcceptanceCaseId,
+  exchangeId: CollaborativeAcceptanceExchangeId,
+});
+export type CollaborativeAcceptanceRequestTransportContext =
+  typeof CollaborativeAcceptanceRequestTransportContext.Type;
+
 export const CollaborativeAcceptanceProjection = Schema.Struct({
   caseId: CollaborativeAcceptanceCaseId,
   candidateId: CollaborativeAcceptanceCandidateId,
   headSha: TrimmedNonEmptyString,
-  acceptanceStatus: CollaborativeAcceptanceStatus,
+  executionPhase: CollaborativeAcceptanceExecutionPhase,
   collaborationStatus: CollaborativeAcceptanceCollaborationStatus,
+  acceptanceLifecycle: CollaborativeAcceptanceLifecycle,
   readiness: CollaborativeAcceptanceReadiness,
   reasons: Schema.Array(TrimmedNonEmptyString),
   staleAssessmentIds: Schema.Array(CollaborativeAcceptanceAssessmentId),
@@ -281,6 +306,7 @@ export const CollaborativeAcceptanceCase = Schema.Struct({
 export type CollaborativeAcceptanceCase = typeof CollaborativeAcceptanceCase.Type;
 
 export const CollaborativeAcceptanceRecord = Schema.Struct({
+  revision: NonNegativeInt,
   case: CollaborativeAcceptanceCase,
   candidates: Schema.Array(CollaborativeAcceptanceCandidate),
   evidence: Schema.Array(CollaborativeAcceptanceEvidence),

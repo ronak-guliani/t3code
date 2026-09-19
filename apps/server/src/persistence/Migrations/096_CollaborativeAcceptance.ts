@@ -14,6 +14,7 @@ export default Effect.gen(function* () {
       current_head_sha TEXT NOT NULL,
       case_json TEXT NOT NULL,
       projection_json TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
