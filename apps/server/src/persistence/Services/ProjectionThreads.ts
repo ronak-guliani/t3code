@@ -8,6 +8,7 @@
  */
 import {
   CommandId,
+  CollaborationRequest,
   GitPullRequestAssociation,
   IsoDateTime,
   ModelSelection,
@@ -29,6 +30,7 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionThread = Schema.Struct({
   nudging: Schema.optional(ThreadNudging),
+  collaborationRequests: Schema.optionalKey(Schema.Array(CollaborationRequest)),
   threadId: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),

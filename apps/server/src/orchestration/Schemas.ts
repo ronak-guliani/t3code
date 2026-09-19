@@ -5,6 +5,8 @@ import {
   ThreadCreatedPayload as ContractsThreadCreatedPayloadSchema,
   ThreadArchivedPayload as ContractsThreadArchivedPayloadSchema,
   ThreadMetaUpdatedPayload as ContractsThreadMetaUpdatedPayloadSchema,
+  ThreadCollaborationRequestUpdatedPayload as ContractsThreadCollaborationRequestUpdatedPayloadSchema,
+  ThreadCollaborationStateClearedPayload as ContractsThreadCollaborationStateClearedPayloadSchema,
   ThreadPullRequestLinkedPayload as ContractsThreadPullRequestLinkedPayloadSchema,
   ThreadPullRequestRekeyedPayload as ContractsThreadPullRequestRekeyedPayloadSchema,
   ThreadPullRequestUnlinkedPayload as ContractsThreadPullRequestUnlinkedPayloadSchema,
@@ -56,6 +58,10 @@ export const ProjectDeletedPayload = ContractsProjectDeletedPayloadSchema;
 export const ThreadCreatedPayload = ContractsThreadCreatedPayloadSchema;
 export const ThreadArchivedPayload = ContractsThreadArchivedPayloadSchema;
 export const ThreadMetaUpdatedPayload = ContractsThreadMetaUpdatedPayloadSchema;
+export const ThreadCollaborationRequestUpdatedPayload =
+  ContractsThreadCollaborationRequestUpdatedPayloadSchema;
+export const ThreadCollaborationStateClearedPayload =
+  ContractsThreadCollaborationStateClearedPayloadSchema;
 export const ThreadPullRequestLinkedPayload = ContractsThreadPullRequestLinkedPayloadSchema;
 export const ThreadPullRequestRekeyedPayload = ContractsThreadPullRequestRekeyedPayloadSchema;
 export const ThreadPullRequestUnlinkedPayload = ContractsThreadPullRequestUnlinkedPayloadSchema;

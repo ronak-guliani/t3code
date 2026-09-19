@@ -104,6 +104,90 @@ function withEventBase(
   };
 }
 
+function collaborationRequestLocation(readModel: OrchestrationReadModel, requestId: string) {
+  for (const thread of readModel.threads) {
+    const request = thread.collaborationRequests?.find((entry) => entry.requestId === requestId);
+    if (request) return { thread, request };
+  }
+  return null;
+}
+
+function collaborationRequestEvent(
+  command: OrchestrationCommand,
+  threadId: ThreadId,
+  request: unknown,
+  action:
+    | "created"
+    | "responded"
+    | "consumed"
+    | "superseded"
+    | "cancelled"
+    | "reopened"
+    | "override"
+    | "response-rejected",
+  updatedAt: string,
+) {
+  return {
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: updatedAt,
+      commandId: command.commandId,
+    }),
+    type: "thread.collaboration-request-updated" as const,
+    payload: {
+      threadId,
+      action,
+      request,
+      updatedAt,
+    },
+  };
+}
+
+function collaborationQueueEvent(
+  command: OrchestrationCommand,
+  threadId: ThreadId,
+  delivery: {
+    queuedTurnId: string;
+    message: unknown;
+    modelSelection?: unknown;
+    titleSeed?: string;
+    runtimeMode: unknown;
+    interactionMode: unknown;
+  },
+  origin: unknown,
+  createdAt: string,
+) {
+  return {
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: createdAt,
+      commandId: command.commandId,
+    }),
+    type: "thread.queued-turn-created" as const,
+    payload: {
+      threadId,
+      queuedTurn: {
+        id: delivery.queuedTurnId,
+        threadId,
+        message: delivery.message,
+        ...(delivery.modelSelection !== undefined
+          ? { modelSelection: delivery.modelSelection }
+          : {}),
+        ...(delivery.titleSeed !== undefined ? { titleSeed: delivery.titleSeed } : {}),
+        runtimeMode: delivery.runtimeMode,
+        interactionMode: delivery.interactionMode,
+        origin,
+        createdAt,
+        updatedAt: createdAt,
+        failedAt: null,
+        failureMessage: null,
+      },
+    },
+  };
+}
+
 type PlannedOrchestrationEvent = Omit<OrchestrationEvent, "sequence">;
 
 type DecideOrchestrationCommandResult =
@@ -1178,6 +1262,366 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
     }
+
+    case "thread.collaboration-request.create": {
+      const sender = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const recipient = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.recipientThreadId,
+      });
+      const duplicate = collaborationRequestLocation(readModel, command.requestId);
+      if (duplicate) {
+        return [];
+      }
+      if (
+        command.blocking &&
+        (sender.collaborationRequests ?? []).some(
+          (request) =>
+            request.blocking &&
+            request.status === "waiting" &&
+            request.producingExecution.executionId === command.producingExecution.executionId &&
+            request.producingExecution.generation === command.producingExecution.generation,
+        )
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only one blocking collaboration request is allowed per execution generation.",
+        });
+      }
+      const reciprocal = (recipient.collaborationRequests ?? []).find(
+        (request) =>
+          request.blocking &&
+          request.status === "waiting" &&
+          request.senderThreadId === recipient.id &&
+          request.recipientThreadId === sender.id,
+      );
+      const directCycle =
+        command.blocking &&
+        reciprocal !== undefined &&
+        (sender.parentThreadId === recipient.id || recipient.parentThreadId === sender.id);
+      const status = directCycle ? "needs-human" : command.blocking ? "waiting" : "response-ready";
+      const terminalOutcome = directCycle ? "needs-human" : null;
+      const request = {
+        requestId: command.requestId,
+        kind: command.kind,
+        exchangeId: command.exchangeId,
+        senderThreadId: sender.id,
+        recipientThreadId: recipient.id,
+        blocking: command.blocking,
+        ...(command.acceptanceId !== undefined ? { acceptanceId: command.acceptanceId } : {}),
+        ...(command.caseId !== undefined ? { caseId: command.caseId } : {}),
+        senderAuthority: command.senderAuthority,
+        recipientAuthority: command.recipientAuthority,
+        producingExecution: command.producingExecution,
+        payloadRef: command.payloadRef,
+        candidateRefs: command.candidateRefs,
+        findingRefs: command.findingRefs,
+        supersedesRequestId: command.supersedesRequestId ?? null,
+        deliveryQueuedTurnId: directCycle ? null : command.delivery.queuedTurnId,
+        responseDeliveryQueuedTurnId: null,
+        responseRef: null,
+        response: null,
+        consumedExecution: null,
+        status,
+        terminalOutcome,
+        createdAt: command.createdAt,
+        updatedAt: command.createdAt,
+      };
+      const events = [
+        collaborationRequestEvent(command, sender.id, request, "created", command.createdAt),
+        collaborationRequestEvent(command, recipient.id, request, "created", command.createdAt),
+      ];
+      if (!directCycle) {
+        events.push(
+          collaborationQueueEvent(
+            command,
+            recipient.id,
+            command.delivery,
+            {
+              kind: "collaboration-request",
+              requestId: request.requestId,
+              exchangeId: request.exchangeId,
+            },
+            command.createdAt,
+          ),
+        );
+      }
+      return events;
+    }
+
+    case "thread.collaboration-request.respond": {
+      const location = collaborationRequestLocation(readModel, command.requestId);
+      if (!location) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Unknown collaboration request '${command.requestId}'.`,
+        });
+      }
+      const { request } = location;
+      if (
+        request.recipientThreadId !== command.threadId ||
+        request.exchangeId !== command.exchangeId ||
+        request.status !== "waiting"
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The collaboration request is no longer available for response.",
+        });
+      }
+      const response = {
+        responseId: command.responseId,
+        requestId: request.requestId,
+        exchangeId: request.exchangeId,
+        responderThreadId: command.threadId,
+        responderAuthority: command.responderAuthority,
+        payloadRef: command.payloadRef,
+        outcome: command.outcome,
+        createdAt: command.createdAt,
+      };
+      const nextRequest = {
+        ...request,
+        status: "response-ready",
+        responseDeliveryQueuedTurnId: command.delivery.queuedTurnId,
+        responseRef: response.responseId,
+        response,
+        updatedAt: command.createdAt,
+      };
+      const events = [
+        collaborationRequestEvent(
+          command,
+          request.senderThreadId,
+          nextRequest,
+          "responded",
+          command.createdAt,
+        ),
+        collaborationRequestEvent(
+          command,
+          request.recipientThreadId,
+          nextRequest,
+          "responded",
+          command.createdAt,
+        ),
+        collaborationQueueEvent(
+          command,
+          request.senderThreadId,
+          command.delivery,
+          {
+            kind: "collaboration-response",
+            requestId: request.requestId,
+            responseId: response.responseId,
+            exchangeId: request.exchangeId,
+          },
+          command.createdAt,
+        ),
+      ];
+      return events;
+    }
+
+    case "thread.collaboration-request.consume": {
+      const location = collaborationRequestLocation(readModel, command.requestId);
+      if (!location || location.request.senderThreadId !== command.threadId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The collaboration request is not owned by this thread.",
+        });
+      }
+      const { request } = location;
+      if (
+        request.status !== "response-ready" ||
+        request.responseRef !== command.responseId ||
+        request.response === null ||
+        request.producingExecution.executionId !== command.consumedExecution.executionId ||
+        command.consumedExecution.generation <= request.producingExecution.generation
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The response cannot be consumed by this execution generation.",
+        });
+      }
+      const nextRequest = {
+        ...request,
+        status: "consumed",
+        consumedExecution: command.consumedExecution,
+        terminalOutcome: request.response.outcome,
+        updatedAt: command.createdAt,
+      };
+      const events = [
+        collaborationRequestEvent(
+          command,
+          command.threadId,
+          nextRequest,
+          "consumed",
+          command.createdAt,
+        ),
+      ];
+      if (request.recipientThreadId !== command.threadId) {
+        events.push(
+          collaborationRequestEvent(
+            command,
+            request.recipientThreadId,
+            nextRequest,
+            "consumed",
+            command.createdAt,
+          ),
+        );
+      }
+      return events;
+    }
+
+    case "thread.collaboration-request.supersede":
+    case "thread.collaboration-request.cancel":
+    case "thread.collaboration-request.override": {
+      const location = collaborationRequestLocation(readModel, command.requestId);
+      if (!location) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Unknown collaboration request '${command.requestId}'.`,
+        });
+      }
+      const request = location.request;
+      const isSupersede = command.type === "thread.collaboration-request.supersede";
+      const isOverride = command.type === "thread.collaboration-request.override";
+      const nextRequest = {
+        ...request,
+        status: isSupersede ? "superseded" : isOverride ? command.outcome : "cancelled",
+        terminalOutcome: isSupersede ? "superseded" : isOverride ? command.outcome : "cancelled",
+        updatedAt: command.createdAt,
+      };
+      const events = [
+        collaborationRequestEvent(
+          command,
+          location.thread.id,
+          nextRequest,
+          isSupersede ? "superseded" : isOverride ? "override" : "cancelled",
+          command.createdAt,
+        ),
+      ];
+      const otherThreadId =
+        request.senderThreadId === location.thread.id
+          ? request.recipientThreadId
+          : request.senderThreadId;
+      if (otherThreadId !== location.thread.id) {
+        events.push(
+          collaborationRequestEvent(
+            command,
+            otherThreadId,
+            nextRequest,
+            isSupersede ? "superseded" : isOverride ? "override" : "cancelled",
+            command.createdAt,
+          ),
+        );
+      }
+      for (const queuedTurnId of [
+        request.deliveryQueuedTurnId,
+        request.responseDeliveryQueuedTurnId,
+      ]) {
+        if (queuedTurnId === null) continue;
+        const ownerThreadId =
+          queuedTurnId === request.deliveryQueuedTurnId
+            ? request.recipientThreadId
+            : request.senderThreadId;
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: ownerThreadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.queued-turn-deleted",
+          payload: {
+            threadId: ownerThreadId,
+            queuedTurnId,
+            deletedAt: command.createdAt,
+          },
+        });
+      }
+      return events;
+    }
+
+    case "thread.collaboration-response.delete": {
+      const location = collaborationRequestLocation(readModel, command.requestId);
+      if (
+        !location ||
+        location.thread.id !== command.threadId ||
+        location.request.responseRef !== command.responseId ||
+        location.request.status !== "response-ready"
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only the current failed response can be deleted and reopened.",
+        });
+      }
+      const nextRequest = {
+        ...location.request,
+        status: "waiting",
+        responseDeliveryQueuedTurnId: null,
+        responseRef: null,
+        response: null,
+        updatedAt: command.createdAt,
+      };
+      const events = [
+        collaborationRequestEvent(
+          command,
+          command.threadId,
+          nextRequest,
+          "reopened",
+          command.createdAt,
+        ),
+      ];
+      if (location.request.recipientThreadId !== command.threadId) {
+        events.push(
+          collaborationRequestEvent(
+            command,
+            location.request.recipientThreadId,
+            nextRequest,
+            "reopened",
+            command.createdAt,
+          ),
+        );
+      }
+      if (location.request.responseDeliveryQueuedTurnId !== null) {
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.queued-turn-deleted",
+          payload: {
+            threadId: command.threadId,
+            queuedTurnId: location.request.responseDeliveryQueuedTurnId,
+            deletedAt: command.createdAt,
+          },
+        });
+      }
+      return events;
+    }
+
+    case "thread.collaboration-state.clear":
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.collaboration-state-cleared",
+        payload: {
+          threadId: command.threadId,
+          clearedAt: command.createdAt,
+        },
+      };
 
     case "thread.meta.update": {
       const thread = yield* requireThread({
@@ -2723,6 +3167,36 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               },
             });
           }
+        }
+      }
+      if (nextActiveTurn !== null && nextActiveTurn !== prevActiveTurn) {
+        const responseReady = (thread.collaborationRequests ?? []).find(
+          (request) =>
+            request.status === "response-ready" &&
+            request.response !== null &&
+            request.responseDeliveryQueuedTurnId !== null,
+        );
+        if (responseReady) {
+          sourceEvents.push(
+            collaborationRequestEvent(
+              command,
+              thread.id,
+              {
+                ...responseReady,
+                status: "consumed",
+                consumedExecution: {
+                  executionId: command.session.providerInstanceId ?? thread.id,
+                  generation: responseReady.producingExecution.generation + 1,
+                  dispatchId: responseReady.producingExecution.dispatchId,
+                  turnId: nextActiveTurn,
+                },
+                terminalOutcome: responseReady.response.outcome,
+                updatedAt: command.createdAt,
+              },
+              "consumed",
+              command.createdAt,
+            ),
+          );
         }
       }
       if (command.session?.status === "running" && threadHasSettlementOverride(thread)) {

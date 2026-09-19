@@ -33,6 +33,8 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadCollaborationRequestUpdatedPayload,
+  ThreadCollaborationStateClearedPayload,
   ThreadPullRequestLinkedPayload,
   ThreadPullRequestRekeyedPayload,
   ThreadPullRequestUnlinkedPayload,
@@ -618,6 +620,48 @@ export function projectEvent(
             }),
           };
         }),
+      );
+
+    case "thread.collaboration-request-updated":
+      return decodeForEvent(
+        ThreadCollaborationRequestUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            collaborationRequests: (() => {
+              const existing =
+                nextBase.threads.find((thread) => thread.id === payload.threadId)
+                  ?.collaborationRequests ?? [];
+              const withoutRequest = existing.filter(
+                (request) => request.requestId !== payload.request.requestId,
+              );
+              return [...withoutRequest, payload.request].toSorted((left, right) =>
+                left.createdAt.localeCompare(right.createdAt),
+              );
+            })(),
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.collaboration-state-cleared":
+      return decodeForEvent(
+        ThreadCollaborationStateClearedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            collaborationRequests: [],
+            updatedAt: payload.clearedAt,
+          }),
+        })),
       );
 
     case "thread.pull-request-linked":

@@ -388,6 +388,91 @@ export const ThreadNudging = Schema.Struct({
 });
 export type ThreadNudging = typeof ThreadNudging.Type;
 
+export const CollaborationRequestId = TrimmedNonEmptyString;
+export type CollaborationRequestId = typeof CollaborationRequestId.Type;
+export const CollaborationResponseId = TrimmedNonEmptyString;
+export type CollaborationResponseId = typeof CollaborationResponseId.Type;
+export const CollaborationExchangeId = TrimmedNonEmptyString;
+export type CollaborationExchangeId = typeof CollaborationExchangeId.Type;
+export const CollaborationRequestKind = Schema.Literals([
+  "clarification",
+  "decision",
+  "review",
+  "remediation",
+]);
+export type CollaborationRequestKind = typeof CollaborationRequestKind.Type;
+export const CollaborationRequestStatus = Schema.Literals([
+  "waiting",
+  "response-ready",
+  "consumed",
+  "superseded",
+  "cancelled",
+  "needs-human",
+]);
+export type CollaborationRequestStatus = typeof CollaborationRequestStatus.Type;
+export const CollaborationRequestTerminalOutcome = Schema.Literals([
+  "completed",
+  "cancelled",
+  "superseded",
+  "needs-human",
+  "stale",
+]);
+export type CollaborationRequestTerminalOutcome = typeof CollaborationRequestTerminalOutcome.Type;
+
+export const CollaborationExecutionAuthority = Schema.Struct({
+  executionId: TrimmedNonEmptyString,
+  generation: NonNegativeInt,
+  dispatchId: Schema.NullOr(TrimmedNonEmptyString),
+  turnId: Schema.NullOr(TurnId),
+});
+export type CollaborationExecutionAuthority = typeof CollaborationExecutionAuthority.Type;
+
+export const CollaborationPayloadReference = Schema.Struct({
+  ref: TrimmedNonEmptyString,
+  sha256: TrimmedNonEmptyString,
+});
+export type CollaborationPayloadReference = typeof CollaborationPayloadReference.Type;
+
+export const CollaborationResponse = Schema.Struct({
+  responseId: CollaborationResponseId,
+  requestId: CollaborationRequestId,
+  exchangeId: CollaborationExchangeId,
+  responderThreadId: ThreadId,
+  responderAuthority: CollaborationExecutionAuthority,
+  payloadRef: CollaborationPayloadReference,
+  outcome: CollaborationRequestTerminalOutcome,
+  createdAt: IsoDateTime,
+});
+export type CollaborationResponse = typeof CollaborationResponse.Type;
+
+export const CollaborationRequest = Schema.Struct({
+  requestId: CollaborationRequestId,
+  kind: CollaborationRequestKind,
+  exchangeId: CollaborationExchangeId,
+  senderThreadId: ThreadId,
+  recipientThreadId: ThreadId,
+  blocking: Schema.Boolean,
+  acceptanceId: Schema.optional(TrimmedNonEmptyString),
+  caseId: Schema.optional(TrimmedNonEmptyString),
+  senderAuthority: CollaborationExecutionAuthority,
+  recipientAuthority: CollaborationExecutionAuthority,
+  producingExecution: CollaborationExecutionAuthority,
+  payloadRef: CollaborationPayloadReference,
+  candidateRefs: Schema.Array(TrimmedNonEmptyString),
+  findingRefs: Schema.Array(TrimmedNonEmptyString),
+  supersedesRequestId: Schema.NullOr(CollaborationRequestId),
+  deliveryQueuedTurnId: Schema.NullOr(QueuedTurnId),
+  responseDeliveryQueuedTurnId: Schema.NullOr(QueuedTurnId),
+  responseRef: Schema.NullOr(CollaborationResponseId),
+  response: Schema.NullOr(CollaborationResponse),
+  consumedExecution: Schema.NullOr(CollaborationExecutionAuthority),
+  status: CollaborationRequestStatus,
+  terminalOutcome: Schema.NullOr(CollaborationRequestTerminalOutcome),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type CollaborationRequest = typeof CollaborationRequest.Type;
+
 export const PullRequestMonitorOrigin = Schema.Struct({
   kind: Schema.Literal("pull-request-monitor"),
   repository: TrimmedNonEmptyString,
@@ -407,11 +492,28 @@ export const PullRequestMonitorOrigin = Schema.Struct({
 });
 export type PullRequestMonitorOrigin = typeof PullRequestMonitorOrigin.Type;
 
+export const CollaborationRequestOrigin = Schema.Struct({
+  kind: Schema.Literal("collaboration-request"),
+  requestId: CollaborationRequestId,
+  exchangeId: CollaborationExchangeId,
+});
+export type CollaborationRequestOrigin = typeof CollaborationRequestOrigin.Type;
+
+export const CollaborationResponseOrigin = Schema.Struct({
+  kind: Schema.Literal("collaboration-response"),
+  requestId: CollaborationRequestId,
+  responseId: CollaborationResponseId,
+  exchangeId: CollaborationExchangeId,
+});
+export type CollaborationResponseOrigin = typeof CollaborationResponseOrigin.Type;
+
 export const MessageOrigin = Schema.Union([
   WorkspaceHandoffOrigin,
   CrossThreadOrigin,
   PullRequestMonitorOrigin,
   ChildNudgeOrigin,
+  CollaborationRequestOrigin,
+  CollaborationResponseOrigin,
 ]);
 export type MessageOrigin = typeof MessageOrigin.Type;
 
@@ -660,6 +762,7 @@ export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;
 
 export const OrchestrationThread = Schema.Struct({
   nudging: Schema.optional(ThreadNudging),
+  collaborationRequests: Schema.optionalKey(Schema.Array(CollaborationRequest)),
   linkedPullRequest: Schema.optionalKey(Schema.NullOr(ThreadLinkedPullRequest)),
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   unsettledAt: Schema.optional(Schema.NullOr(IsoDateTime)),
@@ -1006,6 +1109,105 @@ const ThreadMetaUpdateCommand = Schema.Struct({
       "title and regenerateTitle cannot be specified together",
   ),
 );
+
+const CollaborationDelivery = Schema.Struct({
+  queuedTurnId: QueuedTurnId,
+  message: QueuedTurnMessage,
+  modelSelection: Schema.optional(ModelSelection),
+  titleSeed: Schema.optional(TrimmedNonEmptyString),
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+});
+export type CollaborationDelivery = typeof CollaborationDelivery.Type;
+
+const CollaborationRequestCreateCommand = Schema.Struct({
+  type: Schema.Literal("thread.collaboration-request.create"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CollaborationRequestId,
+  recipientThreadId: ThreadId,
+  kind: CollaborationRequestKind,
+  exchangeId: CollaborationExchangeId,
+  blocking: Schema.Boolean,
+  acceptanceId: Schema.optional(TrimmedNonEmptyString),
+  caseId: Schema.optional(TrimmedNonEmptyString),
+  senderAuthority: CollaborationExecutionAuthority,
+  recipientAuthority: CollaborationExecutionAuthority,
+  producingExecution: CollaborationExecutionAuthority,
+  payloadRef: CollaborationPayloadReference,
+  candidateRefs: Schema.Array(TrimmedNonEmptyString),
+  findingRefs: Schema.Array(TrimmedNonEmptyString),
+  supersedesRequestId: Schema.optional(CollaborationRequestId),
+  delivery: CollaborationDelivery,
+  createdAt: IsoDateTime,
+});
+
+const CollaborationRequestRespondCommand = Schema.Struct({
+  type: Schema.Literal("thread.collaboration-request.respond"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CollaborationRequestId,
+  responseId: CollaborationResponseId,
+  exchangeId: CollaborationExchangeId,
+  responderAuthority: CollaborationExecutionAuthority,
+  payloadRef: CollaborationPayloadReference,
+  outcome: CollaborationRequestTerminalOutcome,
+  delivery: CollaborationDelivery,
+  createdAt: IsoDateTime,
+});
+
+const CollaborationRequestConsumeCommand = Schema.Struct({
+  type: Schema.Literal("thread.collaboration-request.consume"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CollaborationRequestId,
+  responseId: CollaborationResponseId,
+  consumedExecution: CollaborationExecutionAuthority,
+  createdAt: IsoDateTime,
+});
+
+const CollaborationRequestSupersedeCommand = Schema.Struct({
+  type: Schema.Literal("thread.collaboration-request.supersede"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CollaborationRequestId,
+  supersededByRequestId: CollaborationRequestId,
+  createdAt: IsoDateTime,
+});
+
+const CollaborationRequestCancelCommand = Schema.Struct({
+  type: Schema.Literal("thread.collaboration-request.cancel"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CollaborationRequestId,
+  createdAt: IsoDateTime,
+});
+
+const CollaborationResponseDeleteCommand = Schema.Struct({
+  type: Schema.Literal("thread.collaboration-response.delete"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CollaborationRequestId,
+  responseId: CollaborationResponseId,
+  createdAt: IsoDateTime,
+});
+
+const CollaborationRequestOverrideCommand = Schema.Struct({
+  type: Schema.Literal("thread.collaboration-request.override"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CollaborationRequestId,
+  outcome: Schema.Literals(["cancelled", "needs-human"]),
+  authorizedBy: Schema.Literal("user"),
+  createdAt: IsoDateTime,
+});
+
+const CollaborationStateClearCommand = Schema.Struct({
+  type: Schema.Literal("thread.collaboration-state.clear"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
 
 const ThreadWorkspaceHandoffCommand = Schema.Struct({
   type: Schema.Literal("thread.workspace.handoff"),
@@ -1452,6 +1654,13 @@ const ThreadDispatchReplaceCommand = Schema.Struct({
 
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadChildReportCommand,
+  CollaborationRequestCreateCommand,
+  CollaborationRequestRespondCommand,
+  CollaborationRequestSupersedeCommand,
+  CollaborationRequestCancelCommand,
+  CollaborationResponseDeleteCommand,
+  CollaborationRequestOverrideCommand,
+  CollaborationStateClearCommand,
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
@@ -1492,6 +1701,13 @@ export type DispatchableClientOrchestrationCommand =
 
 export const ClientOrchestrationCommand = Schema.Union([
   ThreadChildReportCommand,
+  CollaborationRequestCreateCommand,
+  CollaborationRequestRespondCommand,
+  CollaborationRequestSupersedeCommand,
+  CollaborationRequestCancelCommand,
+  CollaborationResponseDeleteCommand,
+  CollaborationRequestOverrideCommand,
+  CollaborationStateClearCommand,
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
@@ -1631,6 +1847,7 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
 
 export const InternalOrchestrationCommand = Schema.Union([
   ChatArchiveImportCommand,
+  CollaborationRequestConsumeCommand,
   ThreadSessionSetCommand,
   ThreadDispatchReplaceCommand,
   ThreadMessageAssistantDeltaCommand,
@@ -1675,6 +1892,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.pin-reordered",
   "thread.decoupled",
   "thread.meta-updated",
+  "thread.collaboration-request-updated",
+  "thread.collaboration-state-cleared",
   "thread.pull-request-linked",
   "thread.pull-request-unlinked",
   "thread.pull-request-rekeyed",
@@ -1859,6 +2078,28 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   pullRequestSource: Schema.optional(ThreadPullRequestLinkSource),
   pullRequestOwnership: Schema.optional(Schema.Literal("transfer")),
   updatedAt: IsoDateTime,
+});
+
+export const ThreadCollaborationRequestUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  action: Schema.Literals([
+    "created",
+    "responded",
+    "consumed",
+    "superseded",
+    "cancelled",
+    "reopened",
+    "override",
+    "response-rejected",
+  ]),
+  request: CollaborationRequest,
+  response: Schema.optional(CollaborationResponse),
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadCollaborationStateClearedPayload = Schema.Struct({
+  threadId: ThreadId,
+  clearedAt: IsoDateTime,
 });
 
 export const ThreadPullRequestLinkedPayload = Schema.Struct({
@@ -2192,6 +2433,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.meta-updated"),
     payload: ThreadMetaUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.collaboration-request-updated"),
+    payload: ThreadCollaborationRequestUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.collaboration-state-cleared"),
+    payload: ThreadCollaborationStateClearedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -2625,6 +2876,7 @@ export const DispatchResult = Schema.Struct({
   threadUrl: Schema.optionalKey(ThreadUrl),
   /** Fencing outcome for thread.child.report commands; absent otherwise. */
   reportVerdict: Schema.optionalKey(DispatchReportVerdict),
+  collaborationOutcome: Schema.optionalKey(CollaborationRequestTerminalOutcome),
 });
 export type DispatchResult = typeof DispatchResult.Type;
 
