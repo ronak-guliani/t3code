@@ -31,6 +31,12 @@ export interface RepositoryValidationGateSpec {
   readonly attempt: number;
   readonly testFiles?: ReadonlyArray<string>;
   readonly timeoutMs?: number;
+  /**
+   * Optional caller-owned scope (for example a sanitized validation run id)
+   * namespacing artifact keys so concurrent runs cannot overwrite each other.
+   * Must already satisfy the artifact-key alphabet when provided.
+   */
+  readonly scope?: string;
 }
 
 export interface ValidationArtifactDescriptor {
@@ -160,6 +166,9 @@ function validateSpec(spec: RepositoryValidationGateSpec): string | null {
   if (spec.timeoutMs !== undefined && (!Number.isFinite(spec.timeoutMs) || spec.timeoutMs <= 0)) {
     return "timeoutMs must be a positive finite number.";
   }
+  if (spec.scope !== undefined && !isSafeArtifactKey(spec.scope)) {
+    return "artifact scope must be a safe artifact key.";
+  }
   if (
     spec.id === "focused-tests" &&
     spec.testFiles?.some((file) => !isSafeRelativeTestFile(file))
@@ -197,6 +206,11 @@ function artifactContents(result: {
 
 function isSafeArtifactKey(key: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(key);
+}
+
+export function artifactKeyForSpec(spec: RepositoryValidationGateSpec): string {
+  const base = `${spec.id}-attempt-${spec.attempt}`;
+  return spec.scope === undefined ? base : `${spec.scope}-${base}`;
 }
 
 export const makeFileValidationArtifactStore = (directory: string): ValidationArtifactStore => ({
@@ -327,7 +341,7 @@ export const makeRepositoryValidationRunner = Effect.fn("makeRepositoryValidatio
                     }
                   : null;
 
-        const artifactKey = `${spec.id}-attempt-${spec.attempt}`;
+        const artifactKey = artifactKeyForSpec(spec);
         const artifactExit = yield* artifactStore
           .write({
             key: artifactKey,

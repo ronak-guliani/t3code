@@ -258,6 +258,57 @@ describe("validation coordinator integration", () => {
     ).rejects.toThrow("not owned by the active target executor");
   });
 
+  it("accepts interrupted-to-pending gate resets so resumed runs stay schedulable", async () => {
+    const running = runningRun();
+    const gateId = running.gates[0]!.id;
+    const interrupted = transitionValidationGate(
+      running,
+      {
+        gateId,
+        status: "interrupted",
+        command: "pnpm test",
+        startedAt: now,
+        completedAt: now,
+        exitCode: null,
+        outputRef: null,
+        blockerReason: null,
+        diagnostics: ["Reactor restarted while gate was running."],
+      },
+      now,
+    );
+    expect(interrupted.gates[0]?.status).toBe("interrupted");
+
+    let model = readModelWithRun(interrupted);
+    const reset = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.validation-gate.update",
+          commandId: CommandId.make("cmd-reset-1"),
+          threadId,
+          runId: "run-1",
+          executorId: "executor-1",
+          target,
+          gateId,
+          status: "pending",
+          command: "pnpm test",
+          startedAt: null,
+          completedAt: null,
+          exitCode: null,
+          outputRef: null,
+          blockerReason: null,
+          diagnostics: ["Gate reset to pending after the run was interrupted."],
+          createdAt: now,
+        },
+        readModel: model,
+      }),
+    );
+    const events = Array.isArray(reset) ? reset : [reset];
+    for (const event of events) {
+      model = await Effect.runPromise(projectEvent(model, { ...event, sequence: 1 } as never));
+    }
+    expect(model.threads[0]?.validationRun?.gates[0]?.status).toBe("pending");
+  });
+
   it("maps failure taxonomy to typed outcomes", () => {
     const run = runningRun();
     const cases: Array<{

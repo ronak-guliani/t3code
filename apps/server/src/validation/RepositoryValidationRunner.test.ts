@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import * as ProcessRunner from "../processRunner.ts";
 import {
+  artifactKeyForSpec,
   makeFileValidationArtifactStore,
   RepositoryValidationRunner,
   RepositoryValidationRunnerLive,
@@ -254,5 +255,65 @@ describe("RepositoryValidationRunner", () => {
     await expect(
       Effect.runPromise(store.write({ key: "../evil", contents: "x" })),
     ).rejects.toThrow();
+  });
+
+  it("scopes artifact keys per run so concurrent runs cannot overwrite each other", async () => {
+    expect(artifactKeyForSpec({ id: "lint", cwd: "/repo", attempt: 1 })).toBe("lint-attempt-1");
+    expect(
+      artifactKeyForSpec({ id: "lint", cwd: "/repo", attempt: 2, scope: "validation-req-1" }),
+    ).toBe("validation-req-1-lint-attempt-2");
+
+    const written = new Map<string, string>();
+    const store: ValidationArtifactStore = {
+      write: ({ key, contents }) =>
+        Effect.sync(() => {
+          written.set(key, contents);
+          return descriptor(key);
+        }),
+    };
+    const run = vi.fn(() => Effect.succeed(baseProcessResult()));
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const runner = yield* RepositoryValidationRunner;
+        return yield* runner.run({
+          gates: [
+            { id: "lint", cwd: "/repo", attempt: 1, scope: "validation-req-1" },
+            { id: "lint", cwd: "/repo", attempt: 1, scope: "validation-req-2" },
+          ],
+        });
+      }).pipe(
+        Effect.provide(RepositoryValidationRunnerLive),
+        Effect.provideService(ProcessRunner.ProcessRunner, { run }),
+        Effect.provideService(ValidationArtifactStoreService, store),
+      ),
+    );
+
+    expect(result.attempts.map((attempt) => attempt.artifact?.key)).toEqual([
+      "validation-req-1-lint-attempt-1",
+      "validation-req-2-lint-attempt-1",
+    ]);
+    expect(written.size).toBe(2);
+  });
+
+  it("rejects unsafe artifact scopes without executing", async () => {
+    const run = vi.fn(() => Effect.succeed(baseProcessResult()));
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const runner = yield* RepositoryValidationRunner;
+        return yield* runner.run({
+          gates: [{ id: "lint", cwd: "/repo", attempt: 1, scope: "../../evil" }],
+        });
+      }).pipe(
+        Effect.provide(RepositoryValidationRunnerLive),
+        Effect.provideService(ProcessRunner.ProcessRunner, { run }),
+        Effect.provideService(ValidationArtifactStoreService, {
+          write: ({ key }) => Effect.succeed(descriptor(key)),
+        }),
+      ),
+    );
+
+    expect(run).not.toHaveBeenCalled();
+    expect(result.attempts[0]?.failure?.kind).toBe("invalid-spec");
+    expect(result.attempts[0]?.failure?.message).toContain("artifact scope");
   });
 });

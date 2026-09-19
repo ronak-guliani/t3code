@@ -202,3 +202,24 @@ export function collectChangedPathsFromCheckpoints(
   }
   return [...paths].toSorted();
 }
+
+/**
+ * Selects the next runnable gate in deterministic plan order: the first
+ * required pending gate whose earlier required gates all passed (or were
+ * not required). Gates left in any other status — including `interrupted`
+ * after a resume that did not reset them — block selection.
+ */
+export function selectNextRunnableGate(
+  gates: ReadonlyArray<ValidationGate>,
+): ValidationGate | undefined {
+  return gates.find((gate, index) => {
+    if (!gate.required || gate.status !== "pending") return false;
+    for (let i = 0; i < index; i += 1) {
+      const earlier = gates[i];
+      if (!earlier) continue;
+      if (!earlier.required) continue;
+      if (earlier.status !== "passed" && earlier.status !== "not-required") return false;
+    }
+    return true;
+  });
+}

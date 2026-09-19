@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ValidationGate, ValidationTarget } from "@t3tools/contracts";
 
 import {
+  artifactScopeForRun,
   attemptNumberForAttemptId,
   browserScenarioForGate,
   isBrowserGateKind,
@@ -43,6 +44,35 @@ const gate = (overrides: Partial<ValidationGate> = {}): ValidationGate => ({
 });
 
 describe("ValidationGateExecutor mapping", () => {
+  it("scopes repository artifacts to the coordinator run id", () => {
+    expect(artifactScopeForRun("validation:req-1")).toBe("validation-req-1");
+    expect(artifactScopeForRun("validation:550e8400-e29b-41d4-a716-446655440000")).toBe(
+      "validation-550e8400-e29b-41d4-a716-446655440000",
+    );
+    const scoped = artifactScopeForRun("validation:req-1");
+    expect(scoped.length).toBeLessThanOrEqual(64);
+    expect(/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(scoped)).toBe(true);
+    const result = mapRepositoryAttemptToResult({
+      runId: "validation:req-1",
+      gate: gate(),
+      attemptId: "attempt:validation:req-1:gate:2",
+      leaseId: "lease:validation:req-1",
+      executorId: "validation-coordinator:env-1",
+      target,
+      attempt: {
+        status: "passed",
+        exitCode: 0,
+        artifact: { key: `${scoped}-lint-attempt-2`, sha256: "a".repeat(64) },
+        failure: null,
+        stdout: "ok",
+        stderr: "",
+      },
+      observedAt: "2026-09-18T00:00:01.000Z",
+      completedAt: "2026-09-18T00:00:02.000Z",
+    });
+    expect(result.outputRef).toContain(`artifact:${scoped}-lint-attempt-2:`);
+  });
+
   it("derives the runner attempt number from the reactor attempt id", () => {
     expect(attemptNumberForAttemptId("attempt:validation:req-1:gate:1")).toBe(1);
     expect(attemptNumberForAttemptId("attempt:validation:req-1:gate:2")).toBe(2);

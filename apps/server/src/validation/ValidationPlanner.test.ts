@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import type { ThreadId, ValidationTarget } from "@t3tools/contracts";
+import type { ThreadId, ValidationGate, ValidationTarget } from "@t3tools/contracts";
 
 import {
   collectChangedPathsFromCheckpoints,
   planCoordinatorRunWithPolicy,
+  selectNextRunnableGate,
 } from "./ValidationPlanner.ts";
 
 const target: ValidationTarget = {
@@ -123,5 +124,48 @@ describe("ValidationPlanner", () => {
     ]);
     expect(first).toEqual(second);
     expect(first).toEqual(["a.ts", "b.ts", "c.ts"]);
+  });
+
+  it("selects the first pending gate only after earlier required gates pass", () => {
+    const gate = (overrides: Partial<ValidationGate>): ValidationGate => ({
+      id: "gate",
+      label: "Gate",
+      kind: "lint",
+      instanceId: "gate",
+      required: true,
+      status: "pending",
+      command: "pnpm lint",
+      requestedAt: "2026-09-18T00:00:00.000Z",
+      startedAt: null,
+      completedAt: null,
+      exitCode: null,
+      outputRef: null,
+      blockerReason: null,
+      diagnostics: [],
+      attempts: [],
+      result: null,
+      ...overrides,
+    });
+    const first = gate({ id: "first" });
+    const second = gate({ id: "second" });
+
+    expect(selectNextRunnableGate([first, second])?.id).toBe("first");
+    expect(selectNextRunnableGate([{ ...first, status: "passed" }, second])?.id).toBe("second");
+    // An interrupted gate is not runnable and blocks dependents until reset.
+    expect(selectNextRunnableGate([{ ...first, status: "interrupted" }, second])).toBeUndefined();
+    expect(
+      selectNextRunnableGate([
+        { ...first, status: "interrupted" },
+        { ...second, status: "interrupted" },
+      ]),
+    ).toBeUndefined();
+    // Resetting the interrupted gate to pending makes the run schedulable again.
+    expect(
+      selectNextRunnableGate([
+        { ...first, status: "pending" },
+        { ...second, status: "pending" },
+      ])?.id,
+    ).toBe("first");
+    expect(selectNextRunnableGate([{ ...first, required: false }])).toBeUndefined();
   });
 });

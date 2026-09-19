@@ -22,6 +22,7 @@ import {
 import {
   collectChangedPathsFromCheckpoints,
   planCoordinatorRunWithPolicy,
+  selectNextRunnableGate,
 } from "../../validation/ValidationPlanner.ts";
 import {
   isBrowserGateKind,
@@ -160,15 +161,43 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
     const status = validationRunEffectiveStatus(run);
     if (status === "interrupted") {
       yield* releaseLease(run);
+      const resumedAt = new Date().toISOString();
+      const resetExecutorId = run.executorId;
+      if (resetExecutorId) {
+        for (const gate of run.gates) {
+          if (gate.status !== "interrupted") continue;
+          yield* orchestrationEngine.dispatch({
+            type: "thread.validation-gate.update",
+            commandId: commandId(run.id, `reset:${gate.id}:${run.updatedAt}`),
+            threadId: thread.id,
+            runId: run.id,
+            executorId: resetExecutorId,
+            target: run.target,
+            gateId: gate.id,
+            status: "pending",
+            command: gate.command,
+            startedAt: null,
+            completedAt: null,
+            exitCode: null,
+            outputRef: null,
+            blockerReason: null,
+            diagnostics: [
+              ...gate.diagnostics,
+              "Gate reset to pending after the run was interrupted.",
+            ],
+            createdAt: resumedAt,
+          });
+        }
+      }
       yield* orchestrationEngine.dispatch({
         type: "thread.validation.lifecycle",
-        commandId: commandId(run.id, "resume-planned"),
+        commandId: commandId(run.id, `resume-planned:${run.updatedAt}`),
         threadId: thread.id,
         update: {
           runId: run.id,
           status: "planned",
           reason: null,
-          updatedAt: new Date().toISOString(),
+          updatedAt: resumedAt,
         },
       });
       return;
@@ -344,16 +373,7 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
       return;
     }
 
-    const nextGate = run.gates.find((gate, index) => {
-      if (!gate.required || gate.status !== "pending") return false;
-      for (let i = 0; i < index; i += 1) {
-        const earlier = run.gates[i];
-        if (!earlier) continue;
-        if (!earlier.required) continue;
-        if (earlier.status !== "passed" && earlier.status !== "not-required") return false;
-      }
-      return true;
-    });
+    const nextGate = selectNextRunnableGate(run.gates);
     if (!nextGate) return;
 
     const observedAt = new Date().toISOString();

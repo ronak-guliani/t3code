@@ -83,6 +83,16 @@ export function attemptNumberForAttemptId(attemptId: string): number {
   return Number.isInteger(parsed) && parsed >= 1 ? parsed : 1;
 }
 
+/**
+ * Derives a filesystem-safe artifact scope from a coordinator run id so
+ * repository evidence from concurrent runs cannot share artifact keys.
+ * Request ids are UUIDs, so the sanitized form stays injective in practice.
+ */
+export function artifactScopeForRun(runId: string): string {
+  const sanitized = runId.replace(/[^A-Za-z0-9._-]/g, "-").replace(/^[^A-Za-z0-9]+/, "");
+  return (sanitized || "run").slice(0, 64);
+}
+
 export function mapRepositoryAttemptToResult(input: {
   readonly runId: string;
   readonly gate: ValidationGate;
@@ -334,6 +344,7 @@ export const makeValidationGateExecutor = Effect.gen(function* () {
             id: gateId,
             cwd: input.cwd,
             attempt: attemptNumberForAttemptId(input.attemptId),
+            scope: artifactScopeForRun(input.runId),
           },
         ],
       });
