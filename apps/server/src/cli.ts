@@ -4800,10 +4800,10 @@ const observabilityGetCommand = Command.make("get", {
   Command.withHandler((flags) =>
     withLiveRpcClient(flags, (client) =>
       Effect.gen(function* () {
-        const [settings, config] = yield* Effect.all([
-          client[WS_METHODS.serverGetSettings]({}),
-          client[WS_METHODS.serverGetConfig]({}),
-        ]);
+        const [settings, config] = yield* Effect.all(
+          [client[WS_METHODS.serverGetSettings]({}), client[WS_METHODS.serverGetConfig]({})],
+          { concurrency: "unbounded" },
+        );
         yield* printJson({ settings: settings.observability, runtime: config.observability });
       }),
     ),
