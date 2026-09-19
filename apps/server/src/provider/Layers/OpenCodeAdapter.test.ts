@@ -1773,6 +1773,60 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect(
+    "reconciles from an assistant parent when the prompt is absent from the transcript page",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-opencode-truncated-transcript");
+        const observed = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+        const turn = yield* adapter.sendTurn({
+          threadId,
+          input: "Recover from a truncated transcript",
+          modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+        });
+        const prompt = runtimeMock.state.promptCalls.at(-1) as { messageID: string };
+
+        yield* sleep(150);
+        runtimeMock.state.messages = [
+          {
+            info: {
+              id: "assistant-truncated-transcript",
+              role: "assistant",
+              parentID: prompt.messageID,
+            },
+            parts: [
+              {
+                id: "assistant-part",
+                messageID: "assistant-truncated-transcript",
+                type: "text",
+                text: "Recovered from the parent correlation",
+                time: { start: 1, end: 2 },
+              },
+            ],
+          },
+        ];
+        runtimeMock.state.sessionStatus = "idle";
+
+        const events = Array.from(yield* Fiber.join(observed).pipe(Effect.timeout("2 seconds")));
+        const completed = events.filter(
+          (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+        );
+        assert.equal(completed.length, 1);
+      }),
+  );
+
   it.effect("does not fail a long-running prompt before its transcript is idle", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;

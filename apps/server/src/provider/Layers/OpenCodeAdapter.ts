@@ -1377,16 +1377,14 @@ export function makeOpenCodeAdapter(
         const promptIndex = messages.findIndex(
           (candidate) => candidate.info.id === promptMessageId,
         );
-        const assistant =
-          promptIndex >= 0
-            ? messages.find(
-                (entry) =>
-                  entry.info.role === "assistant" &&
-                  ((entry.info as { readonly parentID?: string }).parentID === promptMessageId ||
-                    messages.findIndex((candidate) => candidate.info.id === entry.info.id) >
-                      promptIndex),
-              )
-            : undefined;
+        const assistant = messages.find(
+          (entry) =>
+            entry.info.role === "assistant" &&
+            ((entry.info as { readonly parentID?: string }).parentID === promptMessageId ||
+              (promptIndex >= 0 &&
+                messages.findIndex((candidate) => candidate.info.id === entry.info.id) >
+                  promptIndex)),
+        );
         if (assistant?.info.role === "assistant" && assistant.info.error !== undefined) {
           yield* finishTurn(context, turnId, "failed", sessionErrorMessage(assistant.info.error));
           return;
