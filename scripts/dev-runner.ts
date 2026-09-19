@@ -162,6 +162,27 @@ export function resolveOffset(config: {
   return { offset: 0, source: "default ports" };
 }
 
+/**
+ * State-home precedence for dev servers: explicit `--home-dir` wins, then the
+ * worktree's own gitignored `.t3`, then ambient `T3CODE_HOME`. The flag must
+ * NOT carry a `T3CODE_HOME` fallback (see its definition): the fallback would
+ * arrive already merged into `flagHome` and make the worktree branch dead,
+ * capturing worktree state into the shared home. Blank strings are not
+ * selections — treating `--home-dir ""` as one would skip the worktree
+ * default and land on the shared home.
+ */
+export function resolveDevT3Home(input: {
+  readonly flagHome: string | undefined;
+  readonly worktreeHome: string | undefined;
+  readonly envHome: string | undefined;
+}): string | undefined {
+  return (
+    (input.flagHome?.trim() || undefined) ??
+    (input.worktreeHome?.trim() || undefined) ??
+    (input.envHome?.trim() || undefined)
+  );
+}
+
 function resolveBaseDir(baseDir: string | undefined): Effect.Effect<string, never, Path.Path> {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -430,7 +451,7 @@ export function resolveModePortOffsets<R = NetService>({
 
 interface DevRunnerCliInput {
   readonly mode: DevMode;
-  readonly t3Home: string | undefined;
+  readonly t3Home: Option.Option<string>;
   readonly noBrowser: boolean | undefined;
   readonly autoBootstrapProjectFromCwd: boolean | undefined;
   readonly logWebSocketEvents: boolean | undefined;
@@ -493,13 +514,11 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
     // state into the shared home. `--home-dir` still wins; otherwise fall back
     // to the isolated fork default below via createDevRunnerEnv.
     const worktreeHome = yield* resolveWorktreeT3Home(cwd);
-    // Trim before choosing: `--home-dir ""` is not a selection, and treating it
-    // as one would skip the worktree default and land on the shared home —
-    // exactly the outcome this precedence exists to prevent.
-    const resolvedT3Home =
-      (input.t3Home?.trim() || undefined) ??
-      worktreeHome ??
-      (process.env.T3CODE_HOME?.trim() || undefined);
+    const resolvedT3Home = resolveDevT3Home({
+      flagHome: Option.getOrUndefined(input.t3Home),
+      worktreeHome,
+      envHome: process.env.T3CODE_HOME,
+    });
 
     const env = yield* createDevRunnerEnv({
       mode: input.mode,
@@ -625,9 +644,9 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   t3Home: Flag.string("home-dir").pipe(
     Flag.withDescription(
-      "Base directory for all T3 Code data (equivalent to T3CODE_HOME). Inside a git worktree this defaults to that worktree's own .t3 so dev state stays off the shared home.",
+      "Base directory for all T3 Code data (equivalent to T3CODE_HOME). Inside a git worktree this defaults to that worktree's own .t3 so dev state stays off the shared home. Deliberately no T3CODE_HOME fallback here: the ambient value is applied after the worktree default (see resolveDevT3Home), otherwise it would silently capture worktree state into the shared home.",
     ),
-    Flag.withFallbackConfig(optionalStringConfig("T3CODE_HOME")),
+    Flag.optional,
   ),
   noBrowser: Flag.boolean("no-browser").pipe(
     Flag.withDescription("Browser auto-open toggle (equivalent to T3CODE_NO_BROWSER)."),

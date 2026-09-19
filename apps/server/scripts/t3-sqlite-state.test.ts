@@ -124,4 +124,33 @@ it.layer(NodeServices.layer)("t3-sqlite-state", (it) => {
         assert.equal(aliasError._tag, "SqliteStateSharedHomeMutationError");
       }),
   );
+
+  it.effect.skipIf(!symlinksSupported)(
+    "refuses the fork shared dev home (~/.t3-dev) by default",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const fakeHome = yield* fs.makeTempDirectoryScoped({ prefix: "t3-sqlite-state-home-" });
+        const devHome = path.join(fakeHome, ".t3-dev");
+        yield* createFixtureDatabase(devHome);
+
+        const previousHome = process.env.HOME;
+        process.env.HOME = fakeHome;
+        try {
+          const error = yield* runSqliteState({
+            operation: "exec",
+            baseDir: devHome,
+            sql: "DELETE FROM fixtures",
+          }).pipe(Effect.flip);
+          assert.equal(error._tag, "SqliteStateSharedHomeMutationError");
+        } finally {
+          if (previousHome === undefined) {
+            delete process.env.HOME;
+          } else {
+            process.env.HOME = previousHome;
+          }
+        }
+      }),
+  );
 });

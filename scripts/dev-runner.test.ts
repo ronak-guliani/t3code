@@ -9,6 +9,7 @@ import {
   findFirstAvailableOffset,
   isBrowserAllowedPort,
   isProxiableBindHost,
+  resolveDevT3Home,
   resolveModePortOffsets,
   resolveOffset,
 } from "./dev-runner.ts";
@@ -92,6 +93,60 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         assert.equal(isBrowserAllowedPort(5733), true);
         assert.equal(isBrowserAllowedPort(6000), false);
         assert.equal(isBrowserAllowedPort(22), false);
+      }),
+    );
+  });
+
+  describe("resolveDevT3Home", () => {
+    it.effect("prefers --home-dir over worktree and ambient homes", () =>
+      Effect.sync(() => {
+        assert.equal(
+          resolveDevT3Home({
+            flagHome: "/tmp/explicit",
+            worktreeHome: "/repo/.t3-work/.t3",
+            envHome: "/home/user/.t3-dev",
+          }),
+          "/tmp/explicit",
+        );
+      }),
+    );
+
+    it.effect("prefers the worktree home over ambient T3CODE_HOME", () =>
+      Effect.sync(() => {
+        assert.equal(
+          resolveDevT3Home({
+            flagHome: undefined,
+            worktreeHome: "/repo/.t3-work/.t3",
+            envHome: "/home/user/.t3-dev",
+          }),
+          "/repo/.t3-work/.t3",
+        );
+      }),
+    );
+
+    it.effect("falls back to ambient T3CODE_HOME outside a worktree", () =>
+      Effect.sync(() => {
+        assert.equal(
+          resolveDevT3Home({
+            flagHome: undefined,
+            worktreeHome: undefined,
+            envHome: "/home/user/.t3-dev",
+          }),
+          "/home/user/.t3-dev",
+        );
+        assert.equal(
+          resolveDevT3Home({ flagHome: undefined, worktreeHome: undefined, envHome: undefined }),
+          undefined,
+        );
+      }),
+    );
+
+    it.effect("ignores blank selections", () =>
+      Effect.sync(() => {
+        assert.equal(
+          resolveDevT3Home({ flagHome: "  ", worktreeHome: "/repo/.t3", envHome: "/home/.t3-dev" }),
+          "/repo/.t3",
+        );
       }),
     );
   });
