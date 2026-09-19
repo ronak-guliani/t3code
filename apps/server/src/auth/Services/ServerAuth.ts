@@ -49,6 +49,7 @@ export interface ServerAuthShape {
     {
       readonly response: AuthBootstrapResult;
       readonly sessionToken: string;
+      readonly cookieName?: string;
     },
     AuthError
   >;

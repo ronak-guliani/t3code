@@ -25,6 +25,11 @@ import {
   signPayload,
   timingSafeEqualBase64Url,
 } from "../utils.ts";
+import {
+  REUSABLE_DEV_SESSION_EXPIRES_AT,
+  REUSABLE_DEV_SESSION_PREFIX,
+  resolveReusableDevAuth,
+} from "../ReusableDevAuth.ts";
 import { defaultSessionScopes } from "../scopes.ts";
 
 const SIGNING_SECRET_NAME = "server-signing-key";
@@ -132,6 +137,43 @@ export const makeSessionCredentialService = Effect.gen(function* () {
       message,
       cause,
     });
+
+  const devAuth = resolveReusableDevAuth(serverConfig);
+  if (devAuth) {
+    const existing = yield* authSessions
+      .getById({ sessionId: devAuth.sessionId })
+      .pipe(Effect.mapError(toSessionCredentialError("Failed to load reusable dev session.")));
+    if (Option.isNone(existing)) {
+      const issuedAt = yield* DateTime.now;
+      yield* authSessions
+        .create({
+          sessionId: devAuth.sessionId,
+          subject: "reusable-dev-token",
+          role: "owner",
+          scopes: null,
+          method: "browser-session-cookie",
+          proofKeyThumbprint: null,
+          client: {
+            label: "Reusable dev token",
+            ipAddress: null,
+            userAgent: null,
+            deviceType: "unknown",
+            os: null,
+            browser: null,
+          },
+          issuedAt,
+          expiresAt: REUSABLE_DEV_SESSION_EXPIRES_AT,
+        })
+        .pipe(
+          Effect.mapError(toSessionCredentialError("Failed to seed reusable dev session.")),
+          // A peer server on the same database may win the race; the row is
+          // there on re-read and verification stays fail-closed otherwise.
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to seed reusable dev session.", { cause }),
+          ),
+        );
+    }
+  }
 
   const emitUpsert = (clientSession: AuthClientSession) =>
     PubSub.publish(changesPubSub, {
@@ -329,6 +371,42 @@ export const makeSessionCredentialService = Effect.gen(function* () {
 
   const verify: SessionCredentialServiceShape["verify"] = (token) =>
     Effect.gen(function* () {
+      // Normal credentials keep precedence at the selection layer: this branch
+      // only matches the exact configured dev token. Anything else falls
+      // through to standard session verification and fails closed there.
+      if (devAuth?.matches(token)) {
+        const row = yield* authSessions
+          .getById({ sessionId: devAuth.sessionId })
+          .pipe(
+            Effect.mapError(toSessionCredentialError("Failed to verify reusable dev session.")),
+          );
+        if (Option.isNone(row)) {
+          return yield* new SessionCredentialError({
+            message: "Unknown session token.",
+          });
+        }
+        if (row.value.revokedAt !== null) {
+          return yield* new SessionCredentialError({
+            message: "Session token revoked.",
+          });
+        }
+        const now = yield* Clock.currentTimeMillis;
+        if (row.value.expiresAt.epochMilliseconds <= now) {
+          return yield* new SessionCredentialError({
+            message: "Session token expired.",
+          });
+        }
+        return {
+          sessionId: row.value.sessionId,
+          token,
+          method: row.value.method,
+          client: toClientMetadata(row.value.client),
+          expiresAt: row.value.expiresAt,
+          subject: row.value.subject,
+          role: row.value.role,
+          scopes: row.value.scopes ?? defaultSessionScopes(row.value.role),
+        } satisfies VerifiedSession;
+      }
       const [encodedPayload, signature] = token.split(".");
       if (!encodedPayload || !signature) {
         return yield* new SessionCredentialError({
@@ -448,6 +526,14 @@ export const makeSessionCredentialService = Effect.gen(function* () {
             }),
         ),
       );
+
+      // A rotated or removed dev token must not leave usable websocket tickets
+      // behind: only the currently configured dev session may mint them.
+      if (claims.sid.startsWith(REUSABLE_DEV_SESSION_PREFIX) && claims.sid !== devAuth?.sessionId) {
+        return yield* new SessionCredentialError({
+          message: "Unknown websocket session.",
+        });
+      }
 
       const now = yield* Clock.currentTimeMillis;
       if (claims.exp <= now) {
