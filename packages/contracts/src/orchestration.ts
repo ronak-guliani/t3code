@@ -19,7 +19,17 @@ import {
   TrimmedString,
   TurnId,
 } from "./baseSchemas.ts";
-import { PullRequestMonitorActionableEvent } from "./pullRequestMonitor.ts";
+import {
+  PullRequestMonitorActionableEvent,
+  PullRequestMonitorAcceptanceProvenance,
+  PullRequestMonitorFeedbackRevisionId,
+} from "./pullRequestMonitor.ts";
+import {
+  CollaborativeAcceptanceCandidateId,
+  CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptanceExchangeId,
+  CollaborativeAcceptanceRequestTransportContext,
+} from "./collaborativeAcceptance.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { ReviewResult, ReviewSnapshot } from "./review.ts";
 import { GitPullRequestAssociation } from "./git.ts";
@@ -392,8 +402,6 @@ export const CollaborationRequestId = TrimmedNonEmptyString;
 export type CollaborationRequestId = typeof CollaborationRequestId.Type;
 export const CollaborationResponseId = TrimmedNonEmptyString;
 export type CollaborationResponseId = typeof CollaborationResponseId.Type;
-export const CollaborationExchangeId = TrimmedNonEmptyString;
-export type CollaborationExchangeId = typeof CollaborationExchangeId.Type;
 export const CollaborationRequestKind = Schema.Literals([
   "clarification",
   "decision",
@@ -403,6 +411,7 @@ export const CollaborationRequestKind = Schema.Literals([
 export type CollaborationRequestKind = typeof CollaborationRequestKind.Type;
 export const CollaborationRequestStatus = Schema.Literals([
   "waiting",
+  "notification-delivered",
   "response-ready",
   "consumed",
   "superseded",
@@ -436,7 +445,7 @@ export type CollaborationPayloadReference = typeof CollaborationPayloadReference
 export const CollaborationResponse = Schema.Struct({
   responseId: CollaborationResponseId,
   requestId: CollaborationRequestId,
-  exchangeId: CollaborationExchangeId,
+  exchangeId: CollaborativeAcceptanceExchangeId,
   responderThreadId: ThreadId,
   responderAuthority: CollaborationExecutionAuthority,
   payloadRef: CollaborationPayloadReference,
@@ -448,18 +457,19 @@ export type CollaborationResponse = typeof CollaborationResponse.Type;
 export const CollaborationRequest = Schema.Struct({
   requestId: CollaborationRequestId,
   kind: CollaborationRequestKind,
-  exchangeId: CollaborationExchangeId,
+  exchangeId: CollaborativeAcceptanceExchangeId,
   senderThreadId: ThreadId,
   recipientThreadId: ThreadId,
   blocking: Schema.Boolean,
-  acceptanceId: Schema.optional(TrimmedNonEmptyString),
-  caseId: Schema.optional(TrimmedNonEmptyString),
+  caseId: Schema.optional(CollaborativeAcceptanceCaseId),
+  transportContext: Schema.optional(Schema.NullOr(CollaborativeAcceptanceRequestTransportContext)),
   senderAuthority: CollaborationExecutionAuthority,
   recipientAuthority: CollaborationExecutionAuthority,
   producingExecution: CollaborationExecutionAuthority,
   payloadRef: CollaborationPayloadReference,
-  candidateRefs: Schema.Array(TrimmedNonEmptyString),
-  findingRefs: Schema.Array(TrimmedNonEmptyString),
+  candidateRefs: Schema.Array(CollaborativeAcceptanceCandidateId),
+  findingRefs: Schema.Array(PullRequestMonitorFeedbackRevisionId),
+  monitorProvenance: Schema.optional(Schema.NullOr(PullRequestMonitorAcceptanceProvenance)),
   supersedesRequestId: Schema.NullOr(CollaborationRequestId),
   deliveryQueuedTurnId: Schema.NullOr(QueuedTurnId),
   responseDeliveryQueuedTurnId: Schema.NullOr(QueuedTurnId),
@@ -470,7 +480,18 @@ export const CollaborationRequest = Schema.Struct({
   terminalOutcome: Schema.NullOr(CollaborationRequestTerminalOutcome),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
-});
+}).check(
+  Schema.makeFilter((request) => {
+    const hasResponse = request.responseRef !== null && request.response !== null;
+    if ((request.status === "response-ready" || request.status === "consumed") && !hasResponse) {
+      return "Collaboration request response state is inconsistent with its status";
+    }
+    if (request.status === "notification-delivered" && hasResponse) {
+      return "Notifications cannot carry a correlated response";
+    }
+    return true;
+  }),
+);
 export type CollaborationRequest = typeof CollaborationRequest.Type;
 
 export const PullRequestMonitorOrigin = Schema.Struct({
@@ -495,7 +516,7 @@ export type PullRequestMonitorOrigin = typeof PullRequestMonitorOrigin.Type;
 export const CollaborationRequestOrigin = Schema.Struct({
   kind: Schema.Literal("collaboration-request"),
   requestId: CollaborationRequestId,
-  exchangeId: CollaborationExchangeId,
+  exchangeId: CollaborativeAcceptanceExchangeId,
 });
 export type CollaborationRequestOrigin = typeof CollaborationRequestOrigin.Type;
 
@@ -503,7 +524,7 @@ export const CollaborationResponseOrigin = Schema.Struct({
   kind: Schema.Literal("collaboration-response"),
   requestId: CollaborationRequestId,
   responseId: CollaborationResponseId,
-  exchangeId: CollaborationExchangeId,
+  exchangeId: CollaborativeAcceptanceExchangeId,
 });
 export type CollaborationResponseOrigin = typeof CollaborationResponseOrigin.Type;
 
@@ -1127,16 +1148,17 @@ const CollaborationRequestCreateCommand = Schema.Struct({
   requestId: CollaborationRequestId,
   recipientThreadId: ThreadId,
   kind: CollaborationRequestKind,
-  exchangeId: CollaborationExchangeId,
+  exchangeId: CollaborativeAcceptanceExchangeId,
   blocking: Schema.Boolean,
-  acceptanceId: Schema.optional(TrimmedNonEmptyString),
-  caseId: Schema.optional(TrimmedNonEmptyString),
+  caseId: Schema.optional(CollaborativeAcceptanceCaseId),
+  transportContext: Schema.optional(Schema.NullOr(CollaborativeAcceptanceRequestTransportContext)),
   senderAuthority: CollaborationExecutionAuthority,
   recipientAuthority: CollaborationExecutionAuthority,
   producingExecution: CollaborationExecutionAuthority,
   payloadRef: CollaborationPayloadReference,
-  candidateRefs: Schema.Array(TrimmedNonEmptyString),
-  findingRefs: Schema.Array(TrimmedNonEmptyString),
+  candidateRefs: Schema.Array(CollaborativeAcceptanceCandidateId),
+  findingRefs: Schema.Array(PullRequestMonitorFeedbackRevisionId),
+  monitorProvenance: Schema.optional(Schema.NullOr(PullRequestMonitorAcceptanceProvenance)),
   supersedesRequestId: Schema.optional(CollaborationRequestId),
   delivery: CollaborationDelivery,
   createdAt: IsoDateTime,
@@ -1148,7 +1170,7 @@ const CollaborationRequestRespondCommand = Schema.Struct({
   threadId: ThreadId,
   requestId: CollaborationRequestId,
   responseId: CollaborationResponseId,
-  exchangeId: CollaborationExchangeId,
+  exchangeId: CollaborativeAcceptanceExchangeId,
   responderAuthority: CollaborationExecutionAuthority,
   payloadRef: CollaborationPayloadReference,
   outcome: CollaborationRequestTerminalOutcome,
@@ -1172,6 +1194,7 @@ const CollaborationRequestSupersedeCommand = Schema.Struct({
   threadId: ThreadId,
   requestId: CollaborationRequestId,
   supersededByRequestId: CollaborationRequestId,
+  actorAuthority: CollaborationExecutionAuthority,
   createdAt: IsoDateTime,
 });
 
@@ -1180,6 +1203,7 @@ const CollaborationRequestCancelCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   requestId: CollaborationRequestId,
+  actorAuthority: CollaborationExecutionAuthority,
   createdAt: IsoDateTime,
 });
 
@@ -1189,6 +1213,7 @@ const CollaborationResponseDeleteCommand = Schema.Struct({
   threadId: ThreadId,
   requestId: CollaborationRequestId,
   responseId: CollaborationResponseId,
+  actorAuthority: CollaborationExecutionAuthority,
   createdAt: IsoDateTime,
 });
 

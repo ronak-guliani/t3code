@@ -328,6 +328,7 @@
 
 ## Projection schemas and checkout reservations
 
+- Whole-record read/replace persistence needs a durable revision fence: pure transition correctness does not prevent concurrent budget overspend or last-write-wins updates. Require an expected revision on every aggregate write and reject stale saves inside the transaction.
 - Projection schema changes must update repository SQL plus every full, shell, and targeted snapshot query and mapper; a passing projection write test does not prove reconnect or CLI reads decode.
 - Archived-thread reads must opt in at the CLI resolution seam; keep checkpoint/diff inspection opt-in and leave dispatch/revert helpers on the default active-thread filter.
 - Keep each `Effect.all` snapshot query tuple position aligned with its destructuring, and define SQL-backed `SqlSchema` queries inside the layer that owns the `SqlClient`; a misplaced query can shift `workflowRuns` to `undefined` or fail only when executed.
@@ -364,6 +365,7 @@
 ## Checkpoint and snapshot atomicity
 
 - `CheckpointReactor.ts` carries `// @ts-nocheck`, so Effect API renames (e.g. `tapErrorCause` → `tapCause`) fail only at runtime; verify changes against its test suite, not typecheck.
+- Worse, a nonexistent Effect API inside a `// @ts-nocheck` file (fork beta vs upstream rc drift, e.g. `catchAllCause`) silently widens that file's inferred layer requirements to `unknown`, so typecheck breaks in dozens of unrelated test files with no error at the source. When porting upstream code, confirm every Effect combinator exists in the fork's effect version, and treat a sudden `unknown`-context cascade as a poisoned nocheck inference before touching the reporters.
 - Completion ingestion and checkpointing must share one provider subscription with an owned queue handoff; independent hot subscribers lose startup-gap events. Release checkout exclusions on failed handoff and worker cancellation, including queued completions.
 - `NodeSqliteClient` is one `DatabaseSync` connection behind `Semaphore(1)`: `Effect.all` concurrency cannot overlap SQLite SELECTs, and shell/full snapshot row reads must stay in one read transaction with `projection_state` or `subscribeShell` drops buffered live events through a mismatched `snapshotSequence`; regression tests must pause at the row/cursor boundary and queue a writer while that transaction is open, because whole-snapshot races do not prove atomicity.
 - Revert projection commits precede Git ref pruning; integration assertions must wait for the final revert-guard deletion before checking pruned refs. Session readiness alone does not prove a turn's checkpoint is finalized.

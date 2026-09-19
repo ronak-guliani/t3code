@@ -112,6 +112,28 @@ function collaborationRequestLocation(readModel: OrchestrationReadModel, request
   return null;
 }
 
+function executionAuthorityMatches(
+  expected: {
+    readonly executionId: string;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+  actual: {
+    readonly executionId: string;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+) {
+  return (
+    expected.executionId === actual.executionId &&
+    expected.generation === actual.generation &&
+    expected.dispatchId === actual.dispatchId &&
+    expected.turnId === actual.turnId
+  );
+}
+
 function collaborationRequestEvent(
   command: OrchestrationCommand,
   threadId: ThreadId,
@@ -1278,6 +1300,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (duplicate) {
         return [];
       }
+      const transportContextMismatch =
+        command.transportContext !== undefined &&
+        command.transportContext !== null &&
+        (command.transportContext.exchangeId !== command.exchangeId ||
+          command.caseId !== command.transportContext.caseId);
+      const provenanceMismatch =
+        command.monitorProvenance !== undefined &&
+        command.monitorProvenance !== null &&
+        (command.monitorProvenance.caseId !== command.caseId ||
+          command.monitorProvenance.candidateId !== command.candidateRefs[0] ||
+          command.monitorProvenance.findingRevisionId !== command.findingRefs[0] ||
+          command.monitorProvenance.transportContext?.exchangeId !== command.exchangeId);
+      if (
+        !executionAuthorityMatches(command.senderAuthority, command.producingExecution) ||
+        transportContextMismatch ||
+        provenanceMismatch
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "The request authority and acceptance transport context must be immutable and correlated.",
+        });
+      }
       if (
         command.blocking &&
         (sender.collaborationRequests ?? []).some(
@@ -1304,8 +1349,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.blocking &&
         reciprocal !== undefined &&
         (sender.parentThreadId === recipient.id || recipient.parentThreadId === sender.id);
-      const status = directCycle ? "needs-human" : command.blocking ? "waiting" : "response-ready";
-      const terminalOutcome = directCycle ? "needs-human" : null;
+      const status = directCycle
+        ? "needs-human"
+        : command.blocking
+          ? "waiting"
+          : "notification-delivered";
+      const terminalOutcome = directCycle ? "needs-human" : !command.blocking ? "completed" : null;
       const request = {
         requestId: command.requestId,
         kind: command.kind,
@@ -1313,14 +1362,46 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         senderThreadId: sender.id,
         recipientThreadId: recipient.id,
         blocking: command.blocking,
-        ...(command.acceptanceId !== undefined ? { acceptanceId: command.acceptanceId } : {}),
         ...(command.caseId !== undefined ? { caseId: command.caseId } : {}),
+        ...(command.transportContext !== undefined
+          ? { transportContext: command.transportContext }
+          : {}),
         senderAuthority: command.senderAuthority,
         recipientAuthority: command.recipientAuthority,
         producingExecution: command.producingExecution,
         payloadRef: command.payloadRef,
-        candidateRefs: command.candidateRefs,
-        findingRefs: command.findingRefs,
+        candidateRefs: Object.freeze([...command.candidateRefs]),
+        findingRefs: Object.freeze([...command.findingRefs]),
+        ...(command.monitorProvenance !== undefined
+          ? {
+              monitorProvenance:
+                command.monitorProvenance === null
+                  ? null
+                  : Object.freeze({
+                      ...command.monitorProvenance,
+                      transportContext:
+                        command.monitorProvenance.transportContext === null
+                          ? null
+                          : Object.freeze({
+                              ...command.monitorProvenance.transportContext,
+                            }),
+                      workflow: Object.freeze({ ...command.monitorProvenance.workflow }),
+                      requiredCoverage: Object.freeze({
+                        ...command.monitorProvenance.requiredCoverage,
+                        required: Object.freeze([
+                          ...command.monitorProvenance.requiredCoverage.required,
+                        ]),
+                        covered: Object.freeze([
+                          ...command.monitorProvenance.requiredCoverage.covered,
+                        ]),
+                      }),
+                      location:
+                        command.monitorProvenance.location === null
+                          ? null
+                          : Object.freeze({ ...command.monitorProvenance.location }),
+                    }),
+            }
+          : {}),
         supersedesRequestId: command.supersedesRequestId ?? null,
         deliveryQueuedTurnId: directCycle ? null : command.delivery.queuedTurnId,
         responseDeliveryQueuedTurnId: null,
@@ -1332,10 +1413,63 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         createdAt: command.createdAt,
         updatedAt: command.createdAt,
       };
-      const events = [
+      const superseded = command.supersedesRequestId
+        ? collaborationRequestLocation(readModel, command.supersedesRequestId)
+        : null;
+      if (
+        command.supersedesRequestId !== undefined &&
+        (superseded === null ||
+          superseded.request.senderThreadId !== sender.id ||
+          superseded.request.recipientThreadId !== recipient.id ||
+          !superseded.request.blocking ||
+          superseded.request.status !== "waiting")
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only the bound sender may supersede its active blocking request.",
+        });
+      }
+      const events = [];
+      if (superseded !== null) {
+        const retired = {
+          ...superseded.request,
+          status: "superseded",
+          terminalOutcome: "superseded",
+          updatedAt: command.createdAt,
+        };
+        for (const threadId of new Set([
+          superseded.request.senderThreadId,
+          superseded.request.recipientThreadId,
+        ])) {
+          events.push(
+            collaborationRequestEvent(command, threadId, retired, "superseded", command.createdAt),
+          );
+        }
+        for (const [queuedTurnId, ownerThreadId] of [
+          [superseded.request.deliveryQueuedTurnId, superseded.request.recipientThreadId],
+          [superseded.request.responseDeliveryQueuedTurnId, superseded.request.senderThreadId],
+        ] as const) {
+          if (queuedTurnId === null) continue;
+          events.push({
+            ...withEventBase({
+              aggregateKind: "thread",
+              aggregateId: ownerThreadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            }),
+            type: "thread.queued-turn-deleted" as const,
+            payload: {
+              threadId: ownerThreadId,
+              queuedTurnId,
+              deletedAt: command.createdAt,
+            },
+          });
+        }
+      }
+      events.push(
         collaborationRequestEvent(command, sender.id, request, "created", command.createdAt),
         collaborationRequestEvent(command, recipient.id, request, "created", command.createdAt),
-      ];
+      );
       if (!directCycle) {
         events.push(
           collaborationQueueEvent(
@@ -1366,6 +1500,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         request.recipientThreadId !== command.threadId ||
         request.exchangeId !== command.exchangeId ||
+        !executionAuthorityMatches(request.recipientAuthority, command.responderAuthority) ||
         request.status !== "waiting"
       ) {
         return yield* new OrchestrationCommandInvariantError({
@@ -1436,6 +1571,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         request.responseRef !== command.responseId ||
         request.response === null ||
         request.producingExecution.executionId !== command.consumedExecution.executionId ||
+        request.senderThreadId !== command.threadId ||
         command.consumedExecution.generation <= request.producingExecution.generation
       ) {
         return yield* new OrchestrationCommandInvariantError({
@@ -1486,6 +1622,37 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const request = location.request;
       const isSupersede = command.type === "thread.collaboration-request.supersede";
       const isOverride = command.type === "thread.collaboration-request.override";
+      const actorIsSender = command.threadId === request.senderThreadId;
+      const actorIsRecipient = command.threadId === request.recipientThreadId;
+      const actorAuthority = "actorAuthority" in command ? command.actorAuthority : undefined;
+      const actorIsBound = isOverride
+        ? actorIsSender || actorIsRecipient
+        : actorIsSender
+          ? actorAuthority !== undefined &&
+            executionAuthorityMatches(request.senderAuthority, actorAuthority)
+          : actorIsRecipient &&
+            actorAuthority !== undefined &&
+            executionAuthorityMatches(request.recipientAuthority, actorAuthority);
+      if (
+        !actorIsBound ||
+        (isSupersede && !actorIsSender) ||
+        (isSupersede &&
+          !readModel.threads.some((thread) =>
+            (thread.collaborationRequests ?? []).some(
+              (entry) =>
+                entry.requestId === command.supersededByRequestId &&
+                entry.supersedesRequestId === request.requestId &&
+                entry.senderThreadId === request.senderThreadId &&
+                entry.recipientThreadId === request.recipientThreadId,
+            ),
+          ))
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "The collaboration request mutation is not authorized for this request authority.",
+        });
+      }
       const nextRequest = {
         ...request,
         status: isSupersede ? "superseded" : isOverride ? command.outcome : "cancelled",
@@ -1547,9 +1714,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const location = collaborationRequestLocation(readModel, command.requestId);
       if (
         !location ||
-        location.thread.id !== command.threadId ||
+        !(
+          (location.request.senderThreadId === command.threadId &&
+            executionAuthorityMatches(location.request.senderAuthority, command.actorAuthority)) ||
+          (location.request.recipientThreadId === command.threadId &&
+            executionAuthorityMatches(location.request.recipientAuthority, command.actorAuthority))
+        ) ||
         location.request.responseRef !== command.responseId ||
-        location.request.status !== "response-ready"
+        location.request.status !== "response-ready" ||
+        location.request.response === null ||
+        !["stale", "needs-human"].includes(location.request.response.outcome)
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -1594,7 +1768,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           }),
           type: "thread.queued-turn-deleted",
           payload: {
-            threadId: command.threadId,
+            threadId: location.request.senderThreadId,
             queuedTurnId: location.request.responseDeliveryQueuedTurnId,
             deletedAt: command.createdAt,
           },

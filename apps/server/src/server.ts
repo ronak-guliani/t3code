@@ -117,6 +117,7 @@ import { layer as pullRequestMonitorAssociationReactorLayer } from "./pullReques
 import { layer as pullRequestAssociationRecoveryLayer } from "./pullRequestMonitor/PullRequestAssociationRecovery.ts";
 import { layer as pullRequestMonitorReviewHandoffReactorLayer } from "./pullRequestMonitor/PullRequestReviewHandoffReactor.ts";
 import { ProjectionStateRepositoryLive } from "./persistence/Layers/ProjectionState.ts";
+import { CollaborativeAcceptanceRepositoryLive } from "./persistence/Layers/CollaborativeAcceptance.ts";
 import { layer as pullRequestMonitorServiceLayer } from "./pullRequestMonitor/PullRequestMonitorService.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
@@ -148,10 +149,13 @@ const HttpServerLive = Layer.unwrap(
         ...(config.host ? { hostname: config.host } : {}),
       });
     } else {
-      const [NodeHttpServer, NodeHttp] = yield* Effect.all([
-        Effect.promise(() => import("@effect/platform-node/NodeHttpServer")),
-        Effect.promise(() => import("node:http")),
-      ]);
+      const [NodeHttpServer, NodeHttp] = yield* Effect.all(
+        [
+          Effect.promise(() => import("@effect/platform-node/NodeHttpServer")),
+          Effect.promise(() => import("node:http")),
+        ],
+        { concurrency: "unbounded" },
+      );
       return NodeHttpServer.layer(NodeHttp.createServer, {
         host: config.host,
         port: config.port,
@@ -202,7 +206,9 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
 );
 
-const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
+export const PersistenceLayerLive = CollaborativeAcceptanceRepositoryLive.pipe(
+  Layer.provideMerge(SqlitePersistenceLayerLive),
+);
 
 const GitManagerLayerLive = GitManagerLive.pipe(
   Layer.provideMerge(ProjectSetupScriptRunnerLive),

@@ -1,4 +1,6 @@
 import {
+  CollaborativeAcceptanceCandidateId,
+  CollaborativeAcceptanceExchangeId,
   CollaborationRequestId,
   CollaborationResponseId,
   CommandId,
@@ -19,8 +21,10 @@ import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
 
 const now = "2026-09-19T00:00:00.000Z";
-const authority = (turnId: string, generation = 1) => ({
-  executionId: "execution-child",
+const exchange = (value: string) => CollaborativeAcceptanceExchangeId.make(value);
+const candidate = (value: string) => CollaborativeAcceptanceCandidateId.make(value);
+const authority = (turnId: string, generation = 1, executionId = "execution-child") => ({
+  executionId,
   generation,
   dispatchId: null,
   turnId: TurnId.make(turnId),
@@ -78,6 +82,19 @@ async function makeReadModel(): Promise<OrchestrationReadModel> {
   return readModel;
 }
 
+async function projectEvents(
+  readModel: OrchestrationReadModel,
+  events: ReadonlyArray<any>,
+): Promise<OrchestrationReadModel> {
+  let next = readModel;
+  for (const event of events) {
+    next = await Effect.runPromise(
+      projectEvent(next, { ...event, sequence: next.snapshotSequence + 1 }),
+    );
+  }
+  return next;
+}
+
 describe("collaboration request protocol", () => {
   it("creates one durable request and one delivery, then deduplicates request retries", async () => {
     const readModel = await makeReadModel();
@@ -89,13 +106,13 @@ describe("collaboration request protocol", () => {
       requestId,
       recipientThreadId: ThreadId.make("parent"),
       kind: "review" as const,
-      exchangeId: "exchange-review",
+      exchangeId: exchange("exchange-review"),
       blocking: true,
       senderAuthority: authority("turn-child"),
       recipientAuthority: authority("turn-parent"),
       producingExecution: authority("turn-child"),
       payloadRef: { ref: "payload://review", sha256: "sha-review" },
-      candidateRefs: ["candidate-1"],
+      candidateRefs: [candidate("candidate-1")],
       findingRefs: [],
       delivery: delivery("queued-review", "Please review the candidate."),
       createdAt: now,
@@ -133,7 +150,7 @@ describe("collaboration request protocol", () => {
       requestId,
       recipientThreadId: ThreadId.make("parent"),
       kind: "decision" as const,
-      exchangeId: "exchange-decision",
+      exchangeId: exchange("exchange-decision"),
       blocking: true,
       senderAuthority: authority("turn-child"),
       recipientAuthority: authority("turn-parent"),
@@ -162,7 +179,7 @@ describe("collaboration request protocol", () => {
           threadId: ThreadId.make("parent"),
           requestId,
           responseId: CollaborationResponseId.make("response-decision"),
-          exchangeId: "exchange-decision",
+          exchangeId: exchange("exchange-decision"),
           responderAuthority: authority("turn-parent"),
           payloadRef: { ref: "payload://response", sha256: "sha-response" },
           outcome: "completed",
@@ -201,7 +218,7 @@ describe("collaboration request protocol", () => {
     const existing = {
       requestId: CollaborationRequestId.make("request-parent"),
       kind: "clarification" as const,
-      exchangeId: "exchange-parent",
+      exchangeId: exchange("exchange-parent"),
       senderThreadId: ThreadId.make("parent"),
       recipientThreadId: ThreadId.make("child"),
       blocking: true,
@@ -251,7 +268,7 @@ describe("collaboration request protocol", () => {
           requestId: CollaborationRequestId.make("request-child"),
           recipientThreadId: ThreadId.make("parent"),
           kind: "clarification",
-          exchangeId: "exchange-child",
+          exchangeId: exchange("exchange-child"),
           blocking: true,
           senderAuthority: authority("turn-child"),
           recipientAuthority: authority("turn-parent"),
@@ -269,5 +286,122 @@ describe("collaboration request protocol", () => {
       (result as ReadonlyArray<any>).filter((event) => event.type === "thread.queued-turn-created"),
     ).toHaveLength(0);
     expect((result as ReadonlyArray<any>)[0]?.payload.request.terminalOutcome).toBe("needs-human");
+  });
+
+  it("uses a terminal notification state for nonblocking delivery", async () => {
+    const readModel = await makeReadModel();
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.collaboration-request.create",
+          commandId: CommandId.make("command-notification"),
+          threadId: ThreadId.make("child"),
+          requestId: CollaborationRequestId.make("request-notification"),
+          recipientThreadId: ThreadId.make("parent"),
+          kind: "clarification",
+          exchangeId: exchange("exchange-notification"),
+          blocking: false,
+          senderAuthority: authority("turn-child"),
+          recipientAuthority: authority("turn-parent", 1, "execution-parent"),
+          producingExecution: authority("turn-child"),
+          payloadRef: { ref: "payload://notification", sha256: "sha-notification" },
+          candidateRefs: [],
+          findingRefs: [],
+          delivery: delivery("queued-notification", "FYI."),
+          createdAt: now,
+        },
+        readModel,
+      }),
+    );
+    const requestEvent = (result as ReadonlyArray<any>).find(
+      (event) => event.type === "thread.collaboration-request-updated",
+    );
+    expect(requestEvent.payload.request.status).toBe("notification-delivered");
+    expect(requestEvent.payload.request.terminalOutcome).toBe("completed");
+    expect(
+      (result as ReadonlyArray<any>).filter((event) => event.type === "thread.queued-turn-created"),
+    ).toHaveLength(1);
+  });
+
+  it("rejects cross-thread request mutation and unbound response authority", async () => {
+    const base = await makeReadModel();
+    const created = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.collaboration-request.create",
+          commandId: CommandId.make("command-authenticated-request"),
+          threadId: ThreadId.make("child"),
+          requestId: CollaborationRequestId.make("request-authenticated"),
+          recipientThreadId: ThreadId.make("parent"),
+          kind: "decision",
+          exchangeId: exchange("exchange-authenticated"),
+          blocking: true,
+          senderAuthority: authority("turn-child"),
+          recipientAuthority: authority("turn-parent", 1, "execution-parent"),
+          producingExecution: authority("turn-child"),
+          payloadRef: { ref: "payload://authenticated", sha256: "sha-authenticated" },
+          candidateRefs: [],
+          findingRefs: [],
+          delivery: delivery("queued-authenticated", "Choose."),
+          createdAt: now,
+        },
+        readModel: base,
+      }),
+    );
+    const readModel = await projectEvents(base, created as ReadonlyArray<any>);
+
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.collaboration-request.cancel",
+            commandId: CommandId.make("command-cross-thread-cancel"),
+            threadId: ThreadId.make("parent"),
+            requestId: CollaborationRequestId.make("request-authenticated"),
+            actorAuthority: authority("turn-child"),
+            createdAt: now,
+          },
+          readModel,
+        }),
+      ),
+    ).rejects.toThrow();
+
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.collaboration-request.override",
+            commandId: CommandId.make("command-cross-thread-override"),
+            threadId: ThreadId.make("unrelated"),
+            requestId: CollaborationRequestId.make("request-authenticated"),
+            outcome: "needs-human",
+            authorizedBy: "user",
+            createdAt: now,
+          },
+          readModel,
+        }),
+      ),
+    ).rejects.toThrow();
+
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.collaboration-request.respond",
+            commandId: CommandId.make("command-unbound-response"),
+            threadId: ThreadId.make("parent"),
+            requestId: CollaborationRequestId.make("request-authenticated"),
+            responseId: CollaborationResponseId.make("response-unbound"),
+            exchangeId: exchange("exchange-authenticated"),
+            responderAuthority: authority("turn-parent", 2, "execution-parent"),
+            payloadRef: { ref: "payload://response-unbound", sha256: "sha-response-unbound" },
+            outcome: "completed",
+            delivery: delivery("queued-response-unbound", "No."),
+            createdAt: now,
+          },
+          readModel,
+        }),
+      ),
+    ).rejects.toThrow();
   });
 });

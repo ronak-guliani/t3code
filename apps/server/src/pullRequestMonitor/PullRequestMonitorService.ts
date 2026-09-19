@@ -83,6 +83,7 @@ import { buildFallbackMaintenancePrompt, formatBlockersSummary } from "./wakePro
 const FALLBACK_COOLDOWN_MS = 30 * 60 * 1000;
 /** Exclusive claim while a fallback launch is materializing a worktree/thread. */
 const FALLBACK_LAUNCH_LEASE_MS = 3 * 60 * 1000;
+const decodePullRequestMonitorFindings = Schema.decodeUnknownEffect(PullRequestMonitorFindings);
 
 function isoNow() {
   return Effect.map(DateTime.now, (now) => DateTime.formatIso(DateTime.toUtc(now)));
@@ -245,6 +246,46 @@ export const layer = Layer.effect(
         return automaticPrFeedbackBlockReason(settings, target, shell?.session);
       });
 
+    const automationReason = (input: {
+      readonly monitor: PullRequestMonitorRecord;
+      readonly openFeedback: ReadonlyArray<{
+        readonly status: string;
+        readonly disposition?: string | null | undefined;
+        readonly reviewerDisposition?: string | null | undefined;
+      }>;
+      readonly deliveries: ReadonlyArray<{ readonly status: string }>;
+    }) => {
+      const needsHuman = input.openFeedback.some(
+        (item) => item.disposition === "needs-human" || item.reviewerDisposition === "needs-human",
+      );
+      if (needsHuman) {
+        return {
+          kind: "needs-human" as const,
+          code: "feedback-needs-human",
+          detail: "A review finding requires explicit human adjudication.",
+        };
+      }
+      if (!input.monitor.enabled || input.monitor.status === "stopped") {
+        return {
+          kind: "monitoring-paused" as const,
+          code: input.monitor.status === "stopped" ? "stopped" : "disabled",
+          detail: input.monitor.lastError ?? "Pull request monitoring is paused.",
+        };
+      }
+      if (
+        input.deliveries.some(
+          (delivery) => delivery.status === "pending" || delivery.status === "failed",
+        )
+      ) {
+        return {
+          kind: "waiting-automatic" as const,
+          code: "delivery-pending",
+          detail: "Automatic review feedback is waiting for durable delivery.",
+        };
+      }
+      return undefined;
+    };
+
     const status = (input: PullRequestMonitorStatusInput) =>
       Effect.gen(function* () {
         const monitor = yield* resolveMonitor(input).pipe(
@@ -278,6 +319,11 @@ export const layer = Layer.effect(
         const openFeedback = yield* feedback.listOpenItems(monitor.id);
         const recentDeliveries = yield* feedback.listDeliveries(monitor.id);
         const recentReports = yield* feedback.listReports(monitor.id);
+        const derivedAutomationReason = automationReason({
+          monitor,
+          openFeedback,
+          deliveries: recentDeliveries,
+        });
         const blockReason =
           monitor.enabled && openFeedback.length > 0
             ? yield* serverSettings.getSettings.pipe(
@@ -290,6 +336,7 @@ export const layer = Layer.effect(
         return {
           monitor,
           ...(blockReason ? { automationBlockReason: blockReason } : {}),
+          ...(derivedAutomationReason ? { automationReason: derivedAutomationReason } : {}),
           ownerCandidates,
           latestSnapshot: latest?.snapshot ?? null,
           recentEvents: latest?.events ?? [],
@@ -802,7 +849,7 @@ export const layer = Layer.effect(
 
     const submitFindings = (input: PullRequestMonitorSubmitFindingsInput) =>
       Effect.gen(function* () {
-        yield* Schema.decodeUnknownEffect(PullRequestMonitorFindings)(input.findings ?? []).pipe(
+        yield* decodePullRequestMonitorFindings(input.findings ?? []).pipe(
           Effect.mapError((cause) =>
             monitorError("Invalid review findings submission.", { cause }),
           ),
@@ -821,26 +868,32 @@ export const layer = Layer.effect(
           monitorRecord = yield* resolveMonitor({ reference: input.reference });
         }
 
-        if (input.reviewedHeadSha !== undefined) {
-          // The monitor row can be empty or stale when its opportunistic start poll failed
-          // or lost a lease. Only a fresh provider snapshot can safely reject stale review
-          // findings; snapshot failures remain retryable to the durable handoff reactor.
-          const currentSnapshot = yield* pullRequests
-            .monitorSnapshot(input.reference)
-            .pipe(
-              Effect.mapError((cause) =>
-                monitorError("Could not verify the reviewed pull request revision.", { cause }),
-              ),
-            );
-          if (currentSnapshot.headSha !== input.reviewedHeadSha) {
-            return {
-              monitor: monitorRecord,
-              linkedReviewThreadId: input.reviewThreadId,
-              ownerThreadId: monitorRecord.ownerThreadId,
-              monitoringStarted: startMonitoring,
-              findings: [],
-            };
-          }
+        // The monitor row can be empty or stale when its opportunistic start poll failed or
+        // lost a lease. A fresh provider snapshot supplies the immutable head provenance for
+        // every parent-agent finding, not only for explicitly head-tagged submissions.
+        const currentSnapshot =
+          (input.findings !== undefined && input.findings.length > 0) ||
+          input.reviewedHeadSha !== undefined
+            ? yield* pullRequests
+                .monitorSnapshot(input.reference)
+                .pipe(
+                  Effect.mapError((cause) =>
+                    monitorError("Could not verify the reviewed pull request revision.", { cause }),
+                  ),
+                )
+            : null;
+        if (
+          input.reviewedHeadSha !== undefined &&
+          currentSnapshot !== null &&
+          currentSnapshot.headSha !== input.reviewedHeadSha
+        ) {
+          return {
+            monitor: monitorRecord,
+            linkedReviewThreadId: input.reviewThreadId,
+            ownerThreadId: monitorRecord.ownerThreadId,
+            monitoringStarted: startMonitoring,
+            findings: [],
+          };
         }
 
         yield* requireProjectThread({
@@ -865,9 +918,18 @@ export const layer = Layer.effect(
         // Each finding becomes its own durable item/revision so the owner can disposition
         // them individually; delivery follows the normal debounced wake path.
         const findings = yield* feedback.ingestFindings({
-          monitor: monitorRecord,
+          monitor:
+            currentSnapshot === null
+              ? monitorRecord
+              : {
+                  ...monitorRecord,
+                  headSha: currentSnapshot.headSha,
+                  sourceRevision: currentSnapshot.sourceRevision,
+                },
           reviewThreadId: input.reviewThreadId,
           findings: input.findings ?? [],
+          ...(currentSnapshot === null ? {} : { reviewedHeadSha: currentSnapshot.headSha }),
+          origin: input.origin ?? "reviewer",
         });
         // Always use ownership-scoped SQL so concurrent poll updates cannot clobber the link.
         yield* store.transferOwnershipAtomic({

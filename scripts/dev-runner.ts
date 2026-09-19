@@ -5,16 +5,58 @@ import * as NodeOS from "node:os";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { NetService } from "@t3tools/shared/Net";
+import { resolveGitWorktreePath, resolveWorktreeT3Home } from "@t3tools/shared/devHome";
 import { Config, Data, Effect, Hash, Layer, Logger, Option, Path, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import { ChildProcess } from "effect/unstable/process";
+
+import { type DevShareError, shareDevServer, unshareDevServer } from "./lib/dev-share.ts";
+import { loadRepoEnv } from "./lib/public-config.ts";
+
+Object.assign(process.env, loadRepoEnv());
 
 const BASE_SERVER_PORT = 13773;
 const BASE_WEB_PORT = 5733;
 const MAX_HASH_OFFSET = 3000;
 const MAX_PORT = 65535;
 const DESKTOP_DEV_LOOPBACK_HOST = "127.0.0.1";
-const DEV_PORT_PROBE_HOSTS = ["127.0.0.1", "0.0.0.0", "::1", "::"] as const;
+// HTTP(S) requests to these ports are blocked by the Fetch standard before a
+// browser reaches the network. Keep the complete list here so explicit or
+// future wider offsets cannot produce a URL that curl accepts but browsers
+// reject. https://fetch.spec.whatwg.org/#port-blocking
+const FETCH_BAD_PORTS = new Set([
+  0, 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101, 102,
+  103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427, 465,
+  512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993,
+  995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668,
+  6669, 6679, 6697, 10080,
+]);
+// Dev servers bind loopback, so loopback is the only interface whose
+// availability decides whether we can use a port. Probing wildcards too made
+// the runner walk away from a perfectly free port whenever something else held
+// the same number on another interface — `tailscale serve` does exactly that,
+// which silently moved the ports out from under a URL that had just been shared.
+const DEV_PORT_PROBE_HOSTS = ["127.0.0.1", "::1"] as const;
+
+/**
+ * Bind hosts on which a backend still answers `http://localhost:<port>`, which
+ * is where single-origin browser dev proxies to. Loopback and the wildcards
+ * qualify; a specific interface (e.g. a LAN IP) does not — the OS binds only
+ * that address and the proxy target goes dark.
+ */
+export function isProxiableBindHost(host: string): boolean {
+  const normalized = host.trim();
+  return (
+    normalized === "" ||
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "[::1]" ||
+    normalized === "0.0.0.0" ||
+    normalized === "::" ||
+    normalized === "[::]"
+  );
+}
 
 export const DEFAULT_DEV_T3_HOME = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(NodeOS.homedir(), ".t3-dev"),
@@ -77,9 +119,14 @@ const OffsetConfig = Config.all({
   devInstance: optionalStringConfig("T3CODE_DEV_INSTANCE"),
 });
 
+export function isBrowserAllowedPort(port: number): boolean {
+  return !FETCH_BAD_PORTS.has(port);
+}
+
 export function resolveOffset(config: {
   readonly portOffset: number | undefined;
   readonly devInstance: string | undefined;
+  readonly worktreePath?: string | undefined;
 }): { readonly offset: number; readonly source: string } {
   if (config.portOffset !== undefined) {
     if (config.portOffset < 0) {
@@ -92,16 +139,48 @@ export function resolveOffset(config: {
   }
 
   const seed = config.devInstance?.trim();
-  if (!seed) {
-    return { offset: 0, source: "default ports" };
+  if (seed) {
+    if (/^\d+$/.test(seed)) {
+      return { offset: Number(seed), source: `numeric T3CODE_DEV_INSTANCE=${seed}` };
+    }
+
+    const offset = ((Hash.string(seed) >>> 0) % MAX_HASH_OFFSET) + 1;
+    return { offset, source: `hashed T3CODE_DEV_INSTANCE=${seed}` };
   }
 
-  if (/^\d+$/.test(seed)) {
-    return { offset: Number(seed), source: `numeric T3CODE_DEV_INSTANCE=${seed}` };
+  // Worktrees get ports derived from their path so each one is stable across
+  // restarts and distinct from its siblings. Without this every worktree starts
+  // at offset 0 and scan-collides onto whatever happens to be free that minute,
+  // so ports move under you between runs — which breaks any URL you already
+  // shared. The main checkout keeps the documented 5733/13773.
+  const worktreePath = config.worktreePath?.trim();
+  if (worktreePath) {
+    const offset = ((Hash.string(worktreePath) >>> 0) % MAX_HASH_OFFSET) + 1;
+    return { offset, source: `worktree ${worktreePath}` };
   }
 
-  const offset = ((Hash.string(seed) >>> 0) % MAX_HASH_OFFSET) + 1;
-  return { offset, source: `hashed T3CODE_DEV_INSTANCE=${seed}` };
+  return { offset: 0, source: "default ports" };
+}
+
+/**
+ * State-home precedence for dev servers: explicit `--home-dir` wins, then the
+ * worktree's own gitignored `.t3`, then ambient `T3CODE_HOME`. The flag must
+ * NOT carry a `T3CODE_HOME` fallback (see its definition): the fallback would
+ * arrive already merged into `flagHome` and make the worktree branch dead,
+ * capturing worktree state into the shared home. Blank strings are not
+ * selections — treating `--home-dir ""` as one would skip the worktree
+ * default and land on the shared home.
+ */
+export function resolveDevT3Home(input: {
+  readonly flagHome: string | undefined;
+  readonly worktreeHome: string | undefined;
+  readonly envHome: string | undefined;
+}): string | undefined {
+  return (
+    (input.flagHome?.trim() || undefined) ??
+    (input.worktreeHome?.trim() || undefined) ??
+    (input.envHome?.trim() || undefined)
+  );
 }
 
 function resolveBaseDir(baseDir: string | undefined): Effect.Effect<string, never, Path.Path> {
@@ -179,7 +258,10 @@ export function createDevRunnerEnv({
     if (!isDesktopMode && noBrowser !== undefined) {
       output.T3CODE_NO_BROWSER = noBrowser ? "1" : "0";
     } else if (!isDesktopMode) {
-      delete output.T3CODE_NO_BROWSER;
+      // Browser auto-open is opt-in: a dev runner that opens a browser tab on
+      // every worktree boot surprises multi-worktree flows. Pass
+      // --no-browser=false (or T3CODE_NO_BROWSER=0) to restore auto-open.
+      output.T3CODE_NO_BROWSER = "1";
     }
 
     if (autoBootstrapProjectFromCwd !== undefined) {
@@ -277,6 +359,10 @@ export function findFirstAvailableOffset<R = NetService>({
         break;
       }
 
+      if (requireWebPort && !isBrowserAllowedPort(webPort)) {
+        continue;
+      }
+
       const checks: Array<Effect.Effect<boolean, never, R>> = [];
       if (requireServerPort) {
         checks.push(checkPort(serverPort));
@@ -365,7 +451,7 @@ export function resolveModePortOffsets<R = NetService>({
 
 interface DevRunnerCliInput {
   readonly mode: DevMode;
-  readonly t3Home: string | undefined;
+  readonly t3Home: Option.Option<string>;
   readonly noBrowser: boolean | undefined;
   readonly autoBootstrapProjectFromCwd: boolean | undefined;
   readonly logWebSocketEvents: boolean | undefined;
@@ -373,6 +459,7 @@ interface DevRunnerCliInput {
   readonly port: number | undefined;
   readonly devUrl: URL | undefined;
   readonly dryRun: boolean;
+  readonly share: boolean;
   readonly runnerArgs: ReadonlyArray<string>;
 }
 
@@ -388,8 +475,26 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       ),
     );
 
+    // Single-origin browser dev proxies the backend at localhost. A wildcard
+    // bind still answers there; a specific non-loopback interface does not,
+    // which breaks every proxied request in a way that reads as "server is
+    // broken" rather than "flag combination is unsupported". Reject it up
+    // front instead. (dev:server and dev:desktop don't proxy — untouched.)
+    if (
+      (input.mode === "dev" || input.mode === "dev:web") &&
+      input.host !== undefined &&
+      !isProxiableBindHost(input.host)
+    ) {
+      return yield* new DevRunnerError({
+        message: `--host ${input.host} cannot be combined with ${input.mode}: single-origin browser dev proxies the backend at localhost, and a backend bound only to ${input.host} leaves localhost unanswered, so every proxied request fails. Use a wildcard (0.0.0.0 or ::) to serve that interface and loopback together, or --share for remote access.`,
+      });
+    }
+
+    const cwd = process.cwd();
+    const worktreePath = yield* resolveGitWorktreePath(cwd);
+
     const { offset, source } = yield* Effect.try({
-      try: () => resolveOffset({ portOffset, devInstance }),
+      try: () => resolveOffset({ portOffset, devInstance, worktreePath }),
       catch: (cause) =>
         new DevRunnerError({
           message: cause instanceof Error ? cause.message : String(cause),
@@ -404,12 +509,23 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       hasExplicitDevUrl: input.devUrl !== undefined,
     });
 
+    // A dev server started inside a worktree defaults to that worktree's own
+    // (gitignored) `.t3` — an ambient T3CODE_HOME must not capture worktree
+    // state into the shared home. `--home-dir` still wins; otherwise fall back
+    // to the isolated fork default below via createDevRunnerEnv.
+    const worktreeHome = yield* resolveWorktreeT3Home(cwd);
+    const resolvedT3Home = resolveDevT3Home({
+      flagHome: Option.getOrUndefined(input.t3Home),
+      worktreeHome,
+      envHome: process.env.T3CODE_HOME,
+    });
+
     const env = yield* createDevRunnerEnv({
       mode: input.mode,
       baseEnv: process.env,
       serverOffset,
       webOffset,
-      t3Home: input.t3Home,
+      t3Home: resolvedT3Home,
       noBrowser: input.noBrowser,
       autoBootstrapProjectFromCwd: input.autoBootstrapProjectFromCwd,
       logWebSocketEvents: input.logWebSocketEvents,
@@ -427,8 +543,66 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       `[dev-runner] mode=${input.mode} source=${source}${selectionSuffix} serverPort=${String(env.T3CODE_PORT)} webPort=${String(env.PORT)} baseDir=${String(env.T3CODE_HOME)}`,
     );
 
+    // --dry-run only resolves and prints. Sharing would replace, then tear
+    // down, whatever mapping the port already had — a surprising side effect
+    // from a command documented as inert.
     if (input.dryRun) {
       return;
+    }
+
+    const sharedWebPort = BASE_WEB_PORT + webOffset;
+    if (input.share) {
+      if (input.mode === "dev:server") {
+        yield* Effect.logInfo("[dev-runner] --share has no effect for dev:server (no web server).");
+      } else if (input.mode === "dev:desktop") {
+        yield* Effect.logWarning(
+          "[dev-runner] --share is not supported for dev:desktop (the renderer is pinned to loopback). Use `dev`, which runs the whole browser stack.",
+        );
+      } else {
+        // acquireRelease, not share-then-addFinalizer: the mapping outlives
+        // this process (and reboots), so the cleanup has to be registered
+        // atomically with creating it. An interrupt landing in between would
+        // otherwise leave a mapping pointing at a port nothing listens on.
+        //
+        // A tailnet that isn't up shouldn't stop the dev server from starting —
+        // warn, and carry on serving locally.
+        const shared = yield* Effect.acquireRelease(
+          shareDevServer({ webPort: sharedWebPort }),
+          () =>
+            // Serve config outlives this process, so a cleanup that did not
+            // take leaves a tailnet URL pointing at a port nothing serves.
+            unshareDevServer(sharedWebPort).pipe(
+              Effect.flatMap((result) =>
+                result.cleared
+                  ? Effect.void
+                  : Effect.logWarning(
+                      `[dev-runner] could not remove the tailnet mapping for port ${String(sharedWebPort)}${
+                        result.explanation ? `: ${result.explanation}` : ""
+                      }. Remove it with \`tailscale serve --https=${String(sharedWebPort)} off\`.`,
+                    ),
+              ),
+            ),
+        ).pipe(
+          Effect.tapError((error: DevShareError) =>
+            Effect.logWarning(
+              `[dev-runner] could not share on the tailnet: ${error.message}${
+                "hint" in error && typeof error.hint === "string" ? ` — ${error.hint}` : ""
+              }`,
+            ),
+          ),
+          Effect.option,
+          Effect.map(Option.getOrUndefined),
+        );
+
+        if (shared) {
+          // The server builds its pairing URL from this, so the URL printed at
+          // startup is already the shareable one. An explicit --dev-url still wins.
+          if (input.devUrl === undefined) {
+            env.VITE_DEV_SERVER_URL = shared.url;
+          }
+          yield* Effect.logInfo(`[dev-runner] shared on tailnet: ${shared.url}`);
+        }
+      }
     }
 
     const child = yield* ChildProcess.make("vp", [...MODE_ARGS[input.mode], ...input.runnerArgs], {
@@ -469,8 +643,10 @@ const devRunnerCli = Command.make("dev-runner", {
     Argument.withDescription("Development mode to run."),
   ),
   t3Home: Flag.string("home-dir").pipe(
-    Flag.withDescription("Base directory for all T3 Code data (equivalent to T3CODE_HOME)."),
-    Flag.withFallbackConfig(optionalStringConfig("T3CODE_HOME")),
+    Flag.withDescription(
+      "Base directory for all T3 Code data (equivalent to T3CODE_HOME). Inside a git worktree this defaults to that worktree's own .t3 so dev state stays off the shared home. Deliberately no T3CODE_HOME fallback here: the ambient value is applied after the worktree default (see resolveDevT3Home), otherwise it would silently capture worktree state into the shared home.",
+    ),
+    Flag.optional,
   ),
   noBrowser: Flag.boolean("no-browser").pipe(
     Flag.withDescription("Browser auto-open toggle (equivalent to T3CODE_NO_BROWSER)."),
@@ -503,6 +679,12 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   dryRun: Flag.boolean("dry-run").pipe(
     Flag.withDescription("Resolve mode/ports/env and print, but do not spawn the task runner."),
+    Flag.withDefault(false),
+  ),
+  share: Flag.boolean("share").pipe(
+    Flag.withDescription(
+      "Publish the web dev server on this machine's tailnet over HTTPS (via `tailscale serve`) and print the pairing URL for it. Removed again on exit.",
+    ),
     Flag.withDefault(false),
   ),
   runnerArgs: Argument.string("runner-arg").pipe(
