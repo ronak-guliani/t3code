@@ -807,8 +807,16 @@ export function PullRequestDetailPanel({
 
   if (detailQuery.isPending) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        Loading pull request…
+      <div className="flex h-full flex-col gap-4 p-4" aria-busy="true">
+        <div className="flex items-start gap-3">
+          <div className="size-5 animate-pulse rounded-full bg-muted" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <div className="h-4 w-4/5 animate-pulse rounded bg-muted" />
+            <div className="h-3 w-2/5 animate-pulse rounded bg-muted" />
+          </div>
+        </div>
+        <div className="h-8 animate-pulse rounded bg-muted/70" />
+        <div className="h-24 animate-pulse rounded-lg bg-muted/50" />
       </div>
     );
   }
@@ -872,15 +880,15 @@ export function PullRequestDetailPanel({
         });
       }}
     >
-      <header className="border-b border-border px-4 py-3">
-        <div className="flex gap-2">
+      <header className="shrink-0 border-b border-border bg-background px-4 pt-4">
+        <div className="flex items-start gap-2">
           <PullRequestStateGlyph
             isDraft={detail.isDraft}
             mergeability={detail.mergeability}
             state={detail.state}
           />
           <h1
-            className="min-w-0 flex-1 truncate text-sm font-semibold"
+            className="min-w-0 flex-1 text-base leading-5 font-semibold"
             title={`#${detail.number} ${detail.title}`}
           >
             #{detail.number} {detail.title}
@@ -902,12 +910,12 @@ export function PullRequestDetailPanel({
             <XIcon className="size-3.5" />
           </Button>
         </div>
-        <div className="mt-1 text-xs text-muted-foreground">
+        <div className="mt-1 pl-7 text-xs text-muted-foreground">
           Opened by <PullRequestActorLabel actor={detail.author} className="inline-flex" /> ·
           Updated {formatRelativeTimeLabel(detail.updatedAt)}
           {detail.isDraft ? " · Draft" : ""}
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <div className="mt-3 flex flex-wrap items-center gap-2 pl-7 text-xs text-muted-foreground">
           <span
             className="inline-flex max-w-56 items-center gap-1 rounded bg-muted/60 px-1.5 py-0.5 font-mono"
             title={`Head branch: ${detail.headBranch}`}
@@ -1029,7 +1037,11 @@ export function PullRequestDetailPanel({
             ) : null}
           </div>
         ) : null}
-        <div aria-label="Pull request detail tabs" className="mt-3 flex gap-1" role="tablist">
+        <div
+          aria-label="Pull request detail tabs"
+          className="-mx-4 mt-4 flex gap-1 border-t border-border/70 px-4 py-2"
+          role="tablist"
+        >
           {tabs.map((item) => {
             const count =
               item.value === "timeline"
@@ -1043,10 +1055,10 @@ export function PullRequestDetailPanel({
                 aria-controls={selected ? "pr-panel" : undefined}
                 aria-selected={selected}
                 className={cn(
-                  "rounded px-2 py-1 text-xs font-medium tabular-nums",
+                  "rounded-md border px-2.5 py-1 text-xs font-medium tabular-nums transition-colors",
                   selected
-                    ? "bg-accent text-foreground ring-1 ring-border"
-                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                    ? "border-border bg-accent text-foreground shadow-xs/5"
+                    : "border-transparent text-muted-foreground hover:border-border/60 hover:bg-accent/60 hover:text-foreground",
                 )}
                 id={`pr-tab-${item.value}`}
                 key={item.value}
@@ -1065,7 +1077,7 @@ export function PullRequestDetailPanel({
       </header>
       <div
         aria-labelledby={`pr-tab-${activeTab}`}
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
         id="pr-panel"
         role="tabpanel"
       >
