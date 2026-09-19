@@ -66,8 +66,12 @@ describe("computeReadiness", () => {
         },
       }),
     );
-    expect(unknownRequired.label).toBe("no-known-blockers");
-    expect(unknownRequired.ready).toBe(true);
+    expect(unknownRequired.label).toBe("blocked");
+    expect(unknownRequired.ready).toBe(false);
+    expect(unknownRequired.blockers).toContainEqual({
+      kind: "evidence-incomplete",
+      detail: "checks",
+    });
   });
 
   it("blocks on changes-requested and unresolved threads", () => {
@@ -154,8 +158,12 @@ describe("computeReadiness", () => {
         },
       }),
     );
-    expect(result.ready).toBe(true);
-    expect(result.label).toBe("no-known-blockers");
+    expect(result.ready).toBe(false);
+    expect(result.label).toBe("blocked");
+    expect(result.blockers).toContainEqual({
+      kind: "evidence-incomplete",
+      detail: "reviews",
+    });
   });
 
   it("treats base distance as informational", () => {
@@ -172,12 +180,53 @@ describe("computeReadiness", () => {
         },
       }),
     );
-    expect(result.ready).toBe(true);
-    expect(result.label).toBe("ready-to-merge");
-    expect(result.blockers).toEqual([]);
+    expect(result.ready).toBe(false);
+    expect(result.label).toBe("blocked");
+    expect(result.blockers).toContainEqual({ kind: "base-comparison-unknown" });
 
     const behind = computeReadiness(snapshot({ behindBaseBy: 3 }));
     expect(behind).toEqual({ ready: true, label: "ready-to-merge", blockers: [] });
+  });
+
+  it("fails closed when pagination is incomplete even if loaded findings are clear", () => {
+    const result = computeReadiness(
+      snapshot({
+        completeness: {
+          reviewsComplete: true,
+          reviewThreadsComplete: true,
+          issueCommentsComplete: false,
+          checksComplete: true,
+          requiredChecksKnown: true,
+          baseComparisonKnown: true,
+        },
+      }),
+    );
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContainEqual({
+      kind: "evidence-incomplete",
+      detail: "issue-comments",
+    });
+  });
+
+  it("fails closed for unknown mergeability and incomplete checks", () => {
+    const result = computeReadiness(
+      snapshot({
+        mergeability: "unknown",
+        completeness: {
+          reviewsComplete: true,
+          reviewThreadsComplete: true,
+          issueCommentsComplete: true,
+          checksComplete: false,
+          requiredChecksKnown: true,
+          baseComparisonKnown: true,
+        },
+      }),
+    );
+    expect(result.ready).toBe(false);
+    expect(result.blockers.map((blocker) => blocker.kind)).toEqual([
+      "mergeability",
+      "evidence-incomplete",
+    ]);
   });
 
   it("blocks on merge conflicts", () => {

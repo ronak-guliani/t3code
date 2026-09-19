@@ -33,6 +33,7 @@ import MigrationFeedback from "../persistence/Migrations/072_PullRequestMonitorF
 import MigrationOwnership from "../persistence/Migrations/073_PullRequestMonitorOwnership.ts";
 import MigrationFallback from "../persistence/Migrations/074_PullRequestMonitorFallback.ts";
 import MigrationRevisionIdentity from "../persistence/Migrations/076_PullRequestMonitorRevisionIdentity.ts";
+import MigrationReviewDisputes from "../persistence/Migrations/096_PullRequestMonitorReviewDisputes.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -353,6 +354,7 @@ const MigratedSql = Layer.effectDiscard(
     yield* MigrationOwnership;
     yield* MigrationFallback;
     yield* MigrationRevisionIdentity;
+    yield* MigrationReviewDisputes;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layerMemory()));
 
@@ -2084,6 +2086,122 @@ layer("PullRequestMonitorService", (it) => {
       assert.strictEqual(items[0]?.disposition, "resolved-upstream");
       currentSnapshot = sampleSnapshot();
     }),
+  );
+
+  it.effect(
+    "keeps parent findings and child disputes distinct until explicit reviewer agreement",
+    () =>
+      Effect.gen(function* () {
+        const monitors = yield* PullRequestMonitorService;
+        const reviewer = ThreadId.make("thr_parent_review");
+        const child = ThreadId.make("thr_child_dispute");
+        seedThread(reviewer);
+        seedThread(child);
+        const originalSnapshot = currentSnapshot;
+        const reference = { projectId, repository: "acme/app", number: 65 } as const;
+        const submitted = yield* monitors.submitFindings({
+          reference,
+          reviewThreadId: reviewer,
+          reviewedHeadSha: "deadbeef",
+          findings: [
+            {
+              key: "parent-dispute",
+              title: "Parent finding",
+              detail: "Keep this evidence exact.",
+              severity: "major",
+            },
+            {
+              key: "parent-fixed",
+              title: "Fixed finding",
+              detail: "This is fixed on the next head.",
+              severity: "minor",
+            },
+          ],
+        });
+        const disputeId = submitted.findings[0]!.itemId;
+        const fixedId = submitted.findings[1]!.itemId;
+
+        const rejected = yield* monitors.report({
+          monitorId: submitted.monitor.id,
+          itemId: disputeId,
+          disposition: "rejected",
+          note: "Child disputes the finding.",
+          reporterThreadId: child,
+        });
+        assert.strictEqual(rejected.item.status, "open");
+        assert.strictEqual(rejected.item.disposition, "rejected");
+        assert.strictEqual(rejected.item.childDisposition, "rejected");
+        assert.isNull(rejected.item.reviewerDisposition ?? null);
+
+        const upheld = yield* monitors.report({
+          monitorId: submitted.monitor.id,
+          itemId: disputeId,
+          disposition: "upheld",
+          note: "Reviewer confirms the finding.",
+          reporterThreadId: reviewer,
+        });
+        assert.strictEqual(upheld.item.status, "open");
+        assert.strictEqual(upheld.item.disposition, "upheld");
+        assert.strictEqual(upheld.item.childDisposition, "rejected");
+        assert.strictEqual(upheld.item.reviewerDisposition, "upheld");
+
+        const revised = yield* monitors.report({
+          monitorId: submitted.monitor.id,
+          itemId: disputeId,
+          disposition: "revised",
+          note: "Reviewer narrows the required change.",
+          reporterThreadId: reviewer,
+        });
+        assert.strictEqual(revised.item.status, "open");
+        assert.strictEqual(revised.item.disposition, "revised");
+        assert.strictEqual(revised.item.reviewerDisposition, "revised");
+
+        const needsHuman = yield* monitors.report({
+          monitorId: submitted.monitor.id,
+          itemId: disputeId,
+          disposition: "needs-human",
+          note: "The dispute needs an operator decision.",
+          reporterThreadId: reviewer,
+        });
+        assert.strictEqual(needsHuman.item.status, "open");
+        assert.strictEqual(needsHuman.item.reviewerDisposition, "needs-human");
+
+        const agreedWithdrawal = yield* monitors.report({
+          monitorId: submitted.monitor.id,
+          itemId: disputeId,
+          disposition: "withdrawn",
+          note: "Reviewer agrees the child rejection is correct.",
+          reporterThreadId: reviewer,
+        });
+        assert.strictEqual(agreedWithdrawal.item.status, "closed");
+        assert.strictEqual(agreedWithdrawal.item.disposition, "rejected-with-reviewer-agreement");
+        assert.strictEqual(agreedWithdrawal.item.childDisposition, "rejected");
+        assert.strictEqual(agreedWithdrawal.item.reviewerDisposition, "withdrawn");
+
+        currentSnapshot = sampleSnapshot({
+          headSha: "feedface",
+          sourceRevision: "rev-fixed",
+        });
+        const fixed = yield* monitors.report({
+          monitorId: submitted.monitor.id,
+          itemId: fixedId,
+          disposition: "resolved",
+          note: "Fixed on the new head.",
+          reporterThreadId: child,
+        });
+        assert.strictEqual(fixed.item.status, "verifying");
+        assert.strictEqual(fixed.item.disposition, "resolved");
+        assert.isTrue(fixed.awaitingVerification);
+        yield* monitors.pollOnce;
+        const verified = yield* monitors.context({
+          monitorId: submitted.monitor.id,
+          includeClosed: true,
+        });
+        const verifiedItem = verified.items.find((item) => item.id === fixedId);
+        assert.strictEqual(verifiedItem?.status, "closed");
+        assert.strictEqual(verifiedItem?.disposition, "resolved-upstream");
+        currentSnapshot = originalSnapshot;
+      }),
   );
 
   it.effect("delivers unresolved review feedback when the head moves before delivery", () =>

@@ -42,6 +42,21 @@ export function computeReadiness(
   if (snapshot.mergeability !== "mergeable") {
     blockers.push({ kind: "mergeability", detail: snapshot.mergeability });
   }
+  if (!snapshot.completeness.baseComparisonKnown) {
+    blockers.push({ kind: "base-comparison-unknown" });
+  }
+  if (!snapshot.completeness.reviewsComplete) {
+    blockers.push({ kind: "evidence-incomplete", detail: "reviews" });
+  }
+  if (!snapshot.completeness.reviewThreadsComplete) {
+    blockers.push({ kind: "evidence-incomplete", detail: "review-threads" });
+  }
+  if (!snapshot.completeness.issueCommentsComplete) {
+    blockers.push({ kind: "evidence-incomplete", detail: "issue-comments" });
+  }
+  if (!snapshot.completeness.checksComplete || !snapshot.completeness.requiredChecksKnown) {
+    blockers.push({ kind: "evidence-incomplete", detail: "checks" });
+  }
 
   const currentChecks = snapshot.checkRuns.filter((check) => check.headSha === snapshot.headSha);
   if (currentChecks.length === 0) {
@@ -100,23 +115,11 @@ export function computeReadiness(
     });
   }
 
-  // Only claim "ready to merge" when every actionable merge-policy input was observed.
-  const evidenceSupportsReadyLabel =
-    snapshot.completeness.requiredChecksKnown &&
-    snapshot.completeness.checksComplete &&
-    snapshot.completeness.reviewsComplete &&
-    snapshot.completeness.reviewThreadsComplete &&
-    currentChecks.length > 0;
-
   if (blockers.length > 0) {
     return { ready: false, label: "blocked", blockers };
   }
 
-  return {
-    ready: true,
-    label: evidenceSupportsReadyLabel ? "ready-to-merge" : "no-known-blockers",
-    blockers: [],
-  };
+  return { ready: true, label: "ready-to-merge", blockers: [] };
 }
 
 export function formatBlockersSummary(readiness: PullRequestMonitorReadiness): string {
