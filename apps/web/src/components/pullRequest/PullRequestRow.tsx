@@ -57,6 +57,9 @@ function PullRequestRowImpl({
   selected,
   matchedElsewhere,
   onSelect,
+  onHoverStart,
+  onHoverEnd,
+  onFocusRow,
 }: {
   readonly entry: PullRequestListEntry;
   readonly selected: boolean;
@@ -66,12 +69,24 @@ function PullRequestRowImpl({
    */
   readonly matchedElsewhere?: boolean;
   readonly onSelect: (entry: PullRequestListEntry) => void;
+  /**
+   * Warm the detail before it opens. Hover is delayed by the route so crossing
+   * rows costs nothing; keyboard focus prefetches at once because focus is
+   * already intentional.
+   */
+  readonly onHoverStart?: (entry: PullRequestListEntry) => void;
+  readonly onHoverEnd?: () => void;
+  readonly onFocusRow?: (entry: PullRequestListEntry) => void;
 }) {
   return (
     <button
       type="button"
       aria-current={selected ? "true" : undefined}
       onClick={() => onSelect(entry)}
+      onPointerEnter={onHoverStart ? () => onHoverStart(entry) : undefined}
+      onPointerLeave={onHoverEnd}
+      onFocus={onFocusRow ? () => onFocusRow(entry) : undefined}
+      onBlur={onHoverEnd}
       className={cn(
         "@container/pr-row grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         // Offscreen rows are skipped for style, layout and paint: a long list
