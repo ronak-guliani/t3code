@@ -208,6 +208,7 @@ interface OpenCodeSessionContext {
   readonly autoRepliedRequestIds: Set<string>;
   interruptedTurnId: TurnId | undefined;
   awaitingBusyAfterInterruption: boolean;
+  nativeIdleTurnId: TurnId | undefined;
   readonly messageRoleById: Map<string, "user" | "assistant">;
   // OpenCode permits edits to completed parts. Keep text for snapshot comparison
   // until native removal or session teardown, but do not retain other part payloads.
@@ -1188,6 +1189,7 @@ export function makeOpenCodeAdapter(
             if (!turnId) {
               break;
             }
+            context.nativeIdleTurnId = undefined;
             context.awaitingBusyAfterInterruption = false;
             updateProviderSession(context, {
               status: "running",
@@ -1216,6 +1218,7 @@ export function makeOpenCodeAdapter(
             turnId &&
             !context.awaitingBusyAfterInterruption
           ) {
+            context.nativeIdleTurnId = turnId;
             const promptMessageId = context.activePromptMessageId;
             if (promptMessageId !== undefined && context.recoveryFiber === undefined) {
               context.recoveryFiber = yield* reconcileTurn(context, turnId, promptMessageId).pipe(
@@ -1274,6 +1277,7 @@ export function makeOpenCodeAdapter(
       }
       context.activeTurnId = undefined;
       context.activePromptMessageId = undefined;
+      context.nativeIdleTurnId = undefined;
       context.activeAgent = undefined;
       context.activeVariant = undefined;
       context.recoveryFiber = undefined;
@@ -1333,7 +1337,9 @@ export function makeOpenCodeAdapter(
 
         const statusData = result.success.status.data;
         const status = statusData?.[context.openCodeSessionId];
-        const isIdle = statusData !== undefined && (status === undefined || status.type === "idle");
+        const isIdle =
+          context.nativeIdleTurnId === turnId ||
+          (statusData !== undefined && (status === undefined || status.type === "idle"));
         const messages = result.success.messages.data ?? [];
         for (const entry of messages) {
           const info = entry.info as {
@@ -1852,6 +1858,7 @@ export function makeOpenCodeAdapter(
           autoRepliedRequestIds: new Set(),
           interruptedTurnId: undefined,
           awaitingBusyAfterInterruption: false,
+          nativeIdleTurnId: undefined,
           textPartsByMessageId: new Map(),
           messageRoleById: new Map(),
           activeTurnId: undefined,
@@ -1982,6 +1989,7 @@ export function makeOpenCodeAdapter(
         }
         context.activeTurnId = turnId;
         context.activePromptMessageId = promptMessageId;
+        context.nativeIdleTurnId = undefined;
         context.awaitingBusyAfterInterruption = false;
         context.activeAgent = agent;
         context.activeVariant = variant;
@@ -2034,6 +2042,7 @@ export function makeOpenCodeAdapter(
             }
             context.activeTurnId = undefined;
             context.activePromptMessageId = undefined;
+            context.nativeIdleTurnId = undefined;
             context.activeAgent = undefined;
             context.activeVariant = undefined;
             updateProviderSession(
@@ -2094,6 +2103,7 @@ export function makeOpenCodeAdapter(
         yield* abortOpenCodeDescendants(context).pipe(Effect.mapError(toRequestError));
         context.activeTurnId = undefined;
         context.activePromptMessageId = undefined;
+        context.nativeIdleTurnId = undefined;
         context.interruptedTurnId = interruptedTurnId;
         updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
         if (interruptedTurnId) {

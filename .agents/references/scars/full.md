@@ -73,6 +73,7 @@
 - OpenCode prompt admission is not turn completion: long tool-heavy turns can remain busy for minutes after `promptAsync` returns, so recovery polling must back off and wait for native idle evidence instead of treating a short admission window as a failed turn.
 - OpenCode transcript pages may omit the prompt after a long turn; use an assistant's `parentID` for completion correlation without requiring the prompt row to be present in the page.
 - OpenCode's status map lists active sessions and may omit an idle session; a valid map without the current session is idle evidence, while a missing or invalid map remains unknown.
+- Preserve native OpenCode idle evidence until a later busy event or turn replacement; the status endpoint can remain stale-busy after the event stream reports idle, and polling must not erase stronger correlated completion evidence.
 - Pending CLI approvals/questions must combine `activityContext` with the recent activity window and honor terminal lifecycle events; a request outside the window is not resolved.
 - Thread history reads must filter and limit in SQL before decoding, omit unrelated checkpoints, and bind pagination cursors to thread/view. Unary RPC deadlines must not cap stream lifetime or imply that timed-out mutations were rejected.
 - Preserve typed thread-read input failures through HTTP and RPC; missing/ambiguous threads and invalid cursors are client errors, not error-logged repository failures.
