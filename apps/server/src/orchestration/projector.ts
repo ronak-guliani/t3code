@@ -15,7 +15,6 @@ import { sameThreadPullRequest } from "@t3tools/shared/threadPullRequests";
 import { Effect, Schema } from "effect";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
-import { pullRequestFromReviewSnapshot } from "./reviewPullRequest.ts";
 import { acceptValidationResult, transitionValidationRunStatus } from "@t3tools/contracts";
 import {
   MAX_THREAD_ACTIVITIES,
