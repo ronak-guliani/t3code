@@ -10,7 +10,7 @@ import { MAX_PULL_REQUEST_INLINE_REVIEW_COMMENTS } from "@t3tools/contracts";
 import { parsePatchFiles } from "@pierre/diffs";
 import { FileDiff, type FileDiffMetadata, Virtualizer } from "@pierre/diffs/react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { CheckIcon, CircleIcon } from "lucide-react";
+import { CheckIcon, CircleIcon, FileDiffIcon } from "lucide-react";
 import { useMemo, useState, type CSSProperties } from "react";
 
 import ChatMarkdown from "../ChatMarkdown";
@@ -254,155 +254,192 @@ export function PullRequestCodeTab({
   }
 
   return (
-    <div className="space-y-4 p-4">
-      {canComment ? (
-        <section className="rounded-lg border border-border/70 bg-card p-3">
-          <p className="text-sm font-medium">Add a line comment to this review</p>
-          <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_5rem_7rem]">
-            <input
-              aria-label="File path"
-              className="h-8 rounded border border-input bg-background px-2 text-sm"
-              list="pull-request-diff-paths"
-              placeholder="src/file.ts"
-              value={path}
-              onChange={(event) => setPath(event.currentTarget.value)}
-            />
-            <input
-              aria-label="Line number"
-              className="h-8 rounded border border-input bg-background px-2 text-sm"
-              inputMode="numeric"
-              min="1"
-              step="1"
-              type="number"
-              value={line}
-              onChange={(event) => setLine(event.currentTarget.value)}
-            />
-            <select
-              aria-label="Diff side"
-              className="h-8 rounded border border-input bg-background px-2 text-sm"
-              value={side}
-              onChange={(event) => setSide(event.currentTarget.value as PullRequestDiffSide)}
-            >
-              <option value="right">New version</option>
-              <option value="left">Old version</option>
-            </select>
-          </div>
-          <datalist id="pull-request-diff-paths">
-            {filePaths.map((filePath) => (
-              <option key={filePath} value={filePath} />
-            ))}
-          </datalist>
-          <Textarea
-            className="mt-2"
-            placeholder="Comment"
-            size="sm"
-            value={body}
-            onChange={(event) => setBody(event.currentTarget.value)}
-          />
-          <div className="mt-2 flex justify-end">
-            <Button
-              disabled={
-                !path.trim() ||
-                !body.trim() ||
-                !isValidCommentLine ||
-                pendingReviewComments.length >= MAX_PULL_REQUEST_INLINE_REVIEW_COMMENTS
-              }
-              size="xs"
-              onClick={() => {
-                add(key, {
-                  id: nextPendingReviewCommentId(),
-                  path: path.trim(),
-                  line: commentLine,
-                  side,
-                  body: body.trim(),
-                });
-                setBody("");
-              }}
-            >
-              Add to review
-            </Button>
-          </div>
-        </section>
-      ) : null}
+    <div className="min-h-full bg-muted/10">
+      <div className="sticky top-0 z-10 flex min-w-0 flex-wrap items-center gap-2 border-b border-border/60 bg-background/95 px-3 py-2 backdrop-blur">
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium">
+          <FileDiffIcon className="size-3.5 text-muted-foreground" />
+          {files.length} {files.length === 1 ? "file" : "files"}
+        </span>
+        <span className="font-mono text-[11px] text-emerald-600 dark:text-emerald-400">
+          +{detail.additions}
+        </span>
+        <span className="font-mono text-[11px] text-red-600 dark:text-red-400">
+          -{detail.deletions}
+        </span>
+        {diffQuery.hasNextPage ? (
+          <span className="ml-auto text-[11px] text-muted-foreground">More files available</span>
+        ) : null}
+      </div>
       {files.length > 0 ? (
-        <Virtualizer
-          className="max-h-[calc(100dvh-23rem)] overflow-auto"
-          config={{ overscrollSize: 600, intersectionObserverMargin: 1200 }}
+        <nav
+          aria-label="Changed files"
+          className="flex gap-1 overflow-x-auto border-b border-border/60 bg-background px-3 py-2"
         >
-          {files.map(({ file, index, pageIndex, path: filePath }) => (
-            <section
-              className="mb-3 overflow-hidden rounded-lg border border-border/70 last:mb-0"
-              key={`${pageIndex}:${index}:${filePath}`}
+          {files.map(({ index, pageIndex, path: filePath }) => (
+            <a
+              className="max-w-52 shrink-0 truncate rounded-md border border-border/70 bg-muted/20 px-2 py-1 font-mono text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+              href={`#pull-request-file-${pageIndex}-${index}`}
+              key={`${pageIndex}:${index}:${filePath}:link`}
+              title={filePath}
             >
-              <FileDiff
-                fileDiff={file}
-                style={diffTextStyle}
-                options={{
-                  diffStyle: "unified",
-                  lineDiffType: "none",
-                  overflow: diffWordWrap ? "wrap" : "scroll",
-                  theme: resolveDiffThemeName(resolvedTheme),
-                  themeType: resolvedTheme,
-                }}
+              {filePath}
+            </a>
+          ))}
+        </nav>
+      ) : null}
+      <div className="space-y-3 p-3">
+        {canComment ? (
+          <section className="rounded-lg border border-border/70 bg-background p-3">
+            <p className="text-sm font-medium">Add a line comment to this review</p>
+            <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_5rem_7rem]">
+              <input
+                aria-label="File path"
+                className="h-8 rounded border border-input bg-background px-2 text-sm"
+                list="pull-request-diff-paths"
+                placeholder="src/file.ts"
+                value={path}
+                onChange={(event) => setPath(event.currentTarget.value)}
               />
-              {threadByPath[filePath]?.length ? (
-                <div className="space-y-2 border-t border-border/70 p-3">
-                  {threadByPath[filePath].map((thread) => (
-                    <ReviewThread
-                      detail={detail}
-                      key={thread.id}
-                      pending={pending}
-                      thread={thread}
-                      onReply={onReply}
-                      onResolve={onResolve}
-                    />
-                  ))}
-                </div>
-              ) : null}
+              <input
+                aria-label="Line number"
+                className="h-8 rounded border border-input bg-background px-2 text-sm"
+                inputMode="numeric"
+                min="1"
+                step="1"
+                type="number"
+                value={line}
+                onChange={(event) => setLine(event.currentTarget.value)}
+              />
+              <select
+                aria-label="Diff side"
+                className="h-8 rounded border border-input bg-background px-2 text-sm"
+                value={side}
+                onChange={(event) => setSide(event.currentTarget.value as PullRequestDiffSide)}
+              >
+                <option value="right">New version</option>
+                <option value="left">Old version</option>
+              </select>
+            </div>
+            <datalist id="pull-request-diff-paths">
+              {filePaths.map((filePath) => (
+                <option key={filePath} value={filePath} />
+              ))}
+            </datalist>
+            <Textarea
+              className="mt-2"
+              placeholder="Comment"
+              size="sm"
+              value={body}
+              onChange={(event) => setBody(event.currentTarget.value)}
+            />
+            <div className="mt-2 flex justify-end">
+              <Button
+                disabled={
+                  !path.trim() ||
+                  !body.trim() ||
+                  !isValidCommentLine ||
+                  pendingReviewComments.length >= MAX_PULL_REQUEST_INLINE_REVIEW_COMMENTS
+                }
+                size="xs"
+                onClick={() => {
+                  add(key, {
+                    id: nextPendingReviewCommentId(),
+                    path: path.trim(),
+                    line: commentLine,
+                    side,
+                    body: body.trim(),
+                  });
+                  setBody("");
+                }}
+              >
+                Add to review
+              </Button>
+            </div>
+          </section>
+        ) : null}
+        {files.length > 0 ? (
+          <Virtualizer
+            className="max-h-[calc(100dvh-23rem)] overflow-auto"
+            config={{ overscrollSize: 600, intersectionObserverMargin: 1200 }}
+          >
+            {files.map(({ file, index, pageIndex, path: filePath }) => (
+              <section
+                className="mb-3 overflow-hidden rounded-lg border border-border/70 last:mb-0"
+                id={`pull-request-file-${pageIndex}-${index}`}
+                key={`${pageIndex}:${index}:${filePath}`}
+              >
+                <FileDiff
+                  fileDiff={file}
+                  style={diffTextStyle}
+                  options={{
+                    diffStyle: "unified",
+                    lineDiffType: "none",
+                    overflow: diffWordWrap ? "wrap" : "scroll",
+                    theme: resolveDiffThemeName(resolvedTheme),
+                    themeType: resolvedTheme,
+                  }}
+                />
+                {threadByPath[filePath]?.length ? (
+                  <div className="space-y-2 border-t border-border/70 p-3">
+                    {threadByPath[filePath].map((thread) => (
+                      <ReviewThread
+                        detail={detail}
+                        key={thread.id}
+                        pending={pending}
+                        thread={thread}
+                        onReply={onReply}
+                        onResolve={onResolve}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            ))}
+          </Virtualizer>
+        ) : null}
+        {renderablePages
+          .filter((page) => page.kind === "raw")
+          .map((page) => (
+            <section
+              className="overflow-hidden rounded-lg border border-border/70"
+              key={`raw:${page.index}`}
+            >
+              <p className="border-b border-border/70 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                {page.reason}
+              </p>
+              <pre
+                className={
+                  diffWordWrap
+                    ? "max-h-120 overflow-auto p-3 leading-5 whitespace-pre-wrap wrap-break-word"
+                    : "max-h-120 overflow-auto p-3 leading-5"
+                }
+                style={{ fontSize: pullRequestsCodeFontSize }}
+              >
+                {page.text}
+              </pre>
             </section>
           ))}
-        </Virtualizer>
-      ) : null}
-      {renderablePages
-        .filter((page) => page.kind === "raw")
-        .map((page) => (
-          <section
-            className="overflow-hidden rounded-lg border border-border/70"
-            key={`raw:${page.index}`}
-          >
-            <p className="border-b border-border/70 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-              {page.reason}
-            </p>
-            <pre
-              className={
-                diffWordWrap
-                  ? "max-h-120 overflow-auto p-3 leading-5 whitespace-pre-wrap wrap-break-word"
-                  : "max-h-120 overflow-auto p-3 leading-5"
-              }
-              style={{ fontSize: pullRequestsCodeFontSize }}
+        {renderablePages.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No diff available.</p>
+        ) : null}
+        {renderablePages.some((page) => page.truncated) ? (
+          <p className="text-xs text-muted-foreground">
+            Some files could not be rendered by GitHub.
+          </p>
+        ) : null}
+        {diffQuery.hasNextPage ? (
+          <div className="flex justify-center">
+            <Button
+              disabled={diffQuery.isFetchingNextPage}
+              size="sm"
+              variant="outline"
+              onClick={() => void diffQuery.fetchNextPage()}
             >
-              {page.text}
-            </pre>
-          </section>
-        ))}
-      {renderablePages.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No diff available.</p>
-      ) : null}
-      {renderablePages.some((page) => page.truncated) ? (
-        <p className="text-xs text-muted-foreground">Some files could not be rendered by GitHub.</p>
-      ) : null}
-      {diffQuery.hasNextPage ? (
-        <div className="flex justify-center">
-          <Button
-            disabled={diffQuery.isFetchingNextPage}
-            size="sm"
-            variant="outline"
-            onClick={() => void diffQuery.fetchNextPage()}
-          >
-            {diffQuery.isFetchingNextPage ? "Loading files…" : "Load more files"}
-          </Button>
-        </div>
-      ) : null}
+              {diffQuery.isFetchingNextPage ? "Loading files…" : "Load more files"}
+            </Button>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
