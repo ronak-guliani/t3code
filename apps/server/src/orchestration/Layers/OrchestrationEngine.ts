@@ -369,11 +369,36 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       requestedPath === null || requestedPath === undefined
         ? null
         : yield* Effect.promise(() => canonicalizeWorktreePath(requestedPath));
+    // An explicit project-checkout path (the client sent a concrete directory
+    // instead of null) means the user chose "Current checkout": honor it
+    // instead of allocating an isolated worktree. Null/undefined requests fall
+    // through to isolation below so legacy callers keep the safe default.
+    // For thread.create and bootstrapped turn.start the explicit path lives on
+    // createThread (which is the command itself for thread.create); otherwise
+    // it lives on the existing thread binding.
+    const isExplicitCheckoutRequest =
+      typeof createThread?.worktreePath === "string" ||
+      (createThread === undefined &&
+        (command.type === "thread.turn.start" || command.type === "thread.queued-turn.dispatch") &&
+        typeof (
+          (command.type === "thread.queued-turn.dispatch"
+            ? command.workspaceBinding?.worktreePath
+            : undefined) ??
+          thread?.workspaceBinding?.worktreePath ??
+          thread?.worktreePath
+        ) === "string");
     if (canonicalRequested !== null) {
       const requestedRoot = yield* Effect.promise(() => resolveGitWorktreeRoot(canonicalRequested));
       const isProjectCheckout =
         (requestedRoot !== null && requestedRoot === gitRoot) ||
         (requestedRoot === null && projectRoot === canonicalRequested);
+      if (isProjectCheckout && isExecutionCommand && isExplicitCheckoutRequest) {
+        return {
+          command,
+          worktreePath: canonicalRequested,
+          branch: createThread?.branch ?? thread?.branch ?? null,
+        };
+      }
       if (isProjectCheckout && isExecutionCommand && gitRoot !== null) {
         // Treat legacy/root bindings as an isolation request. This preserves
         // the user's turn and recovery path while ensuring the human checkout
