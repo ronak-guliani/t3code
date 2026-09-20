@@ -171,6 +171,9 @@ function PullRequestCollaborationStatusCard({
   readonly acceptance: CollaborativeAcceptanceStatus | undefined;
   readonly controls: {
     readonly canControl: boolean;
+    readonly hasCaseId: boolean;
+    readonly isLoading: boolean;
+    readonly error: string | null;
     readonly isPaused: boolean;
     readonly isPending: boolean;
     readonly onPause: () => void;
@@ -255,6 +258,15 @@ function PullRequestCollaborationStatusCard({
         <p className="mt-2 text-xs text-muted-foreground">
           Evidence {completeEvidence}/{currentEvidence.length} complete · {openObligations} open
           obligation{openObligations === 1 ? "" : "s"} · exchanges {exchangeCount}/{exchangeBudget}
+        </p>
+      ) : null}
+      {!controls.canControl ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          {controls.isLoading
+            ? "Loading canonical acceptance status…"
+            : controls.hasCaseId && controls.error
+              ? `Canonical acceptance status unavailable: ${controls.error}`
+              : "Canonical acceptance status is unavailable for this PR. The coordinator exposes case-scoped controls only after a typed case ID is provided; a PR-to-case lookup is a backend follow-up."}
         </p>
       ) : null}
       {controls.canControl ? (
@@ -887,6 +899,9 @@ export function PullRequestDetailPanel({
       acceptanceThreadId !== null &&
       acceptanceQuery.data?.record !== null &&
       acceptanceQuery.data?.record !== undefined,
+    hasCaseId: acceptanceCaseId !== null,
+    isLoading: acceptanceQuery.isLoading,
+    error: acceptanceQuery.isError ? errorMessage(acceptanceQuery.error) : null,
     isPaused: acceptanceProjection?.executionPhase === "paused",
     isPending: acceptanceMutationPending,
     onPause: () => {

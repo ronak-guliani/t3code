@@ -126,6 +126,8 @@ export function presentCollaborativeAcceptanceStatus(input: {
     !providerRefreshFailed &&
     !terminalMonitor &&
     !incompleteEvidence;
+  const acceptanceUnavailable =
+    input.acceptance?.record === null || input.acceptance?.record === undefined;
   return {
     execution: providerRefreshFailed
       ? "Monitoring paused"
@@ -144,10 +146,14 @@ export function presentCollaborativeAcceptanceStatus(input: {
           : input.monitor?.ownerCandidates?.length
             ? "Request queued"
             : "No active exchange",
-    acceptance: "Monitoring",
+    acceptance:
+      input.acceptance?.record !== null && input.acceptance?.record !== undefined
+        ? "Monitoring"
+        : "Acceptance status unavailable",
     readiness: readyNow
       ? "Ready now"
-      : providerRefreshFailed ||
+      : acceptanceUnavailable ||
+          providerRefreshFailed ||
           incompleteEvidence ||
           acceptanceEvidenceIncomplete ||
           missingEvidence ||
@@ -159,6 +165,9 @@ export function presentCollaborativeAcceptanceStatus(input: {
             ? "Blocked"
             : "Waiting for evidence",
     blocker:
+      (acceptanceUnavailable
+        ? "Canonical collaborative acceptance status is unavailable for this PR."
+        : null) ??
       failClosedReason ??
       input.monitor?.automationBlockReason ??
       readiness?.blockers[0]?.detail ??

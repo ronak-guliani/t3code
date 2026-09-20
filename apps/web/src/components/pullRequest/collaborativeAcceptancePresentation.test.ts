@@ -35,7 +35,7 @@ describe("presentCollaborativeAcceptanceStatus", () => {
       acceptance: null,
     });
 
-    expect(result.readiness).toBe("No known blockers");
+    expect(result.readiness).toBe("Waiting for evidence");
     expect(result.readiness).not.toBe("Ready now");
   });
 
@@ -161,5 +161,7 @@ describe("presentCollaborativeAcceptanceStatus", () => {
 
     expect(result.readiness).toBe("Waiting for evidence");
     expect(result.readiness).not.toBe("Ready now");
+    expect(result.acceptance).toBe("Acceptance status unavailable");
+    expect(result.blocker).toContain("Canonical collaborative acceptance status");
   });
 });
