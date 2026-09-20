@@ -499,6 +499,37 @@ export const CollaborativeAcceptanceStatus = Schema.Struct({
 });
 export type CollaborativeAcceptanceStatus = typeof CollaborativeAcceptanceStatus.Type;
 
+export const CollaborativeAcceptanceCaseLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  pullRequest: PullRequestRef,
+});
+export type CollaborativeAcceptanceCaseLookupInput =
+  typeof CollaborativeAcceptanceCaseLookupInput.Type;
+
+export const CollaborativeAcceptanceCaseLookupResult = Schema.Struct({
+  caseId: CollaborativeAcceptanceCaseId,
+  status: CollaborativeAcceptanceStatus,
+});
+export type CollaborativeAcceptanceCaseLookupResult =
+  typeof CollaborativeAcceptanceCaseLookupResult.Type;
+
+export const CollaborativeAcceptanceCaseLookupReason = Schema.Literals([
+  "not-found",
+  "ambiguous",
+  "unauthorized",
+  "unavailable",
+]);
+export type CollaborativeAcceptanceCaseLookupReason =
+  typeof CollaborativeAcceptanceCaseLookupReason.Type;
+
+export class CollaborativeAcceptanceCaseLookupError extends Schema.TaggedErrorClass<CollaborativeAcceptanceCaseLookupError>()(
+  "CollaborativeAcceptanceCaseLookupError",
+  {
+    message: Schema.String,
+    reason: CollaborativeAcceptanceCaseLookupReason,
+  },
+) {}
+
 export class CollaborativeAcceptanceError extends Schema.TaggedErrorClass<CollaborativeAcceptanceError>()(
   "CollaborativeAcceptanceError",
   {

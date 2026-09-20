@@ -123,6 +123,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.collaborativeAcceptanceSubmitCandidate]: AuthOrchestrationOperateScope,
   [WS_METHODS.collaborativeAcceptanceRequestReview]: AuthOrchestrationOperateScope,
   [WS_METHODS.collaborativeAcceptanceStatus]: AuthOrchestrationReadScope,
+  [WS_METHODS.collaborativeAcceptanceResolveForPullRequest]: AuthOrchestrationReadScope,
   [WS_METHODS.collaborativeAcceptanceSubmitAssessment]: AuthOrchestrationOperateScope,
   [WS_METHODS.collaborativeAcceptancePause]: AuthOrchestrationOperateScope,
   [WS_METHODS.collaborativeAcceptanceResume]: AuthOrchestrationOperateScope,

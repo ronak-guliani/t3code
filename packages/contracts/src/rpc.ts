@@ -12,6 +12,9 @@ import { NonNegativeInt } from "./baseSchemas.ts";
 import { ThreadId } from "./baseSchemas.ts";
 import {
   CollaborativeAcceptanceAssessmentSubmission,
+  CollaborativeAcceptanceCaseLookupError,
+  CollaborativeAcceptanceCaseLookupInput,
+  CollaborativeAcceptanceCaseLookupResult,
   CollaborativeAcceptanceCandidateSubmission,
   CollaborativeAcceptanceCaseId,
   CollaborativeAcceptanceError,
@@ -450,6 +453,7 @@ export const WS_METHODS = {
   collaborativeAcceptanceSubmitCandidate: "collaborativeAcceptance.submitCandidate",
   collaborativeAcceptanceRequestReview: "collaborativeAcceptance.requestReview",
   collaborativeAcceptanceStatus: "collaborativeAcceptance.status",
+  collaborativeAcceptanceResolveForPullRequest: "collaborativeAcceptance.resolveForPullRequest",
   collaborativeAcceptanceSubmitAssessment: "collaborativeAcceptance.submitAssessment",
   collaborativeAcceptancePause: "collaborativeAcceptance.pause",
   collaborativeAcceptanceResume: "collaborativeAcceptance.resume",
@@ -851,6 +855,15 @@ export const WsCollaborativeAcceptanceStatusRpc = Rpc.make(
     payload: CollaborativeAcceptanceCaseInput,
     success: CollaborativeAcceptanceStatus,
     error: CollaborativeAcceptanceError,
+  },
+);
+
+export const WsCollaborativeAcceptanceResolveForPullRequestRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceResolveForPullRequest,
+  {
+    payload: CollaborativeAcceptanceCaseLookupInput,
+    success: CollaborativeAcceptanceCaseLookupResult,
+    error: CollaborativeAcceptanceCaseLookupError,
   },
 );
 
@@ -1455,6 +1468,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsCollaborativeAcceptanceSubmitCandidateRpc,
   WsCollaborativeAcceptanceRequestReviewRpc,
   WsCollaborativeAcceptanceStatusRpc,
+  WsCollaborativeAcceptanceResolveForPullRequestRpc,
   WsCollaborativeAcceptanceSubmitAssessmentRpc,
   WsCollaborativeAcceptancePauseRpc,
   WsCollaborativeAcceptanceResumeRpc,

@@ -2396,6 +2396,124 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("resolves the current acceptance case from a durable PR association", () =>
+    Effect.gen(function* () {
+      const pullRequest = {
+        projectId: ProjectId.make("project-acceptance-lookup"),
+        repository: "owner/repository",
+        number: 42,
+      };
+      const acceptanceThread = {
+        ...makeDefaultOrchestrationReadModel().threads[0],
+        id: defaultThreadId,
+        projectId: pullRequest.projectId,
+        pullRequest: {
+          number: pullRequest.number,
+          title: "Acceptance PR",
+          url: "https://github.com/owner/repository/pull/42",
+          baseBranch: "main",
+          headBranch: "feature/acceptance",
+          state: "open",
+        },
+      } as unknown as OrchestrationThread;
+      const status = { record: null, pauseReason: null };
+      let seenInput:
+        | {
+            readonly threadId: ThreadId;
+            readonly pullRequest: typeof pullRequest;
+          }
+        | undefined;
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(acceptanceThread)),
+          },
+          collaborativeAcceptanceCoordinator: {
+            resolveForPullRequest: (input) =>
+              Effect.sync(() => {
+                seenInput = input;
+                return {
+                  caseId: CollaborativeAcceptanceCaseId.make("case-current"),
+                  status,
+                };
+              }),
+          },
+        },
+      });
+
+      const { cookie } = yield* bootstrapBrowserSession();
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.collaborativeAcceptanceResolveForPullRequest]({
+            threadId: defaultThreadId,
+            pullRequest,
+          }),
+        ),
+      );
+
+      assert.equal(result.caseId, CollaborativeAcceptanceCaseId.make("case-current"));
+      assert.deepEqual(result.status, status);
+      assert.deepEqual(seenInput, { threadId: defaultThreadId, pullRequest });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("rejects PR lookup when the authenticated thread belongs to another project", () =>
+    Effect.gen(function* () {
+      const acceptanceThread = {
+        ...makeDefaultOrchestrationReadModel().threads[0],
+        id: defaultThreadId,
+        projectId: ProjectId.make("project-owned-by-thread"),
+      } as unknown as OrchestrationThread;
+      let called = false;
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(acceptanceThread)),
+          },
+          collaborativeAcceptanceCoordinator: {
+            resolveForPullRequest: () =>
+              Effect.sync(() => {
+                called = true;
+                return {
+                  caseId: CollaborativeAcceptanceCaseId.make("case-should-not-resolve"),
+                  status: { record: null, pauseReason: null },
+                };
+              }),
+          },
+        },
+      });
+
+      const { cookie } = yield* bootstrapBrowserSession();
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+      const error = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.collaborativeAcceptanceResolveForPullRequest]({
+              threadId: defaultThreadId,
+              pullRequest: {
+                projectId: ProjectId.make("project-other"),
+                repository: "owner/repository",
+                number: 42,
+              },
+            }),
+          ),
+        ),
+      );
+
+      assertInclude(String(error), "not durably associated");
+      assert.isFalse(called);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect(
     "rejects websocket rpc handshake when a session token is only provided via query string",
     () =>

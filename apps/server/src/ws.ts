@@ -29,10 +29,12 @@ import {
   GitHubCliError,
   PullRequestUnavailableError,
   PullRequestMonitorError,
+  CollaborativeAcceptanceCaseLookupError,
   CollaborativeAcceptanceError,
   RpcClientId,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
+  type OrchestrationThread,
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
   type OrchestrationThreadStreamItem,
@@ -66,6 +68,7 @@ import {
   type WorkflowRunInput,
   type WorkflowRunResult,
   type WorkflowWorkerConfig,
+  type PullRequestRef,
   WorkflowRunId,
   WorkflowArtifactId,
   WorkflowNodeId,
@@ -355,6 +358,42 @@ const makeWsRpcLayer = (
                   }),
                 ),
           ),
+        );
+      const withAcceptanceLookup = <A>(
+        operation: (
+          service: CollaborativeAcceptanceCoordinator["Service"],
+        ) => Effect.Effect<A, CollaborativeAcceptanceCaseLookupError>,
+      ): Effect.Effect<A, CollaborativeAcceptanceCaseLookupError> =>
+        Option.match(acceptanceCoordinator, {
+          onNone: () =>
+            Effect.fail(
+              new CollaborativeAcceptanceCaseLookupError({
+                message: "Collaborative acceptance is unavailable in this environment.",
+                reason: "unavailable",
+              }),
+            ),
+          onSome: operation,
+        });
+      const hasDurablePullRequestAssociation = (
+        thread: OrchestrationThread,
+        pullRequest: PullRequestRef,
+      ): boolean =>
+        thread.projectId === pullRequest.projectId &&
+        [
+          ...(thread.pullRequest === undefined || thread.pullRequest === null
+            ? []
+            : [thread.pullRequest]),
+          ...(thread.linkedPullRequest === undefined || thread.linkedPullRequest === null
+            ? []
+            : [thread.linkedPullRequest]),
+          ...(thread.branchPullRequest === undefined || thread.branchPullRequest === null
+            ? []
+            : [thread.branchPullRequest]),
+          ...(thread.pullRequests ?? []).map((link) => link.pullRequest),
+        ].some(
+          (association) =>
+            association.number === pullRequest.number &&
+            repositoryFromPullRequestUrl(association.url) === pullRequest.repository,
         );
       const withPullRequestMonitors = <A, E>(
         f: (
@@ -2402,6 +2441,34 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.collaborativeAcceptanceStatus,
             withAcceptance((service) => service.status(input.caseId)),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceResolveForPullRequest]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceResolveForPullRequest,
+            withAcceptanceLookup((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId).pipe(
+                  Effect.mapError(
+                    () =>
+                      new CollaborativeAcceptanceCaseLookupError({
+                        message: "The acceptance thread is unavailable.",
+                        reason: "unavailable",
+                      }),
+                  ),
+                );
+                if (!hasDurablePullRequestAssociation(thread, input.pullRequest)) {
+                  return yield* new CollaborativeAcceptanceCaseLookupError({
+                    message: "The pull request is not durably associated with this thread.",
+                    reason:
+                      thread.projectId === input.pullRequest.projectId
+                        ? "not-found"
+                        : "unauthorized",
+                  });
+                }
+                return yield* service.resolveForPullRequest(input);
+              }),
+            ),
             { "rpc.aggregate": "collaborativeAcceptance" },
           ),
         [WS_METHODS.collaborativeAcceptanceSubmitAssessment]: (input) =>
