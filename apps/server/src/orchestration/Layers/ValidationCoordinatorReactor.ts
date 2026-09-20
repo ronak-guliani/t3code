@@ -8,7 +8,7 @@ import {
   type ValidationTarget,
   validationRunEffectiveStatus,
 } from "@t3tools/contracts";
-import { Cause, Effect, Layer, Stream } from "effect";
+import { Cause, Duration, Effect, Layer, Stream } from "effect";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { ServerEnvironment } from "../../environment/Services/ServerEnvironment.ts";
@@ -48,6 +48,29 @@ const executorIdForTarget = (target: ValidationTarget): string =>
   `validation-coordinator:${target.environmentIdentity}`;
 export const isValidationCoordinatorOwnedRun = (run: ValidationRun): boolean =>
   run.requestId !== undefined;
+
+/** Upper bound between lease-expiry sweeps; keeps expiry handling responsive. */
+export const VALIDATION_LEASE_SWEEP_INTERVAL_MS = 30_000;
+
+/**
+ * Milliseconds until the next coordinator-owned lease expiry, capped at
+ * `maxIntervalMs` (0 when an expiry is already due). Pure for tests.
+ */
+export function millisUntilNextLeaseExpiry(
+  runs: ReadonlyArray<ValidationRun | null | undefined>,
+  nowMs: number,
+  maxIntervalMs: number,
+): number {
+  let delayMs = maxIntervalMs;
+  for (const run of runs) {
+    if (!run || !isValidationCoordinatorOwnedRun(run) || !run.lease) continue;
+    const remaining = Date.parse(run.lease.expiresAt) - nowMs;
+    if (Number.isNaN(remaining)) continue;
+    if (remaining <= 0) return 0;
+    if (remaining < delayMs) delayMs = remaining;
+  }
+  return Math.max(0, delayMs);
+}
 
 const isValidationEvent = (event: OrchestrationEvent): boolean =>
   event.type.startsWith("thread.validation-");
@@ -576,6 +599,28 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
     }
   });
 
+  // Bounded lease-expiry sweep. Reconciliation is otherwise purely
+  // event-driven, so a hung executor's expired lease would never be
+  // revisited; this wakes no later than the next known expiry (reconstructed
+  // from durable state on every pass, including startup) and reconciles,
+  // which releases expired leases for reclaim.
+  const sweepLeaseExpiries = Effect.fn("ValidationCoordinatorReactor.sweepLeaseExpiries")(
+    function* () {
+      while (true) {
+        const readModel = yield* orchestrationEngine.getReadModel();
+        const delayMs = millisUntilNextLeaseExpiry(
+          readModel.threads.map((thread) => thread.validationRun),
+          Date.now(),
+          VALIDATION_LEASE_SWEEP_INTERVAL_MS,
+        );
+        if (delayMs > 0) {
+          yield* Effect.sleep(Duration.millis(delayMs));
+        }
+        yield* reconcileSafely(reconcileAll());
+      }
+    },
+  );
+
   const request: ValidationCoordinatorReactorShape["request"] = (
     input: ValidationCoordinatorRequest,
   ) =>
@@ -611,6 +656,7 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
         return isValidationEvent(event) ? reconcileSafely(reconcileAll()) : Effect.void;
       }),
     );
+    yield* Effect.forkScoped(sweepLeaseExpiries());
     yield* reconcileSafely(reconcileAll());
   });
 

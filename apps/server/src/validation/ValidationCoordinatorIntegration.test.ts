@@ -12,7 +12,11 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { decideOrchestrationCommand } from "../orchestration/decider.ts";
-import { lifecycleCommandId } from "../orchestration/Layers/ValidationCoordinatorReactor.ts";
+import {
+  lifecycleCommandId,
+  millisUntilNextLeaseExpiry,
+  VALIDATION_LEASE_SWEEP_INTERVAL_MS,
+} from "../orchestration/Layers/ValidationCoordinatorReactor.ts";
 import { projectEvent } from "../orchestration/projector.ts";
 import type { OrchestrationReadModel } from "@t3tools/contracts";
 
@@ -123,6 +127,48 @@ describe("validation coordinator integration", () => {
     expect(lifecycleCommandId("run-1", "preparing", "2026-09-18T00:00:00.000Z")).toBe(first);
     expect(lifecycleCommandId("run-1", "preparing", "2026-09-18T00:01:00.000Z")).not.toBe(first);
     expect(lifecycleCommandId("run-1", "running", "2026-09-18T00:00:00.000Z")).not.toBe(first);
+  });
+
+  it("wakes lease-expiry sweeps from durable run state", () => {
+    const base = runningRun();
+    const leaseAt = (expiresAt: string) => ({
+      ...base,
+      requestId: "req-1",
+      lease: { ...base.lease!, expiresAt },
+    });
+    const nowMs = Date.parse("2026-09-18T00:00:00.000Z");
+
+    expect(millisUntilNextLeaseExpiry([], nowMs, 30_000)).toBe(30_000);
+    expect(millisUntilNextLeaseExpiry([null, undefined], nowMs, 30_000)).toBe(30_000);
+    expect(
+      millisUntilNextLeaseExpiry(
+        [{ ...leaseAt("2026-09-18T00:00:00.000Z"), requestId: undefined }],
+        nowMs,
+        30_000,
+      ),
+    ).toBe(30_000);
+    expect(
+      millisUntilNextLeaseExpiry(
+        [{ ...leaseAt("2026-09-18T00:00:10.000Z"), lease: null }],
+        nowMs,
+        30_000,
+      ),
+    ).toBe(30_000);
+    expect(millisUntilNextLeaseExpiry([leaseAt("2026-09-17T23:59:00.000Z")], nowMs, 30_000)).toBe(
+      0,
+    );
+    expect(millisUntilNextLeaseExpiry([leaseAt("2026-09-18T00:00:10.000Z")], nowMs, 30_000)).toBe(
+      10_000,
+    );
+    expect(
+      millisUntilNextLeaseExpiry(
+        [leaseAt("2026-09-18T01:00:00.000Z"), leaseAt("2026-09-18T00:00:05.000Z")],
+        nowMs,
+        30_000,
+      ),
+    ).toBe(5_000);
+    expect(millisUntilNextLeaseExpiry([leaseAt("not-a-date")], nowMs, 30_000)).toBe(30_000);
+    expect(VALIDATION_LEASE_SWEEP_INTERVAL_MS).toBeLessThanOrEqual(60_000);
   });
 
   it("does not duplicate effects for duplicate results", () => {
