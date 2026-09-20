@@ -308,6 +308,10 @@ export const CollaborativeAcceptanceExchange = Schema.Struct({
   completedAt: Schema.NullOr(IsoDateTime),
   cancelledAt: Schema.NullOr(IsoDateTime),
   modelSpendCents: NonNegativeInt,
+  dispatchAttempt: Schema.optional(NonNegativeInt),
+  dispatchOutcome: Schema.optional(
+    Schema.Literals(["transient", "ambiguous", "permanent", "unavailable"]),
+  ),
   admission: Schema.optional(
     Schema.Struct({
       senderThreadId: ThreadId,

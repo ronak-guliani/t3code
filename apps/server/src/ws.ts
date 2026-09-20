@@ -339,12 +339,22 @@ const makeWsRpcLayer = (
         });
       const authorityForThread = (thread: {
         readonly id: ThreadId;
-        readonly latestTurn: { readonly turnId: TurnId } | null;
+        readonly nudging?:
+          | {
+              readonly delegation?:
+                | {
+                    readonly dispatchSequence?: number | undefined;
+                    readonly dispatchId?: string | undefined;
+                    readonly dispatchTurnId?: TurnId | null | undefined;
+                  }
+                | undefined;
+            }
+          | undefined;
       }): CollaborationExecutionAuthority => ({
         executionId: `thread:${thread.id}`,
-        generation: 0,
-        dispatchId: null,
-        turnId: null,
+        generation: thread.nudging?.delegation?.dispatchSequence ?? 1,
+        dispatchId: thread.nudging?.delegation?.dispatchId ?? null,
+        turnId: thread.nudging?.delegation?.dispatchTurnId ?? null,
       });
       const resolveAcceptanceThread = (threadId: ThreadId) =>
         projectionSnapshotQuery.getThreadDetailById(threadId).pipe(

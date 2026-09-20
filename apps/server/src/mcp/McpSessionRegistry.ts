@@ -1,4 +1,9 @@
-import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  CollaborationExecutionAuthority,
+  EnvironmentId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -204,6 +209,12 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
         capabilities: request.capabilities ?? new Set(["preview"]),
         issuedAt,
+        executionAuthority: {
+          executionId: `thread:${request.threadId}`,
+          generation: issuedAt,
+          dispatchId: null,
+          turnId: null,
+        } satisfies CollaborationExecutionAuthority,
       };
       const config: McpProviderSessionConfig = {
         environmentId,

@@ -21,6 +21,7 @@ import {
   type CollaborativeAcceptanceRecord,
   type CollaborationExecutionAuthority,
   type CollaborationPayloadReference,
+  type OrchestrationEvent,
   type PullRequestMonitorFeedbackReportDisposition,
   type PullRequestMonitorFeedbackItemId,
   PullRequestMonitorFeedbackRevisionId,
@@ -35,7 +36,10 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as Crypto from "node:crypto";
 
 import {
@@ -214,6 +218,7 @@ const makeCoordinator = Effect.gen(function* () {
   const projections = yield* ProjectionSnapshotQuery;
   const queuedTurns = yield* Effect.serviceOption(QueuedTurnReactor);
   const monitors = yield* Effect.serviceOption(PullRequestMonitorService);
+  const started = yield* Ref.make(false);
 
   const load = (caseId: CollaborativeAcceptanceCaseId) =>
     repository.getByCaseId({ caseId }).pipe(
@@ -420,6 +425,21 @@ const makeCoordinator = Effect.gen(function* () {
         reviewCandidate: input.submission.reviewCandidate,
         provenance: expectedProvenance,
       };
+      const reviewCandidate = input.submission.reviewCandidate;
+      if (
+        reviewCandidate.caseId !== caseId ||
+        reviewCandidate.candidateId !== candidate.candidateId ||
+        reviewCandidate.reviewEpoch !== candidate.reviewEpoch ||
+        reviewCandidate.headSha !== candidate.headSha ||
+        reviewCandidate.contractRevision !== candidate.contractRevision ||
+        reviewCandidate.reviewWorkflow.identity !== candidate.reviewWorkflow.identity ||
+        reviewCandidate.reviewWorkflow.version !== candidate.reviewWorkflow.version
+      ) {
+        return yield* acceptanceError(
+          "Review-candidate provenance does not match the submitted candidate.",
+          { caseId, reason: "contradictory-contract" },
+        );
+      }
       for (const evidence of input.submission.initialEvidence) {
         if (
           evidence.caseId !== caseId ||
@@ -1238,6 +1258,21 @@ const makeCoordinator = Effect.gen(function* () {
             reason: "stale-head",
           });
         }
+        const existing = record.providerEvidence;
+        const comparable = (
+          evidence: NonNullable<CollaborativeAcceptanceRecord["providerEvidence"]>,
+        ) => JSON.stringify({ ...evidence, observedAt: null });
+        if (
+          existing !== undefined &&
+          existing !== null &&
+          existing.sourceRevision === input.evidence.sourceRevision &&
+          comparable(existing) === comparable(input.evidence)
+        ) {
+          return {
+            record,
+            pauseReason: record.projection.pauseReason ?? null,
+          };
+        }
         const next = { ...record, providerEvidence: input.evidence };
         const saved = yield* save({
           record: {
@@ -1280,6 +1315,19 @@ const makeCoordinator = Effect.gen(function* () {
                 caseId,
                 reason: "provider-failure",
               });
+            }
+            if (context.latestSnapshot.headSha !== record.case.currentCandidate.headSha) {
+              const withoutEvidence = {
+                ...record,
+                providerEvidence: null,
+                case: { ...record.case, updatedAt: now() },
+              };
+              const next = {
+                ...withoutEvidence,
+                projection: currentProjection(withoutEvidence, "verifying"),
+              };
+              const saved = yield* save({ record: next, expectedRevision: record.revision });
+              return { record: saved, pauseReason: saved.projection.pauseReason ?? null };
             }
             const evidence = providerEvidenceFromSnapshot(
               record,
@@ -1368,10 +1416,33 @@ const makeCoordinator = Effect.gen(function* () {
     Effect.gen(function* () {
       const admission = exchange.admission;
       if (admission === undefined || exchange.requestId === undefined) {
-        return yield* acceptanceError("Acceptance exchange lacks recoverable admission metadata.", {
-          caseId: record.case.caseId,
-          reason: "ambiguous-outcome",
+        const next = {
+          ...record,
+          exchanges: record.exchanges.map((item) =>
+            item.exchangeId === exchange.exchangeId
+              ? {
+                  ...item,
+                  status: "cancelled" as const,
+                  cancelledAt: now(),
+                  dispatchAttempt: (item.dispatchAttempt ?? 0) + 1,
+                  dispatchOutcome: "ambiguous" as const,
+                }
+              : item,
+          ),
+          obligations:
+            exchange.requestId === undefined
+              ? record.obligations
+              : resolveObligation(record, exchange.requestId, "disposed"),
+        };
+        yield* save({
+          record: {
+            ...next,
+            projection: currentProjection(next, "paused", "ambiguous-outcome"),
+            case: { ...next.case, updatedAt: now() },
+          },
+          expectedRevision: record.revision,
         });
+        return;
       }
       const latest = yield* load(record.case.caseId);
       if (latest.case.currentCandidate.headSha !== exchange.headSha) {
@@ -1402,7 +1473,41 @@ const makeCoordinator = Effect.gen(function* () {
         dispatchId: authority.dispatchId,
         turnId: authority.turnId === null ? null : TurnId.make(authority.turnId),
       });
-      yield* engine
+      const attempt = (exchange.dispatchAttempt ?? 0) + 1;
+      if (
+        exchange.dispatchOutcome !== undefined &&
+        attempt > record.case.policy.budgets.retries + 1
+      ) {
+        const exhausted = {
+          ...latest,
+          exchanges: latest.exchanges.map((item) =>
+            item.exchangeId === exchange.exchangeId
+              ? {
+                  ...item,
+                  status: "cancelled" as const,
+                  cancelledAt: now(),
+                  dispatchAttempt: attempt,
+                  dispatchOutcome: "unavailable" as const,
+                }
+              : item,
+          ),
+        };
+        const obligations =
+          exchange.requestId === undefined
+            ? exhausted.obligations
+            : resolveObligation(exhausted, exchange.requestId, "disposed");
+        yield* save({
+          record: {
+            ...exhausted,
+            obligations,
+            projection: currentProjection(exhausted, "paused", "retry-limit"),
+            case: { ...exhausted.case, updatedAt: now() },
+          },
+          expectedRevision: latest.revision,
+        });
+        return;
+      }
+      const dispatchResult = yield* engine
         .dispatch({
           type: "thread.collaboration-request.create",
           commandId: commandFor("request", exchange.requestId),
@@ -1428,14 +1533,52 @@ const makeCoordinator = Effect.gen(function* () {
           delivery,
           createdAt: admission.createdAt,
         })
-        .pipe(
-          Effect.mapError(() =>
-            acceptanceError("Acceptance request recovery failed.", {
-              caseId: record.case.caseId,
-              reason: "provider-failure",
-            }),
+        .pipe(Effect.result);
+      if (dispatchResult._tag === "Failure") {
+        const detail = String(dispatchResult.failure);
+        const permanent =
+          detail.includes("Invariant") ||
+          detail.includes("PreviouslyRejected") ||
+          detail.toLowerCase().includes("unavailable") ||
+          detail.toLowerCase().includes("recipient");
+        const next = {
+          ...latest,
+          exchanges: latest.exchanges.map((item) =>
+            item.exchangeId === exchange.exchangeId
+              ? {
+                  ...item,
+                  ...(permanent
+                    ? {
+                        status: "cancelled" as const,
+                        cancelledAt: now(),
+                        dispatchOutcome: "permanent" as const,
+                      }
+                    : { dispatchOutcome: "ambiguous" as const }),
+                  dispatchAttempt: attempt,
+                }
+              : item,
           ),
-        );
+        };
+        const obligations = permanent
+          ? exchange.requestId === undefined
+            ? next.obligations
+            : resolveObligation(next, exchange.requestId, "disposed")
+          : next.obligations;
+        yield* save({
+          record: {
+            ...next,
+            obligations,
+            projection: currentProjection(
+              { ...next, obligations },
+              permanent ? "paused" : "paused",
+              permanent ? "participant-unavailable" : "ambiguous-outcome",
+            ),
+            case: { ...next.case, updatedAt: now() },
+          },
+          expectedRevision: next.revision,
+        });
+        return;
+      }
       yield* wakeThread(admission.recipientThreadId);
     });
 
@@ -1559,6 +1702,9 @@ const makeCoordinator = Effect.gen(function* () {
 
   const start: CollaborativeAcceptanceCoordinatorShape["start"] = () =>
     Effect.gen(function* () {
+      const firstStart = yield* Ref.modify(started, (value) => [!value, true] as const);
+      if (!firstStart) return;
+      const subscription = yield* engine.acquireDomainEventSubscription;
       const records = yield* repository
         .listAll()
         .pipe(Effect.mapError(() => acceptanceError("Could not recover acceptance cases.")));
@@ -1589,7 +1735,135 @@ const makeCoordinator = Effect.gen(function* () {
           ),
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
-    });
+      const reconcileAllActive = Effect.gen(function* () {
+        const currentRecords = yield* repository
+          .listAll()
+          .pipe(Effect.mapError(() => acceptanceError("Could not load acceptance cases.")));
+        const currentReadModel = yield* engine.getReadModel();
+        yield* Effect.forEach(
+          currentRecords,
+          (record) =>
+            Effect.forEach(
+              record.exchanges.filter(
+                (exchange) =>
+                  exchange.status === "reserved" ||
+                  exchange.status === "committed" ||
+                  exchange.status === "outcome-recorded",
+              ),
+              (exchange) => {
+                const location = currentReadModel.threads
+                  .flatMap((thread) =>
+                    (thread.collaborationRequests ?? []).map((request) => ({ thread, request })),
+                  )
+                  .find(({ request }) => request.exchangeId === exchange.exchangeId);
+                return load(record.case.caseId).pipe(
+                  Effect.flatMap((current) =>
+                    reconcileExchange(current, exchange, location?.request),
+                  ),
+                  Effect.asVoid,
+                );
+              },
+              { concurrency: 1, discard: true },
+            ),
+          { concurrency: 1, discard: true },
+        );
+      });
+      const reconcileEvent = (event: OrchestrationEvent) =>
+        Effect.gen(function* () {
+          if (event.type === "thread.collaboration-request-updated") {
+            const exchangeId = event.payload.request.exchangeId;
+            yield* Effect.forEach(
+              yield* repository
+                .listAll()
+                .pipe(Effect.mapError(() => acceptanceError("Could not load acceptance cases."))),
+              (record) => {
+                const exchange = record.exchanges.find((item) => item.exchangeId === exchangeId);
+                return exchange === undefined
+                  ? Effect.void
+                  : load(record.case.caseId).pipe(
+                      Effect.flatMap((current) =>
+                        reconcileExchange(current, exchange, event.payload.request),
+                      ),
+                      Effect.asVoid,
+                    );
+              },
+              { concurrency: 1, discard: true },
+            );
+          } else if (
+            event.type === "thread.queued-turn-dispatched" ||
+            event.type === "thread.queued-turn-failed" ||
+            event.type === "thread.queued-turn-deleted"
+          ) {
+            yield* reconcileAllActive;
+          }
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("collaborative-acceptance.live-reconciliation-failed", {
+              error,
+            }),
+          ),
+        );
+      yield* Effect.forkScoped(
+        Stream.forever(Stream.fromEffect(PubSub.take(subscription))).pipe(
+          Stream.runForEach(reconcileEvent),
+        ),
+      );
+      yield* Option.match(monitors, {
+        onNone: () => Effect.void,
+        onSome: (service) =>
+          service.subscribeChanges === undefined
+            ? Effect.void
+            : Effect.forkScoped(
+                service.subscribeChanges.pipe(
+                  Stream.runForEach(() =>
+                    repository.listAll().pipe(
+                      Effect.flatMap((currentRecords) =>
+                        Effect.forEach(
+                          currentRecords,
+                          (record) =>
+                            refreshProviderEvidence(record.case.caseId).pipe(
+                              Effect.catch(() => Effect.void),
+                            ),
+                          { concurrency: 1, discard: true },
+                        ),
+                      ),
+                      Effect.catch((error) =>
+                        Effect.logWarning(
+                          "collaborative-acceptance.provider-evidence-refresh-failed",
+                          {
+                            error,
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+      });
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep("1 second").pipe(
+            Effect.andThen(
+              repository.listAll().pipe(
+                Effect.flatMap((currentRecords) =>
+                  Effect.forEach(
+                    currentRecords,
+                    (record) => enforceLimits(record).pipe(Effect.asVoid),
+                    { concurrency: 1, discard: true },
+                  ),
+                ),
+                Effect.catch((error) =>
+                  Effect.logWarning("collaborative-acceptance.deadline-reconciliation-failed", {
+                    error,
+                  }),
+                ),
+              ),
+            ),
+            Effect.andThen(reconcileAllActive),
+          ),
+        ),
+      );
+    }).pipe(Effect.onError(() => Ref.set(started, false)));
 
   return {
     submitCandidate,
