@@ -132,6 +132,8 @@
 
 ## PR reviews and checkpoint provenance
 
+- Collaborative acceptance must reserve one deterministic exchange before creating its queued review request, bind every prompt and outcome to the immutable assignment/dispatch/turn/case/candidate/head tuple, and wake only through `QueuedTurnReactor`; child completion alone is never review evidence.
+
 - Skill triggers that include "draft a PR description" must branch to read-only delivery before staging or publishing; only a publication request authorizes creating a PR, which defaults to ready-for-review unless draft status is explicit.
 
 - Review findings must never be silently dropped: reviewers cite file line numbers that often land on unchanged context, so anchor findings to any line the diff renders and only discard ones naming a file outside the reviewed diff. Review threads stay conversational — refresh the result on every turn that emits reviewer JSON, re-resolve the snapshot it is anchored to, and identify the raw-JSON message by content rather than assuming it is the last assistant message.

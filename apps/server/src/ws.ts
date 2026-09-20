@@ -29,6 +29,8 @@ import {
   GitHubCliError,
   PullRequestUnavailableError,
   PullRequestMonitorError,
+  CollaborativeAcceptanceError,
+  type CollaborationExecutionAuthority,
   RpcClientId,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
@@ -186,6 +188,7 @@ import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { repositoryFromPullRequestUrl } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
 import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorService.ts";
+import { CollaborativeAcceptanceCoordinator } from "./collaborativeAcceptance/Coordinator.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -319,6 +322,49 @@ const makeWsRpcLayer = (
       const pullRequestMonitors = yield* Effect.serviceOption(
         PullRequestMonitors.PullRequestMonitorService,
       );
+      const acceptanceCoordinator = yield* Effect.serviceOption(CollaborativeAcceptanceCoordinator);
+      const withAcceptance = <A>(
+        operation: (
+          service: CollaborativeAcceptanceCoordinator["Service"],
+        ) => Effect.Effect<A, CollaborativeAcceptanceError>,
+      ): Effect.Effect<A, CollaborativeAcceptanceError> =>
+        Option.match(acceptanceCoordinator, {
+          onNone: () =>
+            Effect.fail(
+              new CollaborativeAcceptanceError({
+                message: "Collaborative acceptance is unavailable in this environment.",
+              }),
+            ),
+          onSome: operation,
+        });
+      const authorityForThread = (thread: {
+        readonly id: ThreadId;
+        readonly latestTurn: { readonly turnId: TurnId } | null;
+      }): CollaborationExecutionAuthority => ({
+        executionId: `thread:${thread.id}`,
+        generation: thread.latestTurn === null ? 0 : 1,
+        dispatchId: null,
+        turnId: thread.latestTurn?.turnId ?? null,
+      });
+      const resolveAcceptanceThread = (threadId: ThreadId) =>
+        projectionSnapshotQuery.getThreadDetailById(threadId).pipe(
+          Effect.mapError(
+            () =>
+              new CollaborativeAcceptanceError({
+                message: "Could not resolve the acceptance thread.",
+              }),
+          ),
+          Effect.flatMap((thread) =>
+            Option.isSome(thread)
+              ? Effect.succeed(thread.value)
+              : Effect.fail(
+                  new CollaborativeAcceptanceError({
+                    message: "Acceptance thread is unavailable.",
+                    reason: "participant-unavailable",
+                  }),
+                ),
+          ),
+        );
       const withPullRequestMonitors = <A, E>(
         f: (
           service: PullRequestMonitors.PullRequestMonitorService["Service"],
@@ -2296,6 +2342,80 @@ const makeWsRpcLayer = (
             WS_METHODS.pullRequestMonitorsLaunchFallback,
             withPullRequestMonitors((service) => service.launchFallback(input)),
             { "rpc.aggregate": "pullRequestMonitors" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceSubmitCandidate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceSubmitCandidate,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const sender = yield* resolveAcceptanceThread(input.threadId);
+                const existing =
+                  input.submission.caseId === undefined
+                    ? null
+                    : (yield* service.status(input.submission.caseId)).record;
+                const recipientThreadId =
+                  existing?.case.parentThreadId ?? sender.parentThreadId ?? sender.id;
+                const recipient = yield* resolveAcceptanceThread(recipientThreadId);
+                return yield* service.submitCandidate({
+                  ...input.submission,
+                  senderThreadId: sender.id,
+                  recipientThreadId,
+                  senderAuthority: authorityForThread(sender),
+                  recipientAuthority: authorityForThread(recipient),
+                });
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceRequestReview]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceRequestReview,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const record = (yield* service.status(input.caseId)).record;
+                if (record === null) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance case not found.",
+                    caseId: input.caseId,
+                  });
+                }
+                const sender = yield* resolveAcceptanceThread(input.threadId);
+                const recipient = yield* resolveAcceptanceThread(record.case.parentThreadId);
+                return yield* service.requestReview({
+                  caseId: input.caseId,
+                  senderThreadId: sender.id,
+                  recipientThreadId: recipient.id,
+                  assignmentId: record.case.assignmentId,
+                  senderAuthority: authorityForThread(sender),
+                  recipientAuthority: authorityForThread(recipient),
+                });
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceStatus]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceStatus,
+            withAcceptance((service) => service.status(input.caseId)),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceSubmitAssessment]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceSubmitAssessment,
+            withAcceptance((service) => service.submitAssessment(input.submission)),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptancePause]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptancePause,
+            withAcceptance((service) => service.pause(input.caseId, input.reason)),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceResume]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceResume,
+            withAcceptance((service) => service.resume(input.caseId)),
+            { "rpc.aggregate": "collaborativeAcceptance" },
           ),
 
         [WS_METHODS.subscribeGitStatus]: (input) =>

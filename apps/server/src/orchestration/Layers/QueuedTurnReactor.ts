@@ -449,7 +449,10 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     );
   });
 
-  return { start } satisfies QueuedTurnReactorShape;
+  return {
+    start,
+    wakeThread: (threadId) => drainThreadSafely(threadId as ThreadId),
+  } satisfies QueuedTurnReactorShape;
 });
 
 export const QueuedTurnReactorLive = Layer.effect(QueuedTurnReactor, makeQueuedTurnReactor);

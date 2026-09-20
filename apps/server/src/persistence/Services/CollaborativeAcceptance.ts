@@ -33,6 +33,10 @@ export interface CollaborativeAcceptanceRepositoryShape {
     ReadonlyArray<CollaborativeAcceptanceRecord>,
     CollaborativeAcceptanceRepositoryError
   >;
+  readonly listAll: () => Effect.Effect<
+    ReadonlyArray<CollaborativeAcceptanceRecord>,
+    CollaborativeAcceptanceRepositoryError
+  >;
 }
 
 export class CollaborativeAcceptanceRepository extends Context.Service<

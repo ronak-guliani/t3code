@@ -9,6 +9,7 @@ import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import { ThreadTitleReactor } from "../Services/ThreadTitleReactor.ts";
 import { TurnLifecycleRuntime } from "../Services/TurnLifecycleRuntime.ts";
 import { WorkflowCoordinatorReactor } from "../Services/WorkflowCoordinatorReactor.ts";
+import { CollaborativeAcceptanceCoordinator } from "../../collaborativeAcceptance/Coordinator.ts";
 
 export const makeOrchestrationReactor = Effect.gen(function* () {
   const turnLifecycle = yield* TurnLifecycleRuntime;
@@ -16,6 +17,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const threadDeletionReactor = yield* ThreadDeletionReactor;
   const threadTitleReactor = yield* ThreadTitleReactor;
   const workflowCoordinatorReactor = yield* WorkflowCoordinatorReactor;
+  const acceptanceCoordinator = yield* Effect.serviceOption(CollaborativeAcceptanceCoordinator);
 
   const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
     yield* turnLifecycle.start();
@@ -23,6 +25,9 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* queuedTurnReactor.start();
     yield* workflowCoordinatorReactor.start();
     yield* threadDeletionReactor.start();
+    if (acceptanceCoordinator._tag === "Some") {
+      yield* acceptanceCoordinator.value.start();
+    }
   });
 
   return {

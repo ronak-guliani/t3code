@@ -134,16 +134,23 @@ const makeRepository = Effect.gen(function* () {
     }),
     execute: ({ exchange }) => sql`
       INSERT INTO collaborative_acceptance_exchanges (
-        exchange_id, case_id, execution_id, status, retry_count, reserved_at, started_at,
+        exchange_id, case_id, execution_id, candidate_id, head_sha, request_id, review_mode,
+        status, retry_count, reserved_at, started_at,
         outcome_recorded_at, completed_at, cancelled_at, model_spend_cents, exchange_json
       ) VALUES (
-        ${exchange.exchangeId}, ${exchange.caseId}, ${exchange.executionId}, ${exchange.status},
+        ${exchange.exchangeId}, ${exchange.caseId}, ${exchange.executionId},
+        ${exchange.candidateId ?? null}, ${exchange.headSha ?? null}, ${exchange.requestId ?? null},
+        ${exchange.reviewMode ?? null}, ${exchange.status},
         ${exchange.retryCount}, ${exchange.reservedAt}, ${exchange.startedAt},
         ${exchange.outcomeRecordedAt}, ${exchange.completedAt}, ${exchange.cancelledAt},
         ${exchange.modelSpendCents}, ${JSON.stringify(exchange)}
       )
       ON CONFLICT (exchange_id) DO UPDATE SET
         status = excluded.status,
+        candidate_id = excluded.candidate_id,
+        head_sha = excluded.head_sha,
+        request_id = excluded.request_id,
+        review_mode = excluded.review_mode,
         retry_count = excluded.retry_count,
         reserved_at = excluded.reserved_at,
         started_at = excluded.started_at,
@@ -181,6 +188,25 @@ const makeRepository = Effect.gen(function* () {
         projection_json AS projection
       FROM collaborative_acceptance_cases
       WHERE assignment_id = ${assignmentId}
+      ORDER BY updated_at DESC, case_id ASC
+    `,
+  });
+
+  const listAllCaseRows = SqlSchema.findAll({
+    Request: Schema.Struct({}),
+    Result: Schema.Struct({
+      caseId: CollaborativeAcceptanceCaseId,
+      revision: Schema.Number,
+      case: CollaborativeAcceptanceCaseDbRow.fields.case,
+      projection: CollaborativeAcceptanceCaseDbRow.fields.projection,
+    }),
+    execute: () => sql`
+      SELECT
+        case_id AS "caseId",
+        revision,
+        case_json AS "case",
+        projection_json AS projection
+      FROM collaborative_acceptance_cases
       ORDER BY updated_at DESC, case_id ASC
     `,
   });
@@ -363,7 +389,19 @@ const makeRepository = Effect.gen(function* () {
       ),
     );
 
-  return { save, getByCaseId, listByAssignmentId };
+  const listAll: CollaborativeAcceptanceRepositoryShape["listAll"] = () =>
+    listAllCaseRows({}).pipe(
+      Effect.flatMap((rows) =>
+        Effect.all(
+          rows.map((row) =>
+            loadRecord({ revision: row.revision, case: row.case, projection: row.projection }),
+          ),
+        ),
+      ),
+      Effect.mapError(toPersistenceSqlError("CollaborativeAcceptanceRepository.listAll")),
+    );
+
+  return { save, getByCaseId, listByAssignmentId, listAll };
 });
 
 export const CollaborativeAcceptanceRepositoryLive = Layer.effect(

@@ -121,12 +121,48 @@ export const CollaborativeAcceptanceExecutionPhase = Schema.Literals([
 export type CollaborativeAcceptanceExecutionPhase =
   typeof CollaborativeAcceptanceExecutionPhase.Type;
 
+export const CollaborativeAcceptancePauseReason = Schema.Literals([
+  "circular-wait",
+  "budget-exhausted",
+  "retry-limit",
+  "dispute-limit",
+  "duration-limit",
+  "model-spend-limit",
+  "waiting-deadline",
+  "participant-unavailable",
+  "provider-failure",
+  "closed-pull-request",
+  "contradictory-contract",
+  "stale-head",
+  "ambiguous-outcome",
+]);
+export type CollaborativeAcceptancePauseReason = typeof CollaborativeAcceptancePauseReason.Type;
+
+/**
+ * Immutable provenance captured at admission. Provider adapters and prompt builders must
+ * forward this object; they must not reconstruct it from a current checkout or thread metadata.
+ */
+export const CollaborativeAcceptanceProvenance = Schema.Struct({
+  assignmentId: TrimmedNonEmptyString,
+  dispatchId: Schema.NullOr(TrimmedNonEmptyString),
+  turnId: Schema.NullOr(TrimmedNonEmptyString),
+  caseId: CollaborativeAcceptanceCaseId,
+  candidateId: CollaborativeAcceptanceCandidateId,
+  headSha: TrimmedNonEmptyString,
+  contractRevision: TrimmedNonEmptyString,
+  reviewWorkflow: CollaborativeAcceptanceReviewWorkflow,
+});
+export type CollaborativeAcceptanceProvenance = typeof CollaborativeAcceptanceProvenance.Type;
+
 export const CollaborativeAcceptanceCandidate = Schema.Struct({
   candidateId: CollaborativeAcceptanceCandidateId,
   reviewEpoch: PositiveInt,
   headSha: TrimmedNonEmptyString,
   contractRevision: TrimmedNonEmptyString,
   reviewWorkflow: CollaborativeAcceptanceReviewWorkflow,
+  sourceRevision: Schema.optional(TrimmedNonEmptyString),
+  provenance: Schema.optional(CollaborativeAcceptanceProvenance),
+  reviewCandidate: Schema.optional(Schema.Unknown),
   createdAt: IsoDateTime,
 });
 export type CollaborativeAcceptanceCandidate = typeof CollaborativeAcceptanceCandidate.Type;
@@ -236,6 +272,10 @@ export const CollaborativeAcceptanceExchange = Schema.Struct({
   exchangeId: CollaborativeAcceptanceExchangeId,
   caseId: CollaborativeAcceptanceCaseId,
   executionId: CollaborativeAcceptanceExecutionId,
+  candidateId: Schema.optional(CollaborativeAcceptanceCandidateId),
+  headSha: Schema.optional(TrimmedNonEmptyString),
+  requestId: Schema.optional(TrimmedNonEmptyString),
+  reviewMode: Schema.optional(Schema.Literals(["full", "delta"])),
   status: CollaborativeAcceptanceExchangeStatus,
   retryCount: NonNegativeInt,
   reservedAt: IsoDateTime,
@@ -296,6 +336,8 @@ export const CollaborativeAcceptanceProjection = Schema.Struct({
   readiness: CollaborativeAcceptanceReadiness,
   reasons: Schema.Array(TrimmedNonEmptyString),
   staleAssessmentIds: Schema.Array(CollaborativeAcceptanceAssessmentId),
+  pauseReason: Schema.optional(CollaborativeAcceptancePauseReason),
+  activeExchangeId: Schema.optional(CollaborativeAcceptanceExchangeId),
   updatedAt: IsoDateTime,
 });
 export type CollaborativeAcceptanceProjection = typeof CollaborativeAcceptanceProjection.Type;
@@ -319,8 +361,62 @@ export const CollaborativeAcceptanceRecord = Schema.Struct({
   case: CollaborativeAcceptanceCase,
   candidates: Schema.Array(CollaborativeAcceptanceCandidate),
   evidence: Schema.Array(CollaborativeAcceptanceEvidence),
+  providerEvidence: Schema.optional(Schema.NullOr(CollaborativeAcceptanceProviderEvidence)),
   assessments: Schema.Array(CollaborativeAcceptanceAssessment),
   exchanges: Schema.Array(CollaborativeAcceptanceExchange),
   projection: CollaborativeAcceptanceProjection,
 });
 export type CollaborativeAcceptanceRecord = typeof CollaborativeAcceptanceRecord.Type;
+
+export const CollaborativeAcceptanceCandidateSubmission = Schema.Struct({
+  caseId: Schema.optional(CollaborativeAcceptanceCaseId),
+  assignmentId: TrimmedNonEmptyString,
+  candidate: CollaborativeAcceptanceCandidate,
+  pullRequest: PullRequestRef,
+  criteria: Schema.Array(CollaborativeAcceptanceCriterion),
+  policy: CollaborativeAcceptancePolicy,
+  initialEvidence: Schema.Array(CollaborativeAcceptanceEvidence),
+  reviewCandidate: Schema.Struct({
+    caseId: CollaborativeAcceptanceCaseId,
+    candidateId: CollaborativeAcceptanceCandidateId,
+    reviewEpoch: PositiveInt,
+    headSha: TrimmedNonEmptyString,
+    contractRevision: TrimmedNonEmptyString,
+    reviewWorkflow: CollaborativeAcceptanceReviewWorkflow,
+    coverage: Schema.Struct({
+      required: Schema.Array(TrimmedNonEmptyString),
+      covered: Schema.Array(TrimmedNonEmptyString),
+      applicability: Schema.Literals(["known", "unknown"]),
+    }),
+    previousFindingVerification: Schema.Struct({
+      required: Schema.Boolean,
+      complete: Schema.Boolean,
+      verifiedRevisionIds: Schema.Array(TrimmedNonEmptyString),
+      unresolvedRevisionIds: Schema.Array(TrimmedNonEmptyString),
+    }),
+  }),
+});
+export type CollaborativeAcceptanceCandidateSubmission =
+  typeof CollaborativeAcceptanceCandidateSubmission.Type;
+
+export const CollaborativeAcceptanceAssessmentSubmission = Schema.Struct({
+  caseId: CollaborativeAcceptanceCaseId,
+  assessment: CollaborativeAcceptanceAssessment,
+});
+export type CollaborativeAcceptanceAssessmentSubmission =
+  typeof CollaborativeAcceptanceAssessmentSubmission.Type;
+
+export const CollaborativeAcceptanceStatus = Schema.Struct({
+  record: Schema.NullOr(CollaborativeAcceptanceRecord),
+  pauseReason: Schema.NullOr(CollaborativeAcceptancePauseReason),
+});
+export type CollaborativeAcceptanceStatus = typeof CollaborativeAcceptanceStatus.Type;
+
+export class CollaborativeAcceptanceError extends Schema.TaggedErrorClass<CollaborativeAcceptanceError>()(
+  "CollaborativeAcceptanceError",
+  {
+    message: Schema.String,
+    reason: Schema.optional(CollaborativeAcceptancePauseReason),
+    caseId: Schema.optional(CollaborativeAcceptanceCaseId),
+  },
+) {}
