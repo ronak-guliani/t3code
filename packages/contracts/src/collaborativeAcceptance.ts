@@ -168,6 +168,7 @@ export const CollaborativeAcceptanceProvenance = Schema.Struct({
   assignmentId: TrimmedNonEmptyString,
   dispatchId: Schema.NullOr(TrimmedNonEmptyString),
   turnId: Schema.NullOr(TrimmedNonEmptyString),
+  generation: Schema.optional(NonNegativeInt),
   caseId: CollaborativeAcceptanceCaseId,
   candidateId: CollaborativeAcceptanceCandidateId,
   headSha: TrimmedNonEmptyString,
@@ -309,9 +310,23 @@ export const CollaborativeAcceptanceExchange = Schema.Struct({
   cancelledAt: Schema.NullOr(IsoDateTime),
   modelSpendCents: NonNegativeInt,
   dispatchAttempt: Schema.optional(NonNegativeInt),
+  dispatchAttemptId: Schema.optional(TrimmedNonEmptyString),
+  dispatchStartedAt: Schema.optional(IsoDateTime),
+  dispatchOutcomeAt: Schema.optional(IsoDateTime),
+  dispatchState: Schema.optional(
+    Schema.Literals([
+      "pending",
+      "succeeded",
+      "transient-failure",
+      "ambiguous-failure",
+      "permanent-failure",
+      "cancelled",
+    ]),
+  ),
   dispatchOutcome: Schema.optional(
     Schema.Literals(["transient", "ambiguous", "permanent", "unavailable"]),
   ),
+  retryLineageId: Schema.optional(TrimmedNonEmptyString),
   admission: Schema.optional(
     Schema.Struct({
       senderThreadId: ThreadId,
@@ -355,7 +370,16 @@ export const CollaborativeAcceptanceObligation = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   caseId: CollaborativeAcceptanceCaseId,
   ownerThreadId: ThreadId,
-  status: Schema.Literals(["open", "satisfied", "disposed"]),
+  status: Schema.Literals([
+    "open",
+    "satisfied",
+    "cancelled",
+    "superseded",
+    "unavailable",
+    "failed",
+    "needs-human",
+    "disposed",
+  ]),
   createdAt: IsoDateTime,
   resolvedAt: Schema.NullOr(IsoDateTime),
 });

@@ -20,6 +20,7 @@ export interface McpCredentialRequest {
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
   readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
+  readonly executionAuthority?: CollaborationExecutionAuthority;
 }
 
 export interface McpIssuedCredential {
@@ -34,6 +35,7 @@ export interface McpProviderSessionConfig {
   readonly endpoint: string;
   readonly authorizationHeader: string;
   readonly capabilities: ReadonlySet<McpInvocationContext.McpCapability>;
+  readonly executionAuthority?: CollaborationExecutionAuthority;
 }
 
 export interface McpSessionRegistryShape {
@@ -209,12 +211,9 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
         capabilities: request.capabilities ?? new Set(["preview"]),
         issuedAt,
-        executionAuthority: {
-          executionId: `thread:${request.threadId}`,
-          generation: issuedAt,
-          dispatchId: null,
-          turnId: null,
-        } satisfies CollaborationExecutionAuthority,
+        ...(request.executionAuthority === undefined
+          ? {}
+          : { executionAuthority: request.executionAuthority }),
       };
       const config: McpProviderSessionConfig = {
         environmentId,
@@ -223,6 +222,9 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         providerInstanceId: scope.providerInstanceId,
         endpoint: `${endpointBase}${scope.capabilities.has("device") ? "/mcp-device" : "/mcp"}`,
         capabilities: scope.capabilities,
+        ...(scope.executionAuthority === undefined
+          ? {}
+          : { executionAuthority: scope.executionAuthority }),
         authorizationHeader: `Bearer ${rawToken}`,
       };
       yield* modifyState((current) => {

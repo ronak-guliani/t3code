@@ -27,7 +27,13 @@ const caller = Effect.fn("CollaborativeAcceptanceToolkit.caller")(function* () {
     ),
   );
   const authority = invocation.executionAuthority;
-  if (authority === undefined || authority.executionId !== `thread:${thread.id}`) {
+  if (
+    authority === undefined ||
+    authority.executionId !== `thread:${thread.id}` ||
+    authority.generation <= 0 ||
+    authority.dispatchId === null ||
+    authority.turnId === null
+  ) {
     return yield* new CollaborativeAcceptanceError({
       message: "No authenticated active execution authority is available.",
     });
@@ -35,32 +41,39 @@ const caller = Effect.fn("CollaborativeAcceptanceToolkit.caller")(function* () {
   return { invocation, thread, authority };
 });
 
-const authorityForThread = (
-  thread: {
-    readonly id: string;
-    readonly nudging?:
-      | {
-          readonly delegation?:
-            | {
-                readonly dispatchSequence?: number | undefined;
-                readonly dispatchId?: string | undefined;
-                readonly dispatchTurnId?: string | null | undefined;
-              }
-            | undefined;
-        }
-      | undefined;
-  },
-  fallback: CollaborationExecutionAuthority,
-): CollaborationExecutionAuthority => ({
-  executionId: `thread:${thread.id}`,
-  generation: thread.nudging?.delegation?.dispatchSequence ?? fallback.generation,
-  dispatchId: thread.nudging?.delegation?.dispatchId ?? fallback.dispatchId,
-  turnId:
-    thread.nudging?.delegation?.dispatchTurnId === undefined ||
-    thread.nudging.delegation.dispatchTurnId === null
-      ? fallback.turnId
-      : TurnId.make(thread.nudging.delegation.dispatchTurnId),
-});
+const authorityForThread = (thread: {
+  readonly id: string;
+  readonly nudging?:
+    | {
+        readonly delegation?:
+          | {
+              readonly assignmentId?: string | undefined;
+              readonly dispatchSequence?: number | undefined;
+              readonly dispatchId?: string | undefined;
+              readonly dispatchTurnId?: string | null | undefined;
+            }
+          | undefined;
+      }
+    | undefined;
+}): CollaborationExecutionAuthority | undefined => {
+  const delegation = thread.nudging?.delegation;
+  if (
+    delegation?.dispatchSequence === undefined ||
+    delegation.dispatchSequence <= 0 ||
+    delegation.dispatchId === undefined ||
+    delegation.dispatchTurnId === undefined ||
+    delegation.dispatchTurnId === null
+  ) {
+    return undefined;
+  }
+  return {
+    executionId: `thread:${thread.id}`,
+    ...(delegation.assignmentId === undefined ? {} : { assignmentId: delegation.assignmentId }),
+    generation: delegation.dispatchSequence,
+    dispatchId: delegation.dispatchId,
+    turnId: TurnId.make(delegation.dispatchTurnId),
+  };
+};
 
 const parentContext = (
   acceptanceCase: CollaborativeAcceptanceCase,
@@ -94,7 +107,12 @@ export const CollaborativeAcceptanceToolkitHandlersLive = CollaborativeAcceptanc
               .pipe(Effect.map((result) => result.record?.case ?? null));
       const parent =
         acceptanceCase === null ? null : yield* parentContext(acceptanceCase, projections);
-      const recipientAuthority = authorityForThread(parent ?? context.thread, context.authority);
+      const recipientAuthority = authorityForThread(parent ?? context.thread);
+      if (recipientAuthority === undefined) {
+        return yield* new CollaborativeAcceptanceError({
+          message: "Acceptance recipient has no authenticated active execution.",
+        });
+      }
       return yield* coordinator.submitCandidate({
         ...input,
         senderThreadId: context.invocation.threadId,
@@ -122,7 +140,11 @@ export const CollaborativeAcceptanceToolkitHandlersLive = CollaborativeAcceptanc
         recipientThreadId: parent.id,
         assignmentId: status.record.case.assignmentId,
         senderAuthority: context.authority,
-        recipientAuthority: authorityForThread(parent, context.authority),
+        recipientAuthority:
+          authorityForThread(parent) ??
+          (yield* new CollaborativeAcceptanceError({
+            message: "Acceptance parent has no authenticated active execution.",
+          })),
       });
     }),
 
@@ -160,9 +182,9 @@ export const CollaborativeAcceptanceToolkitHandlersLive = CollaborativeAcceptanc
 
   acceptance_submit_assessment: (input) =>
     Effect.gen(function* () {
-      yield* caller();
+      const context = yield* caller();
       const coordinator = yield* CollaborativeAcceptanceCoordinator;
-      return yield* coordinator.submitAssessment(input);
+      return yield* coordinator.submitAssessment({ ...input, authority: context.authority });
     }),
 
   acceptance_status: (input) =>
@@ -174,16 +196,16 @@ export const CollaborativeAcceptanceToolkitHandlersLive = CollaborativeAcceptanc
 
   acceptance_pause: (input) =>
     Effect.gen(function* () {
-      yield* caller();
+      const context = yield* caller();
       const coordinator = yield* CollaborativeAcceptanceCoordinator;
-      return yield* coordinator.pause(input.caseId, input.reason);
+      return yield* coordinator.pause(input.caseId, input.reason, context.authority);
     }),
 
   acceptance_resume: (input) =>
     Effect.gen(function* () {
-      yield* caller();
+      const context = yield* caller();
       const coordinator = yield* CollaborativeAcceptanceCoordinator;
-      return yield* coordinator.resume(input.caseId);
+      return yield* coordinator.resume(input.caseId, context.authority);
     }),
 });
 
@@ -208,7 +230,11 @@ function requestCollaboration(
       recipientThreadId: parent.id,
       assignmentId: status.record.case.assignmentId,
       senderAuthority: context.authority,
-      recipientAuthority: authorityForThread(parent, context.authority),
+      recipientAuthority:
+        authorityForThread(parent) ??
+        (yield* new CollaborativeAcceptanceError({
+          message: "Acceptance parent has no authenticated active execution.",
+        })),
     });
   }).pipe(Effect.asVoid);
 }

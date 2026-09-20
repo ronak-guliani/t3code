@@ -1,16 +1,17 @@
 import {
+  type CollaborationExecutionAuthority,
   type ChatAttachment,
   CommandId,
   EventId,
   type ModelSelection,
-  type MessageId,
+  MessageId,
   type OrchestrationEvent,
   ProviderDriverKind,
   type OrchestrationSession,
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
-  type TurnId,
+  TurnId,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import { Cache, Cause, Duration, Effect, Equal, Layer, Option, Schema, Stream } from "effect";
@@ -60,6 +61,42 @@ type ProviderIntentEvent = Extract<
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
+function executionAuthorityForThread(thread: {
+  readonly id: ThreadId;
+  readonly nudging?: unknown | undefined;
+}): CollaborationExecutionAuthority | undefined {
+  if (thread.nudging === null || typeof thread.nudging !== "object") {
+    return undefined;
+  }
+  const rawDelegation = "delegation" in thread.nudging ? thread.nudging.delegation : undefined;
+  const delegation = Schema.is(
+    Schema.Struct({
+      assignmentId: MessageId,
+      dispatchSequence: Schema.optional(Schema.Number),
+      dispatchId: Schema.optional(Schema.String),
+      dispatchTurnId: Schema.optional(Schema.NullOr(TurnId)),
+    }),
+  )(rawDelegation)
+    ? rawDelegation
+    : undefined;
+  if (
+    delegation?.dispatchSequence === undefined ||
+    delegation.dispatchSequence <= 0 ||
+    delegation.dispatchId === undefined ||
+    delegation.dispatchTurnId === undefined ||
+    delegation.dispatchTurnId === null
+  ) {
+    return undefined;
+  }
+  return {
+    executionId: `thread:${thread.id}`,
+    ...(delegation.assignmentId === undefined ? {} : { assignmentId: delegation.assignmentId }),
+    generation: delegation.dispatchSequence,
+    dispatchId: delegation.dispatchId,
+    turnId: delegation.dispatchTurnId,
+  };
 }
 
 function mapProviderSessionStatusToOrchestrationStatus(
@@ -560,6 +597,9 @@ const make = Effect.gen(function* () {
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         runtimeMode: desiredRuntimeMode,
+        ...(executionAuthorityForThread(thread) === undefined
+          ? {}
+          : { executionAuthority: executionAuthorityForThread(thread) }),
       });
 
     const bindSessionToThread = (session: ProviderSession) =>
@@ -727,6 +767,9 @@ const make = Effect.gen(function* () {
       ...(input.delegationDispatchId !== undefined
         ? { delegationDispatchId: input.delegationDispatchId }
         : {}),
+      ...(executionAuthorityForThread(thread) === undefined
+        ? {}
+        : { executionAuthority: executionAuthorityForThread(thread) }),
     };
   });
 

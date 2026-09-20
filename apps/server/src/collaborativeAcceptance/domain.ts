@@ -474,7 +474,11 @@ export const cancelExchange = (
   const exchange = ledger.exchanges.find((item) => item.exchangeId === exchangeId);
   if (exchange === undefined) return { ok: false, error: "exchange-not-found" };
   if (exchange.status === "cancelled") return { ok: true, ledger, exchange };
-  if (exchange.status !== "reserved" && exchange.status !== "committed") {
+  if (
+    exchange.status !== "reserved" &&
+    exchange.status !== "committed" &&
+    exchange.status !== "outcome-recorded"
+  ) {
     return { ok: false, error: "invalid-exchange-transition" };
   }
   const cancelled = { ...exchange, status: "cancelled" as const, cancelledAt };
