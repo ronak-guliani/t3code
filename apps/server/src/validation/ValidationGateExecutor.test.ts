@@ -1,3 +1,7 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, sep } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import type { ValidationGate, ValidationTarget } from "@t3tools/contracts";
@@ -8,6 +12,7 @@ import {
   browserScenarioForGate,
   isBrowserGateKind,
   isRepositoryGateKind,
+  makeFileMediaPersistence,
   mapBrowserResultToStructured,
   mapRepositoryAttemptToResult,
   mediaFileNameForGate,
@@ -257,5 +262,21 @@ describe("ValidationGateExecutor mapping", () => {
     expect(passed.outputRef).toBe(`browser:screenshot:${"b".repeat(16)}`);
     expect(passed.outputRef).not.toContain("/tmp/shot.png");
     expect(passed.outputRef).not.toContain("token=");
+  });
+
+  it("keeps persisted media inside the evidence store for crafted run ids", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "t3-validation-media-"));
+    const persistence = makeFileMediaPersistence(baseDir);
+    const bytes = new Uint8Array([1, 2, 3]);
+    const path = await persistence.persist({
+      identity: { runId: "validation:../../evil", gateId: "validation:req-1:focused-tests" },
+      kind: "screenshot",
+      mimeType: "image/png",
+      bytes,
+      sha256: "c".repeat(64),
+    });
+    const expectedDir = join(baseDir, "validation", artifactScopeForRun("validation:../../evil"));
+    expect(path.startsWith(`${expectedDir}${sep}`)).toBe(true);
+    expect(await readFile(path)).toEqual(Buffer.from(bytes));
   });
 });

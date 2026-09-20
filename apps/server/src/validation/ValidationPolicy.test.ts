@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ValidationPolicy } from "./ValidationPolicy.ts";
+import { selectFocusedTestFiles, ValidationPolicy } from "./ValidationPolicy.ts";
 
 const ids = (paths: readonly string[], scope: "changed-behavior" | "full") =>
   new ValidationPolicy()
@@ -99,5 +99,25 @@ describe("ValidationPolicy", () => {
       "typecheck",
       "browser-validation",
     ]);
+  });
+
+  it("selects only safe relative test files for focused runs", () => {
+    expect(
+      selectFocusedTestFiles([
+        "apps/server/src/validation/policy.test.ts",
+        "apps/server/src/server.ts",
+        "README.md",
+        "apps/server/src/validation/policy.test.ts",
+      ]),
+    ).toEqual(["apps/server/src/validation/policy.test.ts"]);
+    expect(
+      selectFocusedTestFiles([
+        "/absolute/path.test.ts",
+        "../escape.test.ts",
+        "C:/win.test.ts",
+        "apps/a.test.ts;rm",
+      ]),
+    ).toEqual([]);
+    expect(selectFocusedTestFiles([])).toEqual([]);
   });
 });

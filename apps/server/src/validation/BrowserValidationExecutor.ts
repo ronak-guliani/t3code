@@ -198,18 +198,27 @@ const preflightFailureMessage = (
   return "Browser preflight did not establish a usable target.";
 };
 
+const pathMatchesPrefix = (path: string, prefix: string): boolean => {
+  const normalized = prefix.length > 1 ? prefix.replace(/\/+$/, "") : prefix;
+  return path === normalized || path.startsWith(`${normalized}/`);
+};
+
 const matchesAuthentication = (
   snapshot: PreviewAutomationSnapshot,
   scenario: BrowserValidationScenario,
   expectedOrigin: string,
-): boolean =>
-  originOf(snapshot.url) === expectedOrigin &&
-  originOf(scenario.authentication.origin) === expectedOrigin &&
-  (scenario.authentication.pathPrefix === undefined ||
-    pathOf(snapshot.url)?.startsWith(scenario.authentication.pathPrefix) === true) &&
-  snapshot.visibleText.includes(scenario.authentication.requiredText);
+): boolean => {
+  if (originOf(snapshot.url) !== expectedOrigin) return false;
+  if (originOf(scenario.authentication.origin) !== expectedOrigin) return false;
+  const { pathPrefix } = scenario.authentication;
+  if (pathPrefix !== undefined) {
+    const snapshotPath = pathOf(snapshot.url);
+    if (snapshotPath === null || !pathMatchesPrefix(snapshotPath, pathPrefix)) return false;
+  }
+  return snapshot.visibleText.includes(scenario.authentication.requiredText);
+};
 
-const evaluateAssertion = (
+export const evaluateAssertion = (
   snapshot: PreviewAutomationSnapshot,
   assertion: BrowserValidationScenario["assertions"][number],
 ): BrowserValidationAssertionResult => {
@@ -226,8 +235,10 @@ const evaluateAssertion = (
     switch (assertion.kind) {
       case "visible-text":
         return snapshot.visibleText.includes(expectedText);
-      case "url-origin":
-        return originOf(snapshot.url) === originOf(expectedText);
+      case "url-origin": {
+        const actualOrigin = originOf(snapshot.url);
+        return actualOrigin !== null && actualOrigin === originOf(expectedText);
+      }
       case "url-path":
         return pathOf(snapshot.url) === expectedText;
       case "title":
@@ -476,7 +487,7 @@ const executePromise = async (
       ),
     );
 
-    if (preflight.recovery.kind === "open-browser" || !preflight.browser.tabAttached) {
+    if (preflight.recovery.kind === "open-browser" || !hasAttachedTab(preflight)) {
       preflight = await Effect.runPromise(
         dependencies.broker.invoke<PreviewAutomationPreflightResult>({
           scope,

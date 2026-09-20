@@ -186,3 +186,33 @@ export class ValidationPolicy {
 
 export const classifyValidationRequirements = (input: ValidationPolicyInput): ValidationPlan =>
   new ValidationPolicy().classify(input);
+
+const TEST_FILE_PATTERN = /\.test\.[cm]?[jt]sx?$/;
+
+function isSafeRelativePath(value: string): boolean {
+  return (
+    value.length > 0 &&
+    !value.startsWith("/") &&
+    !/^[A-Za-z]:/.test(value) &&
+    !value.split("/").includes("..") &&
+    !/[;&|`$<>]/.test(value)
+  );
+}
+
+/**
+ * Selects the changed test files a focused-tests gate should execute.
+ * Only safe relative test paths are returned; anything else is left to the
+ * runner's bare-suite fallback so a crafted path can never become an
+ * invalid spec or escape the repository.
+ */
+export function selectFocusedTestFiles(changedPaths: ReadonlyArray<string>): string[] {
+  return [
+    ...new Set(
+      changedPaths
+        .map(normalizePath)
+        .filter((path) => path.length > 0)
+        .filter((path) => TEST_FILE_PATTERN.test(path))
+        .filter(isSafeRelativePath),
+    ),
+  ].toSorted();
+}
