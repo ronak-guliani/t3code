@@ -25,12 +25,11 @@ const caller = Effect.fn("CollaborativeAcceptanceToolkit.caller")(function* () {
         : Effect.fail(new CollaborativeAcceptanceError({ message: "Calling thread not found." })),
     ),
   );
-  const currentTurn = thread.latestTurn;
   const authority: CollaborationExecutionAuthority = {
     executionId: `thread:${thread.id}`,
-    generation: currentTurn === null ? 0 : 1,
+    generation: 0,
     dispatchId: null,
-    turnId: currentTurn?.turnId ?? null,
+    turnId: null,
   };
   return { invocation, thread, authority };
 });
@@ -69,9 +68,9 @@ export const CollaborativeAcceptanceToolkitHandlersLive = CollaborativeAcceptanc
         acceptanceCase === null ? null : yield* parentContext(acceptanceCase, projections);
       const recipientAuthority: CollaborationExecutionAuthority = {
         executionId: parent === null ? "acceptance-parent" : `thread:${parent.id}`,
-        generation: parent?.latestTurn === null || parent === null ? 0 : 1,
+        generation: 0,
         dispatchId: null,
-        turnId: parent?.latestTurn?.turnId ?? null,
+        turnId: null,
       };
       return yield* coordinator.submitCandidate({
         ...input,
@@ -102,9 +101,9 @@ export const CollaborativeAcceptanceToolkitHandlersLive = CollaborativeAcceptanc
         senderAuthority: context.authority,
         recipientAuthority: {
           executionId: `thread:${parent.id}`,
-          generation: parent.latestTurn === null ? 0 : 1,
+          generation: 0,
           dispatchId: null,
-          turnId: parent.latestTurn?.turnId ?? null,
+          turnId: null,
         },
       });
     }),
@@ -120,7 +119,6 @@ export const CollaborativeAcceptanceToolkitHandlersLive = CollaborativeAcceptanc
         responderThreadId: context.invocation.threadId,
         responseAuthority: context.authority,
         ...input,
-        requestId: input.requestId as never,
       });
     }),
 
@@ -194,9 +192,9 @@ function requestCollaboration(
       senderAuthority: context.authority,
       recipientAuthority: {
         executionId: `thread:${parent.id}`,
-        generation: parent.latestTurn === null ? 0 : 1,
+        generation: 0,
         dispatchId: null,
-        turnId: parent.latestTurn?.turnId ?? null,
+        turnId: null,
       },
     });
   }).pipe(Effect.asVoid);

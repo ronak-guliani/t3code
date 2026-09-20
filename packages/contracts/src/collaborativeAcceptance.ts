@@ -70,6 +70,28 @@ export const CollaborativeAcceptanceReviewWorkflow = Schema.Struct({
 export type CollaborativeAcceptanceReviewWorkflow =
   typeof CollaborativeAcceptanceReviewWorkflow.Type;
 
+export const CollaborativeAcceptanceReviewCandidate = Schema.Struct({
+  caseId: CollaborativeAcceptanceCaseId,
+  candidateId: CollaborativeAcceptanceCandidateId,
+  reviewEpoch: PositiveInt,
+  headSha: TrimmedNonEmptyString,
+  contractRevision: TrimmedNonEmptyString,
+  reviewWorkflow: CollaborativeAcceptanceReviewWorkflow,
+  coverage: Schema.Struct({
+    required: Schema.Array(TrimmedNonEmptyString),
+    covered: Schema.Array(TrimmedNonEmptyString),
+    applicability: Schema.Literals(["known", "unknown"]),
+  }),
+  previousFindingVerification: Schema.Struct({
+    required: Schema.Boolean,
+    complete: Schema.Boolean,
+    verifiedRevisionIds: Schema.Array(TrimmedNonEmptyString),
+    unresolvedRevisionIds: Schema.Array(TrimmedNonEmptyString),
+  }),
+});
+export type CollaborativeAcceptanceReviewCandidate =
+  typeof CollaborativeAcceptanceReviewCandidate.Type;
+
 export const CollaborativeAcceptanceBudgets = Schema.Struct({
   exchanges: NonNegativeInt,
   modelSpendCents: NonNegativeInt,
@@ -237,8 +259,10 @@ export type CollaborativeAcceptanceRequiredCheckCoverage =
   typeof CollaborativeAcceptanceRequiredCheckCoverage.Type;
 
 export const CollaborativeAcceptanceProviderEvidence = Schema.Struct({
+  caseId: Schema.optional(CollaborativeAcceptanceCaseId),
   candidateId: CollaborativeAcceptanceCandidateId,
   headSha: TrimmedNonEmptyString,
+  sourceId: Schema.optional(TrimmedNonEmptyString),
   sourceRevision: TrimmedNonEmptyString,
   complete: Schema.Boolean,
   pullRequestState: PullRequestState,
@@ -284,8 +308,54 @@ export const CollaborativeAcceptanceExchange = Schema.Struct({
   completedAt: Schema.NullOr(IsoDateTime),
   cancelledAt: Schema.NullOr(IsoDateTime),
   modelSpendCents: NonNegativeInt,
+  admission: Schema.optional(
+    Schema.Struct({
+      senderThreadId: ThreadId,
+      recipientThreadId: ThreadId,
+      kind: Schema.Literals(["clarification", "decision", "review", "remediation"]),
+      blocking: Schema.Boolean,
+      senderAuthority: Schema.Struct({
+        executionId: TrimmedNonEmptyString,
+        generation: NonNegativeInt,
+        dispatchId: Schema.NullOr(TrimmedNonEmptyString),
+        turnId: Schema.NullOr(TrimmedNonEmptyString),
+      }),
+      recipientAuthority: Schema.Struct({
+        executionId: TrimmedNonEmptyString,
+        generation: NonNegativeInt,
+        dispatchId: Schema.NullOr(TrimmedNonEmptyString),
+        turnId: Schema.NullOr(TrimmedNonEmptyString),
+      }),
+      producingExecution: Schema.Struct({
+        executionId: TrimmedNonEmptyString,
+        generation: NonNegativeInt,
+        dispatchId: Schema.NullOr(TrimmedNonEmptyString),
+        turnId: Schema.NullOr(TrimmedNonEmptyString),
+      }),
+      payloadRef: Schema.Struct({
+        ref: TrimmedNonEmptyString,
+        sha256: TrimmedNonEmptyString,
+      }),
+      candidateRefs: Schema.Array(CollaborativeAcceptanceCandidateId),
+      findingRefs: Schema.Array(TrimmedNonEmptyString),
+      supersedesRequestId: Schema.NullOr(TrimmedNonEmptyString),
+      deliveryJson: TrimmedNonEmptyString,
+      createdAt: IsoDateTime,
+    }),
+  ),
 });
 export type CollaborativeAcceptanceExchange = typeof CollaborativeAcceptanceExchange.Type;
+
+export const CollaborativeAcceptanceObligation = Schema.Struct({
+  obligationId: TrimmedNonEmptyString,
+  requestId: TrimmedNonEmptyString,
+  caseId: CollaborativeAcceptanceCaseId,
+  ownerThreadId: ThreadId,
+  status: Schema.Literals(["open", "satisfied", "disposed"]),
+  createdAt: IsoDateTime,
+  resolvedAt: Schema.NullOr(IsoDateTime),
+});
+export type CollaborativeAcceptanceObligation = typeof CollaborativeAcceptanceObligation.Type;
 
 export const CollaborativeAcceptanceLifecycle = Schema.Literals([
   "pending",
@@ -364,6 +434,7 @@ export const CollaborativeAcceptanceRecord = Schema.Struct({
   providerEvidence: Schema.optional(Schema.NullOr(CollaborativeAcceptanceProviderEvidence)),
   assessments: Schema.Array(CollaborativeAcceptanceAssessment),
   exchanges: Schema.Array(CollaborativeAcceptanceExchange),
+  obligations: Schema.optional(Schema.Array(CollaborativeAcceptanceObligation)),
   projection: CollaborativeAcceptanceProjection,
 });
 export type CollaborativeAcceptanceRecord = typeof CollaborativeAcceptanceRecord.Type;
@@ -376,25 +447,7 @@ export const CollaborativeAcceptanceCandidateSubmission = Schema.Struct({
   criteria: Schema.Array(CollaborativeAcceptanceCriterion),
   policy: CollaborativeAcceptancePolicy,
   initialEvidence: Schema.Array(CollaborativeAcceptanceEvidence),
-  reviewCandidate: Schema.Struct({
-    caseId: CollaborativeAcceptanceCaseId,
-    candidateId: CollaborativeAcceptanceCandidateId,
-    reviewEpoch: PositiveInt,
-    headSha: TrimmedNonEmptyString,
-    contractRevision: TrimmedNonEmptyString,
-    reviewWorkflow: CollaborativeAcceptanceReviewWorkflow,
-    coverage: Schema.Struct({
-      required: Schema.Array(TrimmedNonEmptyString),
-      covered: Schema.Array(TrimmedNonEmptyString),
-      applicability: Schema.Literals(["known", "unknown"]),
-    }),
-    previousFindingVerification: Schema.Struct({
-      required: Schema.Boolean,
-      complete: Schema.Boolean,
-      verifiedRevisionIds: Schema.Array(TrimmedNonEmptyString),
-      unresolvedRevisionIds: Schema.Array(TrimmedNonEmptyString),
-    }),
-  }),
+  reviewCandidate: CollaborativeAcceptanceReviewCandidate,
 });
 export type CollaborativeAcceptanceCandidateSubmission =
   typeof CollaborativeAcceptanceCandidateSubmission.Type;

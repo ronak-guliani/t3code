@@ -134,6 +134,29 @@ function executionAuthorityMatches(
   );
 }
 
+function collaborationResponseAuthorityMatches(
+  admission: {
+    readonly executionId: string;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+  active: {
+    readonly executionId: string;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+) {
+  return (
+    admission.executionId === active.executionId &&
+    admission.dispatchId === active.dispatchId &&
+    (admission.turnId === null
+      ? active.generation >= admission.generation
+      : active.generation === admission.generation && admission.turnId === active.turnId)
+  );
+}
+
 function collaborationRequestEvent(
   command: OrchestrationCommand,
   threadId: ThreadId,
@@ -1500,7 +1523,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         request.recipientThreadId !== command.threadId ||
         request.exchangeId !== command.exchangeId ||
-        !executionAuthorityMatches(request.recipientAuthority, command.responderAuthority) ||
+        !collaborationResponseAuthorityMatches(
+          request.recipientAuthority,
+          command.responderAuthority,
+        ) ||
         request.status !== "waiting"
       ) {
         return yield* new OrchestrationCommandInvariantError({

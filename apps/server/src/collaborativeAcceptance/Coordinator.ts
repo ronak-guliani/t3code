@@ -4,9 +4,12 @@ import {
   CollaborativeAcceptanceError,
   CollaborativeAcceptanceExecutionId,
   CollaborativeAcceptanceExchangeId,
+  CollaborativeAcceptanceObligation,
   CollaborativeAcceptanceProvenance,
   CollaborativeAcceptanceStatus,
+  CollaborationDelivery,
   CollaborationRequestId,
+  CollaborationResponseId,
   CommandId,
   MessageId,
   type CollaborativeAcceptanceAssessment,
@@ -19,21 +22,29 @@ import {
   type CollaborationExecutionAuthority,
   type CollaborationPayloadReference,
   type PullRequestMonitorFeedbackReportDisposition,
-  type PullRequestMonitorReviewCandidate,
+  type PullRequestMonitorFeedbackItemId,
+  PullRequestMonitorFeedbackRevisionId,
+  PullRequestMonitorReviewCandidate,
+  type PullRequestMonitorSnapshot,
   type PullRequestRef,
   type ThreadId,
+  TurnId,
   QueuedTurnId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Crypto from "node:crypto";
 
 import {
   advanceAcceptanceCandidate,
+  cancelExchange,
   evaluateAcceptance,
   reserveExchange,
+  recordExchangeOutcome,
+  completeExchange,
   startExchange,
 } from "./domain.ts";
 import { CollaborativeAcceptanceRepository } from "../persistence/Services/CollaborativeAcceptance.ts";
@@ -50,6 +61,8 @@ const hash = (parts: ReadonlyArray<string>) =>
   Crypto.createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 32);
 
 const now = () => new Date().toISOString();
+const decodeReviewCandidateSchema = Schema.decodeUnknownEffect(PullRequestMonitorReviewCandidate);
+const decodeCollaborationDeliverySchema = Schema.decodeUnknownEffect(CollaborationDelivery);
 
 const acceptanceError = (
   message: string,
@@ -162,7 +175,7 @@ export interface CollaborativeAcceptanceCoordinatorShape {
   readonly dispositionFinding: (input: {
     readonly caseId: CollaborativeAcceptanceCaseId;
     readonly reference: PullRequestRef;
-    readonly itemId: string;
+    readonly itemId: PullRequestMonitorFeedbackItemId;
     readonly disposition: PullRequestMonitorFeedbackReportDisposition;
     readonly note?: string;
     readonly reporterThreadId: ThreadId;
@@ -175,6 +188,9 @@ export interface CollaborativeAcceptanceCoordinatorShape {
     readonly caseId: CollaborativeAcceptanceCaseId;
     readonly evidence: NonNullable<CollaborativeAcceptanceRecord["providerEvidence"]>;
   }) => Effect.Effect<CollaborativeAcceptanceStatus, CollaborativeAcceptanceError>;
+  readonly refreshProviderEvidence: (
+    caseId: CollaborativeAcceptanceCaseId,
+  ) => Effect.Effect<CollaborativeAcceptanceStatus, CollaborativeAcceptanceError>;
   readonly status: (
     caseId: CollaborativeAcceptanceCaseId,
   ) => Effect.Effect<CollaborativeAcceptanceStatus, CollaborativeAcceptanceError>;
@@ -185,7 +201,11 @@ export interface CollaborativeAcceptanceCoordinatorShape {
   readonly resume: (
     caseId: CollaborativeAcceptanceCaseId,
   ) => Effect.Effect<CollaborativeAcceptanceStatus, CollaborativeAcceptanceError>;
-  readonly start: () => Effect.Effect<void, never, import("effect/Scope").Scope>;
+  readonly start: () => Effect.Effect<
+    void,
+    CollaborativeAcceptanceError,
+    import("effect/Scope").Scope
+  >;
 }
 
 const makeCoordinator = Effect.gen(function* () {
@@ -205,29 +225,39 @@ const makeCoordinator = Effect.gen(function* () {
       ),
     );
 
-  const save = (record: CollaborativeAcceptanceRecord) =>
+  const save = (input: {
+    readonly record: CollaborativeAcceptanceRecord;
+    readonly expectedRevision: number | null;
+  }) =>
     repository
-      .save({ record, expectedRevision: record.revision })
+      .save(input)
       .pipe(Effect.mapError(() => acceptanceError("Acceptance case changed concurrently; retry.")));
 
   const currentProjection = (
     record: CollaborativeAcceptanceRecord,
     executionPhase: CollaborativeAcceptanceRecord["projection"]["executionPhase"] = "verifying",
-    pauseReason?: CollaborativeAcceptancePauseReason,
+    pauseReason?: CollaborativeAcceptancePauseReason | null,
   ) => {
+    const effectivePauseReason =
+      pauseReason === undefined ? record.projection.pauseReason : pauseReason;
+    const obligations = (record.obligations ?? [])
+      .filter((obligation) => obligation.status === "open")
+      .map((obligation) => obligation.obligationId);
     const evaluation = evaluateAcceptance({
       case: record.case,
       candidate: record.case.currentCandidate,
-      executionPhase,
+      executionPhase: effectivePauseReason === undefined ? executionPhase : "paused",
       providerEvidence: record.providerEvidence ?? null,
       evidence: record.evidence,
       assessments: record.assessments,
-      collaborationObligations: [],
+      collaborationObligations: obligations,
       updatedAt: now(),
     });
     return {
       ...evaluation.projection,
-      ...(pauseReason === undefined ? {} : { pauseReason }),
+      ...(effectivePauseReason === undefined || effectivePauseReason === null
+        ? {}
+        : { pauseReason: effectivePauseReason }),
       ...(record.exchanges.find(
         (exchange) => exchange.status === "reserved" || exchange.status === "committed",
       )?.exchangeId === undefined
@@ -247,38 +277,148 @@ const makeCoordinator = Effect.gen(function* () {
         reactor.wakeThread === undefined ? Effect.void : reactor.wakeThread(threadId),
     });
 
+  const addBlockingObligation = (
+    record: CollaborativeAcceptanceRecord,
+    input: {
+      readonly requestId: CollaborationRequestId;
+      readonly ownerThreadId: ThreadId;
+    },
+  ): ReadonlyArray<CollaborativeAcceptanceObligation> => {
+    const obligations = record.obligations ?? [];
+    if (obligations.some((obligation) => obligation.requestId === input.requestId)) {
+      return obligations;
+    }
+    return [
+      ...obligations,
+      {
+        obligationId: `obligation:${input.requestId}`,
+        requestId: input.requestId,
+        caseId: record.case.caseId,
+        ownerThreadId: input.ownerThreadId,
+        status: "open",
+        createdAt: now(),
+        resolvedAt: null,
+      },
+    ];
+  };
+
+  const resolveObligation = (
+    record: CollaborativeAcceptanceRecord,
+    requestId: CollaborationRequestId,
+    status: "satisfied" | "disposed",
+  ): ReadonlyArray<CollaborativeAcceptanceObligation> =>
+    (record.obligations ?? []).map((obligation) =>
+      obligation.requestId === requestId && obligation.status === "open"
+        ? { ...obligation, status, resolvedAt: now() }
+        : obligation,
+    );
+
+  const enforceLimits = (record: CollaborativeAcceptanceRecord) => {
+    const active = record.exchanges.find(
+      (exchange) => exchange.status === "reserved" || exchange.status === "committed",
+    );
+    const currentTime = Date.parse(now());
+    const budgets = record.case.policy.budgets;
+    let reason: CollaborativeAcceptancePauseReason | undefined;
+    if (
+      active?.status === "committed" &&
+      active.startedAt !== null &&
+      budgets.executionDurationSeconds > 0 &&
+      currentTime - Date.parse(active.startedAt) >= budgets.executionDurationSeconds * 1000
+    ) {
+      reason = "duration-limit";
+    } else if (
+      active !== undefined &&
+      budgets.waitingDeadlineSeconds > 0 &&
+      currentTime - Date.parse(active.startedAt ?? active.reservedAt) >=
+        budgets.waitingDeadlineSeconds * 1000
+    ) {
+      reason = "waiting-deadline";
+    } else if (
+      record.assessments.filter(
+        (assessment) =>
+          assessment.role === "parent-reviewer" &&
+          assessment.outcome !== "pass" &&
+          assessment.outcome !== "acknowledged",
+      ).length > 0 &&
+      record.assessments.filter(
+        (assessment) =>
+          assessment.role === "parent-reviewer" &&
+          assessment.outcome !== "pass" &&
+          assessment.outcome !== "acknowledged",
+      ).length >= budgets.disputeRounds
+    ) {
+      reason = "dispute-limit";
+    }
+    if (reason === undefined || record.projection.pauseReason === reason) {
+      return Effect.succeed(record);
+    }
+    const next = {
+      ...record,
+      projection: currentProjection(record, "paused", reason),
+      case: { ...record.case, updatedAt: now() },
+    };
+    return save({ record: next, expectedRevision: record.revision });
+  };
+
   const status = (caseId: CollaborativeAcceptanceCaseId) =>
     load(caseId).pipe(
+      Effect.flatMap(enforceLimits),
       Effect.map((record) => ({
         record,
         pauseReason: record.projection.pauseReason ?? null,
       })),
     );
 
+  const decodeReviewCandidate = (
+    candidate: CollaborativeAcceptanceCandidate,
+    caseId: CollaborativeAcceptanceCaseId,
+  ) =>
+    decodeReviewCandidateSchema(candidate.reviewCandidate).pipe(
+      Effect.mapError(() =>
+        acceptanceError("Candidate review metadata is unavailable or invalid.", {
+          caseId,
+          reason: "contradictory-contract",
+        }),
+      ),
+    );
+
   const persistCandidate = (input: {
     readonly submission: CollaborativeAcceptanceCandidateSubmission;
     readonly senderThreadId: ThreadId;
     readonly recipientThreadId: ThreadId;
+    readonly senderAuthority: CollaborationExecutionAuthority;
   }) =>
     Effect.gen(function* () {
       const caseId =
         input.submission.caseId ??
         CollaborativeAcceptanceCaseId.make(`acceptance:${input.submission.assignmentId}`);
+      const expectedProvenance: CollaborativeAcceptanceProvenance = {
+        assignmentId: input.submission.assignmentId,
+        dispatchId: input.senderAuthority.dispatchId,
+        turnId: input.senderAuthority.turnId,
+        caseId,
+        candidateId: input.submission.candidate.candidateId,
+        headSha: input.submission.candidate.headSha,
+        contractRevision: input.submission.candidate.contractRevision,
+        reviewWorkflow: input.submission.candidate.reviewWorkflow,
+      };
+      if (
+        input.submission.candidate.provenance !== undefined &&
+        JSON.stringify(input.submission.candidate.provenance) !== JSON.stringify(expectedProvenance)
+      ) {
+        return yield* acceptanceError(
+          "Candidate provenance does not match authenticated execution.",
+          {
+            caseId,
+            reason: "contradictory-contract",
+          },
+        );
+      }
       const candidate = {
         ...input.submission.candidate,
         reviewCandidate: input.submission.reviewCandidate,
-        provenance:
-          input.submission.candidate.provenance ??
-          ({
-            assignmentId: input.submission.assignmentId,
-            dispatchId: null,
-            turnId: null,
-            caseId,
-            candidateId: input.submission.candidate.candidateId,
-            headSha: input.submission.candidate.headSha,
-            contractRevision: input.submission.candidate.contractRevision,
-            reviewWorkflow: input.submission.candidate.reviewWorkflow,
-          } satisfies CollaborativeAcceptanceProvenance),
+        provenance: expectedProvenance,
       };
       for (const evidence of input.submission.initialEvidence) {
         if (
@@ -336,6 +476,18 @@ const makeCoordinator = Effect.gen(function* () {
           createdAt: candidate.createdAt,
           updatedAt: candidate.createdAt,
         };
+        const baseProjection = {
+          caseId,
+          candidateId: candidate.candidateId,
+          headSha: candidate.headSha,
+          executionPhase: "verifying" as const,
+          collaborationStatus: "child-assessment-pending" as const,
+          acceptanceLifecycle: "pending" as const,
+          readiness: "no-known-blockers" as const,
+          reasons: [],
+          staleAssessmentIds: [],
+          updatedAt: candidate.createdAt,
+        };
         const record: CollaborativeAcceptanceRecord = {
           revision: 0,
           case: acceptanceCase,
@@ -350,13 +502,31 @@ const makeCoordinator = Effect.gen(function* () {
             evidence: input.submission.initialEvidence,
             assessments: [],
             exchanges: [],
-            projection: {} as CollaborativeAcceptanceRecord["projection"],
+            projection: baseProjection,
           }),
         };
-        return yield* Effect.succeed(record);
+        return yield* Effect.succeed({ record, expectedRevision: null });
       }
 
       const record = existing.value;
+      if (
+        record.case.assignmentId !== input.submission.assignmentId ||
+        record.case.pullRequest.repository !== input.submission.pullRequest.repository ||
+        record.case.pullRequest.number !== input.submission.pullRequest.number ||
+        record.case.contractRevision !== candidate.contractRevision ||
+        record.case.policy.reviewWorkflow.identity !== candidate.reviewWorkflow.identity ||
+        record.case.policy.reviewWorkflow.version !== candidate.reviewWorkflow.version ||
+        record.case.policy.commentPolicy !== input.submission.policy.commentPolicy ||
+        record.case.policy.reviewTrigger !== input.submission.policy.reviewTrigger ||
+        record.case.policy.automation !== input.submission.policy.automation ||
+        JSON.stringify(record.case.policy.budgets) !==
+          JSON.stringify(input.submission.policy.budgets)
+      ) {
+        return yield* acceptanceError(
+          "Candidate provenance does not match the durable acceptance contract.",
+          { caseId, reason: "contradictory-contract" },
+        );
+      }
       const transition = advanceAcceptanceCandidate(record.case, candidate);
       if (!transition.ok) {
         return yield* acceptanceError("Candidate review epoch must increase.", {
@@ -365,12 +535,15 @@ const makeCoordinator = Effect.gen(function* () {
         });
       }
       return {
-        ...record,
-        case: transition.acceptanceCase,
-        candidates: record.candidates.some((entry) => entry.candidateId === candidate.candidateId)
-          ? record.candidates
-          : [...record.candidates, candidate],
-        evidence: [...record.evidence, ...input.submission.initialEvidence],
+        record: {
+          ...record,
+          case: transition.acceptanceCase,
+          candidates: record.candidates.some((entry) => entry.candidateId === candidate.candidateId)
+            ? record.candidates
+            : [...record.candidates, candidate],
+          evidence: [...record.evidence, ...input.submission.initialEvidence],
+        },
+        expectedRevision: record.revision,
       };
     });
 
@@ -393,6 +566,10 @@ const makeCoordinator = Effect.gen(function* () {
       );
       if (equivalent !== undefined) return input.record;
 
+      if (input.record.projection.pauseReason !== undefined) {
+        return input.record;
+      }
+
       if (
         !input.force &&
         (input.record.case.policy.automation === "off" ||
@@ -401,13 +578,15 @@ const makeCoordinator = Effect.gen(function* () {
         return input.record;
       }
 
+      const previousCandidate = input.record.candidates.at(-2);
+      const previousReviewCandidate =
+        previousCandidate === undefined
+          ? null
+          : yield* decodeReviewCandidate(previousCandidate, caseId);
       if (
         !reviewCandidateEligibility({
           candidate: input.reviewCandidate,
-          previous: (() => {
-            const previous = input.record.candidates.at(-2)?.reviewCandidate;
-            return previous === undefined ? null : (previous as PullRequestMonitorReviewCandidate);
-          })(),
+          previous: previousReviewCandidate,
         }).eligible
       ) {
         return input.record;
@@ -462,21 +641,6 @@ const makeCoordinator = Effect.gen(function* () {
                 : "budget-exhausted",
         });
       }
-      const started = startExchange(reserved.ledger, exchangeId, now());
-      if (!started.ok) {
-        return yield* acceptanceError(`Review admission paused: ${started.error}.`, {
-          caseId,
-          reason: "budget-exhausted",
-        });
-      }
-
-      const latestHead = input.candidate.headSha;
-      if (input.record.case.currentCandidate.headSha !== latestHead) {
-        return yield* acceptanceError("Candidate changed before review dispatch.", {
-          caseId,
-          reason: "stale-head",
-        });
-      }
       const parent = yield* projections.getThreadDetailById(input.authority.recipientThreadId).pipe(
         Effect.mapError(() =>
           acceptanceError("Could not resolve the review recipient.", { caseId }),
@@ -500,6 +664,106 @@ const makeCoordinator = Effect.gen(function* () {
           request.findingRefs.length === 0,
       );
       const payloadRef = payloadFor(provenance);
+      const delivery = {
+        queuedTurnId: queuedTurnFor(requestId),
+        message: {
+          messageId: messageFor(requestId),
+          role: "user" as const,
+          text: reviewPrompt({
+            provenance,
+            candidate: input.candidate,
+            pullRequest: input.pullRequest,
+            mode: input.mode,
+          }),
+          attachments: [],
+        },
+        modelSelection: parent.modelSelection,
+        runtimeMode: parent.runtimeMode,
+        interactionMode: parent.interactionMode,
+      };
+      const admission = {
+        senderThreadId: input.senderThreadId,
+        recipientThreadId: input.authority.recipientThreadId,
+        kind: "review" as const,
+        blocking: true,
+        senderAuthority: input.authority.senderAuthority,
+        recipientAuthority: input.authority.recipientAuthority,
+        producingExecution: input.authority.senderAuthority,
+        payloadRef,
+        candidateRefs: [input.candidate.candidateId],
+        findingRefs: [],
+        supersedesRequestId: previousRequest?.requestId ?? null,
+        deliveryJson: JSON.stringify(delivery),
+        createdAt: now(),
+      };
+      const obligations = addBlockingObligation(input.record, {
+        requestId,
+        ownerThreadId: input.senderThreadId,
+      });
+      const reservedRecord = {
+        ...input.record,
+        obligations,
+        exchanges: reserved.ledger.exchanges.map((item) =>
+          item.exchangeId === exchangeId ? { ...item, admission } : item,
+        ),
+        projection: currentProjection({
+          ...input.record,
+          obligations,
+          exchanges: reserved.ledger.exchanges.map((item) =>
+            item.exchangeId === exchangeId ? { ...item, admission } : item,
+          ),
+        }),
+        case: { ...input.record.case, updatedAt: now() },
+      };
+      const persistedReservation = yield* save({
+        record: reservedRecord,
+        expectedRevision: input.record.revision,
+      });
+      const latest = yield* load(caseId);
+      if (latest.case.currentCandidate.headSha !== input.candidate.headSha) {
+        const cancelled = reservedRecord.exchanges.map((item) =>
+          item.exchangeId === exchangeId
+            ? { ...item, status: "cancelled" as const, cancelledAt: now() }
+            : item,
+        );
+        yield* save({
+          record: {
+            ...latest,
+            exchanges: cancelled,
+            projection: currentProjection({ ...latest, exchanges: cancelled }),
+            case: { ...latest.case, updatedAt: now() },
+          },
+          expectedRevision: latest.revision,
+        });
+        return yield* acceptanceError("Candidate changed before review dispatch.", {
+          caseId,
+          reason: "stale-head",
+        });
+      }
+      const started = startExchange(
+        { budget: input.record.case.policy.budgets, exchanges: persistedReservation.exchanges },
+        exchangeId,
+        now(),
+      );
+      if (!started.ok) {
+        return yield* acceptanceError(`Review admission paused: ${started.error}.`, {
+          caseId,
+          reason: "budget-exhausted",
+        });
+      }
+      const committedRecord = {
+        ...persistedReservation,
+        exchanges: started.ledger.exchanges,
+        projection: currentProjection({
+          ...persistedReservation,
+          exchanges: started.ledger.exchanges,
+        }),
+        case: { ...persistedReservation.case, updatedAt: now() },
+      };
+      const persistedCommit = yield* save({
+        record: committedRecord,
+        expectedRevision: persistedReservation.revision,
+      });
       yield* engine
         .dispatch({
           type: "thread.collaboration-request.create",
@@ -521,23 +785,7 @@ const makeCoordinator = Effect.gen(function* () {
           ...(previousRequest === undefined
             ? {}
             : { supersedesRequestId: previousRequest.requestId }),
-          delivery: {
-            queuedTurnId: queuedTurnFor(requestId),
-            message: {
-              messageId: messageFor(requestId),
-              role: "user",
-              text: reviewPrompt({
-                provenance,
-                candidate: input.candidate,
-                pullRequest: input.pullRequest,
-                mode: input.mode,
-              }),
-              attachments: [],
-            },
-            modelSelection: parent.modelSelection,
-            runtimeMode: parent.runtimeMode,
-            interactionMode: parent.interactionMode,
-          },
+          delivery,
           createdAt: now(),
         })
         .pipe(
@@ -546,50 +794,54 @@ const makeCoordinator = Effect.gen(function* () {
           ),
         );
 
-      const committedExchanges = started.ledger.exchanges.map((item) =>
-        item.exchangeId === exchangeId ? { ...started.exchange, requestId } : item,
-      );
-      const committedRecord = {
-        ...input.record,
-        exchanges: committedExchanges,
-        projection: currentProjection({
-          ...input.record,
-          exchanges: committedExchanges,
-        }),
-        case: { ...input.record.case, updatedAt: now() },
-      };
-      yield* save(committedRecord);
       yield* wakeThread(input.authority.recipientThreadId);
-      return committedRecord;
+      return persistedCommit;
     });
 
   const submitCandidate: CollaborativeAcceptanceCoordinatorShape["submitCandidate"] = (input) =>
     Effect.gen(function* () {
-      const record = yield* persistCandidate({
+      const persistedCandidate = yield* persistCandidate({
         submission: input,
         senderThreadId: input.senderThreadId,
         recipientThreadId: input.recipientThreadId,
+        senderAuthority: input.senderAuthority,
       });
+      const record = persistedCandidate.record;
       const candidate = record.case.currentCandidate;
-      const reviewCandidate = candidate.reviewCandidate as PullRequestMonitorReviewCandidate;
-      const previous = record.candidates.at(-2)?.reviewCandidate as
-        | PullRequestMonitorReviewCandidate
-        | undefined;
+      const reviewCandidate = yield* decodeReviewCandidate(candidate, record.case.caseId);
+      const previousCandidate = record.candidates.at(-2);
+      const previous =
+        previousCandidate === undefined
+          ? undefined
+          : yield* decodeReviewCandidate(previousCandidate, record.case.caseId);
       const eligibility = reviewCandidateEligibility({
         candidate: reviewCandidate,
         ...(previous === undefined ? {} : { previous }),
       });
+      const previouslyReviewedEligibleCandidate = record.candidates
+        .slice(0, -1)
+        .some((entry) =>
+          record.exchanges.some(
+            (exchange) =>
+              exchange.candidateId === entry.candidateId && exchange.status !== "cancelled",
+          ),
+        );
       const shouldTrigger =
-        input.candidate.reviewEpoch === 1
-          ? input.policy.reviewTrigger === "first-candidate" ||
-            input.policy.reviewTrigger === "each-eligible-candidate"
-          : input.policy.reviewTrigger === "each-eligible-candidate";
+        input.policy.automation !== "off" &&
+        (input.policy.automation === "until-ready" ||
+          record.exchanges.every((exchange) => exchange.status === "cancelled")) &&
+        (input.policy.reviewTrigger === "each-eligible-candidate" ||
+          (input.policy.reviewTrigger === "first-candidate" &&
+            !previouslyReviewedEligibleCandidate));
       const persisted = yield* save({
-        ...record,
-        projection: currentProjection(record),
-        case: { ...record.case, updatedAt: now() },
+        record: {
+          ...record,
+          projection: currentProjection(record),
+          case: { ...record.case, updatedAt: now() },
+        },
+        expectedRevision: persistedCandidate.expectedRevision,
       });
-      if (!shouldTrigger || !eligibility.eligible || input.policy.automation === "off") {
+      if (!shouldTrigger || !eligibility.eligible) {
         return { record: persisted, pauseReason: persisted.projection.pauseReason ?? null };
       }
       const reviewed = yield* admitReview({
@@ -607,9 +859,11 @@ const makeCoordinator = Effect.gen(function* () {
 
   const requestReview: CollaborativeAcceptanceCoordinatorShape["requestReview"] = (input) =>
     Effect.gen(function* () {
-      const record = yield* load(input.caseId);
-      const reviewCandidate = record.case.currentCandidate
-        .reviewCandidate as PullRequestMonitorReviewCandidate;
+      const record = yield* load(input.caseId).pipe(Effect.flatMap(enforceLimits));
+      const reviewCandidate = yield* decodeReviewCandidate(
+        record.case.currentCandidate,
+        input.caseId,
+      );
       const eligibility = reviewCandidateEligibility({ candidate: reviewCandidate });
       if (!eligibility.eligible || eligibility.mode === null) {
         return { record, pauseReason: record.projection.pauseReason ?? null };
@@ -632,10 +886,24 @@ const makeCoordinator = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const caseId = input.caseId;
+      if (caseId === undefined) {
+        return yield* acceptanceError(
+          "Acceptance collaboration requests require a durable case binding.",
+          { reason: "contradictory-contract" },
+        );
+      }
+      const record = yield* load(caseId);
       const exchangeId = CollaborativeAcceptanceExchangeId.make(
         `exchange:${hash([input.assignmentId, input.senderThreadId, input.recipientThreadId, input.kind, input.text])}`,
       );
       const requestId = requestFor(exchangeId);
+      if (
+        record.exchanges.some(
+          (exchange) => exchange.exchangeId === exchangeId && exchange.status !== "cancelled",
+        )
+      ) {
+        return;
+      }
       const recipient = yield* projections.getThreadDetailById(input.recipientThreadId).pipe(
         Effect.mapError(() => acceptanceError("Could not resolve collaboration recipient.")),
         Effect.flatMap((thread) =>
@@ -648,6 +916,113 @@ const makeCoordinator = Effect.gen(function* () {
               ),
         ),
       );
+      const delivery = {
+        queuedTurnId: queuedTurnFor(requestId),
+        message: {
+          messageId: messageFor(requestId),
+          role: "user" as const,
+          text: input.text,
+          attachments: [],
+        },
+        modelSelection: recipient.modelSelection,
+        runtimeMode: recipient.runtimeMode,
+        interactionMode: recipient.interactionMode,
+      };
+      const exchange: CollaborativeAcceptanceExchange = {
+        exchangeId,
+        caseId,
+        executionId: executionFor(caseId, exchangeId, "full"),
+        requestId,
+        status: "reserved",
+        retryCount: 0,
+        reservedAt: now(),
+        startedAt: null,
+        outcomeRecordedAt: null,
+        completedAt: null,
+        cancelledAt: null,
+        modelSpendCents: 1,
+      };
+      const reserved = reserveExchange(
+        { budget: record.case.policy.budgets, exchanges: record.exchanges },
+        exchange,
+      );
+      if (!reserved.ok) {
+        return yield* acceptanceError(`Collaboration admission paused: ${reserved.error}.`, {
+          caseId,
+          reason:
+            reserved.error === "model-spend-budget-exhausted"
+              ? "model-spend-limit"
+              : "budget-exhausted",
+        });
+      }
+      const admission = {
+        senderThreadId: input.senderThreadId,
+        recipientThreadId: input.recipientThreadId,
+        kind: input.kind,
+        blocking: true,
+        senderAuthority: input.senderAuthority,
+        recipientAuthority: input.recipientAuthority,
+        producingExecution: input.senderAuthority,
+        payloadRef: {
+          ref: `collaboration://${requestId}`,
+          sha256: Crypto.createHash("sha256").update(input.text).digest("hex"),
+        },
+        candidateRefs: [],
+        findingRefs: [],
+        supersedesRequestId: null,
+        deliveryJson: JSON.stringify(delivery),
+        createdAt: now(),
+      };
+      const obligations = addBlockingObligation(record, {
+        requestId,
+        ownerThreadId: input.senderThreadId,
+      });
+      const reservedRecord = {
+        ...record,
+        obligations,
+        exchanges: reserved.ledger.exchanges.map((item) =>
+          item.exchangeId === exchangeId ? { ...item, admission } : item,
+        ),
+        projection: currentProjection({
+          ...record,
+          obligations,
+          exchanges: reserved.ledger.exchanges.map((item) =>
+            item.exchangeId === exchangeId ? { ...item, admission } : item,
+          ),
+        }),
+        case: { ...record.case, updatedAt: now() },
+      };
+      const persistedReservation = yield* save({
+        record: reservedRecord,
+        expectedRevision: record.revision,
+      });
+      const started = startExchange(
+        {
+          budget: persistedReservation.case.policy.budgets,
+          exchanges: persistedReservation.exchanges,
+        },
+        exchangeId,
+        now(),
+      );
+      if (!started.ok) {
+        return yield* acceptanceError(`Collaboration admission paused: ${started.error}.`, {
+          caseId,
+          reason: "budget-exhausted",
+        });
+      }
+      const committedRecord = {
+        ...persistedReservation,
+        exchanges: started.ledger.exchanges,
+        projection: currentProjection({
+          ...persistedReservation,
+          exchanges: started.ledger.exchanges,
+        }),
+        case: { ...persistedReservation.case, updatedAt: now() },
+      };
+      yield* save({
+        record: committedRecord,
+        expectedRevision: persistedReservation.revision,
+      });
       yield* engine
         .dispatch({
           type: "thread.collaboration-request.create",
@@ -658,28 +1033,15 @@ const makeCoordinator = Effect.gen(function* () {
           kind: input.kind,
           exchangeId,
           blocking: true,
-          ...(caseId === undefined ? {} : { caseId, transportContext: { caseId, exchangeId } }),
+          caseId,
+          transportContext: { caseId, exchangeId },
           senderAuthority: input.senderAuthority,
           recipientAuthority: input.recipientAuthority,
           producingExecution: input.senderAuthority,
-          payloadRef: {
-            ref: `collaboration://${requestId}`,
-            sha256: Crypto.createHash("sha256").update(input.text).digest("hex"),
-          },
+          payloadRef: admission.payloadRef,
           candidateRefs: [],
           findingRefs: [],
-          delivery: {
-            queuedTurnId: queuedTurnFor(requestId),
-            message: {
-              messageId: messageFor(requestId),
-              role: "user",
-              text: input.text,
-              attachments: [],
-            },
-            modelSelection: recipient.modelSelection,
-            runtimeMode: recipient.runtimeMode,
-            interactionMode: recipient.interactionMode,
-          },
+          delivery,
           createdAt: now(),
         })
         .pipe(Effect.mapError(() => acceptanceError("Collaboration request could not be queued.")));
@@ -700,6 +1062,19 @@ const makeCoordinator = Effect.gen(function* () {
       if (location.request.recipientThreadId !== input.responderThreadId) {
         return yield* acceptanceError("Only the request recipient may respond.");
       }
+      if (
+        location.request.recipientAuthority.executionId !== `thread:${input.responderThreadId}` ||
+        input.responseAuthority.executionId !== location.request.recipientAuthority.executionId ||
+        input.responseAuthority.dispatchId !== location.request.recipientAuthority.dispatchId ||
+        (location.request.recipientAuthority.turnId === null
+          ? input.responseAuthority.generation < location.request.recipientAuthority.generation
+          : input.responseAuthority.generation !== location.request.recipientAuthority.generation ||
+            input.responseAuthority.turnId !== location.request.recipientAuthority.turnId)
+      ) {
+        return yield* acceptanceError("Response authority does not match the admitted request.", {
+          reason: "contradictory-contract",
+        });
+      }
       const sender = yield* projections.getThreadDetailById(location.request.senderThreadId).pipe(
         Effect.mapError(() => acceptanceError("Could not resolve request sender.")),
         Effect.flatMap((thread) =>
@@ -718,8 +1093,9 @@ const makeCoordinator = Effect.gen(function* () {
           commandId: commandFor("respond", input.requestId),
           threadId: input.responderThreadId,
           requestId: input.requestId,
-          responseId:
-            `response:${hash([input.requestId, input.responseAuthority.executionId, input.text])}` as never,
+          responseId: CollaborationResponseId.make(
+            `response:${hash([input.requestId, input.responseAuthority.executionId, input.text])}`,
+          ),
           exchangeId: location.request.exchangeId,
           responderAuthority: input.responseAuthority,
           payloadRef: {
@@ -744,6 +1120,27 @@ const makeCoordinator = Effect.gen(function* () {
         .pipe(
           Effect.mapError(() => acceptanceError("Collaboration response could not be queued.")),
         );
+      const caseId = location.request.caseId;
+      if (caseId !== undefined) {
+        const record = yield* load(caseId);
+        const outcome = recordExchangeOutcome(
+          { budget: record.case.policy.budgets, exchanges: record.exchanges },
+          location.request.exchangeId,
+          now(),
+        );
+        if (outcome.ok) {
+          const next = {
+            ...record,
+            exchanges: outcome.ledger.exchanges,
+            projection: currentProjection({
+              ...record,
+              exchanges: outcome.ledger.exchanges,
+            }),
+            case: { ...record.case, updatedAt: now() },
+          };
+          yield* save({ record: next, expectedRevision: record.revision });
+        }
+      }
       yield* wakeThread(location.request.senderThreadId);
     });
 
@@ -778,18 +1175,61 @@ const makeCoordinator = Effect.gen(function* () {
           : [...record.assessments, assessment],
       };
       const saved = yield* save({
-        ...next,
-        projection: currentProjection(next),
-        case: { ...next.case, updatedAt: now() },
+        record: {
+          ...next,
+          projection: currentProjection(next),
+          case: { ...next.case, updatedAt: now() },
+        },
+        expectedRevision: record.revision,
       });
+
       return { record: saved, pauseReason: saved.projection.pauseReason ?? null };
     });
+
+  const providerEvidenceFromSnapshot = (
+    record: CollaborativeAcceptanceRecord,
+    snapshot: PullRequestMonitorSnapshot,
+    unresolvedActionableFindings: number,
+    unresolvedReviewThreads: number,
+  ) => {
+    const coverage = snapshot.requiredCheckCoverage;
+    return {
+      caseId: record.case.caseId,
+      candidateId: record.case.currentCandidate.candidateId,
+      headSha: snapshot.headSha,
+      sourceId: `${snapshot.provider}:${snapshot.repository}#${snapshot.number}`,
+      sourceRevision: snapshot.sourceRevision,
+      complete:
+        snapshot.completeness.reviewsComplete &&
+        snapshot.completeness.reviewThreadsComplete &&
+        snapshot.completeness.issueCommentsComplete &&
+        snapshot.completeness.checksComplete &&
+        snapshot.completeness.requiredChecksKnown &&
+        coverage?.completeness === "complete",
+      pullRequestState: snapshot.state,
+      isDraft: snapshot.isDraft,
+      mergeability: snapshot.mergeability,
+      reviewEvidenceComplete: snapshot.completeness.reviewsComplete,
+      reviewThreadEvidenceComplete: snapshot.completeness.reviewThreadsComplete,
+      commentEvidenceComplete: snapshot.completeness.issueCommentsComplete,
+      checkEvidenceComplete: snapshot.completeness.checksComplete,
+      requiredChecksKnown: snapshot.completeness.requiredChecksKnown,
+      requiredChecks: coverage?.observed ?? [],
+      ...(coverage === undefined ? {} : { requiredCheckCoverage: coverage }),
+      unresolvedActionableFindings,
+      unresolvedReviewThreads,
+      observedAt: snapshot.fetchedAt,
+    };
+  };
 
   const recordProviderEvidence: CollaborativeAcceptanceCoordinatorShape["recordProviderEvidence"] =
     (input) =>
       Effect.gen(function* () {
         const record = yield* load(input.caseId);
         if (
+          input.evidence.caseId === undefined ||
+          input.evidence.sourceId === undefined ||
+          (input.evidence.caseId !== undefined && input.evidence.caseId !== input.caseId) ||
           input.evidence.candidateId !== record.case.currentCandidate.candidateId ||
           input.evidence.headSha !== record.case.currentCandidate.headSha
         ) {
@@ -800,11 +1240,55 @@ const makeCoordinator = Effect.gen(function* () {
         }
         const next = { ...record, providerEvidence: input.evidence };
         const saved = yield* save({
-          ...next,
-          projection: currentProjection(next),
-          case: { ...next.case, updatedAt: now() },
+          record: {
+            ...next,
+            projection: currentProjection(
+              next,
+              input.evidence.pullRequestState === "open" ? "monitoring" : "paused",
+              input.evidence.pullRequestState === "open" ? undefined : "closed-pull-request",
+            ),
+            case: { ...next.case, updatedAt: now() },
+          },
+          expectedRevision: record.revision,
         });
         return { record: saved, pauseReason: saved.projection.pauseReason ?? null };
+      });
+
+  const refreshProviderEvidence: CollaborativeAcceptanceCoordinatorShape["refreshProviderEvidence"] =
+    (caseId) =>
+      Option.match(monitors, {
+        onNone: () =>
+          Effect.fail(
+            acceptanceError("Pull request monitoring is unavailable.", {
+              caseId,
+              reason: "participant-unavailable",
+            }),
+          ),
+        onSome: (service) =>
+          Effect.gen(function* () {
+            const record = yield* load(caseId);
+            const context = yield* service.context({ reference: record.case.pullRequest }).pipe(
+              Effect.mapError(() =>
+                acceptanceError("Authoritative pull-request evidence is unavailable.", {
+                  caseId,
+                  reason: "provider-failure",
+                }),
+              ),
+            );
+            if (context.latestSnapshot === null) {
+              return yield* acceptanceError("Provider evidence is unavailable.", {
+                caseId,
+                reason: "provider-failure",
+              });
+            }
+            const evidence = providerEvidenceFromSnapshot(
+              record,
+              context.latestSnapshot,
+              context.items.filter((item) => item.status !== "closed").length,
+              context.latestSnapshot.reviewThreads.filter((thread) => !thread.resolved).length,
+            );
+            return yield* recordProviderEvidence({ caseId, evidence });
+          }),
       });
 
   const dispositionFinding: CollaborativeAcceptanceCoordinatorShape["dispositionFinding"] = (
@@ -821,7 +1305,7 @@ const makeCoordinator = Effect.gen(function* () {
         service
           .report({
             reference: input.reference,
-            itemId: input.itemId as never,
+            itemId: input.itemId,
             disposition: input.disposition,
             ...(input.note === undefined ? {} : { note: input.note }),
             reporterThreadId: input.reporterThreadId,
@@ -839,7 +1323,7 @@ const makeCoordinator = Effect.gen(function* () {
         projection: currentProjection(record, "paused", reason),
         case: { ...record.case, updatedAt: now() },
       };
-      const saved = yield* save(next);
+      const saved = yield* save({ record: next, expectedRevision: record.revision });
       return { record: saved, pauseReason: reason };
     });
 
@@ -848,11 +1332,229 @@ const makeCoordinator = Effect.gen(function* () {
       const record = yield* load(caseId);
       const next = {
         ...record,
-        projection: currentProjection(record, "verifying"),
+        projection: currentProjection(record, "verifying", null),
         case: { ...record.case, updatedAt: now() },
       };
-      const saved = yield* save(next);
+      const saved = yield* save({ record: next, expectedRevision: record.revision });
       return { record: saved, pauseReason: saved.projection.pauseReason ?? null };
+    });
+
+  const decodeAdmissionDelivery = (record: CollaborativeAcceptanceRecord, json: string) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      return Effect.fail(
+        acceptanceError("Persisted acceptance delivery is invalid.", {
+          caseId: record.case.caseId,
+          reason: "ambiguous-outcome",
+        }),
+      );
+    }
+    return decodeCollaborationDeliverySchema(parsed).pipe(
+      Effect.mapError(() =>
+        acceptanceError("Persisted acceptance delivery is unavailable.", {
+          caseId: record.case.caseId,
+          reason: "ambiguous-outcome",
+        }),
+      ),
+    );
+  };
+
+  const dispatchAdmission = (
+    record: CollaborativeAcceptanceRecord,
+    exchange: CollaborativeAcceptanceExchange,
+  ) =>
+    Effect.gen(function* () {
+      const admission = exchange.admission;
+      if (admission === undefined || exchange.requestId === undefined) {
+        return yield* acceptanceError("Acceptance exchange lacks recoverable admission metadata.", {
+          caseId: record.case.caseId,
+          reason: "ambiguous-outcome",
+        });
+      }
+      const latest = yield* load(record.case.caseId);
+      if (latest.case.currentCandidate.headSha !== exchange.headSha) {
+        const cancelled = latest.exchanges.map((item) =>
+          item.exchangeId === exchange.exchangeId
+            ? { ...item, status: "cancelled" as const, cancelledAt: now() }
+            : item,
+        );
+        yield* save({
+          record: {
+            ...latest,
+            exchanges: cancelled,
+            projection: currentProjection(
+              { ...latest, exchanges: cancelled },
+              "paused",
+              "stale-head",
+            ),
+            case: { ...latest.case, updatedAt: now() },
+          },
+          expectedRevision: latest.revision,
+        });
+        return;
+      }
+      const delivery = yield* decodeAdmissionDelivery(latest, admission.deliveryJson);
+      const toAuthority = (authority: typeof admission.senderAuthority) => ({
+        executionId: authority.executionId,
+        generation: authority.generation,
+        dispatchId: authority.dispatchId,
+        turnId: authority.turnId === null ? null : TurnId.make(authority.turnId),
+      });
+      yield* engine
+        .dispatch({
+          type: "thread.collaboration-request.create",
+          commandId: commandFor("request", exchange.requestId),
+          threadId: admission.senderThreadId,
+          requestId: exchange.requestId,
+          recipientThreadId: admission.recipientThreadId,
+          kind: admission.kind,
+          exchangeId: exchange.exchangeId,
+          blocking: admission.blocking,
+          caseId: exchange.caseId,
+          transportContext: { caseId: exchange.caseId, exchangeId: exchange.exchangeId },
+          senderAuthority: toAuthority(admission.senderAuthority),
+          recipientAuthority: toAuthority(admission.recipientAuthority),
+          producingExecution: toAuthority(admission.producingExecution),
+          payloadRef: admission.payloadRef,
+          candidateRefs: admission.candidateRefs,
+          findingRefs: admission.findingRefs.map((finding) =>
+            PullRequestMonitorFeedbackRevisionId.make(finding),
+          ),
+          ...(admission.supersedesRequestId === null
+            ? {}
+            : { supersedesRequestId: admission.supersedesRequestId }),
+          delivery,
+          createdAt: admission.createdAt,
+        })
+        .pipe(
+          Effect.mapError(() =>
+            acceptanceError("Acceptance request recovery failed.", {
+              caseId: record.case.caseId,
+              reason: "provider-failure",
+            }),
+          ),
+        );
+      yield* wakeThread(admission.recipientThreadId);
+    });
+
+  const reconcileExchange = (
+    record: CollaborativeAcceptanceRecord,
+    exchange: CollaborativeAcceptanceExchange,
+    request:
+      | {
+          readonly status: string;
+          readonly terminalOutcome: string | null;
+        }
+      | undefined,
+  ) =>
+    Effect.gen(function* () {
+      let next = record;
+      if (request === undefined) {
+        if (exchange.status === "reserved") {
+          const started = startExchange(
+            { budget: record.case.policy.budgets, exchanges: record.exchanges },
+            exchange.exchangeId,
+            now(),
+          );
+          if (!started.ok) {
+            return yield* acceptanceError("Acceptance exchange recovery could not start.", {
+              caseId: record.case.caseId,
+              reason: "budget-exhausted",
+            });
+          }
+          next = yield* save({
+            record: {
+              ...record,
+              exchanges: started.ledger.exchanges,
+              projection: currentProjection({ ...record, exchanges: started.ledger.exchanges }),
+              case: { ...record.case, updatedAt: now() },
+            },
+            expectedRevision: record.revision,
+          });
+          exchange =
+            next.exchanges.find((item) => item.exchangeId === exchange.exchangeId) ?? exchange;
+        }
+        yield* dispatchAdmission(next, exchange);
+        return;
+      }
+      if (request.status === "response-ready" || request.status === "consumed") {
+        const outcome = recordExchangeOutcome(
+          { budget: record.case.policy.budgets, exchanges: next.exchanges },
+          exchange.exchangeId,
+          now(),
+        );
+        if (outcome.ok && outcome.exchange.status !== exchange.status) {
+          next = yield* save({
+            record: {
+              ...next,
+              exchanges: outcome.ledger.exchanges,
+              projection: currentProjection({ ...next, exchanges: outcome.ledger.exchanges }),
+              case: { ...next.case, updatedAt: now() },
+            },
+            expectedRevision: next.revision,
+          });
+        }
+        if (request.status === "consumed") {
+          const completed = completeExchange(
+            { budget: next.case.policy.budgets, exchanges: next.exchanges },
+            exchange.exchangeId,
+            now(),
+          );
+          if (completed.ok && completed.exchange.status !== "completed") {
+            const obligations =
+              exchange.requestId === undefined
+                ? next.obligations
+                : resolveObligation(next, exchange.requestId, "satisfied");
+            next = yield* save({
+              record: {
+                ...next,
+                exchanges: completed.ledger.exchanges,
+                ...(obligations === undefined ? {} : { obligations }),
+                projection: currentProjection({
+                  ...next,
+                  exchanges: completed.ledger.exchanges,
+                  ...(obligations === undefined ? {} : { obligations }),
+                }),
+                case: { ...next.case, updatedAt: now() },
+              },
+              expectedRevision: next.revision,
+            });
+          }
+        }
+      } else if (
+        request.status === "cancelled" ||
+        request.status === "superseded" ||
+        request.status === "needs-human"
+      ) {
+        const cancelled = cancelExchange(
+          { budget: next.case.policy.budgets, exchanges: next.exchanges },
+          exchange.exchangeId,
+          now(),
+        );
+        if (cancelled.ok && cancelled.exchange.status !== "cancelled") {
+          const obligations =
+            exchange.requestId === undefined
+              ? next.obligations
+              : resolveObligation(next, exchange.requestId, "disposed");
+          next = yield* save({
+            record: {
+              ...next,
+              exchanges: cancelled.ledger.exchanges,
+              obligations,
+              projection: currentProjection({
+                ...next,
+                exchanges: cancelled.ledger.exchanges,
+                obligations,
+              }),
+              case: { ...next.case, updatedAt: now() },
+            },
+            expectedRevision: next.revision,
+          });
+        }
+      }
+      return next;
     });
 
   const start: CollaborativeAcceptanceCoordinatorShape["start"] = () =>
@@ -860,26 +1562,34 @@ const makeCoordinator = Effect.gen(function* () {
       const records = yield* repository
         .listAll()
         .pipe(Effect.mapError(() => acceptanceError("Could not recover acceptance cases.")));
+      const readModel = yield* engine.getReadModel();
       yield* Effect.forEach(
         records,
         (record) =>
           Effect.forEach(
             record.exchanges.filter(
               (exchange) =>
-                (exchange.status === "reserved" || exchange.status === "committed") &&
-                exchange.requestId === undefined,
+                exchange.status === "reserved" ||
+                exchange.status === "committed" ||
+                exchange.status === "outcome-recorded",
             ),
-            () =>
-              Effect.logWarning("acceptance exchange requires recovery", {
-                caseId: record.case.caseId,
-              }),
-            { concurrency: 1 },
+            (exchange) =>
+              load(record.case.caseId).pipe(
+                Effect.flatMap((current) => {
+                  const location = readModel.threads
+                    .flatMap((thread) =>
+                      (thread.collaborationRequests ?? []).map((request) => ({ thread, request })),
+                    )
+                    .find(({ request }) => request.exchangeId === exchange.exchangeId);
+                  return reconcileExchange(current, exchange, location?.request);
+                }),
+                Effect.asVoid,
+              ),
+            { concurrency: 1, discard: true },
           ),
         { concurrency: 1 },
-      );
-    }).pipe(
-      Effect.catch((error) => Effect.logError("Collaborative acceptance recovery failed.", error)),
-    );
+      ).pipe(Effect.asVoid);
+    });
 
   return {
     submitCandidate,
@@ -889,6 +1599,7 @@ const makeCoordinator = Effect.gen(function* () {
     dispositionFinding,
     submitAssessment,
     recordProviderEvidence,
+    refreshProviderEvidence,
     status,
     pause,
     resume,

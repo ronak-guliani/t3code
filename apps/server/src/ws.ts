@@ -342,9 +342,9 @@ const makeWsRpcLayer = (
         readonly latestTurn: { readonly turnId: TurnId } | null;
       }): CollaborationExecutionAuthority => ({
         executionId: `thread:${thread.id}`,
-        generation: thread.latestTurn === null ? 0 : 1,
+        generation: 0,
         dispatchId: null,
-        turnId: thread.latestTurn?.turnId ?? null,
+        turnId: null,
       });
       const resolveAcceptanceThread = (threadId: ThreadId) =>
         projectionSnapshotQuery.getThreadDetailById(threadId).pipe(

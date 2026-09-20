@@ -1131,7 +1131,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   ),
 );
 
-const CollaborationDelivery = Schema.Struct({
+export const CollaborationDelivery = Schema.Struct({
   queuedTurnId: QueuedTurnId,
   message: QueuedTurnMessage,
   modelSelection: Schema.optional(ModelSelection),
