@@ -1,4 +1,5 @@
 import type {
+  CollaborativeAcceptanceStatus,
   EnvironmentId,
   PullRequestAction,
   PullRequestActivity,
@@ -32,11 +33,16 @@ import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import {
   pullRequestActivityQueryOptions,
+  collaborativeAcceptancePauseMutationOptions,
+  collaborativeAcceptanceRequestReviewMutationOptions,
+  collaborativeAcceptanceResumeMutationOptions,
+  collaborativeAcceptanceStatusQueryOptions,
   pullRequestCommentMutationOptions,
   pullRequestDetailQueryOptions,
   pullRequestDiffInfiniteQueryOptions,
   pullRequestInvalidateMutationOptions,
   pullRequestMonitorStatusQueryOptions,
+  pullRequestMonitorContextQueryOptions,
   pullRequestReplyToThreadMutationOptions,
   pullRequestRequestReviewersMutationOptions,
   pullRequestReviewerCandidatesQueryOptions,
@@ -158,12 +164,36 @@ function toDetailView(
 
 function PullRequestCollaborationStatusCard({
   status,
+  acceptance,
+  controls,
 }: {
   readonly status: PullRequestMonitorStatusResult | undefined;
+  readonly acceptance: CollaborativeAcceptanceStatus | undefined;
+  readonly controls: {
+    readonly canControl: boolean;
+    readonly isPaused: boolean;
+    readonly isPending: boolean;
+    readonly onPause: () => void;
+    readonly onResume: () => void;
+    readonly onRequestReview: () => void;
+  };
 }) {
-  const presentation = presentCollaborativeAcceptanceStatus({ monitor: status });
-  const candidateHead = status?.latestSnapshot?.headSha ?? status?.monitor?.headSha;
+  const presentation = presentCollaborativeAcceptanceStatus({ monitor: status, acceptance });
+  const record = acceptance?.record;
+  const candidateHead =
+    record?.projection.headSha ??
+    record?.case.currentCandidate.headSha ??
+    status?.latestSnapshot?.headSha ??
+    status?.monitor?.headSha;
   const blockers = status?.monitor?.readiness?.blockers ?? [];
+  const currentEvidence = record?.evidence.filter((evidence) => evidence.current) ?? [];
+  const completeEvidence = currentEvidence.filter((evidence) => evidence.complete).length;
+  const openObligations =
+    record?.obligations?.filter((obligation) => obligation.status === "open").length ?? 0;
+  const exchangeBudget = record?.case.policy.budgets.exchanges;
+  const exchangeCount = record?.exchanges.filter(
+    (exchange) => exchange.status !== "cancelled",
+  ).length;
 
   return (
     <section
@@ -220,6 +250,32 @@ function PullRequestCollaborationStatusCard({
           {status.openFeedback.length} open finding{status.openFeedback.length === 1 ? "" : "s"} ·{" "}
           {status.recentEvents.length} recent event{status.recentEvents.length === 1 ? "" : "s"}
         </p>
+      ) : null}
+      {record ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Evidence {completeEvidence}/{currentEvidence.length} complete · {openObligations} open
+          obligation{openObligations === 1 ? "" : "s"} · exchanges {exchangeCount}/{exchangeBudget}
+        </p>
+      ) : null}
+      {controls.canControl ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button
+            disabled={controls.isPending}
+            size="xs"
+            variant="outline"
+            onClick={controls.isPaused ? controls.onResume : controls.onPause}
+          >
+            {controls.isPaused ? "Resume automation" : "Pause automation"}
+          </Button>
+          <Button
+            disabled={controls.isPending}
+            size="xs"
+            variant="outline"
+            onClick={controls.onRequestReview}
+          >
+            Request review
+          </Button>
+        </div>
       ) : null}
     </section>
   );
@@ -736,6 +792,13 @@ export function PullRequestDetailPanel({
   const [tab, setTab] = useState<DetailTab>("summary");
   const detailQuery = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
   const monitorQuery = useQuery(pullRequestMonitorStatusQueryOptions({ environmentId, reference }));
+  const monitorContextQuery = useQuery(
+    pullRequestMonitorContextQueryOptions({
+      environmentId,
+      reference,
+      enabled: monitorQuery.data?.monitor !== null && monitorQuery.data?.monitor !== undefined,
+    }),
+  );
   const activityQuery = useQuery(
     pullRequestActivityQueryOptions({
       environmentId,
@@ -749,6 +812,23 @@ export function PullRequestDetailPanel({
     null,
   );
   const detail = toDetailView(detailQuery.data, activityQuery.data);
+  const acceptanceProvenance = useMemo(() => {
+    for (const findingDetail of monitorContextQuery.data?.findingDetails ?? []) {
+      const provenance = findingDetail.finding?.acceptanceProvenance;
+      if (provenance) return provenance;
+    }
+    return null;
+  }, [monitorContextQuery.data?.findingDetails]);
+  const acceptanceCaseId = acceptanceProvenance?.caseId ?? null;
+  const acceptanceThreadId = monitorQuery.data?.monitor?.ownerThreadId ?? null;
+  const acceptanceQuery = useQuery(
+    collaborativeAcceptanceStatusQueryOptions({
+      environmentId,
+      threadId: acceptanceThreadId,
+      caseId: acceptanceCaseId,
+      enabled: acceptanceCaseId !== null && acceptanceThreadId !== null,
+    }),
+  );
   const owner = useStore((state) =>
     findPullRequestBrowserThread(
       selectThreadShellsAcrossEnvironments(state),
@@ -789,6 +869,76 @@ export function PullRequestDetailPanel({
   const requestReviewers = useMutation(
     pullRequestRequestReviewersMutationOptions({ environmentId, queryClient }),
   );
+  const pauseAcceptance = useMutation(
+    collaborativeAcceptancePauseMutationOptions({ environmentId, queryClient }),
+  );
+  const resumeAcceptance = useMutation(
+    collaborativeAcceptanceResumeMutationOptions({ environmentId, queryClient }),
+  );
+  const requestAcceptanceReview = useMutation(
+    collaborativeAcceptanceRequestReviewMutationOptions({ environmentId, queryClient }),
+  );
+  const acceptanceMutationPending =
+    pauseAcceptance.isPending || resumeAcceptance.isPending || requestAcceptanceReview.isPending;
+  const acceptanceProjection = acceptanceQuery.data?.record?.projection;
+  const acceptanceControls = {
+    canControl:
+      acceptanceCaseId !== null &&
+      acceptanceThreadId !== null &&
+      acceptanceQuery.data?.record !== null &&
+      acceptanceQuery.data?.record !== undefined,
+    isPaused: acceptanceProjection?.executionPhase === "paused",
+    isPending: acceptanceMutationPending,
+    onPause: () => {
+      if (acceptanceCaseId === null || acceptanceThreadId === null) return;
+      void pauseAcceptance
+        .mutateAsync({
+          threadId: acceptanceThreadId,
+          caseId: acceptanceCaseId,
+          reason: "ambiguous-outcome",
+        })
+        .then(() => {
+          toastManager.add({ type: "success", title: "Automation paused" });
+        })
+        .catch((error) => {
+          toastManager.add({
+            type: "error",
+            title: "Could not pause automation",
+            description: errorMessage(error),
+          });
+        });
+    },
+    onResume: () => {
+      if (acceptanceCaseId === null || acceptanceThreadId === null) return;
+      void resumeAcceptance
+        .mutateAsync({ threadId: acceptanceThreadId, caseId: acceptanceCaseId })
+        .then(() => {
+          toastManager.add({ type: "success", title: "Automation resumed" });
+        })
+        .catch((error) => {
+          toastManager.add({
+            type: "error",
+            title: "Could not resume automation",
+            description: errorMessage(error),
+          });
+        });
+    },
+    onRequestReview: () => {
+      if (acceptanceCaseId === null || acceptanceThreadId === null) return;
+      void requestAcceptanceReview
+        .mutateAsync({ threadId: acceptanceThreadId, caseId: acceptanceCaseId })
+        .then(() => {
+          toastManager.add({ type: "success", title: "Review request queued" });
+        })
+        .catch((error) => {
+          toastManager.add({
+            type: "error",
+            title: "Could not request review",
+            description: errorMessage(error),
+          });
+        });
+    },
+  };
 
   const refresh = () => {
     void invalidate.mutateAsync({ reference }).catch((error) =>
@@ -1149,7 +1299,11 @@ export function PullRequestDetailPanel({
         </div>
         {monitorQuery.data ? (
           <div className="border-t border-border/70 px-4 py-3">
-            <PullRequestCollaborationStatusCard status={monitorQuery.data} />
+            <PullRequestCollaborationStatusCard
+              acceptance={acceptanceQuery.data}
+              controls={acceptanceControls}
+              status={monitorQuery.data}
+            />
           </div>
         ) : monitorQuery.isError ? (
           <div className="border-t border-border/70 px-4 py-3 text-xs text-muted-foreground">

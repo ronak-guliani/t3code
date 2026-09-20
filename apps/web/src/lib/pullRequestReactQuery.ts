@@ -20,6 +20,7 @@ import type {
   PullRequestThreadReplyInput,
   PullRequestThreadResolutionInput,
   PullRequestMonitorLaunchFallbackInput,
+  PullRequestMonitorContextResult,
   PullRequestMonitorStartInput,
   PullRequestMonitorStatusInput,
   PullRequestMonitorStopInput,
@@ -116,10 +117,19 @@ export const pullRequestQueryKeys = {
       reference.repository,
       reference.number,
     ] as const,
+  monitorContext: (environmentId: EnvironmentId | null, reference: PullRequestRef) =>
+    [
+      "pull-requests",
+      environmentId ?? null,
+      "monitor-context",
+      reference.projectId,
+      reference.repository,
+      reference.number,
+    ] as const,
   collaborativeAcceptanceStatus: (
     environmentId: EnvironmentId | null,
-    threadId: ThreadId,
-    caseId: CollaborativeAcceptanceCaseId,
+    threadId: ThreadId | null,
+    caseId: CollaborativeAcceptanceCaseId | null,
   ) => ["collaborative-acceptance", environmentId ?? null, threadId, caseId] as const,
 };
 
@@ -505,10 +515,30 @@ export function pullRequestMonitorStatusQueryOptions(input: {
   });
 }
 
+export function pullRequestMonitorContextQueryOptions(input: {
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<PullRequestMonitorContextResult>({
+    queryKey: pullRequestQueryKeys.monitorContext(input.environmentId, input.reference),
+    staleTime: PULL_REQUEST_STALE_TIME_MS,
+    refetchInterval: 15_000,
+    enabled: input.enabled ?? true,
+    queryFn: () =>
+      ensureEnvironmentApi(input.environmentId).pullRequestMonitors.context({
+        reference: input.reference,
+        includeClosed: true,
+        limit: 20,
+      }),
+  });
+}
+
 export function collaborativeAcceptanceStatusQueryOptions(input: {
   readonly environmentId: EnvironmentId;
-  readonly threadId: ThreadId;
-  readonly caseId: CollaborativeAcceptanceCaseId;
+  readonly threadId: ThreadId | null;
+  readonly caseId: CollaborativeAcceptanceCaseId | null;
+  readonly enabled?: boolean;
 }) {
   return queryOptions({
     queryKey: pullRequestQueryKeys.collaborativeAcceptanceStatus(
@@ -518,11 +548,16 @@ export function collaborativeAcceptanceStatusQueryOptions(input: {
     ),
     staleTime: PULL_REQUEST_STALE_TIME_MS,
     refetchInterval: 15_000,
-    queryFn: () =>
-      ensureEnvironmentApi(input.environmentId).collaborativeAcceptance.status({
+    enabled: input.enabled ?? true,
+    queryFn: () => {
+      if (input.threadId === null || input.caseId === null) {
+        throw new Error("Collaborative acceptance status is unavailable.");
+      }
+      return ensureEnvironmentApi(input.environmentId).collaborativeAcceptance.status({
         threadId: input.threadId,
         caseId: input.caseId,
-      }),
+      });
+    },
   });
 }
 
