@@ -148,10 +148,13 @@ const HttpServerLive = Layer.unwrap(
         ...(config.host ? { hostname: config.host } : {}),
       });
     } else {
-      const [NodeHttpServer, NodeHttp] = yield* Effect.all([
-        Effect.promise(() => import("@effect/platform-node/NodeHttpServer")),
-        Effect.promise(() => import("node:http")),
-      ]);
+      const [NodeHttpServer, NodeHttp] = yield* Effect.all(
+        [
+          Effect.promise(() => import("@effect/platform-node/NodeHttpServer")),
+          Effect.promise(() => import("node:http")),
+        ],
+        { concurrency: "unbounded" },
+      );
       return NodeHttpServer.layer(NodeHttp.createServer, {
         host: config.host,
         port: config.port,

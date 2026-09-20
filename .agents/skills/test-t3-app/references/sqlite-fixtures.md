@@ -10,7 +10,16 @@ Start the target runtime once before inspection so all migrations have run. Use 
 
 ## Read-only inspection
 
-This checkout does not contain the previously referenced `apps/server/scripts/t3-sqlite-state.ts` helper. If `sqlite3` is installed, use it only for read-only inspection:
+Prefer the guarded helper `apps/server/scripts/t3-sqlite-state.ts`, which runs
+queries on a readonly connection and refuses `exec` against the shared homes
+(`~/.t3`, `~/.t3-dev`):
+
+```bash
+node apps/server/scripts/t3-sqlite-state.ts query --base-dir <isolated-base-dir> \
+  --sql "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;"
+```
+
+If the helper is unavailable and `sqlite3` is installed, use it only for read-only inspection:
 
 ```bash
 sqlite3 -readonly <base-dir>/dev/state.sqlite \
@@ -41,7 +50,7 @@ The web UI primarily reads these projection tables:
 
 Inspect `PRAGMA table_info(<table>)` and the current migrations under `apps/server/src/persistence/Migrations/` before constructing inserts. Keep identifiers unique, timestamps as ISO strings, JSON columns valid, and related project/thread/turn IDs consistent.
 
-No mobile showcase fixture script is installed in this checkout. Derive any separately reviewed fixture from the target database schema and current migrations, not an unavailable example. Stop the server and back up the isolated database before mutation; no helper provides these safeguards automatically.
+No mobile showcase fixture script is installed in this checkout. Derive any separately reviewed fixture from the target database schema and current migrations, not an unavailable example. Stop the server before mutation; `t3-sqlite-state.ts exec` takes a `VACUUM INTO` backup (0600) automatically, but prefer it only for isolated fixture databases, never the shared homes.
 
 Direct projection writes may be appropriate for ephemeral visual states, edge-case counts, long titles, activity lists, and similar UI fixtures, but this checkout provides no supported fixture helper. They do not create a coherent orchestration event history. Do not modify `orchestration_events` unless the test specifically exercises projector internals, and do not use direct projection writes to claim backend business behavior works.
 

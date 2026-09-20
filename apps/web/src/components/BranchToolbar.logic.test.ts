@@ -1,9 +1,10 @@
-import { EnvironmentId, type GitBranch } from "@t3tools/contracts";
+import { EnvironmentId, type GitBranch, ProjectId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import {
   dedupeRemoteBranchesWithLocalMatches,
   deriveLocalBranchNameFromRemoteRef,
   isProjectCheckoutPath,
+  resolveActiveProjectRef,
   resolveEnvironmentOptionLabel,
   resolveBranchSelectionTarget,
   resolveCurrentWorkspaceLabel,
@@ -437,5 +438,30 @@ describe("shouldIncludeBranchPickerItem", () => {
         checkoutPullRequestItemValue: "__checkout_pull_request__:1359",
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveActiveProjectRef", () => {
+  const environmentId = EnvironmentId.make("environment-local");
+  const serverProjectId = ProjectId.make("project-server");
+  const draftProjectId = ProjectId.make("project-draft");
+
+  it("prefers the live server thread project", () => {
+    expect(
+      resolveActiveProjectRef(
+        { environmentId, projectId: serverProjectId },
+        { environmentId, projectId: draftProjectId },
+      ),
+    ).toEqual({ environmentId, projectId: serverProjectId });
+  });
+
+  it("falls back to the composer draft project without a server thread", () => {
+    expect(
+      resolveActiveProjectRef(undefined, { environmentId, projectId: draftProjectId }),
+    ).toEqual({ environmentId, projectId: draftProjectId });
+  });
+
+  it("resolves to null without either thread", () => {
+    expect(resolveActiveProjectRef(undefined, null)).toBeNull();
   });
 });

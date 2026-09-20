@@ -1,4 +1,4 @@
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
+import { scopeThreadRef } from "@t3tools/client-runtime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
@@ -20,6 +20,7 @@ import { cn } from "~/lib/utils";
 import {
   type EnvMode,
   type EnvironmentOption,
+  resolveActiveProjectRef,
   resolveCurrentWorkspaceLabel,
   resolveEnvModeLabel,
   resolveEffectiveEnvMode,
@@ -233,11 +234,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   const draftThread = useComposerDraftStore((store) =>
     draftId ? store.getDraftSession(draftId) : store.getDraftThreadByRef(threadRef),
   );
-  const activeProjectRef = serverThread
-    ? scopeProjectRef(serverThread.environmentId, serverThread.projectId)
-    : draftThread
-      ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
-      : null;
+  const activeProjectRef = resolveActiveProjectRef(serverThread, draftThread);
   const activeProjectSelector = useMemo(
     () => createProjectSelectorByRef(activeProjectRef),
     [activeProjectRef],

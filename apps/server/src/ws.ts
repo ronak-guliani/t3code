@@ -3021,7 +3021,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               sessions.markConnected(session.sessionId),
               backgroundPolicy.registerConnection(session.sessionId, backgroundConnection),
             ],
-            { discard: true },
+            { discard: true, concurrency: "unbounded" },
           ),
           () =>
             Effect.logInfo("websocket connected", {
@@ -3043,7 +3043,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                 backgroundPolicy.removeConnection(session.sessionId, backgroundConnection),
                 sessions.markDisconnected(session.sessionId),
               ],
-              { discard: true },
+              { discard: true, concurrency: "unbounded" },
             ),
         );
       }).pipe(Effect.catchTag("AuthError", respondToAuthError)),

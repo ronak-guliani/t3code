@@ -62,7 +62,7 @@ import { ProjectionWorkflowRepository } from "../../persistence/Services/Project
 import { ProjectionWorkflowRepositoryLive } from "../../persistence/Layers/ProjectionWorkflows.ts";
 import { RepositoryIdentityResolver } from "../../project/Services/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
-import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "../projector.ts";
+import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "../projection/ProjectionPolicy.ts";
 // Per-thread cap for background-agent runs in shell snapshots.
 const MAX_BACKGROUND_AGENT_RUNS_PER_THREAD = 100;
 import {

@@ -39,9 +39,9 @@ import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/proje
 import { truncate } from "@t3tools/shared/String";
 import { Debouncer } from "@tanstack/react-pacer";
 import {
+  type ComponentProps,
   memo,
   lazy,
-  type ComponentProps,
   type ReactNode,
   Suspense,
   useCallback,
@@ -205,6 +205,7 @@ import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { ChatTimelineSection, type ChatTimelineSectionHandle } from "./chat/ChatTimelineSection";
+import { RetainedRightPanelSurface } from "./chat/RetainedRightPanelSurface";
 import { ReviewFindingsCard } from "./chat/ReviewFindingsCard";
 import { formatReviewFindings } from "../lib/reviewFindingFormat";
 import { ChatHeader } from "./chat/ChatHeader";
@@ -214,7 +215,11 @@ import {
 } from "./chat/AgentWorkflowHeaderActions";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
-import { resolveEffectiveEnvMode, resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
+import {
+  resolveActiveProjectRef,
+  resolveEffectiveEnvMode,
+  resolveEnvironmentOptionLabel,
+} from "./BranchToolbar.logic";
 import { ProviderStatusBanner } from "./chat/ProviderStatusBanner";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import {
@@ -602,15 +607,10 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     ),
   );
   const draftThread = useComposerDraftStore((store) => store.getDraftThreadByRef(threadRef));
-  const projectRef = useMemo(() => {
-    if (serverThread) {
-      return scopeProjectRef(serverThread.environmentId, serverThread.projectId);
-    }
-    if (draftThread) {
-      return scopeProjectRef(draftThread.environmentId, draftThread.projectId);
-    }
-    return null;
-  }, [serverThread, draftThread]);
+  const projectRef = useMemo(
+    () => resolveActiveProjectRef(serverThread, draftThread),
+    [serverThread, draftThread],
+  );
   const projectEnvironmentId = projectRef?.environmentId;
   const projectProjectId = projectRef?.projectId;
   const project = useStore(
@@ -777,13 +777,9 @@ const RetainedPlanSurface = memo(function RetainedPlanSurface(
 ) {
   const { visible, ...planProps } = props;
   return (
-    <div
-      className={cn("h-full min-h-0", !visible && "hidden")}
-      data-chat-view-right-panel-surface={visible ? "plan" : undefined}
-      aria-hidden={!visible}
-    >
+    <RetainedRightPanelSurface visible={visible} surface="plan">
       <PlanSidebar {...planProps} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -791,13 +787,9 @@ const RetainedPreviewSurface = memo(function RetainedPreviewSurface(
   props: ComponentProps<typeof PreviewPanel>,
 ) {
   return (
-    <div
-      className={cn("h-full min-h-0", !props.visible && "hidden")}
-      data-chat-view-right-panel-surface={props.visible ? "preview" : undefined}
-      aria-hidden={!props.visible}
-    >
+    <RetainedRightPanelSurface visible={props.visible} surface="preview">
       <PreviewPanel {...props} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -808,11 +800,7 @@ const RetainedDiffSurface = memo(function RetainedDiffSurface(props: {
   readonly onDiffSearchChange: (nextSearch: DiffRouteSearch) => void;
 }) {
   return (
-    <div
-      className={cn("h-full min-h-0", !props.visible && "hidden")}
-      data-chat-view-right-panel-surface={props.visible ? "diff" : undefined}
-      aria-hidden={!props.visible}
-    >
+    <RetainedRightPanelSurface visible={props.visible} surface="diff">
       <Suspense fallback={null}>
         <RightPanelDiff
           threadRef={props.threadRef}
@@ -820,7 +808,7 @@ const RetainedDiffSurface = memo(function RetainedDiffSurface(props: {
           onDiffSearchChange={props.onDiffSearchChange}
         />
       </Suspense>
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -829,13 +817,9 @@ const RetainedInsightsSurface = memo(function RetainedInsightsSurface(
 ) {
   const { visible, ...insightsProps } = props;
   return (
-    <div
-      className={cn("h-full min-h-0", !visible && "hidden")}
-      data-chat-view-right-panel-surface={visible ? "insights" : undefined}
-      aria-hidden={!visible}
-    >
+    <RetainedRightPanelSurface visible={visible} surface="insights">
       <InsightsPanel {...insightsProps} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -843,13 +827,9 @@ const RetainedTerminalSurface = memo(function RetainedTerminalSurface(
   props: ComponentProps<typeof PersistentThreadTerminalDrawer>,
 ) {
   return (
-    <div
-      className={cn("h-full min-h-0", !props.visible && "hidden")}
-      data-chat-view-right-panel-surface={props.visible ? "terminal" : undefined}
-      aria-hidden={!props.visible}
-    >
+    <RetainedRightPanelSurface visible={props.visible} surface="terminal">
       <PersistentThreadTerminalDrawer {...props} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -861,13 +841,9 @@ const RetainedFileSurface = memo(function RetainedFileSurface(
 ) {
   const { visible, kind, ...fileProps } = props;
   return (
-    <div
-      className={cn("h-full min-h-0", !visible && "hidden")}
-      data-chat-view-right-panel-surface={visible ? kind : undefined}
-      aria-hidden={!visible}
-    >
+    <RetainedRightPanelSurface visible={visible} surface={kind}>
       <FilePreviewPanel {...fileProps} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
