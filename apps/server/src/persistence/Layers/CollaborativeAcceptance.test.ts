@@ -202,6 +202,23 @@ repositoryLayer("Collaborative acceptance repository", (it) => {
     }),
   );
 
+  it.effect("lists all immutable case records for PR lookup", () =>
+    Effect.gen(function* () {
+      const repository = yield* CollaborativeAcceptanceRepository;
+      const first = record("lookup-first");
+      const second = record("lookup-second");
+
+      yield* repository.save({ record: first, expectedRevision: null });
+      yield* repository.save({ record: second, expectedRevision: null });
+
+      const result = yield* repository.listAll();
+
+      const caseIds = new Set(result.map(({ case: acceptanceCase }) => acceptanceCase.caseId));
+      assert.isTrue(caseIds.has(first.case.caseId));
+      assert.isTrue(caseIds.has(second.case.caseId));
+    }),
+  );
+
   it.effect("keeps prior candidates immutable when a new review epoch is saved", () =>
     Effect.gen(function* () {
       const repository = yield* CollaborativeAcceptanceRepository;

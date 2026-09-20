@@ -1,6 +1,7 @@
 import {
   CollaborativeAcceptanceCandidateId,
   CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptanceCaseLookupError,
   CollaborativeAcceptanceError,
   CollaborativeAcceptanceExecutionId,
   CollaborativeAcceptanceExchangeId,
@@ -16,6 +17,8 @@ import {
   type CollaborativeAcceptanceCandidate,
   type CollaborativeAcceptanceCandidateSubmission,
   type CollaborativeAcceptanceCase,
+  type CollaborativeAcceptanceCaseLookupInput,
+  type CollaborativeAcceptanceCaseLookupResult,
   type CollaborativeAcceptanceExchange,
   type CollaborativeAcceptancePauseReason,
   type CollaborativeAcceptanceRecord,
@@ -53,6 +56,7 @@ import {
   completeExchange,
   startExchange,
 } from "./domain.ts";
+import { selectCurrentAcceptanceCase } from "./caseLookup.ts";
 import { CollaborativeAcceptanceRepository } from "../persistence/Services/CollaborativeAcceptance.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import {
@@ -251,6 +255,12 @@ export interface CollaborativeAcceptanceCoordinatorShape {
   readonly status: (
     caseId: CollaborativeAcceptanceCaseId,
   ) => Effect.Effect<CollaborativeAcceptanceStatus, CollaborativeAcceptanceError>;
+  readonly resolveForPullRequest: (
+    input: CollaborativeAcceptanceCaseLookupInput,
+  ) => Effect.Effect<
+    CollaborativeAcceptanceCaseLookupResult,
+    CollaborativeAcceptanceCaseLookupError
+  >;
   readonly pause: (
     caseId: CollaborativeAcceptanceCaseId,
     reason: CollaborativeAcceptancePauseReason,
@@ -535,6 +545,61 @@ const makeCoordinator = Effect.gen(function* () {
         record,
         pauseReason: record.projection.pauseReason ?? null,
       })),
+    );
+
+  const resolveForPullRequest = (
+    input: CollaborativeAcceptanceCaseLookupInput,
+  ): Effect.Effect<
+    CollaborativeAcceptanceCaseLookupResult,
+    CollaborativeAcceptanceCaseLookupError
+  > =>
+    repository.listAll().pipe(
+      Effect.mapError(
+        () =>
+          new CollaborativeAcceptanceCaseLookupError({
+            message: "Collaborative acceptance cases are unavailable.",
+            reason: "unavailable",
+          }),
+      ),
+      Effect.flatMap((records) => {
+        const selection = selectCurrentAcceptanceCase({
+          records,
+          threadId: input.threadId,
+          pullRequest: input.pullRequest,
+        });
+        switch (selection._tag) {
+          case "not-found":
+            return Effect.fail(
+              new CollaborativeAcceptanceCaseLookupError({
+                message: "No active acceptance case is associated with this pull request.",
+                reason: "not-found",
+              }),
+            );
+          case "ambiguous":
+            return Effect.fail(
+              new CollaborativeAcceptanceCaseLookupError({
+                message: "Multiple active acceptance cases are associated with this pull request.",
+                reason: "ambiguous",
+              }),
+            );
+          case "selected":
+            return status(selection.record.case.caseId).pipe(
+              Effect.map(
+                (currentStatus): CollaborativeAcceptanceCaseLookupResult => ({
+                  caseId: selection.record.case.caseId,
+                  status: currentStatus,
+                }),
+              ),
+              Effect.mapError(
+                () =>
+                  new CollaborativeAcceptanceCaseLookupError({
+                    message: "The acceptance case status is unavailable.",
+                    reason: "unavailable",
+                  }),
+              ),
+            );
+        }
+      }),
     );
 
   const enforceLimitsFresh = (caseId: CollaborativeAcceptanceCaseId) =>
@@ -2304,6 +2369,7 @@ const makeCoordinator = Effect.gen(function* () {
     recordProviderEvidence,
     refreshProviderEvidence,
     status,
+    resolveForPullRequest,
     pause,
     resume,
     start,

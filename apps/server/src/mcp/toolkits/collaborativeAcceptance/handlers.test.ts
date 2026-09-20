@@ -47,6 +47,7 @@ const thread = {
 
 const coordinator: CollaborativeAcceptanceCoordinatorShape = {
   status: () => Effect.succeed({ record: null, pauseReason: null }),
+  resolveForPullRequest: () => Effect.die("unused"),
   submitCandidate: () => Effect.die("unused"),
   requestReview: () => Effect.die("unused"),
   requestCollaboration: () => Effect.die("unused"),
