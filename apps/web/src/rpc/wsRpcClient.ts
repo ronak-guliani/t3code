@@ -9,6 +9,13 @@ import {
   type ServerSettingsPatch,
   WS_METHODS,
 } from "@t3tools/contracts";
+import type {
+  CollaborativeAcceptanceAssessmentSubmission,
+  CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptanceCandidateSubmission,
+  CollaborativeAcceptancePauseReason,
+  ThreadId,
+} from "@t3tools/contracts";
 import { applyGitStatusStreamEvent } from "@t3tools/shared/git";
 import { Effect, Stream } from "effect";
 
@@ -171,6 +178,18 @@ export interface WsRpcClient {
     readonly transfer: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsTransfer>;
     readonly submitFindings: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsSubmitFindings>;
     readonly launchFallback: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsLaunchFallback>;
+  };
+  readonly collaborativeAcceptance: {
+    readonly submitCandidate: RpcUnaryMethod<
+      typeof WS_METHODS.collaborativeAcceptanceSubmitCandidate
+    >;
+    readonly requestReview: RpcUnaryMethod<typeof WS_METHODS.collaborativeAcceptanceRequestReview>;
+    readonly status: RpcUnaryMethod<typeof WS_METHODS.collaborativeAcceptanceStatus>;
+    readonly submitAssessment: RpcUnaryMethod<
+      typeof WS_METHODS.collaborativeAcceptanceSubmitAssessment
+    >;
+    readonly pause: RpcUnaryMethod<typeof WS_METHODS.collaborativeAcceptancePause>;
+    readonly resume: RpcUnaryMethod<typeof WS_METHODS.collaborativeAcceptanceResume>;
   };
   readonly workflow: {
     readonly run: RpcUnaryMethod<typeof WS_METHODS.workflowRun>;
@@ -427,6 +446,35 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.pullRequestMonitorsSubmitFindings](input)),
       launchFallback: (input) =>
         transport.request((client) => client[WS_METHODS.pullRequestMonitorsLaunchFallback](input)),
+    },
+    collaborativeAcceptance: {
+      submitCandidate: (input: {
+        readonly threadId: ThreadId;
+        readonly submission: CollaborativeAcceptanceCandidateSubmission;
+      }) =>
+        transport.request((client) =>
+          client[WS_METHODS.collaborativeAcceptanceSubmitCandidate](input),
+        ),
+      requestReview: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.collaborativeAcceptanceRequestReview](input),
+        ),
+      status: (input) =>
+        transport.request((client) => client[WS_METHODS.collaborativeAcceptanceStatus](input)),
+      submitAssessment: (input: {
+        readonly threadId: ThreadId;
+        readonly submission: CollaborativeAcceptanceAssessmentSubmission;
+      }) =>
+        transport.request((client) =>
+          client[WS_METHODS.collaborativeAcceptanceSubmitAssessment](input),
+        ),
+      pause: (input: {
+        readonly threadId: ThreadId;
+        readonly caseId: CollaborativeAcceptanceCaseId;
+        readonly reason: CollaborativeAcceptancePauseReason;
+      }) => transport.request((client) => client[WS_METHODS.collaborativeAcceptancePause](input)),
+      resume: (input) =>
+        transport.request((client) => client[WS_METHODS.collaborativeAcceptanceResume](input)),
     },
     workflow: {
       run: (input) => transport.request((client) => client[WS_METHODS.workflowRun](input)),

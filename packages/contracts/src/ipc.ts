@@ -154,6 +154,13 @@ import type {
   PullRequestMonitorSubmitFindingsResult,
   PullRequestMonitorTransferInput,
 } from "./pullRequestMonitor.ts";
+import type {
+  CollaborativeAcceptanceAssessmentSubmission,
+  CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptanceCandidateSubmission,
+  CollaborativeAcceptancePauseReason,
+  CollaborativeAcceptanceStatus,
+} from "./collaborativeAcceptance.ts";
 import { ServerSettings, type ClientSettings, type ServerSettingsPatch } from "./settings.ts";
 import { Schema } from "effect";
 
@@ -1134,6 +1141,33 @@ export interface EnvironmentApi {
     launchFallback: (
       input: PullRequestMonitorLaunchFallbackInput,
     ) => Promise<PullRequestMonitorLaunchFallbackResult>;
+  };
+  collaborativeAcceptance: {
+    submitCandidate: (input: {
+      readonly threadId: ThreadId;
+      readonly submission: CollaborativeAcceptanceCandidateSubmission;
+    }) => Promise<CollaborativeAcceptanceStatus>;
+    requestReview: (input: {
+      readonly threadId: ThreadId;
+      readonly caseId: CollaborativeAcceptanceCaseId;
+    }) => Promise<CollaborativeAcceptanceStatus>;
+    status: (input: {
+      readonly threadId: ThreadId;
+      readonly caseId: CollaborativeAcceptanceCaseId;
+    }) => Promise<CollaborativeAcceptanceStatus>;
+    submitAssessment: (input: {
+      readonly threadId: ThreadId;
+      readonly submission: CollaborativeAcceptanceAssessmentSubmission;
+    }) => Promise<CollaborativeAcceptanceStatus>;
+    pause: (input: {
+      readonly threadId: ThreadId;
+      readonly caseId: CollaborativeAcceptanceCaseId;
+      readonly reason: CollaborativeAcceptancePauseReason;
+    }) => Promise<CollaborativeAcceptanceStatus>;
+    resume: (input: {
+      readonly threadId: ThreadId;
+      readonly caseId: CollaborativeAcceptanceCaseId;
+    }) => Promise<CollaborativeAcceptanceStatus>;
   };
   server: {
     exportActiveChats: () => Promise<ServerExportActiveChatsResult>;

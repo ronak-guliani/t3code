@@ -8,6 +8,7 @@ import type {
   PullRequestRef,
   PullRequestReviewThread,
   PullRequestReviewVerdict,
+  PullRequestMonitorStatusResult,
 } from "@t3tools/contracts";
 import { MAX_PULL_REQUEST_INLINE_REVIEW_COMMENTS } from "@t3tools/contracts";
 import { parsePatchFiles } from "@pierre/diffs";
@@ -35,6 +36,7 @@ import {
   pullRequestDetailQueryOptions,
   pullRequestDiffInfiniteQueryOptions,
   pullRequestInvalidateMutationOptions,
+  pullRequestMonitorStatusQueryOptions,
   pullRequestReplyToThreadMutationOptions,
   pullRequestRequestReviewersMutationOptions,
   pullRequestReviewerCandidatesQueryOptions,
@@ -52,6 +54,7 @@ import { isWebUrl } from "~/browser/browserLinkTarget";
 import { selectThreadShellsAcrossEnvironments, useStore } from "~/store";
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import { findPullRequestBrowserThread } from "~/lib/openPullRequestLink";
+import { presentCollaborativeAcceptanceStatus } from "./collaborativeAcceptancePresentation";
 
 import {
   EMPTY_PENDING_REVIEW_COMMENTS,
@@ -151,6 +154,75 @@ function toDetailView(
     author: activity?.author ?? detail.author,
     reviewers: activity?.reviewers ?? detail.reviewers,
   };
+}
+
+function PullRequestCollaborationStatusCard({
+  status,
+}: {
+  readonly status: PullRequestMonitorStatusResult | undefined;
+}) {
+  const presentation = presentCollaborativeAcceptanceStatus({ monitor: status });
+  const candidateHead = status?.latestSnapshot?.headSha ?? status?.monitor?.headSha;
+  const blockers = status?.monitor?.readiness?.blockers ?? [];
+
+  return (
+    <section
+      className="rounded-xl border border-border/70 bg-card/60 p-3"
+      aria-label="Pull request collaboration status"
+      aria-live="polite"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold">Collaboration status</h2>
+        {candidateHead ? (
+          <code
+            className="max-w-40 truncate text-[11px] text-muted-foreground"
+            title={candidateHead}
+          >
+            {candidateHead.slice(0, 12)}
+          </code>
+        ) : null}
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {(
+          [
+            ["Execution", presentation.execution],
+            ["Collaboration", presentation.collaboration],
+            ["Acceptance", presentation.acceptance],
+            ["Readiness", presentation.readiness],
+          ] as const
+        ).map(([label, value]) => (
+          <div key={label} className="min-w-0 rounded-lg bg-muted/50 px-2.5 py-2">
+            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              {label}
+            </div>
+            <div className="truncate text-xs font-medium" title={value}>
+              {value}
+            </div>
+          </div>
+        ))}
+      </div>
+      {presentation.blocker ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">Why:</span> {presentation.blocker}
+        </p>
+      ) : null}
+      {blockers.length > 0 ? (
+        <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+          {blockers.slice(0, 3).map((blocker) => (
+            <li key={`${blocker.kind}-${blocker.detail ?? ""}`}>
+              {blocker.detail ?? blocker.kind}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {status?.openFeedback.length ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {status.openFeedback.length} open finding{status.openFeedback.length === 1 ? "" : "s"} ·{" "}
+          {status.recentEvents.length} recent event{status.recentEvents.length === 1 ? "" : "s"}
+        </p>
+      ) : null}
+    </section>
+  );
 }
 
 function CommentComposer({
@@ -663,6 +735,7 @@ export function PullRequestDetailPanel({
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<DetailTab>("summary");
   const detailQuery = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
+  const monitorQuery = useQuery(pullRequestMonitorStatusQueryOptions({ environmentId, reference }));
   const activityQuery = useQuery(
     pullRequestActivityQueryOptions({
       environmentId,
@@ -1074,6 +1147,15 @@ export function PullRequestDetailPanel({
             );
           })}
         </div>
+        {monitorQuery.data ? (
+          <div className="border-t border-border/70 px-4 py-3">
+            <PullRequestCollaborationStatusCard status={monitorQuery.data} />
+          </div>
+        ) : monitorQuery.isError ? (
+          <div className="border-t border-border/70 px-4 py-3 text-xs text-muted-foreground">
+            Collaboration status unavailable: {errorMessage(monitorQuery.error)}
+          </div>
+        ) : null}
       </header>
       <div
         aria-labelledby={`pr-tab-${activeTab}`}

@@ -1,4 +1,7 @@
 import type {
+  CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptancePauseReason,
+  CollaborativeAcceptanceStatus,
   EnvironmentId,
   PullRequestActionInput,
   PullRequestActivity,
@@ -20,6 +23,7 @@ import type {
   PullRequestMonitorStartInput,
   PullRequestMonitorStatusInput,
   PullRequestMonitorStopInput,
+  ThreadId,
 } from "@t3tools/contracts";
 import { PullRequestDiffResult as PullRequestDiffResultSchema } from "@t3tools/contracts";
 import {
@@ -112,6 +116,11 @@ export const pullRequestQueryKeys = {
       reference.repository,
       reference.number,
     ] as const,
+  collaborativeAcceptanceStatus: (
+    environmentId: EnvironmentId | null,
+    threadId: ThreadId,
+    caseId: CollaborativeAcceptanceCaseId,
+  ) => ["collaborative-acceptance", environmentId ?? null, threadId, caseId] as const,
 };
 
 export const pullRequestMutationKeys = {
@@ -135,6 +144,8 @@ export const pullRequestMutationKeys = {
     ["pull-requests", "mutation", environmentId ?? null, "monitor-stop"] as const,
   monitorLaunchFallback: (environmentId: EnvironmentId | null) =>
     ["pull-requests", "mutation", environmentId ?? null, "monitor-fallback"] as const,
+  collaborativeAcceptance: (environmentId: EnvironmentId | null, action: string) =>
+    ["collaborative-acceptance", "mutation", environmentId ?? null, action] as const,
 };
 
 function requirePullRequestApi(environmentId: EnvironmentId | null) {
@@ -491,6 +502,96 @@ export function pullRequestMonitorStatusQueryOptions(input: {
       const api = await ensureEnvironmentApi(input.environmentId);
       return api.pullRequestMonitors.status(statusInput);
     },
+  });
+}
+
+export function collaborativeAcceptanceStatusQueryOptions(input: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly caseId: CollaborativeAcceptanceCaseId;
+}) {
+  return queryOptions({
+    queryKey: pullRequestQueryKeys.collaborativeAcceptanceStatus(
+      input.environmentId,
+      input.threadId,
+      input.caseId,
+    ),
+    staleTime: PULL_REQUEST_STALE_TIME_MS,
+    refetchInterval: 15_000,
+    queryFn: () =>
+      ensureEnvironmentApi(input.environmentId).collaborativeAcceptance.status({
+        threadId: input.threadId,
+        caseId: input.caseId,
+      }),
+  });
+}
+
+function collaborativeAcceptanceMutationOptions<TInput>(input: {
+  readonly environmentId: EnvironmentId;
+  readonly queryClient: QueryClient;
+  readonly action: string;
+  readonly mutationFn: (value: TInput) => Promise<CollaborativeAcceptanceStatus>;
+}) {
+  return mutationOptions({
+    mutationKey: pullRequestMutationKeys.collaborativeAcceptance(input.environmentId, input.action),
+    mutationFn: input.mutationFn,
+    onSuccess: async (result) => {
+      const record = result.record;
+      if (!record) return;
+      await input.queryClient.invalidateQueries({
+        queryKey: pullRequestQueryKeys.collaborativeAcceptanceStatus(
+          input.environmentId,
+          record.case.parentThreadId,
+          record.case.caseId,
+        ),
+      });
+    },
+  });
+}
+
+export function collaborativeAcceptancePauseMutationOptions(input: {
+  readonly environmentId: EnvironmentId;
+  readonly queryClient: QueryClient;
+}) {
+  return collaborativeAcceptanceMutationOptions<{
+    readonly threadId: ThreadId;
+    readonly caseId: CollaborativeAcceptanceCaseId;
+    readonly reason: CollaborativeAcceptancePauseReason;
+  }>({
+    ...input,
+    action: "pause",
+    mutationFn: (value) =>
+      ensureEnvironmentApi(input.environmentId).collaborativeAcceptance.pause(value),
+  });
+}
+
+export function collaborativeAcceptanceResumeMutationOptions(input: {
+  readonly environmentId: EnvironmentId;
+  readonly queryClient: QueryClient;
+}) {
+  return collaborativeAcceptanceMutationOptions<{
+    readonly threadId: ThreadId;
+    readonly caseId: CollaborativeAcceptanceCaseId;
+  }>({
+    ...input,
+    action: "resume",
+    mutationFn: (value) =>
+      ensureEnvironmentApi(input.environmentId).collaborativeAcceptance.resume(value),
+  });
+}
+
+export function collaborativeAcceptanceRequestReviewMutationOptions(input: {
+  readonly environmentId: EnvironmentId;
+  readonly queryClient: QueryClient;
+}) {
+  return collaborativeAcceptanceMutationOptions<{
+    readonly threadId: ThreadId;
+    readonly caseId: CollaborativeAcceptanceCaseId;
+  }>({
+    ...input,
+    action: "request-review",
+    mutationFn: (value) =>
+      ensureEnvironmentApi(input.environmentId).collaborativeAcceptance.requestReview(value),
   });
 }
 

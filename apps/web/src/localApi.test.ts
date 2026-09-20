@@ -118,6 +118,14 @@ const rpcClientMock = {
     submitFindings: vi.fn(),
     launchFallback: vi.fn(),
   },
+  collaborativeAcceptance: {
+    submitCandidate: vi.fn(),
+    requestReview: vi.fn(),
+    status: vi.fn(),
+    submitAssessment: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+  },
   workflow: {
     run: vi.fn(),
   },

@@ -87,6 +87,14 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       submitFindings: rpcClient.pullRequestMonitors.submitFindings,
       launchFallback: rpcClient.pullRequestMonitors.launchFallback,
     },
+    collaborativeAcceptance: {
+      submitCandidate: rpcClient.collaborativeAcceptance.submitCandidate,
+      requestReview: rpcClient.collaborativeAcceptance.requestReview,
+      status: rpcClient.collaborativeAcceptance.status,
+      submitAssessment: rpcClient.collaborativeAcceptance.submitAssessment,
+      pause: rpcClient.collaborativeAcceptance.pause,
+      resume: rpcClient.collaborativeAcceptance.resume,
+    },
     workflow: {
       run: rpcClient.workflow.run,
     },
