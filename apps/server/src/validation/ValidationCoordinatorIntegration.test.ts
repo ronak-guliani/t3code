@@ -309,6 +309,40 @@ describe("validation coordinator integration", () => {
     expect(model.threads[0]?.validationRun?.gates[0]?.status).toBe("pending");
   });
 
+  it("drives the run to blocked when a gate kind has no runner", async () => {
+    const run = runningRun();
+    const gateId = run.gates[0]!.id;
+    let model = readModelWithRun(run);
+    const record = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.validation.result.record",
+          commandId: CommandId.make("cmd-result-unknown-1"),
+          threadId,
+          result: resultFor(run, {
+            id: `result:run-1:${gateId}:attempt:run-1:${gateId}:1`,
+            attemptId: `attempt:run-1:${gateId}:1`,
+            status: "blocked",
+            exitCode: null,
+            outputRef: null,
+            blockerReason: "Gate kind repository-tests has no integrated runner.",
+            diagnostics: ["Select a supported validation gate."],
+          }),
+        },
+        readModel: model,
+      }),
+    );
+    const events = Array.isArray(record) ? record : [record];
+    for (const event of events) {
+      model = await Effect.runPromise(projectEvent(model, { ...event, sequence: 1 } as never));
+    }
+    expect(model.threads[0]?.validationRun?.status).toBe("blocked");
+    expect(model.threads[0]?.validationRun?.gates[0]?.status).toBe("blocked");
+    expect(model.threads[0]?.validationRun?.gates[0]?.blockerReason).toContain(
+      "no integrated runner",
+    );
+  });
+
   it("maps failure taxonomy to typed outcomes", () => {
     const run = runningRun();
     const cases: Array<{

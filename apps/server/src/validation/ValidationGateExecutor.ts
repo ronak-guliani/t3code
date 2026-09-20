@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -447,11 +446,6 @@ export const makeValidationGateExecutor = Effect.gen(function* () {
           threadId: input.threadId,
         });
         const completedAt = new Date().toISOString();
-        const sha = createHash("sha256")
-          .update(`${input.runId}:${input.gate.id}:${input.attemptId}`)
-          .digest("hex")
-          .slice(0, 16);
-        void sha;
         return mapBrowserResultToStructured({
           runId: input.runId,
           gate: input.gate,

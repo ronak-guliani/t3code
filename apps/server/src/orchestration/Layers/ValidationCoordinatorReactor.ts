@@ -490,22 +490,25 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
 
     const now = new Date().toISOString();
     yield* orchestrationEngine.dispatch({
-      type: "thread.validation-gate.update",
-      commandId: commandId(run.id, `block:unknown:${nextGate.id}`),
+      type: "thread.validation.result.record",
+      commandId: commandId(run.id, `result:${nextGate.id}:${attemptId}`),
       threadId: thread.id,
-      runId: run.id,
-      executorId: run.lease.executorId,
-      target: run.target,
-      gateId: nextGate.id,
-      status: "blocked",
-      command: nextGate.command,
-      startedAt: observedAt,
-      completedAt: now,
-      exitCode: null,
-      outputRef: null,
-      blockerReason: `Gate kind ${nextGate.kind ?? "unknown"} has no integrated runner.`,
-      diagnostics: ["Select a supported validation gate."],
-      createdAt: now,
+      result: {
+        id: `result:${run.id}:${nextGate.id}:${attemptId}`,
+        runId: run.id,
+        gateId: nextGate.id,
+        attemptId,
+        leaseId: run.lease.id,
+        executorId: run.lease.executorId,
+        target: run.target,
+        status: "blocked" as const,
+        observedAt,
+        completedAt: now,
+        exitCode: null,
+        outputRef: null,
+        blockerReason: `Gate kind ${nextGate.kind ?? "unknown"} has no integrated runner.`,
+        diagnostics: ["Select a supported validation gate."],
+      },
     });
   });
 

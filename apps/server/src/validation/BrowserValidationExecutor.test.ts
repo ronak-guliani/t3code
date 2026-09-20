@@ -256,6 +256,30 @@ describe("browser validation executor", () => {
     expect(deps.issueCount).toBe(0);
   });
 
+  it("reports an unrequested preflight target actionably", async () => {
+    const deps = dependencies({
+      preflights: [preflight({ target: { ...preflight().target, requested: false } })],
+    });
+    const result = await Effect.runPromise(executeBrowserValidation(deps, input()));
+    expect(result.outcome).toBe("blocked");
+    expect(result.diagnostics[0]?.message).toContain("did not request");
+    expect(deps.issueCount).toBe(0);
+  });
+
+  it("reports a preflight environment mismatch actionably", async () => {
+    const deps = dependencies({
+      preflights: [
+        preflight({
+          target: { ...preflight().target, environmentId: EnvironmentId.make("other") },
+        }),
+      ],
+    });
+    const result = await Effect.runPromise(executeBrowserValidation(deps, input()));
+    expect(result.outcome).toBe("blocked");
+    expect(result.diagnostics[0]?.message).toContain("different environment");
+    expect(deps.issueCount).toBe(0);
+  });
+
   it("blocks when browser recovery still has no attached tab", async () => {
     const noTab = preflight({
       browser: { ...preflight().browser, tabAttached: false, tabId: null },

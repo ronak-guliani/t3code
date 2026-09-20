@@ -173,16 +173,25 @@ const preflightIsUsable = (
   result.target.environmentId === environment.environmentId &&
   (result.recovery.kind === "none" || result.recovery.kind === "pair-after-preflight");
 
-const preflightFailureMessage = (result: PreviewAutomationPreflightResult): string => {
+const preflightFailureMessage = (
+  result: PreviewAutomationPreflightResult,
+  environment: ExecutionEnvironmentDescriptor,
+): string => {
   if (!result.browser.supported) return "The connected browser does not support automation.";
   if (!result.browser.available) return "No automation-capable browser host is available.";
   if (result.mcp.credential !== "valid") return "The preview automation credential is invalid.";
   if (!hasAttachedTab(result)) {
     return "Browser preflight did not attach a controllable tab.";
   }
+  if (!result.target.requested) {
+    return "Browser preflight did not request the expected validation target.";
+  }
   if (result.target.reachability !== "reachable") return "The validation target is unavailable.";
   if (result.target.app !== "expected-t3-app")
     return "The target is not the expected T3 application.";
+  if (result.target.environmentId !== environment.environmentId) {
+    return "The connected browser is attached to a different environment.";
+  }
   if (result.recovery.kind !== "none" && result.recovery.kind !== "pair-after-preflight") {
     return result.recovery.message;
   }
@@ -487,7 +496,7 @@ const executePromise = async (
       );
     }
     if (!preflightIsUsable(preflight, input.environment)) {
-      fail("blocked", "browser", preflightFailureMessage(preflight));
+      fail("blocked", "browser", preflightFailureMessage(preflight, input.environment));
     }
 
     const targetOrigin = preflight.target.origin;
