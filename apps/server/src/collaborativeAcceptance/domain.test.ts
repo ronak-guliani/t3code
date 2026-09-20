@@ -23,6 +23,7 @@ import {
   evaluateAcceptance,
   recordExchangeOutcome,
   reserveExchange,
+  retryExchange,
   startExchange,
   type AcceptanceEvaluationInput,
   type AcceptanceExchangeLedger,
@@ -321,6 +322,18 @@ describe("evaluateAcceptance", () => {
     assert.strictEqual(stale.projection.acceptanceLifecycle, "verifying");
     assert.strictEqual(stale.projection.readiness, "blocked");
   });
+
+  it("keeps terminal negative collaboration outcomes blocking", () => {
+    for (const outcome of ["cancelled", "superseded", "unavailable", "failed", "needs-human"]) {
+      const result = evaluateAcceptance(
+        input({
+          collaborationObligations: [`obligation:${outcome}`],
+        }),
+      );
+      assert.notStrictEqual(result.projection.readiness, "ready-now");
+      assert.include(result.projection.reasons, "collaboration-obligations-open");
+    }
+  });
 });
 
 describe("exchange accounting", () => {
@@ -352,7 +365,7 @@ describe("exchange accounting", () => {
     const recorded = recordExchangeOutcome(started.ledger, exchange.exchangeId, now);
     assert.isTrue(recorded.ok);
     if (!recorded.ok) return;
-    const retriedReservation = reserveExchange(recorded.ledger, exchange);
+    const retriedReservation = retryExchange(recorded.ledger, exchange.exchangeId, now);
     assert.isTrue(retriedReservation.ok);
     if (!retriedReservation.ok) return;
     const retry = startExchange(retriedReservation.ledger, exchange.exchangeId, now);
@@ -380,6 +393,29 @@ describe("exchange accounting", () => {
     assert.isTrue(cancelledAfterStart.ok);
     if (!cancelledAfterStart.ok) return;
     assert.strictEqual(cancelledAfterStart.exchange.startedAt, now);
+  });
+
+  it("does not reopen a terminal exchange without an explicit retry transition", () => {
+    const reserved = reserveExchange(ledger, exchange);
+    assert.isTrue(reserved.ok);
+    if (!reserved.ok) return;
+    const started = startExchange(reserved.ledger, exchange.exchangeId, now);
+    assert.isTrue(started.ok);
+    if (!started.ok) return;
+    const cancelled = cancelExchange(started.ledger, exchange.exchangeId, now);
+    assert.isTrue(cancelled.ok);
+    if (!cancelled.ok) return;
+
+    const implicit = reserveExchange(cancelled.ledger, exchange);
+    assert.isTrue(implicit.ok);
+    if (!implicit.ok) return;
+    assert.strictEqual(implicit.exchange.status, "cancelled");
+
+    const explicit = retryExchange(cancelled.ledger, exchange.exchangeId, now);
+    assert.isTrue(explicit.ok);
+    if (!explicit.ok) return;
+    assert.strictEqual(explicit.exchange.status, "reserved");
+    assert.strictEqual(explicit.exchange.retryCount, 1);
   });
 
   it("enforces the lifecycle ordering", () => {

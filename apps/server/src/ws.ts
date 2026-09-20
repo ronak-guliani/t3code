@@ -354,6 +354,7 @@ const makeWsRpcLayer = (
       }): CollaborationExecutionAuthority | undefined => {
         const delegation = thread.nudging?.delegation;
         if (
+          delegation?.assignmentId === undefined ||
           delegation?.dispatchSequence === undefined ||
           delegation.dispatchSequence <= 0 ||
           delegation.dispatchId === undefined ||
@@ -364,9 +365,8 @@ const makeWsRpcLayer = (
         }
         return {
           executionId: `thread:${thread.id}`,
-          ...(delegation.assignmentId === undefined
-            ? {}
-            : { assignmentId: delegation.assignmentId }),
+          assignmentId: delegation.assignmentId,
+          threadId: thread.id,
           generation: delegation.dispatchSequence,
           dispatchId: delegation.dispatchId,
           turnId: delegation.dispatchTurnId,

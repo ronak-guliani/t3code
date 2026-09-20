@@ -115,12 +115,16 @@ function collaborationRequestLocation(readModel: OrchestrationReadModel, request
 function executionAuthorityMatches(
   expected: {
     readonly executionId: string;
+    readonly assignmentId?: string;
+    readonly threadId?: string;
     readonly generation: number;
     readonly dispatchId: string | null;
     readonly turnId: string | null;
   },
   actual: {
     readonly executionId: string;
+    readonly assignmentId?: string;
+    readonly threadId?: string;
     readonly generation: number;
     readonly dispatchId: string | null;
     readonly turnId: string | null;
@@ -128,6 +132,12 @@ function executionAuthorityMatches(
 ) {
   return (
     expected.executionId === actual.executionId &&
+    (expected.assignmentId === undefined && actual.assignmentId === undefined
+      ? true
+      : expected.assignmentId === actual.assignmentId) &&
+    (expected.threadId === undefined && actual.threadId === undefined
+      ? true
+      : expected.threadId === actual.threadId) &&
     expected.generation === actual.generation &&
     expected.dispatchId === actual.dispatchId &&
     expected.turnId === actual.turnId
@@ -137,23 +147,34 @@ function executionAuthorityMatches(
 function collaborationResponseAuthorityMatches(
   admission: {
     readonly executionId: string;
+    readonly assignmentId?: string;
+    readonly threadId?: string;
     readonly generation: number;
     readonly dispatchId: string | null;
     readonly turnId: string | null;
   },
   active: {
     readonly executionId: string;
+    readonly assignmentId?: string;
+    readonly threadId?: string;
     readonly generation: number;
     readonly dispatchId: string | null;
     readonly turnId: string | null;
   },
 ) {
+  const strict =
+    admission.assignmentId !== undefined ||
+    admission.dispatchId !== null ||
+    admission.turnId !== null;
   return (
     admission.executionId === active.executionId &&
-    admission.dispatchId === active.dispatchId &&
-    (admission.turnId === null
-      ? active.generation >= admission.generation
-      : active.generation === admission.generation && admission.turnId === active.turnId)
+    (!strict ||
+      (admission.assignmentId !== undefined &&
+        admission.assignmentId === active.assignmentId &&
+        admission.threadId === active.threadId &&
+        admission.generation === active.generation &&
+        admission.dispatchId === active.dispatchId &&
+        admission.turnId === active.turnId))
   );
 }
 
@@ -1592,13 +1613,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       const { request } = location;
+      const consumedAuthorityMatches =
+        request.producingExecution.assignmentId === undefined
+          ? request.producingExecution.executionId === command.consumedExecution.executionId &&
+            command.consumedExecution.generation > request.producingExecution.generation
+          : request.producingExecution.assignmentId === command.consumedExecution.assignmentId &&
+            request.producingExecution.threadId === command.consumedExecution.threadId &&
+            request.producingExecution.dispatchId === command.consumedExecution.dispatchId &&
+            request.producingExecution.executionId === command.consumedExecution.executionId &&
+            command.consumedExecution.generation > request.producingExecution.generation &&
+            command.consumedExecution.turnId !== null;
       if (
         request.status !== "response-ready" ||
         request.responseRef !== command.responseId ||
         request.response === null ||
-        request.producingExecution.executionId !== command.consumedExecution.executionId ||
+        !consumedAuthorityMatches ||
         request.senderThreadId !== command.threadId ||
-        command.consumedExecution.generation <= request.producingExecution.generation
+        (request.producingExecution.threadId !== undefined &&
+          request.producingExecution.threadId !== command.threadId)
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -4199,11 +4231,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     default: {
-      command satisfies never;
-      const fallback = command as never as { type: string };
+      const unexpectedCommand: never = command;
+      const commandType = String(unexpectedCommand);
       return yield* new OrchestrationCommandInvariantError({
-        commandType: fallback.type,
-        detail: `Unknown command type: ${fallback.type}`,
+        commandType,
+        detail: `Unknown command type: ${commandType}`,
       });
     }
   }

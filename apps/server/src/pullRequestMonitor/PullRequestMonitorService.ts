@@ -804,6 +804,7 @@ export const layer = Layer.effect(
           nextPollAt: now,
           updatedAt: now,
         });
+        yield* notify;
       });
 
     const context = (input: PullRequestMonitorContextInput) =>

@@ -23,10 +23,19 @@ import { createEmptyReadModel, projectEvent } from "./projector.ts";
 const now = "2026-09-19T00:00:00.000Z";
 const exchange = (value: string) => CollaborativeAcceptanceExchangeId.make(value);
 const candidate = (value: string) => CollaborativeAcceptanceCandidateId.make(value);
-const authority = (turnId: string | null, generation = 1, executionId = "execution-child") => ({
+const authority = (
+  turnId: string | null,
+  generation = 1,
+  executionId = "execution-child",
+  assignmentId = "assignment-1",
+) => ({
   executionId,
+  assignmentId,
+  threadId: ThreadId.make(
+    executionId.includes("parent") || turnId?.includes("parent") ? "parent" : "child",
+  ),
   generation,
-  dispatchId: null,
+  dispatchId: `dispatch-${executionId}`,
   turnId: turnId === null ? null : TurnId.make(turnId),
 });
 const delivery = (queuedTurnId: string, text: string) => ({
@@ -213,6 +222,71 @@ describe("collaboration request protocol", () => {
     expect((consumed as ReadonlyArray<any>)[0]?.payload.request.status).toBe("consumed");
   });
 
+  it("preserves a consumed needs-human outcome as terminal non-success", async () => {
+    const base = await makeReadModel();
+    const requestId = CollaborationRequestId.make("request-needs-human");
+    const createCommand = {
+      type: "thread.collaboration-request.create" as const,
+      commandId: CommandId.make("command-request-needs-human"),
+      threadId: ThreadId.make("child"),
+      requestId,
+      recipientThreadId: ThreadId.make("parent"),
+      kind: "review" as const,
+      exchangeId: exchange("exchange-needs-human"),
+      blocking: true,
+      senderAuthority: authority("turn-child"),
+      recipientAuthority: authority("turn-parent", 1, "execution-parent"),
+      producingExecution: authority("turn-child"),
+      payloadRef: { ref: "payload://needs-human", sha256: "sha-needs-human" },
+      candidateRefs: [candidate("candidate-needs-human")],
+      findingRefs: [],
+      delivery: delivery("queued-needs-human", "Review the candidate."),
+      createdAt: now,
+    };
+    const created = await Effect.runPromise(
+      decideOrchestrationCommand({ command: createCommand, readModel: base }),
+    );
+    let readModel = await projectEvents(base, created as ReadonlyArray<any>);
+    const responded = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.collaboration-request.respond",
+          commandId: CommandId.make("command-respond-needs-human"),
+          threadId: ThreadId.make("parent"),
+          requestId,
+          responseId: CollaborationResponseId.make("response-needs-human"),
+          exchangeId: exchange("exchange-needs-human"),
+          responderAuthority: authority("turn-parent", 1, "execution-parent"),
+          payloadRef: { ref: "payload://needs-human-response", sha256: "sha-needs-human-response" },
+          outcome: "needs-human",
+          delivery: delivery("queued-needs-human-response", "Needs human review."),
+          createdAt: now,
+        },
+        readModel,
+      }),
+    );
+    readModel = await projectEvents(readModel, responded as ReadonlyArray<any>);
+
+    const consumed = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.collaboration-request.consume",
+          commandId: CommandId.make("command-consume-needs-human"),
+          threadId: ThreadId.make("child"),
+          requestId,
+          responseId: CollaborationResponseId.make("response-needs-human"),
+          consumedExecution: authority("turn-child-continuation", 2),
+          createdAt: now,
+        },
+        readModel,
+      }),
+    );
+    expect((consumed as ReadonlyArray<any>)[0]?.payload.request.status).toBe("consumed");
+    expect((consumed as ReadonlyArray<any>)[0]?.payload.request.terminalOutcome).toBe(
+      "needs-human",
+    );
+  });
+
   it("authorizes a response against immutable admission authority after recipient delivery advances", async () => {
     const base = await makeReadModel();
     const requestId = CollaborationRequestId.make("request-delivery-authority");
@@ -226,7 +300,7 @@ describe("collaboration request protocol", () => {
       exchangeId: exchange("exchange-delivery-authority"),
       blocking: true,
       senderAuthority: authority("turn-child"),
-      recipientAuthority: authority(null, 1, "execution-parent"),
+      recipientAuthority: authority("turn-parent-admitted", 1, "execution-parent"),
       producingExecution: authority("turn-child"),
       payloadRef: { ref: "payload://delivery-authority", sha256: "sha-delivery-authority" },
       candidateRefs: [candidate("candidate-delivery-authority")],
@@ -253,7 +327,7 @@ describe("collaboration request protocol", () => {
           requestId,
           responseId: CollaborationResponseId.make("response-delivery-authority"),
           exchangeId: exchange("exchange-delivery-authority"),
-          responderAuthority: authority("turn-parent-delivery", 1, "execution-parent"),
+          responderAuthority: authority("turn-parent-admitted", 1, "execution-parent"),
           payloadRef: {
             ref: "payload://delivery-authority-response",
             sha256: "sha-delivery-authority-response",

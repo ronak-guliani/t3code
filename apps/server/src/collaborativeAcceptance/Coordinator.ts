@@ -48,6 +48,7 @@ import {
   cancelExchange,
   evaluateAcceptance,
   reserveExchange,
+  retryExchange,
   recordExchangeOutcome,
   completeExchange,
   startExchange,
@@ -73,6 +74,12 @@ const hash = (parts: ReadonlyArray<string>) =>
 const now = () => new Date().toISOString();
 const decodeReviewCandidateSchema = Schema.decodeUnknownEffect(PullRequestMonitorReviewCandidate);
 const decodeCollaborationDeliverySchema = Schema.decodeUnknownEffect(CollaborationDelivery);
+const isCollaborativeAcceptanceError = Schema.is(CollaborativeAcceptanceError);
+const isInvariantCommandError = Schema.is(OrchestrationCommandInvariantError);
+const isPreviouslyRejectedCommandError = Schema.is(OrchestrationCommandPreviouslyRejectedError);
+const isWorktreeCleanupPendingCommandError = Schema.is(
+  OrchestrationCommandWorktreeCleanupPendingError,
+);
 
 const acceptanceError = (
   message: string,
@@ -96,6 +103,14 @@ const hasCompleteAuthority = (authority: CollaborationExecutionAuthority): boole
   authority.dispatchId.trim().length > 0 &&
   authority.turnId !== null &&
   authority.turnId.trim().length > 0;
+
+const bindAuthority = (
+  authority: CollaborationExecutionAuthority,
+  threadId: ThreadId,
+): CollaborationExecutionAuthority => ({
+  ...authority,
+  threadId,
+});
 
 const requireCompleteAuthority = (
   authority: CollaborationExecutionAuthority,
@@ -286,6 +301,18 @@ const makeCoordinator = Effect.gen(function* () {
       .save(input)
       .pipe(Effect.mapError(() => acceptanceError("Acceptance case changed concurrently; retry.")));
 
+  const isCasConflict = (error: unknown): boolean =>
+    isCollaborativeAcceptanceError(error) &&
+    error.message === "Acceptance case changed concurrently; retry.";
+
+  const retryCasConflict = <A>(effect: Effect.Effect<A, CollaborativeAcceptanceError>) =>
+    effect.pipe(
+      Effect.retry({
+        times: 3,
+        while: isCasConflict,
+      }),
+    );
+
   const currentProjection = (
     record: CollaborativeAcceptanceRecord,
     executionPhase: CollaborativeAcceptanceRecord["projection"]["executionPhase"] = "verifying",
@@ -397,6 +424,28 @@ const makeCoordinator = Effect.gen(function* () {
         : obligation,
     );
 
+  const obligationStatusForTerminalOutcome = (
+    outcome: string | null,
+  ): "satisfied" | "cancelled" | "superseded" | "unavailable" | "failed" | "needs-human" => {
+    switch (outcome) {
+      case "completed":
+        return "satisfied";
+      case "cancelled":
+        return "cancelled";
+      case "superseded":
+      case "stale":
+        return "superseded";
+      case "needs-human":
+        return "needs-human";
+      case "unavailable":
+        return "unavailable";
+      case "failed":
+      case "rejected":
+      default:
+        return "failed";
+    }
+  };
+
   const enforceLimits = (record: CollaborativeAcceptanceRecord) => {
     const active = record.exchanges.find(
       (exchange) => exchange.status === "reserved" || exchange.status === "committed",
@@ -453,6 +502,9 @@ const makeCoordinator = Effect.gen(function* () {
         pauseReason: record.projection.pauseReason ?? null,
       })),
     );
+
+  const enforceLimitsFresh = (caseId: CollaborativeAcceptanceCaseId) =>
+    retryCasConflict(load(caseId).pipe(Effect.flatMap(enforceLimits)));
 
   const decodeReviewCandidate = (
     candidate: CollaborativeAcceptanceCandidate,
@@ -671,11 +723,23 @@ const makeCoordinator = Effect.gen(function* () {
         });
       }
       const exchangeId = exchangeFor(caseId, input.candidate.candidateId, input.mode);
+      const senderAuthority = bindAuthority(input.authority.senderAuthority, input.senderThreadId);
+      const recipientAuthority = bindAuthority(
+        input.authority.recipientAuthority,
+        input.authority.recipientThreadId,
+      );
       const requestId = requestFor(exchangeId);
       const equivalent = input.record.exchanges.find(
-        (exchange) => exchange.exchangeId === exchangeId && exchange.status !== "cancelled",
+        (exchange) => exchange.exchangeId === exchangeId,
       );
-      if (equivalent !== undefined && equivalent.status !== "outcome-recorded") {
+      if (
+        equivalent !== undefined &&
+        equivalent.status !== "cancelled" &&
+        equivalent.status !== "outcome-recorded"
+      ) {
+        return input.record;
+      }
+      if (equivalent !== undefined && !input.force) {
         return input.record;
       }
 
@@ -731,7 +795,7 @@ const makeCoordinator = Effect.gen(function* () {
         requestId,
         reviewMode: input.mode,
         status: "reserved",
-        retryCount: equivalent?.retryCount ?? 0,
+        retryCount: 0,
         reservedAt: now(),
         startedAt: null,
         outcomeRecordedAt: null,
@@ -742,10 +806,17 @@ const makeCoordinator = Effect.gen(function* () {
           ? { retryLineageId: exchangeId }
           : { retryLineageId: equivalent.retryLineageId }),
       };
-      const reserved = reserveExchange(
-        { budget: input.record.case.policy.budgets, exchanges: input.record.exchanges },
-        exchange,
-      );
+      const reserved =
+        equivalent === undefined
+          ? reserveExchange(
+              { budget: input.record.case.policy.budgets, exchanges: input.record.exchanges },
+              exchange,
+            )
+          : retryExchange(
+              { budget: input.record.case.policy.budgets, exchanges: input.record.exchanges },
+              exchangeId,
+              now(),
+            );
       if (!reserved.ok) {
         return yield* acceptanceError(`Review admission paused: ${reserved.error}.`, {
           caseId,
@@ -802,9 +873,9 @@ const makeCoordinator = Effect.gen(function* () {
         recipientThreadId: input.authority.recipientThreadId,
         kind: "review" as const,
         blocking: true,
-        senderAuthority: input.authority.senderAuthority,
-        recipientAuthority: input.authority.recipientAuthority,
-        producingExecution: input.authority.senderAuthority,
+        senderAuthority,
+        recipientAuthority,
+        producingExecution: senderAuthority,
         payloadRef,
         candidateRefs: [input.candidate.candidateId],
         findingRefs: [],
@@ -856,62 +927,8 @@ const makeCoordinator = Effect.gen(function* () {
           reason: "stale-head",
         });
       }
-      const started = startExchange(
-        { budget: input.record.case.policy.budgets, exchanges: persistedReservation.exchanges },
-        exchangeId,
-        now(),
-      );
-      if (!started.ok) {
-        return yield* acceptanceError(`Review admission paused: ${started.error}.`, {
-          caseId,
-          reason: "budget-exhausted",
-        });
-      }
-      const committedRecord = {
-        ...persistedReservation,
-        exchanges: started.ledger.exchanges,
-        projection: currentProjection({
-          ...persistedReservation,
-          exchanges: started.ledger.exchanges,
-        }),
-        case: { ...persistedReservation.case, updatedAt: now() },
-      };
-      const persistedCommit = yield* save({
-        record: committedRecord,
-        expectedRevision: persistedReservation.revision,
-      });
-      yield* engine
-        .dispatch({
-          type: "thread.collaboration-request.create",
-          commandId: commandFor("request", requestId),
-          threadId: input.senderThreadId,
-          requestId,
-          recipientThreadId: input.authority.recipientThreadId,
-          kind: "review",
-          exchangeId,
-          blocking: true,
-          caseId,
-          transportContext: { caseId, exchangeId },
-          senderAuthority: input.authority.senderAuthority,
-          recipientAuthority: input.authority.recipientAuthority,
-          producingExecution: input.authority.senderAuthority,
-          payloadRef,
-          candidateRefs: [input.candidate.candidateId],
-          findingRefs: [],
-          ...(previousRequest === undefined
-            ? {}
-            : { supersedesRequestId: previousRequest.requestId }),
-          delivery,
-          createdAt: now(),
-        })
-        .pipe(
-          Effect.mapError(() =>
-            acceptanceError("Review request could not be admitted.", { caseId }),
-          ),
-        );
-
-      yield* wakeThread(input.authority.recipientThreadId);
-      return persistedCommit;
+      yield* dispatchAdmission(persistedReservation, exchange);
+      return yield* load(caseId);
     });
 
   const submitCandidate: CollaborativeAcceptanceCoordinatorShape["submitCandidate"] = (input) =>
@@ -1025,13 +1042,11 @@ const makeCoordinator = Effect.gen(function* () {
         `exchange:${hash([input.assignmentId, input.senderThreadId, input.recipientThreadId, input.kind, input.text])}`,
       );
       const requestId = requestFor(exchangeId);
-      if (
-        record.exchanges.some(
-          (exchange) => exchange.exchangeId === exchangeId && exchange.status !== "cancelled",
-        )
-      ) {
+      if (record.exchanges.some((exchange) => exchange.exchangeId === exchangeId)) {
         return;
       }
+      const senderAuthority = bindAuthority(input.senderAuthority, input.senderThreadId);
+      const recipientAuthority = bindAuthority(input.recipientAuthority, input.recipientThreadId);
       const recipient = yield* projections.getThreadDetailById(input.recipientThreadId).pipe(
         Effect.mapError(() => acceptanceError("Could not resolve collaboration recipient.")),
         Effect.flatMap((thread) =>
@@ -1088,9 +1103,9 @@ const makeCoordinator = Effect.gen(function* () {
         recipientThreadId: input.recipientThreadId,
         kind: input.kind,
         blocking: true,
-        senderAuthority: input.senderAuthority,
-        recipientAuthority: input.recipientAuthority,
-        producingExecution: input.senderAuthority,
+        senderAuthority,
+        recipientAuthority,
+        producingExecution: senderAuthority,
         payloadRef: {
           ref: `collaboration://${requestId}`,
           sha256: Crypto.createHash("sha256").update(input.text).digest("hex"),
@@ -1124,56 +1139,7 @@ const makeCoordinator = Effect.gen(function* () {
         record: reservedRecord,
         expectedRevision: record.revision,
       });
-      const started = startExchange(
-        {
-          budget: persistedReservation.case.policy.budgets,
-          exchanges: persistedReservation.exchanges,
-        },
-        exchangeId,
-        now(),
-      );
-      if (!started.ok) {
-        return yield* acceptanceError(`Collaboration admission paused: ${started.error}.`, {
-          caseId,
-          reason: "budget-exhausted",
-        });
-      }
-      const committedRecord = {
-        ...persistedReservation,
-        exchanges: started.ledger.exchanges,
-        projection: currentProjection({
-          ...persistedReservation,
-          exchanges: started.ledger.exchanges,
-        }),
-        case: { ...persistedReservation.case, updatedAt: now() },
-      };
-      yield* save({
-        record: committedRecord,
-        expectedRevision: persistedReservation.revision,
-      });
-      yield* engine
-        .dispatch({
-          type: "thread.collaboration-request.create",
-          commandId: commandFor("request", requestId),
-          threadId: input.senderThreadId,
-          requestId,
-          recipientThreadId: input.recipientThreadId,
-          kind: input.kind,
-          exchangeId,
-          blocking: true,
-          caseId,
-          transportContext: { caseId, exchangeId },
-          senderAuthority: input.senderAuthority,
-          recipientAuthority: input.recipientAuthority,
-          producingExecution: input.senderAuthority,
-          payloadRef: admission.payloadRef,
-          candidateRefs: [],
-          findingRefs: [],
-          delivery,
-          createdAt: now(),
-        })
-        .pipe(Effect.mapError(() => acceptanceError("Collaboration request could not be queued.")));
-      yield* wakeThread(input.recipientThreadId);
+      yield* dispatchAdmission(persistedReservation, exchange);
     });
 
   const respondToRequest: CollaborativeAcceptanceCoordinatorShape["respondToRequest"] = (input) =>
@@ -1203,6 +1169,7 @@ const makeCoordinator = Effect.gen(function* () {
         record?.exchanges.find((exchange) => exchange.exchangeId === location.request.exchangeId)
           ?.admission?.recipientAuthority ?? null;
       yield* requireCompleteAuthority(input.responseAuthority, caseId);
+      const responseAuthority = bindAuthority(input.responseAuthority, input.responderThreadId);
       if (
         record !== null &&
         (input.responseAuthority.assignmentId !== record.case.assignmentId ||
@@ -1215,10 +1182,12 @@ const makeCoordinator = Effect.gen(function* () {
       }
       if (
         admittedAuthority === null ||
-        input.responseAuthority.executionId !== admittedAuthority.executionId ||
-        input.responseAuthority.generation !== admittedAuthority.generation ||
-        input.responseAuthority.dispatchId !== admittedAuthority.dispatchId ||
-        input.responseAuthority.turnId !== admittedAuthority.turnId
+        responseAuthority.executionId !== admittedAuthority.executionId ||
+        responseAuthority.assignmentId !== admittedAuthority.assignmentId ||
+        responseAuthority.threadId !== admittedAuthority.threadId ||
+        responseAuthority.generation !== admittedAuthority.generation ||
+        responseAuthority.dispatchId !== admittedAuthority.dispatchId ||
+        responseAuthority.turnId !== admittedAuthority.turnId
       ) {
         return yield* acceptanceError("Response authority does not match the admitted request.", {
           reason: "contradictory-contract",
@@ -1243,10 +1212,10 @@ const makeCoordinator = Effect.gen(function* () {
           threadId: input.responderThreadId,
           requestId: input.requestId,
           responseId: CollaborationResponseId.make(
-            `response:${hash([input.requestId, input.responseAuthority.executionId, input.text])}`,
+            `response:${hash([input.requestId, responseAuthority.executionId, input.text])}`,
           ),
           exchangeId: location.request.exchangeId,
-          responderAuthority: input.responseAuthority,
+          responderAuthority: responseAuthority,
           payloadRef: {
             ref: `collaboration-response://${input.requestId}`,
             sha256: Crypto.createHash("sha256").update(input.text).digest("hex"),
@@ -1600,13 +1569,16 @@ const makeCoordinator = Effect.gen(function* () {
     exchange: CollaborativeAcceptanceExchange,
   ) =>
     Effect.gen(function* () {
-      const admission = exchange.admission;
-      if (admission === undefined || exchange.requestId === undefined) {
-        const attemptId = `dispatch:${hash([exchange.exchangeId, "legacy"])}`;
+      const latest = yield* load(record.case.caseId);
+      const latestExchange =
+        latest.exchanges.find((item) => item.exchangeId === exchange.exchangeId) ?? exchange;
+      const admission = latestExchange.admission;
+      if (admission === undefined || latestExchange.requestId === undefined) {
+        const attemptId = `dispatch:${hash([latestExchange.exchangeId, "legacy"])}`;
         const next = {
-          ...record,
-          exchanges: record.exchanges.map((item) =>
-            item.exchangeId === exchange.exchangeId
+          ...latest,
+          exchanges: latest.exchanges.map((item) =>
+            item.exchangeId === latestExchange.exchangeId
               ? {
                   ...item,
                   status: "cancelled" as const,
@@ -1620,9 +1592,9 @@ const makeCoordinator = Effect.gen(function* () {
               : item,
           ),
           obligations:
-            exchange.requestId === undefined
-              ? record.obligations
-              : resolveObligation(record, exchange.requestId, "unavailable"),
+            latestExchange.requestId === undefined
+              ? latest.obligations
+              : resolveObligation(latest, latestExchange.requestId, "unavailable"),
         };
         yield* save({
           record: {
@@ -1630,14 +1602,16 @@ const makeCoordinator = Effect.gen(function* () {
             projection: currentProjection(next, "paused", "ambiguous-outcome"),
             case: { ...next.case, updatedAt: now() },
           },
-          expectedRevision: record.revision,
+          expectedRevision: latest.revision,
         });
         return;
       }
-      const latest = yield* load(record.case.caseId);
-      const latestExchange =
-        latest.exchanges.find((item) => item.exchangeId === exchange.exchangeId) ?? exchange;
-      if (latestExchange.dispatchState === "succeeded") {
+      if (
+        latestExchange.dispatchState === "succeeded" ||
+        latestExchange.status === "completed" ||
+        latestExchange.status === "cancelled" ||
+        latestExchange.status === "outcome-recorded"
+      ) {
         return;
       }
       if (latest.case.currentCandidate.headSha !== exchange.headSha) {
@@ -1669,23 +1643,80 @@ const makeCoordinator = Effect.gen(function* () {
         return;
       }
       const delivery = yield* decodeAdmissionDelivery(latest, admission.deliveryJson);
-      const toAuthority = (authority: typeof admission.senderAuthority) => ({
+      const toAuthority = (
+        authority: typeof admission.senderAuthority,
+        threadId: ThreadId,
+      ): CollaborationExecutionAuthority => ({
         executionId: authority.executionId,
+        ...(authority.assignmentId === undefined
+          ? { assignmentId: latest.case.assignmentId }
+          : { assignmentId: authority.assignmentId }),
+        threadId,
         generation: authority.generation,
         dispatchId: authority.dispatchId,
         turnId: authority.turnId === null ? null : TurnId.make(authority.turnId),
       });
+      const senderAuthority = toAuthority(admission.senderAuthority, admission.senderThreadId);
+      const recipientAuthority = toAuthority(
+        admission.recipientAuthority,
+        admission.recipientThreadId,
+      );
+      const producingExecution = toAuthority(
+        admission.producingExecution,
+        admission.senderThreadId,
+      );
+      if (
+        senderAuthority.assignmentId !== latest.case.assignmentId ||
+        recipientAuthority.assignmentId !== latest.case.assignmentId ||
+        producingExecution.assignmentId !== latest.case.assignmentId
+      ) {
+        return yield* acceptanceError("Persisted admission authority is not bound to the case.", {
+          caseId: latest.case.caseId,
+          reason: "contradictory-contract",
+        });
+      }
+      let dispatchReady = latest;
+      let dispatchExchange = latestExchange;
+      if (dispatchExchange.status === "reserved") {
+        const started = startExchange(
+          { budget: latest.case.policy.budgets, exchanges: latest.exchanges },
+          dispatchExchange.exchangeId,
+          now(),
+        );
+        if (!started.ok) {
+          return yield* acceptanceError(`Acceptance admission paused: ${started.error}.`, {
+            caseId: latest.case.caseId,
+            reason: "budget-exhausted",
+          });
+        }
+        dispatchReady = yield* save({
+          record: {
+            ...latest,
+            exchanges: started.ledger.exchanges,
+            projection: currentProjection({ ...latest, exchanges: started.ledger.exchanges }),
+            case: { ...latest.case, updatedAt: now() },
+          },
+          expectedRevision: latest.revision,
+        });
+        dispatchExchange =
+          dispatchReady.exchanges.find((item) => item.exchangeId === dispatchExchange.exchangeId) ??
+          dispatchExchange;
+      }
+      if (dispatchExchange.status !== "committed") {
+        return;
+      }
+      const requestId = latestExchange.requestId;
       const retryingPendingAttempt = latestExchange.dispatchState === "pending";
       const attempt = retryingPendingAttempt
-        ? (latestExchange.dispatchAttempt ?? 1)
-        : (latestExchange.dispatchAttempt ?? 0) + 1;
+        ? (dispatchExchange.dispatchAttempt ?? 1)
+        : (dispatchExchange.dispatchAttempt ?? 0) + 1;
       const attemptId =
-        latestExchange.dispatchAttemptId ??
-        `dispatch:${hash([exchange.exchangeId, String(attempt)])}`;
-      if (attempt > latest.case.policy.budgets.retries + 1) {
+        dispatchExchange.dispatchAttemptId ??
+        `dispatch:${hash([dispatchExchange.exchangeId, String(attempt)])}`;
+      if (attempt > dispatchReady.case.policy.budgets.retries + 1) {
         const exhausted = {
-          ...latest,
-          exchanges: latest.exchanges.map((item) =>
+          ...dispatchReady,
+          exchanges: dispatchReady.exchanges.map((item) =>
             item.exchangeId === exchange.exchangeId
               ? {
                   ...item,
@@ -1711,13 +1742,13 @@ const makeCoordinator = Effect.gen(function* () {
             projection: currentProjection(exhausted, "paused", "retry-limit"),
             case: { ...exhausted.case, updatedAt: now() },
           },
-          expectedRevision: latest.revision,
+          expectedRevision: dispatchReady.revision,
         });
         return;
       }
       const pending = {
-        ...latest,
-        exchanges: latest.exchanges.map((item) =>
+        ...dispatchReady,
+        exchanges: dispatchReady.exchanges.map((item) =>
           item.exchangeId === exchange.exchangeId
             ? {
                 ...item,
@@ -1736,23 +1767,23 @@ const makeCoordinator = Effect.gen(function* () {
           projection: currentProjection(pending),
           case: { ...pending.case, updatedAt: now() },
         },
-        expectedRevision: latest.revision,
+        expectedRevision: dispatchReady.revision,
       });
       const dispatchResult = yield* engine
         .dispatch({
           type: "thread.collaboration-request.create",
-          commandId: commandFor("request", exchange.requestId),
+          commandId: commandFor("request", requestId),
           threadId: admission.senderThreadId,
-          requestId: exchange.requestId,
+          requestId,
           recipientThreadId: admission.recipientThreadId,
           kind: admission.kind,
           exchangeId: exchange.exchangeId,
           blocking: admission.blocking,
           caseId: exchange.caseId,
           transportContext: { caseId: exchange.caseId, exchangeId: exchange.exchangeId },
-          senderAuthority: toAuthority(admission.senderAuthority),
-          recipientAuthority: toAuthority(admission.recipientAuthority),
-          producingExecution: toAuthority(admission.producingExecution),
+          senderAuthority,
+          recipientAuthority,
+          producingExecution,
           payloadRef: admission.payloadRef,
           candidateRefs: admission.candidateRefs,
           findingRefs: admission.findingRefs.map((finding) =>
@@ -1768,11 +1799,10 @@ const makeCoordinator = Effect.gen(function* () {
       if (dispatchResult._tag === "Failure") {
         const failure = dispatchResult.failure;
         const permanent =
-          Schema.is(OrchestrationCommandInvariantError)(failure) ||
-          Schema.is(OrchestrationCommandPreviouslyRejectedError)(failure) ||
-          Schema.is(OrchestrationCommandWorktreeCleanupPendingError)(failure);
-        const unavailable =
-          permanent && Schema.is(OrchestrationCommandWorktreeCleanupPendingError)(failure);
+          isInvariantCommandError(failure) ||
+          isPreviouslyRejectedCommandError(failure) ||
+          isWorktreeCleanupPendingCommandError(failure);
+        const unavailable = permanent && isWorktreeCleanupPendingCommandError(failure);
         const next = {
           ...persistedAttempt,
           exchanges: persistedAttempt.exchanges.map((item) =>
@@ -1857,34 +1887,10 @@ const makeCoordinator = Effect.gen(function* () {
           readonly terminalOutcome: string | null;
         }
       | undefined,
-  ) =>
+  ): Effect.Effect<CollaborativeAcceptanceRecord | void, CollaborativeAcceptanceError> =>
     Effect.gen(function* () {
       let next = record;
       if (request === undefined) {
-        if (exchange.status === "reserved") {
-          const started = startExchange(
-            { budget: record.case.policy.budgets, exchanges: record.exchanges },
-            exchange.exchangeId,
-            now(),
-          );
-          if (!started.ok) {
-            return yield* acceptanceError("Acceptance exchange recovery could not start.", {
-              caseId: record.case.caseId,
-              reason: "budget-exhausted",
-            });
-          }
-          next = yield* save({
-            record: {
-              ...record,
-              exchanges: started.ledger.exchanges,
-              projection: currentProjection({ ...record, exchanges: started.ledger.exchanges }),
-              case: { ...record.case, updatedAt: now() },
-            },
-            expectedRevision: record.revision,
-          });
-          exchange =
-            next.exchanges.find((item) => item.exchangeId === exchange.exchangeId) ?? exchange;
-        }
         yield* dispatchAdmission(next, exchange);
         return;
       }
@@ -1905,7 +1911,7 @@ const makeCoordinator = Effect.gen(function* () {
             expectedRevision: next.revision,
           });
         }
-        if (request.status === "consumed") {
+        if (request.status === "consumed" && request.terminalOutcome === "completed") {
           const completed = completeExchange(
             { budget: next.case.policy.budgets, exchanges: next.exchanges },
             exchange.exchangeId,
@@ -1931,6 +1937,33 @@ const makeCoordinator = Effect.gen(function* () {
               expectedRevision: next.revision,
             });
           }
+        } else if (request.status === "consumed") {
+          const cancelled = cancelExchange(
+            { budget: next.case.policy.budgets, exchanges: next.exchanges },
+            exchange.exchangeId,
+            now(),
+          );
+          if (cancelled.ok && exchange.status !== "cancelled") {
+            const obligationStatus = obligationStatusForTerminalOutcome(request.terminalOutcome);
+            const obligations =
+              exchange.requestId === undefined
+                ? next.obligations
+                : resolveObligation(next, exchange.requestId, obligationStatus);
+            next = yield* save({
+              record: {
+                ...next,
+                exchanges: cancelled.ledger.exchanges,
+                obligations,
+                projection: currentProjection({
+                  ...next,
+                  exchanges: cancelled.ledger.exchanges,
+                  obligations,
+                }),
+                case: { ...next.case, updatedAt: now() },
+              },
+              expectedRevision: next.revision,
+            });
+          }
         }
       } else if (
         request.status === "cancelled" ||
@@ -1944,7 +1977,7 @@ const makeCoordinator = Effect.gen(function* () {
           exchange.exchangeId,
           now(),
         );
-        if (cancelled.ok && cancelled.exchange.status !== "cancelled") {
+        if (cancelled.ok && exchange.status !== "cancelled") {
           const obligations =
             exchange.requestId === undefined
               ? next.obligations
@@ -1980,19 +2013,25 @@ const makeCoordinator = Effect.gen(function* () {
       return next;
     });
 
-  const reconcileExchangeLocked = (
-    record: CollaborativeAcceptanceRecord,
-    exchange: CollaborativeAcceptanceExchange,
+  const reconcileExchangeFresh = (
+    caseId: CollaborativeAcceptanceCaseId,
+    exchangeId: CollaborativeAcceptanceExchange["exchangeId"],
     request:
       | {
           readonly status: string;
           readonly terminalOutcome: string | null;
         }
       | undefined,
-  ) =>
-    withReconciliationLock(
-      `${record.case.caseId}:${exchange.exchangeId}`,
-      reconcileExchange(record, exchange, request),
+  ): Effect.Effect<CollaborativeAcceptanceRecord | void, CollaborativeAcceptanceError> =>
+    retryCasConflict(
+      load(caseId).pipe(
+        Effect.flatMap((record) => {
+          const exchange = record.exchanges.find((item) => item.exchangeId === exchangeId);
+          return exchange === undefined
+            ? Effect.void
+            : reconcileExchange(record, exchange, request);
+        }),
+      ),
     );
 
   const start: CollaborativeAcceptanceCoordinatorShape["start"] = () =>
@@ -2031,16 +2070,20 @@ const makeCoordinator = Effect.gen(function* () {
                 exchange.status === "outcome-recorded",
             ),
             (exchange) =>
-              load(record.case.caseId).pipe(
-                Effect.flatMap((current) => {
-                  const location = readModel.threads
+              withReconciliationLock(
+                `${record.case.caseId}:${exchange.exchangeId}`,
+                reconcileExchangeFresh(
+                  record.case.caseId,
+                  exchange.exchangeId,
+                  readModel.threads
                     .flatMap((thread) =>
-                      (thread.collaborationRequests ?? []).map((request) => ({ thread, request })),
+                      (thread.collaborationRequests ?? []).map((request) => ({
+                        thread,
+                        request,
+                      })),
                     )
-                    .find(({ request }) => request.exchangeId === exchange.exchangeId);
-                  return reconcileExchangeLocked(current, exchange, location?.request);
-                }),
-                Effect.asVoid,
+                    .find(({ request }) => request.exchangeId === exchange.exchangeId)?.request,
+                ).pipe(Effect.asVoid),
               ),
             { concurrency: 1, discard: true },
           ),
@@ -2067,11 +2110,13 @@ const makeCoordinator = Effect.gen(function* () {
                     (thread.collaborationRequests ?? []).map((request) => ({ thread, request })),
                   )
                   .find(({ request }) => request.exchangeId === exchange.exchangeId);
-                return load(record.case.caseId).pipe(
-                  Effect.flatMap((current) =>
-                    reconcileExchangeLocked(current, exchange, location?.request),
-                  ),
-                  Effect.asVoid,
+                return withReconciliationLock(
+                  `${record.case.caseId}:${exchange.exchangeId}`,
+                  reconcileExchangeFresh(
+                    record.case.caseId,
+                    exchange.exchangeId,
+                    location?.request,
+                  ).pipe(Effect.asVoid),
                 );
               },
               { concurrency: 1, discard: true },
@@ -2091,11 +2136,13 @@ const makeCoordinator = Effect.gen(function* () {
                 const exchange = record.exchanges.find((item) => item.exchangeId === exchangeId);
                 return exchange === undefined
                   ? Effect.void
-                  : load(record.case.caseId).pipe(
-                      Effect.flatMap((current) =>
-                        reconcileExchangeLocked(current, exchange, event.payload.request),
-                      ),
-                      Effect.asVoid,
+                  : withReconciliationLock(
+                      `${record.case.caseId}:${exchange.exchangeId}`,
+                      reconcileExchangeFresh(
+                        record.case.caseId,
+                        exchange.exchangeId,
+                        event.payload.request,
+                      ).pipe(Effect.asVoid),
                     );
               },
               { concurrency: 1, discard: true },
@@ -2134,7 +2181,9 @@ const makeCoordinator = Effect.gen(function* () {
                           (record) =>
                             withReconciliationLock(
                               record.case.caseId,
-                              refreshProviderEvidence(record.case.caseId).pipe(Effect.asVoid),
+                              retryCasConflict(
+                                refreshProviderEvidence(record.case.caseId).pipe(Effect.asVoid),
+                              ),
                             ),
                           { concurrency: 1, discard: true },
                         ),
@@ -2163,7 +2212,7 @@ const makeCoordinator = Effect.gen(function* () {
                     (record) =>
                       withReconciliationLock(
                         record.case.caseId,
-                        enforceLimits(record).pipe(Effect.asVoid),
+                        enforceLimitsFresh(record.case.caseId).pipe(Effect.asVoid),
                       ),
                     { concurrency: 1, discard: true },
                   ),

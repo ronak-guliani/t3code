@@ -1,6 +1,7 @@
 import {
   CollaborationExecutionAuthority,
   CollaborativeAcceptanceError,
+  ThreadId,
   TurnId,
   type CollaborativeAcceptanceCaseId,
   type CollaborativeAcceptanceCase,
@@ -30,6 +31,8 @@ const caller = Effect.fn("CollaborativeAcceptanceToolkit.caller")(function* () {
   if (
     authority === undefined ||
     authority.executionId !== `thread:${thread.id}` ||
+    authority.assignmentId === undefined ||
+    (authority.threadId !== undefined && authority.threadId !== thread.id) ||
     authority.generation <= 0 ||
     authority.dispatchId === null ||
     authority.turnId === null
@@ -58,6 +61,7 @@ const authorityForThread = (thread: {
 }): CollaborationExecutionAuthority | undefined => {
   const delegation = thread.nudging?.delegation;
   if (
+    delegation?.assignmentId === undefined ||
     delegation?.dispatchSequence === undefined ||
     delegation.dispatchSequence <= 0 ||
     delegation.dispatchId === undefined ||
@@ -68,7 +72,8 @@ const authorityForThread = (thread: {
   }
   return {
     executionId: `thread:${thread.id}`,
-    ...(delegation.assignmentId === undefined ? {} : { assignmentId: delegation.assignmentId }),
+    assignmentId: delegation.assignmentId,
+    threadId: ThreadId.make(thread.id),
     generation: delegation.dispatchSequence,
     dispatchId: delegation.dispatchId,
     turnId: TurnId.make(delegation.dispatchTurnId),

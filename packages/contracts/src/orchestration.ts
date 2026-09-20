@@ -431,6 +431,7 @@ export type CollaborationRequestTerminalOutcome = typeof CollaborationRequestTer
 export const CollaborationExecutionAuthority = Schema.Struct({
   executionId: TrimmedNonEmptyString,
   assignmentId: Schema.optional(TrimmedNonEmptyString),
+  threadId: Schema.optional(ThreadId),
   generation: NonNegativeInt,
   dispatchId: Schema.NullOr(TrimmedNonEmptyString),
   turnId: Schema.NullOr(TurnId),

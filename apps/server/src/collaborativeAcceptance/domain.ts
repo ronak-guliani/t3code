@@ -369,31 +369,6 @@ export const reserveExchange = (
 ): ExchangeTransitionResult => {
   const existing = ledger.exchanges.find((item) => item.exchangeId === exchange.exchangeId);
   if (existing !== undefined) {
-    if (existing.status === "cancelled" && existing.startedAt === null) {
-      const reopened = {
-        ...existing,
-        status: "reserved" as const,
-        reservedAt: exchange.reservedAt,
-        cancelledAt: null,
-      };
-      return { ok: true, ledger: replaceExchange(ledger, reopened), exchange: reopened };
-    }
-    if (existing.status === "outcome-recorded" && existing.retryCount < ledger.budget.retries) {
-      const retry = {
-        ...existing,
-        status: "reserved" as const,
-        retryCount: existing.retryCount + 1,
-        reservedAt: exchange.reservedAt,
-        startedAt: null,
-        outcomeRecordedAt: null,
-        completedAt: null,
-        cancelledAt: null,
-      };
-      return { ok: true, ledger: replaceExchange(ledger, retry), exchange: retry };
-    }
-    if (existing.status === "outcome-recorded") {
-      return { ok: false, error: "retry-budget-exhausted" };
-    }
     return { ok: true, ledger, exchange: existing };
   }
   if (countAdmissionDebits(ledger) >= ledger.budget.exchanges) {
@@ -407,6 +382,42 @@ export const reserveExchange = (
     ledger: { ...ledger, exchanges: [...ledger.exchanges, exchange] },
     exchange,
   };
+};
+
+export const retryExchange = (
+  ledger: AcceptanceExchangeLedger,
+  exchangeId: CollaborativeAcceptanceExchange["exchangeId"],
+  reservedAt: string,
+): ExchangeTransitionResult => {
+  const exchange = ledger.exchanges.find((item) => item.exchangeId === exchangeId);
+  if (exchange === undefined) return { ok: false, error: "exchange-not-found" };
+  if (exchange.status !== "cancelled" && exchange.status !== "outcome-recorded") {
+    return { ok: false, error: "invalid-exchange-transition" };
+  }
+  if (exchange.retryCount >= ledger.budget.retries) {
+    return { ok: false, error: "retry-budget-exhausted" };
+  }
+  const {
+    dispatchAttempt: _dispatchAttempt,
+    dispatchAttemptId: _dispatchAttemptId,
+    dispatchStartedAt: _dispatchStartedAt,
+    dispatchOutcomeAt: _dispatchOutcomeAt,
+    dispatchState: _dispatchState,
+    dispatchOutcome: _dispatchOutcome,
+    ...retryBase
+  } = exchange;
+  const retry = {
+    ...retryBase,
+    status: "reserved" as const,
+    retryCount: exchange.retryCount + 1,
+    reservedAt,
+    startedAt: null,
+    outcomeRecordedAt: null,
+    completedAt: null,
+    cancelledAt: null,
+    retryLineageId: exchange.retryLineageId ?? exchange.exchangeId,
+  };
+  return { ok: true, ledger: replaceExchange(ledger, retry), exchange: retry };
 };
 
 export const startExchange = (

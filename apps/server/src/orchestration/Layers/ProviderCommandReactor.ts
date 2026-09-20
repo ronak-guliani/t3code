@@ -92,7 +92,8 @@ function executionAuthorityForThread(thread: {
   }
   return {
     executionId: `thread:${thread.id}`,
-    ...(delegation.assignmentId === undefined ? {} : { assignmentId: delegation.assignmentId }),
+    assignmentId: delegation.assignmentId,
+    threadId: thread.id,
     generation: delegation.dispatchSequence,
     dispatchId: delegation.dispatchId,
     turnId: delegation.dispatchTurnId,
