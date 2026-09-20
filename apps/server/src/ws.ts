@@ -30,7 +30,6 @@ import {
   PullRequestUnavailableError,
   PullRequestMonitorError,
   CollaborativeAcceptanceError,
-  type CollaborationExecutionAuthority,
   RpcClientId,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
@@ -189,6 +188,7 @@ import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { repositoryFromPullRequestUrl } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
 import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorService.ts";
 import { CollaborativeAcceptanceCoordinator } from "./collaborativeAcceptance/Coordinator.ts";
+import { acceptanceAuthorityForThread } from "./collaborativeAcceptance/authority.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -337,41 +337,6 @@ const makeWsRpcLayer = (
             ),
           onSome: operation,
         });
-      const authorityForThread = (thread: {
-        readonly id: ThreadId;
-        readonly nudging?:
-          | {
-              readonly delegation?:
-                | {
-                    readonly assignmentId?: string | undefined;
-                    readonly dispatchSequence?: number | undefined;
-                    readonly dispatchId?: string | undefined;
-                    readonly dispatchTurnId?: TurnId | null | undefined;
-                  }
-                | undefined;
-            }
-          | undefined;
-      }): CollaborationExecutionAuthority | undefined => {
-        const delegation = thread.nudging?.delegation;
-        if (
-          delegation?.assignmentId === undefined ||
-          delegation?.dispatchSequence === undefined ||
-          delegation.dispatchSequence <= 0 ||
-          delegation.dispatchId === undefined ||
-          delegation.dispatchTurnId === undefined ||
-          delegation.dispatchTurnId === null
-        ) {
-          return undefined;
-        }
-        return {
-          executionId: `thread:${thread.id}`,
-          assignmentId: delegation.assignmentId,
-          threadId: thread.id,
-          generation: delegation.dispatchSequence,
-          dispatchId: delegation.dispatchId,
-          turnId: delegation.dispatchTurnId,
-        };
-      };
       const resolveAcceptanceThread = (threadId: ThreadId) =>
         projectionSnapshotQuery.getThreadDetailById(threadId).pipe(
           Effect.mapError(
@@ -2382,8 +2347,8 @@ const makeWsRpcLayer = (
                 const recipientThreadId =
                   existing?.case.parentThreadId ?? sender.parentThreadId ?? sender.id;
                 const recipient = yield* resolveAcceptanceThread(recipientThreadId);
-                const senderAuthority = authorityForThread(sender);
-                const recipientAuthority = authorityForThread(recipient);
+                const senderAuthority = acceptanceAuthorityForThread(sender);
+                const recipientAuthority = acceptanceAuthorityForThread(recipient);
                 if (senderAuthority === undefined || recipientAuthority === undefined) {
                   return yield* new CollaborativeAcceptanceError({
                     message: "Acceptance requires authenticated active execution authority.",
@@ -2414,8 +2379,8 @@ const makeWsRpcLayer = (
                 }
                 const sender = yield* resolveAcceptanceThread(input.threadId);
                 const recipient = yield* resolveAcceptanceThread(record.case.parentThreadId);
-                const senderAuthority = authorityForThread(sender);
-                const recipientAuthority = authorityForThread(recipient);
+                const senderAuthority = acceptanceAuthorityForThread(sender);
+                const recipientAuthority = acceptanceAuthorityForThread(recipient);
                 if (senderAuthority === undefined || recipientAuthority === undefined) {
                   return yield* new CollaborativeAcceptanceError({
                     message: "Acceptance requires authenticated active execution authority.",
@@ -2445,7 +2410,7 @@ const makeWsRpcLayer = (
             withAcceptance((service) =>
               Effect.gen(function* () {
                 const thread = yield* resolveAcceptanceThread(input.threadId);
-                const authority = authorityForThread(thread);
+                const authority = acceptanceAuthorityForThread(thread);
                 if (authority === undefined) {
                   return yield* new CollaborativeAcceptanceError({
                     message: "Acceptance requires authenticated active execution authority.",
@@ -2465,7 +2430,7 @@ const makeWsRpcLayer = (
             withAcceptance((service) =>
               Effect.gen(function* () {
                 const thread = yield* resolveAcceptanceThread(input.threadId);
-                const authority = authorityForThread(thread);
+                const authority = acceptanceAuthorityForThread(thread);
                 if (authority === undefined) {
                   return yield* new CollaborativeAcceptanceError({
                     message: "Acceptance requires authenticated active execution authority.",
@@ -2482,7 +2447,7 @@ const makeWsRpcLayer = (
             withAcceptance((service) =>
               Effect.gen(function* () {
                 const thread = yield* resolveAcceptanceThread(input.threadId);
-                const authority = authorityForThread(thread);
+                const authority = acceptanceAuthorityForThread(thread);
                 if (authority === undefined) {
                   return yield* new CollaborativeAcceptanceError({
                     message: "Acceptance requires authenticated active execution authority.",

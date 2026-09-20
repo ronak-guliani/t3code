@@ -70,6 +70,7 @@ it.effect("preserves the authenticated execution authority without inventing one
     const authority = {
       executionId: "thread:thread-authority",
       assignmentId: "assignment-authority",
+      threadId: ThreadId.make("thread-authority"),
       generation: 3,
       dispatchId: "dispatch-authority",
       turnId: TurnId.make("turn-authority"),

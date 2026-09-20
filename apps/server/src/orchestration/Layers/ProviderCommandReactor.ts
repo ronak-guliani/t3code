@@ -1,5 +1,4 @@
 import {
-  type CollaborationExecutionAuthority,
   type ChatAttachment,
   CommandId,
   EventId,
@@ -40,6 +39,7 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
 import { WorkspaceOwnershipRepositoryLive } from "../../persistence/Layers/WorkspaceOwnership.ts";
+import { acceptanceAuthorityForThread } from "../../collaborativeAcceptance/authority.ts";
 
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -61,43 +61,6 @@ type ProviderIntentEvent = Extract<
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized && normalized.length > 0 ? normalized : undefined;
-}
-
-function executionAuthorityForThread(thread: {
-  readonly id: ThreadId;
-  readonly nudging?: unknown | undefined;
-}): CollaborationExecutionAuthority | undefined {
-  if (thread.nudging === null || typeof thread.nudging !== "object") {
-    return undefined;
-  }
-  const rawDelegation = "delegation" in thread.nudging ? thread.nudging.delegation : undefined;
-  const delegation = Schema.is(
-    Schema.Struct({
-      assignmentId: MessageId,
-      dispatchSequence: Schema.optional(Schema.Number),
-      dispatchId: Schema.optional(Schema.String),
-      dispatchTurnId: Schema.optional(Schema.NullOr(TurnId)),
-    }),
-  )(rawDelegation)
-    ? rawDelegation
-    : undefined;
-  if (
-    delegation?.dispatchSequence === undefined ||
-    delegation.dispatchSequence <= 0 ||
-    delegation.dispatchId === undefined ||
-    delegation.dispatchTurnId === undefined ||
-    delegation.dispatchTurnId === null
-  ) {
-    return undefined;
-  }
-  return {
-    executionId: `thread:${thread.id}`,
-    assignmentId: delegation.assignmentId,
-    threadId: thread.id,
-    generation: delegation.dispatchSequence,
-    dispatchId: delegation.dispatchId,
-    turnId: delegation.dispatchTurnId,
-  };
 }
 
 function mapProviderSessionStatusToOrchestrationStatus(
@@ -598,9 +561,9 @@ const make = Effect.gen(function* () {
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         runtimeMode: desiredRuntimeMode,
-        ...(executionAuthorityForThread(thread) === undefined
+        ...(acceptanceAuthorityForThread(thread) === undefined
           ? {}
-          : { executionAuthority: executionAuthorityForThread(thread) }),
+          : { executionAuthority: acceptanceAuthorityForThread(thread) }),
       });
 
     const bindSessionToThread = (session: ProviderSession) =>
@@ -768,9 +731,9 @@ const make = Effect.gen(function* () {
       ...(input.delegationDispatchId !== undefined
         ? { delegationDispatchId: input.delegationDispatchId }
         : {}),
-      ...(executionAuthorityForThread(thread) === undefined
+      ...(acceptanceAuthorityForThread(thread) === undefined
         ? {}
-        : { executionAuthority: executionAuthorityForThread(thread) }),
+        : { executionAuthority: acceptanceAuthorityForThread(thread) }),
     };
   });
 

@@ -269,6 +269,9 @@ const makeCoordinator = Effect.gen(function* () {
   const queuedTurns = yield* Effect.serviceOption(QueuedTurnReactor);
   const monitors = yield* Effect.serviceOption(PullRequestMonitorService);
   const started = yield* Ref.make(false);
+  const dirtyReconciliationCases = yield* Ref.make<ReadonlySet<CollaborativeAcceptanceCaseId>>(
+    new Set(),
+  );
   const reconciliationLocks = new Map<string, Semaphore.Semaphore>();
 
   const withReconciliationLock = <A, E, R>(
@@ -311,6 +314,37 @@ const makeCoordinator = Effect.gen(function* () {
         times: 3,
         while: isCasConflict,
       }),
+    );
+
+  const retainDirtyCase = (caseId: CollaborativeAcceptanceCaseId) =>
+    Ref.update(
+      dirtyReconciliationCases,
+      (cases) => new Set([...cases, caseId]) as ReadonlySet<CollaborativeAcceptanceCaseId>,
+    );
+
+  const reconcileSafely = <A, E, R>(
+    caseId: CollaborativeAcceptanceCaseId,
+    key: string,
+    label: string,
+    effect: Effect.Effect<A, E, R>,
+  ) =>
+    withReconciliationLock(key, effect).pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          if (isCasConflict(error)) {
+            yield* retainDirtyCase(caseId);
+          }
+          yield* Effect.logWarning(label, {
+            caseId,
+            error: isCasConflict(error)
+              ? acceptanceError("Acceptance reconciliation retry budget exhausted.", {
+                  caseId,
+                  reason: "ambiguous-outcome",
+                })
+              : error,
+          });
+        }),
+      ),
     );
 
   const currentProjection = (
@@ -2045,16 +2079,11 @@ const makeCoordinator = Effect.gen(function* () {
       yield* Effect.forEach(
         records,
         (record) =>
-          withReconciliationLock(
+          reconcileSafely(
             record.case.caseId,
+            record.case.caseId,
+            "collaborative-acceptance.startup-evidence-refresh-failed",
             refreshProviderEvidence(record.case.caseId).pipe(Effect.asVoid),
-          ).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("collaborative-acceptance.startup-evidence-refresh-failed", {
-                caseId: record.case.caseId,
-                error,
-              }),
-            ),
           ),
         { concurrency: 1, discard: true },
       );
@@ -2070,8 +2099,10 @@ const makeCoordinator = Effect.gen(function* () {
                 exchange.status === "outcome-recorded",
             ),
             (exchange) =>
-              withReconciliationLock(
+              reconcileSafely(
+                record.case.caseId,
                 `${record.case.caseId}:${exchange.exchangeId}`,
+                "collaborative-acceptance.startup-exchange-reconciliation-failed",
                 reconcileExchangeFresh(
                   record.case.caseId,
                   exchange.exchangeId,
@@ -2110,8 +2141,10 @@ const makeCoordinator = Effect.gen(function* () {
                     (thread.collaborationRequests ?? []).map((request) => ({ thread, request })),
                   )
                   .find(({ request }) => request.exchangeId === exchange.exchangeId);
-                return withReconciliationLock(
+                return reconcileSafely(
+                  record.case.caseId,
                   `${record.case.caseId}:${exchange.exchangeId}`,
+                  "collaborative-acceptance.periodic-exchange-reconciliation-failed",
                   reconcileExchangeFresh(
                     record.case.caseId,
                     exchange.exchangeId,
@@ -2136,8 +2169,10 @@ const makeCoordinator = Effect.gen(function* () {
                 const exchange = record.exchanges.find((item) => item.exchangeId === exchangeId);
                 return exchange === undefined
                   ? Effect.void
-                  : withReconciliationLock(
+                  : reconcileSafely(
+                      record.case.caseId,
                       `${record.case.caseId}:${exchange.exchangeId}`,
+                      "collaborative-acceptance.event-reconciliation-failed",
                       reconcileExchangeFresh(
                         record.case.caseId,
                         exchange.exchangeId,
@@ -2179,8 +2214,10 @@ const makeCoordinator = Effect.gen(function* () {
                         Effect.forEach(
                           currentRecords,
                           (record) =>
-                            withReconciliationLock(
+                            reconcileSafely(
                               record.case.caseId,
+                              record.case.caseId,
+                              "collaborative-acceptance.provider-evidence-refresh-failed",
                               retryCasConflict(
                                 refreshProviderEvidence(record.case.caseId).pipe(Effect.asVoid),
                               ),
@@ -2201,30 +2238,52 @@ const makeCoordinator = Effect.gen(function* () {
                 ),
               ),
       });
+      const reconcileDirtyCases = Effect.gen(function* () {
+        const dirtyCases = yield* Ref.modify(dirtyReconciliationCases, (cases) => [
+          [...cases],
+          new Set<CollaborativeAcceptanceCaseId>(),
+        ]);
+        yield* Effect.forEach(
+          dirtyCases,
+          (caseId) =>
+            reconcileSafely(
+              caseId,
+              caseId,
+              "collaborative-acceptance.dirty-case-reconciliation-failed",
+              refreshProviderEvidence(caseId).pipe(Effect.asVoid),
+            ),
+          { concurrency: 1, discard: true },
+        );
+      });
       yield* Effect.forkScoped(
         Effect.forever(
           Effect.sleep("1 second").pipe(
             Effect.andThen(
-              repository.listAll().pipe(
-                Effect.flatMap((currentRecords) =>
-                  Effect.forEach(
-                    currentRecords,
-                    (record) =>
-                      withReconciliationLock(
-                        record.case.caseId,
-                        enforceLimitsFresh(record.case.caseId).pipe(Effect.asVoid),
-                      ),
-                    { concurrency: 1, discard: true },
-                  ),
-                ),
+              Effect.gen(function* () {
+                const currentRecords = yield* repository
+                  .listAll()
+                  .pipe(Effect.mapError(() => acceptanceError("Could not load acceptance cases.")));
+                yield* Effect.forEach(
+                  currentRecords,
+                  (record) =>
+                    reconcileSafely(
+                      record.case.caseId,
+                      record.case.caseId,
+                      "collaborative-acceptance.deadline-reconciliation-failed",
+                      enforceLimitsFresh(record.case.caseId).pipe(Effect.asVoid),
+                    ),
+                  { concurrency: 1, discard: true },
+                );
+                yield* reconcileDirtyCases;
+                yield* reconcileAllActive;
+              }).pipe(
                 Effect.catch((error) =>
-                  Effect.logWarning("collaborative-acceptance.deadline-reconciliation-failed", {
+                  Effect.logWarning("collaborative-acceptance.periodic-reconciliation-failed", {
                     error,
                   }),
                 ),
               ),
             ),
-            Effect.andThen(reconcileAllActive),
           ),
         ),
       );
