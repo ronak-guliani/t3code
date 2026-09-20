@@ -207,6 +207,33 @@ describe("validation executor authority", () => {
     }
   });
 
+  it("rejects lease claims for terminal validation runs", async () => {
+    for (const status of ["ready", "failed", "blocked", "interrupted", "stale"] as const) {
+      await expect(
+        Effect.runPromise(
+          decideOrchestrationCommand({
+            command: {
+              type: "thread.validation.lease.claim",
+              commandId: CommandId.make(`validation:claim-${status}`),
+              threadId,
+              runId: "run-1",
+              executorId: "executor-1",
+              target,
+              lease: {
+                id: `lease:${status}`,
+                executorId: "executor-1",
+                claimedAt: now,
+                expiresAt: "2026-09-18T01:00:00.000Z",
+              },
+              claimedAt: now,
+            },
+            readModel: readModel({ ...run(), status }),
+          }),
+        ),
+      ).rejects.toThrow("terminal run");
+    }
+  });
+
   it("replaces a terminal run when planning a new request", async () => {
     const request: ValidationRequest = {
       requestId: CommandId.make("validation:request-2"),

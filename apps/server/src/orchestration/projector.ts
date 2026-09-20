@@ -872,12 +872,18 @@ export function projectEvent(
               if (!run || run.id !== payload.update.runId) {
                 return { updatedAt: event.occurredAt };
               }
-              return {
-                validationRun: transitionValidationRunStatus(
+              let validationRun: typeof run;
+              try {
+                validationRun = transitionValidationRunStatus(
                   run,
                   payload.update.status,
                   payload.update.updatedAt,
-                ),
+                );
+              } catch {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRun,
                 updatedAt: event.occurredAt,
               };
             })(),
@@ -933,6 +939,9 @@ export function projectEvent(
               if (!current?.validationRun || current.validationRun.id !== payload.runId) {
                 return { updatedAt: event.occurredAt };
               }
+              if (current.validationRun.lease?.id !== payload.leaseId) {
+                return { updatedAt: event.occurredAt };
+              }
               return {
                 validationRun: {
                   ...current.validationRun,
@@ -964,8 +973,14 @@ export function projectEvent(
               if (!run || run.id !== payload.result.runId) {
                 return { updatedAt: event.occurredAt };
               }
+              let validationRun: typeof run;
+              try {
+                validationRun = acceptValidationResult(run, payload.result);
+              } catch {
+                return { updatedAt: event.occurredAt };
+              }
               return {
-                validationRun: acceptValidationResult(run, payload.result),
+                validationRun,
                 updatedAt: event.occurredAt,
               };
             })(),

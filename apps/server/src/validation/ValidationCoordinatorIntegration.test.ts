@@ -312,6 +312,60 @@ describe("validation coordinator integration", () => {
     ).rejects.toThrow("not owned by the active target executor");
   });
 
+  it("ignores stale lease releases and invalid replay transitions", async () => {
+    const run = runningRun();
+    const model = readModelWithRun(run);
+    const staleRelease = await Effect.runPromise(
+      projectEvent(model, {
+        type: "thread.validation-lease-released",
+        sequence: 1,
+        occurredAt: now,
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        commandId: "stale-release",
+        payload: {
+          threadId,
+          runId: run.id,
+          leaseId: "lease:stale",
+          releasedAt: now,
+        },
+      } as never),
+    );
+    expect(staleRelease.threads[0]?.validationRun?.lease?.id).toBe(run.lease?.id);
+
+    const invalidLifecycle = await Effect.runPromise(
+      projectEvent(readModelWithRun({ ...run, status: "ready" }), {
+        type: "thread.validation-lifecycle-updated",
+        sequence: 2,
+        occurredAt: now,
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        commandId: "invalid-lifecycle",
+        payload: {
+          threadId,
+          update: { runId: run.id, status: "running", reason: null, updatedAt: now },
+        },
+      } as never),
+    );
+    expect(invalidLifecycle.threads[0]?.validationRun?.status).toBe("ready");
+
+    const invalidResult = await Effect.runPromise(
+      projectEvent(readModelWithRun({ ...run, status: "ready" }), {
+        type: "thread.validation-result-recorded",
+        sequence: 3,
+        occurredAt: now,
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        commandId: "invalid-result",
+        payload: {
+          threadId,
+          result: resultFor({ ...run, status: "ready" }),
+        },
+      } as never),
+    );
+    expect(invalidResult.threads[0]?.validationRun?.status).toBe("ready");
+  });
+
   it("accepts interrupted-to-pending gate resets so resumed runs stay schedulable", async () => {
     const running = runningRun();
     const gateId = running.gates[0]!.id;

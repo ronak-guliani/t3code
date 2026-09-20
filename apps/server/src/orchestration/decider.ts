@@ -728,6 +728,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "Validation lease claim does not match the active run.",
         });
       }
+      if (isValidationRunTerminal(validationRunEffectiveStatus(run))) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation lease claim cannot target a terminal run.",
+        });
+      }
       if (!validationTargetEquals(run.target, command.target)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,

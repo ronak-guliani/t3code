@@ -226,12 +226,19 @@ export async function runProcess(
       }, 1_000);
     }, timeoutMs);
 
-    const finalize = (callback: () => void): void => {
-      if (settled) return;
+    const finalize = (callback: () => void, preserveForceKill = false): void => {
+      if (settled) {
+        if (!preserveForceKill && forceKillTimer) {
+          clearTimeout(forceKillTimer);
+          forceKillTimer = null;
+        }
+        return;
+      }
       settled = true;
       clearTimeout(timeoutTimer);
-      if (forceKillTimer) {
+      if (!preserveForceKill && forceKillTimer) {
         clearTimeout(forceKillTimer);
+        forceKillTimer = null;
       }
       if (abortListener !== null) {
         options.signal?.removeEventListener("abort", abortListener);
@@ -241,10 +248,14 @@ export async function runProcess(
     };
 
     const fail = (error: Error): void => {
+      if (settled) return;
       killChild(child, "SIGTERM");
+      forceKillTimer = setTimeout(() => {
+        killChild(child, "SIGKILL");
+      }, 1_000);
       finalize(() => {
         reject(error);
-      });
+      }, true);
     };
 
     const abortListener: (() => void) | null =
@@ -257,7 +268,7 @@ export async function runProcess(
             }, 1_000);
             finalize(() => {
               reject(new Error(`Command aborted: ${commandLabel(command, args)}.`));
-            });
+            }, true);
           };
     if (options.signal !== undefined && abortListener !== null) {
       options.signal.addEventListener("abort", abortListener, { once: true });

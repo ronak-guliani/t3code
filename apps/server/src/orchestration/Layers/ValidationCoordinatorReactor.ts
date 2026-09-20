@@ -335,10 +335,10 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
       return;
     }
 
-    if (status === "planned") {
+    if (status === "planned" || status === "preparing") {
       yield* orchestrationEngine.dispatch({
         type: "thread.validation.lifecycle",
-        commandId: commandId(run.id, "running-resumed"),
+        commandId: lifecycleCommandId(run.id, "running-resumed", run.updatedAt),
         threadId: thread.id,
         update: {
           runId: run.id,
