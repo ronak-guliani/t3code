@@ -67,6 +67,11 @@ import {
   reviewCandidateEligibility,
   type ReviewCandidateMode,
 } from "../pullRequestMonitor/reviewCandidate.ts";
+import {
+  retryReconciliationCas,
+  runReconciliationBatch,
+  runReconciliationTick,
+} from "./reconciliation.ts";
 
 const hash = (parts: ReadonlyArray<string>) =>
   Crypto.createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 32);
@@ -309,12 +314,7 @@ const makeCoordinator = Effect.gen(function* () {
     error.message === "Acceptance case changed concurrently; retry.";
 
   const retryCasConflict = <A>(effect: Effect.Effect<A, CollaborativeAcceptanceError>) =>
-    effect.pipe(
-      Effect.retry({
-        times: 3,
-        while: isCasConflict,
-      }),
-    );
+    retryReconciliationCas(effect, isCasConflict);
 
   const retainDirtyCase = (caseId: CollaborativeAcceptanceCaseId) =>
     Ref.update(
@@ -2259,29 +2259,31 @@ const makeCoordinator = Effect.gen(function* () {
         Effect.forever(
           Effect.sleep("1 second").pipe(
             Effect.andThen(
-              Effect.gen(function* () {
-                const currentRecords = yield* repository
-                  .listAll()
-                  .pipe(Effect.mapError(() => acceptanceError("Could not load acceptance cases.")));
-                yield* Effect.forEach(
-                  currentRecords,
-                  (record) =>
-                    reconcileSafely(
-                      record.case.caseId,
-                      record.case.caseId,
-                      "collaborative-acceptance.deadline-reconciliation-failed",
-                      enforceLimitsFresh(record.case.caseId).pipe(Effect.asVoid),
-                    ),
-                  { concurrency: 1, discard: true },
-                );
-                yield* reconcileDirtyCases;
-                yield* reconcileAllActive;
-              }).pipe(
-                Effect.catch((error) =>
+              runReconciliationTick(
+                Effect.gen(function* () {
+                  const currentRecords = yield* repository
+                    .listAll()
+                    .pipe(
+                      Effect.mapError(() => acceptanceError("Could not load acceptance cases.")),
+                    );
+                  yield* runReconciliationBatch(
+                    currentRecords,
+                    (record) =>
+                      reconcileSafely(
+                        record.case.caseId,
+                        record.case.caseId,
+                        "collaborative-acceptance.deadline-reconciliation-failed",
+                        enforceLimitsFresh(record.case.caseId).pipe(Effect.asVoid),
+                      ),
+                    () => Effect.void,
+                  );
+                  yield* reconcileDirtyCases;
+                  yield* reconcileAllActive;
+                }),
+                (error) =>
                   Effect.logWarning("collaborative-acceptance.periodic-reconciliation-failed", {
                     error,
                   }),
-                ),
               ),
             ),
           ),
