@@ -559,7 +559,7 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.runtimeMode).toBe("approval-required");
   });
 
-  it("binds the complete acceptance authority tuple when starting a provider session", async () => {
+  it("rejects delayed authority after a delegation rollover", async () => {
     const harness = await createHarness({
       delegation: {
         assignmentId: asMessageId("assignment-provider-authority"),
@@ -582,13 +582,7 @@ describe("ProviderCommandReactor", () => {
       dispatchSequence: 3,
       dispatchTurnId: "turn-provider-authority",
     });
-    expect(acceptanceAuthorityForThread(authorityThread!)).toMatchObject({
-      executionId: "thread:thread-1",
-      assignmentId: "assignment-provider-authority",
-      generation: 3,
-      dispatchId: "dispatch-provider-authority",
-      turnId: "turn-provider-authority",
-    });
+    expect(acceptanceAuthorityForThread(authorityThread!)).toBeDefined();
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -607,15 +601,94 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
+    await harness.drain();
+    expect(harness.startSession).not.toHaveBeenCalled();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("propagates the complete current authority tuple on a provider session restart", async () => {
+    const harness = await createHarness({
+      delegation: {
+        assignmentId: asMessageId("assignment-provider-authority"),
+        dispatchId: "dispatch-provider-authority",
+        dispatchSequence: 3,
+        dispatchTurnId: null,
+        dispatchReason: "assigned",
+        followUp: "automatic",
+        completedAt: null,
+      },
+    });
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-provider-authority-initial"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-provider-authority-initial"),
+          role: "user",
+          text: "bind authority",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
     await waitFor(() => harness.startSession.mock.calls.length === 1);
-    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const afterTurn = await Effect.runPromise(harness.engine.getReadModel());
+    const afterTurnThread = afterTurn.threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(afterTurnThread?.session).not.toBeNull();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-provider-authority-bind"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          ...afterTurnThread!.session!,
+          activeTurnId: asTurnId("turn-1"),
+          status: "running",
+          updatedAt: now,
+        },
+        expectedActiveTurnId: afterTurnThread!.session!.activeTurnId ?? undefined,
+        createdAt: now,
+      }),
+    );
+
+    const boundReadModel = await Effect.runPromise(harness.engine.getReadModel());
+    const boundThread = boundReadModel.threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(acceptanceAuthorityForThread(boundThread!)).toMatchObject({
+      assignmentId: "assignment-provider-authority",
+      dispatchId: "dispatch-provider-authority",
+      generation: 3,
+      turnId: "turn-1",
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-provider-authority-restart"),
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
       executionAuthority: {
         executionId: "thread:thread-1",
         assignmentId: "assignment-provider-authority",
         threadId: "thread-1",
         generation: 3,
         dispatchId: "dispatch-provider-authority",
-        turnId: "turn-provider-authority",
+        turnId: "turn-1",
       },
     });
   });

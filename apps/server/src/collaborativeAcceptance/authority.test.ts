@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId, TurnId } from "@t3tools/contracts";
 
 import { acceptanceAuthorityForThread, acceptanceAuthorityMatchesThread } from "./authority.ts";
 
@@ -59,6 +59,30 @@ describe("acceptanceAuthorityForThread", () => {
     expect(
       acceptanceAuthorityMatchesThread(
         current === undefined ? undefined : { ...current, threadId: ThreadId.make("thread-2") },
+        thread,
+      ),
+    ).toBe(false);
+    expect(
+      acceptanceAuthorityMatchesThread(
+        current === undefined ? undefined : { ...current, assignmentId: "assignment-2" },
+        thread,
+      ),
+    ).toBe(false);
+    expect(
+      acceptanceAuthorityMatchesThread(
+        current === undefined ? undefined : { ...current, dispatchId: "dispatch-2" },
+        thread,
+      ),
+    ).toBe(false);
+    expect(
+      acceptanceAuthorityMatchesThread(
+        current === undefined ? undefined : { ...current, turnId: TurnId.make("turn-2") },
+        thread,
+      ),
+    ).toBe(false);
+    expect(
+      acceptanceAuthorityMatchesThread(
+        current === undefined ? undefined : { ...current, executionId: "thread:thread-2" },
         thread,
       ),
     ).toBe(false);

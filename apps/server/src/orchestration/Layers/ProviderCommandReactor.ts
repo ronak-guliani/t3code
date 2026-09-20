@@ -6,6 +6,7 @@ import {
   type ModelSelection,
   MessageId,
   type OrchestrationEvent,
+  type OrchestrationThread,
   ProviderDriverKind,
   type OrchestrationSession,
   ThreadId,
@@ -40,7 +41,10 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
 import { WorkspaceOwnershipRepositoryLive } from "../../persistence/Layers/WorkspaceOwnership.ts";
-import { acceptanceAuthorityForThread } from "../../collaborativeAcceptance/authority.ts";
+import {
+  acceptanceAuthorityForThread,
+  acceptanceAuthorityMatchesThread,
+} from "../../collaborativeAcceptance/authority.ts";
 
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -426,6 +430,22 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const resolveExecutionAuthority = (
+    thread: OrchestrationThread,
+    supplied: CollaborationExecutionAuthority | undefined,
+  ) => {
+    if (supplied !== undefined && !acceptanceAuthorityMatchesThread(supplied, thread)) {
+      return Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: providerErrorLabel(thread.session?.providerName ?? undefined),
+          method: "thread.turn.start",
+          detail: `Thread '${thread.id}' received execution authority that does not match its current durable delegation.`,
+        }),
+      );
+    }
+    return Effect.succeed(supplied ?? acceptanceAuthorityForThread(thread));
+  };
+
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
     createdAt: string,
@@ -440,6 +460,10 @@ const make = Effect.gen(function* () {
       return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
     }
 
+    const executionAuthority = yield* resolveExecutionAuthority(
+      thread,
+      options?.executionAuthority,
+    );
     const desiredRuntimeMode = thread.runtimeMode;
     const requestedModelSelection = options?.modelSelection;
     const resolveActiveSession = (threadId: ThreadId) =>
@@ -563,12 +587,7 @@ const make = Effect.gen(function* () {
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         runtimeMode: desiredRuntimeMode,
-        ...((options?.executionAuthority ?? acceptanceAuthorityForThread(thread)) === undefined
-          ? {}
-          : {
-              executionAuthority:
-                options?.executionAuthority ?? acceptanceAuthorityForThread(thread),
-            }),
+        ...(executionAuthority === undefined ? {} : { executionAuthority }),
       });
 
     const bindSessionToThread = (session: ProviderSession) =>
@@ -687,11 +706,10 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
+    const executionAuthority = yield* resolveExecutionAuthority(thread, input.executionAuthority);
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-      ...(input.executionAuthority !== undefined
-        ? { executionAuthority: input.executionAuthority }
-        : {}),
+      ...(executionAuthority !== undefined ? { executionAuthority } : {}),
     });
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
@@ -738,11 +756,7 @@ const make = Effect.gen(function* () {
       ...(input.delegationDispatchId !== undefined
         ? { delegationDispatchId: input.delegationDispatchId }
         : {}),
-      ...((input.executionAuthority ?? acceptanceAuthorityForThread(thread)) === undefined
-        ? {}
-        : {
-            executionAuthority: input.executionAuthority ?? acceptanceAuthorityForThread(thread),
-          }),
+      ...(executionAuthority === undefined ? {} : { executionAuthority }),
     };
   });
 
