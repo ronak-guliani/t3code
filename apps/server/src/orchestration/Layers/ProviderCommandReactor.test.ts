@@ -3,7 +3,9 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  type CollaborationExecutionAuthority,
   ModelSelection,
+  type OrchestrationEvent,
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderDriverKind,
@@ -56,6 +58,7 @@ import {
   providerErrorLabel,
   providerErrorLabelFromInstanceHint,
   ProviderCommandReactorLive,
+  validateProviderExecutionAuthority,
 } from "./ProviderCommandReactor.ts";
 import { ThreadTitleReactorLive } from "./ThreadTitleReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -91,6 +94,33 @@ async function waitFor(
 
   return poll();
 }
+
+const makeManualTurnStartRequestedEvent = (input: {
+  readonly eventId: string;
+  readonly messageId: MessageId;
+  readonly createdAt: string;
+  readonly authority: unknown;
+}): OrchestrationEvent =>
+  ({
+    sequence: 10_000,
+    eventId: EventId.make(`manual-provider-${input.eventId}`),
+    aggregateKind: "thread",
+    aggregateId: ThreadId.make("thread-1"),
+    occurredAt: input.createdAt,
+    commandId: CommandId.make(`manual-provider-${input.eventId}`),
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "thread.turn-start-requested",
+    payload: {
+      threadId: ThreadId.make("thread-1"),
+      messageId: input.messageId,
+      runtimeMode: "approval-required",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      executionAuthority: input.authority,
+      createdAt: input.createdAt,
+    },
+  }) as OrchestrationEvent;
 
 describe("ProviderCommandReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
@@ -156,6 +186,8 @@ describe("ProviderCommandReactor", () => {
     readonly checkpointBaselineRefExists?: boolean;
     readonly checkpointRefMatchesWorkspace?: boolean;
     readonly delegation?: ThreadDelegation;
+    readonly deferReactorStart?: boolean;
+    readonly manualProviderEvents?: boolean;
   }) {
     const now = new Date().toISOString();
     const baseDir = input?.baseDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-"));
@@ -405,14 +437,29 @@ describe("ProviderCommandReactor", () => {
     runtime = ManagedRuntime.make(layer);
 
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    const manualProviderEvents = input?.manualProviderEvents
+      ? Effect.runSync(PubSub.unbounded<OrchestrationEvent>())
+      : undefined;
+    if (manualProviderEvents !== undefined) {
+      const domainEvents = engine.streamDomainEvents;
+      Object.defineProperty(engine, "streamDomainEvents", {
+        configurable: true,
+        get: () => Stream.merge(domainEvents, Stream.fromPubSub(manualProviderEvents)),
+      });
+    }
     const workspaceOwnership = await runtime.runPromise(
       Effect.service(WorkspaceOwnershipRepository),
     );
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
     const titleReactor = await runtime.runPromise(Effect.service(ThreadTitleReactor));
     scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
-    await Effect.runPromise(titleReactor.start().pipe(Scope.provide(scope)));
+    const startReactors = async () => {
+      await Effect.runPromise(reactor.start().pipe(Scope.provide(scope!)));
+      await Effect.runPromise(titleReactor.start().pipe(Scope.provide(scope!)));
+    };
+    if (!input?.deferReactorStart) {
+      await startReactors();
+    }
     const drain = () =>
       Effect.runPromise(
         Effect.gen(function* () {
@@ -490,6 +537,12 @@ describe("ProviderCommandReactor", () => {
       stateDir,
       drain,
       workspaceOwnership,
+      startReactors,
+      publishProviderEvent:
+        manualProviderEvents === undefined
+          ? undefined
+          : (event: OrchestrationEvent) =>
+              Effect.runPromise(PubSub.publish(manualProviderEvents, event)),
     };
   }
 
@@ -552,6 +605,8 @@ describe("ProviderCommandReactor", () => {
       },
       runtimeMode: "approval-required",
     });
+    expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("executionAuthority");
+    expect(harness.sendTurn.mock.calls[0]?.[0]).not.toHaveProperty("executionAuthority");
 
     const readModel = await Effect.runPromise(harness.engine.getReadModel());
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
@@ -692,6 +747,224 @@ describe("ProviderCommandReactor", () => {
       },
     });
   });
+
+  it("injects a valid complete authority through the production event path", async () => {
+    const messageId = asMessageId("user-provider-authority-injected");
+    const harness = await createHarness({
+      delegation: {
+        assignmentId: asMessageId("assignment-provider-authority"),
+        dispatchId: "dispatch-provider-authority",
+        dispatchSequence: 3,
+        dispatchTurnId: null,
+        dispatchReason: "assigned",
+        followUp: "automatic",
+        completedAt: null,
+      },
+      deferReactorStart: true,
+      manualProviderEvents: true,
+    });
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-provider-authority-message"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId,
+          role: "user",
+          text: "injected authority",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-provider-authority-current"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-current"),
+          activeMessageId: messageId,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const authority = acceptanceAuthorityForThread(thread!);
+    expect(authority).toBeDefined();
+
+    await harness.startReactors();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await harness.publishProviderEvent!(
+      makeManualTurnStartRequestedEvent({
+        eventId: "valid",
+        messageId,
+        createdAt: now,
+        authority,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      executionAuthority: authority,
+    });
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      executionAuthority: authority,
+    });
+  });
+
+  it.each([
+    [
+      "stale generation",
+      (authority: CollaborationExecutionAuthority) => ({
+        ...authority,
+        generation: authority.generation - 1,
+      }),
+    ],
+    [
+      "wrong assignment",
+      (authority: CollaborationExecutionAuthority) => ({
+        ...authority,
+        assignmentId: "assignment-wrong",
+      }),
+    ],
+    [
+      "wrong dispatch",
+      (authority: CollaborationExecutionAuthority) => ({
+        ...authority,
+        dispatchId: "dispatch-wrong",
+      }),
+    ],
+    [
+      "wrong turn",
+      (authority: CollaborationExecutionAuthority) => ({
+        ...authority,
+        turnId: TurnId.make("turn-wrong"),
+      }),
+    ],
+    [
+      "wrong execution",
+      (authority: CollaborationExecutionAuthority) => ({
+        ...authority,
+        executionId: "thread:wrong",
+      }),
+    ],
+    [
+      "wrong thread",
+      (authority: CollaborationExecutionAuthority) => ({
+        ...authority,
+        threadId: ThreadId.make("thread-wrong"),
+      }),
+    ],
+    ["null authority", () => null],
+    [
+      "incomplete authority",
+      (authority: CollaborationExecutionAuthority) => ({ ...authority, assignmentId: undefined }),
+    ],
+    [
+      "malformed authority",
+      (authority: CollaborationExecutionAuthority) => ({ ...authority, generation: 1.5 }),
+    ],
+  ])(
+    "rejects %s authority through the production event path before provider calls",
+    async (_label, mutateAuthority) => {
+      const messageId = asMessageId("user-provider-authority-rejected");
+      const harness = await createHarness({
+        delegation: {
+          assignmentId: asMessageId("assignment-provider-authority"),
+          dispatchId: "dispatch-provider-authority",
+          dispatchSequence: 3,
+          dispatchTurnId: null,
+          dispatchReason: "assigned",
+          followUp: "automatic",
+          completedAt: null,
+        },
+        deferReactorStart: true,
+        manualProviderEvents: true,
+      });
+      const now = new Date().toISOString();
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-provider-authority-message"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId,
+            role: "user",
+            text: "rejected authority",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-provider-authority-current"),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: asTurnId("turn-current"),
+            activeMessageId: messageId,
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      const authority = acceptanceAuthorityForThread(thread!);
+      expect(authority).toBeDefined();
+      const invalidAuthority = mutateAuthority(authority!);
+      const typedFailure = await Effect.runPromise(
+        Effect.result(
+          validateProviderExecutionAuthority(
+            thread!,
+            invalidAuthority as unknown as CollaborationExecutionAuthority,
+          ),
+        ),
+      );
+      expect(typedFailure._tag).toBe("Failure");
+      if (typedFailure._tag === "Failure") {
+        expect(typedFailure.failure).toBeInstanceOf(ProviderAdapterRequestError);
+      }
+
+      await harness.startReactors();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await harness.publishProviderEvent!(
+        makeManualTurnStartRequestedEvent({
+          eventId: `invalid-${_label.replaceAll(" ", "-")}`,
+          messageId,
+          createdAt: now,
+          authority: invalidAuthority,
+        }),
+      );
+      await harness.drain();
+      expect(harness.startSession).not.toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not start or send a provider turn after workspace ownership is released", async () => {
     const harness = await createHarness();

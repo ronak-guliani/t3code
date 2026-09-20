@@ -120,6 +120,27 @@ export function providerErrorLabelFromInstanceHint(input: {
   );
 }
 
+export const validateProviderExecutionAuthority = (
+  thread: OrchestrationThread,
+  supplied: CollaborationExecutionAuthority | undefined,
+) => {
+  if (
+    supplied !== undefined &&
+    (supplied === null ||
+      typeof supplied !== "object" ||
+      !acceptanceAuthorityMatchesThread(supplied, thread))
+  ) {
+    return Effect.fail(
+      new ProviderAdapterRequestError({
+        provider: providerErrorLabel(thread.session?.providerName ?? undefined),
+        method: "thread.turn.start",
+        detail: `Thread '${thread.id}' received execution authority that does not match its current durable delegation.`,
+      }),
+    );
+  }
+  return Effect.succeed(supplied ?? acceptanceAuthorityForThread(thread));
+};
+
 function findProviderAdapterRequestError(
   cause: Cause.Cause<ProviderServiceError>,
 ): ProviderAdapterRequestError | undefined {
@@ -430,22 +451,6 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const resolveExecutionAuthority = (
-    thread: OrchestrationThread,
-    supplied: CollaborationExecutionAuthority | undefined,
-  ) => {
-    if (supplied !== undefined && !acceptanceAuthorityMatchesThread(supplied, thread)) {
-      return Effect.fail(
-        new ProviderAdapterRequestError({
-          provider: providerErrorLabel(thread.session?.providerName ?? undefined),
-          method: "thread.turn.start",
-          detail: `Thread '${thread.id}' received execution authority that does not match its current durable delegation.`,
-        }),
-      );
-    }
-    return Effect.succeed(supplied ?? acceptanceAuthorityForThread(thread));
-  };
-
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
     createdAt: string,
@@ -460,7 +465,7 @@ const make = Effect.gen(function* () {
       return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
     }
 
-    const executionAuthority = yield* resolveExecutionAuthority(
+    const executionAuthority = yield* validateProviderExecutionAuthority(
       thread,
       options?.executionAuthority,
     );
@@ -706,7 +711,10 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
-    const executionAuthority = yield* resolveExecutionAuthority(thread, input.executionAuthority);
+    const executionAuthority = yield* validateProviderExecutionAuthority(
+      thread,
+      input.executionAuthority,
+    );
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       ...(executionAuthority !== undefined ? { executionAuthority } : {}),
