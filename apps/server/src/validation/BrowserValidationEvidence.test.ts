@@ -80,6 +80,27 @@ describe("browser validation evidence", () => {
     ).rejects.toThrow("dimensions do not match");
   });
 
+  it("rejects oversized PNG headers before decoding", async () => {
+    const oversized = Uint8Array.from(png);
+    new DataView(oversized.buffer, oversized.byteOffset, oversized.byteLength).setUint32(
+      16,
+      0xffffffff,
+    );
+
+    await expect(
+      validateBrowserValidationMedia({
+        identity,
+        media: {
+          kind: "screenshot",
+          mimeType: "image/png",
+          bytes: oversized,
+          width: 2,
+          height: 1,
+        },
+      }),
+    ).rejects.toThrow("dimensions exceed the allowed bounds");
+  });
+
   it("keeps snapshot diagnostics bounded and URL-safe", () => {
     const snapshot = {
       url: "https://example.test/app?token=secret#private",

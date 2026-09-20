@@ -12,6 +12,7 @@ import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts"
 import {
   ValidationEnvironmentService,
   ValidationEnvironmentServiceLive,
+  validationEnvironmentStateDirectory,
 } from "./ValidationEnvironmentService.ts";
 
 const environmentId = "environment-1";
@@ -61,7 +62,31 @@ describe("ValidationEnvironmentService", () => {
     server = undefined;
   });
 
-  it("observes a stable process start identity across launch and later revalidation", async () => {
+  it("isolates persisted environment state by the full captured target", () => {
+    const baseDir = "/tmp/t3-validation-service";
+    const target = {
+      workspaceRoot: baseDir,
+      worktreePath: "/workspace/.worktree",
+      branch: "main",
+      revision: "revision-1",
+      dirtyStateFingerprint: "dirty-1",
+      environmentIdentity: environmentId,
+    };
+    const sameTarget = validationEnvironmentStateDirectory(baseDir, target);
+    const differentRevision = validationEnvironmentStateDirectory(baseDir, {
+      ...target,
+      revision: "revision-2",
+    });
+    const differentWorktree = validationEnvironmentStateDirectory(baseDir, {
+      ...target,
+      worktreePath: "/workspace/.other-worktree",
+    });
+
+    expect(differentRevision).not.toBe(sameTarget);
+    expect(differentWorktree).not.toBe(sameTarget);
+  });
+
+  it("blocks when the server cannot launch the captured validation target", async () => {
     const started = await startReadinessServer();
     server = started.server;
     const baseDir = await mkdtemp(join(tmpdir(), "t3-validation-service-"));
@@ -98,21 +123,8 @@ describe("ValidationEnvironmentService", () => {
         ),
       );
 
-    const first = await acquireWithFreshManager();
-
-    // Advance past any clock granularity used for process identity so a
-    // recomputed launch stamp would no longer match the persisted record.
-    await new Promise((resolve) => setTimeout(resolve, 25));
-
-    const second = await acquireWithFreshManager();
-
-    // The second acquire must reuse the persisted environment (same ownership
-    // and process) rather than fail with pid-reuse or relaunch.
-    expect(second.ownershipIdentity).toBe(first.ownershipIdentity);
-    expect(second.backend.process.pid).toBe(process.pid);
-    expect(second.backend.process.startIdentity).toBe(first.backend.process.startIdentity);
-    // Both leases share one persisted record across manager instances, so
-    // releasing both would race state removal; the leases hold no timers or
-    // handles once acquired.
+    await expect(acquireWithFreshManager()).rejects.toMatchObject({
+      code: "launch-failed",
+    });
   });
 });

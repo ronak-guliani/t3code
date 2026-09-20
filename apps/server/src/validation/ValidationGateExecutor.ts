@@ -162,6 +162,11 @@ export function browserScenarioForGate(input: {
   readonly webOrigin: string;
   readonly webPort: number;
 }): BrowserValidationScenario {
+  if (input.scenarioId !== "browser-validation") {
+    throw new Error(
+      `Browser scenario "${input.scenarioId}" has no executable definition in this server.`,
+    );
+  }
   const label = input.gate.label || `Browser scenario: ${input.scenarioId}`;
   return {
     id: input.scenarioId,

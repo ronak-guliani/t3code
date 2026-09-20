@@ -187,26 +187,20 @@ describe("ValidationGateExecutor mapping", () => {
     expect(joined).not.toContain("credential=abc");
   });
 
-  it("expands browser scenarios with explicit assertions and screenshot evidence", () => {
+  it("blocks browser scenarios without an executable definition", () => {
     const browserGate = gate({
       id: "validation:req-1:browser-scenario:opens-settings",
       label: "Opens settings",
       kind: "browser-scenario",
     });
-    const scenario = browserScenarioForGate({
-      gate: browserGate,
-      scenarioId: "opens-settings",
-      webOrigin: "http://127.0.0.1:3773",
-      webPort: 3773,
-    });
-    expect(scenario.id).toBe("opens-settings");
-    expect(scenario.assertions.length).toBeGreaterThan(0);
-    expect(scenario.media.some((requirement) => requirement.kind === "screenshot")).toBe(true);
-    expect(
-      scenario.media.some(
-        (requirement) => requirement.kind === "recording" && requirement.required,
-      ),
-    ).toBe(false);
+    expect(() =>
+      browserScenarioForGate({
+        gate: browserGate,
+        scenarioId: "opens-settings",
+        webOrigin: "http://127.0.0.1:3773",
+        webPort: 3773,
+      }),
+    ).toThrow("has no executable definition");
   });
 
   it("maps browser outcomes without success-shaped fallback evidence", () => {

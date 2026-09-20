@@ -154,9 +154,32 @@ const decodePng = async (
   if (bytes.length < 45 || bytes.length > MAX_MEDIA_BYTES) {
     throw new BrowserValidationEvidenceError("Screenshot bytes are outside the allowed bounds.");
   }
+  if (
+    (width !== undefined && (width <= 0 || width > MAX_MEDIA_EDGE)) ||
+    (height !== undefined && (height <= 0 || height > MAX_MEDIA_EDGE))
+  ) {
+    throw new BrowserValidationEvidenceError("Screenshot dimensions exceed the allowed bounds.");
+  }
+  const header = Buffer.from(bytes);
+  if (
+    header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) &&
+    header.readUInt32BE(8) === 13 &&
+    header.subarray(12, 16).toString("ascii") === "IHDR"
+  ) {
+    const headerWidth = header.readUInt32BE(16);
+    const headerHeight = header.readUInt32BE(20);
+    if (
+      headerWidth <= 0 ||
+      headerHeight <= 0 ||
+      headerWidth > MAX_MEDIA_EDGE ||
+      headerHeight > MAX_MEDIA_EDGE
+    ) {
+      throw new BrowserValidationEvidenceError("Screenshot dimensions exceed the allowed bounds.");
+    }
+  }
   const image = await new Promise<PNG>((resolve, reject) => {
     const decoder = new PNG({ checkCRC: true });
-    decoder.parse(Buffer.from(bytes), (error, parsed) => {
+    decoder.parse(header, (error, parsed) => {
       if (error || !parsed) {
         reject(new BrowserValidationEvidenceError("Screenshot could not be decoded."));
       } else {

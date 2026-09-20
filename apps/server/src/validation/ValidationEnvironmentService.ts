@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -8,7 +9,6 @@ import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts"
 import {
   createValidationEnvironmentManager,
   ValidationEnvironmentError,
-  type StartedValidationEnvironment,
   type StoredValidationEnvironment,
   type ValidationEnvironmentAdapters,
   type ValidationEnvironmentLease,
@@ -37,13 +37,30 @@ function safeEnvId(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 64) || "default";
 }
 
+export function validationEnvironmentStateDirectory(
+  baseDir: string,
+  target: import("@t3tools/contracts").ValidationTarget,
+): string {
+  const targetKey = createHash("sha256")
+    .update(
+      JSON.stringify([
+        target.workspaceRoot,
+        target.worktreePath,
+        target.branch,
+        target.revision,
+        target.dirtyStateFingerprint,
+        target.environmentIdentity,
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 24);
+  return join(baseDir, "validation", safeEnvId(target.environmentIdentity), targetKey);
+}
+
 export const makeValidationEnvironmentService = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const environment = yield* ServerEnvironment;
   const currentEnvironmentId = yield* environment.getEnvironmentId;
-
-  const stateDirFor = (environmentIdentity: string): string =>
-    join(config.baseDir, "validation", safeEnvId(environmentIdentity));
 
   const readState = async (stateDirectory: string): Promise<StoredValidationEnvironment | null> => {
     try {
@@ -89,27 +106,13 @@ export const makeValidationEnvironmentService = Effect.gen(function* () {
       },
     },
     launcher: {
-      start: async ({ target, ownershipIdentity }) => {
-        if (target.environmentIdentity !== currentEnvironmentId) {
-          throw new ValidationEnvironmentError(
-            "descriptor-mismatch",
-            "Validation target environment does not match this server.",
-          );
-        }
-        const backendPort = config.port;
-        const backendOrigin = `http://127.0.0.1:${backendPort}`;
-        const webOrigin = backendOrigin;
-        const identity = {
-          pid: process.pid,
-          startIdentity: serverStartIdentity,
-          ownershipIdentity,
-        };
-        const started: StartedValidationEnvironment = {
-          ownershipIdentity,
-          backend: { origin: backendOrigin, port: backendPort, process: identity },
-          web: { origin: webOrigin, port: backendPort, process: identity },
-        };
-        return started;
+      start: async ({ target }) => {
+        throw new ValidationEnvironmentError(
+          target.environmentIdentity !== currentEnvironmentId
+            ? "descriptor-mismatch"
+            : "launch-failed",
+          "Launching the captured validation target is not available in this server process.",
+        );
       },
     },
     process: {
@@ -174,7 +177,7 @@ export const makeValidationEnvironmentService = Effect.gen(function* () {
     target: import("@t3tools/contracts").ValidationTarget,
   ): ValidationEnvironmentTarget => ({
     ...target,
-    stateDirectory: stateDirFor(target.environmentIdentity),
+    stateDirectory: validationEnvironmentStateDirectory(config.baseDir, target),
     launchConfig: {
       command: "pnpm",
       args: ["dev"],

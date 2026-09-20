@@ -1,6 +1,7 @@
 import {
   reduceValidationReadiness,
   validationGateStatusLabel,
+  validationRunEffectiveStatus,
   validationRunStatusLabel,
   type EnvironmentId,
   type MessageId,
@@ -609,7 +610,7 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
               <div className="mb-2 flex items-center justify-between gap-2">
                 <span className="font-medium">Validation</span>
                 <span className="text-muted-foreground">
-                  {validationRunStatusLabel(validationRun.status ?? "planned")} ·{" "}
+                  {validationRunStatusLabel(validationRunEffectiveStatus(validationRun))} ·{" "}
                   {currentValidationTarget
                     ? reduceValidationReadiness(validationRun, currentValidationTarget)
                     : "Readiness unavailable"}

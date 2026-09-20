@@ -184,6 +184,39 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
     });
   });
 
+  const interruptActiveGates = Effect.fn("ValidationCoordinatorReactor.interruptActiveGates")(
+    function* (
+      thread: import("@t3tools/contracts").OrchestrationThread,
+      run: NonNullable<import("@t3tools/contracts").OrchestrationThread["validationRun"]>,
+      reason: string,
+    ) {
+      const executorId = run.lease?.executorId ?? run.executorId;
+      if (!executorId) return;
+      const completedAt = new Date().toISOString();
+      for (const gate of run.gates) {
+        if (gate.status !== "running") continue;
+        yield* orchestrationEngine.dispatch({
+          type: "thread.validation-gate.update",
+          commandId: commandId(run.id, `interrupt:${gate.id}:${run.updatedAt}`),
+          threadId: thread.id,
+          runId: run.id,
+          executorId,
+          target: run.target,
+          gateId: gate.id,
+          status: "interrupted",
+          command: gate.command,
+          startedAt: gate.startedAt,
+          completedAt,
+          exitCode: null,
+          outputRef: null,
+          blockerReason: reason,
+          diagnostics: [...gate.diagnostics, reason],
+          createdAt: completedAt,
+        });
+      }
+    },
+  );
+
   const reconcileRun = Effect.fn("ValidationCoordinatorReactor.reconcileRun")(function* (
     runId: string,
   ) {
@@ -235,11 +268,11 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
       });
       return;
     }
-    if (isValidationRunTerminal(status)) {
-      yield* releaseLease(run);
-      return;
-    }
-    if (run.lease && Date.parse(run.lease.expiresAt) <= Date.now()) {
+    if (
+      !isValidationRunTerminal(status) &&
+      run.lease &&
+      Date.parse(run.lease.expiresAt) <= Date.now()
+    ) {
       yield* releaseLease(run);
       return;
     }
@@ -248,6 +281,8 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
       Effect.catch((error) =>
         Effect.gen(function* () {
           if (status === "planned" || status === "preparing" || status === "running") {
+            const reason = error.message;
+            yield* interruptActiveGates(thread, run, reason);
             yield* orchestrationEngine.dispatch({
               type: "thread.validation.lifecycle",
               commandId: commandId(run.id, "blocked-target"),
@@ -255,7 +290,7 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
               update: {
                 runId: run.id,
                 status: "blocked",
-                reason: error.message,
+                reason,
                 updatedAt: new Date().toISOString(),
               },
             });
@@ -275,6 +310,8 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
       currentTarget.workspaceRoot !== run.target.workspaceRoot ||
       currentTarget.environmentIdentity !== run.target.environmentIdentity
     ) {
+      const reason = "Validation target drifted after planning.";
+      yield* interruptActiveGates(thread, run, reason);
       yield* orchestrationEngine.dispatch({
         type: "thread.validation.lifecycle",
         commandId: commandId(run.id, "stale"),
@@ -282,10 +319,15 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
         update: {
           runId: run.id,
           status: "stale",
-          reason: "Validation target drifted after planning.",
+          reason,
           updatedAt: new Date().toISOString(),
         },
       });
+      yield* releaseLease(run);
+      return;
+    }
+
+    if (isValidationRunTerminal(status)) {
       yield* releaseLease(run);
       return;
     }
