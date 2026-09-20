@@ -1,4 +1,8 @@
-import { Effect } from "effect";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { Cause, Effect, Fiber } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import * as ProcessRunner from "../processRunner.ts";
@@ -255,6 +259,75 @@ describe("RepositoryValidationRunner", () => {
     await expect(
       Effect.runPromise(store.write({ key: "../evil", contents: "x" })),
     ).rejects.toThrow();
+  });
+
+  it("runs focused gates with existing test files and drops deleted ones", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "t3-validation-focused-"));
+    const kept = "kept.test.ts";
+    await writeFile(join(dir, kept), "x", "utf8");
+    const seen: string[][] = [];
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const runner = yield* RepositoryValidationRunner;
+        return yield* runner.run({
+          gates: [
+            {
+              id: "focused-tests",
+              cwd: dir,
+              attempt: 1,
+              testFiles: [kept, "deleted.test.ts"],
+            },
+          ],
+        });
+      }).pipe(
+        Effect.provide(RepositoryValidationRunnerLive),
+        Effect.provideService(ProcessRunner.ProcessRunner, {
+          run: (input: ProcessRunner.EffectProcessRunInput) => {
+            seen.push([...input.args]);
+            return Effect.succeed(baseProcessResult());
+          },
+        }),
+        Effect.provideService(ValidationArtifactStoreService, {
+          write: ({ key }) => Effect.succeed(descriptor(key)),
+        }),
+      ),
+    );
+
+    expect(seen).toEqual([["exec", "vp", "test", "run", kept]]);
+    expect(result.attempts[0]?.status).toBe("passed");
+  });
+
+  it("aborts the spawned child when the gate fiber is interrupted", async () => {
+    let observedSignal: AbortSignal | undefined;
+    const gate = Effect.gen(function* () {
+      const runner = yield* RepositoryValidationRunner;
+      return yield* runner.run({ gates: [{ id: "lint", cwd: "/repo", attempt: 1 }] });
+    }).pipe(
+      Effect.provide(RepositoryValidationRunnerLive),
+      Effect.provideService(ProcessRunner.ProcessRunner, {
+        run: (input: ProcessRunner.EffectProcessRunInput) => {
+          observedSignal = input.signal;
+          return Effect.never;
+        },
+      }),
+      Effect.provideService(ValidationArtifactStoreService, {
+        write: ({ key }) => Effect.succeed(descriptor(key)),
+      }),
+    );
+
+    const fiber = Effect.runFork(gate);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    const exit = await Effect.runPromise(Fiber.await(fiber));
+
+    // The abort hook fires so the spawned child cannot outlive cancellation;
+    // external interruption still terminates the fiber (the reactor resumes
+    // the orphaned running gate on its next pass).
+    expect(observedSignal?.aborted).toBe(true);
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+    }
   });
 
   it("scopes artifact keys per run so concurrent runs cannot overwrite each other", async () => {

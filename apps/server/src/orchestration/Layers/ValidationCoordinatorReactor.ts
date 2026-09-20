@@ -19,6 +19,7 @@ import {
   type ValidationCoordinatorReactorShape,
   type ValidationCoordinatorRequest,
 } from "../Services/ValidationCoordinatorReactor.ts";
+import { selectFocusedTestFiles } from "../../validation/ValidationPolicy.ts";
 import {
   collectChangedPathsFromCheckpoints,
   planCoordinatorRunWithPolicy,
@@ -32,6 +33,15 @@ import {
 
 const commandId = (runId: string, action: string): CommandId =>
   CommandId.make(`validation:${runId}:${action}`);
+
+/**
+ * Command ids for repeatable lifecycle transitions. The engine replays the
+ * recorded verdict for a retried command id with no new event, so ids must
+ * stay stable for same-state retries yet differ across lifecycle cycles;
+ * `run.updatedAt` changes on every applied transition, giving both.
+ */
+export const lifecycleCommandId = (runId: string, action: string, updatedAt: string): CommandId =>
+  commandId(runId, `${action}:${updatedAt}`);
 
 const runIdForRequest = (requestId: string): string => `validation:${requestId}`;
 const executorIdForTarget = (target: ValidationTarget): string =>
@@ -399,6 +409,10 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
 
     const cwd = run.target.worktreePath ?? run.target.workspaceRoot;
     if (isRepositoryGateKind(nextGate.kind)) {
+      const testFiles =
+        nextGate.kind === "focused-tests"
+          ? selectFocusedTestFiles(collectChangedPathsFromCheckpoints(thread.checkpoints ?? []))
+          : undefined;
       const result = yield* gateExecutor
         .executeRepositoryGate({
           runId: run.id,
@@ -409,6 +423,7 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
           target: run.target,
           cwd,
           observedAt,
+          ...(testFiles === undefined ? {} : { testFiles }),
         })
         .pipe(
           Effect.catch((error) =>

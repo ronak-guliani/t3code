@@ -267,6 +267,7 @@ export interface ValidationGateExecutorShape {
     readonly target: ValidationTarget;
     readonly cwd: string;
     readonly observedAt: string;
+    readonly testFiles?: ReadonlyArray<string>;
   }) => Effect.Effect<ValidationStructuredResult, Error>;
   readonly executeBrowserGate: (input: {
     readonly runId: string;
@@ -299,7 +300,7 @@ export function mediaFileNameForGate(input: {
   return `${segment}-${input.sha256.slice(0, 16)}.${ext}`;
 }
 
-const makeFileMediaPersistence = (baseDir: string) => ({
+export const makeFileMediaPersistence = (baseDir: string) => ({
   persist: async (input: {
     readonly identity: { readonly runId: string; readonly gateId: string };
     readonly kind: "screenshot" | "recording";
@@ -307,7 +308,7 @@ const makeFileMediaPersistence = (baseDir: string) => ({
     readonly bytes: Uint8Array;
     readonly sha256: string;
   }): Promise<string> => {
-    const dir = join(baseDir, "validation", input.identity.runId);
+    const dir = join(baseDir, "validation", artifactScopeForRun(input.identity.runId));
     await mkdir(dir, { recursive: true });
     const path = join(
       dir,
@@ -344,6 +345,7 @@ export const makeValidationGateExecutor = Effect.gen(function* () {
             cwd: input.cwd,
             attempt: attemptNumberForAttemptId(input.attemptId),
             scope: artifactScopeForRun(input.runId),
+            ...(input.testFiles === undefined ? {} : { testFiles: [...input.testFiles] }),
           },
         ],
       });

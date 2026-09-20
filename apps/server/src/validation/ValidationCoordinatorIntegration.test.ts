@@ -12,6 +12,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { decideOrchestrationCommand } from "../orchestration/decider.ts";
+import { lifecycleCommandId } from "../orchestration/Layers/ValidationCoordinatorReactor.ts";
 import { projectEvent } from "../orchestration/projector.ts";
 import type { OrchestrationReadModel } from "@t3tools/contracts";
 
@@ -117,6 +118,13 @@ const resultFor = (
 });
 
 describe("validation coordinator integration", () => {
+  it("keys repeatable lifecycle commands per cycle for engine dedup", () => {
+    const first = lifecycleCommandId("run-1", "preparing", "2026-09-18T00:00:00.000Z");
+    expect(lifecycleCommandId("run-1", "preparing", "2026-09-18T00:00:00.000Z")).toBe(first);
+    expect(lifecycleCommandId("run-1", "preparing", "2026-09-18T00:01:00.000Z")).not.toBe(first);
+    expect(lifecycleCommandId("run-1", "running", "2026-09-18T00:00:00.000Z")).not.toBe(first);
+  });
+
   it("does not duplicate effects for duplicate results", () => {
     const run = runningRun();
     const result = resultFor(run);

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { Cause, Clock, Context, Data, Effect, Layer, Semaphore } from "effect";
@@ -213,6 +213,20 @@ export function artifactKeyForSpec(spec: RepositoryValidationGateSpec): string {
   return spec.scope === undefined ? base : `${spec.scope}-${base}`;
 }
 
+async function keepExistingTestFiles(cwd: string, files: ReadonlyArray<string>): Promise<string[]> {
+  const kept: string[] = [];
+  for (const file of files) {
+    try {
+      const entry = await stat(path.join(cwd, file));
+      if (entry.isFile()) kept.push(file);
+    } catch {
+      // Renamed or deleted since planning: drop the candidate and let the
+      // gate fall back to the bare suite rather than fail on a missing file.
+    }
+  }
+  return kept;
+}
+
 export const makeFileValidationArtifactStore = (directory: string): ValidationArtifactStore => ({
   write: ({ key, contents }) => {
     if (!isSafeArtifactKey(key)) {
@@ -253,8 +267,14 @@ export const makeRepositoryValidationRunner = Effect.fn("makeRepositoryValidatio
     ): Effect.Effect<ValidationAttemptResult, never> =>
       Effect.gen(function* () {
         const startedAt = yield* Clock.currentTimeMillis;
-        const commandResult = commandFor(spec);
         const specFailure = validateSpec(spec);
+        const focusedTestFiles =
+          specFailure === null && spec.id === "focused-tests" && spec.testFiles !== undefined
+            ? yield* Effect.promise(() => keepExistingTestFiles(spec.cwd, spec.testFiles ?? []))
+            : undefined;
+        const effectiveSpec =
+          focusedTestFiles === undefined ? spec : { ...spec, testFiles: focusedTestFiles };
+        const commandResult = commandFor(effectiveSpec);
         if ("failure" in commandResult || specFailure !== null) {
           const failure =
             ("failure" in commandResult ? commandResult.failure : specFailure) ??
@@ -281,18 +301,26 @@ export const makeRepositoryValidationRunner = Effect.fn("makeRepositoryValidatio
         }
         const command = commandResult;
 
+        // Aborting here kills the spawned child when this fiber is
+        // interrupted; without it the child would keep running past
+        // cancellation until its own timeout.
+        const abortController = new AbortController();
         const processExit = yield* Effect.uninterruptibleMask((restore) =>
-          restore(
-            validationProcesses.withPermits(1)(
-              processRunner.run({
-                command: command.executable,
-                args: command.args,
-                cwd: spec.cwd,
-                ...(spec.timeoutMs === undefined ? {} : { timeout: spec.timeoutMs }),
-                maxOutputBytes: MAX_OUTPUT_BYTES,
-                outputMode: "truncate",
-              }),
+          Effect.ensuring(
+            restore(
+              validationProcesses.withPermits(1)(
+                processRunner.run({
+                  command: command.executable,
+                  args: command.args,
+                  cwd: spec.cwd,
+                  ...(spec.timeoutMs === undefined ? {} : { timeout: spec.timeoutMs }),
+                  maxOutputBytes: MAX_OUTPUT_BYTES,
+                  outputMode: "truncate",
+                  signal: abortController.signal,
+                }),
+              ),
             ),
+            Effect.sync(() => abortController.abort()),
           ).pipe(
             Effect.matchCause({
               onFailure: (cause) => ({ _tag: "failure" as const, cause }),

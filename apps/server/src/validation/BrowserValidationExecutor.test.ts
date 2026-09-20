@@ -14,7 +14,7 @@ import {
 
 import type { BootstrapCredentialService } from "../auth/Services/BootstrapCredentialService.ts";
 import type { PreviewAutomationBroker } from "../mcp/PreviewAutomationBroker.ts";
-import { executeBrowserValidation } from "./BrowserValidationExecutor.ts";
+import { executeBrowserValidation, evaluateAssertion } from "./BrowserValidationExecutor.ts";
 
 const environmentId = EnvironmentId.make("environment-1");
 const threadId = ThreadId.make("thread-1");
@@ -278,6 +278,72 @@ describe("browser validation executor", () => {
     expect(result.outcome).toBe("blocked");
     expect(result.diagnostics[0]?.message).toContain("different environment");
     expect(deps.issueCount).toBe(0);
+  });
+
+  it("retries preflight with an open browser when the first tab id is missing", async () => {
+    const deps = dependencies({
+      preflights: [
+        preflight({
+          browser: { ...preflight().browser, tabId: null },
+          recovery: { kind: "none", message: "No tab yet." },
+        }),
+        preflight(),
+      ],
+    });
+    const result = await Effect.runPromise(executeBrowserValidation(deps, input()));
+    expect(result.outcome).toBe("passed");
+    expect(deps.calls.map((call) => call.operation)).toEqual([
+      "preflight",
+      "preflight",
+      "openAndSnapshot",
+      "press",
+      "snapshot",
+    ]);
+  });
+
+  it("rejects authentication on a path that only shares a prefix", async () => {
+    const deps = dependencies({ preflights: [preflight()] });
+    const result = await Effect.runPromise(
+      executeBrowserValidation(
+        deps,
+        input({
+          authentication: { ...scenario.authentication, pathPrefix: "/app" },
+        }),
+      ),
+    );
+    // Default pairing snapshot serves /app, which satisfies the prefix.
+    expect(result.outcome).toBe("passed");
+
+    const wrongPage = dependencies({
+      preflights: [preflight()],
+      pairing: snapshot("http://localhost:5173/application"),
+    });
+    const rejected = await Effect.runPromise(
+      executeBrowserValidation(
+        wrongPage,
+        input({
+          authentication: { ...scenario.authentication, pathPrefix: "/app" },
+        }),
+      ),
+    );
+    expect(rejected.outcome).toBe("failed");
+    expect(wrongPage.calls.map((call) => call.operation)).toEqual(["preflight", "openAndSnapshot"]);
+  });
+
+  it("fails url-origin assertions when either origin is unparseable", () => {
+    const assertion = { id: "origin", kind: "url-origin" as const, expected: "http://a.example/" };
+    expect(evaluateAssertion(snapshot("http://a.example/page"), assertion).passed).toBe(true);
+    expect(evaluateAssertion(snapshot("http://b.example/page"), assertion).passed).toBe(false);
+    expect(evaluateAssertion(snapshot("not a url"), assertion).passed).toBe(false);
+    expect(
+      evaluateAssertion(snapshot("http://a.example/page"), {
+        ...assertion,
+        expected: "not a url",
+      }).passed,
+    ).toBe(false);
+    expect(
+      evaluateAssertion(snapshot("not a url"), { ...assertion, expected: "also bad" }).passed,
+    ).toBe(false);
   });
 
   it("blocks when browser recovery still has no attached tab", async () => {
