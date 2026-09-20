@@ -31,8 +31,6 @@ import {
   ValidationGateExecutor,
 } from "../../validation/ValidationGateExecutor.ts";
 
-const VALIDATION_LEASE_SWEEP_INTERVAL = "1 minute";
-
 const commandId = (runId: string, action: string): CommandId =>
   CommandId.make(`validation:${runId}:${action}`);
 
@@ -660,12 +658,6 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
     );
     yield* Effect.forkScoped(sweepLeaseExpiries());
     yield* reconcileSafely(reconcileAll());
-    yield* Effect.forkScoped(
-      Effect.sleep(VALIDATION_LEASE_SWEEP_INTERVAL).pipe(
-        Effect.andThen(reconcileSafely(reconcileAll())),
-        Effect.forever,
-      ),
-    );
   });
 
   return {
