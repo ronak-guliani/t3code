@@ -1,7 +1,6 @@
 import {
   CommandId,
   isValidationRunTerminal,
-  planValidationCoordinatorRun,
   type OrchestrationEvent,
   type ThreadId,
   type ValidationRequest,
@@ -20,6 +19,16 @@ import {
   type ValidationCoordinatorReactorShape,
   type ValidationCoordinatorRequest,
 } from "../Services/ValidationCoordinatorReactor.ts";
+import {
+  collectChangedPathsFromCheckpoints,
+  planCoordinatorRunWithPolicy,
+  selectNextRunnableGate,
+} from "../../validation/ValidationPlanner.ts";
+import {
+  isBrowserGateKind,
+  isRepositoryGateKind,
+  ValidationGateExecutor,
+} from "../../validation/ValidationGateExecutor.ts";
 
 const commandId = (runId: string, action: string): CommandId =>
   CommandId.make(`validation:${runId}:${action}`);
@@ -73,6 +82,7 @@ const makeTargetResolver = Effect.gen(function* () {
 const makeValidationCoordinatorReactor = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const targetResolver = yield* ValidationCoordinatorTargetResolver;
+  const gateExecutor = yield* ValidationGateExecutor;
   let reconciling = false;
   let queued = false;
 
@@ -106,12 +116,13 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
         }),
       ),
     );
+    const changedPaths = collectChangedPathsFromCheckpoints(thread.checkpoints ?? []);
     const runId = runIdForRequest(request.requestId);
     yield* orchestrationEngine.dispatch({
       type: "thread.validation.coordinator-plan",
       commandId: commandId(runId, "plan"),
       threadId: request.threadId,
-      run: planValidationCoordinatorRun({
+      run: planCoordinatorRunWithPolicy({
         id: runId,
         requestId: request.requestId,
         threadId: request.threadId,
@@ -120,41 +131,11 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
         scope: request.scope,
         requester: request.requester,
         requestedAt: request.requestedAt,
+        changedPaths,
       }),
       createdAt: request.requestedAt,
     });
   });
-
-  const blockUnavailableGates = Effect.fn("ValidationCoordinatorReactor.blockUnavailableGates")(
-    function* (
-      run: NonNullable<import("@t3tools/contracts").OrchestrationThread["validationRun"]>,
-    ) {
-      const executorId = run.executorId;
-      if (!executorId) return;
-      const now = new Date().toISOString();
-      for (const gate of run.gates) {
-        if (!gate.required || gate.status !== "pending") continue;
-        yield* orchestrationEngine.dispatch({
-          type: "thread.validation-gate.update",
-          commandId: commandId(run.id, `block:${gate.id}`),
-          threadId: run.threadId,
-          runId: run.id,
-          executorId,
-          target: run.target,
-          gateId: gate.id,
-          status: "blocked",
-          command: gate.command,
-          startedAt: null,
-          completedAt: now,
-          exitCode: null,
-          outputRef: null,
-          blockerReason: "Validation runner is not available yet.",
-          diagnostics: ["This gate is blocked until its typed runner is integrated."],
-          createdAt: now,
-        });
-      }
-    },
-  );
 
   const releaseLease = Effect.fn("ValidationCoordinatorReactor.releaseLease")(function* (
     run: NonNullable<import("@t3tools/contracts").OrchestrationThread["validationRun"]>,
@@ -178,6 +159,49 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
     const run = thread?.validationRun;
     if (!thread || !run || !isValidationCoordinatorOwnedRun(run)) return;
     const status = validationRunEffectiveStatus(run);
+    if (status === "interrupted") {
+      yield* releaseLease(run);
+      const resumedAt = new Date().toISOString();
+      const resetExecutorId = run.executorId;
+      if (resetExecutorId) {
+        for (const gate of run.gates) {
+          if (gate.status !== "interrupted") continue;
+          yield* orchestrationEngine.dispatch({
+            type: "thread.validation-gate.update",
+            commandId: commandId(run.id, `reset:${gate.id}:${run.updatedAt}`),
+            threadId: thread.id,
+            runId: run.id,
+            executorId: resetExecutorId,
+            target: run.target,
+            gateId: gate.id,
+            status: "pending",
+            command: gate.command,
+            startedAt: null,
+            completedAt: null,
+            exitCode: null,
+            outputRef: null,
+            blockerReason: null,
+            diagnostics: [
+              ...gate.diagnostics,
+              "Gate reset to pending after the run was interrupted.",
+            ],
+            createdAt: resumedAt,
+          });
+        }
+      }
+      yield* orchestrationEngine.dispatch({
+        type: "thread.validation.lifecycle",
+        commandId: commandId(run.id, `resume-planned:${run.updatedAt}`),
+        threadId: thread.id,
+        update: {
+          runId: run.id,
+          status: "planned",
+          reason: null,
+          updatedAt: resumedAt,
+        },
+      });
+      return;
+    }
     if (isValidationRunTerminal(status)) {
       yield* releaseLease(run);
       return;
@@ -260,7 +284,7 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
           id: `lease:${run.id}:${run.updatedAt}`,
           executorId,
           claimedAt,
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
         },
         claimedAt,
       });
@@ -278,20 +302,214 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
       return;
     }
 
-    if (status === "running") {
-      yield* blockUnavailableGates({ ...run, executorId });
+    if (status === "planned") {
       yield* orchestrationEngine.dispatch({
         type: "thread.validation.lifecycle",
-        commandId: commandId(run.id, "blocked-runners"),
+        commandId: commandId(run.id, "running-resumed"),
         threadId: thread.id,
         update: {
           runId: run.id,
-          status: "blocked",
-          reason: "Validation runners are not integrated.",
+          status: "running",
+          reason: null,
           updatedAt: new Date().toISOString(),
         },
       });
+      return;
     }
+
+    if (status !== "running") return;
+
+    const runningGate = run.gates.find((gate) => gate.status === "running");
+    if (runningGate) {
+      const now = new Date().toISOString();
+      yield* orchestrationEngine.dispatch({
+        type: "thread.validation-gate.update",
+        commandId: commandId(run.id, `interrupt:${runningGate.id}:${now}`),
+        threadId: thread.id,
+        runId: run.id,
+        executorId: run.lease.executorId,
+        target: run.target,
+        gateId: runningGate.id,
+        status: "interrupted",
+        command: runningGate.command,
+        startedAt: runningGate.startedAt,
+        completedAt: now,
+        exitCode: null,
+        outputRef: runningGate.outputRef,
+        blockerReason: null,
+        diagnostics: [...runningGate.diagnostics, "Reactor restarted while gate was running."],
+        createdAt: now,
+      });
+      yield* orchestrationEngine.dispatch({
+        type: "thread.validation.lifecycle",
+        commandId: commandId(run.id, "interrupted-restart"),
+        threadId: thread.id,
+        update: {
+          runId: run.id,
+          status: "interrupted",
+          reason: "Reactor restarted during gate execution.",
+          updatedAt: now,
+        },
+      });
+      return;
+    }
+
+    if (
+      run.gates.every(
+        (gate) => !gate.required || gate.status === "passed" || gate.status === "not-required",
+      )
+    ) {
+      yield* orchestrationEngine.dispatch({
+        type: "thread.validation.lifecycle",
+        commandId: commandId(run.id, "ready"),
+        threadId: thread.id,
+        update: {
+          runId: run.id,
+          status: "ready",
+          reason: null,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+      return;
+    }
+
+    const nextGate = selectNextRunnableGate(run.gates);
+    if (!nextGate) return;
+
+    const observedAt = new Date().toISOString();
+    const attemptId = `attempt:${run.id}:${nextGate.id}:${nextGate.attempts.length + 1}`;
+    yield* orchestrationEngine.dispatch({
+      type: "thread.validation-gate.update",
+      commandId: commandId(run.id, `start:${nextGate.id}:${attemptId}`),
+      threadId: thread.id,
+      runId: run.id,
+      executorId: run.lease.executorId,
+      target: run.target,
+      gateId: nextGate.id,
+      status: "running",
+      command: nextGate.command,
+      startedAt: observedAt,
+      completedAt: null,
+      exitCode: null,
+      outputRef: null,
+      blockerReason: null,
+      diagnostics: [],
+      createdAt: observedAt,
+    });
+
+    const cwd = run.target.worktreePath ?? run.target.workspaceRoot;
+    if (isRepositoryGateKind(nextGate.kind)) {
+      const result = yield* gateExecutor
+        .executeRepositoryGate({
+          runId: run.id,
+          gate: { ...nextGate, status: "running", startedAt: observedAt },
+          attemptId,
+          leaseId: run.lease.id,
+          executorId: run.lease.executorId,
+          target: run.target,
+          cwd,
+          observedAt,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.succeed({
+              id: `result:${run.id}:${nextGate.id}:${attemptId}`,
+              runId: run.id,
+              gateId: nextGate.id,
+              attemptId,
+              leaseId: run.lease?.id ?? `lease:${run.id}`,
+              executorId: run.lease?.executorId ?? executorId,
+              target: run.target,
+              status: "blocked" as const,
+              observedAt,
+              completedAt: new Date().toISOString(),
+              exitCode: null,
+              outputRef: null,
+              blockerReason:
+                error instanceof Error
+                  ? error.message.slice(0, 500)
+                  : "Repository gate is blocked.",
+              diagnostics: [error instanceof Error ? error.message.slice(0, 1000) : "Blocked."],
+            }),
+          ),
+        );
+      yield* orchestrationEngine.dispatch({
+        type: "thread.validation.result.record",
+        commandId: commandId(run.id, `result:${nextGate.id}:${attemptId}`),
+        threadId: thread.id,
+        result,
+      });
+      return;
+    }
+
+    if (isBrowserGateKind(nextGate.kind)) {
+      const scenarioId = nextGate.id.includes(":browser-scenario:")
+        ? (nextGate.id.split(":browser-scenario:")[1] ?? nextGate.id)
+        : "browser-validation";
+      const result = yield* gateExecutor
+        .executeBrowserGate({
+          runId: run.id,
+          gate: { ...nextGate, status: "running", startedAt: observedAt },
+          scenarioId,
+          attemptId,
+          leaseId: run.lease.id,
+          executorId: run.lease.executorId,
+          target: run.target,
+          threadId: run.threadId,
+          observedAt,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.succeed({
+              id: `result:${run.id}:${nextGate.id}:${attemptId}`,
+              runId: run.id,
+              gateId: nextGate.id,
+              attemptId,
+              leaseId: run.lease?.id ?? `lease:${run.id}`,
+              executorId: run.lease?.executorId ?? executorId,
+              target: run.target,
+              status: "blocked" as const,
+              observedAt,
+              completedAt: new Date().toISOString(),
+              exitCode: null,
+              outputRef: null,
+              blockerReason:
+                error instanceof Error ? error.message.slice(0, 500) : "Browser gate is blocked.",
+              diagnostics: [error instanceof Error ? error.message.slice(0, 1000) : "Blocked."],
+            }),
+          ),
+        );
+      yield* orchestrationEngine.dispatch({
+        type: "thread.validation.result.record",
+        commandId: commandId(run.id, `result:${nextGate.id}:${attemptId}`),
+        threadId: thread.id,
+        result,
+      });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    yield* orchestrationEngine.dispatch({
+      type: "thread.validation.result.record",
+      commandId: commandId(run.id, `result:${nextGate.id}:${attemptId}`),
+      threadId: thread.id,
+      result: {
+        id: `result:${run.id}:${nextGate.id}:${attemptId}`,
+        runId: run.id,
+        gateId: nextGate.id,
+        attemptId,
+        leaseId: run.lease.id,
+        executorId: run.lease.executorId,
+        target: run.target,
+        status: "blocked" as const,
+        observedAt,
+        completedAt: now,
+        exitCode: null,
+        outputRef: null,
+        blockerReason: `Gate kind ${nextGate.kind ?? "unknown"} has no integrated runner.`,
+        diagnostics: ["Select a supported validation gate."],
+      },
+    });
   });
 
   const reconcileRequest = Effect.fn("ValidationCoordinatorReactor.reconcileRequest")(function* (
