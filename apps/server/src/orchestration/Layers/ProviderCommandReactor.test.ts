@@ -20,6 +20,7 @@ import {
   ProjectId,
   ThreadId,
   TurnId,
+  type ThreadDelegation,
 } from "@t3tools/contracts";
 import { Deferred, Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -62,6 +63,7 @@ import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ThreadTitleReactor } from "../Services/ThreadTitleReactor.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { acceptanceAuthorityForThread } from "../../collaborativeAcceptance/authority.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
@@ -153,6 +155,7 @@ describe("ProviderCommandReactor", () => {
     readonly checkpointRefExists?: boolean;
     readonly checkpointBaselineRefExists?: boolean;
     readonly checkpointRefMatchesWorkspace?: boolean;
+    readonly delegation?: ThreadDelegation;
   }) {
     const now = new Date().toISOString();
     const baseDir = input?.baseDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-"));
@@ -429,12 +432,32 @@ describe("ProviderCommandReactor", () => {
         createdAt: now,
       }),
     );
+    if (input?.delegation !== undefined) {
+      await Effect.runPromise(
+        engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-parent-thread-create"),
+          threadId: ThreadId.make("thread-parent"),
+          projectId: asProjectId("project-1"),
+          title: "Parent Thread",
+          modelSelection,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: threadTwoWorkspace,
+          createdAt: now,
+        }),
+      );
+    }
     await Effect.runPromise(
       engine.dispatch({
         type: "thread.create",
         commandId: CommandId.make("cmd-thread-create"),
         threadId: ThreadId.make("thread-1"),
         projectId: asProjectId("project-1"),
+        ...(input?.delegation === undefined
+          ? {}
+          : { parentThreadId: ThreadId.make("thread-parent"), delegation: input.delegation }),
         title: "Thread",
         modelSelection: modelSelection,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -534,6 +557,67 @@ describe("ProviderCommandReactor", () => {
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+  });
+
+  it("binds the complete acceptance authority tuple when starting a provider session", async () => {
+    const harness = await createHarness({
+      delegation: {
+        assignmentId: asMessageId("assignment-provider-authority"),
+        dispatchId: "dispatch-provider-authority",
+        dispatchSequence: 3,
+        dispatchTurnId: asTurnId("turn-provider-authority"),
+        dispatchReason: "assigned",
+        followUp: "automatic",
+        completedAt: null,
+      },
+    });
+    const now = new Date().toISOString();
+    const beforeTurn = await Effect.runPromise(harness.engine.getReadModel());
+    const authorityThread = beforeTurn.threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(authorityThread?.nudging?.delegation).toMatchObject({
+      assignmentId: "assignment-provider-authority",
+      dispatchId: "dispatch-provider-authority",
+      dispatchSequence: 3,
+      dispatchTurnId: "turn-provider-authority",
+    });
+    expect(acceptanceAuthorityForThread(authorityThread!)).toMatchObject({
+      executionId: "thread:thread-1",
+      assignmentId: "assignment-provider-authority",
+      generation: 3,
+      dispatchId: "dispatch-provider-authority",
+      turnId: "turn-provider-authority",
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-provider-authority"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-provider-authority"),
+          role: "user",
+          text: "bind authority",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      executionAuthority: {
+        executionId: "thread:thread-1",
+        assignmentId: "assignment-provider-authority",
+        threadId: "thread-1",
+        generation: 3,
+        dispatchId: "dispatch-provider-authority",
+        turnId: "turn-provider-authority",
+      },
+    });
   });
 
   it("does not start or send a provider turn after workspace ownership is released", async () => {

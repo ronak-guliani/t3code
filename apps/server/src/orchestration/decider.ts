@@ -538,6 +538,7 @@ function buildTurnStartEvents(input: {
   readonly delegationAssignmentId?: TurnStartRequestedPayload["delegationAssignmentId"];
   readonly delegationDispatchId?: TurnStartRequestedPayload["delegationDispatchId"];
   readonly delegationTransition?: TurnStartRequestedPayload["delegationTransition"];
+  readonly executionAuthority?: TurnStartRequestedPayload["executionAuthority"];
   readonly workspaceBinding?: TurnStartRequestedPayload["workspaceBinding"];
   readonly at: string;
 }): {
@@ -590,6 +591,9 @@ function buildTurnStartEvents(input: {
         : {}),
       ...(input.delegationTransition !== undefined
         ? { delegationTransition: input.delegationTransition }
+        : {}),
+      ...(input.executionAuthority !== undefined
+        ? { executionAuthority: input.executionAuthority }
         : {}),
       ...(input.workspaceBinding !== undefined ? { workspaceBinding: input.workspaceBinding } : {}),
       createdAt: input.at,
@@ -2497,6 +2501,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         targetThread.nudging?.delegation?.completedAt === null
           ? targetThread.nudging.delegation
           : undefined;
+      const executionAuthority =
+        activeDelegation?.dispatchId !== undefined &&
+        activeDelegation.dispatchSequence !== undefined &&
+        activeDelegation.dispatchTurnId !== undefined &&
+        activeDelegation.dispatchTurnId !== null
+          ? {
+              executionId: `thread:${targetThread.id}`,
+              assignmentId: activeDelegation.assignmentId,
+              threadId: targetThread.id,
+              generation: activeDelegation.dispatchSequence,
+              dispatchId: activeDelegation.dispatchId,
+              turnId: activeDelegation.dispatchTurnId,
+            }
+          : undefined;
       if (activeDelegation?.decision) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -2530,6 +2548,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               delegationTransition: turnDelegation.dispatchReason ?? "assigned",
             }
           : {}),
+        ...(executionAuthority !== undefined ? { executionAuthority } : {}),
         ...(command.workspaceBinding !== undefined
           ? { workspaceBinding: command.workspaceBinding }
           : {}),

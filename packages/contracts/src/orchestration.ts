@@ -2203,6 +2203,7 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   delegationAssignmentId: Schema.optional(MessageId),
   delegationDispatchId: Schema.optional(TrimmedNonEmptyString),
   delegationTransition: Schema.optional(Schema.Literals(["assigned", "continued", "replaced"])),
+  executionAuthority: Schema.optional(CollaborationExecutionAuthority),
   workspaceBinding: Schema.optional(WorkspaceBinding),
   createdAt: IsoDateTime,
 });

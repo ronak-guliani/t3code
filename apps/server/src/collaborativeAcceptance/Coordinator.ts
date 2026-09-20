@@ -1433,7 +1433,7 @@ const makeCoordinator = Effect.gen(function* () {
         return { record: saved, pauseReason: saved.projection.pauseReason ?? null };
       });
 
-  const refreshProviderEvidence: CollaborativeAcceptanceCoordinatorShape["refreshProviderEvidence"] =
+  const refreshProviderEvidenceFreshState: CollaborativeAcceptanceCoordinatorShape["refreshProviderEvidence"] =
     (caseId) =>
       Option.match(monitors, {
         onNone: () =>
@@ -1485,22 +1485,27 @@ const makeCoordinator = Effect.gen(function* () {
             return yield* recordProviderEvidence({ caseId, evidence });
           }).pipe(
             Effect.catch((error) =>
-              load(caseId).pipe(
-                Effect.flatMap((record) => invalidateProviderEvidence(record)),
-                Effect.tap(() =>
-                  Effect.logWarning("collaborative-acceptance.provider-evidence-invalidated", {
-                    caseId,
-                    error,
-                  }),
-                ),
-                Effect.map((record) => ({
-                  record,
-                  pauseReason: record.projection.pauseReason ?? null,
-                })),
-              ),
+              isCasConflict(error)
+                ? Effect.fail(error)
+                : load(caseId).pipe(
+                    Effect.flatMap((record) => invalidateProviderEvidence(record)),
+                    Effect.tap(() =>
+                      Effect.logWarning("collaborative-acceptance.provider-evidence-invalidated", {
+                        caseId,
+                        error,
+                      }),
+                    ),
+                    Effect.map((record) => ({
+                      record,
+                      pauseReason: record.projection.pauseReason ?? null,
+                    })),
+                  ),
             ),
           ),
       });
+
+  const refreshProviderEvidence: CollaborativeAcceptanceCoordinatorShape["refreshProviderEvidence"] =
+    (caseId) => retryCasConflict(refreshProviderEvidenceFreshState(caseId));
 
   const dispositionFinding: CollaborativeAcceptanceCoordinatorShape["dispositionFinding"] = (
     input,
@@ -2218,9 +2223,7 @@ const makeCoordinator = Effect.gen(function* () {
                               record.case.caseId,
                               record.case.caseId,
                               "collaborative-acceptance.provider-evidence-refresh-failed",
-                              retryCasConflict(
-                                refreshProviderEvidence(record.case.caseId).pipe(Effect.asVoid),
-                              ),
+                              refreshProviderEvidence(record.case.caseId).pipe(Effect.asVoid),
                             ),
                           { concurrency: 1, discard: true },
                         ),

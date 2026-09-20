@@ -1,5 +1,6 @@
 import {
   type ChatAttachment,
+  type CollaborationExecutionAuthority,
   CommandId,
   EventId,
   type ModelSelection,
@@ -430,6 +431,7 @@ const make = Effect.gen(function* () {
     createdAt: string,
     options?: {
       readonly modelSelection?: ModelSelection;
+      readonly executionAuthority?: CollaborationExecutionAuthority;
     },
   ) {
     const readModel = yield* orchestrationEngine.getReadModel();
@@ -561,9 +563,12 @@ const make = Effect.gen(function* () {
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         runtimeMode: desiredRuntimeMode,
-        ...(acceptanceAuthorityForThread(thread) === undefined
+        ...((options?.executionAuthority ?? acceptanceAuthorityForThread(thread)) === undefined
           ? {}
-          : { executionAuthority: acceptanceAuthorityForThread(thread) }),
+          : {
+              executionAuthority:
+                options?.executionAuthority ?? acceptanceAuthorityForThread(thread),
+            }),
       });
 
     const bindSessionToThread = (session: ProviderSession) =>
@@ -673,6 +678,7 @@ const make = Effect.gen(function* () {
     readonly interactionMode?: "default" | "plan";
     readonly delegationAssignmentId?: MessageId;
     readonly delegationDispatchId?: string;
+    readonly executionAuthority?: CollaborationExecutionAuthority;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -681,11 +687,12 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
-    yield* ensureSessionForThread(
-      input.threadId,
-      input.createdAt,
-      input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {},
-    );
+    yield* ensureSessionForThread(input.threadId, input.createdAt, {
+      ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+      ...(input.executionAuthority !== undefined
+        ? { executionAuthority: input.executionAuthority }
+        : {}),
+    });
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }
@@ -731,9 +738,11 @@ const make = Effect.gen(function* () {
       ...(input.delegationDispatchId !== undefined
         ? { delegationDispatchId: input.delegationDispatchId }
         : {}),
-      ...(acceptanceAuthorityForThread(thread) === undefined
+      ...((input.executionAuthority ?? acceptanceAuthorityForThread(thread)) === undefined
         ? {}
-        : { executionAuthority: acceptanceAuthorityForThread(thread) }),
+        : {
+            executionAuthority: input.executionAuthority ?? acceptanceAuthorityForThread(thread),
+          }),
     };
   });
 
@@ -1068,6 +1077,9 @@ const make = Effect.gen(function* () {
         : {}),
       ...(event.payload.delegationDispatchId !== undefined
         ? { delegationDispatchId: event.payload.delegationDispatchId }
+        : {}),
+      ...(event.payload.executionAuthority !== undefined
+        ? { executionAuthority: event.payload.executionAuthority }
         : {}),
       createdAt: event.payload.createdAt,
     }).pipe(
