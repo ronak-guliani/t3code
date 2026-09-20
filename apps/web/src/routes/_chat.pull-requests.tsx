@@ -21,7 +21,7 @@ import {
   RefreshCwIcon,
   SearchIcon,
 } from "lucide-react";
-import { type ReactNode, useDeferredValue, useEffect, useMemo } from "react";
+import { type ReactNode, useDeferredValue, useEffect, useMemo, useRef } from "react";
 
 import { PullRequestDetailPanel } from "../components/pullRequest/PullRequestDetailPanel";
 import { PullRequestFiltersMenu } from "../components/pullRequest/PullRequestFiltersMenu";
@@ -41,6 +41,7 @@ import {
   pullRequestInvalidateMutationOptions,
   pullRequestListInfiniteQueryOptions,
   pullRequestListStatsQueryOptions,
+  prefetchPullRequestDetail,
 } from "../lib/pullRequestReactQuery";
 import { findGitHubPullRequestProject } from "../lib/openPullRequestLink";
 import { cn } from "../lib/utils";
@@ -82,6 +83,8 @@ const INVOLVEMENT_LABELS: Record<(typeof INVOLVEMENTS)[number], string> = {
 };
 const PAGE_SIZE = 50;
 const STATS_BATCH_SIZE = 500;
+/** Pointer hovers shorter than this never leave the client. */
+const HOVER_PREFETCH_DELAY_MS = 350;
 const EMPTY_PROJECTS: readonly Project[] = [];
 const PULL_REQUESTS_PANEL_REF = scopeThreadRef(
   EnvironmentId.make("pull-requests"),
@@ -209,6 +212,47 @@ function PullRequestsRoute() {
       !entry.title.toLowerCase().includes(normalizedQuery) &&
       !entry.repository.toLowerCase().includes(normalizedQuery)
     );
+  };
+  /**
+   * Warm the detail an intentional hover is about to open, so selecting the
+   * row reads from the cache. Pointer hovers wait 350ms — crossing rows on
+   * the way somewhere else fires nothing — while keyboard focus prefetches
+   * at once. Only the detail: the activity's review-thread walk is paginated
+   * and unbounded, and the detail is one consolidated read.
+   */
+  const hoverPrefetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelHoverPrefetch = () => {
+    if (hoverPrefetchTimer.current !== null) {
+      clearTimeout(hoverPrefetchTimer.current);
+      hoverPrefetchTimer.current = null;
+    }
+  };
+  useEffect(() => cancelHoverPrefetch, []);
+  const prefetchDetailFor = (entry: {
+    readonly projectId: ProjectId;
+    readonly repository: string;
+    readonly number: number;
+  }) => {
+    if (!supported) return;
+    void prefetchPullRequestDetail(queryClient, {
+      environmentId,
+      reference: {
+        projectId: entry.projectId,
+        repository: entry.repository,
+        number: entry.number,
+      },
+    });
+  };
+  const scheduleHoverPrefetch = (entry: {
+    readonly projectId: ProjectId;
+    readonly repository: string;
+    readonly number: number;
+  }) => {
+    cancelHoverPrefetch();
+    hoverPrefetchTimer.current = setTimeout(() => {
+      hoverPrefetchTimer.current = null;
+      prefetchDetailFor(entry);
+    }, HOVER_PREFETCH_DELAY_MS);
   };
   const sortedEntries = useMemo(() => {
     if (sort === "ready") return entriesWithStats;
@@ -543,6 +587,9 @@ function PullRequestsRoute() {
                           selectedProjectId: next.projectId,
                         })
                       }
+                      onHoverStart={scheduleHoverPrefetch}
+                      onHoverEnd={cancelHoverPrefetch}
+                      onFocusRow={prefetchDetailFor}
                     />
                   ))}
                   {otherEntries.length > 0 ? (
@@ -572,6 +619,9 @@ function PullRequestsRoute() {
                           selectedProjectId: next.projectId,
                         })
                       }
+                      onHoverStart={scheduleHoverPrefetch}
+                      onHoverEnd={cancelHoverPrefetch}
+                      onFocusRow={prefetchDetailFor}
                     />
                   ))}
                   {listQuery.hasNextPage ? (

@@ -215,6 +215,23 @@ export function pullRequestActivityQueryOptions(input: {
   });
 }
 
+/**
+ * Warm the detail a row is about to open, so selecting it reads from the cache instead of
+ * paying for another round trip. Only the detail: the activity's review-thread walk is
+ * paginated and unbounded, while the detail is one consolidated read. React Query dedupes
+ * against fresh entries, so rows opened recently cost nothing here.
+ */
+export function prefetchPullRequestDetail(
+  queryClient: QueryClient,
+  input: {
+    readonly environmentId: EnvironmentId | null;
+    readonly reference: PullRequestRef;
+  },
+): Promise<void> {
+  if (input.environmentId === null) return Promise.resolve();
+  return queryClient.prefetchQuery(pullRequestDetailQueryOptions(input));
+}
+
 async function pullRequestHttpError(response: Response): Promise<Error> {
   const text = await response.text();
   if (!text) {
