@@ -1,4 +1,4 @@
-import type { PullRequestListEntry } from "@t3tools/contracts";
+import type { EnvironmentId, PullRequestListEntry } from "@t3tools/contracts";
 import { memo } from "react";
 
 import { cn } from "~/lib/utils";
@@ -17,6 +17,10 @@ const LABEL_SLOTS = [
   { pill: "hidden @xl/pr-row-meta:inline-flex", overflow: "@3xl/pr-row-meta:hidden" },
   { pill: "hidden @3xl/pr-row-meta:inline-flex", overflow: "" },
 ] as const;
+
+type PullRequestRowEntry = PullRequestListEntry & {
+  readonly environmentId?: EnvironmentId;
+};
 
 function PullRequestRowLabels({ labels }: { readonly labels: PullRequestListEntry["labels"] }) {
   if (labels.length === 0) return null;
@@ -61,22 +65,22 @@ function PullRequestRowImpl({
   onHoverEnd,
   onFocusRow,
 }: {
-  readonly entry: PullRequestListEntry;
+  readonly entry: PullRequestRowEntry;
   readonly selected: boolean;
   /**
    * A search found this, but in something the row does not show — a
    * description, a comment, a commit message.
    */
   readonly matchedElsewhere?: boolean;
-  readonly onSelect: (entry: PullRequestListEntry) => void;
+  readonly onSelect: (entry: PullRequestRowEntry) => void;
   /**
    * Warm the detail before it opens. Hover is delayed by the route so crossing
    * rows costs nothing; keyboard focus prefetches at once because focus is
    * already intentional.
    */
-  readonly onHoverStart?: (entry: PullRequestListEntry) => void;
+  readonly onHoverStart?: (entry: PullRequestRowEntry) => void;
   readonly onHoverEnd?: () => void;
-  readonly onFocusRow?: (entry: PullRequestListEntry) => void;
+  readonly onFocusRow?: (entry: PullRequestRowEntry) => void;
 }) {
   return (
     <button

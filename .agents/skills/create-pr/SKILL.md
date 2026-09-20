@@ -35,27 +35,36 @@ For publication requests, create a **ready-for-review, non-draft PR** by default
 
 3. Keep the PR focused. Exclude unrelated existing worktree changes. If the branch combines independent concerns or is unusually large, recommend splitting it rather than obscuring the scope.
 
-4. Compose a concise imperative title, preferably conventional-commit style and under 72 characters. Write a body containing only applicable sections:
+4. Compose a concise imperative title, preferably conventional-commit style and under 72 characters. Match upstream `.github/pull_request_template.md` format, with `Problem` as the first heading. Write a body containing only applicable sections:
 
    ```md
-   ## Summary
+   ## Problem
 
-   - <meaningful change and why>
+   - <problem being solved, with linked issue if any>
 
-   ## Testing
+   ## What Changed
 
-   - <commands actually run and their outcomes; identify failures and blockers>
+   - <meaningful change and why, kept scope-tight>
 
-   ## Evidence
+   ## Why
+
+   - <problem being solved and why this approach is the right one>
+   - <breaking changes, migrations, or rollout constraints, if any>
+
+   ## UI Changes
 
    - <tested revision, observable scenario results, and published screenshot/recording links>
+   - <delete this section if not applicable>
 
-   ## Breaking changes
+   ## Checklist
 
-   - <migration impact, if any>
+   - [ ] This PR is small and focused
+   - [ ] I explained what changed and why
+   - [ ] I included before/after screenshots for any UI changes
+   - [ ] I included a video for animation/interaction changes
    ```
 
-   Follow repository validation requirements even when the user only says "create PR". For user-visible changes, load `test-t3-app` and exercise the actual feature with meaningful data in a real client. Capture before/after screenshots; record motion or timing after authentication. Use `pnpm pr:media -- <PR URL> <capture files...>` to upload those captures and verify delivery. Describe the tested revision, actions, observations, diagnostics, and limitations in the PR's testing notes, not a separate feature-report manifest. Recheck affected scenarios after further code edits. `pnpm test:self` is only a pairing/reconnect smoke check; run it when relevant and never substitute its captures, a generic authenticated app, or a successful upload for feature testing. Remove obsolete pairing-only PR evidence when replacing it with feature captures. Inspect the published media before reporting success. If validation or publication is blocked, say so explicitly. Documentation-only changes may say "Not applicable" with the reason. Describe the why and externally observable behavior, not a file-by-file diff.
+   Follow repository validation requirements even when the user only says "create PR". Never claim testing that did not run; include commands actually run and their outcomes in `Why` or `UI Changes` as appropriate, identifying failures and blockers. For user-visible changes, load `test-t3-app` and exercise the actual feature with meaningful data in a real client. Capture before/after screenshots; record motion or timing after authentication. Use `pnpm pr:media -- <PR URL> <capture files...>` to upload those captures and verify delivery. Describe the tested revision, actions, observations, diagnostics, and limitations in the PR notes, not a separate feature-report manifest. Recheck affected scenarios after further code edits. `pnpm test:self` is only a pairing/reconnect smoke check; run it when relevant and never substitute its captures, a generic authenticated app, or a successful upload for feature testing. Remove obsolete pairing-only PR evidence when replacing it with feature captures. Inspect the published media before reporting success. If validation or publication is blocked, say so explicitly. Documentation-only changes may delete the `UI Changes` section. Describe the why and externally observable behavior, not a file-by-file diff.
 
 5. Treat "create PR" as authorization to create a focused branch if needed, commit the task's changes, push, and create the PR. Do not ask for confirmation of the title, body, base, or these routine steps. Infer sensible defaults from repository context; ask only when a genuine blocker cannot be resolved safely.
 
