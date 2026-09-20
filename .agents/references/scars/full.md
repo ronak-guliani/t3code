@@ -70,6 +70,10 @@
 
 - Agent CLI stdout is a data boundary: send logs and failures to stderr, use the server-matched launcher rather than ambient PATH, and never infer matching protocol contracts from equal package versions.
 - OpenCode SSE connection success is not semantic progress: admit prompts only after the subscription is established, correlate each prompt with a client message ID, and reconcile transcript plus native status until correlated work is idle before projecting one terminal turn event. Replayed evidence must be idempotent, and interrupt/session replacement remains authoritative over delayed recovery results.
+- OpenCode prompt admission is not turn completion: long tool-heavy turns can remain busy for minutes after `promptAsync` returns, so recovery polling must back off and wait for native idle evidence instead of treating a short admission window as a failed turn.
+- OpenCode transcript pages may omit the prompt after a long turn; use an assistant's `parentID` for completion correlation without requiring the prompt row to be present in the page.
+- OpenCode's status map lists active sessions and may omit an idle session; a valid map without the current session is idle evidence, while a missing or invalid map remains unknown.
+- Preserve native OpenCode idle evidence until a later busy event or turn replacement; the status endpoint can remain stale-busy after the event stream reports idle, and polling must not erase stronger correlated completion evidence.
 - Pending CLI approvals/questions must combine `activityContext` with the recent activity window and honor terminal lifecycle events; a request outside the window is not resolved.
 - Thread history reads must filter and limit in SQL before decoding, omit unrelated checkpoints, and bind pagination cursors to thread/view. Unary RPC deadlines must not cap stream lifetime or imply that timed-out mutations were rejected.
 - Preserve typed thread-read input failures through HTTP and RPC; missing/ambiguous threads and invalid cursors are client errors, not error-logged repository failures.
@@ -295,6 +299,7 @@
 - Virtualized row items must own every primitive that changes their rendering. Derive receipt-aware status before list rendering and compare it in item equality; do not hide row state in render closures, whole-map props, or `extraData`, because mounted rows can remain stale after persistence updates.
 - Workspace handoff intentionally ends turn A and queues a continuation before turn B starts. Project non-failed queue presence onto the shell as `hasPendingQueuedTurn` (do not read detail-only `queuedTurnsByThreadId` for sidebar/notify). Treat that flag as still-working in status, archive guards, settle/snooze, and completion notifications so the idle gap does not flash "Done" / "Chat completed"; do not seed `notifiedTurnKeys` while the queue is pending.
 - Completion notifications must prefer a matching `insights.turn.completed` provider state over checkpoint-derived shell/detail state; `missing` checkpoint status and normal shutdown ordering can transiently or permanently misclassify a successful turn as interrupted. Briefly confirm fallback interruptions before notifying.
+- Sidebar expansion derived from the active descendant is not durable state: archiving a nested thread navigates away from its subtree and collapses every parent that was open only by reveal. Pin ancestor `threadExpandedById` overrides before the archive navigation so the visible tree keeps its exact state.
 
 ## Projection performance and service composition
 
@@ -360,6 +365,7 @@
 ## Checkpoint and snapshot atomicity
 
 - `CheckpointReactor.ts` carries `// @ts-nocheck`, so Effect API renames (e.g. `tapErrorCause` → `tapCause`) fail only at runtime; verify changes against its test suite, not typecheck.
+- Worse, a nonexistent Effect API inside a `// @ts-nocheck` file (fork beta vs upstream rc drift, e.g. `catchAllCause`) silently widens that file's inferred layer requirements to `unknown`, so typecheck breaks in dozens of unrelated test files with no error at the source. When porting upstream code, confirm every Effect combinator exists in the fork's effect version, and treat a sudden `unknown`-context cascade as a poisoned nocheck inference before touching the reporters.
 - Completion ingestion and checkpointing must share one provider subscription with an owned queue handoff; independent hot subscribers lose startup-gap events. Release checkout exclusions on failed handoff and worker cancellation, including queued completions.
 - `NodeSqliteClient` is one `DatabaseSync` connection behind `Semaphore(1)`: `Effect.all` concurrency cannot overlap SQLite SELECTs, and shell/full snapshot row reads must stay in one read transaction with `projection_state` or `subscribeShell` drops buffered live events through a mismatched `snapshotSequence`; regression tests must pause at the row/cursor boundary and queue a writer while that transaction is open, because whole-snapshot races do not prove atomicity.
 - Revert projection commits precede Git ref pruning; integration assertions must wait for the final revert-guard deletion before checking pruned refs. Session readiness alone does not prove a turn's checkpoint is finalized.

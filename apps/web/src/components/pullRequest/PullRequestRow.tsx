@@ -12,11 +12,6 @@ import {
   pullRequestLabelColor,
 } from "./pullRequestPresentation";
 
-/**
- * Each slot past the first only appears once the meta line is wide enough to
- * hold it, so a narrow row shows one label and a "+N" while a wide one spreads
- * out up to three.
- */
 const LABEL_SLOTS = [
   { pill: "", overflow: "@xl/pr-row-meta:hidden" },
   { pill: "hidden @xl/pr-row-meta:inline-flex", overflow: "@3xl/pr-row-meta:hidden" },
@@ -30,7 +25,6 @@ function PullRequestRowLabels({ labels }: { readonly labels: PullRequestListEntr
       {LABEL_SLOTS.map((slot, index) => {
         const label = labels[index];
         if (!label) return null;
-        const dot = pullRequestLabelColor(label.color);
         const remaining = labels.length - index - 1;
         return (
           <span
@@ -43,7 +37,9 @@ function PullRequestRowLabels({ labels }: { readonly labels: PullRequestListEntr
             <span
               aria-hidden
               className="size-2 shrink-0 rounded-full bg-muted-foreground"
-              {...(dot ? { style: { backgroundColor: dot } } : {})}
+              {...(pullRequestLabelColor(label.color)
+                ? { style: { backgroundColor: pullRequestLabelColor(label.color)! } }
+                : {})}
             />
             <span className="truncate">{label.name}</span>
             {remaining > 0 ? (
@@ -61,6 +57,9 @@ function PullRequestRowImpl({
   selected,
   matchedElsewhere,
   onSelect,
+  onHoverStart,
+  onHoverEnd,
+  onFocusRow,
 }: {
   readonly entry: PullRequestListEntry;
   readonly selected: boolean;
@@ -70,12 +69,24 @@ function PullRequestRowImpl({
    */
   readonly matchedElsewhere?: boolean;
   readonly onSelect: (entry: PullRequestListEntry) => void;
+  /**
+   * Warm the detail before it opens. Hover is delayed by the route so crossing
+   * rows costs nothing; keyboard focus prefetches at once because focus is
+   * already intentional.
+   */
+  readonly onHoverStart?: (entry: PullRequestListEntry) => void;
+  readonly onHoverEnd?: () => void;
+  readonly onFocusRow?: (entry: PullRequestListEntry) => void;
 }) {
   return (
     <button
       type="button"
       aria-current={selected ? "true" : undefined}
       onClick={() => onSelect(entry)}
+      onPointerEnter={onHoverStart ? () => onHoverStart(entry) : undefined}
+      onPointerLeave={onHoverEnd}
+      onFocus={onFocusRow ? () => onFocusRow(entry) : undefined}
+      onBlur={onHoverEnd}
       className={cn(
         "@container/pr-row grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         // Offscreen rows are skipped for style, layout and paint: a long list
@@ -103,7 +114,7 @@ function PullRequestRowImpl({
           <PullRequestDiffStat
             additions={entry.additions}
             deletions={entry.deletions}
-            className="shrink-0 text-[11px] whitespace-nowrap"
+            className="shrink-0 whitespace-nowrap text-[11px]"
           />
         </span>
         <PullRequestMetaLine className="@container/pr-row-meta col-start-1 row-start-2 overflow-hidden text-xs text-muted-foreground/70">
@@ -121,7 +132,7 @@ function PullRequestRowImpl({
           />
           {entry.labels.length > 0 ? <PullRequestRowLabels labels={entry.labels} /> : null}
         </PullRequestMetaLine>
-        <span className="col-start-2 row-start-2 flex items-center justify-self-end gap-3 text-[11px] whitespace-nowrap text-muted-foreground/70 tabular-nums">
+        <span className="col-start-2 row-start-2 flex items-center justify-self-end gap-3 whitespace-nowrap text-[11px] text-muted-foreground/70 tabular-nums">
           <span className="hidden @sm/pr-row:inline">
             {formatRelativeTimeLabel(entry.updatedAt)}
           </span>

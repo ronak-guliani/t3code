@@ -1,5 +1,5 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
-import { type OrchestrationThreadActivity, ThreadId } from "@t3tools/contracts";
+import { type EnvironmentId, type OrchestrationThreadActivity, ThreadId } from "@t3tools/contracts";
 import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import { getThreadSortTimestamp, sortThreads } from "./lib/threadSort";
 import {
@@ -145,6 +145,44 @@ export function sidebarThreadKey(
   thread: Pick<SidebarThreadSummary, "environmentId" | "id">,
 ): string {
   return scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+}
+
+/**
+ * Ancestor thread keys from the direct parent up to the root. Archiving a
+ * nested thread navigates away from its subtree, which drops the
+ * active-descendant expansion keeping these parents open — callers pin the
+ * returned keys before navigating so the sidebar keeps its visible state.
+ * Stops at missing parents and cycles rather than throwing on stale data.
+ */
+export function selectAncestorThreadKeys(
+  threads: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+    readonly parentThreadId?: ThreadId | null;
+  }>,
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): string[] {
+  const parentById = new Map<ThreadId, ThreadId | null | undefined>();
+  for (const thread of threads) {
+    if (thread.environmentId === environmentId) {
+      parentById.set(thread.id, thread.parentThreadId);
+    }
+  }
+  const ancestors: string[] = [];
+  const seen = new Set<ThreadId>([threadId]);
+  let parentId = parentById.get(threadId) ?? null;
+  while (parentId !== null && parentId !== undefined && !seen.has(parentId)) {
+    seen.add(parentId);
+    // Only pin parents that actually exist in this environment; a dangling
+    // reference resolves to no row and must not invent expansion state.
+    if (!parentById.has(parentId)) {
+      break;
+    }
+    ancestors.push(scopedThreadKey(scopeThreadRef(environmentId, parentId)));
+    parentId = parentById.get(parentId) ?? null;
+  }
+  return ancestors;
 }
 
 const getThreadKey = sidebarThreadKey;

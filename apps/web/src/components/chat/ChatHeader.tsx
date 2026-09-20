@@ -24,7 +24,6 @@ import {
   type AgentWorkflowRunRequest,
 } from "./AgentWorkflowHeaderActions";
 import { WorkflowRunsButton, type WorkflowRunPresentation } from "./WorkflowRunSummary";
-import { EnvironmentIdentity } from "../EnvironmentIdentity";
 import { ProjectEnvironmentNotice } from "../ProjectEnvironmentNotice";
 import { useSettings } from "../../hooks/useSettings";
 
@@ -152,7 +151,6 @@ export const ChatHeader = memo(function ChatHeader({
         >
           {activeThreadTitle}
         </h2>
-        <EnvironmentIdentity environmentId={activeThreadEnvironmentId} />
         {activeProjectName ? (
           <ProjectEnvironmentNotice
             environmentId={activeThreadEnvironmentId}

@@ -6,7 +6,7 @@ import { useCallback, useLayoutEffect, useRef } from "react";
 import { getFallbackThreadIdAfterDelete } from "../components/Sidebar.logic";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useNewThreadHandler } from "./useHandleNewThread";
-import { isThreadInSubtree } from "../sidebarThreadTree";
+import { isThreadInSubtree, selectAncestorThreadKeys } from "../sidebarThreadTree";
 import { readEnvironmentApi } from "../environmentApi";
 import { newCommandId } from "../lib/utils";
 import { readLocalApi } from "../localApi";
@@ -22,6 +22,7 @@ import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { useSettings } from "./useSettings";
 import { refreshArchivedThreadsForEnvironment } from "../archivedThreadsState";
+import { useUiStateStore } from "../uiStateStore";
 
 interface ArchivedThreadDeleteContext {
   readonly thread: {
@@ -106,6 +107,17 @@ export function useThreadActions() {
         isThreadInSubtree(threadsBeforeArchive, threadRef.threadId, currentRouteThreadRef.threadId);
 
       if (currentRouteIsInArchivedSubtree) {
+        // Leaving the archived subtree drops the active-descendant expansion
+        // that keeps its parents open, collapsing the visible tree. Pin the
+        // ancestors open first so the sidebar keeps its exact state.
+        const setThreadExpanded = useUiStateStore.getState().setThreadExpanded;
+        for (const ancestorKey of selectAncestorThreadKeys(
+          threadsBeforeArchive,
+          threadRef.environmentId,
+          threadRef.threadId,
+        )) {
+          setThreadExpanded(ancestorKey, true);
+        }
         await handleNewThreadRef.current(scopeProjectRef(thread.environmentId, thread.projectId));
       }
     },

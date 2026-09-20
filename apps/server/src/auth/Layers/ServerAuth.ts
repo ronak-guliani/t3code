@@ -14,6 +14,8 @@ import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 
 import { AuthControlPlane } from "../Services/AuthControlPlane.ts";
 import { verifyAndConsumeDpopProof } from "../DpopReplayGuard.ts";
+import { resolveReusableDevAuth } from "../ReusableDevAuth.ts";
+import { ServerConfig } from "../../config.ts";
 import { ServerAuthPolicyLive } from "./ServerAuthPolicy.ts";
 import { BootstrapCredentialService } from "../Services/BootstrapCredentialService.ts";
 import { BootstrapCredentialError } from "../Services/BootstrapCredentialService.ts";
@@ -34,6 +36,7 @@ import { defaultSessionScopes } from "../scopes.ts";
 type BootstrapExchangeResult = {
   readonly response: AuthBootstrapResult;
   readonly sessionToken: string;
+  readonly cookieName?: string;
 };
 
 const BEARER_AUTHORIZATION_PREFIX = "Bearer ";
@@ -108,7 +111,9 @@ export const makeServerAuth = Effect.gen(function* () {
   const bootstrapCredentials = yield* BootstrapCredentialService;
   const authControlPlane = yield* AuthControlPlane;
   const sessions = yield* SessionCredentialService;
+  const serverConfig = yield* ServerConfig;
   const descriptor = yield* policy.getDescriptor();
+  const devAuth = resolveReusableDevAuth(serverConfig);
 
   const authenticateToken = (token: string): Effect.Effect<AuthenticatedSession, AuthError> =>
     sessions.verify(token).pipe(
@@ -156,6 +161,13 @@ export const makeServerAuth = Effect.gen(function* () {
     }
     const authorization = parseAuthorizationCredential(request);
     if (!authorization) {
+      // Reusable dev cookie is a last resort, never a fallback: a presented
+      // normal credential (even a rejected one) fails closed above instead of
+      // being retried against the dev token.
+      const devCookieToken = devAuth ? request.cookies[devAuth.cookieName] : undefined;
+      if (devCookieToken) {
+        return authenticateToken(devCookieToken);
+      }
       return Effect.fail(
         new AuthError({
           message: "Authentication required.",
@@ -287,8 +299,41 @@ export const makeServerAuth = Effect.gen(function* () {
   const exchangeBootstrapCredential: ServerAuthShape["exchangeBootstrapCredential"] = (
     credential,
     requestMetadata,
-  ) =>
-    bootstrapCredentials.consume(credential).pipe(
+  ) => {
+    // Pasting the reusable dev token into the pairing flow binds this browser
+    // profile with the dedicated dev cookie (30-day expiry). The raw token
+    // itself stays usable as a bearer credential; revoking the dev session or
+    // rotating the env value invalidates both.
+    if (devAuth?.matches(credential)) {
+      return sessions.verify(credential).pipe(
+        Effect.mapError(
+          (cause) =>
+            new AuthError({
+              message: "Invalid bootstrap credential.",
+              status: 401,
+              cause,
+            }),
+        ),
+        Effect.flatMap((session) =>
+          DateTime.now.pipe(
+            Effect.map(
+              (now) =>
+                ({
+                  response: {
+                    authenticated: true,
+                    role: session.role,
+                    sessionMethod: session.method,
+                    expiresAt: DateTime.toUtc(DateTime.add(now, { days: 30 })),
+                  } satisfies AuthBootstrapResult,
+                  sessionToken: credential,
+                  cookieName: devAuth.cookieName,
+                }) satisfies BootstrapExchangeResult,
+            ),
+          ),
+        ),
+      );
+    }
+    return bootstrapCredentials.consume(credential).pipe(
       Effect.mapError(toBootstrapExchangeAuthError),
       Effect.flatMap((grant) =>
         sessions
@@ -325,6 +370,7 @@ export const makeServerAuth = Effect.gen(function* () {
           }) satisfies BootstrapExchangeResult,
       ),
     );
+  };
 
   const exchangeBootstrapCredentialForBearerSession: ServerAuthShape["exchangeBootstrapCredentialForBearerSession"] =
     (credential, requestMetadata) =>
