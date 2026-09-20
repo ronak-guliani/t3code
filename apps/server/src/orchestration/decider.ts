@@ -115,12 +115,16 @@ function collaborationRequestLocation(readModel: OrchestrationReadModel, request
 function executionAuthorityMatches(
   expected: {
     readonly executionId: string;
+    readonly assignmentId?: string;
+    readonly threadId?: string;
     readonly generation: number;
     readonly dispatchId: string | null;
     readonly turnId: string | null;
   },
   actual: {
     readonly executionId: string;
+    readonly assignmentId?: string;
+    readonly threadId?: string;
     readonly generation: number;
     readonly dispatchId: string | null;
     readonly turnId: string | null;
@@ -128,9 +132,49 @@ function executionAuthorityMatches(
 ) {
   return (
     expected.executionId === actual.executionId &&
+    (expected.assignmentId === undefined && actual.assignmentId === undefined
+      ? true
+      : expected.assignmentId === actual.assignmentId) &&
+    (expected.threadId === undefined && actual.threadId === undefined
+      ? true
+      : expected.threadId === actual.threadId) &&
     expected.generation === actual.generation &&
     expected.dispatchId === actual.dispatchId &&
     expected.turnId === actual.turnId
+  );
+}
+
+function collaborationResponseAuthorityMatches(
+  admission: {
+    readonly executionId: string;
+    readonly assignmentId?: string;
+    readonly threadId?: string;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+  active: {
+    readonly executionId: string;
+    readonly assignmentId?: string;
+    readonly threadId?: string;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+) {
+  const strict =
+    admission.assignmentId !== undefined ||
+    admission.dispatchId !== null ||
+    admission.turnId !== null;
+  return (
+    admission.executionId === active.executionId &&
+    (!strict ||
+      (admission.assignmentId !== undefined &&
+        admission.assignmentId === active.assignmentId &&
+        admission.threadId === active.threadId &&
+        admission.generation === active.generation &&
+        admission.dispatchId === active.dispatchId &&
+        admission.turnId === active.turnId))
   );
 }
 
@@ -494,6 +538,7 @@ function buildTurnStartEvents(input: {
   readonly delegationAssignmentId?: TurnStartRequestedPayload["delegationAssignmentId"];
   readonly delegationDispatchId?: TurnStartRequestedPayload["delegationDispatchId"];
   readonly delegationTransition?: TurnStartRequestedPayload["delegationTransition"];
+  readonly executionAuthority?: TurnStartRequestedPayload["executionAuthority"];
   readonly workspaceBinding?: TurnStartRequestedPayload["workspaceBinding"];
   readonly at: string;
 }): {
@@ -546,6 +591,9 @@ function buildTurnStartEvents(input: {
         : {}),
       ...(input.delegationTransition !== undefined
         ? { delegationTransition: input.delegationTransition }
+        : {}),
+      ...(input.executionAuthority !== undefined
+        ? { executionAuthority: input.executionAuthority }
         : {}),
       ...(input.workspaceBinding !== undefined ? { workspaceBinding: input.workspaceBinding } : {}),
       createdAt: input.at,
@@ -1500,7 +1548,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         request.recipientThreadId !== command.threadId ||
         request.exchangeId !== command.exchangeId ||
-        !executionAuthorityMatches(request.recipientAuthority, command.responderAuthority) ||
+        !collaborationResponseAuthorityMatches(
+          request.recipientAuthority,
+          command.responderAuthority,
+        ) ||
         request.status !== "waiting"
       ) {
         return yield* new OrchestrationCommandInvariantError({
@@ -1566,13 +1617,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       const { request } = location;
+      const consumedAuthorityMatches =
+        request.producingExecution.assignmentId === undefined
+          ? request.producingExecution.executionId === command.consumedExecution.executionId &&
+            command.consumedExecution.generation > request.producingExecution.generation
+          : request.producingExecution.assignmentId === command.consumedExecution.assignmentId &&
+            request.producingExecution.threadId === command.consumedExecution.threadId &&
+            request.producingExecution.dispatchId === command.consumedExecution.dispatchId &&
+            request.producingExecution.executionId === command.consumedExecution.executionId &&
+            command.consumedExecution.generation > request.producingExecution.generation &&
+            command.consumedExecution.turnId !== null;
       if (
         request.status !== "response-ready" ||
         request.responseRef !== command.responseId ||
         request.response === null ||
-        request.producingExecution.executionId !== command.consumedExecution.executionId ||
+        !consumedAuthorityMatches ||
         request.senderThreadId !== command.threadId ||
-        command.consumedExecution.generation <= request.producingExecution.generation
+        (request.producingExecution.threadId !== undefined &&
+          request.producingExecution.threadId !== command.threadId)
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -2439,6 +2501,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         targetThread.nudging?.delegation?.completedAt === null
           ? targetThread.nudging.delegation
           : undefined;
+      const executionAuthority =
+        activeDelegation?.dispatchId !== undefined &&
+        activeDelegation.dispatchSequence !== undefined &&
+        activeDelegation.dispatchTurnId !== undefined &&
+        activeDelegation.dispatchTurnId !== null
+          ? {
+              executionId: `thread:${targetThread.id}`,
+              assignmentId: activeDelegation.assignmentId,
+              threadId: targetThread.id,
+              generation: activeDelegation.dispatchSequence,
+              dispatchId: activeDelegation.dispatchId,
+              turnId: activeDelegation.dispatchTurnId,
+            }
+          : undefined;
       if (activeDelegation?.decision) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -2472,6 +2548,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               delegationTransition: turnDelegation.dispatchReason ?? "assigned",
             }
           : {}),
+        ...(executionAuthority !== undefined ? { executionAuthority } : {}),
         ...(command.workspaceBinding !== undefined
           ? { workspaceBinding: command.workspaceBinding }
           : {}),
@@ -4173,11 +4250,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     default: {
-      command satisfies never;
-      const fallback = command as never as { type: string };
+      const unexpectedCommand: never = command;
+      const commandType = String(unexpectedCommand);
       return yield* new OrchestrationCommandInvariantError({
-        commandType: fallback.type,
-        detail: `Unknown command type: ${fallback.type}`,
+        commandType,
+        detail: `Unknown command type: ${commandType}`,
       });
     }
   }

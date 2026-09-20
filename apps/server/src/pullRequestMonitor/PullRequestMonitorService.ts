@@ -153,6 +153,12 @@ export class PullRequestMonitorService extends Context.Service<
     readonly subscribeList: (
       input: PullRequestMonitorListInput,
     ) => Stream.Stream<PullRequestMonitorListResult, PullRequestMonitorError>;
+    /**
+     * Emits after a monitor observation or feedback mutation has committed.
+     * Consumers must re-read authoritative context; the notification is only a
+     * wake-up signal and carries no mutable evidence.
+     */
+    readonly subscribeChanges?: Stream.Stream<void>;
     readonly pollOnce: Effect.Effect<void>;
     readonly context: (
       input: PullRequestMonitorContextInput,
@@ -798,6 +804,7 @@ export const layer = Layer.effect(
           nextPollAt: now,
           updatedAt: now,
         });
+        yield* notify;
       });
 
     const context = (input: PullRequestMonitorContextInput) =>
@@ -1429,6 +1436,7 @@ export const layer = Layer.effect(
           Stream.fromEffect(list(input)),
           Stream.fromPubSub(changes).pipe(Stream.mapEffect(() => list(input))),
         ),
+      subscribeChanges: Stream.fromPubSub(changes),
       pollOnce,
       context,
       report,

@@ -430,6 +430,8 @@ export type CollaborationRequestTerminalOutcome = typeof CollaborationRequestTer
 
 export const CollaborationExecutionAuthority = Schema.Struct({
   executionId: TrimmedNonEmptyString,
+  assignmentId: Schema.optional(TrimmedNonEmptyString),
+  threadId: Schema.optional(ThreadId),
   generation: NonNegativeInt,
   dispatchId: Schema.NullOr(TrimmedNonEmptyString),
   turnId: Schema.NullOr(TurnId),
@@ -1131,7 +1133,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   ),
 );
 
-const CollaborationDelivery = Schema.Struct({
+export const CollaborationDelivery = Schema.Struct({
   queuedTurnId: QueuedTurnId,
   message: QueuedTurnMessage,
   modelSelection: Schema.optional(ModelSelection),
@@ -2201,6 +2203,7 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   delegationAssignmentId: Schema.optional(MessageId),
   delegationDispatchId: Schema.optional(TrimmedNonEmptyString),
   delegationTransition: Schema.optional(Schema.Literals(["assigned", "continued", "replaced"])),
+  executionAuthority: Schema.optional(CollaborationExecutionAuthority),
   workspaceBinding: Schema.optional(WorkspaceBinding),
   createdAt: IsoDateTime,
 });

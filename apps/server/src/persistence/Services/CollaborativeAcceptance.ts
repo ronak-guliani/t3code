@@ -5,6 +5,8 @@ import {
   CollaborativeAcceptanceCaseId,
   CollaborativeAcceptanceEvidence,
   CollaborativeAcceptanceExchange,
+  CollaborativeAcceptanceObligation,
+  CollaborativeAcceptanceProviderEvidence,
   CollaborativeAcceptanceProjection,
   CollaborativeAcceptanceRecord,
 } from "@t3tools/contracts";
@@ -48,6 +50,8 @@ export const CollaborativeAcceptanceCaseDbRow = Schema.Struct({
   revision: Schema.Number,
   case: Schema.fromJsonString(CollaborativeAcceptanceCase),
   projection: Schema.fromJsonString(CollaborativeAcceptanceProjection),
+  providerEvidence: Schema.NullOr(Schema.fromJsonString(CollaborativeAcceptanceProviderEvidence)),
+  obligations: Schema.fromJsonString(Schema.Array(CollaborativeAcceptanceObligation)),
 });
 export type CollaborativeAcceptanceCaseDbRow = typeof CollaborativeAcceptanceCaseDbRow.Type;
 

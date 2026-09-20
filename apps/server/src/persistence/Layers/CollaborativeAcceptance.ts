@@ -19,6 +19,8 @@ import {
   CollaborativeAcceptanceCaseId,
   CollaborativeAcceptanceEvidence,
   CollaborativeAcceptanceExchange,
+  CollaborativeAcceptanceObligation,
+  CollaborativeAcceptanceProviderEvidence,
   CollaborativeAcceptanceProjection,
   CollaborativeAcceptanceRecord,
 } from "@t3tools/contracts";
@@ -36,18 +38,23 @@ const makeRepository = Effect.gen(function* () {
     Request: Schema.Struct({
       case: CollaborativeAcceptanceCase,
       projection: CollaborativeAcceptanceProjection,
+      providerEvidence: Schema.NullOr(CollaborativeAcceptanceProviderEvidence),
+      obligations: Schema.Array(CollaborativeAcceptanceObligation),
       revision: Schema.Number,
     }),
-    execute: ({ case: acceptanceCase, projection, revision }) => sql`
+    execute: ({ case: acceptanceCase, projection, providerEvidence, obligations, revision }) => sql`
       INSERT INTO collaborative_acceptance_cases (
         case_id, assignment_id, parent_thread_id, contract_revision,
         current_candidate_id, current_head_sha, case_json, projection_json,
-        revision, created_at, updated_at
+        provider_evidence_json, obligations_json, revision, created_at, updated_at
       ) VALUES (
         ${acceptanceCase.caseId}, ${acceptanceCase.assignmentId}, ${acceptanceCase.parentThreadId},
         ${acceptanceCase.contractRevision}, ${acceptanceCase.currentCandidate.candidateId},
         ${acceptanceCase.currentCandidate.headSha}, ${JSON.stringify(acceptanceCase)},
-        ${JSON.stringify(projection)}, ${revision}, ${acceptanceCase.createdAt},
+        ${JSON.stringify(projection)}, ${
+          providerEvidence === null ? null : JSON.stringify(providerEvidence)
+        },
+        ${JSON.stringify(obligations)}, ${revision}, ${acceptanceCase.createdAt},
         ${acceptanceCase.updatedAt}
       )
     `,
@@ -57,10 +64,19 @@ const makeRepository = Effect.gen(function* () {
     Request: Schema.Struct({
       case: CollaborativeAcceptanceCase,
       projection: CollaborativeAcceptanceProjection,
+      providerEvidence: Schema.NullOr(CollaborativeAcceptanceProviderEvidence),
+      obligations: Schema.Array(CollaborativeAcceptanceObligation),
       expectedRevision: Schema.Number,
       revision: Schema.Number,
     }),
-    execute: ({ case: acceptanceCase, projection, expectedRevision, revision }) => sql`
+    execute: ({
+      case: acceptanceCase,
+      projection,
+      providerEvidence,
+      obligations,
+      expectedRevision,
+      revision,
+    }) => sql`
       UPDATE collaborative_acceptance_cases
       SET
         assignment_id = ${acceptanceCase.assignmentId},
@@ -70,6 +86,10 @@ const makeRepository = Effect.gen(function* () {
         current_head_sha = ${acceptanceCase.currentCandidate.headSha},
         case_json = ${JSON.stringify(acceptanceCase)},
         projection_json = ${JSON.stringify(projection)},
+        provider_evidence_json = ${
+          providerEvidence === null ? null : JSON.stringify(providerEvidence)
+        },
+        obligations_json = ${JSON.stringify(obligations)},
         revision = ${revision},
         updated_at = ${acceptanceCase.updatedAt}
       WHERE case_id = ${acceptanceCase.caseId}
@@ -166,7 +186,8 @@ const makeRepository = Effect.gen(function* () {
     Request: caseIdInput,
     Result: CollaborativeAcceptanceCaseDbRow,
     execute: ({ caseId }) => sql`
-      SELECT revision, case_json AS "case", projection_json AS projection
+      SELECT revision, case_json AS "case", projection_json AS projection,
+        provider_evidence_json AS "providerEvidence", obligations_json AS obligations
       FROM collaborative_acceptance_cases
       WHERE case_id = ${caseId}
     `,
@@ -179,13 +200,17 @@ const makeRepository = Effect.gen(function* () {
       revision: Schema.Number,
       case: CollaborativeAcceptanceCaseDbRow.fields.case,
       projection: CollaborativeAcceptanceCaseDbRow.fields.projection,
+      providerEvidence: CollaborativeAcceptanceCaseDbRow.fields.providerEvidence,
+      obligations: CollaborativeAcceptanceCaseDbRow.fields.obligations,
     }),
     execute: ({ assignmentId }) => sql`
       SELECT
         case_id AS "caseId",
         revision,
         case_json AS "case",
-        projection_json AS projection
+        projection_json AS projection,
+        provider_evidence_json AS "providerEvidence",
+        obligations_json AS obligations
       FROM collaborative_acceptance_cases
       WHERE assignment_id = ${assignmentId}
       ORDER BY updated_at DESC, case_id ASC
@@ -199,13 +224,17 @@ const makeRepository = Effect.gen(function* () {
       revision: Schema.Number,
       case: CollaborativeAcceptanceCaseDbRow.fields.case,
       projection: CollaborativeAcceptanceCaseDbRow.fields.projection,
+      providerEvidence: CollaborativeAcceptanceCaseDbRow.fields.providerEvidence,
+      obligations: CollaborativeAcceptanceCaseDbRow.fields.obligations,
     }),
     execute: () => sql`
       SELECT
         case_id AS "caseId",
         revision,
         case_json AS "case",
-        projection_json AS projection
+        projection_json AS projection,
+        provider_evidence_json AS "providerEvidence",
+        obligations_json AS obligations
       FROM collaborative_acceptance_cases
       ORDER BY updated_at DESC, case_id ASC
     `,
@@ -278,6 +307,8 @@ const makeRepository = Effect.gen(function* () {
           evidence,
           assessments,
           exchanges,
+          ...(row.providerEvidence === null ? {} : { providerEvidence: row.providerEvidence }),
+          ...(row.obligations.length === 0 ? {} : { obligations: row.obligations }),
           projection: row.projection,
         }),
       ),
@@ -307,6 +338,8 @@ const makeRepository = Effect.gen(function* () {
             yield* insertCase({
               case: record.case,
               projection: record.projection,
+              providerEvidence: record.providerEvidence ?? null,
+              obligations: record.obligations ?? [],
               revision: record.revision,
             });
           } else {
@@ -326,6 +359,8 @@ const makeRepository = Effect.gen(function* () {
             yield* updateCase({
               case: nextRecord.case,
               projection: nextRecord.projection,
+              providerEvidence: nextRecord.providerEvidence ?? null,
+              obligations: nextRecord.obligations ?? [],
               expectedRevision: actualRevision,
               revision: nextRecord.revision,
             });
@@ -377,13 +412,7 @@ const makeRepository = Effect.gen(function* () {
     input,
   ) =>
     listCaseRowsByAssignment(input).pipe(
-      Effect.flatMap((rows) =>
-        Effect.all(
-          rows.map((row) =>
-            loadRecord({ revision: row.revision, case: row.case, projection: row.projection }),
-          ),
-        ),
-      ),
+      Effect.flatMap((rows) => Effect.all(rows.map((row) => loadRecord(row)))),
       Effect.mapError(
         toPersistenceSqlError("CollaborativeAcceptanceRepository.listByAssignmentId"),
       ),
@@ -391,13 +420,7 @@ const makeRepository = Effect.gen(function* () {
 
   const listAll: CollaborativeAcceptanceRepositoryShape["listAll"] = () =>
     listAllCaseRows({}).pipe(
-      Effect.flatMap((rows) =>
-        Effect.all(
-          rows.map((row) =>
-            loadRecord({ revision: row.revision, case: row.case, projection: row.projection }),
-          ),
-        ),
-      ),
+      Effect.flatMap((rows) => Effect.all(rows.map((row) => loadRecord(row)))),
       Effect.mapError(toPersistenceSqlError("CollaborativeAcceptanceRepository.listAll")),
     );
 

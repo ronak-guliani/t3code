@@ -30,7 +30,6 @@ import {
   PullRequestUnavailableError,
   PullRequestMonitorError,
   CollaborativeAcceptanceError,
-  type CollaborationExecutionAuthority,
   RpcClientId,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
@@ -189,6 +188,7 @@ import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { repositoryFromPullRequestUrl } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
 import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorService.ts";
 import { CollaborativeAcceptanceCoordinator } from "./collaborativeAcceptance/Coordinator.ts";
+import { acceptanceAuthorityForThread } from "./collaborativeAcceptance/authority.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -337,15 +337,6 @@ const makeWsRpcLayer = (
             ),
           onSome: operation,
         });
-      const authorityForThread = (thread: {
-        readonly id: ThreadId;
-        readonly latestTurn: { readonly turnId: TurnId } | null;
-      }): CollaborationExecutionAuthority => ({
-        executionId: `thread:${thread.id}`,
-        generation: thread.latestTurn === null ? 0 : 1,
-        dispatchId: null,
-        turnId: thread.latestTurn?.turnId ?? null,
-      });
       const resolveAcceptanceThread = (threadId: ThreadId) =>
         projectionSnapshotQuery.getThreadDetailById(threadId).pipe(
           Effect.mapError(
@@ -2356,12 +2347,19 @@ const makeWsRpcLayer = (
                 const recipientThreadId =
                   existing?.case.parentThreadId ?? sender.parentThreadId ?? sender.id;
                 const recipient = yield* resolveAcceptanceThread(recipientThreadId);
+                const senderAuthority = acceptanceAuthorityForThread(sender);
+                const recipientAuthority = acceptanceAuthorityForThread(recipient);
+                if (senderAuthority === undefined || recipientAuthority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
                 return yield* service.submitCandidate({
                   ...input.submission,
                   senderThreadId: sender.id,
                   recipientThreadId,
-                  senderAuthority: authorityForThread(sender),
-                  recipientAuthority: authorityForThread(recipient),
+                  senderAuthority,
+                  recipientAuthority,
                 });
               }),
             ),
@@ -2381,13 +2379,20 @@ const makeWsRpcLayer = (
                 }
                 const sender = yield* resolveAcceptanceThread(input.threadId);
                 const recipient = yield* resolveAcceptanceThread(record.case.parentThreadId);
+                const senderAuthority = acceptanceAuthorityForThread(sender);
+                const recipientAuthority = acceptanceAuthorityForThread(recipient);
+                if (senderAuthority === undefined || recipientAuthority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
                 return yield* service.requestReview({
                   caseId: input.caseId,
                   senderThreadId: sender.id,
                   recipientThreadId: recipient.id,
                   assignmentId: record.case.assignmentId,
-                  senderAuthority: authorityForThread(sender),
-                  recipientAuthority: authorityForThread(recipient),
+                  senderAuthority,
+                  recipientAuthority,
                 });
               }),
             ),
@@ -2402,19 +2407,55 @@ const makeWsRpcLayer = (
         [WS_METHODS.collaborativeAcceptanceSubmitAssessment]: (input) =>
           observeRpcEffect(
             WS_METHODS.collaborativeAcceptanceSubmitAssessment,
-            withAcceptance((service) => service.submitAssessment(input.submission)),
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId);
+                const authority = acceptanceAuthorityForThread(thread);
+                if (authority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.submitAssessment({
+                  ...input.submission,
+                  authority,
+                });
+              }),
+            ),
             { "rpc.aggregate": "collaborativeAcceptance" },
           ),
         [WS_METHODS.collaborativeAcceptancePause]: (input) =>
           observeRpcEffect(
             WS_METHODS.collaborativeAcceptancePause,
-            withAcceptance((service) => service.pause(input.caseId, input.reason)),
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId);
+                const authority = acceptanceAuthorityForThread(thread);
+                if (authority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.pause(input.caseId, input.reason, authority);
+              }),
+            ),
             { "rpc.aggregate": "collaborativeAcceptance" },
           ),
         [WS_METHODS.collaborativeAcceptanceResume]: (input) =>
           observeRpcEffect(
             WS_METHODS.collaborativeAcceptanceResume,
-            withAcceptance((service) => service.resume(input.caseId)),
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId);
+                const authority = acceptanceAuthorityForThread(thread);
+                if (authority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.resume(input.caseId, authority);
+              }),
+            ),
             { "rpc.aggregate": "collaborativeAcceptance" },
           ),
 
