@@ -3,26 +3,19 @@ import type {
   PullRequestAction,
   PullRequestActivity,
   PullRequestDetail,
-  PullRequestDiffSide,
   PullRequestMergeMethod,
   PullRequestRef,
-  PullRequestReviewThread,
   PullRequestReviewVerdict,
 } from "@t3tools/contracts";
-import { MAX_PULL_REQUEST_INLINE_REVIEW_COMMENTS } from "@t3tools/contracts";
-import { parsePatchFiles } from "@pierre/diffs";
-import { FileDiff, type FileDiffMetadata, Virtualizer } from "@pierre/diffs/react";
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  CheckIcon,
-  CircleIcon,
   ExternalLinkIcon,
   GitMergeIcon,
   MessageSquareIcon,
   RefreshCwIcon,
   XIcon,
 } from "lucide-react";
-import { useMemo, useState, type CSSProperties } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 
 import ChatMarkdown from "../ChatMarkdown";
 import { Badge } from "../ui/badge";
@@ -33,7 +26,6 @@ import {
   pullRequestActivityQueryOptions,
   pullRequestCommentMutationOptions,
   pullRequestDetailQueryOptions,
-  pullRequestDiffInfiniteQueryOptions,
   pullRequestInvalidateMutationOptions,
   pullRequestReplyToThreadMutationOptions,
   pullRequestRequestReviewersMutationOptions,
@@ -42,11 +34,8 @@ import {
   pullRequestSetThreadResolutionMutationOptions,
   pullRequestSubmitReviewMutationOptions,
 } from "~/lib/pullRequestReactQuery";
-import { buildPatchCacheKey, resolveDiffThemeName } from "~/lib/diffRendering";
 import { cn } from "~/lib/utils";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
-import { useTheme } from "~/hooks/useTheme";
-import { useSettings } from "~/hooks/useSettings";
 import { useOpenLink } from "~/browser/useOpenLink";
 import { isWebUrl } from "~/browser/browserLinkTarget";
 import { selectThreadShellsAcrossEnvironments, useStore } from "~/store";
@@ -55,7 +44,6 @@ import { findPullRequestBrowserThread } from "~/lib/openPullRequestLink";
 
 import {
   EMPTY_PENDING_REVIEW_COMMENTS,
-  nextPendingReviewCommentId,
   pullRequestReviewKey,
   usePullRequestReviewStore,
   type PendingReviewComment,
@@ -83,6 +71,12 @@ const TABS: readonly { readonly value: DetailTab; readonly label: string }[] = [
   { value: "timeline", label: "Timeline" },
   { value: "code", label: "Code" },
 ];
+
+const LazyPullRequestCodeTab = lazy(() =>
+  import("./PullRequestCodeTab").then(({ PullRequestCodeTab }) => ({
+    default: PullRequestCodeTab,
+  })),
+);
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "The request could not be completed.";
@@ -188,101 +182,6 @@ function CommentComposer({
   );
 }
 
-function ReviewThread({
-  thread,
-  detail,
-  pending,
-  onReply,
-  onResolve,
-}: {
-  readonly thread: PullRequestReviewThread;
-  readonly detail: PullRequestDetailView;
-  readonly pending: boolean;
-  readonly onReply: (threadId: string, body: string) => Promise<void>;
-  readonly onResolve: (threadId: string, resolved: boolean) => void;
-}) {
-  const [reply, setReply] = useState("");
-  const canReply = detail.capabilities.review.reply && detail.viewerPermissions.comment;
-  const canResolve = detail.capabilities.review.resolve && detail.viewerPermissions.resolve;
-
-  return (
-    <article className="rounded-lg border border-border/70 bg-card p-3 text-sm">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        {thread.isResolved ? (
-          <CheckIcon className="size-3.5 text-emerald-500" />
-        ) : (
-          <CircleIcon className="size-3.5" />
-        )}
-        <span>
-          {thread.isResolved ? "Resolved" : "Open"} · {thread.path}
-          {thread.line ? `:${thread.line}` : ""}
-          {thread.isOutdated ? " · outdated" : ""}
-        </span>
-        {canResolve ? (
-          <Button
-            className="ml-auto"
-            disabled={pending}
-            size="xs"
-            variant="ghost"
-            onClick={() => onResolve(thread.id, !thread.isResolved)}
-          >
-            {thread.isResolved ? "Unresolve" : "Resolve"}
-          </Button>
-        ) : null}
-      </div>
-      <div className="mt-3 space-y-3">
-        {thread.comments.map((comment) => (
-          <div key={comment.id}>
-            <div className="flex gap-2 text-xs text-muted-foreground">
-              <PullRequestActorLabel actor={comment.author} className="text-foreground" />
-              <span>{formatRelativeTimeLabel(comment.createdAt)}</span>
-            </div>
-            <div className="mt-1">
-              <ChatMarkdown
-                cwd={detail.workspaceRoot}
-                text={toRenderablePullRequestMarkdown(comment.body)}
-              />
-            </div>
-          </div>
-        ))}
-      </div>
-      {canReply ? (
-        <div className="mt-3">
-          <Textarea
-            aria-label={`Reply to ${thread.path}`}
-            disabled={pending}
-            placeholder="Reply to this thread"
-            size="sm"
-            value={reply}
-            onChange={(event) => setReply(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && reply.trim()) {
-                event.preventDefault();
-                void onReply(thread.id, reply.trim())
-                  .then(() => setReply(""))
-                  .catch(() => undefined);
-              }
-            }}
-          />
-          <div className="mt-2 flex justify-end">
-            <Button
-              disabled={pending || reply.trim().length === 0}
-              size="xs"
-              onClick={() =>
-                void onReply(thread.id, reply.trim())
-                  .then(() => setReply(""))
-                  .catch(() => undefined)
-              }
-            >
-              Reply
-            </Button>
-          </div>
-        </div>
-      ) : null}
-    </article>
-  );
-}
-
 function ReviewComposer({
   detail,
   reference,
@@ -378,279 +277,6 @@ function ReviewComposer({
   );
 }
 
-type RenderablePullRequestPatch =
-  | { readonly kind: "files"; readonly files: readonly FileDiffMetadata[] }
-  | { readonly kind: "raw"; readonly text: string; readonly reason: string };
-
-function renderPullRequestPatch(patch: string, cacheKey: string): RenderablePullRequestPatch {
-  const normalized = patch.trim();
-  if (!normalized) {
-    return { kind: "files", files: [] };
-  }
-  try {
-    const files = parsePatchFiles(normalized, buildPatchCacheKey(normalized, cacheKey)).flatMap(
-      (parsed) => parsed.files,
-    );
-    return files.length > 0
-      ? { kind: "files", files }
-      : {
-          kind: "raw",
-          text: normalized,
-          reason: "GitHub returned a diff format that could not be rendered.",
-        };
-  } catch {
-    return {
-      kind: "raw",
-      text: normalized,
-      reason: "This diff could not be parsed. Showing the raw patch.",
-    };
-  }
-}
-
-function pullRequestDiffPath(file: FileDiffMetadata): string {
-  const path = file.name ?? file.prevName ?? "";
-  return path.startsWith("a/") || path.startsWith("b/") ? path.slice(2) : path;
-}
-
-function CodeTab({
-  detail,
-  reference,
-  environmentId,
-  onReply,
-  onResolve,
-  pending,
-}: {
-  readonly detail: PullRequestDetailView;
-  readonly reference: PullRequestRef;
-  readonly environmentId: EnvironmentId;
-  readonly onReply: (threadId: string, body: string) => Promise<void>;
-  readonly onResolve: (threadId: string, resolved: boolean) => void;
-  readonly pending: boolean;
-}) {
-  const diffQuery = useInfiniteQuery(
-    pullRequestDiffInfiniteQueryOptions({ environmentId, request: reference }),
-  );
-  const [path, setPath] = useState("");
-  const [line, setLine] = useState("1");
-  const [side, setSide] = useState<PullRequestDiffSide>("right");
-  const [body, setBody] = useState("");
-  const key = pullRequestReviewKey(reference);
-  const add = usePullRequestReviewStore((state) => state.add);
-  const pendingReviewComments = usePullRequestReviewStore(
-    (state) => state.commentsByKey[key] ?? EMPTY_PENDING_REVIEW_COMMENTS,
-  );
-  const { resolvedTheme } = useTheme();
-  const pullRequestsCodeFontSize = useSettings((s) => s.pullRequestsCodeFontSize);
-  const diffWordWrap = useSettings((s) => s.diffWordWrap);
-  // The renderer defaults to 13px/20px; drive both from the pull request
-  // code font size setting so diffs match the app's code density.
-  const diffTextStyle = useMemo<CSSProperties>(
-    () =>
-      ({
-        "--diffs-font-size": `${pullRequestsCodeFontSize}px`,
-        "--diffs-line-height": `${pullRequestsCodeFontSize + 8}px`,
-      }) as CSSProperties,
-    [pullRequestsCodeFontSize],
-  );
-  const renderablePages = useMemo(
-    () =>
-      (diffQuery.data?.pages ?? []).map((page, index) => ({
-        index,
-        truncated: page.truncated,
-        ...renderPullRequestPatch(page.patch, `${key}:${index}`),
-      })),
-    [diffQuery.data?.pages, key],
-  );
-  const files = useMemo(
-    () =>
-      renderablePages.flatMap((page) =>
-        page.kind === "files"
-          ? page.files.map((file, index) => ({
-              file,
-              index,
-              pageIndex: page.index,
-              path: pullRequestDiffPath(file),
-            }))
-          : [],
-      ),
-    [renderablePages],
-  );
-  const filePaths = useMemo(
-    () => [...new Set(files.map((file) => file.path).filter((filePath) => filePath.length > 0))],
-    [files],
-  );
-  const threadByPath = useMemo(
-    () =>
-      detail.reviewThreads.reduce<Record<string, PullRequestReviewThread[]>>((threads, thread) => {
-        (threads[thread.path] ??= []).push(thread);
-        return threads;
-      }, {}),
-    [detail.reviewThreads],
-  );
-  const canComment = detail.capabilities.review.inlineComment && detail.viewerPermissions.comment;
-  const commentLine = Number(line);
-  const isValidCommentLine = Number.isSafeInteger(commentLine) && commentLine > 0;
-
-  if (diffQuery.isPending) {
-    return <p className="p-4 text-sm text-muted-foreground">Loading diff…</p>;
-  }
-  if (diffQuery.error) {
-    return <p className="p-4 text-sm text-destructive">{errorMessage(diffQuery.error)}</p>;
-  }
-  return (
-    <div className="space-y-4 p-4">
-      {canComment ? (
-        <section className="rounded-lg border border-border/70 bg-card p-3">
-          <p className="text-sm font-medium">Add a line comment to this review</p>
-          <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_5rem_7rem]">
-            <input
-              aria-label="File path"
-              className="h-8 rounded border border-input bg-background px-2 text-sm"
-              list="pull-request-diff-paths"
-              placeholder="src/file.ts"
-              value={path}
-              onChange={(event) => setPath(event.currentTarget.value)}
-            />
-            <input
-              aria-label="Line number"
-              className="h-8 rounded border border-input bg-background px-2 text-sm"
-              inputMode="numeric"
-              min="1"
-              step="1"
-              type="number"
-              value={line}
-              onChange={(event) => setLine(event.currentTarget.value)}
-            />
-            <select
-              aria-label="Diff side"
-              className="h-8 rounded border border-input bg-background px-2 text-sm"
-              value={side}
-              onChange={(event) => setSide(event.currentTarget.value as PullRequestDiffSide)}
-            >
-              <option value="right">New version</option>
-              <option value="left">Old version</option>
-            </select>
-          </div>
-          <datalist id="pull-request-diff-paths">
-            {filePaths.map((filePath) => (
-              <option key={filePath} value={filePath} />
-            ))}
-          </datalist>
-          <Textarea
-            className="mt-2"
-            placeholder="Comment"
-            size="sm"
-            value={body}
-            onChange={(event) => setBody(event.currentTarget.value)}
-          />
-          <div className="mt-2 flex justify-end">
-            <Button
-              disabled={
-                !path.trim() ||
-                !body.trim() ||
-                !isValidCommentLine ||
-                pendingReviewComments.length >= MAX_PULL_REQUEST_INLINE_REVIEW_COMMENTS
-              }
-              size="xs"
-              onClick={() => {
-                add(key, {
-                  id: nextPendingReviewCommentId(),
-                  path: path.trim(),
-                  line: commentLine,
-                  side,
-                  body: body.trim(),
-                });
-                setBody("");
-              }}
-            >
-              Add to review
-            </Button>
-          </div>
-        </section>
-      ) : null}
-      {files.length > 0 ? (
-        <Virtualizer
-          className="max-h-[calc(100dvh-23rem)] overflow-auto"
-          config={{ overscrollSize: 600, intersectionObserverMargin: 1200 }}
-        >
-          {files.map(({ file, index, pageIndex, path: filePath }) => (
-            <section
-              className="mb-3 overflow-hidden rounded-lg border border-border/70 last:mb-0"
-              key={`${pageIndex}:${index}:${filePath}`}
-            >
-              <FileDiff
-                fileDiff={file}
-                style={diffTextStyle}
-                options={{
-                  diffStyle: "unified",
-                  lineDiffType: "none",
-                  overflow: diffWordWrap ? "wrap" : "scroll",
-                  theme: resolveDiffThemeName(resolvedTheme),
-                  themeType: resolvedTheme,
-                }}
-              />
-              {threadByPath[filePath]?.length ? (
-                <div className="space-y-2 border-t border-border/70 p-3">
-                  {threadByPath[filePath].map((thread) => (
-                    <ReviewThread
-                      detail={detail}
-                      key={thread.id}
-                      pending={pending}
-                      thread={thread}
-                      onReply={onReply}
-                      onResolve={onResolve}
-                    />
-                  ))}
-                </div>
-              ) : null}
-            </section>
-          ))}
-        </Virtualizer>
-      ) : null}
-      {renderablePages
-        .filter((page) => page.kind === "raw")
-        .map((page) => (
-          <section
-            className="overflow-hidden rounded-lg border border-border/70"
-            key={`raw:${page.index}`}
-          >
-            <p className="border-b border-border/70 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-              {page.reason}
-            </p>
-            <pre
-              className={
-                diffWordWrap
-                  ? "max-h-120 overflow-auto p-3 leading-5 whitespace-pre-wrap wrap-break-word"
-                  : "max-h-120 overflow-auto p-3 leading-5"
-              }
-              style={{ fontSize: pullRequestsCodeFontSize }}
-            >
-              {page.text}
-            </pre>
-          </section>
-        ))}
-      {renderablePages.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No diff available.</p>
-      ) : null}
-      {renderablePages.some((page) => page.truncated) ? (
-        <p className="text-xs text-muted-foreground">Some files could not be rendered by GitHub.</p>
-      ) : null}
-      {diffQuery.hasNextPage ? (
-        <div className="flex justify-center">
-          <Button
-            disabled={diffQuery.isFetchingNextPage}
-            size="sm"
-            variant="outline"
-            onClick={() => void diffQuery.fetchNextPage()}
-          >
-            {diffQuery.isFetchingNextPage ? "Loading files…" : "Load more files"}
-          </Button>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 export function PullRequestDetailPanel({
   environmentId,
   reference,
@@ -663,13 +289,14 @@ export function PullRequestDetailPanel({
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<DetailTab>("summary");
   const detailQuery = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
-  const activityQuery = useQuery(
-    pullRequestActivityQueryOptions({
+  const activityQuery = useQuery({
+    ...pullRequestActivityQueryOptions({
       environmentId,
       reference,
       enabled: tab !== "summary",
     }),
-  );
+    refetchInterval: tab === "timeline" ? 30_000 : false,
+  });
   const [comment, setComment] = useState("");
   const [actionPending, setActionPending] = useState<PullRequestAction | null>(null);
   const [mergeMethodOverride, setMergeMethodOverride] = useState<PullRequestMergeMethod | null>(
@@ -804,6 +431,19 @@ export function PullRequestDetailPanel({
         }),
       );
   };
+  const timelineItems = useMemo(
+    () =>
+      [
+        ...(detail?.comments ?? []).map((comment) => ({ kind: "comment" as const, item: comment })),
+        ...(detail?.commits ?? []).map((commit) => ({ kind: "commit" as const, item: commit })),
+      ].toSorted((left, right) => {
+        const leftDate = left.kind === "comment" ? left.item.createdAt : left.item.committedDate;
+        const rightDate =
+          right.kind === "comment" ? right.item.createdAt : right.item.committedDate;
+        return leftDate.localeCompare(rightDate);
+      }),
+    [detail?.comments, detail?.commits],
+  );
 
   if (detailQuery.isPending) {
     return (
@@ -851,12 +491,7 @@ export function PullRequestDetailPanel({
       : checkSummary.pending > 0
         ? "text-muted-foreground"
         : "text-emerald-500";
-  // The timeline shows every comment kind, including line-level review
-  // comments (with their file location) the way the host's own timeline
-  // does. Filtering those out made review-heavy pull requests read as
-  // having no conversation at all.
-  const conversationItems = detail.comments;
-  const timelineCount = conversationItems.length + detail.commits.length;
+  const timelineCount = timelineItems.length;
   const tabs = detail.capabilities.diff ? TABS : TABS.filter((tab) => tab.value !== "code");
   const activeTab = tabs.some((item) => item.value === tab) ? tab : "summary";
   const reviewKey = pullRequestReviewKey(reference);
@@ -1216,53 +851,49 @@ export function PullRequestDetailPanel({
                 </Button>
               </div>
             ) : null}
-            {conversationItems.map((item) => (
-              <article className="border-b border-border/60 pb-4" key={item.id}>
-                <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                  <PullRequestActorLabel actor={item.author} className="text-foreground" />
-                  <span>{formatRelativeTimeLabel(item.createdAt)}</span>
-                  {item.kind === "review-comment" && item.path ? (
-                    <span className="min-w-0 truncate font-mono text-[11px]">
-                      {item.path}
-                      {typeof item.reviewState === "string" && item.reviewState
-                        ? ` · ${item.reviewState}`
-                        : ""}
-                    </span>
-                  ) : null}
-                  {item.kind === "review" ? (
-                    <ReviewVerdictBadge reviewState={item.reviewState} />
-                  ) : null}
-                </div>
-                <div className="mt-2 text-sm">
-                  <ChatMarkdown
-                    cwd={detail.workspaceRoot}
-                    text={toRenderablePullRequestMarkdown(item.body)}
-                  />
-                </div>
-              </article>
-            ))}
+            {timelineItems.map((entry) =>
+              entry.kind === "commit" ? (
+                <article className="border-b border-border/60 pb-4" key={entry.item.oid}>
+                  <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                    <span className="font-mono text-foreground">{entry.item.oid.slice(0, 7)}</span>
+                    <span>committed</span>
+                    <span>{formatRelativeTimeLabel(entry.item.committedDate)}</span>
+                  </div>
+                  <p className="mt-2 text-sm">{entry.item.messageHeadline}</p>
+                </article>
+              ) : (
+                <article className="border-b border-border/60 pb-4" key={entry.item.id}>
+                  <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                    <PullRequestActorLabel actor={entry.item.author} className="text-foreground" />
+                    <span>{formatRelativeTimeLabel(entry.item.createdAt)}</span>
+                    {entry.item.kind === "review-comment" && entry.item.path ? (
+                      <span className="min-w-0 truncate font-mono text-[11px]">
+                        {entry.item.path}
+                        {typeof entry.item.reviewState === "string" && entry.item.reviewState
+                          ? ` · ${entry.item.reviewState}`
+                          : ""}
+                      </span>
+                    ) : null}
+                    {entry.item.kind === "review" ? (
+                      <ReviewVerdictBadge reviewState={entry.item.reviewState} />
+                    ) : null}
+                  </div>
+                  <div className="mt-2 text-sm">
+                    <ChatMarkdown
+                      cwd={detail.workspaceRoot}
+                      text={toRenderablePullRequestMarkdown(entry.item.body)}
+                    />
+                  </div>
+                </article>
+              ),
+            )}
             {detail.commentsTruncated ? (
               <p className="text-xs text-muted-foreground">
                 GitHub returned the most recent {detail.comments.length} of {detail.commentCount}{" "}
                 items; some line-level review comments may be missing.
               </p>
             ) : null}
-            {detail.commits.length > 0 ? (
-              <section>
-                <h2 className="text-sm font-medium">Commits</h2>
-                <ul className="mt-2 space-y-2">
-                  {detail.commits.map((commit) => (
-                    <li className="text-sm" key={commit.oid}>
-                      <span className="font-mono text-xs text-muted-foreground">
-                        {commit.oid.slice(0, 7)}
-                      </span>{" "}
-                      {commit.messageHeadline}
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ) : null}
-            {conversationItems.length === 0 ? (
+            {timelineItems.length === 0 ? (
               <p className="text-sm text-muted-foreground">No conversation yet.</p>
             ) : null}
             {detail.capabilities.comment && detail.viewerPermissions.comment ? (
@@ -1278,15 +909,17 @@ export function PullRequestDetailPanel({
           </div>
         ) : null}
         {activeTab === "code" ? (
-          <CodeTab
-            detail={detail}
-            environmentId={environmentId}
-            key={reviewKey}
-            reference={reference}
-            onReply={sendReply}
-            onResolve={toggleResolved}
-            pending={reply.isPending || resolve.isPending}
-          />
+          <Suspense fallback={<p className="p-4 text-sm text-muted-foreground">Loading code…</p>}>
+            <LazyPullRequestCodeTab
+              detail={detail}
+              environmentId={environmentId}
+              key={reviewKey}
+              reference={reference}
+              onReply={sendReply}
+              onResolve={toggleResolved}
+              pending={reply.isPending || resolve.isPending}
+            />
+          </Suspense>
         ) : null}
         {activeTab !== "summary" ? (
           <div className="p-4 pt-0">
