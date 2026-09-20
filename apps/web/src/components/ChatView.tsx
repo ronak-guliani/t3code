@@ -2904,6 +2904,7 @@ function ChatViewBody(
     activeWorktreePath,
     hasServerThread: isServerThread,
     draftThreadEnvMode: isLocalDraftThread ? draftThread?.envMode : undefined,
+    projectCwd: activeProject?.cwd ?? null,
   });
   const canOverrideServerThreadEnvMode = Boolean(
     isServerThread && activeThread && activeThread.worktreePath === null,

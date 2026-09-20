@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   dedupeRemoteBranchesWithLocalMatches,
   deriveLocalBranchNameFromRemoteRef,
+  isProjectCheckoutPath,
   resolveEnvironmentOptionLabel,
   resolveBranchSelectionTarget,
   resolveCurrentWorkspaceLabel,
@@ -139,6 +140,41 @@ describe("resolveEffectiveEnvMode", () => {
       }),
     ).toBe("worktree");
   });
+
+  it("reports server threads bound to the project checkout as current-checkout mode", () => {
+    expect(
+      resolveEffectiveEnvMode({
+        activeWorktreePath: "/repo",
+        hasServerThread: true,
+        draftThreadEnvMode: undefined,
+        projectCwd: "/repo",
+      }),
+    ).toBe("local");
+  });
+
+  it("keeps reporting server threads in real worktrees as worktree mode", () => {
+    expect(
+      resolveEffectiveEnvMode({
+        activeWorktreePath: "/repo/.t3/worktrees/feature-a",
+        hasServerThread: true,
+        draftThreadEnvMode: undefined,
+        projectCwd: "/repo",
+      }),
+    ).toBe("worktree");
+  });
+});
+
+describe("isProjectCheckoutPath", () => {
+  it("matches the project checkout ignoring trailing slashes", () => {
+    expect(isProjectCheckoutPath("/repo/", "/repo")).toBe(true);
+    expect(isProjectCheckoutPath("/repo", "/repo/")).toBe(true);
+  });
+
+  it("rejects real worktrees and missing inputs", () => {
+    expect(isProjectCheckoutPath("/repo/.t3/worktrees/a", "/repo")).toBe(false);
+    expect(isProjectCheckoutPath(null, "/repo")).toBe(false);
+    expect(isProjectCheckoutPath("/repo", null)).toBe(false);
+  });
 });
 
 describe("resolveEnvModeLabel", () => {
@@ -156,6 +192,10 @@ describe("resolveCurrentWorkspaceLabel", () => {
   it("describes the active checkout as a worktree when one is attached", () => {
     expect(resolveCurrentWorkspaceLabel("/repo/.t3/worktrees/feature-a")).toBe("Current worktree");
   });
+
+  it("describes the project checkout path as the current checkout", () => {
+    expect(resolveCurrentWorkspaceLabel("/repo", "/repo")).toBe("Current checkout");
+  });
 });
 
 describe("resolveLockedWorkspaceLabel", () => {
@@ -165,6 +205,10 @@ describe("resolveLockedWorkspaceLabel", () => {
 
   it("uses a shorter label for an attached worktree", () => {
     expect(resolveLockedWorkspaceLabel("/repo/.t3/worktrees/feature-a")).toBe("Worktree");
+  });
+
+  it("uses the local label for the project checkout path", () => {
+    expect(resolveLockedWorkspaceLabel("/repo", "/repo")).toBe("Local checkout");
   });
 });
 

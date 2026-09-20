@@ -242,6 +242,10 @@ export const WorkspaceBinding = Schema.Struct({
   worktreePath: TrimmedNonEmptyString,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   generation: NonNegativeInt,
+  // Present only when the thread explicitly opted into the project checkout
+  // ("Current checkout"). Absent for isolated workspaces and for legacy
+  // bindings, which must keep isolating.
+  workspaceScope: Schema.optionalKey(Schema.Literals(["project-checkout"])),
 });
 export type WorkspaceBinding = typeof WorkspaceBinding.Type;
 

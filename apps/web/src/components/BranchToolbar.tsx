@@ -69,6 +69,7 @@ interface MobileRunContextSelectorProps {
   onEnvironmentChange: ((environmentId: EnvironmentId) => void) | undefined;
   effectiveEnvMode: EnvMode;
   activeWorktreePath: string | null;
+  projectCwd: string | null;
   onEnvModeChange: (mode: EnvMode) => void;
 }
 
@@ -81,6 +82,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
   onEnvironmentChange,
   effectiveEnvMode,
   activeWorktreePath,
+  projectCwd,
   onEnvModeChange,
 }: MobileRunContextSelectorProps) {
   const activeEnvironment = useMemo(
@@ -96,10 +98,10 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
         ? FolderGitIcon
         : FolderIcon;
   const workspaceLabel = envModeLocked
-    ? resolveLockedWorkspaceLabel(activeWorktreePath)
+    ? resolveLockedWorkspaceLabel(activeWorktreePath, projectCwd)
     : effectiveEnvMode === "worktree"
       ? resolveEnvModeLabel("worktree")
-      : resolveCurrentWorkspaceLabel(activeWorktreePath);
+      : resolveCurrentWorkspaceLabel(activeWorktreePath, projectCwd);
 
   return (
     <Menu>
@@ -163,7 +165,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
                   <FolderIcon className="size-3" />
                 )}
                 <span className="min-w-0 truncate">
-                  {resolveCurrentWorkspaceLabel(activeWorktreePath)}
+                  {resolveCurrentWorkspaceLabel(activeWorktreePath, projectCwd)}
                 </span>
               </span>
             </MenuRadioItem>
@@ -243,12 +245,14 @@ export const BranchToolbar = memo(function BranchToolbar({
   const activeProject = useStore(activeProjectSelector);
   const hasActiveThread = serverThread !== undefined || draftThread !== null;
   const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
+  const activeProjectCwd = activeProject?.cwd ?? null;
   const effectiveEnvMode =
     effectiveEnvModeOverride ??
     resolveEffectiveEnvMode({
       activeWorktreePath,
       hasServerThread: serverThread !== undefined,
       draftThreadEnvMode: draftThread?.envMode,
+      projectCwd: activeProjectCwd,
     });
   const canPrepareServerWorktree = Boolean(
     serverThread !== undefined &&
@@ -293,6 +297,7 @@ export const BranchToolbar = memo(function BranchToolbar({
                 onEnvironmentChange={onEnvironmentChange}
                 effectiveEnvMode={effectiveEnvMode}
                 activeWorktreePath={activeWorktreePath}
+                projectCwd={activeProjectCwd}
                 onEnvModeChange={onEnvModeChange}
               />
               <BranchToolbarDeviceLabel
@@ -317,6 +322,7 @@ export const BranchToolbar = memo(function BranchToolbar({
                 envLocked={envModeLocked}
                 effectiveEnvMode={effectiveEnvMode}
                 activeWorktreePath={activeWorktreePath}
+                projectCwd={activeProjectCwd}
                 onEnvModeChange={onEnvModeChange}
               />
               <BranchToolbarDeviceLabel

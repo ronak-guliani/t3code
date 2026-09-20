@@ -345,7 +345,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       thread === undefined &&
       createThread === undefined
     ) {
-      return { command, worktreePath: null, branch: null };
+      return { command, worktreePath: null, branch: null, honoredProjectCheckout: false };
     }
     const requestedPath =
       createThread?.worktreePath ??
@@ -369,34 +369,33 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       requestedPath === null || requestedPath === undefined
         ? null
         : yield* Effect.promise(() => canonicalizeWorktreePath(requestedPath));
-    // An explicit project-checkout path (the client sent a concrete directory
-    // instead of null) means the user chose "Current checkout": honor it
-    // instead of allocating an isolated worktree. Null/undefined requests fall
-    // through to isolation below so legacy callers keep the safe default.
-    // For thread.create and bootstrapped turn.start the explicit path lives on
-    // createThread (which is the command itself for thread.create); otherwise
-    // it lives on the existing thread binding.
-    const isExplicitCheckoutRequest =
-      typeof createThread?.worktreePath === "string" ||
-      (createThread === undefined &&
-        (command.type === "thread.turn.start" || command.type === "thread.queued-turn.dispatch") &&
-        typeof (
-          (command.type === "thread.queued-turn.dispatch"
-            ? command.workspaceBinding?.worktreePath
-            : undefined) ??
-          thread?.workspaceBinding?.worktreePath ??
-          thread?.worktreePath
-        ) === "string");
+    // An explicit project-checkout path in the current creation request (the
+    // client sent a concrete directory instead of null) means the user chose
+    // "Current checkout": honor it instead of allocating an isolated
+    // worktree. Follow-up turns without a creation request are honored only
+    // when the thread's persisted binding carries the project-checkout scope
+    // recorded below; legacy root bindings without that scope keep isolating
+    // so existing threads can never silently gain main-checkout writes.
+    const isFreshCheckoutRequest = typeof createThread?.worktreePath === "string";
+    const isPersistedCheckoutRequest =
+      createThread === undefined &&
+      (command.type === "thread.turn.start" || command.type === "thread.queued-turn.dispatch") &&
+      thread?.workspaceBinding?.workspaceScope === "project-checkout";
     if (canonicalRequested !== null) {
       const requestedRoot = yield* Effect.promise(() => resolveGitWorktreeRoot(canonicalRequested));
       const isProjectCheckout =
         (requestedRoot !== null && requestedRoot === gitRoot) ||
         (requestedRoot === null && projectRoot === canonicalRequested);
-      if (isProjectCheckout && isExecutionCommand && isExplicitCheckoutRequest) {
+      if (
+        isProjectCheckout &&
+        isExecutionCommand &&
+        (isFreshCheckoutRequest || isPersistedCheckoutRequest)
+      ) {
         return {
           command,
           worktreePath: canonicalRequested,
           branch: createThread?.branch ?? thread?.branch ?? null,
+          honoredProjectCheckout: true,
         };
       }
       if (isProjectCheckout && isExecutionCommand && gitRoot !== null) {
@@ -410,7 +409,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             "The project checkout is reserved for the human. Choose or create an isolated worktree; T3 will not write the main checkout.",
         });
       } else {
-        return { command, worktreePath: canonicalRequested, branch: createThread?.branch ?? null };
+        return {
+          command,
+          worktreePath: canonicalRequested,
+          branch: createThread?.branch ?? null,
+          honoredProjectCheckout: false,
+        };
       }
     }
 
@@ -419,6 +423,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         command,
         worktreePath: null,
         branch: null,
+        honoredProjectCheckout: false,
       };
     }
 
@@ -431,7 +436,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         break;
     }
     if (threadId === undefined) {
-      return { command, worktreePath: null, branch: null };
+      return { command, worktreePath: null, branch: null, honoredProjectCheckout: false };
     }
     if (gitRoot === null) {
       return yield* new OrchestrationCommandInvariantError({
@@ -563,7 +568,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           : command.type === "thread.queued-turn.dispatch"
             ? { ...command, workspaceBinding: undefined }
             : command;
-    return { command: nextCommand, worktreePath, branch };
+    return { command: nextCommand, worktreePath, branch, honoredProjectCheckout: false };
   });
 
   const admitWorkspace = Effect.fn("admitWorkspace")(function* (command: OrchestrationCommand) {
@@ -648,7 +653,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }),
       );
-    const withBinding = { ...command, workspaceBinding: binding } as OrchestrationCommand;
+    const withBinding = {
+      ...command,
+      workspaceBinding: prepared.honoredProjectCheckout
+        ? { ...binding, workspaceScope: "project-checkout" as const }
+        : binding,
+    } as OrchestrationCommand;
     return withBinding;
   });
 
