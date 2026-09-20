@@ -39,6 +39,7 @@ import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/proje
 import { truncate } from "@t3tools/shared/String";
 import { Debouncer } from "@tanstack/react-pacer";
 import {
+  type ComponentProps,
   memo,
   lazy,
   type ReactNode,
@@ -768,6 +769,81 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
         onAddTerminalContext={handleAddTerminalContext}
       />
     </div>
+  );
+});
+
+const RetainedPlanSurface = memo(function RetainedPlanSurface(
+  props: ComponentProps<typeof PlanSidebar> & { readonly visible: boolean },
+) {
+  const { visible, ...planProps } = props;
+  return (
+    <RetainedRightPanelSurface visible={visible} surface="plan">
+      <PlanSidebar {...planProps} />
+    </RetainedRightPanelSurface>
+  );
+});
+
+const RetainedPreviewSurface = memo(function RetainedPreviewSurface(
+  props: ComponentProps<typeof PreviewPanel>,
+) {
+  return (
+    <RetainedRightPanelSurface visible={props.visible} surface="preview">
+      <PreviewPanel {...props} />
+    </RetainedRightPanelSurface>
+  );
+});
+
+const RetainedDiffSurface = memo(function RetainedDiffSurface(props: {
+  readonly visible: boolean;
+  readonly threadRef: ScopedThreadRef;
+  readonly diffSearch: DiffRouteSearch;
+  readonly onDiffSearchChange: (nextSearch: DiffRouteSearch) => void;
+}) {
+  return (
+    <RetainedRightPanelSurface visible={props.visible} surface="diff">
+      <Suspense fallback={null}>
+        <RightPanelDiff
+          threadRef={props.threadRef}
+          diffSearch={props.diffSearch}
+          onDiffSearchChange={props.onDiffSearchChange}
+        />
+      </Suspense>
+    </RetainedRightPanelSurface>
+  );
+});
+
+const RetainedInsightsSurface = memo(function RetainedInsightsSurface(
+  props: ComponentProps<typeof InsightsPanel> & { readonly visible: boolean },
+) {
+  const { visible, ...insightsProps } = props;
+  return (
+    <RetainedRightPanelSurface visible={visible} surface="insights">
+      <InsightsPanel {...insightsProps} />
+    </RetainedRightPanelSurface>
+  );
+});
+
+const RetainedTerminalSurface = memo(function RetainedTerminalSurface(
+  props: ComponentProps<typeof PersistentThreadTerminalDrawer>,
+) {
+  return (
+    <RetainedRightPanelSurface visible={props.visible} surface="terminal">
+      <PersistentThreadTerminalDrawer {...props} />
+    </RetainedRightPanelSurface>
+  );
+});
+
+const RetainedFileSurface = memo(function RetainedFileSurface(
+  props: ComponentProps<typeof FilePreviewPanel> & {
+    readonly visible: boolean;
+    readonly kind: "files" | "file";
+  },
+) {
+  const { visible, kind, ...fileProps } = props;
+  return (
+    <RetainedRightPanelSurface visible={visible} surface={kind}>
+      <FilePreviewPanel {...fileProps} />
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -4685,70 +4761,70 @@ function ChatViewBody(
       switch (surface.kind) {
         case "plan":
           return (
-            <RetainedRightPanelSurface key={surface.id} visible={visible} surface="plan">
-              <PlanSidebar
-                activePlan={activePlan}
-                activeProposedPlan={sidebarProposedPlan}
-                label={planSidebarLabel}
-                environmentId={environmentId}
-                markdownCwd={gitCwd ?? undefined}
-                workspaceRoot={activeWorkspaceRoot}
-                timestampFormat={timestampFormat}
-                mode="sheet"
-                onClose={closePlanSidebar}
-              />
-            </RetainedRightPanelSurface>
+            <RetainedPlanSurface
+              key={surface.id}
+              visible={visible}
+              activePlan={activePlan}
+              activeProposedPlan={sidebarProposedPlan}
+              label={planSidebarLabel}
+              environmentId={environmentId}
+              markdownCwd={gitCwd ?? undefined}
+              workspaceRoot={activeWorkspaceRoot}
+              timestampFormat={timestampFormat}
+              mode="sheet"
+              onClose={closePlanSidebar}
+            />
           );
         case "preview":
           return activeThreadRef ? (
-            <RetainedRightPanelSurface key={surface.id} visible={visible} surface="preview">
-              <PreviewPanel
-                mode="embedded"
-                threadRef={activeThreadRef}
-                tabId={surface.resourceId}
-                configuredUrls={configuredPreviewUrls}
-                visible={visible}
-                onClose={closeBrowserPreview}
-              />
-            </RetainedRightPanelSurface>
+            <RetainedPreviewSurface
+              key={surface.id}
+              mode="embedded"
+              threadRef={activeThreadRef}
+              tabId={surface.resourceId}
+              configuredUrls={configuredPreviewUrls}
+              visible={visible}
+              onClose={closeBrowserPreview}
+            />
           ) : null;
         case "diff":
           return activeThreadRef ? (
-            <RetainedRightPanelSurface key={surface.id} visible={visible} surface="diff">
-              <Suspense fallback={null}>
-                <RightPanelDiff
-                  threadRef={activeThreadRef}
-                  diffSearch={diffSearch}
-                  onDiffSearchChange={updateDiffSearch}
-                />
-              </Suspense>
-            </RetainedRightPanelSurface>
+            <RetainedDiffSurface
+              key={surface.id}
+              visible={visible}
+              threadRef={activeThreadRef}
+              diffSearch={diffSearch}
+              onDiffSearchChange={updateDiffSearch}
+            />
           ) : null;
         case "insights":
           return (
-            <RetainedRightPanelSurface key={surface.id} visible={visible} surface="insights">
-              <InsightsPanel activities={insightActivities} mode="sheet" onClose={closeInsights} />
-            </RetainedRightPanelSurface>
+            <RetainedInsightsSurface
+              key={surface.id}
+              visible={visible}
+              activities={insightActivities}
+              mode="sheet"
+              onClose={closeInsights}
+            />
           );
         case "terminal":
           return activeThreadRef ? (
-            <RetainedRightPanelSurface key={surface.id} visible={visible} surface="terminal">
-              <PersistentThreadTerminalDrawer
-                threadRef={activeThreadRef}
-                threadId={activeThreadRef.threadId}
-                visible={visible}
-                terminalId={surface.resourceId}
-                terminalLabels={terminalLabels}
-                launchContext={activeTerminalLaunchContext ?? null}
-                focusRequestId={terminalFocusRequestId}
-                splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
-                newShortcutLabel={newTerminalShortcutLabel ?? undefined}
-                closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
-                keybindings={keybindings}
-                onAddTerminalContext={addTerminalContextToDraft}
-                onTerminalClosed={handleRightPanelTerminalClosed}
-              />
-            </RetainedRightPanelSurface>
+            <RetainedTerminalSurface
+              key={surface.id}
+              threadRef={activeThreadRef}
+              threadId={activeThreadRef.threadId}
+              visible={visible}
+              terminalId={surface.resourceId}
+              terminalLabels={terminalLabels}
+              launchContext={activeTerminalLaunchContext ?? null}
+              focusRequestId={terminalFocusRequestId}
+              splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
+              newShortcutLabel={newTerminalShortcutLabel ?? undefined}
+              closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
+              keybindings={keybindings}
+              onAddTerminalContext={addTerminalContextToDraft}
+              onTerminalClosed={handleRightPanelTerminalClosed}
+            />
           ) : null;
         case "device":
           return activeThreadRef ? (
@@ -4767,16 +4843,17 @@ function ChatViewBody(
         case "files":
         case "file":
           return activeThreadRef ? (
-            <RetainedRightPanelSurface key={surface.id} visible={visible} surface={surface.kind}>
-              <FilePreviewPanel
-                cwd={activeWorkspaceRoot ?? activeProject?.cwd ?? ""}
-                projectName={activeProject?.name}
-                relativePath={surface.kind === "file" ? surface.relativePath : null}
-                revealLine={surface.kind === "file" ? surface.revealLine : null}
-                threadRef={activeThreadRef}
-                onOpenFile={openRightPanelFile}
-              />
-            </RetainedRightPanelSurface>
+            <RetainedFileSurface
+              key={surface.id}
+              visible={visible}
+              kind={surface.kind}
+              cwd={activeWorkspaceRoot ?? activeProject?.cwd ?? ""}
+              projectName={activeProject?.name}
+              relativePath={surface.kind === "file" ? surface.relativePath : null}
+              revealLine={surface.kind === "file" ? surface.revealLine : null}
+              threadRef={activeThreadRef}
+              onOpenFile={openRightPanelFile}
+            />
           ) : null;
       }
     });
