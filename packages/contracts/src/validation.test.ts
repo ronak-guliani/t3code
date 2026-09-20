@@ -262,6 +262,23 @@ describe("validation runs", () => {
     const accepted = acceptValidationResult(current, result);
     expect(accepted.gates[0]?.result?.id).toBe("result-1");
     expect(accepted.gates[0]?.status).toBe("passed");
+    const duplicateBase = { ...accepted, status: "running" as const };
+    expect(acceptValidationResult(duplicateBase, result)).toBe(duplicateBase);
+    expect(() => acceptValidationResult(duplicateBase, { ...result, id: "result-2" })).toThrow(
+      "does not match the existing attempt",
+    );
+    expect(() =>
+      acceptValidationResult(duplicateBase, { ...result, leaseId: "lease:stale" }),
+    ).toThrow("not attached to the active lease");
+    expect(() =>
+      acceptValidationResult(duplicateBase, { ...result, executorId: "executor-stale" }),
+    ).toThrow("not owned by the active executor");
+    expect(() =>
+      acceptValidationResult(duplicateBase, {
+        ...result,
+        completedAt: "2026-09-16T12:02:00.000Z",
+      }),
+    ).toThrow("after the active lease expired");
 
     for (const status of ["preparing", "blocked", "ready", "stale"] as const) {
       expect(() => acceptValidationResult({ ...current, status }, result)).toThrow(

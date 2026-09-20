@@ -371,6 +371,9 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
             yield* releaseLease(run);
             return null;
           }
+          if (run.lease) {
+            yield* releaseLease(run);
+          }
           return null;
         }),
       ),

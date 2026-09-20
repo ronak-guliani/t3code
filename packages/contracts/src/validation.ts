@@ -525,12 +525,6 @@ export const acceptValidationResult = (
   if (!gate) {
     throw new Error(`Validation gate ${result.gateId} does not exist.`);
   }
-  if (gate.attempts.some((attempt) => attempt.id === result.attemptId)) {
-    return run;
-  }
-  if (gate.status !== "running") {
-    throw new Error(`Validation gate ${result.gateId} is not running.`);
-  }
   if (!run.lease || run.lease.id !== result.leaseId) {
     throw new Error("Validation result is not attached to the active lease.");
   }
@@ -539,6 +533,19 @@ export const acceptValidationResult = (
   }
   if (Date.parse(result.completedAt) > Date.parse(run.lease.expiresAt)) {
     throw new Error("Validation result arrived after the active lease expired.");
+  }
+  const existingAttempt = gate.attempts.find((attempt) => attempt.id === result.attemptId);
+  if (existingAttempt) {
+    if (
+      existingAttempt.result === null ||
+      JSON.stringify(existingAttempt.result) !== JSON.stringify(result)
+    ) {
+      throw new Error("Validation result does not match the existing attempt.");
+    }
+    return run;
+  }
+  if (gate.status !== "running") {
+    throw new Error(`Validation gate ${result.gateId} is not running.`);
   }
   const attempt: ValidationAttempt = {
     id: result.attemptId,

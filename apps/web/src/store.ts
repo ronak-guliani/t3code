@@ -357,6 +357,9 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pullRequests: thread.pullRequests ?? [],
     ...(thread.reviewSnapshot !== undefined ? { reviewSnapshot: thread.reviewSnapshot } : {}),
     ...(thread.reviewResult !== undefined ? { reviewResult: thread.reviewResult } : {}),
+    ...(thread.validationRequest !== undefined && thread.validationRequest !== null
+      ? { validationRequest: thread.validationRequest }
+      : {}),
     ...(thread.validationRun !== undefined && thread.validationRun !== null
       ? { validationRun: thread.validationRun }
       : {}),
@@ -401,6 +404,9 @@ function mapThreadShell(
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
     pullRequests: thread.pullRequests ?? [],
+    ...(thread.validationRequest !== undefined && thread.validationRequest !== null
+      ? { validationRequest: thread.validationRequest }
+      : {}),
     ...(thread.validationRun !== undefined && thread.validationRun !== null
       ? { validationRun: thread.validationRun }
       : {}),
@@ -430,6 +436,9 @@ function mapThreadShell(
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
     pullRequests: thread.pullRequests ?? [],
+    ...(thread.validationRequest !== undefined && thread.validationRequest !== null
+      ? { validationRequest: thread.validationRequest }
+      : {}),
     ...(thread.validationRun !== undefined && thread.validationRun !== null
       ? { validationRun: thread.validationRun }
       : {}),
@@ -474,6 +483,9 @@ function toThreadShell(thread: Thread): ThreadShell {
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
     pullRequests: thread.pullRequests ?? [],
+    ...(thread.validationRequest !== undefined && thread.validationRequest !== null
+      ? { validationRequest: thread.validationRequest }
+      : {}),
     ...(thread.validationRun !== undefined && thread.validationRun !== null
       ? { validationRun: thread.validationRun }
       : {}),
