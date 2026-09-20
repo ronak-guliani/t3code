@@ -83,6 +83,7 @@ const gateUpdate = (
   commandId: CommandId.make("validation-gate-update"),
   threadId,
   runId: "run-1",
+  leaseId: "lease:run-1",
   executorId: "executor-1",
   target,
   gateId: "repository-tests",
@@ -99,14 +100,24 @@ const gateUpdate = (
 });
 
 describe("validation executor authority", () => {
-  const run = () =>
-    planValidationRun({
+  const run = () => {
+    const planned = planValidationRun({
       id: "run-1",
       threadId,
       executorId: "executor-1",
       target,
       requestedAt: now,
     });
+    return {
+      ...planned,
+      lease: {
+        id: "lease:run-1",
+        executorId: "executor-1",
+        claimedAt: now,
+        expiresAt: "2026-09-18T01:00:00.000Z",
+      },
+    };
+  };
 
   it("rejects a stale executor after the target changes", async () => {
     await expect(
@@ -118,7 +129,7 @@ describe("validation executor authority", () => {
           readModel: readModel(run()),
         }),
       ),
-    ).rejects.toThrow("not owned by the active target executor");
+    ).rejects.toThrow("not owned by the active lease and target executor");
   });
 
   it("rejects a different executor even when the run id matches", async () => {
@@ -129,7 +140,7 @@ describe("validation executor authority", () => {
           readModel: readModel(run()),
         }),
       ),
-    ).rejects.toThrow("not owned by the active target executor");
+    ).rejects.toThrow("not owned by the active lease and target executor");
   });
 
   it("accepts a matching executor and target", async () => {

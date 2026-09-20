@@ -2890,11 +2890,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       if (
         thread.validationRun.executorId !== command.executorId ||
+        thread.validationRun.lease?.id !== command.leaseId ||
         !validationTargetEquals(thread.validationRun.target, command.target)
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: "Validation gate update is not owned by the active target executor.",
+          detail: "Validation gate update is not owned by the active lease and target executor.",
         });
       }
       const run = yield* Effect.try({

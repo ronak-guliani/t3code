@@ -1399,6 +1399,7 @@ const ThreadValidationGateUpdateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   runId: TrimmedNonEmptyString,
+  leaseId: TrimmedNonEmptyString,
   executorId: TrimmedNonEmptyString,
   target: ValidationTarget,
   gateId: ValidationGateId,

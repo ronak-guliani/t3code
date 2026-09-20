@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { CommandId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { DEFAULT_PROVIDER_INTERACTION_MODE } from "@t3tools/contracts";
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { decideOrchestrationCommand } from "../orchestration/decider.ts";
@@ -16,6 +16,7 @@ import {
   lifecycleCommandId,
   millisUntilNextLeaseExpiry,
   VALIDATION_LEASE_SWEEP_INTERVAL_MS,
+  withValidationLeaseTimeout,
 } from "../orchestration/Layers/ValidationCoordinatorReactor.ts";
 import { projectEvent } from "../orchestration/projector.ts";
 import type { OrchestrationReadModel } from "@t3tools/contracts";
@@ -171,6 +172,19 @@ describe("validation coordinator integration", () => {
     expect(VALIDATION_LEASE_SWEEP_INTERVAL_MS).toBeLessThanOrEqual(60_000);
   });
 
+  it("interrupts a hung gate when its lease expires", async () => {
+    let interrupted = false;
+    const exit = await Effect.runPromiseExit(
+      withValidationLeaseTimeout(
+        Effect.never.pipe(Effect.ensuring(Effect.sync(() => void (interrupted = true)))),
+        new Date(Date.now() + 20).toISOString(),
+      ),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(interrupted).toBe(true);
+  });
+
   it("does not duplicate effects for duplicate results", () => {
     const run = runningRun();
     const result = resultFor(run);
@@ -255,7 +269,15 @@ describe("validation coordinator integration", () => {
       target,
       requestedAt: now,
     });
-    let model = readModelWithRun(planned);
+    let model = readModelWithRun({
+      ...planned,
+      lease: {
+        id: "lease:run-1",
+        executorId: "executor-1",
+        claimedAt: now,
+        expiresAt: "2026-09-18T01:00:00.000Z",
+      },
+    });
     const gateEvent = await Effect.runPromise(
       decideOrchestrationCommand({
         command: {
@@ -263,6 +285,7 @@ describe("validation coordinator integration", () => {
           commandId: CommandId.make("cmd-1"),
           threadId,
           runId: "run-1",
+          leaseId: "lease:run-1",
           executorId: "executor-1",
           target,
           gateId: "repository-tests",
@@ -293,6 +316,7 @@ describe("validation coordinator integration", () => {
             commandId: CommandId.make("cmd-2"),
             threadId,
             runId: "run-1",
+            leaseId: "lease:run-1",
             executorId: "other-executor",
             target,
             gateId: "repository-tests",
@@ -309,7 +333,7 @@ describe("validation coordinator integration", () => {
           readModel: model,
         }),
       ),
-    ).rejects.toThrow("not owned by the active target executor");
+    ).rejects.toThrow("not owned by the active lease and target executor");
   });
 
   it("ignores stale lease releases and invalid replay transitions", async () => {
@@ -394,6 +418,7 @@ describe("validation coordinator integration", () => {
           commandId: CommandId.make("cmd-reset-1"),
           threadId,
           runId: "run-1",
+          leaseId: "lease:run-1",
           executorId: "executor-1",
           target,
           gateId,
