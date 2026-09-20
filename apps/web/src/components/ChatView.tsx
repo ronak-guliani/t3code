@@ -41,7 +41,6 @@ import { Debouncer } from "@tanstack/react-pacer";
 import {
   memo,
   lazy,
-  type ComponentProps,
   type ReactNode,
   Suspense,
   useCallback,
@@ -205,6 +204,7 @@ import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { ChatTimelineSection, type ChatTimelineSectionHandle } from "./chat/ChatTimelineSection";
+import { RetainedRightPanelSurface } from "./chat/RetainedRightPanelSurface";
 import { ReviewFindingsCard } from "./chat/ReviewFindingsCard";
 import { formatReviewFindings } from "../lib/reviewFindingFormat";
 import { ChatHeader } from "./chat/ChatHeader";
@@ -214,7 +214,11 @@ import {
 } from "./chat/AgentWorkflowHeaderActions";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
-import { resolveEffectiveEnvMode, resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
+import {
+  resolveActiveProjectRef,
+  resolveEffectiveEnvMode,
+  resolveEnvironmentOptionLabel,
+} from "./BranchToolbar.logic";
 import { ProviderStatusBanner } from "./chat/ProviderStatusBanner";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import {
@@ -602,15 +606,10 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     ),
   );
   const draftThread = useComposerDraftStore((store) => store.getDraftThreadByRef(threadRef));
-  const projectRef = useMemo(() => {
-    if (serverThread) {
-      return scopeProjectRef(serverThread.environmentId, serverThread.projectId);
-    }
-    if (draftThread) {
-      return scopeProjectRef(draftThread.environmentId, draftThread.projectId);
-    }
-    return null;
-  }, [serverThread, draftThread]);
+  const projectRef = useMemo(
+    () => resolveActiveProjectRef(serverThread, draftThread),
+    [serverThread, draftThread],
+  );
   const projectEnvironmentId = projectRef?.environmentId;
   const projectProjectId = projectRef?.projectId;
   const project = useStore(
@@ -768,105 +767,6 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
         onHeightChange={setTerminalHeight}
         onAddTerminalContext={handleAddTerminalContext}
       />
-    </div>
-  );
-});
-
-const RetainedPlanSurface = memo(function RetainedPlanSurface(
-  props: ComponentProps<typeof PlanSidebar> & { readonly visible: boolean },
-) {
-  const { visible, ...planProps } = props;
-  return (
-    <div
-      className={cn("h-full min-h-0", !visible && "hidden")}
-      data-chat-view-right-panel-surface={visible ? "plan" : undefined}
-      aria-hidden={!visible}
-    >
-      <PlanSidebar {...planProps} />
-    </div>
-  );
-});
-
-const RetainedPreviewSurface = memo(function RetainedPreviewSurface(
-  props: ComponentProps<typeof PreviewPanel>,
-) {
-  return (
-    <div
-      className={cn("h-full min-h-0", !props.visible && "hidden")}
-      data-chat-view-right-panel-surface={props.visible ? "preview" : undefined}
-      aria-hidden={!props.visible}
-    >
-      <PreviewPanel {...props} />
-    </div>
-  );
-});
-
-const RetainedDiffSurface = memo(function RetainedDiffSurface(props: {
-  readonly visible: boolean;
-  readonly threadRef: ScopedThreadRef;
-  readonly diffSearch: DiffRouteSearch;
-  readonly onDiffSearchChange: (nextSearch: DiffRouteSearch) => void;
-}) {
-  return (
-    <div
-      className={cn("h-full min-h-0", !props.visible && "hidden")}
-      data-chat-view-right-panel-surface={props.visible ? "diff" : undefined}
-      aria-hidden={!props.visible}
-    >
-      <Suspense fallback={null}>
-        <RightPanelDiff
-          threadRef={props.threadRef}
-          diffSearch={props.diffSearch}
-          onDiffSearchChange={props.onDiffSearchChange}
-        />
-      </Suspense>
-    </div>
-  );
-});
-
-const RetainedInsightsSurface = memo(function RetainedInsightsSurface(
-  props: ComponentProps<typeof InsightsPanel> & { readonly visible: boolean },
-) {
-  const { visible, ...insightsProps } = props;
-  return (
-    <div
-      className={cn("h-full min-h-0", !visible && "hidden")}
-      data-chat-view-right-panel-surface={visible ? "insights" : undefined}
-      aria-hidden={!visible}
-    >
-      <InsightsPanel {...insightsProps} />
-    </div>
-  );
-});
-
-const RetainedTerminalSurface = memo(function RetainedTerminalSurface(
-  props: ComponentProps<typeof PersistentThreadTerminalDrawer>,
-) {
-  return (
-    <div
-      className={cn("h-full min-h-0", !props.visible && "hidden")}
-      data-chat-view-right-panel-surface={props.visible ? "terminal" : undefined}
-      aria-hidden={!props.visible}
-    >
-      <PersistentThreadTerminalDrawer {...props} />
-    </div>
-  );
-});
-
-const RetainedFileSurface = memo(function RetainedFileSurface(
-  props: ComponentProps<typeof FilePreviewPanel> & {
-    readonly visible: boolean;
-    readonly kind: "files" | "file";
-  },
-) {
-  const { visible, kind, ...fileProps } = props;
-  return (
-    <div
-      className={cn("h-full min-h-0", !visible && "hidden")}
-      data-chat-view-right-panel-surface={visible ? kind : undefined}
-      aria-hidden={!visible}
-    >
-      <FilePreviewPanel {...fileProps} />
     </div>
   );
 });
@@ -4785,70 +4685,70 @@ function ChatViewBody(
       switch (surface.kind) {
         case "plan":
           return (
-            <RetainedPlanSurface
-              key={surface.id}
-              visible={visible}
-              activePlan={activePlan}
-              activeProposedPlan={sidebarProposedPlan}
-              label={planSidebarLabel}
-              environmentId={environmentId}
-              markdownCwd={gitCwd ?? undefined}
-              workspaceRoot={activeWorkspaceRoot}
-              timestampFormat={timestampFormat}
-              mode="sheet"
-              onClose={closePlanSidebar}
-            />
+            <RetainedRightPanelSurface key={surface.id} visible={visible} surface="plan">
+              <PlanSidebar
+                activePlan={activePlan}
+                activeProposedPlan={sidebarProposedPlan}
+                label={planSidebarLabel}
+                environmentId={environmentId}
+                markdownCwd={gitCwd ?? undefined}
+                workspaceRoot={activeWorkspaceRoot}
+                timestampFormat={timestampFormat}
+                mode="sheet"
+                onClose={closePlanSidebar}
+              />
+            </RetainedRightPanelSurface>
           );
         case "preview":
           return activeThreadRef ? (
-            <RetainedPreviewSurface
-              key={surface.id}
-              mode="embedded"
-              threadRef={activeThreadRef}
-              tabId={surface.resourceId}
-              configuredUrls={configuredPreviewUrls}
-              visible={visible}
-              onClose={closeBrowserPreview}
-            />
+            <RetainedRightPanelSurface key={surface.id} visible={visible} surface="preview">
+              <PreviewPanel
+                mode="embedded"
+                threadRef={activeThreadRef}
+                tabId={surface.resourceId}
+                configuredUrls={configuredPreviewUrls}
+                visible={visible}
+                onClose={closeBrowserPreview}
+              />
+            </RetainedRightPanelSurface>
           ) : null;
         case "diff":
           return activeThreadRef ? (
-            <RetainedDiffSurface
-              key={surface.id}
-              visible={visible}
-              threadRef={activeThreadRef}
-              diffSearch={diffSearch}
-              onDiffSearchChange={updateDiffSearch}
-            />
+            <RetainedRightPanelSurface key={surface.id} visible={visible} surface="diff">
+              <Suspense fallback={null}>
+                <RightPanelDiff
+                  threadRef={activeThreadRef}
+                  diffSearch={diffSearch}
+                  onDiffSearchChange={updateDiffSearch}
+                />
+              </Suspense>
+            </RetainedRightPanelSurface>
           ) : null;
         case "insights":
           return (
-            <RetainedInsightsSurface
-              key={surface.id}
-              visible={visible}
-              activities={insightActivities}
-              mode="sheet"
-              onClose={closeInsights}
-            />
+            <RetainedRightPanelSurface key={surface.id} visible={visible} surface="insights">
+              <InsightsPanel activities={insightActivities} mode="sheet" onClose={closeInsights} />
+            </RetainedRightPanelSurface>
           );
         case "terminal":
           return activeThreadRef ? (
-            <RetainedTerminalSurface
-              key={surface.id}
-              threadRef={activeThreadRef}
-              threadId={activeThreadRef.threadId}
-              visible={visible}
-              terminalId={surface.resourceId}
-              terminalLabels={terminalLabels}
-              launchContext={activeTerminalLaunchContext ?? null}
-              focusRequestId={terminalFocusRequestId}
-              splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
-              newShortcutLabel={newTerminalShortcutLabel ?? undefined}
-              closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
-              keybindings={keybindings}
-              onAddTerminalContext={addTerminalContextToDraft}
-              onTerminalClosed={handleRightPanelTerminalClosed}
-            />
+            <RetainedRightPanelSurface key={surface.id} visible={visible} surface="terminal">
+              <PersistentThreadTerminalDrawer
+                threadRef={activeThreadRef}
+                threadId={activeThreadRef.threadId}
+                visible={visible}
+                terminalId={surface.resourceId}
+                terminalLabels={terminalLabels}
+                launchContext={activeTerminalLaunchContext ?? null}
+                focusRequestId={terminalFocusRequestId}
+                splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
+                newShortcutLabel={newTerminalShortcutLabel ?? undefined}
+                closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
+                keybindings={keybindings}
+                onAddTerminalContext={addTerminalContextToDraft}
+                onTerminalClosed={handleRightPanelTerminalClosed}
+              />
+            </RetainedRightPanelSurface>
           ) : null;
         case "device":
           return activeThreadRef ? (
@@ -4867,17 +4767,16 @@ function ChatViewBody(
         case "files":
         case "file":
           return activeThreadRef ? (
-            <RetainedFileSurface
-              key={surface.id}
-              visible={visible}
-              kind={surface.kind}
-              cwd={activeWorkspaceRoot ?? activeProject?.cwd ?? ""}
-              projectName={activeProject?.name}
-              relativePath={surface.kind === "file" ? surface.relativePath : null}
-              revealLine={surface.kind === "file" ? surface.revealLine : null}
-              threadRef={activeThreadRef}
-              onOpenFile={openRightPanelFile}
-            />
+            <RetainedRightPanelSurface key={surface.id} visible={visible} surface={surface.kind}>
+              <FilePreviewPanel
+                cwd={activeWorkspaceRoot ?? activeProject?.cwd ?? ""}
+                projectName={activeProject?.name}
+                relativePath={surface.kind === "file" ? surface.relativePath : null}
+                revealLine={surface.kind === "file" ? surface.revealLine : null}
+                threadRef={activeThreadRef}
+                onOpenFile={openRightPanelFile}
+              />
+            </RetainedRightPanelSurface>
           ) : null;
       }
     });

@@ -1,4 +1,5 @@
-import type { EnvironmentId, GitBranch, ProjectId } from "@t3tools/contracts";
+import type { EnvironmentId, GitBranch, ProjectId, ScopedProjectRef } from "@t3tools/contracts";
+import { scopeProjectRef } from "@t3tools/client-runtime";
 import { Schema } from "effect";
 export {
   dedupeRemoteBranchesWithLocalMatches,
@@ -44,6 +45,25 @@ export function resolveEnvironmentOptionLabel(input: {
 
 export function resolveEnvModeLabel(mode: EnvMode): string {
   return mode === "worktree" ? "New worktree" : "Current checkout";
+}
+
+/**
+ * Single owner of the server-first project rule: a live server thread decides
+ * the project; otherwise the composer draft does. Shared by BranchToolbar and
+ * the ChatView terminal drawer so the active project cannot drift between the
+ * toolbar, the terminal cwd, and the thread view.
+ */
+export function resolveActiveProjectRef(
+  serverThread: { environmentId: EnvironmentId; projectId: ProjectId } | undefined,
+  draftThread: { environmentId: EnvironmentId; projectId: ProjectId } | null,
+): ScopedProjectRef | null {
+  if (serverThread) {
+    return scopeProjectRef(serverThread.environmentId, serverThread.projectId);
+  }
+  if (draftThread) {
+    return scopeProjectRef(draftThread.environmentId, draftThread.projectId);
+  }
+  return null;
 }
 
 export function resolveCurrentWorkspaceLabel(activeWorktreePath: string | null): string {
