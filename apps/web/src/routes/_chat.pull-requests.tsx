@@ -3,10 +3,12 @@ import {
   ThreadId,
   type ProjectId,
   type PullRequestInvolvement,
+  type PullRequestListInput,
+  type PullRequestListResult,
   type PullRequestListState,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useQueries, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownUpIcon,
@@ -36,18 +38,19 @@ import { Spinner } from "../components/ui/spinner";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../components/WorkspacePageContainer";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
-import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
+import { usePrimaryEnvironmentDescriptor } from "../environments/primary";
 import {
-  pullRequestInvalidateMutationOptions,
-  pullRequestListInfiniteQueryOptions,
+  pullRequestQueryKeys,
   pullRequestListStatsQueryOptions,
   prefetchPullRequestDetail,
 } from "../lib/pullRequestReactQuery";
-import { findGitHubPullRequestProject } from "../lib/openPullRequestLink";
+import { ensureEnvironmentApi } from "../environmentApi";
 import { cn } from "../lib/utils";
 import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelStore";
 import { useSettings } from "../hooks/useSettings";
 import { selectProjectsAcrossEnvironments, useStore } from "../store";
+import { useEnvironments } from "../state/environments";
+import { useSavedEnvironmentRuntimeStore } from "../environments/runtime";
 import type { Project } from "../types";
 
 export interface PullRequestsSearch {
@@ -60,6 +63,7 @@ export interface PullRequestsSearch {
   readonly repository?: string;
   readonly number?: number;
   readonly selectedProjectId?: ProjectId;
+  readonly environmentId?: EnvironmentId;
 }
 type PullRequestsSearchPatch = {
   readonly [Key in keyof PullRequestsSearch]?: PullRequestsSearch[Key] | undefined;
@@ -90,6 +94,34 @@ const PULL_REQUESTS_PANEL_REF = scopeThreadRef(
   EnvironmentId.make("pull-requests"),
   ThreadId.make("pull-requests"),
 );
+
+async function fetchAllPullRequestList(
+  environmentId: EnvironmentId,
+  request: Omit<PullRequestListInput, "cursors">,
+): Promise<PullRequestListResult> {
+  const pages: PullRequestListResult[] = [];
+  let cursors: PullRequestListInput["cursors"] | undefined;
+  for (let page = 0; page < 20; page += 1) {
+    const result = await ensureEnvironmentApi(environmentId).pullRequests.list({
+      ...request,
+      ...(cursors ? { cursors } : {}),
+    });
+    pages.push(result);
+    if (Object.keys(result.nextCursors).length === 0) break;
+    cursors = result.nextCursors;
+  }
+  const first = pages[0];
+  if (!first) {
+    throw new Error("Pull request list returned no pages.");
+  }
+  return {
+    ...first,
+    entries: pages.flatMap((page) => page.entries),
+    errors: pages.flatMap((page) => page.errors),
+    viewers: Object.assign({}, ...pages.map((page) => page.viewers)),
+    nextCursors: {},
+  };
+}
 
 function isListState(value: unknown): value is PullRequestListState {
   return typeof value === "string" && (LIST_STATES as readonly string[]).includes(value);
@@ -124,6 +156,9 @@ export const Route = createFileRoute("/_chat/pull-requests")({
     ...(typeof search.selectedProjectId === "string" && search.selectedProjectId
       ? { selectedProjectId: search.selectedProjectId as ProjectId }
       : {}),
+    ...(typeof search.environmentId === "string" && search.environmentId
+      ? { environmentId: search.environmentId as EnvironmentId }
+      : {}),
   }),
   component: PullRequestsRoute,
 });
@@ -131,75 +166,108 @@ export const Route = createFileRoute("/_chat/pull-requests")({
 function PullRequestsRoute() {
   const search = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
-  const environmentId = usePrimaryEnvironmentId();
-  const descriptor = usePrimaryEnvironmentDescriptor();
   const queryClient = useQueryClient();
-  const allProjects = useStore(selectProjectsAcrossEnvironments);
-  const projects = useMemo(
+  const primaryDescriptor = usePrimaryEnvironmentDescriptor();
+  const { environments } = useEnvironments();
+  const savedRuntime = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  const environmentTargets = useMemo(
     () =>
-      environmentId
-        ? allProjects.filter((project) => project.environmentId === environmentId)
-        : EMPTY_PROJECTS,
-    [allProjects, environmentId],
+      environments
+        .map((environment) => ({
+          ...environment,
+          descriptor:
+            environment.environmentId === primaryDescriptor?.environmentId
+              ? primaryDescriptor
+              : (savedRuntime[environment.environmentId]?.descriptor ?? null),
+        }))
+        .filter((environment) => environment.descriptor?.capabilities.pullRequests === true),
+    [environments, primaryDescriptor, savedRuntime],
   );
-  const supported = descriptor?.capabilities.pullRequests === true;
+  const environmentIds = useMemo(
+    () => environmentTargets.map((environment) => environment.environmentId),
+    [environmentTargets],
+  );
+  const allProjects = useStore(selectProjectsAcrossEnvironments);
+  const projects = useMemo(() => {
+    if (environmentIds.length === 0) return EMPTY_PROJECTS;
+    const supported = new Set(environmentIds);
+    return allProjects.filter((project) => supported.has(project.environmentId));
+  }, [allProjects, environmentIds]);
   const defaultListState = useSettings((s) => s.pullRequestsDefaultState);
   const effectiveState = search.state ?? defaultListState;
   const sort = search.sort ?? "ready";
   const deferredQuery = useDeferredValue(search.q ?? "");
-  const listQuery = useInfiniteQuery(
-    pullRequestListInfiniteQueryOptions({
-      environmentId: supported ? environmentId : null,
-      request: {
-        state: effectiveState,
-        involvement: search.involvement,
-        limit: PAGE_SIZE,
-        ...(search.projectId ? { projectId: search.projectId } : {}),
-        ...(deferredQuery.trim() ? { query: deferredQuery.trim() } : {}),
-      },
-    }),
-  );
+  const listQueries = useQueries({
+    queries: environmentTargets.map(({ environmentId }) =>
+      queryOptions({
+        queryKey: pullRequestQueryKeys.list(environmentId, {
+          state: effectiveState,
+          involvement: search.involvement,
+          limit: PAGE_SIZE,
+          ...(search.projectId ? { projectId: search.projectId } : {}),
+          ...(deferredQuery.trim() ? { query: deferredQuery.trim() } : {}),
+        }),
+        queryFn: () =>
+          fetchAllPullRequestList(environmentId, {
+            state: effectiveState,
+            involvement: search.involvement,
+            limit: PAGE_SIZE,
+            ...(search.projectId ? { projectId: search.projectId } : {}),
+            ...(deferredQuery.trim() ? { query: deferredQuery.trim() } : {}),
+          }),
+        staleTime: 30_000,
+        refetchOnWindowFocus: true,
+        refetchOnReconnect: true,
+      }),
+    ),
+  });
   const entries = useMemo(
-    () => listQuery.data?.pages.flatMap((page) => page.entries) ?? [],
-    [listQuery.data?.pages],
-  );
-  const statReferenceBatches = useMemo(
     () =>
-      Array.from({ length: Math.ceil(entries.length / STATS_BATCH_SIZE) }, (_, index) =>
-        entries
-          .slice(index * STATS_BATCH_SIZE, (index + 1) * STATS_BATCH_SIZE)
-          .map(({ projectId, repository, number }) => ({ projectId, repository, number })),
+      listQueries.flatMap((query, index) =>
+        (query.data?.entries ?? []).map((entry) => ({
+          ...entry,
+          environmentId: environmentTargets[index]!.environmentId,
+        })),
       ),
-    [entries],
+    [environmentTargets, listQueries],
+  );
+  const statsTargets = useMemo(
+    () =>
+      environmentTargets.flatMap(({ environmentId }) => {
+        const refs = entries
+          .filter((entry) => entry.environmentId === environmentId)
+          .map(({ projectId, repository, number }) => ({ projectId, repository, number }));
+        return Array.from({ length: Math.ceil(refs.length / STATS_BATCH_SIZE) }, (_, index) => ({
+          environmentId,
+          refs: refs.slice(index * STATS_BATCH_SIZE, (index + 1) * STATS_BATCH_SIZE),
+        }));
+      }),
+    [entries, environmentTargets],
   );
   const statsQueries = useQueries({
-    queries: statReferenceBatches.map((refs) =>
+    queries: statsTargets.map(({ environmentId, refs }) =>
       pullRequestListStatsQueryOptions({
-        environmentId: supported ? environmentId : null,
+        environmentId,
         request: { refs },
       }),
     ),
   });
-  const invalidateMutation = useMutation(
-    pullRequestInvalidateMutationOptions({
-      environmentId: supported ? environmentId : null,
-      queryClient,
-    }),
-  );
   const entriesWithStats = useMemo(() => {
     const stats = new Map(
-      statsQueries.flatMap((query) =>
+      statsQueries.flatMap((query, index) =>
         (query.data?.stats ?? []).map((stat) => [
-          `${stat.projectId}:${stat.repository}#${stat.number}`,
+          `${statsTargets[index]?.environmentId}:${stat.projectId}:${stat.repository}#${stat.number}`,
           stat,
         ]),
       ),
     );
     return entries.map((entry) => {
-      const stat = stats.get(`${entry.projectId}:${entry.repository}#${entry.number}`);
+      const stat = stats.get(
+        `${entry.environmentId}:${entry.projectId}:${entry.repository}#${entry.number}`,
+      );
       return stat && entry.additions === 0 && entry.deletions === 0 ? { ...entry, ...stat } : entry;
     });
-  }, [entries, statsQueries]);
+  }, [entries, statsQueries, statsTargets]);
   const normalizedQuery = deferredQuery.trim().toLowerCase();
   /**
    * The list only narrows by title/repository client-side for display; a row
@@ -232,10 +300,12 @@ function PullRequestsRoute() {
     readonly projectId: ProjectId;
     readonly repository: string;
     readonly number: number;
+    readonly environmentId?: EnvironmentId;
   }) => {
-    if (!supported) return;
+    const targetEnvironmentId = entry.environmentId ?? environmentTargets[0]?.environmentId;
+    if (!targetEnvironmentId) return;
     void prefetchPullRequestDetail(queryClient, {
-      environmentId,
+      environmentId: targetEnvironmentId,
       reference: {
         projectId: entry.projectId,
         repository: entry.repository,
@@ -273,7 +343,28 @@ function PullRequestsRoute() {
     () => sortedEntries.filter((entry) => !entry.viewerReviewRequested),
     [sortedEntries],
   );
-  const explicitSelection = useMemo(
+  const selectedEntry = useMemo(
+    () =>
+      search.repository && search.number
+        ? entriesWithStats.find(
+            (entry) =>
+              entry.repository === search.repository &&
+              entry.number === search.number &&
+              (!search.selectedProjectId || entry.projectId === search.selectedProjectId) &&
+              (!search.environmentId || entry.environmentId === search.environmentId) &&
+              (!search.host || entry.host === search.host),
+          )
+        : undefined,
+    [
+      entriesWithStats,
+      search.environmentId,
+      search.host,
+      search.number,
+      search.repository,
+      search.selectedProjectId,
+    ],
+  );
+  const selected = useMemo(
     () =>
       search.repository && search.number && search.selectedProjectId
         ? {
@@ -281,35 +372,23 @@ function PullRequestsRoute() {
             repository: search.repository,
             number: search.number,
           }
-        : null,
-    [search.number, search.repository, search.selectedProjectId],
+        : selectedEntry
+          ? {
+              projectId: selectedEntry.projectId,
+              repository: selectedEntry.repository,
+              number: selectedEntry.number,
+            }
+          : null,
+    [
+      search.number,
+      search.repository,
+      search.selectedProjectId,
+      selectedEntry?.number,
+      selectedEntry?.projectId,
+      selectedEntry?.repository,
+    ],
   );
-  const inferredSelection = useMemo(() => {
-    const repository = search.repository;
-    const number = search.number;
-    if (explicitSelection || !repository || !number) {
-      return null;
-    }
-    const project = findGitHubPullRequestProject(projects, {
-      environmentId,
-      host: search.host,
-      repository,
-    });
-    return project ? { projectId: project.id, repository, number } : null;
-  }, [environmentId, explicitSelection, projects, search.host, search.number, search.repository]);
-  const selected = explicitSelection ?? inferredSelection;
-  const selectedEntry = useMemo(
-    () =>
-      selected
-        ? entriesWithStats.find(
-            (entry) =>
-              entry.projectId === selected.projectId &&
-              entry.repository === selected.repository &&
-              entry.number === selected.number,
-          )
-        : undefined,
-    [entriesWithStats, selected],
-  );
+  const selectedEnvironmentId = search.environmentId ?? selectedEntry?.environmentId ?? null;
   const pullRequestsPanel = useRightPanelStore((state) =>
     selectThreadRightPanelState(state.byThreadKey, PULL_REQUESTS_PANEL_REF),
   );
@@ -336,6 +415,7 @@ function PullRequestsRoute() {
                 repository: next.repository,
                 number: next.number,
                 selectedProjectId: next.selectedProjectId,
+                ...(next.environmentId ? { environmentId: next.environmentId } : {}),
               }
             : {}),
         };
@@ -344,33 +424,43 @@ function PullRequestsRoute() {
     });
   };
   useEffect(() => {
-    if (!inferredSelection || search.selectedProjectId) return;
+    if (!selectedEntry || search.selectedProjectId) return;
     void navigate({
       search: (previous: PullRequestsSearch) => ({
         ...previous,
-        repository: inferredSelection.repository,
-        number: inferredSelection.number,
-        selectedProjectId: inferredSelection.projectId,
+        repository: selectedEntry.repository,
+        number: selectedEntry.number,
+        selectedProjectId: selectedEntry.projectId,
+        environmentId: selectedEntry.environmentId,
       }),
       replace: true,
     });
-  }, [inferredSelection, navigate, search.selectedProjectId]);
+  }, [navigate, search.selectedProjectId, selectedEntry]);
   useEffect(() => {
-    if (!environmentId) return;
-    if (!selected) {
+    if (!selected || !selectedEnvironmentId) {
       closePanel(PULL_REQUESTS_PANEL_REF);
       return;
     }
     openPullRequest(PULL_REQUESTS_PANEL_REF, {
-      environmentId,
+      environmentId: selectedEnvironmentId,
       reference: selected,
       ...(search.host ? { host: search.host } : {}),
       ...(selectedEntry?.title ? { title: selectedEntry.title } : {}),
     });
-  }, [closePanel, environmentId, openPullRequest, search.host, selected, selectedEntry?.title]);
-  const errors = listQuery.data?.pages.flatMap((page) => page.errors) ?? [];
+  }, [
+    closePanel,
+    openPullRequest,
+    search.host,
+    selected,
+    selectedEntry?.title,
+    selectedEnvironmentId,
+  ]);
+  const listIsPending = listQueries.some((query) => query.isPending);
+  const listIsFetching = listQueries.some((query) => query.isFetching);
+  const listError = listQueries.find((query) => query.error)?.error;
+  const errors = listQueries.flatMap((query) => query.data?.errors ?? []);
 
-  if (!descriptor) {
+  if (environments.length === 0) {
     return (
       <Surface>
         <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
@@ -380,7 +470,7 @@ function PullRequestsRoute() {
     );
   }
 
-  if (!supported) {
+  if (environmentTargets.length === 0) {
     return (
       <Surface>
         <EmptyState
@@ -410,11 +500,7 @@ function PullRequestsRoute() {
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <InputGroup className="min-w-0 flex-1">
                       <InputGroupAddon>
-                        {listQuery.isFetching && !listQuery.isFetchingNextPage ? (
-                          <Spinner aria-hidden />
-                        ) : (
-                          <SearchIcon aria-hidden />
-                        )}
+                        {listIsFetching ? <Spinner aria-hidden /> : <SearchIcon aria-hidden />}
                       </InputGroupAddon>
                       <InputGroupInput
                         type="search"
@@ -500,51 +586,46 @@ function PullRequestsRoute() {
                     </Menu>
                     <Button
                       aria-label="Refresh pull requests"
-                      disabled={listQuery.isFetching || invalidateMutation.isPending}
+                      disabled={listIsFetching}
                       size="icon"
                       variant="outline"
-                      onClick={() => void invalidateMutation.mutateAsync({})}
+                      onClick={() => void Promise.all(listQueries.map((query) => query.refetch()))}
                     >
-                      <RefreshCwIcon
-                        className={cn(
-                          (listQuery.isFetching || invalidateMutation.isPending) && "animate-spin",
-                        )}
-                      />
+                      <RefreshCwIcon className={cn(listIsFetching && "animate-spin")} />
                     </Button>
                   </div>
                   <p aria-live="polite" className="sr-only">
                     {entriesWithStats.length} pull request
                     {entriesWithStats.length === 1 ? "" : "s"}
-                    {listQuery.hasNextPage ? ", more available" : ""}
-                    {listQuery.isFetching && !listQuery.isFetchingNextPage ? ", updating" : ""}
+                    {listIsFetching ? ", updating" : ""}
                   </p>
                 </div>
                 <div>
-                  {listQuery.isPending ? (
+                  {listIsPending ? (
                     <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
                       <LoaderCircleIcon className="size-4 animate-spin" /> Loading pull requests…
                     </div>
                   ) : null}
-                  {listQuery.error ? (
+                  {listError ? (
                     <EmptyState
                       title="Could not load pull requests"
                       description={
-                        listQuery.error instanceof Error
-                          ? listQuery.error.message
-                          : "Please try again."
+                        listError instanceof Error ? listError.message : "Please try again."
                       }
                       action={
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => void listQuery.refetch()}
+                          onClick={() =>
+                            void Promise.all(listQueries.map((query) => query.refetch()))
+                          }
                         >
                           Retry
                         </Button>
                       }
                     />
                   ) : null}
-                  {!listQuery.isPending && !listQuery.error && entriesWithStats.length === 0 ? (
+                  {!listIsPending && !listError && entriesWithStats.length === 0 ? (
                     <EmptyState
                       title="No pull requests"
                       description={
@@ -573,7 +654,7 @@ function PullRequestsRoute() {
                   {reviewRequestedEntries.map((entry) => (
                     <PullRequestRow
                       entry={entry}
-                      key={`${entry.projectId}:${entry.repository}#${entry.number}`}
+                      key={`${entry.environmentId}:${entry.projectId}:${entry.repository}#${entry.number}`}
                       matchedElsewhere={matchRowElsewhere(entry)}
                       selected={
                         selected?.projectId === entry.projectId &&
@@ -585,6 +666,7 @@ function PullRequestsRoute() {
                           repository: next.repository,
                           number: next.number,
                           selectedProjectId: next.projectId,
+                          environmentId: next.environmentId,
                         })
                       }
                       onHoverStart={scheduleHoverPrefetch}
@@ -605,7 +687,7 @@ function PullRequestsRoute() {
                   {otherEntries.map((entry) => (
                     <PullRequestRow
                       entry={entry}
-                      key={`${entry.projectId}:${entry.repository}#${entry.number}`}
+                      key={`${entry.environmentId}:${entry.projectId}:${entry.repository}#${entry.number}`}
                       matchedElsewhere={matchRowElsewhere(entry)}
                       selected={
                         selected?.projectId === entry.projectId &&
@@ -617,6 +699,7 @@ function PullRequestsRoute() {
                           repository: next.repository,
                           number: next.number,
                           selectedProjectId: next.projectId,
+                          environmentId: next.environmentId,
                         })
                       }
                       onHoverStart={scheduleHoverPrefetch}
@@ -624,18 +707,6 @@ function PullRequestsRoute() {
                       onFocusRow={prefetchDetailFor}
                     />
                   ))}
-                  {listQuery.hasNextPage ? (
-                    <div className="flex justify-center p-3">
-                      <Button
-                        disabled={listQuery.isFetchingNextPage}
-                        size="sm"
-                        variant="outline"
-                        onClick={() => void listQuery.fetchNextPage()}
-                      >
-                        {listQuery.isFetchingNextPage ? "Loading…" : "Load more"}
-                      </Button>
-                    </div>
-                  ) : null}
                   {errors.length > 0 ? (
                     <ul className="space-y-1 p-3 text-xs text-muted-foreground">
                       {errors.map((error) => (
@@ -673,17 +744,27 @@ function PullRequestsRoute() {
               projectId: surface.reference.projectId,
               repository: surface.reference.repository,
               number: surface.reference.number,
+              environmentId: surface.environmentId,
               ...(surface.host ? { host: surface.host } : {}),
             });
           }}
           onClose={(surface) => {
             closeSurface(PULL_REQUESTS_PANEL_REF, surface.id);
+            const nextSurface = pullRequestsPanel.surfaces.findLast(
+              (candidate) => candidate.id !== surface.id,
+            );
             if (
-              surface.kind === "pull-request" &&
-              selected?.projectId === surface.reference.projectId &&
-              selected.repository === surface.reference.repository &&
-              selected.number === surface.reference.number
+              surface.id === pullRequestsPanel.activeSurfaceId &&
+              nextSurface?.kind === "pull-request"
             ) {
+              updateSearch({
+                projectId: nextSurface.reference.projectId,
+                repository: nextSurface.reference.repository,
+                number: nextSurface.reference.number,
+                environmentId: nextSurface.environmentId,
+                ...(nextSurface.host ? { host: nextSurface.host } : {}),
+              });
+            } else if (surface.id === pullRequestsPanel.activeSurfaceId) {
               updateSearch({}, true);
             }
           }}
@@ -715,7 +796,23 @@ function PullRequestsRoute() {
                   reference={surface.reference}
                   onClose={() => {
                     closeSurface(PULL_REQUESTS_PANEL_REF, surface.id);
-                    updateSearch({}, true);
+                    const nextSurface = pullRequestsPanel.surfaces.findLast(
+                      (candidate) => candidate.id !== surface.id,
+                    );
+                    if (
+                      surface.id === pullRequestsPanel.activeSurfaceId &&
+                      nextSurface?.kind === "pull-request"
+                    ) {
+                      updateSearch({
+                        projectId: nextSurface.reference.projectId,
+                        repository: nextSurface.reference.repository,
+                        number: nextSurface.reference.number,
+                        environmentId: nextSurface.environmentId,
+                        ...(nextSurface.host ? { host: nextSurface.host } : {}),
+                      });
+                    } else if (surface.id === pullRequestsPanel.activeSurfaceId) {
+                      updateSearch({}, true);
+                    }
                   }}
                 />
               </div>
