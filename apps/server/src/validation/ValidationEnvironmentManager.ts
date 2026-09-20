@@ -641,24 +641,26 @@ export function createValidationEnvironmentManager(
       }
     }
 
+    if (options.removeState) {
+      try {
+        const removed = await adapters.state.removeIfOwned(
+          record.target.stateDirectory,
+          record.ownershipIdentity,
+        );
+        if (!removed) {
+          failures.push("Environment state ownership changed during cleanup.");
+        }
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+
     if (failures.length > 0) {
       const diagnostic = failures.join(" | ");
       await recordDiagnostic(record, diagnostic).catch(() => undefined);
       throw new ValidationEnvironmentError("cleanup-ambiguous", diagnostic, {
         diagnostics: failures,
       });
-    }
-
-    if (options.removeState) {
-      const removed = await adapters.state.removeIfOwned(
-        record.target.stateDirectory,
-        record.ownershipIdentity,
-      );
-      if (!removed) {
-        const diagnostic = "Environment state ownership changed during cleanup.";
-        await recordDiagnostic(record, diagnostic).catch(() => undefined);
-        throw new ValidationEnvironmentError("cleanup-ambiguous", diagnostic);
-      }
     }
   };
 
@@ -767,12 +769,13 @@ export function createValidationEnvironmentManager(
           { removeState: false },
         );
       } catch (cleanupError) {
-        if (cause instanceof ValidationEnvironmentError) {
-          throw createError(cause, [
-            cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-          ]);
-        }
-        throw cleanupError;
+        const startupError =
+          cause instanceof ValidationEnvironmentError
+            ? cause
+            : errorFromUnknown("launch-failed", "Validation environment startup failed.", cause);
+        throw createError(startupError, [
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        ]);
       }
       if (cause instanceof ValidationEnvironmentError) throw cause;
       throw errorFromUnknown("launch-failed", "Validation environment startup failed.", cause);

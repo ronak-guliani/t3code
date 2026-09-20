@@ -130,7 +130,7 @@ function commandFor(
     case "focused-tests":
       return {
         executable: "pnpm",
-        args: ["exec", "vp", "test", "run", ...(spec.testFiles ?? [])],
+        args: ["exec", "vp", "test", "run", "--", ...(spec.testFiles ?? [])],
       };
     case "full-tests":
       return { executable: "pnpm", args: ["test"] };

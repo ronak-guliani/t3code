@@ -473,7 +473,7 @@ export const makeValidationGateExecutor = Effect.gen(function* () {
           envSummary: `environment ${lease.environmentIdentity} backend ${lease.backendOrigin}:${lease.backendPort} pid ${lease.backend.process.pid} web ${lease.webOrigin}:${lease.webPort} pid ${lease.web.process.pid}`,
         });
       } finally {
-        yield* Effect.promise(() => lease.release()).pipe(Effect.ignore);
+        yield* Effect.promise(() => lease.release());
       }
     });
 

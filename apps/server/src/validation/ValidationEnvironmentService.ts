@@ -12,6 +12,7 @@ import {
   type StoredValidationEnvironment,
   type ValidationEnvironmentAdapters,
   type ValidationEnvironmentLease,
+  type ValidationEnvironmentProcessIdentity,
   type ValidationEnvironmentTarget,
 } from "./ValidationEnvironmentManager.ts";
 
@@ -27,6 +28,7 @@ export class ValidationEnvironmentService extends Context.Service<
 >()("t3/validation/ValidationEnvironmentService") {}
 
 const STATE_FILE = "validation-environment.json";
+const MAX_VALIDATION_RESPONSE_BYTES = 256 * 1024;
 
 // Captured once per process: process/pid-identity probes must observe the same
 // start identity as the launch record, otherwise every readiness revalidation
@@ -61,49 +63,129 @@ export const makeValidationEnvironmentService = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const environment = yield* ServerEnvironment;
   const currentEnvironmentId = yield* environment.getEnvironmentId;
+  const stateLocks = new Map<string, Promise<void>>();
+  const knownProcesses = new Map<string, ValidationEnvironmentProcessIdentity | null>();
+  const knownListeners = new Map<string, ValidationEnvironmentProcessIdentity | null>();
 
-  const readState = async (stateDirectory: string): Promise<StoredValidationEnvironment | null> => {
+  const withStateLock = async <A>(
+    stateDirectory: string,
+    operation: () => Promise<A>,
+  ): Promise<A> => {
+    const previous = stateLocks.get(stateDirectory) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.then(() => current);
+    stateLocks.set(stateDirectory, queued);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (stateLocks.get(stateDirectory) === queued) stateLocks.delete(stateDirectory);
+    }
+  };
+
+  const rememberRecord = (record: StoredValidationEnvironment): void => {
+    const sameIdentity = (
+      left: ValidationEnvironmentProcessIdentity,
+      right: ValidationEnvironmentProcessIdentity,
+    ): boolean =>
+      left.pid === right.pid &&
+      left.startIdentity === right.startIdentity &&
+      left.ownershipIdentity === right.ownershipIdentity;
+    for (const endpoint of [record.backend, record.web]) {
+      const processKey = `${endpoint.process.pid}:${endpoint.process.startIdentity}`;
+      const existingProcess = knownProcesses.get(processKey);
+      knownProcesses.set(
+        processKey,
+        existingProcess === undefined ||
+          (existingProcess !== null && sameIdentity(existingProcess, endpoint.process))
+          ? endpoint.process
+          : null,
+      );
+      const existingListener = knownListeners.get(endpoint.origin);
+      knownListeners.set(
+        endpoint.origin,
+        existingListener === undefined ||
+          (existingListener !== null && sameIdentity(existingListener, endpoint.process))
+          ? endpoint.process
+          : null,
+      );
+    }
+  };
+
+  const forgetRecord = (record: StoredValidationEnvironment): void => {
+    for (const endpoint of [record.backend, record.web]) {
+      const processKey = `${endpoint.process.pid}:${endpoint.process.startIdentity}`;
+      const knownProcess = knownProcesses.get(processKey);
+      if (knownProcess !== null && knownProcess?.ownershipIdentity === record.ownershipIdentity) {
+        knownProcesses.delete(processKey);
+      }
+      const knownListener = knownListeners.get(endpoint.origin);
+      if (knownListener !== null && knownListener?.ownershipIdentity === record.ownershipIdentity) {
+        knownListeners.delete(endpoint.origin);
+      }
+    }
+  };
+
+  const readStateFile = async (
+    stateDirectory: string,
+  ): Promise<StoredValidationEnvironment | null> => {
     try {
       const raw = await readFile(join(stateDirectory, STATE_FILE), "utf8");
-      return JSON.parse(raw) as StoredValidationEnvironment;
+      const record = JSON.parse(raw) as StoredValidationEnvironment;
+      rememberRecord(record);
+      return record;
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
       throw error;
     }
   };
 
-  const writeState = async (record: StoredValidationEnvironment): Promise<void> => {
+  const readState = (stateDirectory: string): Promise<StoredValidationEnvironment | null> =>
+    withStateLock(stateDirectory, () => readStateFile(stateDirectory));
+
+  const writeStateFile = async (record: StoredValidationEnvironment): Promise<void> => {
     await mkdir(record.target.stateDirectory, { recursive: true });
     await writeFile(
       join(record.target.stateDirectory, STATE_FILE),
       JSON.stringify(record, null, 2),
       "utf8",
     );
+    rememberRecord(record);
   };
+
+  const writeState = (record: StoredValidationEnvironment): Promise<void> =>
+    withStateLock(record.target.stateDirectory, () => writeStateFile(record));
 
   const adapters: ValidationEnvironmentAdapters = {
     state: {
       read: (stateDirectory) => readState(stateDirectory),
       write: (record) => writeState(record),
-      removeIfOwned: async (stateDirectory, ownershipIdentity) => {
-        const current = await readState(stateDirectory);
-        if (!current || current.ownershipIdentity !== ownershipIdentity) return false;
-        try {
-          await rm(join(stateDirectory, STATE_FILE), { force: true });
-        } catch {
-          return false;
-        }
-        return true;
-      },
-      recordDiagnostic: async (stateDirectory, _ownershipIdentity, diagnostic) => {
-        try {
-          const current = await readState(stateDirectory);
-          if (!current) return;
-          await writeState({ ...current, lastDiagnostic: diagnostic.slice(0, 1000) });
-        } catch {
-          return;
-        }
-      },
+      removeIfOwned: (stateDirectory, ownershipIdentity) =>
+        withStateLock(stateDirectory, async () => {
+          const current = await readStateFile(stateDirectory);
+          if (!current || current.ownershipIdentity !== ownershipIdentity) return false;
+          try {
+            await rm(join(stateDirectory, STATE_FILE), { force: true });
+          } catch {
+            return false;
+          }
+          forgetRecord(current);
+          return true;
+        }),
+      recordDiagnostic: (stateDirectory, ownershipIdentity, diagnostic) =>
+        withStateLock(stateDirectory, async () => {
+          try {
+            const current = await readStateFile(stateDirectory);
+            if (!current || current.ownershipIdentity !== ownershipIdentity) return;
+            await writeStateFile({ ...current, lastDiagnostic: diagnostic.slice(0, 1000) });
+          } catch {
+            return;
+          }
+        }),
     },
     launcher: {
       start: async ({ target }) => {
@@ -117,12 +199,10 @@ export const makeValidationEnvironmentService = Effect.gen(function* () {
     },
     process: {
       inspect: async (identity) => {
-        if (identity.pid !== process.pid) return null;
-        return {
-          pid: process.pid,
-          startIdentity: serverStartIdentity,
-          ownershipIdentity: identity.ownershipIdentity,
-        };
+        if (identity.pid !== process.pid || identity.startIdentity !== serverStartIdentity) {
+          return null;
+        }
+        return knownProcesses.get(`${identity.pid}:${identity.startIdentity}`) ?? null;
       },
       terminate: async (identity) => {
         if (identity.pid === process.pid) return;
@@ -136,18 +216,42 @@ export const makeValidationEnvironmentService = Effect.gen(function* () {
     listener: {
       inspect: async (endpoint) => {
         if (endpoint.port !== config.port) return null;
-        return {
-          pid: process.pid,
-          startIdentity: serverStartIdentity,
-          ownershipIdentity: endpoint.process.ownershipIdentity,
-        };
+        return knownListeners.get(endpoint.origin) ?? null;
       },
     },
     http: {
       request: async ({ origin, path, signal }) => {
         const url = `${origin}${path}`;
         const response = await fetch(url, { signal });
-        const text = await response.text();
+        const contentLength = response.headers.get("content-length");
+        if (contentLength !== null && Number(contentLength) > MAX_VALIDATION_RESPONSE_BYTES) {
+          throw new Error("Validation HTTP response exceeded the 256 KiB limit.");
+        }
+        const reader = response.body?.getReader();
+        let text: string;
+        if (!reader) {
+          text = await response.text();
+          if (Buffer.byteLength(text) > MAX_VALIDATION_RESPONSE_BYTES) {
+            throw new Error("Validation HTTP response exceeded the 256 KiB limit.");
+          }
+        } else {
+          const chunks: Buffer[] = [];
+          let totalBytes = 0;
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              totalBytes += value.byteLength;
+              if (totalBytes > MAX_VALIDATION_RESPONSE_BYTES) {
+                throw new Error("Validation HTTP response exceeded the 256 KiB limit.");
+              }
+              chunks.push(Buffer.from(value));
+            }
+          } finally {
+            reader.releaseLock();
+          }
+          text = Buffer.concat(chunks).toString("utf8");
+        }
         let json: unknown;
         try {
           json = JSON.parse(text);

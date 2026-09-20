@@ -293,7 +293,7 @@ describe("RepositoryValidationRunner", () => {
       ),
     );
 
-    expect(seen).toEqual([["exec", "vp", "test", "run", kept]]);
+    expect(seen).toEqual([["exec", "vp", "test", "run", "--", kept]]);
     expect(result.attempts[0]?.status).toBe("passed");
   });
 

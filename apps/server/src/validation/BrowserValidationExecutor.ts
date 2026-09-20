@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 import type {
   BrowserValidationAppState,
@@ -28,6 +28,7 @@ import { Effect, Context, Layer } from "effect";
 import * as BootstrapCredentialService from "../auth/Services/BootstrapCredentialService.ts";
 import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+import { resolveBrowserEvidenceDir } from "../mcp/PreviewEvidence.ts";
 import {
   browserValidationAppState,
   browserValidationFinalSnapshot,
@@ -310,10 +311,26 @@ const scopeOf = (input: BrowserValidationExecutionInput): McpInvocationScope => 
 const readRecording = (
   dependencies: BrowserValidationExecutorDependencies,
   artifact: PreviewAutomationRecordingArtifact,
-): Promise<Uint8Array> =>
-  dependencies.readRecording
-    ? dependencies.readRecording(artifact)
-    : readFile(artifact.path).then((bytes) => Uint8Array.from(bytes));
+): Promise<Uint8Array> => {
+  if (dependencies.readRecording) return dependencies.readRecording(artifact);
+  if (artifact.transferred !== true) {
+    return Promise.reject(
+      new Error("Recording artifact was not transferred to the validation server."),
+    );
+  }
+  const evidenceDirectory = resolve(resolveBrowserEvidenceDir());
+  const artifactPath = resolve(artifact.path);
+  const relativePath = relative(evidenceDirectory, artifactPath);
+  if (
+    !isAbsolute(evidenceDirectory) ||
+    relativePath.length === 0 ||
+    relativePath.startsWith("..") ||
+    isAbsolute(relativePath)
+  ) {
+    return Promise.reject(new Error("Recording artifact path is outside the evidence directory."));
+  }
+  return readFile(artifactPath).then((bytes) => Uint8Array.from(bytes));
+};
 
 const defaultSmallRecordingDecoder = (
   broker: PreviewBroker,
