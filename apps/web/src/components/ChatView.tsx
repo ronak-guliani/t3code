@@ -2880,6 +2880,7 @@ function ChatViewBody(
     activeWorktreePath,
     hasServerThread: isServerThread,
     draftThreadEnvMode: isLocalDraftThread ? draftThread?.envMode : undefined,
+    projectCwd: activeProject?.cwd ?? null,
   });
   const canOverrideServerThreadEnvMode = Boolean(
     isServerThread && activeThread && activeThread.worktreePath === null,
@@ -3549,7 +3550,14 @@ function ChatViewBody(
                       runtimeMode,
                       interactionMode,
                       branch: activeThreadBranch,
-                      worktreePath: activeThread.worktreePath,
+                      // Explicit "Current checkout" choice binds the thread to the
+                      // project checkout so the server does not allocate an
+                      // isolated worktree. Worktree mode keeps worktreePath null
+                      // so a new worktree is created off the base branch.
+                      worktreePath:
+                        sendEnvMode === "local"
+                          ? (activeThread.worktreePath ?? activeProject.cwd)
+                          : activeThread.worktreePath,
                       ...(draftThread?.pullRequest
                         ? { pullRequest: draftThread.pullRequest }
                         : activeThread && "pullRequest" in activeThread && activeThread.pullRequest

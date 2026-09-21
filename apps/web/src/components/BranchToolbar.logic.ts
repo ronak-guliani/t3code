@@ -48,6 +48,26 @@ export function resolveEnvModeLabel(mode: EnvMode): string {
 }
 
 /**
+ * Whether a thread worktree path is the project checkout itself (an explicit
+ * "Current checkout" thread) rather than an isolated worktree. Paths are
+ * compared textually after light normalization: the server stores the exact
+ * string the client sent for explicit checkouts, so a mismatch here degrades
+ * to the previous treat-as-worktree behavior instead of misreporting.
+ */
+export function isProjectCheckoutPath(
+  worktreePath: string | null | undefined,
+  projectCwd: string | null | undefined,
+): boolean {
+  if (!worktreePath || !projectCwd) {
+    return false;
+  }
+  const normalize = (value: string) => value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalizedPath = normalize(worktreePath);
+  const normalizedCwd = normalize(projectCwd);
+  return normalizedPath.length > 0 && normalizedPath === normalizedCwd;
+}
+
+/**
  * Single owner of the server-first project rule: a live server thread decides
  * the project; otherwise the composer draft does. Shared by BranchToolbar and
  * the ChatView terminal drawer so the active project cannot drift between the
@@ -66,20 +86,36 @@ export function resolveActiveProjectRef(
   return null;
 }
 
-export function resolveCurrentWorkspaceLabel(activeWorktreePath: string | null): string {
-  return activeWorktreePath ? "Current worktree" : resolveEnvModeLabel("local");
+export function resolveCurrentWorkspaceLabel(
+  activeWorktreePath: string | null,
+  projectCwd?: string | null,
+): string {
+  if (activeWorktreePath && !isProjectCheckoutPath(activeWorktreePath, projectCwd ?? null)) {
+    return "Current worktree";
+  }
+  return resolveEnvModeLabel("local");
 }
 
-export function resolveLockedWorkspaceLabel(activeWorktreePath: string | null): string {
-  return activeWorktreePath ? "Worktree" : "Local checkout";
+export function resolveLockedWorkspaceLabel(
+  activeWorktreePath: string | null,
+  projectCwd?: string | null,
+): string {
+  if (activeWorktreePath && !isProjectCheckoutPath(activeWorktreePath, projectCwd ?? null)) {
+    return "Worktree";
+  }
+  return "Local checkout";
 }
 
 export function resolveEffectiveEnvMode(input: {
   activeWorktreePath: string | null;
   hasServerThread: boolean;
   draftThreadEnvMode: EnvMode | undefined;
+  projectCwd?: string | null;
 }): EnvMode {
-  const { activeWorktreePath, hasServerThread, draftThreadEnvMode } = input;
+  const { activeWorktreePath, hasServerThread, draftThreadEnvMode, projectCwd } = input;
+  if (isProjectCheckoutPath(activeWorktreePath, projectCwd ?? null)) {
+    return "local";
+  }
   if (!hasServerThread) {
     if (activeWorktreePath) {
       return "local";

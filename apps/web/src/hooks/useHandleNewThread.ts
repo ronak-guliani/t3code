@@ -143,7 +143,7 @@ function useNewThreadState() {
               ? DEFAULT_NEW_THREAD_WORKSPACE.branch
               : (options.branch ?? null),
           worktreePath: options?.worktreePath ?? null,
-          envMode: options?.envMode ?? "local",
+          envMode: options?.envMode ?? DEFAULT_NEW_THREAD_WORKSPACE.envMode,
           runtimeMode: DEFAULT_RUNTIME_MODE,
         });
         applyStickyState(draftId);
