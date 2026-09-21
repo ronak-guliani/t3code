@@ -578,7 +578,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
           return (
             <Toast.Root
               className={cn(
-                "group absolute z-[calc(9999-var(--toast-index))] w-full overflow-visible rounded-xl border border-border/70 bg-popover/95 text-popover-foreground shadow-xl/10 ring-1 ring-foreground/5 backdrop-blur-xl select-none [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s] before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
+                "group absolute z-[calc(9999-var(--toast-index))] w-full overflow-visible rounded-xl border border-border/70 bg-popover/95 text-popover-foreground shadow-xl/10 ring-1 ring-foreground/5 backdrop-blur-xl select-none [transition:transform_.3s_cubic-bezier(.22,1,.36,1),opacity_.2s,height_.15s] before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
                 // Base positioning using data-position
                 "data-[position*=right]:right-0 data-[position*=right]:left-auto",
                 "data-[position*=left]:right-auto data-[position*=left]:left-0",
@@ -669,7 +669,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
                 className={cn(
                   // `overflow-x: clip` avoids the CSS quirk where pairing `hidden` + `y: visible`
                   // forces `y` to `auto`. Expandable detail panels can extend below without being cut off.
-                  "pointer-events-auto min-h-0 overflow-y-visible py-2.5 pr-7 pl-3 text-[13px] transition-opacity duration-250 [overflow-x:clip] data-expanded:opacity-100",
+                  "pointer-events-auto min-h-0 overflow-y-visible py-2.5 pr-7 pl-3 text-[13px] transition-opacity duration-150 [overflow-x:clip] data-expanded:opacity-100",
                   stackedActionLayout
                     ? "flex flex-col gap-1.5"
                     : cn("flex items-center justify-between gap-2", inlineContentEndPad),
