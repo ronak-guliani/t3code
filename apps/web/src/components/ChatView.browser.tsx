@@ -43,6 +43,10 @@ import {
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import {
+  readPrimaryEnvironmentDescriptor,
+  writePrimaryEnvironmentDescriptor,
+} from "../environments/primary";
+import {
   INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
   removeInlineTerminalContextPlaceholder,
   type TerminalContextDraft,
@@ -63,7 +67,7 @@ import { usePendingTurnStore } from "../pendingTurnStore";
 import { useUiStateStore } from "../uiStateStore";
 import { resetPreviewStateForTests, applyPreviewServerSnapshot } from "../previewStateStore";
 import { browserMiniPlayerSource, usePreviewMiniPlayerStore } from "../previewMiniPlayerStore";
-import { useRightPanelStore } from "../rightPanelStore";
+import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelStore";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { createAuthenticatedSessionHandlers } from "../../test/authHttpHandlers";
 import { BrowserWsRpcHarness, type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
@@ -4529,6 +4533,143 @@ describe("ChatView timeline estimator parity (full app)", () => {
       expect(mounted.router.state.location.pathname).toBe(serverThreadPath(secondaryThreadId));
     } finally {
       openSpy.mockRestore();
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a non-active row's GitHub PR in that thread's panel and navigates to it", async () => {
+    const secondaryThreadId = ThreadId.make("thread-secondary-project");
+    const prUrl = "https://github.com/acme/app/pull/205";
+    const supportingPrUrl = "https://github.com/acme/app/pull/206";
+
+    const snapshot = createSnapshotWithSecondaryProject({
+      includeArchivedSecondaryThread: false,
+    });
+    const withGithubPrs: OrchestrationReadModel = {
+      ...snapshot,
+      projects: snapshot.projects.map((project) =>
+        project.id === PROJECT_ID
+          ? {
+              ...project,
+              repositoryIdentity: {
+                canonicalKey: "github.com/acme/app",
+                locator: {
+                  source: "git-remote",
+                  remoteName: "origin",
+                  remoteUrl: "https://github.com/acme/app.git",
+                },
+                provider: "github",
+                displayName: "acme/app",
+              },
+            }
+          : project,
+      ),
+      threads: snapshot.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? {
+              ...thread,
+              pullRequest: {
+                number: 205,
+                title: "feat(web): clickable PR number after sidebar v1 titles",
+                url: prUrl,
+                baseBranch: "main",
+                headBranch: "feat/sidebar-v1-title-pr-link",
+                state: "open",
+              },
+              pullRequests: [
+                {
+                  pullRequest: {
+                    number: 205,
+                    title: "feat(web): clickable PR number after sidebar v1 titles",
+                    url: prUrl,
+                    baseBranch: "main",
+                    headBranch: "feat/sidebar-v1-title-pr-link",
+                    state: "open",
+                  },
+                  source: "created",
+                  linkedAt: "2026-03-04T12:00:00.000Z",
+                },
+                {
+                  pullRequest: {
+                    number: 206,
+                    title: "fix(web): open non-active row PRs in the visible panel",
+                    url: supportingPrUrl,
+                    baseBranch: "main",
+                    headBranch: "fix/sidebar-non-active-pr-link",
+                    state: "open",
+                  },
+                  source: "manual",
+                  linkedAt: "2026-03-04T12:01:00.000Z",
+                },
+              ],
+            }
+          : thread,
+      ),
+    };
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: withGithubPrs,
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/${secondaryThreadId}`,
+    });
+
+    try {
+      expect(mounted.router.state.location.pathname).toBe(serverThreadPath(secondaryThreadId));
+      // In-app PR viewing requires the pullRequests environment capability.
+      const currentDescriptor = readPrimaryEnvironmentDescriptor();
+      writePrimaryEnvironmentDescriptor(
+        currentDescriptor
+          ? {
+              ...currentDescriptor,
+              capabilities: { ...currentDescriptor.capabilities, pullRequests: true },
+            }
+          : null,
+      );
+
+      const prTrigger = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(
+            `[data-testid="thread-pr-link-${THREAD_ID}"] button`,
+          ),
+        "Unable to find sidebar title PR mark.",
+      );
+      expect(prTrigger.textContent?.trim()).toBe("#206 + 1");
+
+      prTrigger.focus();
+      await userEvent.keyboard("{Enter}");
+
+      await expect
+        .element(page.getByRole("dialog", { name: "Linked pull requests" }))
+        .toBeVisible();
+
+      const primaryPrAnchor = await waitForElement(
+        () => document.querySelector<HTMLAnchorElement>(`a[href="${supportingPrUrl}"]`),
+        "Unable to find primary linked pull request.",
+      );
+      primaryPrAnchor.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+      // The panel renders only for the active chat, so the click opens the
+      // row's thread instead of updating invisible panel state.
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.pathname).toBe(serverThreadPath(THREAD_ID));
+        },
+        { timeout: 8_000, interval: 32 },
+      );
+      await vi.waitFor(
+        () => {
+          const panel = selectThreadRightPanelState(
+            useRightPanelStore.getState().byThreadKey,
+            THREAD_REF,
+          );
+          expect(panel.isOpen).toBe(true);
+          expect(panel.activeSurfaceId).toBe(
+            `pull-request:${LOCAL_ENVIRONMENT_ID}:${PROJECT_ID}:acme/app:206`,
+          );
+        },
+        { timeout: 8_000, interval: 32 },
+      );
+    } finally {
       await mounted.cleanup();
     }
   });
