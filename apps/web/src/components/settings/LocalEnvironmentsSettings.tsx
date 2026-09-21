@@ -113,7 +113,10 @@ export function LocalEnvironmentsSettings() {
                       </Badge>
                     )}
                   </div>
-                  <p className="truncate font-mono text-[11px] text-muted-foreground/80">
+                  <p
+                    className="truncate font-mono text-[11px] text-muted-foreground/80"
+                    title={environment.baseDir}
+                  >
                     {environment.baseDir}
                   </p>
                   <p className="truncate text-[11px] text-muted-foreground/70">

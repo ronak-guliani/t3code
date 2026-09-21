@@ -266,6 +266,9 @@ function StatusPill({
 /**
  * Local equivalent of upstream's FoldedSettingsSection: the section starts
  * collapsed behind a summary line so pairing details don't crowd the page.
+ * `autoOpen` covers data that arrives after mount (e.g. pairing links from
+ * the auth subscription): the section opens once it turns true unless the
+ * user already toggled it by hand.
  */
 function CollapsibleSettingsSection({
   title,
@@ -273,6 +276,7 @@ function CollapsibleSettingsSection({
   summary,
   headerAction,
   defaultOpen = false,
+  autoOpen = false,
   children,
 }: {
   title: string;
@@ -280,9 +284,16 @@ function CollapsibleSettingsSection({
   summary?: string | null;
   headerAction?: ReactNode;
   defaultOpen?: boolean;
+  autoOpen?: boolean;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const [userToggled, setUserToggled] = useState(false);
+  useEffect(() => {
+    if (autoOpen && !userToggled) {
+      setOpen(true);
+    }
+  }, [autoOpen, userToggled]);
   return (
     <section className="space-y-2.5">
       <div className="flex items-start justify-between gap-3 px-1">
@@ -298,7 +309,13 @@ function CollapsibleSettingsSection({
         {headerAction ? <div className="flex shrink-0 items-center">{headerAction}</div> : null}
       </div>
       <div className="relative overflow-hidden rounded-2xl border bg-card text-card-foreground shadow-sm/4 not-dark:bg-clip-padding before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:shadow-none dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
-        <Collapsible open={open} onOpenChange={setOpen}>
+        <Collapsible
+          open={open}
+          onOpenChange={(next) => {
+            setUserToggled(true);
+            setOpen(next);
+          }}
+        >
           <CollapsibleTrigger className="flex w-full items-center gap-2 px-4 py-3 text-left outline-none sm:px-5">
             <ChevronRightIcon
               aria-hidden
@@ -681,7 +698,10 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
         </>
       }
       meta={
-        <p className="truncate text-xs text-muted-foreground">
+        <p
+          className="truncate text-xs text-muted-foreground"
+          title={[roleLabel, ...deviceInfoBits].join(" · ")}
+        >
           {[roleLabel, ...deviceInfoBits].join(" · ")}
         </p>
       }
@@ -996,7 +1016,10 @@ function SavedBackendListRow({
             {descriptorLabel && descriptorLabel !== record.label ? (
               <p className="text-xs text-muted-foreground">Server label: {descriptorLabel}</p>
             ) : null}
-            <p className="truncate font-mono text-[11px] text-muted-foreground/80">
+            <p
+              className="truncate font-mono text-[11px] text-muted-foreground/80"
+              title={record.httpBaseUrl}
+            >
               {record.httpBaseUrl}
             </p>
             {enabled && runtime?.lastError ? (
@@ -1738,7 +1761,7 @@ export function ConnectionsSettings() {
                 desktopClientSessions,
                 visibleDesktopPairingLinks,
               )}
-              defaultOpen={visibleDesktopPairingLinks.length > 0}
+              autoOpen={visibleDesktopPairingLinks.length > 0}
               headerAction={
                 <AuthorizedClientsHeaderAction
                   clientSessions={desktopClientSessions}

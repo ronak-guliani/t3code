@@ -192,7 +192,10 @@ export function RemoteAccessSettings() {
               {statusLabel}
             </Badge>
             {status?.publicUrl ? (
-              <p className="truncate font-mono text-[11px] text-muted-foreground/80">
+              <p
+                className="truncate font-mono text-[11px] text-muted-foreground/80"
+                title={status.publicUrl}
+              >
                 {status.publicUrl}
               </p>
             ) : null}
