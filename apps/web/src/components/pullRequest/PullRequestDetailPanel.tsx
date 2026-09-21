@@ -34,6 +34,7 @@ import { toastManager } from "../ui/toast";
 import {
   pullRequestActivityQueryOptions,
   pullRequestCommentMutationOptions,
+  pullRequestDiffInfiniteQueryOptions,
   pullRequestDetailQueryOptions,
   pullRequestInvalidateMutationOptions,
   pullRequestReplyToThreadMutationOptions,
@@ -551,6 +552,14 @@ export function PullRequestDetailPanel({
   const tabs = detail.capabilities.diff ? TABS : TABS.filter((tab) => tab.value !== "code");
   const activeTab = tabs.some((item) => item.value === tab) ? tab : "summary";
   const reviewKey = pullRequestReviewKey(reference);
+  const prefetchCodeDiff = () => {
+    void queryClient.prefetchInfiniteQuery(
+      pullRequestDiffInfiniteQueryOptions({
+        environmentId,
+        request: reference,
+      }),
+    );
+  };
   const statePresentation = pullRequestStatePresentation({
     state: detail.state,
     isDraft: detail.isDraft,
@@ -808,6 +817,8 @@ export function PullRequestDetailPanel({
                   key={item.value}
                   role="tab"
                   type="button"
+                  onFocus={item.value === "code" ? prefetchCodeDiff : undefined}
+                  onPointerEnter={item.value === "code" ? prefetchCodeDiff : undefined}
                   onClick={() => setTab(item.value)}
                 >
                   {item.label}
