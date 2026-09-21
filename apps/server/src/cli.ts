@@ -54,8 +54,10 @@ import {
   LogLevel,
   Option,
   Path,
+  Redacted,
   References,
   Schema,
+  SchemaIssue,
   Stream,
 } from "effect";
 import { Argument, Command, Flag, GlobalFlag } from "effect/unstable/cli";
@@ -323,6 +325,25 @@ const EnvServerConfig = Config.all({
     Config.map(Option.getOrUndefined),
   ),
   backgroundService: Config.boolean("T3CODE_BACKGROUND_SERVICE").pipe(Config.withDefault(false)),
+  devAuthToken: Config.redacted("T3CODE_DEV_AUTH_TOKEN").pipe(
+    Config.map((token) => Redacted.make(Redacted.value(token).trim())),
+    Config.mapOrFail((token) =>
+      Redacted.value(token).length === 0 || Redacted.value(token).length >= 32
+        ? Effect.succeed(token)
+        : Effect.fail(
+            new Config.ConfigError(
+              new Schema.SchemaError(
+                new SchemaIssue.InvalidValue(Option.none(), {
+                  message: "T3CODE_DEV_AUTH_TOKEN must contain at least 32 characters.",
+                }),
+              ),
+            ),
+          ),
+    ),
+    Config.option,
+    Config.map(Option.filter((token) => Redacted.value(token).length > 0)),
+    Config.map(Option.getOrUndefined),
+  ),
 });
 
 interface CliServerFlags {
@@ -487,6 +508,11 @@ export const resolveServerConfig = (
     );
     const logLevel = Option.getOrElse(cliLogLevel, () => env.logLevel);
 
+    // Reusable dev credential: only honored by web-mode dev servers (devUrl
+    // set). Desktop and non-development servers ignore it. Each environment
+    // seeds its own session row, so worktrees do not share auth state.
+    const devAuthToken = mode === "web" && devUrl !== undefined ? env.devAuthToken : undefined;
+
     const config: ServerConfigShape = {
       logLevel,
       traceMinLevel: env.traceMinLevel,
@@ -513,6 +539,7 @@ export const resolveServerConfig = (
       host,
       staticDir,
       devUrl,
+      devAuthToken,
       noBrowser,
       startupPresentation,
       desktopBootstrapToken,
@@ -4161,6 +4188,68 @@ const prMonitorCommand = Command.make("pr-monitor").pipe(
   ]),
 );
 
+// --- collaborative acceptance ---------------------------------------------
+const acceptanceStatusCommand = Command.make("status", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  caseId: Argument.string("case-id").pipe(Argument.withDescription("Acceptance case id.")),
+}).pipe(
+  Command.withDescription("Read the durable collaborative acceptance projection."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      client[WS_METHODS.collaborativeAcceptanceStatus]({
+        threadId: thread.id,
+        caseId: flags.caseId,
+      }).pipe(Effect.flatMap(printJson)),
+    ),
+  ),
+);
+
+const acceptancePauseCommand = Command.make("pause", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  caseId: Argument.string("case-id").pipe(Argument.withDescription("Acceptance case id.")),
+  reason: Argument.string("reason").pipe(
+    Argument.withDescription("Typed pause reason, for example budget-exhausted."),
+  ),
+}).pipe(
+  Command.withDescription("Pause collaborative acceptance automation."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      client[WS_METHODS.collaborativeAcceptancePause]({
+        threadId: thread.id,
+        caseId: flags.caseId,
+        reason: flags.reason,
+      }).pipe(Effect.flatMap(printJson)),
+    ),
+  ),
+);
+
+const acceptanceResumeCommand = Command.make("resume", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  caseId: Argument.string("case-id").pipe(Argument.withDescription("Acceptance case id.")),
+}).pipe(
+  Command.withDescription("Resume collaborative acceptance automation."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      client[WS_METHODS.collaborativeAcceptanceResume]({
+        threadId: thread.id,
+        caseId: flags.caseId,
+      }).pipe(Effect.flatMap(printJson)),
+    ),
+  ),
+);
+
+const acceptanceCommand = Command.make("acceptance").pipe(
+  Command.withDescription("Inspect and steer collaborative acceptance coordination."),
+  Command.withSubcommands([
+    acceptanceStatusCommand,
+    acceptancePauseCommand,
+    acceptanceResumeCommand,
+  ]),
+);
+
 const reviewCommand = Command.make("review", {
   ...liveTargetFlags,
   ...modelSelectionFlags,
@@ -4800,10 +4889,10 @@ const observabilityGetCommand = Command.make("get", {
   Command.withHandler((flags) =>
     withLiveRpcClient(flags, (client) =>
       Effect.gen(function* () {
-        const [settings, config] = yield* Effect.all([
-          client[WS_METHODS.serverGetSettings]({}),
-          client[WS_METHODS.serverGetConfig]({}),
-        ]);
+        const [settings, config] = yield* Effect.all(
+          [client[WS_METHODS.serverGetSettings]({}), client[WS_METHODS.serverGetConfig]({})],
+          { concurrency: "unbounded" },
+        );
         yield* printJson({ settings: settings.observability, runtime: config.observability });
       }),
     ),
@@ -5559,6 +5648,7 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
       projectCommand,
       chatCommand,
       prMonitorCommand,
+      acceptanceCommand,
       reviewCommand,
       approvalCommand,
       inputCommand,

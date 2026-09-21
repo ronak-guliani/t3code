@@ -73,6 +73,7 @@
 - OpenCode prompt admission is not turn completion: long tool-heavy turns can remain busy for minutes after `promptAsync` returns, so recovery polling must back off and wait for native idle evidence instead of treating a short admission window as a failed turn.
 - OpenCode transcript pages may omit the prompt after a long turn; use an assistant's `parentID` for completion correlation without requiring the prompt row to be present in the page.
 - OpenCode's status map lists active sessions and may omit an idle session; a valid map without the current session is idle evidence, while a missing or invalid map remains unknown.
+- Preserve native OpenCode idle evidence until a later busy event or turn replacement; the status endpoint can remain stale-busy after the event stream reports idle, and polling must not erase stronger correlated completion evidence.
 - Pending CLI approvals/questions must combine `activityContext` with the recent activity window and honor terminal lifecycle events; a request outside the window is not resolved.
 - Thread history reads must filter and limit in SQL before decoding, omit unrelated checkpoints, and bind pagination cursors to thread/view. Unary RPC deadlines must not cap stream lifetime or imply that timed-out mutations were rejected.
 - Preserve typed thread-read input failures through HTTP and RPC; missing/ambiguous threads and invalid cursors are client errors, not error-logged repository failures.
@@ -132,11 +133,15 @@
 
 ## PR reviews and checkpoint provenance
 
+- Collaborative acceptance must reserve one deterministic exchange before creating its queued review request, bind every prompt and outcome to the immutable assignment/dispatch/turn/case/candidate/head tuple, and wake only through `QueuedTurnReactor`; child completion alone is never review evidence.
+- Collaborative acceptance recovery must subscribe once before its startup snapshot, reconcile response/queue terminal events live, and treat PR-monitor notifications as wakeups that re-read authoritative evidence. Persist a terminal dispatch outcome for unrecoverable legacy work so one malformed exchange cannot strand startup or create a retry storm.
+
 - Skill triggers that include "draft a PR description" must branch to read-only delivery before staging or publishing; only a publication request authorizes creating a PR, which defaults to ready-for-review unless draft status is explicit.
 
 - Review findings must never be silently dropped: reviewers cite file line numbers that often land on unchanged context, so anchor findings to any line the diff renders and only discard ones naming a file outside the reviewed diff. Review threads stay conversational — refresh the result on every turn that emits reviewer JSON, re-resolve the snapshot it is anchored to, and identify the raw-JSON message by content rather than assuming it is the last assistant message.
 - PR metadata writes preserve monitor ownership by default. Only commands carrying explicit transfer intent may replace an owner; inherited/refresh writes use ancestry only as an ownerless fallback, validated before a compare-and-swap claim.
 - Agent PR creation can succeed without the follow-up association tool. Recover from persisted, unambiguous assistant PR URLs only after fresh checkout validation; retry missing metadata after restart and guard dispatch against concurrent thread updates. Never infer an association from branch equality alone.
+- PR existence checks must include `state`: `gh pr view --json url` alone reuses MERGED/CLOSED PRs and pushes follow-up work onto dead branches. Require `state == OPEN` before reusing a branch/PR; otherwise branch fresh from the base for a new PR.
 - When replacing a thread's legacy `pullRequest`, seed any missing legacy association ahead of newer `pullRequests` in both live and durable projections; otherwise the first-created PR disappears or loses primary badge order.
 - Conditional metadata no-ops must be accepted and receipted by the real orchestration engine, not only the decider; the normal dispatch path rejects empty event batches. Exercise stale writes and receipt replay through the production engine.
 - Pull-request review snapshots must use the aggregate `gh pr diff`, never `--patch`; per-commit output repeats file paths and can make the renderer show an earlier commit while hiding later findings.
@@ -278,6 +283,7 @@
 
 ## Client state and completion
 
+- Settings controls that persist a whole nested object must merge each edit against a synchronously updated latest-value ref. Consecutive blur commits can run before React rerenders, so render-captured objects silently overwrite earlier sibling edits.
 - Activity strips must use tool lifecycle plus the owning turn, not the newest successful row, to decide liveness. Preserve lifecycle/output fields in timeline equality checks, and keep attention receipts and explicit disclosures visible across completion folding.
 - Carry inferred activity lifecycle into expanded detail entries before grouping; a live header must not hide its running call among completed history. Shimmer overlays enhance a persistent base icon, never replace it when reduced motion or focus disables the overlay.
 - Bound disclosure batches inside history groups, not just the number of group headers. Cache completed-turn labels against every contributing immutable group, and keep detail-expansion state out of history grouping dependencies.
@@ -303,6 +309,7 @@
 ## Projection performance and service composition
 
 - Shell-summary projection refreshes scan full thread history; only run them for events that can change summary fields, and execute independent repository reads concurrently.
+- Shell stream mapping must skip `thread.activity-appended` events whose kind cannot change shell fields, using the same predicate as the reconciler filter plus `task.completed` always (it can settle a run) and `task.started` only when the payload carries taskType background-agent; otherwise every streaming activity costs a shell re-read (5 SELECTs plus a WS upsert) on the single SQLite connection.
 - Shell-summary refreshes must use targeted aggregate/lifecycle queries (MAX/COUNT/kind-filtered scans), not full-history list + in-JS derive: `NodeSqliteClient` is a single connection behind `Semaphore(1)`, so `Effect` fan-out cannot overlap SELECTs and fewer decoded rows is the only de-serialization lever.
 - Live activity windows are ordered and capped; fast-path new tail appends, but retain the dedupe/sort fallback for duplicate IDs, out-of-order events, and unsorted restored state.
 - Restart hydration must apply the live projector's per-thread activity cap in SQL before decoding payload JSON; full projection histories can exceed the V8 heap even when each live thread is bounded in memory.
@@ -328,6 +335,7 @@
 
 ## Projection schemas and checkout reservations
 
+- Whole-record read/replace persistence needs a durable revision fence: pure transition correctness does not prevent concurrent budget overspend or last-write-wins updates. Require an expected revision on every aggregate write and reject stale saves inside the transaction.
 - Projection schema changes must update repository SQL plus every full, shell, and targeted snapshot query and mapper; a passing projection write test does not prove reconnect or CLI reads decode.
 - Archived-thread reads must opt in at the CLI resolution seam; keep checkpoint/diff inspection opt-in and leave dispatch/revert helpers on the default active-thread filter.
 - Keep each `Effect.all` snapshot query tuple position aligned with its destructuring, and define SQL-backed `SqlSchema` queries inside the layer that owns the `SqlClient`; a misplaced query can shift `workflowRuns` to `undefined` or fail only when executed.
@@ -364,6 +372,7 @@
 ## Checkpoint and snapshot atomicity
 
 - `CheckpointReactor.ts` carries `// @ts-nocheck`, so Effect API renames (e.g. `tapErrorCause` → `tapCause`) fail only at runtime; verify changes against its test suite, not typecheck.
+- Worse, a nonexistent Effect API inside a `// @ts-nocheck` file (fork beta vs upstream rc drift, e.g. `catchAllCause`) silently widens that file's inferred layer requirements to `unknown`, so typecheck breaks in dozens of unrelated test files with no error at the source. When porting upstream code, confirm every Effect combinator exists in the fork's effect version, and treat a sudden `unknown`-context cascade as a poisoned nocheck inference before touching the reporters.
 - Completion ingestion and checkpointing must share one provider subscription with an owned queue handoff; independent hot subscribers lose startup-gap events. Release checkout exclusions on failed handoff and worker cancellation, including queued completions.
 - `NodeSqliteClient` is one `DatabaseSync` connection behind `Semaphore(1)`: `Effect.all` concurrency cannot overlap SQLite SELECTs, and shell/full snapshot row reads must stay in one read transaction with `projection_state` or `subscribeShell` drops buffered live events through a mismatched `snapshotSequence`; regression tests must pause at the row/cursor boundary and queue a writer while that transaction is open, because whole-snapshot races do not prove atomicity.
 - Revert projection commits precede Git ref pruning; integration assertions must wait for the final revert-guard deletion before checking pruned refs. Session readiness alone does not prove a turn's checkpoint is finalized.

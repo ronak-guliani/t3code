@@ -132,6 +132,11 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         }
         if (!followUp.reason) eligibleTurns.push(turn);
       }
+      eligibleTurns.sort((left, right) => {
+        const leftUser = left.origin === undefined ? 0 : 1;
+        const rightUser = right.origin === undefined ? 0 : 1;
+        return leftUser - rightUser || left.createdAt.localeCompare(right.createdAt);
+      });
       let nextQueuedTurn = eligibleTurns[0];
       if (eligibleTurns.some((turn) => turn.origin?.kind === "pull-request-monitor")) {
         const settings = yield* serverSettings.getSettings;
@@ -166,6 +171,18 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         if (!responseTurn) return;
         nextQueuedTurn = responseTurn;
       } else if (activeDelegation?.decision) {
+        return;
+      }
+
+      const blockedByCollaborationWait = (thread.collaborationRequests ?? []).some(
+        (request) =>
+          request.senderThreadId === thread.id && request.blocking && request.status === "waiting",
+      );
+      if (
+        blockedByCollaborationWait &&
+        nextQueuedTurn.origin?.kind !== "collaboration-response" &&
+        nextQueuedTurn.origin !== undefined
+      ) {
         return;
       }
 
@@ -432,7 +449,10 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     );
   });
 
-  return { start } satisfies QueuedTurnReactorShape;
+  return {
+    start,
+    wakeThread: (threadId) => drainThreadSafely(threadId as ThreadId),
+  } satisfies QueuedTurnReactorShape;
 });
 
 export const QueuedTurnReactorLive = Layer.effect(QueuedTurnReactor, makeQueuedTurnReactor);

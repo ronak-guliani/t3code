@@ -24,6 +24,7 @@ import type {
   RuntimeMode,
   ThreadNudging,
   ThreadPullRequestLink,
+  ValidationRequest,
   ValidationRun,
 } from "@t3tools/contracts";
 
@@ -137,6 +138,7 @@ export interface Thread {
   worktreePath: string | null;
   pullRequest?: GitPullRequestAssociation | null;
   pullRequests?: readonly ThreadPullRequestLink[];
+  validationRequest?: ValidationRequest | null | undefined;
   validationRun?: ValidationRun | null | undefined;
   reviewSnapshot?: ReviewSnapshot | undefined;
   reviewResult?: ReviewResult | null | undefined;
@@ -174,6 +176,7 @@ export interface ThreadShell {
   worktreePath: string | null;
   pullRequest?: GitPullRequestAssociation | null;
   pullRequests?: readonly ThreadPullRequestLink[];
+  validationRequest?: ValidationRequest | null | undefined;
   validationRun?: ValidationRun | null | undefined;
 }
 

@@ -1059,6 +1059,14 @@ describe("incremental orchestration updates", () => {
         updatedAt: "2026-05-01T20:40:15.000Z",
         archivedAt: null,
         deletedAt: null,
+        validationRequest: {
+          requestId: "request-pending",
+          threadId,
+          scenarios: [],
+          scope: "changed-behavior",
+          requester: { id: "user-1", kind: "user" },
+          requestedAt: "2026-05-01T20:40:10.000Z",
+        },
         messages: [],
         proposedPlans: [],
         activities: [],
@@ -1081,6 +1089,7 @@ describe("incremental orchestration updates", () => {
     );
 
     expect(threadsOf(next)[0]?.session?.resumeCursor).toEqual(resumeCursor);
+    expect(threadsOf(next)[0]?.validationRequest?.requestId).toBe("request-pending");
     expect(threadsOf(next)[0]?.hasMoreActivities).toBe(true);
     expect(threadsOf(next)[0]?.hasMoreCurrentTurnActivities).toBe(true);
     expect(
