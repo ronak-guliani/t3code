@@ -4,6 +4,8 @@ import { DateTime, Schema } from "effect";
 import { useEffect, useState } from "react";
 import { resolvePrimaryEnvironmentHttpUrl } from "~/environments/primary";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { cn } from "~/lib/utils";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { MobilePairingDialog } from "./MobilePairingDialog";
@@ -132,29 +134,78 @@ export function RemoteAccessSettings() {
     }
   };
 
+  const statusTone = connectionError
+    ? "error"
+    : status?.enabled && status.status === "ready"
+      ? "live"
+      : status?.enabled
+        ? "pending"
+        : "muted";
+  const statusLabel = connectionError
+    ? "Unavailable"
+    : status == null
+      ? "Loading"
+      : status.enabled && status.status === "ready"
+        ? "On"
+        : status.enabled
+          ? "Starting"
+          : "Off";
   return (
-    <SettingsSection title="Remote Access">
+    <SettingsSection
+      title="Remote access"
+      description="Reach this machine from anywhere through your own Cloudflare tunnel. No phone VPN or cloud sign-in required."
+    >
       <SettingsRow
-        title="Connect from anywhere"
-        description="Use an owned Cloudflare Tunnel. No phone VPN or cloud sign-in required."
+        title="Remote tunnel"
+        description={
+          connectionError
+            ? "Connection status unavailable."
+            : (status?.message ?? "Loading remote connection status…")
+        }
         status={
-          <div className="space-y-2">
-            <p role="status">
-              {connectionError
-                ? "Connection status unavailable."
-                : (status?.message ?? "Loading remote connection status...")}
-            </p>
+          <div className="space-y-2.5 pt-1">
+            <Badge
+              variant={
+                statusTone === "live"
+                  ? "success"
+                  : statusTone === "pending"
+                    ? "warning"
+                    : statusTone === "error"
+                      ? "error"
+                      : "secondary"
+              }
+              size="sm"
+            >
+              <span
+                aria-hidden
+                className={cn(
+                  "size-1.5 rounded-full",
+                  statusTone === "live"
+                    ? "bg-success"
+                    : statusTone === "pending"
+                      ? "bg-warning"
+                      : statusTone === "error"
+                        ? "bg-destructive"
+                        : "bg-muted-foreground/50",
+                )}
+              />
+              {statusLabel}
+            </Badge>
             {status?.publicUrl ? (
-              <p className="break-all font-mono text-xs">{status.publicUrl}</p>
+              <p
+                className="truncate font-mono text-[11px] text-muted-foreground/80"
+                title={status.publicUrl}
+              >
+                {status.publicUrl}
+              </p>
             ) : null}
             <div className="space-y-1.5">
-              <p className="text-xs">
-                Run this once in a terminal on this host. It starts or repairs the background host
-                when needed, then configures Remote Access.
+              <p className="text-[11px] text-muted-foreground/80">
+                Run once in a terminal on this host to set up or repair the tunnel:
               </p>
-              <div className="flex min-w-0 items-center gap-2 rounded-md border border-border/60 bg-muted/40 p-2">
+              <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border/60 bg-muted/40 py-1.5 pr-1.5 pl-3">
                 <code
-                  className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs"
+                  className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-xs"
                   translate="no"
                 >
                   {SETUP_COMMAND}
@@ -164,13 +215,13 @@ export function RemoteAccessSettings() {
                   variant="outline"
                   onClick={() => copyToClipboard(SETUP_COMMAND, undefined)}
                 >
-                  {isCopied ? "Copied" : "Copy Command"}
+                  {isCopied ? "Copied" : "Copy"}
                 </Button>
               </div>
             </div>
-            <p className="text-xs">
-              Pair each device separately. Repeat setup on each host. Disabling disconnects remote
-              devices; it does not revoke their sessions.
+            <p className="text-[11px] text-muted-foreground/70">
+              Pair each device separately. Disabling disconnects remote devices without revoking
+              their sessions.
             </p>
             {error ? (
               <p role="alert" className="text-destructive">
@@ -187,15 +238,22 @@ export function RemoteAccessSettings() {
         control={
           <div className="flex flex-wrap gap-2">
             <Button
-              variant="outline"
+              variant="default"
+              size="sm"
               disabled={busy || connectionError !== null || status?.status !== "ready"}
               onClick={() => void pairDevice()}
+              title="Show a pairing code for a remote device"
             >
               Pair remote device
             </Button>
             {status?.publicUrl ? (
-              <Button variant="outline" disabled={busy} onClick={() => void changeEnabled()}>
-                {retryDisable ? "Retry Disable" : status.enabled ? "Disable" : "Enable"}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => void changeEnabled()}
+              >
+                {retryDisable ? "Retry disable" : status.enabled ? "Disable" : "Enable"}
               </Button>
             ) : null}
           </div>
