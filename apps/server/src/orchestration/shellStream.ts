@@ -2,11 +2,13 @@ import {
   type OrchestrationEvent,
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamEvent,
+  type OrchestrationThreadActivity,
   ThreadId,
 } from "@t3tools/contracts";
 import { Effect, Option } from "effect";
 
 import type { ProjectionSnapshotQueryShape } from "./Services/ProjectionSnapshotQuery.ts";
+import { activityChangesShellSummary } from "./projection/ProjectionImpact.ts";
 
 type ShellStreamProjectionQuery = Pick<
   ProjectionSnapshotQueryShape,
@@ -27,6 +29,22 @@ export function filterArchivedShellSnapshot(
   const projectIds = new Set(threads.map((thread) => thread.projectId));
   const projects = snapshot.projects.filter((project) => projectIds.has(project.id));
   return { ...snapshot, projects, threads };
+}
+
+/**
+ * Whether an appended activity can change what the shell row renders.
+ * Streaming turns emit dozens of activities per turn (tool updates, text
+ * deltas) that touch no shell field; re-reading the shell (5 SELECTs plus a
+ * WS upsert) for each one costs the single SQLite connection and spams every
+ * subscriber with identical rows. Uses the reconciler's predicate so the
+ * write and read paths agree, plus task boundaries: background-agent runs
+ * render from live activity rows rather than the thread row.
+ */
+function activityChangesShellStreamSummary(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind === "task.started" || activity.kind === "task.completed") {
+    return true;
+  }
+  return activityChangesShellSummary(activity);
 }
 
 export function toShellStreamEvent(
@@ -65,6 +83,12 @@ export function toShellStreamEvent(
       );
     default:
       if (event.aggregateKind !== "thread") {
+        return Effect.succeed(Option.none());
+      }
+      if (
+        event.type === "thread.activity-appended" &&
+        !activityChangesShellStreamSummary(event.payload.activity)
+      ) {
         return Effect.succeed(Option.none());
       }
       return projectionSnapshotQuery.getThreadShellById(ThreadId.make(event.aggregateId)).pipe(
