@@ -21,6 +21,7 @@ import {
   ProjectionSnapshotQuery,
   type ProjectionSnapshotQueryShape,
 } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 
 const pullRequest: PullRequestRef = {
   projectId: ProjectId.make("project-lookup"),
@@ -93,6 +94,7 @@ const testLayer = CollaborativeAcceptanceCoordinatorLive.pipe(
       Layer.succeed(CollaborativeAcceptanceRepository, repository),
       Layer.succeed(OrchestrationEngineService, {} as OrchestrationEngineShape),
       Layer.succeed(ProjectionSnapshotQuery, {} as ProjectionSnapshotQueryShape),
+      ServerSettingsService.layerTest(),
     ),
   ),
 );
