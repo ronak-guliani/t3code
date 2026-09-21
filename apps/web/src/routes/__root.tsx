@@ -51,6 +51,7 @@ import {
   ensureEnvironmentConnectionBootstrapped,
   getPrimaryEnvironmentConnection,
   startEnvironmentConnectionService,
+  useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import { configureClientTracing } from "../observability/clientTracing";
 import {
@@ -156,6 +157,7 @@ function InternalPullRequestNavigationHandler() {
   const descriptor = usePrimaryEnvironmentDescriptor();
   const environmentId = usePrimaryEnvironmentId();
   const projects = useStore(selectProjectsAcrossEnvironments);
+  const savedEnvironmentRuntime = useSavedEnvironmentRuntimeStore((state) => state.byId);
 
   useEffect(() => {
     const open = (event: Event) => {
@@ -179,6 +181,14 @@ function InternalPullRequestNavigationHandler() {
           repository,
         });
         if (threadProject) {
+          const threadDescriptor =
+            threadRef.environmentId === environmentId
+              ? descriptor
+              : (savedEnvironmentRuntime[threadRef.environmentId]?.descriptor ?? null);
+          if (!threadDescriptor?.capabilities.pullRequests) {
+            openExternalPullRequestLink(url);
+            return;
+          }
           useRightPanelStore.getState().openPullRequest(threadRef, {
             environmentId: threadRef.environmentId,
             reference: {
@@ -215,7 +225,7 @@ function InternalPullRequestNavigationHandler() {
     };
     window.addEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, open);
     return () => window.removeEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, open);
-  }, [descriptor?.capabilities.pullRequests, environmentId, navigate, projects]);
+  }, [descriptor, environmentId, navigate, projects, savedEnvironmentRuntime]);
 
   return null;
 }
