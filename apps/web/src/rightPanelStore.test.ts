@@ -222,4 +222,18 @@ describe("rightPanelStore", () => {
       ],
     });
   });
+
+  it("opens the linked pull request list as a singleton panel tab", () => {
+    const store = useRightPanelStore.getState();
+    store.open(ref, "pull-requests");
+    store.open(ref, "pull-requests");
+
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, ref),
+    ).toMatchObject({
+      isOpen: true,
+      activeSurfaceId: "pull-requests",
+      surfaces: [{ id: "pull-requests", kind: "pull-requests" }],
+    });
+  });
 });

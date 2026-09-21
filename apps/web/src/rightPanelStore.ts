@@ -11,6 +11,7 @@ export type RightPanelKind =
   | "preview"
   | "device"
   | "terminal"
+  | "pull-requests"
   | "pull-request";
 
 export interface DeviceTabTarget {
@@ -31,6 +32,7 @@ export type RightPanelSurface =
   | { id: "plan"; kind: "plan" }
   | { id: `file:${string}`; kind: "file"; relativePath: string; revealLine: number | null }
   | { id: `terminal:${string}`; kind: "terminal"; resourceId: string }
+  | { id: "pull-requests"; kind: "pull-requests" }
   | {
       id: `pull-request:${string}`;
       kind: "pull-request";

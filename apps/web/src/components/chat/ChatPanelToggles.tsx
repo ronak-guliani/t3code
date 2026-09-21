@@ -3,6 +3,7 @@ import {
   ActivityIcon,
   DiffIcon,
   FolderTreeIcon,
+  GitPullRequestIcon,
   GlobeIcon,
   TerminalSquareIcon,
 } from "lucide-react";
@@ -20,6 +21,8 @@ export interface ChatPanelTogglesState {
   browserPreviewOpen: boolean;
   insightsOpen: boolean;
   diffOpen: boolean;
+  pullRequestsAvailable: boolean;
+  pullRequestsOpen: boolean;
   isGitRepo: boolean;
   terminalToggleShortcutLabel: string | null;
   diffToggleShortcutLabel: string | null;
@@ -28,6 +31,7 @@ export interface ChatPanelTogglesState {
   onToggleBrowserPreview: () => void;
   onToggleInsights: () => void;
   onToggleDiff: () => void;
+  onTogglePullRequests: () => void;
 }
 
 interface ChatPanelTogglesProps extends ChatPanelTogglesState {
@@ -61,6 +65,8 @@ export const ChatPanelToggles = memo(function ChatPanelToggles({
   browserPreviewOpen,
   insightsOpen,
   diffOpen,
+  pullRequestsAvailable,
+  pullRequestsOpen,
   isGitRepo,
   terminalToggleShortcutLabel,
   diffToggleShortcutLabel,
@@ -69,6 +75,7 @@ export const ChatPanelToggles = memo(function ChatPanelToggles({
   onToggleBrowserPreview,
   onToggleInsights,
   onToggleDiff,
+  onTogglePullRequests,
 }: ChatPanelTogglesProps) {
   const isRail = orientation === "vertical";
   const tooltipSide = isRail ? "left" : "bottom";
@@ -78,7 +85,14 @@ export const ChatPanelToggles = memo(function ChatPanelToggles({
   const showTerminal = useSettings((s) => s.headerShowTerminalToggle);
   const showDiff = useSettings((s) => s.headerShowDiffToggle);
 
-  if (!showInsights && !showBrowser && !showFiles && !showTerminal && !showDiff) {
+  if (
+    !showInsights &&
+    !showBrowser &&
+    !showFiles &&
+    !showTerminal &&
+    !showDiff &&
+    !pullRequestsAvailable
+  ) {
     return null;
   }
 
@@ -206,6 +220,25 @@ export const ChatPanelToggles = memo(function ChatPanelToggles({
                 ? `Toggle diff panel (${diffToggleShortcutLabel})`
                 : "Toggle diff panel"}
           </TooltipPopup>
+        </Tooltip>
+      ) : null}
+      {pullRequestsAvailable ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Toggle
+                className={TOGGLE_CLASS}
+                pressed={pullRequestsOpen}
+                onPressedChange={onTogglePullRequests}
+                aria-label="Toggle pull requests panel"
+                variant="outline"
+                size="xs"
+              >
+                <GitPullRequestIcon className="size-3" />
+              </Toggle>
+            }
+          />
+          <TooltipPopup side={tooltipSide}>Toggle pull requests panel</TooltipPopup>
         </Tooltip>
       ) : null}
     </div>
