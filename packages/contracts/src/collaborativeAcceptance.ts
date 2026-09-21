@@ -479,6 +479,10 @@ export const CollaborativeAcceptanceCandidateSubmission = Schema.Struct({
   candidate: CollaborativeAcceptanceCandidate,
   pullRequest: PullRequestRef,
   criteria: Schema.Array(CollaborativeAcceptanceCriterion),
+  /**
+   * Compatibility input only. The server captures its saved policy for a new
+   * case and reuses the durable case policy for later candidates.
+   */
   policy: CollaborativeAcceptancePolicy,
   initialEvidence: Schema.Array(CollaborativeAcceptanceEvidence),
   reviewCandidate: CollaborativeAcceptanceReviewCandidate,

@@ -363,6 +363,13 @@ const reservedModelSpend = (ledger: AcceptanceExchangeLedger): number =>
     .filter((exchange) => exchange.status !== "cancelled" || exchange.startedAt !== null)
     .reduce((total, exchange) => total + exchange.modelSpendCents, 0);
 
+const modelSpendLimitExceeded = (
+  ledger: AcceptanceExchangeLedger,
+  additionalSpendCents = 0,
+): boolean =>
+  ledger.budget.modelSpendCents > 0 &&
+  reservedModelSpend(ledger) + additionalSpendCents > ledger.budget.modelSpendCents;
+
 export const reserveExchange = (
   ledger: AcceptanceExchangeLedger,
   exchange: CollaborativeAcceptanceExchange,
@@ -374,7 +381,7 @@ export const reserveExchange = (
   if (countAdmissionDebits(ledger) >= ledger.budget.exchanges) {
     return { ok: false, error: "exchange-budget-exhausted" };
   }
-  if (reservedModelSpend(ledger) + exchange.modelSpendCents > ledger.budget.modelSpendCents) {
+  if (modelSpendLimitExceeded(ledger, exchange.modelSpendCents)) {
     return { ok: false, error: "model-spend-budget-exhausted" };
   }
   return {
@@ -438,7 +445,7 @@ export const startExchange = (
   if (exchange.status !== "reserved") {
     return { ok: false, error: "invalid-exchange-transition" };
   }
-  if (reservedModelSpend(ledger) > ledger.budget.modelSpendCents) {
+  if (modelSpendLimitExceeded(ledger)) {
     return { ok: false, error: "model-spend-budget-exhausted" };
   }
   const committed = { ...exchange, status: "committed" as const, startedAt };

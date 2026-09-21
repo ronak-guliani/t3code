@@ -19,6 +19,7 @@ import {
   type CollaborativeAcceptanceCaseLookupInput,
   type CollaborativeAcceptanceCaseLookupResult,
   type CollaborativeAcceptanceExchange,
+  type CollaborativeAcceptancePolicy,
   type CollaborativeAcceptancePauseReason,
   type CollaborativeAcceptanceRecord,
   type CollaborationExecutionAuthority,
@@ -66,6 +67,7 @@ import {
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { QueuedTurnReactor } from "../orchestration/Services/QueuedTurnReactor.ts";
 import { PullRequestMonitorService } from "../pullRequestMonitor/PullRequestMonitorService.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import {
   reviewCandidateEligibility,
   type ReviewCandidateMode,
@@ -186,6 +188,36 @@ const reviewPrompt = (input: {
     "Return findings through pr_monitor_submit_findings and then respond to this request.",
   ].join("\n");
 
+export const canonicalizeCandidateSubmission = (input: {
+  readonly submission: CollaborativeAcceptanceCandidateSubmission;
+  readonly existingPolicy: CollaborativeAcceptancePolicy | null;
+  readonly configuredPolicy: CollaborativeAcceptancePolicy | null;
+}): CollaborativeAcceptanceCandidateSubmission | null => {
+  const policy = input.existingPolicy ?? input.configuredPolicy;
+  if (policy === null) return null;
+  return {
+    ...input.submission,
+    policy,
+    candidate: {
+      ...input.submission.candidate,
+      reviewWorkflow: policy.reviewWorkflow,
+    },
+    reviewCandidate: {
+      ...input.submission.reviewCandidate,
+      reviewWorkflow: policy.reviewWorkflow,
+    },
+  };
+};
+
+export const shouldAutomaticallyReviewCandidate = (input: {
+  readonly policy: CollaborativeAcceptancePolicy;
+  readonly previouslyReviewedEligibleCandidate: boolean;
+}): boolean =>
+  input.policy.automation !== "off" &&
+  (input.policy.reviewTrigger === "each-eligible-candidate" ||
+    (input.policy.reviewTrigger === "first-candidate" &&
+      !input.previouslyReviewedEligibleCandidate));
+
 export interface AcceptanceAuthorityInput {
   readonly assignmentId: string;
   readonly senderAuthority: CollaborationExecutionAuthority;
@@ -272,6 +304,7 @@ const makeCoordinator = Effect.gen(function* () {
   const persist = caseMutation.persist;
   const engine = yield* OrchestrationEngineService;
   const projections = yield* ProjectionSnapshotQuery;
+  const serverSettings = yield* ServerSettingsService;
   const queuedTurns = yield* Effect.serviceOption(QueuedTurnReactor);
   const monitors = yield* Effect.serviceOption(PullRequestMonitorService);
   const started = yield* Ref.make(false);
@@ -697,6 +730,33 @@ const makeCoordinator = Effect.gen(function* () {
     Effect.gen(function* () {
       const caseId =
         input.caseId ?? CollaborativeAcceptanceCaseId.make(`acceptance:${input.assignmentId}`);
+      const existing = yield* repository
+        .getByCaseId({ caseId })
+        .pipe(
+          Effect.mapError(() => acceptanceError("Could not load the acceptance case.", { caseId })),
+        );
+      const configuredPolicy = Option.isSome(existing)
+        ? null
+        : yield* serverSettings.getSettings.pipe(
+            Effect.map((settings) => settings.collaborativeAcceptance),
+            Effect.mapError(() =>
+              acceptanceError("Could not load collaborative acceptance settings.", {
+                caseId,
+                reason: "contradictory-contract",
+              }),
+            ),
+          );
+      const submission = canonicalizeCandidateSubmission({
+        submission: input,
+        existingPolicy: Option.isSome(existing) ? existing.value.case.policy : null,
+        configuredPolicy,
+      });
+      if (submission === null) {
+        return yield* acceptanceError(
+          "Collaborative acceptance is not configured. Select a policy before starting a new case.",
+          { caseId, reason: "contradictory-contract" },
+        );
+      }
       const caller = yield* projections.getThreadDetailById(input.senderThreadId).pipe(
         Effect.mapError(() =>
           acceptanceError("Could not resolve the submitting thread.", { caseId }),
@@ -716,7 +776,7 @@ const makeCoordinator = Effect.gen(function* () {
       const record = yield* caseMutation.execute({
         _tag: "submit-candidate",
         caseId,
-        submission: input,
+        submission,
         recipientThreadId: input.recipientThreadId,
         senderAuthority: input.senderAuthority,
       });
@@ -739,13 +799,10 @@ const makeCoordinator = Effect.gen(function* () {
               exchange.candidateId === entry.candidateId && exchange.status !== "cancelled",
           ),
         );
-      const shouldTrigger =
-        input.policy.automation !== "off" &&
-        (input.policy.automation === "until-ready" ||
-          record.exchanges.every((exchange) => exchange.status === "cancelled")) &&
-        (input.policy.reviewTrigger === "each-eligible-candidate" ||
-          (input.policy.reviewTrigger === "first-candidate" &&
-            !previouslyReviewedEligibleCandidate));
+      const shouldTrigger = shouldAutomaticallyReviewCandidate({
+        policy: record.case.policy,
+        previouslyReviewedEligibleCandidate,
+      });
       if (!shouldTrigger || !eligibility.eligible) {
         return { record, pauseReason: record.projection.pauseReason ?? null };
       }

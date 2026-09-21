@@ -433,4 +433,35 @@ describe("exchange accounting", () => {
     if (!completed.ok) return;
     assert.strictEqual(completed.exchange.status, "completed");
   });
+
+  it("treats a zero model-spend budget as unlimited", () => {
+    const unlimitedLedger = {
+      ...ledger,
+      budget: { ...ledger.budget, modelSpendCents: 0 },
+    };
+    const estimatedExchange = { ...exchange, modelSpendCents: 1 };
+    const reserved = reserveExchange(unlimitedLedger, estimatedExchange);
+    assert.isTrue(reserved.ok);
+    if (!reserved.ok) return;
+    const started = startExchange(reserved.ledger, estimatedExchange.exchangeId, now);
+    assert.isTrue(started.ok);
+  });
+
+  it("continues to enforce finite model-spend budgets", () => {
+    const finiteLedger = {
+      ...ledger,
+      budget: { ...ledger.budget, modelSpendCents: 1 },
+    };
+    const first = reserveExchange(finiteLedger, { ...exchange, modelSpendCents: 1 });
+    assert.isTrue(first.ok);
+    if (!first.ok) return;
+    const second = reserveExchange(first.ledger, {
+      ...exchange,
+      exchangeId: CollaborativeAcceptanceExchangeId.make("exchange-2"),
+      modelSpendCents: 1,
+    });
+    assert.isFalse(second.ok);
+    if (second.ok) return;
+    assert.strictEqual(second.error, "model-spend-budget-exhausted");
+  });
 });
