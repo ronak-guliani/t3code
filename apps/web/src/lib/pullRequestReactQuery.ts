@@ -289,6 +289,7 @@ async function pullRequestHttpError(response: Response): Promise<Error> {
 export async function fetchPullRequestDiff(input: {
   readonly environmentId: EnvironmentId;
   readonly request: PullRequestDiffInput;
+  readonly signal?: AbortSignal;
 }): Promise<PullRequestDiffResult> {
   const bearerToken = await readSavedEnvironmentBearerToken(input.environmentId).catch(() => null);
   const response = await fetch(
@@ -299,6 +300,7 @@ export async function fetchPullRequestDiff(input: {
     {
       method: "POST",
       credentials: "include",
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
       headers: {
         "content-type": "application/json",
         ...(bearerToken ? { authorization: `Bearer ${bearerToken}` } : {}),
@@ -320,12 +322,13 @@ export function pullRequestDiffInfiniteQueryOptions(input: {
   return infiniteQueryOptions({
     queryKey: pullRequestQueryKeys.diffInfinite(input.environmentId, input.request),
     initialPageParam: null as string | null,
-    queryFn: ({ pageParam }) => {
+    queryFn: ({ pageParam, signal }) => {
       if (!input.environmentId) {
         throw new Error("Pull request diffs are unavailable.");
       }
       return fetchPullRequestDiff({
         environmentId: input.environmentId,
+        signal,
         request: {
           ...input.request,
           ...(pageParam ? { cursor: pageParam } : {}),

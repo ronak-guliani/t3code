@@ -150,6 +150,9 @@ import {
   type RightPanelSurface,
 } from "~/rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { ThreadPullRequestsPanel } from "./ThreadPullRequestsPanel";
+import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
+import { resolveThreadPullRequests } from "./ThreadPullRequestsPopover";
 import { DevicePanel } from "./device/DevicePanel";
 import { reconcileDeviceSessionPresentation } from "./device/reconcileDeviceSessionPresentation";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
@@ -1004,6 +1007,7 @@ function ChatViewBody(
     (routeActiveSurface?.kind === "files" || routeActiveSurface?.kind === "file");
   const insightsOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "insights";
   const diffSurfaceOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "diff";
+  const pullRequestsOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "pull-requests";
   const setPlanSidebarOpen = useCallback(
     (open: boolean) => {
       // Close only the plan surface so thread switches / plan dismiss do not
@@ -2287,6 +2291,17 @@ function ChatViewBody(
     planSidebarDismissedForTurnRef.current =
       activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
   }, [activePlan?.turnId, activeThreadRef, sidebarProposedPlan?.turnId]);
+  const togglePullRequests = useCallback(() => {
+    if (!activeThreadRef) return;
+    const state = useRightPanelStore.getState();
+    const panel = state.byThreadKey[scopedThreadKey(activeThreadRef)];
+    const activeSurface = panel?.surfaces.find((surface) => surface.id === panel.activeSurfaceId);
+    if (panel?.isOpen && activeSurface?.kind === "pull-requests") {
+      state.close(activeThreadRef);
+      return;
+    }
+    state.open(activeThreadRef, "pull-requests");
+  }, [activeThreadRef]);
   const closeInsights = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().closeSurface(activeThreadRef, "insights");
   }, [activeThreadRef]);
@@ -2320,6 +2335,9 @@ function ChatViewBody(
   }, [activeThreadRef]);
   const addDeviceSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "device");
+  }, [activeThreadRef]);
+  const addPullRequestsSurface = useCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "pull-requests");
   }, [activeThreadRef]);
   const runProjectScript = useCallback(
     async (
@@ -4728,6 +4746,9 @@ function ChatViewBody(
       browserPreviewOpen,
       insightsOpen,
       diffOpen: diffSurfaceOpen,
+      pullRequestsAvailable:
+        resolveThreadPullRequests(activeThread?.pullRequests, activeThread?.pullRequest).length > 0,
+      pullRequestsOpen,
       isGitRepo,
       terminalToggleShortcutLabel,
       diffToggleShortcutLabel: diffPanelShortcutLabel,
@@ -4736,6 +4757,7 @@ function ChatViewBody(
       onToggleBrowserPreview: toggleBrowserPreview,
       onToggleInsights: toggleInsights,
       onToggleDiff,
+      onTogglePullRequests: togglePullRequests,
     }),
     [
       activeProject,
@@ -4751,7 +4773,11 @@ function ChatViewBody(
       terminalToggleShortcutLabel,
       toggleBrowserPreview,
       toggleInsights,
+      togglePullRequests,
       toggleTerminalVisibility,
+      pullRequestsOpen,
+      activeThread?.pullRequests,
+      activeThread?.pullRequest,
     ],
   );
   // A fresh JSX node every render would defeat ChatHeader's memo, re-rendering
@@ -4848,6 +4874,30 @@ function ChatViewBody(
               }}
             />
           ) : null;
+        case "pull-requests":
+          return activeThreadRef ? (
+            <ThreadPullRequestsPanel
+              key={surface.id}
+              threadRef={activeThreadRef}
+              links={activeThread?.pullRequests}
+              fallbackPullRequest={activeThread?.pullRequest}
+              visible={visible}
+            />
+          ) : null;
+        case "pull-request":
+          return (
+            <div className={cn("min-h-0 flex-1", !visible && "hidden")} key={surface.id}>
+              <PullRequestDetailPanel
+                environmentId={surface.environmentId}
+                reference={surface.reference}
+                onClose={() => {
+                  if (activeThreadRef) {
+                    useRightPanelStore.getState().closeSurface(activeThreadRef, surface.id);
+                  }
+                }}
+              />
+            </div>
+          );
         case "files":
         case "file":
           return activeThreadRef ? (
@@ -5181,6 +5231,7 @@ function ChatViewBody(
                 onAddDiff={addDiffSurface}
                 onAddInsights={addInsightsSurface}
                 onAddDevice={addDeviceSurface}
+                onAddPullRequests={addPullRequestsSurface}
                 maximized={rightPanelMaximized}
                 onToggleMaximize={toggleRightPanelMaximized}
               >
@@ -5240,6 +5291,7 @@ function ChatViewBody(
             onAddDiff={addDiffSurface}
             onAddInsights={addInsightsSurface}
             onAddDevice={addDeviceSurface}
+            onAddPullRequests={addPullRequestsSurface}
           >
             {renderRightPanelSurfaces()}
           </RightPanelTabs>

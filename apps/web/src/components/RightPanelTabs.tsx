@@ -50,6 +50,7 @@ type Props = {
   readonly onAddDiff: () => void;
   readonly onAddInsights: () => void;
   readonly onAddDevice?: () => void;
+  readonly onAddPullRequests?: () => void;
   readonly showAddSurface?: boolean;
   readonly maximized?: boolean;
   readonly onToggleMaximize?: () => void;
@@ -78,6 +79,8 @@ function titleFor(
       return surface.title
         ? `#${surface.reference.number} ${surface.title}`
         : `Pull request #${surface.reference.number}`;
+    case "pull-requests":
+      return "Pull requests";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -132,6 +135,8 @@ function Icon({
       return <TerminalSquare className="size-3.5" />;
     case "pull-request":
       return <GitPullRequest className="size-3.5" />;
+    case "pull-requests":
+      return <GitPullRequest className="size-3.5" />;
     case "device":
       return <Smartphone className="size-3.5" />;
     case "preview": {
@@ -161,6 +166,7 @@ export function RightPanelTabs({
   onAddDiff,
   onAddInsights,
   onAddDevice,
+  onAddPullRequests,
   showAddSurface = true,
   maximized = false,
   onToggleMaximize,
@@ -287,6 +293,9 @@ export function RightPanelTabs({
                 <MenuItem onClick={onAddDiff}>Diff</MenuItem>
                 <MenuItem onClick={onAddInsights}>Insights</MenuItem>
                 {onAddDevice ? <MenuItem onClick={onAddDevice}>Device</MenuItem> : null}
+                {onAddPullRequests ? (
+                  <MenuItem onClick={onAddPullRequests}>Pull requests</MenuItem>
+                ) : null}
               </MenuPopup>
             </Menu>
           ) : null}

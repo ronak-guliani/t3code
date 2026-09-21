@@ -11,7 +11,7 @@ import { parsePatchFiles } from "@pierre/diffs";
 import { FileDiff, type FileDiffMetadata, Virtualizer } from "@pierre/diffs/react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { CheckIcon, CircleIcon, FileDiffIcon } from "lucide-react";
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import ChatMarkdown from "../ChatMarkdown";
 import { Button } from "../ui/button";
@@ -138,9 +138,7 @@ function renderPullRequestPatch(patch: string, cacheKey: string): RenderablePull
   const normalized = patch.trim();
   if (!normalized) return { kind: "files", files: [] };
   try {
-    const files = parsePatchFiles(normalized, buildPatchCacheKey(normalized, cacheKey)).flatMap(
-      (parsed) => parsed.files,
-    );
+    const files = parsePatchFiles(normalized, cacheKey).flatMap((parsed) => parsed.files);
     return files.length > 0
       ? { kind: "files", files }
       : {
@@ -192,6 +190,7 @@ export function PullRequestCodeTab({
   const { resolvedTheme } = useTheme();
   const pullRequestsCodeFontSize = useSettings((state) => state.pullRequestsCodeFontSize);
   const diffWordWrap = useSettings((state) => state.diffWordWrap);
+  const parsedPatchCache = useRef(new Map<string, RenderablePullRequestPatch>());
   const diffTextStyle = useMemo<CSSProperties>(
     () =>
       ({
@@ -200,15 +199,40 @@ export function PullRequestCodeTab({
       }) as CSSProperties,
     [pullRequestsCodeFontSize],
   );
-  const renderablePages = useMemo(
-    () =>
-      (diffQuery.data?.pages ?? []).map((page, index) => ({
+  const diffOptions = useMemo(
+    () => ({
+      diffStyle: "unified" as const,
+      lineDiffType: "none" as const,
+      overflow: diffWordWrap ? ("wrap" as const) : ("scroll" as const),
+      theme: resolveDiffThemeName(resolvedTheme),
+      themeType: resolvedTheme,
+    }),
+    [diffWordWrap, resolvedTheme],
+  );
+  useEffect(() => {
+    parsedPatchCache.current.clear();
+  }, [key]);
+  const renderablePages = useMemo(() => {
+    return (diffQuery.data?.pages ?? []).map((page, index) => {
+      const normalized = page.patch.trim();
+      const cacheKey = buildPatchCacheKey(normalized, `${key}:${index}`);
+      const cached = parsedPatchCache.current.get(cacheKey);
+      if (cached !== undefined) {
+        return {
+          index,
+          truncated: page.truncated,
+          ...cached,
+        };
+      }
+      const rendered = renderPullRequestPatch(normalized, cacheKey);
+      parsedPatchCache.current.set(cacheKey, rendered);
+      return {
         index,
         truncated: page.truncated,
-        ...renderPullRequestPatch(page.patch, `${key}:${index}`),
-      })),
-    [diffQuery.data?.pages, key],
-  );
+        ...rendered,
+      };
+    });
+  }, [diffQuery.data?.pages, key]);
   const files = useMemo(
     () =>
       renderablePages.flatMap((page) =>
@@ -368,17 +392,7 @@ export function PullRequestCodeTab({
                 id={`pull-request-file-${pageIndex}-${index}`}
                 key={`${pageIndex}:${index}:${filePath}`}
               >
-                <FileDiff
-                  fileDiff={file}
-                  style={diffTextStyle}
-                  options={{
-                    diffStyle: "unified",
-                    lineDiffType: "none",
-                    overflow: diffWordWrap ? "wrap" : "scroll",
-                    theme: resolveDiffThemeName(resolvedTheme),
-                    themeType: resolvedTheme,
-                  }}
-                />
+                <FileDiff fileDiff={file} style={diffTextStyle} options={diffOptions} />
                 {threadByPath[filePath]?.length ? (
                   <div className="space-y-2 border-t border-border/70 p-3">
                     {threadByPath[filePath].map((thread) => (
