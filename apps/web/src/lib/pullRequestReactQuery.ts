@@ -131,6 +131,20 @@ export const pullRequestQueryKeys = {
     threadId: ThreadId | null,
     caseId: CollaborativeAcceptanceCaseId | null,
   ) => ["collaborative-acceptance", environmentId ?? null, threadId, caseId] as const,
+  collaborativeAcceptanceLookup: (
+    environmentId: EnvironmentId | null,
+    threadId: ThreadId | null,
+    reference: PullRequestRef,
+  ) =>
+    [
+      "collaborative-acceptance",
+      environmentId ?? null,
+      "pull-request",
+      threadId,
+      reference.projectId,
+      reference.repository,
+      reference.number,
+    ] as const,
 };
 
 export const pullRequestMutationKeys = {
@@ -573,6 +587,35 @@ export function collaborativeAcceptanceStatusQueryOptions(input: {
       return ensureEnvironmentApi(input.environmentId).collaborativeAcceptance.status({
         threadId: input.threadId,
         caseId: input.caseId,
+      });
+    },
+  });
+}
+
+export function collaborativeAcceptanceLookupQueryOptions(input: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId | null;
+  readonly reference: PullRequestRef;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions({
+    queryKey: pullRequestQueryKeys.collaborativeAcceptanceLookup(
+      input.environmentId,
+      input.threadId,
+      input.reference,
+    ),
+    staleTime: PULL_REQUEST_STALE_TIME_MS,
+    refetchInterval: 15_000,
+    enabled: input.enabled ?? true,
+    queryFn: () => {
+      if (input.threadId === null) {
+        throw new Error("Collaborative acceptance lookup is unavailable.");
+      }
+      return ensureEnvironmentApi(
+        input.environmentId,
+      ).collaborativeAcceptance.resolveForPullRequest({
+        threadId: input.threadId,
+        pullRequest: input.reference,
       });
     },
   });

@@ -156,6 +156,8 @@ import type {
 } from "./pullRequestMonitor.ts";
 import type {
   CollaborativeAcceptanceAssessmentSubmission,
+  CollaborativeAcceptanceCaseLookupInput,
+  CollaborativeAcceptanceCaseLookupResult,
   CollaborativeAcceptanceCaseId,
   CollaborativeAcceptanceCandidateSubmission,
   CollaborativeAcceptancePauseReason,
@@ -1155,6 +1157,9 @@ export interface EnvironmentApi {
       readonly threadId: ThreadId;
       readonly caseId: CollaborativeAcceptanceCaseId;
     }) => Promise<CollaborativeAcceptanceStatus>;
+    resolveForPullRequest: (
+      input: CollaborativeAcceptanceCaseLookupInput,
+    ) => Promise<CollaborativeAcceptanceCaseLookupResult>;
     submitAssessment: (input: {
       readonly threadId: ThreadId;
       readonly submission: CollaborativeAcceptanceAssessmentSubmission;

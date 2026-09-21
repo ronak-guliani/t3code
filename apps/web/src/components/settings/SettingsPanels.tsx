@@ -153,7 +153,9 @@ import {
   buildArchivedThreadGroupsFromSnapshots,
   buildProviderInstanceUpdatePatch,
   filterArchivedThreadGroups,
+  mergeCollaborativeAcceptancePolicy,
   runSequentiallySettled,
+  type CollaborativeAcceptancePolicyPatch,
 } from "./SettingsPanels.logic";
 import {
   SettingResetButton,
@@ -3929,17 +3931,15 @@ function CollaborativeAcceptanceSettingsPanel() {
   const { updateSettings } = useUpdateSettings();
   const policy = settings.collaborativeAcceptance;
   const configuredPolicy = policy ?? DEFAULT_COLLABORATIVE_ACCEPTANCE_POLICY;
+  const policyRef = useRef(policy);
+  policyRef.current = policy;
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
 
   const updatePolicy = useCallback(
-    (patch: Partial<CollaborativeAcceptancePolicy>) => {
-      if (!policy) return;
-      const nextPolicy: CollaborativeAcceptancePolicy = {
-        ...policy,
-        ...patch,
-        reviewWorkflow: { ...policy.reviewWorkflow, ...patch.reviewWorkflow },
-        budgets: { ...policy.budgets, ...patch.budgets },
-      };
+    (patch: CollaborativeAcceptancePolicyPatch) => {
+      const currentPolicy = policyRef.current;
+      if (!currentPolicy) return;
+      const nextPolicy = mergeCollaborativeAcceptancePolicy(currentPolicy, patch);
       if (nextPolicy.automation === "bounded" && nextPolicy.budgets.exchanges < 1) {
         setValidationMessage("Bounded automation needs at least one parent-child exchange.");
         return;
@@ -3952,9 +3952,10 @@ function CollaborativeAcceptanceSettingsPanel() {
         return;
       }
       setValidationMessage(null);
+      policyRef.current = nextPolicy;
       updateSettings({ collaborativeAcceptance: nextPolicy });
     },
-    [policy, updateSettings],
+    [updateSettings],
   );
 
   const updateBudget = useCallback(
@@ -3964,7 +3965,7 @@ function CollaborativeAcceptanceSettingsPanel() {
         setValidationMessage("Limits must be zero or greater.");
         return;
       }
-      updatePolicy({ budgets: { ...configuredPolicy.budgets, [key]: parsed } });
+      updatePolicy({ budgets: { [key]: parsed } });
     },
     [updatePolicy],
   );
@@ -3979,16 +3980,19 @@ function CollaborativeAcceptanceSettingsPanel() {
             value={policy?.automation ?? "unconfigured"}
             onValueChange={(value) => {
               if (value === "unconfigured") {
+                policyRef.current = null;
                 updateSettings({ collaborativeAcceptance: null });
                 setValidationMessage(null);
                 return;
               }
-              updateSettings({
-                collaborativeAcceptance: {
-                  ...(policy ?? DEFAULT_COLLABORATIVE_ACCEPTANCE_POLICY),
+              const nextPolicy = mergeCollaborativeAcceptancePolicy(
+                policyRef.current ?? DEFAULT_COLLABORATIVE_ACCEPTANCE_POLICY,
+                {
                   automation: value as CollaborativeAcceptancePolicy["automation"],
                 },
-              });
+              );
+              policyRef.current = nextPolicy;
+              updateSettings({ collaborativeAcceptance: nextPolicy });
               setValidationMessage(null);
             }}
           >
@@ -4078,7 +4082,7 @@ function CollaborativeAcceptanceSettingsPanel() {
               value={configuredPolicy.reviewWorkflow.identity}
               onCommit={(identity) =>
                 updatePolicy({
-                  reviewWorkflow: { ...configuredPolicy.reviewWorkflow, identity: identity.trim() },
+                  reviewWorkflow: { identity: identity.trim() },
                 })
               }
               aria-label="Collaborative review workflow identity"
@@ -4088,7 +4092,7 @@ function CollaborativeAcceptanceSettingsPanel() {
               value={configuredPolicy.reviewWorkflow.version}
               onCommit={(version) =>
                 updatePolicy({
-                  reviewWorkflow: { ...configuredPolicy.reviewWorkflow, version: version.trim() },
+                  reviewWorkflow: { version: version.trim() },
                 })
               }
               aria-label="Collaborative review workflow version"

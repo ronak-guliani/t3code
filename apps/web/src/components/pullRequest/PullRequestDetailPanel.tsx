@@ -35,6 +35,7 @@ import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import {
   pullRequestActivityQueryOptions,
+  collaborativeAcceptanceLookupQueryOptions,
   collaborativeAcceptancePauseMutationOptions,
   collaborativeAcceptanceRequestReviewMutationOptions,
   collaborativeAcceptanceResumeMutationOptions,
@@ -311,7 +312,7 @@ function PullRequestCollaborationStatusCard({
             ? "Loading canonical acceptance status…"
             : controls.hasCaseId && controls.error
               ? `Canonical acceptance status unavailable: ${controls.error}`
-              : "Canonical acceptance status is unavailable for this PR. The coordinator exposes case-scoped controls only after a typed case ID is provided; a PR-to-case lookup is a backend follow-up."}
+              : "No collaborative acceptance case is currently associated with this pull request."}
         </p>
       ) : null}
       {controls.canControl ? (
@@ -503,6 +504,13 @@ export function PullRequestDetailPanel({
     null,
   );
   const detail = toDetailView(detailQuery.data, activityQuery.data);
+  const owner = useStore((state) =>
+    findPullRequestBrowserThread(
+      selectThreadShellsAcrossEnvironments(state),
+      environmentId,
+      reference,
+    ),
+  );
   const acceptanceProvenance = useMemo(() => {
     for (const findingDetail of monitorContextQuery.data?.findingDetails ?? []) {
       const provenance = findingDetail.finding?.acceptanceProvenance;
@@ -510,8 +518,17 @@ export function PullRequestDetailPanel({
     }
     return null;
   }, [monitorContextQuery.data?.findingDetails]);
-  const acceptanceCaseId = acceptanceProvenance?.caseId ?? null;
-  const acceptanceThreadId = monitorQuery.data?.monitor?.ownerThreadId ?? null;
+  const acceptanceThreadId = monitorQuery.data?.monitor?.ownerThreadId ?? owner?.id ?? null;
+  const acceptanceLookupQuery = useQuery(
+    collaborativeAcceptanceLookupQueryOptions({
+      environmentId,
+      threadId: acceptanceThreadId,
+      reference,
+      enabled: acceptanceThreadId !== null && acceptanceProvenance === null,
+    }),
+  );
+  const acceptanceCaseId =
+    acceptanceProvenance?.caseId ?? acceptanceLookupQuery.data?.caseId ?? null;
   const acceptanceQuery = useQuery(
     collaborativeAcceptanceStatusQueryOptions({
       environmentId,
@@ -520,13 +537,7 @@ export function PullRequestDetailPanel({
       enabled: acceptanceCaseId !== null && acceptanceThreadId !== null,
     }),
   );
-  const owner = useStore((state) =>
-    findPullRequestBrowserThread(
-      selectThreadShellsAcrossEnvironments(state),
-      environmentId,
-      reference,
-    ),
-  );
+  const acceptanceStatus = acceptanceQuery.data ?? acceptanceLookupQuery.data?.status;
   const browserThreadRef = useMemo(
     () => (owner ? scopeThreadRef(owner.environmentId, owner.id) : null),
     [owner?.environmentId, owner?.id],
@@ -571,16 +582,23 @@ export function PullRequestDetailPanel({
   );
   const acceptanceMutationPending =
     pauseAcceptance.isPending || resumeAcceptance.isPending || requestAcceptanceReview.isPending;
-  const acceptanceProjection = acceptanceQuery.data?.record?.projection;
+  const acceptanceProjection = acceptanceStatus?.record?.projection;
   const acceptanceControls = {
     canControl:
       acceptanceCaseId !== null &&
       acceptanceThreadId !== null &&
-      acceptanceQuery.data?.record !== null &&
-      acceptanceQuery.data?.record !== undefined,
+      acceptanceStatus?.record !== null &&
+      acceptanceStatus?.record !== undefined,
     hasCaseId: acceptanceCaseId !== null,
-    isLoading: acceptanceQuery.isLoading,
-    error: acceptanceQuery.isError ? errorMessage(acceptanceQuery.error) : null,
+    isLoading:
+      acceptanceThreadId !== null &&
+      (acceptanceLookupQuery.isLoading ||
+        (acceptanceCaseId !== null && acceptanceQuery.isLoading && acceptanceStatus === undefined)),
+    error: acceptanceQuery.isError
+      ? errorMessage(acceptanceQuery.error)
+      : acceptanceLookupQuery.isError
+        ? errorMessage(acceptanceLookupQuery.error)
+        : null,
     isPaused: acceptanceProjection?.executionPhase === "paused",
     isPending: acceptanceMutationPending,
     onPause: () => {
@@ -1099,7 +1117,7 @@ export function PullRequestDetailPanel({
         {monitorQuery.data ? (
           <div className="border-t border-border/70 px-4 py-3">
             <PullRequestCollaborationStatusCard
-              acceptance={acceptanceQuery.data}
+              acceptance={acceptanceStatus}
               controls={acceptanceControls}
               status={monitorQuery.data}
             />

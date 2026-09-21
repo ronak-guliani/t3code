@@ -185,6 +185,9 @@ export interface WsRpcClient {
     >;
     readonly requestReview: RpcUnaryMethod<typeof WS_METHODS.collaborativeAcceptanceRequestReview>;
     readonly status: RpcUnaryMethod<typeof WS_METHODS.collaborativeAcceptanceStatus>;
+    readonly resolveForPullRequest: RpcUnaryMethod<
+      typeof WS_METHODS.collaborativeAcceptanceResolveForPullRequest
+    >;
     readonly submitAssessment: RpcUnaryMethod<
       typeof WS_METHODS.collaborativeAcceptanceSubmitAssessment
     >;
@@ -461,6 +464,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         ),
       status: (input) =>
         transport.request((client) => client[WS_METHODS.collaborativeAcceptanceStatus](input)),
+      resolveForPullRequest: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.collaborativeAcceptanceResolveForPullRequest](input),
+        ),
       submitAssessment: (input: {
         readonly threadId: ThreadId;
         readonly submission: CollaborativeAcceptanceAssessmentSubmission;
