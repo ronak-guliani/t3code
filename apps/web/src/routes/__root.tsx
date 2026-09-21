@@ -69,6 +69,7 @@ import {
   type InternalPullRequestNavigation,
   openExternalPullRequestLink,
 } from "../lib/openPullRequestLink";
+import { useRightPanelStore } from "../rightPanelStore";
 import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
 import { selectProjectsAcrossEnvironments } from "../store";
 
@@ -158,7 +159,7 @@ function InternalPullRequestNavigationHandler() {
 
   useEffect(() => {
     const open = (event: Event) => {
-      const { host, number, repository, url } = (
+      const { host, number, repository, url, threadRef } = (
         event as CustomEvent<InternalPullRequestNavigation>
       ).detail;
       if (
@@ -170,6 +171,26 @@ function InternalPullRequestNavigationHandler() {
         repository.length === 0
       ) {
         return;
+      }
+      if (threadRef) {
+        const threadProject = findGitHubPullRequestProject(projects, {
+          environmentId: threadRef.environmentId,
+          host,
+          repository,
+        });
+        if (threadProject) {
+          useRightPanelStore.getState().openPullRequest(threadRef, {
+            environmentId: threadRef.environmentId,
+            reference: {
+              projectId: threadProject.id,
+              repository,
+              number,
+            },
+            host,
+            url,
+          });
+          return;
+        }
       }
       const project = findGitHubPullRequestProject(projects, {
         environmentId,

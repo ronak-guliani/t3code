@@ -768,16 +768,17 @@ const MarkdownExternalLink = memo(function MarkdownExternalLink({
 const MarkdownPullRequestLink = memo(function MarkdownPullRequestLink({
   href,
   children,
+  threadRef,
   ...props
-}: MarkdownExternalLinkProps) {
+}: MarkdownExternalLinkProps & { readonly threadRef?: ScopedThreadRef }) {
   const handleClick = useCallback(
     (event: ReactMouseEvent<HTMLAnchorElement>) => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
         return;
       }
-      openPullRequestLink(event, href);
+      openPullRequestLink(event, href, threadRef);
     },
-    [href],
+    [href, threadRef],
   );
 
   return (
@@ -1280,7 +1281,11 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
       const linkedPullRequestUrl = resolveMarkdownPullRequestUrl(node?.properties);
       if (linkedPullRequestUrl) {
         return (
-          <MarkdownPullRequestLink href={linkedPullRequestUrl} {...props}>
+          <MarkdownPullRequestLink
+            href={linkedPullRequestUrl}
+            {...(threadRef ? { threadRef } : {})}
+            {...props}
+          >
             {props.children}
           </MarkdownPullRequestLink>
         );

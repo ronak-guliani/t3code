@@ -150,6 +150,8 @@ import {
   type RightPanelSurface,
 } from "~/rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { ThreadPullRequestsPanel } from "./ThreadPullRequestsPanel";
+import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
 import { DevicePanel } from "./device/DevicePanel";
 import { reconcileDeviceSessionPresentation } from "./device/reconcileDeviceSessionPresentation";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
@@ -2344,6 +2346,9 @@ function ChatViewBody(
   }, [activeThreadRef]);
   const addDeviceSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "device");
+  }, [activeThreadRef]);
+  const addPullRequestsSurface = useCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "pull-requests");
   }, [activeThreadRef]);
   const runProjectScript = useCallback(
     async (
@@ -4864,6 +4869,30 @@ function ChatViewBody(
               }}
             />
           ) : null;
+        case "pull-requests":
+          return activeThreadRef ? (
+            <ThreadPullRequestsPanel
+              key={surface.id}
+              threadRef={activeThreadRef}
+              links={activeThread?.pullRequests}
+              fallbackPullRequest={activeThread?.pullRequest}
+              visible={visible}
+            />
+          ) : null;
+        case "pull-request":
+          return (
+            <div className={cn("min-h-0 flex-1", !visible && "hidden")} key={surface.id}>
+              <PullRequestDetailPanel
+                environmentId={surface.environmentId}
+                reference={surface.reference}
+                onClose={() => {
+                  if (activeThreadRef) {
+                    useRightPanelStore.getState().closeSurface(activeThreadRef, surface.id);
+                  }
+                }}
+              />
+            </div>
+          );
         case "files":
         case "file":
           return activeThreadRef ? (
@@ -5197,6 +5226,7 @@ function ChatViewBody(
                 onAddDiff={addDiffSurface}
                 onAddInsights={addInsightsSurface}
                 onAddDevice={addDeviceSurface}
+                onAddPullRequests={addPullRequestsSurface}
                 maximized={rightPanelMaximized}
                 onToggleMaximize={toggleRightPanelMaximized}
               >
@@ -5256,6 +5286,7 @@ function ChatViewBody(
             onAddDiff={addDiffSurface}
             onAddInsights={addInsightsSurface}
             onAddDevice={addDeviceSurface}
+            onAddPullRequests={addPullRequestsSurface}
           >
             {renderRightPanelSurfaces()}
           </RightPanelTabs>
