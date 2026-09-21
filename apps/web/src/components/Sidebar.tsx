@@ -395,7 +395,11 @@ interface SidebarThreadRowProps {
   dismissAgentRun: (parentThreadId: ThreadId, taskId: string) => void;
   setThreadPinned: (projectKey: string, threadKey: string, pinned: boolean) => void;
   toggleThreadExpanded: (threadKey: string, isExpanded: boolean) => void;
-  openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
+  openPrLink: (
+    event: React.MouseEvent<HTMLElement>,
+    prUrl: string,
+    threadRef?: ScopedThreadRef,
+  ) => void;
   projectKey: string;
   sortable?: {
     attributes: ReturnType<typeof useSortable>["attributes"];
@@ -719,10 +723,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const handleOpenPrSelected = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
       if (prStatus) {
-        openPrLink(event, prStatus.url);
+        openPrLink(event, prStatus.url, threadRef);
       }
     },
-    [openPrLink, prStatus],
+    [openPrLink, prStatus, threadRef],
   );
   // The row surface is a role="button"; without this the menu trigger's click
   // would bubble up and open the thread behind the menu.
@@ -889,6 +893,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     <ThreadPullRequestsPopover
                       links={thread.pullRequests}
                       fallbackPullRequest={thread.pullRequest}
+                      threadRef={threadRef}
                     />
                   </span>
                 </>
@@ -1064,7 +1069,11 @@ interface SidebarProjectThreadListProps {
     draggedThreadKey: string,
     targetThreadKey: string,
   ) => void;
-  openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
+  openPrLink: (
+    event: React.MouseEvent<HTMLElement>,
+    prUrl: string,
+    threadRef?: ScopedThreadRef,
+  ) => void;
   /**
    * Threads are indented to sit under their project header. With the header
    * hidden there is nothing to nest beneath, so the indent is dropped.

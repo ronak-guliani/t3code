@@ -6,6 +6,7 @@ import {
   type ErrorComponentProps,
   useLocation,
   useNavigate,
+  useParams,
 } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
@@ -71,6 +72,12 @@ import {
   openExternalPullRequestLink,
 } from "../lib/openPullRequestLink";
 import { useRightPanelStore } from "../rightPanelStore";
+import {
+  buildThreadRouteParams,
+  clearThreadNavigationRouteSearch,
+  resolveThreadRouteTarget,
+  threadRouteTargetsEqual,
+} from "../threadRoutes";
 import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
 import { selectProjectsAcrossEnvironments } from "../store";
 
@@ -158,6 +165,10 @@ function InternalPullRequestNavigationHandler() {
   const environmentId = usePrimaryEnvironmentId();
   const projects = useStore(selectProjectsAcrossEnvironments);
   const savedEnvironmentRuntime = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  const routeTarget = useParams({
+    strict: false,
+    select: (params) => resolveThreadRouteTarget(params),
+  });
 
   useEffect(() => {
     const open = (event: Event) => {
@@ -199,6 +210,16 @@ function InternalPullRequestNavigationHandler() {
             host,
             url,
           });
+          // Right-panel state renders only for the active chat. When the row
+          // belongs to another thread, open that thread so the surface above
+          // is visible instead of silently updating hidden state.
+          if (!threadRouteTargetsEqual(routeTarget, { kind: "server", threadRef })) {
+            void navigate({
+              to: "/$environmentId/$threadId",
+              params: buildThreadRouteParams(threadRef),
+              search: clearThreadNavigationRouteSearch,
+            });
+          }
           return;
         }
       }
@@ -225,7 +246,7 @@ function InternalPullRequestNavigationHandler() {
     };
     window.addEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, open);
     return () => window.removeEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, open);
-  }, [descriptor, environmentId, navigate, projects, savedEnvironmentRuntime]);
+  }, [descriptor, environmentId, navigate, projects, routeTarget, savedEnvironmentRuntime]);
 
   return null;
 }
