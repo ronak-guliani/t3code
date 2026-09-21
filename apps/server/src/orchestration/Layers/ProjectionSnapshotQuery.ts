@@ -1,5 +1,6 @@
 import {
   ChatAttachment,
+  CollaborationRequest,
   EventId,
   IsoDateTime,
   MessageId,
@@ -136,6 +137,7 @@ const WorkspaceBindingDbSchema = Schema.NullOr(
 const ProjectionThreadDbRowSchema = Schema.Struct({
   ...ProjectionThread.fields,
   nudging: Schema.fromJsonString(ThreadNudging),
+  collaborationRequests: Schema.fromJsonString(Schema.Array(CollaborationRequest)),
   modelSelection: Schema.fromJsonString(ModelSelection),
   pullRequest: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation))),
   reviewSnapshot: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewSnapshot))),
@@ -160,6 +162,7 @@ const ProjectionChatArchiveThreadDbRowSchema = Schema.Struct({
 const ProjectionThreadWithProjectTitleDbRowSchema = Schema.Struct({
   ...ProjectionThread.fields,
   nudging: Schema.fromJsonString(ThreadNudging),
+  collaborationRequests: Schema.fromJsonString(Schema.Array(CollaborationRequest)),
   modelSelection: Schema.fromJsonString(ModelSelection),
   pullRequest: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation))),
   reviewSnapshot: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewSnapshot))),
@@ -536,6 +539,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     thread_id AS "threadId",
     project_id AS "projectId",
     parent_thread_id AS "parentThreadId",
+    collaboration_requests_json AS "collaborationRequests",
     title,
     model_selection_json AS "modelSelection",
     runtime_mode AS "runtimeMode",
@@ -1192,6 +1196,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threads.thread_id AS "threadId",
           threads.project_id AS "projectId",
           threads.parent_thread_id AS "parentThreadId",
+          threads.collaboration_requests_json AS "collaborationRequests",
           threads.title,
           threads.model_selection_json AS "modelSelection",
           threads.runtime_mode AS "runtimeMode",
@@ -2057,6 +2062,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   pinOrderKey: row.pinOrderKey,
                   titleRegeneration: mapTitleRegeneration(row),
                   nudging: row.nudging,
+                  ...(row.collaborationRequests.length > 0
+                    ? { collaborationRequests: row.collaborationRequests }
+                    : {}),
                   deletedAt: row.deletedAt,
                   messages: messagesByThread.get(row.threadId) ?? [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],

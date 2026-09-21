@@ -13,6 +13,7 @@ import {
 } from "../Services/ProjectionThreads.ts";
 import {
   GitPullRequestAssociation,
+  CollaborationRequest,
   ModelSelection,
   ReviewResult,
   ReviewSnapshot,
@@ -25,6 +26,7 @@ import {
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
   Struct.assign({
     nudging: Schema.fromJsonString(ThreadNudging),
+    collaborationRequests: Schema.fromJsonString(Schema.Array(CollaborationRequest)),
     modelSelection: Schema.fromJsonString(ModelSelection),
     pullRequest: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation))),
     reviewSnapshot: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewSnapshot))),
@@ -45,6 +47,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       sql`
         INSERT INTO projection_threads (
           nudging_json,
+          collaboration_requests_json,
           thread_id,
           project_id,
           parent_thread_id,
@@ -82,6 +85,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         )
         VALUES (
           ${JSON.stringify(row.nudging ?? {})},
+          ${JSON.stringify(row.collaborationRequests ?? [])},
           ${row.threadId},
           ${row.projectId},
           ${row.parentThreadId ?? null},
@@ -120,6 +124,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         ON CONFLICT (thread_id)
         DO UPDATE SET
           nudging_json = excluded.nudging_json,
+          collaboration_requests_json = excluded.collaboration_requests_json,
           project_id = excluded.project_id,
           parent_thread_id = excluded.parent_thread_id,
           title = excluded.title,
@@ -163,6 +168,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       sql`
         SELECT
           nudging_json AS "nudging",
+          collaboration_requests_json AS "collaborationRequests",
           thread_id AS "threadId",
           project_id AS "projectId",
           parent_thread_id AS "parentThreadId",
@@ -209,6 +215,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       sql`
         SELECT
           nudging_json AS "nudging",
+          collaboration_requests_json AS "collaborationRequests",
           thread_id AS "threadId",
           project_id AS "projectId",
           parent_thread_id AS "parentThreadId",

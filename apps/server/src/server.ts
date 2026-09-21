@@ -129,6 +129,8 @@ import { layer as pullRequestMonitorAssociationReactorLayer } from "./pullReques
 import { layer as pullRequestAssociationRecoveryLayer } from "./pullRequestMonitor/PullRequestAssociationRecovery.ts";
 import { layer as pullRequestMonitorReviewHandoffReactorLayer } from "./pullRequestMonitor/PullRequestReviewHandoffReactor.ts";
 import { ProjectionStateRepositoryLive } from "./persistence/Layers/ProjectionState.ts";
+import { CollaborativeAcceptanceRepositoryLive } from "./persistence/Layers/CollaborativeAcceptance.ts";
+import { CollaborativeAcceptanceCoordinatorLive } from "./collaborativeAcceptance/Coordinator.ts";
 import { layer as pullRequestMonitorServiceLayer } from "./pullRequestMonitor/PullRequestMonitorService.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
@@ -243,7 +245,9 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
 );
 
-const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
+export const PersistenceLayerLive = CollaborativeAcceptanceRepositoryLive.pipe(
+  Layer.provideMerge(SqlitePersistenceLayerLive),
+);
 
 const GitManagerLayerLive = GitManagerLive.pipe(
   Layer.provideMerge(ProjectSetupScriptRunnerLive),
@@ -405,6 +409,10 @@ const RemoteAccessRoutesLayerLive = remoteAccessRoutes as unknown as Layer.Layer
 
 const BackgroundLayerLive = BackgroundPolicy.layer.pipe(Layer.provideMerge(HostPowerMonitor.layer));
 
+const AcceptanceOrchestrationLayerLive = OrchestrationLayerLive.pipe(
+  Layer.provideMerge(CollaborativeAcceptanceCoordinatorLive),
+);
+
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(CheckpointingLayerLive),
@@ -412,7 +420,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(PullRequestLayerLive),
   Layer.provideMerge(PullRequestMonitorLayerLive),
   Layer.provideMerge(ProviderLayerLive),
-  Layer.provideMerge(OrchestrationLayerLive),
+  Layer.provideMerge(AcceptanceOrchestrationLayerLive),
   Layer.provideMerge(TerminalLayerLive),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(KeybindingsLive),

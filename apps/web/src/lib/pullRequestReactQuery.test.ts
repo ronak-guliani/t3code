@@ -1,7 +1,7 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 
-import { EnvironmentId, ProjectId, type PullRequestListResult } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId, type PullRequestListResult } from "@t3tools/contracts";
 
 import {
   prefetchPullRequestDetail,
@@ -79,6 +79,24 @@ describe("pullRequestReactQuery", () => {
   it("scopes mutation keys by environment", () => {
     expect(pullRequestMutationKeys.comment(ENVIRONMENT_ID)).not.toEqual(
       pullRequestMutationKeys.comment(null),
+    );
+  });
+
+  it("scopes collaborative acceptance lookups by thread and pull request", () => {
+    const reference = { projectId: PROJECT_ID, repository: "acme/web", number: 42 };
+
+    expect(
+      pullRequestQueryKeys.collaborativeAcceptanceLookup(
+        ENVIRONMENT_ID,
+        ThreadId.make("thread-a"),
+        reference,
+      ),
+    ).not.toEqual(
+      pullRequestQueryKeys.collaborativeAcceptanceLookup(
+        ENVIRONMENT_ID,
+        ThreadId.make("thread-b"),
+        reference,
+      ),
     );
   });
 

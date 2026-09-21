@@ -248,6 +248,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           });
           yield* projectionThreadRepository.upsert({
             nudging: event.payload.nudging,
+            collaborationRequests: [],
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
             parentThreadId: event.payload.parentThreadId ?? null,
@@ -554,6 +555,42 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               });
             }
           }
+          return;
+        }
+
+        case "thread.collaboration-request-updated": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const requests = [
+            ...(existingRow.value.collaborationRequests ?? []).filter(
+              (request) => request.requestId !== event.payload.request.requestId,
+            ),
+            event.payload.request,
+          ].toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            collaborationRequests: requests,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.collaboration-state-cleared": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            collaborationRequests: [],
+            updatedAt: event.payload.clearedAt,
+          });
           return;
         }
 

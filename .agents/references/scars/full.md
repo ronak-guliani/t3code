@@ -133,6 +133,9 @@
 
 ## PR reviews and checkpoint provenance
 
+- Collaborative acceptance must reserve one deterministic exchange before creating its queued review request, bind every prompt and outcome to the immutable assignment/dispatch/turn/case/candidate/head tuple, and wake only through `QueuedTurnReactor`; child completion alone is never review evidence.
+- Collaborative acceptance recovery must subscribe once before its startup snapshot, reconcile response/queue terminal events live, and treat PR-monitor notifications as wakeups that re-read authoritative evidence. Persist a terminal dispatch outcome for unrecoverable legacy work so one malformed exchange cannot strand startup or create a retry storm.
+
 - Skill triggers that include "draft a PR description" must branch to read-only delivery before staging or publishing; only a publication request authorizes creating a PR, which defaults to ready-for-review unless draft status is explicit.
 
 - Review findings must never be silently dropped: reviewers cite file line numbers that often land on unchanged context, so anchor findings to any line the diff renders and only discard ones naming a file outside the reviewed diff. Review threads stay conversational — refresh the result on every turn that emits reviewer JSON, re-resolve the snapshot it is anchored to, and identify the raw-JSON message by content rather than assuming it is the last assistant message.
@@ -280,6 +283,7 @@
 
 ## Client state and completion
 
+- Settings controls that persist a whole nested object must merge each edit against a synchronously updated latest-value ref. Consecutive blur commits can run before React rerenders, so render-captured objects silently overwrite earlier sibling edits.
 - Activity strips must use tool lifecycle plus the owning turn, not the newest successful row, to decide liveness. Preserve lifecycle/output fields in timeline equality checks, and keep attention receipts and explicit disclosures visible across completion folding.
 - Carry inferred activity lifecycle into expanded detail entries before grouping; a live header must not hide its running call among completed history. Shimmer overlays enhance a persistent base icon, never replace it when reduced motion or focus disables the overlay.
 - Bound disclosure batches inside history groups, not just the number of group headers. Cache completed-turn labels against every contributing immutable group, and keep detail-expansion state out of history grouping dependencies.
@@ -331,6 +335,7 @@
 
 ## Projection schemas and checkout reservations
 
+- Whole-record read/replace persistence needs a durable revision fence: pure transition correctness does not prevent concurrent budget overspend or last-write-wins updates. Require an expected revision on every aggregate write and reject stale saves inside the transaction.
 - Projection schema changes must update repository SQL plus every full, shell, and targeted snapshot query and mapper; a passing projection write test does not prove reconnect or CLI reads decode.
 - Archived-thread reads must opt in at the CLI resolution seam; keep checkpoint/diff inspection opt-in and leave dispatch/revert helpers on the default active-thread filter.
 - Keep each `Effect.all` snapshot query tuple position aligned with its destructuring, and define SQL-backed `SqlSchema` queries inside the layer that owns the `SqlClient`; a misplaced query can shift `workflowRuns` to `undefined` or fail only when executed.

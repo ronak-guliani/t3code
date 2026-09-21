@@ -29,9 +29,12 @@ import {
   GitHubCliError,
   PullRequestUnavailableError,
   PullRequestMonitorError,
+  CollaborativeAcceptanceCaseLookupError,
+  CollaborativeAcceptanceError,
   RpcClientId,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
+  type OrchestrationThread,
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
   type OrchestrationThreadStreamItem,
@@ -65,6 +68,7 @@ import {
   type WorkflowRunInput,
   type WorkflowRunResult,
   type WorkflowWorkerConfig,
+  type PullRequestRef,
   WorkflowRunId,
   WorkflowArtifactId,
   WorkflowNodeId,
@@ -186,6 +190,8 @@ import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { repositoryFromPullRequestUrl } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
 import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorService.ts";
+import { CollaborativeAcceptanceCoordinator } from "./collaborativeAcceptance/Coordinator.ts";
+import { acceptanceAuthorityForThread } from "./collaborativeAcceptance/authority.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -319,6 +325,76 @@ const makeWsRpcLayer = (
       const pullRequestMonitors = yield* Effect.serviceOption(
         PullRequestMonitors.PullRequestMonitorService,
       );
+      const acceptanceCoordinator = yield* Effect.serviceOption(CollaborativeAcceptanceCoordinator);
+      const withAcceptance = <A>(
+        operation: (
+          service: CollaborativeAcceptanceCoordinator["Service"],
+        ) => Effect.Effect<A, CollaborativeAcceptanceError>,
+      ): Effect.Effect<A, CollaborativeAcceptanceError> =>
+        Option.match(acceptanceCoordinator, {
+          onNone: () =>
+            Effect.fail(
+              new CollaborativeAcceptanceError({
+                message: "Collaborative acceptance is unavailable in this environment.",
+              }),
+            ),
+          onSome: operation,
+        });
+      const resolveAcceptanceThread = (threadId: ThreadId) =>
+        projectionSnapshotQuery.getThreadDetailById(threadId).pipe(
+          Effect.mapError(
+            () =>
+              new CollaborativeAcceptanceError({
+                message: "Could not resolve the acceptance thread.",
+              }),
+          ),
+          Effect.flatMap((thread) =>
+            Option.isSome(thread)
+              ? Effect.succeed(thread.value)
+              : Effect.fail(
+                  new CollaborativeAcceptanceError({
+                    message: "Acceptance thread is unavailable.",
+                    reason: "participant-unavailable",
+                  }),
+                ),
+          ),
+        );
+      const withAcceptanceLookup = <A>(
+        operation: (
+          service: CollaborativeAcceptanceCoordinator["Service"],
+        ) => Effect.Effect<A, CollaborativeAcceptanceCaseLookupError>,
+      ): Effect.Effect<A, CollaborativeAcceptanceCaseLookupError> =>
+        Option.match(acceptanceCoordinator, {
+          onNone: () =>
+            Effect.fail(
+              new CollaborativeAcceptanceCaseLookupError({
+                message: "Collaborative acceptance is unavailable in this environment.",
+                reason: "unavailable",
+              }),
+            ),
+          onSome: operation,
+        });
+      const hasDurablePullRequestAssociation = (
+        thread: OrchestrationThread,
+        pullRequest: PullRequestRef,
+      ): boolean =>
+        thread.projectId === pullRequest.projectId &&
+        [
+          ...(thread.pullRequest === undefined || thread.pullRequest === null
+            ? []
+            : [thread.pullRequest]),
+          ...(thread.linkedPullRequest === undefined || thread.linkedPullRequest === null
+            ? []
+            : [thread.linkedPullRequest]),
+          ...(thread.branchPullRequest === undefined || thread.branchPullRequest === null
+            ? []
+            : [thread.branchPullRequest]),
+          ...(thread.pullRequests ?? []).map((link) => link.pullRequest),
+        ].some(
+          (association) =>
+            association.number === pullRequest.number &&
+            repositoryFromPullRequestUrl(association.url) === pullRequest.repository,
+        );
       const withPullRequestMonitors = <A, E>(
         f: (
           service: PullRequestMonitors.PullRequestMonitorService["Service"],
@@ -2296,6 +2372,158 @@ const makeWsRpcLayer = (
             WS_METHODS.pullRequestMonitorsLaunchFallback,
             withPullRequestMonitors((service) => service.launchFallback(input)),
             { "rpc.aggregate": "pullRequestMonitors" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceSubmitCandidate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceSubmitCandidate,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const sender = yield* resolveAcceptanceThread(input.threadId);
+                const existing =
+                  input.submission.caseId === undefined
+                    ? null
+                    : (yield* service.status(input.submission.caseId)).record;
+                const recipientThreadId =
+                  existing?.case.parentThreadId ?? sender.parentThreadId ?? sender.id;
+                const recipient = yield* resolveAcceptanceThread(recipientThreadId);
+                const senderAuthority = acceptanceAuthorityForThread(sender);
+                const recipientAuthority = acceptanceAuthorityForThread(recipient);
+                if (senderAuthority === undefined || recipientAuthority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.submitCandidate({
+                  ...input.submission,
+                  senderThreadId: sender.id,
+                  recipientThreadId,
+                  senderAuthority,
+                  recipientAuthority,
+                });
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceRequestReview]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceRequestReview,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const record = (yield* service.status(input.caseId)).record;
+                if (record === null) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance case not found.",
+                    caseId: input.caseId,
+                  });
+                }
+                const sender = yield* resolveAcceptanceThread(input.threadId);
+                const recipient = yield* resolveAcceptanceThread(record.case.parentThreadId);
+                const senderAuthority = acceptanceAuthorityForThread(sender);
+                const recipientAuthority = acceptanceAuthorityForThread(recipient);
+                if (senderAuthority === undefined || recipientAuthority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.requestReview({
+                  caseId: input.caseId,
+                  senderThreadId: sender.id,
+                  recipientThreadId: recipient.id,
+                  assignmentId: record.case.assignmentId,
+                  senderAuthority,
+                  recipientAuthority,
+                });
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceStatus]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceStatus,
+            withAcceptance((service) => service.status(input.caseId)),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceResolveForPullRequest]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceResolveForPullRequest,
+            withAcceptanceLookup((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId).pipe(
+                  Effect.mapError(
+                    () =>
+                      new CollaborativeAcceptanceCaseLookupError({
+                        message: "The acceptance thread is unavailable.",
+                        reason: "unavailable",
+                      }),
+                  ),
+                );
+                if (!hasDurablePullRequestAssociation(thread, input.pullRequest)) {
+                  return yield* new CollaborativeAcceptanceCaseLookupError({
+                    message: "The pull request is not durably associated with this thread.",
+                    reason:
+                      thread.projectId === input.pullRequest.projectId
+                        ? "not-found"
+                        : "unauthorized",
+                  });
+                }
+                return yield* service.resolveForPullRequest(input);
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceSubmitAssessment]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceSubmitAssessment,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId);
+                const authority = acceptanceAuthorityForThread(thread);
+                if (authority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.submitAssessment({
+                  ...input.submission,
+                  authority,
+                });
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptancePause]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptancePause,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId);
+                const authority = acceptanceAuthorityForThread(thread);
+                if (authority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.pause(input.caseId, input.reason, authority);
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceResume]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceResume,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId);
+                const authority = acceptanceAuthorityForThread(thread);
+                if (authority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.resume(input.caseId, authority);
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
           ),
 
         [WS_METHODS.subscribeGitStatus]: (input) =>

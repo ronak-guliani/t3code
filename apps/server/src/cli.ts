@@ -4188,6 +4188,68 @@ const prMonitorCommand = Command.make("pr-monitor").pipe(
   ]),
 );
 
+// --- collaborative acceptance ---------------------------------------------
+const acceptanceStatusCommand = Command.make("status", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  caseId: Argument.string("case-id").pipe(Argument.withDescription("Acceptance case id.")),
+}).pipe(
+  Command.withDescription("Read the durable collaborative acceptance projection."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      client[WS_METHODS.collaborativeAcceptanceStatus]({
+        threadId: thread.id,
+        caseId: flags.caseId,
+      }).pipe(Effect.flatMap(printJson)),
+    ),
+  ),
+);
+
+const acceptancePauseCommand = Command.make("pause", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  caseId: Argument.string("case-id").pipe(Argument.withDescription("Acceptance case id.")),
+  reason: Argument.string("reason").pipe(
+    Argument.withDescription("Typed pause reason, for example budget-exhausted."),
+  ),
+}).pipe(
+  Command.withDescription("Pause collaborative acceptance automation."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      client[WS_METHODS.collaborativeAcceptancePause]({
+        threadId: thread.id,
+        caseId: flags.caseId,
+        reason: flags.reason,
+      }).pipe(Effect.flatMap(printJson)),
+    ),
+  ),
+);
+
+const acceptanceResumeCommand = Command.make("resume", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  caseId: Argument.string("case-id").pipe(Argument.withDescription("Acceptance case id.")),
+}).pipe(
+  Command.withDescription("Resume collaborative acceptance automation."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      client[WS_METHODS.collaborativeAcceptanceResume]({
+        threadId: thread.id,
+        caseId: flags.caseId,
+      }).pipe(Effect.flatMap(printJson)),
+    ),
+  ),
+);
+
+const acceptanceCommand = Command.make("acceptance").pipe(
+  Command.withDescription("Inspect and steer collaborative acceptance coordination."),
+  Command.withSubcommands([
+    acceptanceStatusCommand,
+    acceptancePauseCommand,
+    acceptanceResumeCommand,
+  ]),
+);
+
 const reviewCommand = Command.make("review", {
   ...liveTargetFlags,
   ...modelSelectionFlags,
@@ -5586,6 +5648,7 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
       projectCommand,
       chatCommand,
       prMonitorCommand,
+      acceptanceCommand,
       reviewCommand,
       approvalCommand,
       inputCommand,

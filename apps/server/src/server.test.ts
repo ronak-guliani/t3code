@@ -12,6 +12,8 @@ import * as Context from "effect/Context";
 
 import {
   CommandId,
+  CollaborativeAcceptanceCaseId,
+  type CollaborationExecutionAuthority,
   AuthWebSocketTicketResult,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
@@ -114,6 +116,10 @@ import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
 } from "./orchestration/Services/OrchestrationEngine.ts";
+import {
+  CollaborativeAcceptanceCoordinator,
+  type CollaborativeAcceptanceCoordinatorShape,
+} from "./collaborativeAcceptance/Coordinator.ts";
 import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
 import {
   ProjectionSnapshotQuery,
@@ -399,6 +405,7 @@ const buildAppUnderTest = (options?: {
     repositoryIdentityResolver?: Partial<RepositoryIdentityResolverShape>;
     providerService?: Partial<ProviderServiceShape>;
     relayClient?: Partial<RelayClientShape>;
+    collaborativeAcceptanceCoordinator?: Partial<CollaborativeAcceptanceCoordinatorShape>;
   };
 }) =>
   Effect.gen(function* () {
@@ -622,27 +629,44 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(ProjectionSnapshotQuery)({
-          getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: new Date(0).toISOString(),
-            }),
-          getSnapshotSequence: () => Effect.succeed(0),
-          getProjectShellById: () => Effect.succeed(Option.none()),
-          getThreadShellById: () => Effect.succeed(Option.none()),
-          getThreadDetailById: () => Effect.succeed(Option.none()),
-          getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
-          listThreadProjectIds: () => Effect.die("unused"),
-          getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
-          getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
-          getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
-          getThreadCheckpointContext: () => Effect.succeed(Option.none()),
-          ...options?.layers?.projectionSnapshotQuery,
-        }),
+        Layer.merge(
+          Layer.mock(ProjectionSnapshotQuery)({
+            getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 0,
+                projects: [],
+                threads: [],
+                updatedAt: new Date(0).toISOString(),
+              }),
+            getSnapshotSequence: () => Effect.succeed(0),
+            getProjectShellById: () => Effect.succeed(Option.none()),
+            getThreadShellById: () => Effect.succeed(Option.none()),
+            getThreadDetailById: () => Effect.succeed(Option.none()),
+            getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
+            listThreadProjectIds: () => Effect.die("unused"),
+            getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
+            getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+            getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+            getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+            ...options?.layers?.projectionSnapshotQuery,
+          }),
+          Layer.mock(CollaborativeAcceptanceCoordinator)({
+            submitCandidate: () => Effect.die("Not implemented in server test."),
+            requestReview: () => Effect.die("Not implemented in server test."),
+            requestCollaboration: () => Effect.die("Not implemented in server test."),
+            respondToRequest: () => Effect.die("Not implemented in server test."),
+            dispositionFinding: () => Effect.die("Not implemented in server test."),
+            submitAssessment: () => Effect.die("Not implemented in server test."),
+            recordProviderEvidence: () => Effect.die("Not implemented in server test."),
+            refreshProviderEvidence: () => Effect.die("Not implemented in server test."),
+            status: () => Effect.succeed({ record: null, pauseReason: null }),
+            pause: () => Effect.die("Not implemented in server test."),
+            resume: () => Effect.die("Not implemented in server test."),
+            start: () => Effect.die("Not implemented in server test."),
+            ...options?.layers?.collaborativeAcceptanceCoordinator,
+          }),
+        ),
       ),
       Layer.provideMerge(
         WorktreeCleanupJobRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
@@ -2261,6 +2285,232 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.equal(response.environment.environmentId, testEnvironmentDescriptor.environmentId);
       assert.equal(response.auth.policy, "desktop-managed-local");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes acceptance pause through the authenticated websocket authority tuple", () =>
+    Effect.gen(function* () {
+      const authority = {
+        executionId: `thread:${defaultThreadId}`,
+        assignmentId: "assignment-ws-authority",
+        threadId: defaultThreadId,
+        generation: 4,
+        dispatchId: "dispatch-ws-authority",
+        turnId: TurnId.make("turn-ws-authority"),
+      };
+      const acceptanceThread = {
+        ...makeDefaultOrchestrationReadModel().threads[0],
+        id: defaultThreadId,
+        nudging: {
+          delegation: {
+            assignmentId: authority.assignmentId,
+            dispatchSequence: authority.generation,
+            dispatchId: authority.dispatchId,
+            dispatchTurnId: authority.turnId,
+            followUp: "automatic",
+            completedAt: null,
+          },
+        },
+      } as unknown as OrchestrationThread;
+      let seenAuthority: CollaborationExecutionAuthority | undefined;
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(acceptanceThread)),
+          },
+          collaborativeAcceptanceCoordinator: {
+            pause: (_caseId, _reason, receivedAuthority) =>
+              Effect.sync(() => {
+                seenAuthority = receivedAuthority;
+                return { record: null, pauseReason: "retry-limit" };
+              }),
+          },
+        },
+      });
+
+      const { response: bootstrapResponse, cookie } = yield* bootstrapBrowserSession();
+      assert.equal(bootstrapResponse.status, 200);
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.collaborativeAcceptancePause]({
+            threadId: defaultThreadId,
+            caseId: CollaborativeAcceptanceCaseId.make("case-ws-authority"),
+            reason: "retry-limit",
+          }),
+        ),
+      );
+
+      assert.equal(result.pauseReason, "retry-limit");
+      assert.deepEqual(seenAuthority, authority);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("rejects websocket acceptance calls without a complete bound authority tuple", () =>
+    Effect.gen(function* () {
+      const incompleteThread = {
+        ...makeDefaultOrchestrationReadModel().threads[0],
+        id: defaultThreadId,
+        nudging: {
+          delegation: {
+            assignmentId: "assignment-ws-incomplete",
+            dispatchSequence: 4,
+            dispatchId: "",
+            dispatchTurnId: null,
+            followUp: "automatic",
+            completedAt: null,
+          },
+        },
+      } as unknown as OrchestrationThread;
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(incompleteThread)),
+          },
+        },
+      });
+
+      const { cookie } = yield* bootstrapBrowserSession();
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+      const error = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.collaborativeAcceptancePause]({
+              threadId: defaultThreadId,
+              caseId: CollaborativeAcceptanceCaseId.make("case-ws-incomplete"),
+              reason: "retry-limit",
+            }),
+          ),
+        ),
+      );
+
+      assertInclude(String(error), "authenticated active execution authority");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("resolves the current acceptance case from a durable PR association", () =>
+    Effect.gen(function* () {
+      const pullRequest = {
+        projectId: ProjectId.make("project-acceptance-lookup"),
+        repository: "owner/repository",
+        number: 42,
+      };
+      const acceptanceThread = {
+        ...makeDefaultOrchestrationReadModel().threads[0],
+        id: defaultThreadId,
+        projectId: pullRequest.projectId,
+        pullRequest: {
+          number: pullRequest.number,
+          title: "Acceptance PR",
+          url: "https://github.com/owner/repository/pull/42",
+          baseBranch: "main",
+          headBranch: "feature/acceptance",
+          state: "open",
+        },
+      } as unknown as OrchestrationThread;
+      const status = { record: null, pauseReason: null };
+      let seenInput:
+        | {
+            readonly threadId: ThreadId;
+            readonly pullRequest: typeof pullRequest;
+          }
+        | undefined;
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(acceptanceThread)),
+          },
+          collaborativeAcceptanceCoordinator: {
+            resolveForPullRequest: (input) =>
+              Effect.sync(() => {
+                seenInput = input;
+                return {
+                  caseId: CollaborativeAcceptanceCaseId.make("case-current"),
+                  status,
+                };
+              }),
+          },
+        },
+      });
+
+      const { cookie } = yield* bootstrapBrowserSession();
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.collaborativeAcceptanceResolveForPullRequest]({
+            threadId: defaultThreadId,
+            pullRequest,
+          }),
+        ),
+      );
+
+      assert.equal(result.caseId, CollaborativeAcceptanceCaseId.make("case-current"));
+      assert.deepEqual(result.status, status);
+      assert.deepEqual(seenInput, { threadId: defaultThreadId, pullRequest });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("rejects PR lookup when the authenticated thread belongs to another project", () =>
+    Effect.gen(function* () {
+      const acceptanceThread = {
+        ...makeDefaultOrchestrationReadModel().threads[0],
+        id: defaultThreadId,
+        projectId: ProjectId.make("project-owned-by-thread"),
+      } as unknown as OrchestrationThread;
+      let called = false;
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(acceptanceThread)),
+          },
+          collaborativeAcceptanceCoordinator: {
+            resolveForPullRequest: () =>
+              Effect.sync(() => {
+                called = true;
+                return {
+                  caseId: CollaborativeAcceptanceCaseId.make("case-should-not-resolve"),
+                  status: { record: null, pauseReason: null },
+                };
+              }),
+          },
+        },
+      });
+
+      const { cookie } = yield* bootstrapBrowserSession();
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+      const error = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.collaborativeAcceptanceResolveForPullRequest]({
+              threadId: defaultThreadId,
+              pullRequest: {
+                projectId: ProjectId.make("project-other"),
+                repository: "owner/repository",
+                number: 42,
+              },
+            }),
+          ),
+        ),
+      );
+
+      assertInclude(String(error), "not durably associated");
+      assert.isFalse(called);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

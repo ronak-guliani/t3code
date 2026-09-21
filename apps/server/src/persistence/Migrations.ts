@@ -98,6 +98,11 @@ import Migration0093 from "./Migrations/093_WorkspaceOwnershipLedger.ts";
 import Migration0094 from "./Migrations/094_RepairWorkspaceBindingNulls.ts";
 import Migration0095 from "./Migrations/095_ProjectionThreadValidationRuns.ts";
 import Migration0096 from "./Migrations/096_ProjectionThreadValidationRequests.ts";
+import Migration0097 from "./Migrations/097_CollaborativeAcceptance.ts";
+import Migration0098 from "./Migrations/098_PullRequestMonitorReviewDisputes.ts";
+import Migration0099 from "./Migrations/099_ProjectionThreadCollaborationRequests.ts";
+import Migration0100 from "./Migrations/100_CollaborativeAcceptanceCoordinator.ts";
+import Migration0101 from "./Migrations/101_CollaborativeAcceptanceDurability.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -195,6 +200,11 @@ export const migrationEntries = [
   [94, "RepairWorkspaceBindingNulls", Migration0094],
   [95, "ProjectionThreadValidationRuns", Migration0095],
   [96, "ProjectionThreadValidationRequests", Migration0096],
+  [97, "CollaborativeAcceptance", Migration0097],
+  [98, "PullRequestMonitorReviewDisputes", Migration0098],
+  [99, "ProjectionThreadCollaborationRequests", Migration0099],
+  [100, "CollaborativeAcceptanceCoordinator", Migration0100],
+  [101, "CollaborativeAcceptanceDurability", Migration0101],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
