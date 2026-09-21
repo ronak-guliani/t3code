@@ -264,6 +264,7 @@ function createMockEnvironmentApi(input: {
     git: {} as EnvironmentApi["git"],
     pullRequests: {} as EnvironmentApi["pullRequests"],
     pullRequestMonitors: {} as EnvironmentApi["pullRequestMonitors"],
+    collaborativeAcceptance: {} as EnvironmentApi["collaborativeAcceptance"],
     workflow: {
       run: (() => {
         throw new Error("Not implemented in browser test.");
@@ -6542,7 +6543,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       expect(draftThread?.projectId).toBe(SECOND_PROJECT_ID);
       expect(draftThread?.branch).toBe("main");
       expect(draftThread?.worktreePath).toBeNull();
-      expect(draftThread?.envMode).toBe("local");
+      expect(draftThread?.envMode).toBe("worktree");
     } finally {
       await mounted.cleanup();
     }

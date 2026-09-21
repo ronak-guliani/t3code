@@ -16,6 +16,7 @@ import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
 import { Route as SettingsWorkflowsRouteImport } from './routes/settings.workflows'
+import { Route as SettingsPullRequestCollaborationRouteImport } from './routes/settings.pull-request-collaboration'
 import { Route as SettingsGeneralRouteImport } from './routes/settings.general'
 import { Route as SettingsConnectionsRouteImport } from './routes/settings.connections'
 import { Route as SettingsArchivedRouteImport } from './routes/settings.archived'
@@ -59,6 +60,12 @@ const SettingsWorkflowsRoute = SettingsWorkflowsRouteImport.update({
   path: '/workflows',
   getParentRoute: () => SettingsRoute,
 } as any)
+const SettingsPullRequestCollaborationRoute =
+  SettingsPullRequestCollaborationRouteImport.update({
+    id: '/pull-request-collaboration',
+    path: '/pull-request-collaboration',
+    getParentRoute: () => SettingsRoute,
+  } as any)
 const SettingsGeneralRoute = SettingsGeneralRouteImport.update({
   id: '/general',
   path: '/general',
@@ -113,6 +120,7 @@ export interface FileRoutesByFullPath {
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
   '/settings/general': typeof SettingsGeneralRoute
+  '/settings/pull-request-collaboration': typeof SettingsPullRequestCollaborationRoute
   '/settings/workflows': typeof SettingsWorkflowsRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
@@ -128,6 +136,7 @@ export interface FileRoutesByTo {
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
   '/settings/general': typeof SettingsGeneralRoute
+  '/settings/pull-request-collaboration': typeof SettingsPullRequestCollaborationRoute
   '/settings/workflows': typeof SettingsWorkflowsRoute
   '/': typeof ChatIndexRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
@@ -146,6 +155,7 @@ export interface FileRoutesById {
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
   '/settings/general': typeof SettingsGeneralRoute
+  '/settings/pull-request-collaboration': typeof SettingsPullRequestCollaborationRoute
   '/settings/workflows': typeof SettingsWorkflowsRoute
   '/_chat/': typeof ChatIndexRoute
   '/_chat/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
@@ -165,6 +175,7 @@ export interface FileRouteTypes {
     | '/settings/archived'
     | '/settings/connections'
     | '/settings/general'
+    | '/settings/pull-request-collaboration'
     | '/settings/workflows'
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
@@ -180,6 +191,7 @@ export interface FileRouteTypes {
     | '/settings/archived'
     | '/settings/connections'
     | '/settings/general'
+    | '/settings/pull-request-collaboration'
     | '/settings/workflows'
     | '/'
     | '/$environmentId/$threadId'
@@ -197,6 +209,7 @@ export interface FileRouteTypes {
     | '/settings/archived'
     | '/settings/connections'
     | '/settings/general'
+    | '/settings/pull-request-collaboration'
     | '/settings/workflows'
     | '/_chat/'
     | '/_chat/$environmentId/$threadId'
@@ -262,6 +275,13 @@ declare module '@tanstack/react-router' {
       path: '/workflows'
       fullPath: '/settings/workflows'
       preLoaderRoute: typeof SettingsWorkflowsRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/pull-request-collaboration': {
+      id: '/settings/pull-request-collaboration'
+      path: '/pull-request-collaboration'
+      fullPath: '/settings/pull-request-collaboration'
+      preLoaderRoute: typeof SettingsPullRequestCollaborationRouteImport
       parentRoute: typeof SettingsRoute
     }
     '/settings/general': {
@@ -343,6 +363,7 @@ interface SettingsRouteChildren {
   SettingsArchivedRoute: typeof SettingsArchivedRoute
   SettingsConnectionsRoute: typeof SettingsConnectionsRoute
   SettingsGeneralRoute: typeof SettingsGeneralRoute
+  SettingsPullRequestCollaborationRoute: typeof SettingsPullRequestCollaborationRoute
   SettingsWorkflowsRoute: typeof SettingsWorkflowsRoute
 }
 
@@ -350,6 +371,7 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsArchivedRoute: SettingsArchivedRoute,
   SettingsConnectionsRoute: SettingsConnectionsRoute,
   SettingsGeneralRoute: SettingsGeneralRoute,
+  SettingsPullRequestCollaborationRoute: SettingsPullRequestCollaborationRoute,
   SettingsWorkflowsRoute: SettingsWorkflowsRoute,
 }
 

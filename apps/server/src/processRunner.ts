@@ -11,6 +11,12 @@ export interface ProcessRunOptions {
   allowNonZeroExit?: boolean | undefined;
   maxBufferBytes?: number | undefined;
   outputMode?: "error" | "truncate" | undefined;
+  /**
+   * Optional external abort: when aborted, the spawned process tree is
+   * terminated and the run rejects. Lets fiber interruption kill children
+   * instead of leaving them running past cancellation.
+   */
+  signal?: AbortSignal | undefined;
 }
 
 export interface ProcessRunResult {
@@ -34,6 +40,7 @@ export interface EffectProcessRunInput {
   readonly maxOutputBytes?: number;
   readonly outputMode?: "error" | "truncate";
   readonly timeoutBehavior?: "error" | "timedOutResult";
+  readonly signal?: AbortSignal;
 }
 
 export class ProcessSpawnError extends Schema.TaggedErrorClass<ProcessSpawnError>()(
@@ -186,6 +193,10 @@ export async function runProcess(
   const outputMode = options.outputMode ?? "error";
 
   return new Promise<ProcessRunResult>((resolve, reject) => {
+    if (options.signal?.aborted === true) {
+      reject(new Error(`Command aborted before it started: ${commandLabel(command, args)}.`));
+      return;
+    }
     const { command: spawnTarget, shell } = resolveWindowsSpawn(
       command,
       options.env ? { env: options.env } : {},
@@ -215,23 +226,53 @@ export async function runProcess(
       }, 1_000);
     }, timeoutMs);
 
-    const finalize = (callback: () => void): void => {
-      if (settled) return;
+    const finalize = (callback: () => void, preserveForceKill = false): void => {
+      if (settled) {
+        if (!preserveForceKill && forceKillTimer) {
+          clearTimeout(forceKillTimer);
+          forceKillTimer = null;
+        }
+        return;
+      }
       settled = true;
       clearTimeout(timeoutTimer);
-      if (forceKillTimer) {
+      if (!preserveForceKill && forceKillTimer) {
         clearTimeout(forceKillTimer);
+        forceKillTimer = null;
+      }
+      if (abortListener !== null) {
+        options.signal?.removeEventListener("abort", abortListener);
       }
 
       callback();
     };
 
     const fail = (error: Error): void => {
+      if (settled) return;
       killChild(child, "SIGTERM");
+      forceKillTimer = setTimeout(() => {
+        killChild(child, "SIGKILL");
+      }, 1_000);
       finalize(() => {
         reject(error);
-      });
+      }, true);
     };
+
+    const abortListener: (() => void) | null =
+      options.signal === undefined
+        ? null
+        : () => {
+            killChild(child, "SIGTERM");
+            forceKillTimer = setTimeout(() => {
+              killChild(child, "SIGKILL");
+            }, 1_000);
+            finalize(() => {
+              reject(new Error(`Command aborted: ${commandLabel(command, args)}.`));
+            }, true);
+          };
+    if (options.signal !== undefined && abortListener !== null) {
+      options.signal.addEventListener("abort", abortListener, { once: true });
+    }
 
     const appendOutput = (stream: "stdout" | "stderr", chunk: Buffer | string): Error | null => {
       const chunkBuffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
@@ -339,6 +380,7 @@ export const layer = Layer.succeed(
             maxBufferBytes: input.maxOutputBytes,
             outputMode: input.outputMode,
             allowNonZeroExit: true,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
           }),
         catch: (cause) =>
           new ProcessSpawnError({

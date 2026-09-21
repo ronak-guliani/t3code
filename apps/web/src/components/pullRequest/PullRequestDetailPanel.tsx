@@ -1,4 +1,5 @@
 import type {
+  CollaborativeAcceptanceStatus,
   EnvironmentId,
   PullRequestAction,
   PullRequestActivity,
@@ -6,6 +7,7 @@ import type {
   PullRequestMergeMethod,
   PullRequestRef,
   PullRequestReviewVerdict,
+  PullRequestMonitorStatusResult,
 } from "@t3tools/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -33,10 +35,17 @@ import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import {
   pullRequestActivityQueryOptions,
+  collaborativeAcceptanceLookupQueryOptions,
+  collaborativeAcceptancePauseMutationOptions,
+  collaborativeAcceptanceRequestReviewMutationOptions,
+  collaborativeAcceptanceResumeMutationOptions,
+  collaborativeAcceptanceStatusQueryOptions,
   pullRequestCommentMutationOptions,
   pullRequestDiffInfiniteQueryOptions,
   pullRequestDetailQueryOptions,
   pullRequestInvalidateMutationOptions,
+  pullRequestMonitorStatusQueryOptions,
+  pullRequestMonitorContextQueryOptions,
   pullRequestReplyToThreadMutationOptions,
   pullRequestRequestReviewersMutationOptions,
   pullRequestReviewerCandidatesQueryOptions,
@@ -51,6 +60,7 @@ import { isWebUrl } from "~/browser/browserLinkTarget";
 import { selectThreadShellsAcrossEnvironments, useStore } from "~/store";
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import { findPullRequestBrowserThread } from "~/lib/openPullRequestLink";
+import { presentCollaborativeAcceptanceStatus } from "./collaborativeAcceptancePresentation";
 
 import {
   EMPTY_PENDING_REVIEW_COMMENTS,
@@ -199,6 +209,137 @@ function toDetailView(
   };
 }
 
+function PullRequestCollaborationStatusCard({
+  status,
+  acceptance,
+  controls,
+}: {
+  readonly status: PullRequestMonitorStatusResult | undefined;
+  readonly acceptance: CollaborativeAcceptanceStatus | undefined;
+  readonly controls: {
+    readonly canControl: boolean;
+    readonly hasCaseId: boolean;
+    readonly isLoading: boolean;
+    readonly error: string | null;
+    readonly isPaused: boolean;
+    readonly isPending: boolean;
+    readonly onPause: () => void;
+    readonly onResume: () => void;
+    readonly onRequestReview: () => void;
+  };
+}) {
+  const presentation = presentCollaborativeAcceptanceStatus({ monitor: status, acceptance });
+  const record = acceptance?.record;
+  const candidateHead =
+    record?.projection.headSha ??
+    record?.case.currentCandidate.headSha ??
+    status?.latestSnapshot?.headSha ??
+    status?.monitor?.headSha;
+  const blockers = status?.monitor?.readiness?.blockers ?? [];
+  const currentEvidence = record?.evidence.filter((evidence) => evidence.current) ?? [];
+  const completeEvidence = currentEvidence.filter((evidence) => evidence.complete).length;
+  const openObligations =
+    record?.obligations?.filter((obligation) => obligation.status === "open").length ?? 0;
+  const exchangeBudget = record?.case.policy.budgets.exchanges;
+  const exchangeCount = record?.exchanges.filter(
+    (exchange) => exchange.status !== "cancelled",
+  ).length;
+
+  return (
+    <section
+      className="rounded-xl border border-border/70 bg-card/60 p-3"
+      aria-label="Pull request collaboration status"
+      aria-live="polite"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold">Collaboration status</h2>
+        {candidateHead ? (
+          <code
+            className="max-w-40 truncate text-[11px] text-muted-foreground"
+            title={candidateHead}
+          >
+            {candidateHead.slice(0, 12)}
+          </code>
+        ) : null}
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {(
+          [
+            ["Execution", presentation.execution],
+            ["Collaboration", presentation.collaboration],
+            ["Acceptance", presentation.acceptance],
+            ["Readiness", presentation.readiness],
+          ] as const
+        ).map(([label, value]) => (
+          <div key={label} className="min-w-0 rounded-lg bg-muted/50 px-2.5 py-2">
+            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              {label}
+            </div>
+            <div className="truncate text-xs font-medium" title={value}>
+              {value}
+            </div>
+          </div>
+        ))}
+      </div>
+      {presentation.blocker ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">Why:</span> {presentation.blocker}
+        </p>
+      ) : null}
+      {blockers.length > 0 ? (
+        <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+          {blockers.slice(0, 3).map((blocker) => (
+            <li key={`${blocker.kind}-${blocker.detail ?? ""}`}>
+              {blocker.detail ?? blocker.kind}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {status?.openFeedback.length ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {status.openFeedback.length} open finding{status.openFeedback.length === 1 ? "" : "s"} ·{" "}
+          {status.recentEvents.length} recent event{status.recentEvents.length === 1 ? "" : "s"}
+        </p>
+      ) : null}
+      {record ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Evidence {completeEvidence}/{currentEvidence.length} complete · {openObligations} open
+          obligation{openObligations === 1 ? "" : "s"} · exchanges {exchangeCount}/{exchangeBudget}
+        </p>
+      ) : null}
+      {!controls.canControl ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          {controls.isLoading
+            ? "Loading canonical acceptance status…"
+            : controls.hasCaseId && controls.error
+              ? `Canonical acceptance status unavailable: ${controls.error}`
+              : "No collaborative acceptance case is currently associated with this pull request."}
+        </p>
+      ) : null}
+      {controls.canControl ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button
+            disabled={controls.isPending}
+            size="xs"
+            variant="outline"
+            onClick={controls.isPaused ? controls.onResume : controls.onPause}
+          >
+            {controls.isPaused ? "Resume automation" : "Pause automation"}
+          </Button>
+          <Button
+            disabled={controls.isPending}
+            size="xs"
+            variant="outline"
+            onClick={controls.onRequestReview}
+          >
+            Request review
+          </Button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function CommentComposer({
   value,
   disabled,
@@ -342,6 +483,14 @@ export function PullRequestDetailPanel({
   const [tab, setTab] = useState<DetailTab>("summary");
   const detailQuery = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
   const [timelineOrder, setTimelineOrder] = useState<"newest" | "oldest">("newest");
+  const monitorQuery = useQuery(pullRequestMonitorStatusQueryOptions({ environmentId, reference }));
+  const monitorContextQuery = useQuery(
+    pullRequestMonitorContextQueryOptions({
+      environmentId,
+      reference,
+      enabled: monitorQuery.data?.monitor !== null && monitorQuery.data?.monitor !== undefined,
+    }),
+  );
   const activityQuery = useQuery({
     ...pullRequestActivityQueryOptions({
       environmentId,
@@ -363,6 +512,33 @@ export function PullRequestDetailPanel({
       reference,
     ),
   );
+  const acceptanceProvenance = useMemo(() => {
+    for (const findingDetail of monitorContextQuery.data?.findingDetails ?? []) {
+      const provenance = findingDetail.finding?.acceptanceProvenance;
+      if (provenance) return provenance;
+    }
+    return null;
+  }, [monitorContextQuery.data?.findingDetails]);
+  const acceptanceThreadId = monitorQuery.data?.monitor?.ownerThreadId ?? owner?.id ?? null;
+  const acceptanceLookupQuery = useQuery(
+    collaborativeAcceptanceLookupQueryOptions({
+      environmentId,
+      threadId: acceptanceThreadId,
+      reference,
+      enabled: acceptanceThreadId !== null && acceptanceProvenance === null,
+    }),
+  );
+  const acceptanceCaseId =
+    acceptanceProvenance?.caseId ?? acceptanceLookupQuery.data?.caseId ?? null;
+  const acceptanceQuery = useQuery(
+    collaborativeAcceptanceStatusQueryOptions({
+      environmentId,
+      threadId: acceptanceThreadId,
+      caseId: acceptanceCaseId,
+      enabled: acceptanceCaseId !== null && acceptanceThreadId !== null,
+    }),
+  );
+  const acceptanceStatus = acceptanceQuery.data ?? acceptanceLookupQuery.data?.status;
   const browserThreadRef = useMemo(
     () => (owner ? scopeThreadRef(owner.environmentId, owner.id) : null),
     [owner?.environmentId, owner?.id],
@@ -396,6 +572,86 @@ export function PullRequestDetailPanel({
   const requestReviewers = useMutation(
     pullRequestRequestReviewersMutationOptions({ environmentId, queryClient }),
   );
+  const pauseAcceptance = useMutation(
+    collaborativeAcceptancePauseMutationOptions({ environmentId, queryClient }),
+  );
+  const resumeAcceptance = useMutation(
+    collaborativeAcceptanceResumeMutationOptions({ environmentId, queryClient }),
+  );
+  const requestAcceptanceReview = useMutation(
+    collaborativeAcceptanceRequestReviewMutationOptions({ environmentId, queryClient }),
+  );
+  const acceptanceMutationPending =
+    pauseAcceptance.isPending || resumeAcceptance.isPending || requestAcceptanceReview.isPending;
+  const acceptanceProjection = acceptanceStatus?.record?.projection;
+  const acceptanceControls = {
+    canControl:
+      acceptanceCaseId !== null &&
+      acceptanceThreadId !== null &&
+      acceptanceStatus?.record !== null &&
+      acceptanceStatus?.record !== undefined,
+    hasCaseId: acceptanceCaseId !== null,
+    isLoading:
+      acceptanceThreadId !== null &&
+      (acceptanceLookupQuery.isLoading ||
+        (acceptanceCaseId !== null && acceptanceQuery.isLoading && acceptanceStatus === undefined)),
+    error: acceptanceQuery.isError
+      ? errorMessage(acceptanceQuery.error)
+      : acceptanceLookupQuery.isError
+        ? errorMessage(acceptanceLookupQuery.error)
+        : null,
+    isPaused: acceptanceProjection?.executionPhase === "paused",
+    isPending: acceptanceMutationPending,
+    onPause: () => {
+      if (acceptanceCaseId === null || acceptanceThreadId === null) return;
+      void pauseAcceptance
+        .mutateAsync({
+          threadId: acceptanceThreadId,
+          caseId: acceptanceCaseId,
+          reason: "ambiguous-outcome",
+        })
+        .then(() => {
+          toastManager.add({ type: "success", title: "Automation paused" });
+        })
+        .catch((error) => {
+          toastManager.add({
+            type: "error",
+            title: "Could not pause automation",
+            description: errorMessage(error),
+          });
+        });
+    },
+    onResume: () => {
+      if (acceptanceCaseId === null || acceptanceThreadId === null) return;
+      void resumeAcceptance
+        .mutateAsync({ threadId: acceptanceThreadId, caseId: acceptanceCaseId })
+        .then(() => {
+          toastManager.add({ type: "success", title: "Automation resumed" });
+        })
+        .catch((error) => {
+          toastManager.add({
+            type: "error",
+            title: "Could not resume automation",
+            description: errorMessage(error),
+          });
+        });
+    },
+    onRequestReview: () => {
+      if (acceptanceCaseId === null || acceptanceThreadId === null) return;
+      void requestAcceptanceReview
+        .mutateAsync({ threadId: acceptanceThreadId, caseId: acceptanceCaseId })
+        .then(() => {
+          toastManager.add({ type: "success", title: "Review request queued" });
+        })
+        .catch((error) => {
+          toastManager.add({
+            type: "error",
+            title: "Could not request review",
+            description: errorMessage(error),
+          });
+        });
+    },
+  };
 
   const refresh = () => {
     void invalidate.mutateAsync({ reference }).catch((error) =>
@@ -869,6 +1125,19 @@ export function PullRequestDetailPanel({
             </div>
           ) : null}
         </div>
+        {monitorQuery.data ? (
+          <div className="border-t border-border/70 px-4 py-3">
+            <PullRequestCollaborationStatusCard
+              acceptance={acceptanceStatus}
+              controls={acceptanceControls}
+              status={monitorQuery.data}
+            />
+          </div>
+        ) : monitorQuery.isError ? (
+          <div className="border-t border-border/70 px-4 py-3 text-xs text-muted-foreground">
+            Collaboration status unavailable: {errorMessage(monitorQuery.error)}
+          </div>
+        ) : null}
       </header>
       <div
         aria-labelledby={`pr-tab-${activeTab}`}

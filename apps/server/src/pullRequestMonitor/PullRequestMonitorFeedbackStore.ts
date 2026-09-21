@@ -5,6 +5,8 @@ import {
   type PullRequestMonitorFeedbackDeliveryId,
   type PullRequestMonitorFeedbackDeliveryStatus,
   type PullRequestMonitorFeedbackDisposition,
+  type PullRequestMonitorFeedbackActorRole,
+  type PullRequestMonitorFeedbackOrigin,
   type PullRequestMonitorFeedbackItem,
   type PullRequestMonitorFeedbackItemId,
   type PullRequestMonitorFeedbackItemStatus,
@@ -43,6 +45,10 @@ interface ItemRow {
   readonly current_revision_id: string | null;
   readonly summary: string | null;
   readonly current_head_sha: string | null;
+  readonly origin: string | null;
+  readonly origin_thread_id: string | null;
+  readonly child_disposition: string | null;
+  readonly reviewer_disposition: string | null;
 }
 
 interface DeliveryRow {
@@ -70,6 +76,7 @@ interface ReportRow {
   readonly note: string | null;
   readonly reporter_thread_id: string | null;
   readonly created_at: string;
+  readonly actor_role: string | null;
 }
 
 interface StateRow {
@@ -106,6 +113,11 @@ function rowToItem(row: ItemRow): PullRequestMonitorFeedbackItem {
     currentRevisionId: row.current_revision_id as PullRequestMonitorFeedbackRevisionId | null,
     currentRevisionHeadSha: row.current_head_sha,
     summary: (row.summary ?? "").slice(0, 500),
+    origin: (row.origin ?? "provider") as PullRequestMonitorFeedbackOrigin,
+    originThreadId: row.origin_thread_id as ThreadId | null,
+    childDisposition: row.child_disposition as PullRequestMonitorFeedbackItem["childDisposition"],
+    reviewerDisposition:
+      row.reviewer_disposition as PullRequestMonitorFeedbackItem["reviewerDisposition"],
   };
 }
 
@@ -142,6 +154,7 @@ function rowToReport(row: ReportRow): PullRequestMonitorFeedbackReport {
     note: row.note,
     reporterThreadId: row.reporter_thread_id as ThreadId | null,
     createdAt: row.created_at,
+    actorRole: row.actor_role as PullRequestMonitorFeedbackActorRole,
   };
 }
 
@@ -153,6 +166,12 @@ export interface PullRequestMonitorFeedbackStoreApi {
     > & {
       readonly currentRevisionId: PullRequestMonitorFeedbackRevisionId | null;
       readonly summary: string;
+      readonly origin?: PullRequestMonitorFeedbackOrigin | undefined;
+      readonly originThreadId?: ThreadId | null | undefined;
+      readonly childDisposition?: PullRequestMonitorFeedbackItem["childDisposition"] | undefined;
+      readonly reviewerDisposition?:
+        | PullRequestMonitorFeedbackItem["reviewerDisposition"]
+        | undefined;
     };
   }) => Effect.Effect<void, PullRequestMonitorError>;
   readonly insertRevision: (
@@ -181,6 +200,10 @@ export interface PullRequestMonitorFeedbackStoreApi {
     readonly at: string;
     readonly byThreadId: ThreadId | null;
     readonly status: PullRequestMonitorFeedbackItemStatus;
+    readonly childDisposition?: PullRequestMonitorFeedbackItem["childDisposition"] | undefined;
+    readonly reviewerDisposition?:
+      | PullRequestMonitorFeedbackItem["reviewerDisposition"]
+      | undefined;
   }) => Effect.Effect<void, PullRequestMonitorError>;
   readonly insertReport: (
     report: PullRequestMonitorFeedbackReport,
@@ -193,7 +216,12 @@ export interface PullRequestMonitorFeedbackStoreApi {
     readonly at: string;
     readonly byThreadId: ThreadId | null;
     readonly status: PullRequestMonitorFeedbackItemStatus;
+    readonly childDisposition?: PullRequestMonitorFeedbackItem["childDisposition"] | undefined;
+    readonly reviewerDisposition?:
+      | PullRequestMonitorFeedbackItem["reviewerDisposition"]
+      | undefined;
     readonly report: PullRequestMonitorFeedbackReport;
+    readonly actorRole?: PullRequestMonitorFeedbackActorRole;
   }) => Effect.Effect<void, PullRequestMonitorError>;
   readonly listReports: (input: {
     readonly monitorId: PullRequestMonitorId;
@@ -308,12 +336,14 @@ export const PullRequestMonitorFeedbackStore = {
       sql`
         INSERT INTO pull_request_monitor_feedback_items (
           item_id, monitor_id, stable_key, kind, status, disposition, disposition_note,
-          disposition_at, disposition_by_thread_id, first_seen_at, last_seen_at, current_revision_id
+          disposition_at, disposition_by_thread_id, first_seen_at, last_seen_at, current_revision_id,
+          origin, origin_thread_id, child_disposition, reviewer_disposition
         ) VALUES (
           ${item.id}, ${item.monitorId}, ${item.stableKey}, ${item.kind}, ${item.status},
           ${item.disposition}, ${item.dispositionNote}, ${item.dispositionAt},
           ${item.dispositionByThreadId}, ${item.firstSeenAt}, ${item.lastSeenAt},
-          ${item.currentRevisionId}
+          ${item.currentRevisionId}, ${item.origin ?? "provider"}, ${item.originThreadId ?? null},
+          ${item.childDisposition ?? null}, ${item.reviewerDisposition ?? null}
         )
         ON CONFLICT(monitor_id, stable_key) DO UPDATE SET
           kind = excluded.kind,
@@ -323,7 +353,11 @@ export const PullRequestMonitorFeedbackStore = {
           disposition_at = excluded.disposition_at,
           disposition_by_thread_id = excluded.disposition_by_thread_id,
           last_seen_at = excluded.last_seen_at,
-          current_revision_id = COALESCE(excluded.current_revision_id, pull_request_monitor_feedback_items.current_revision_id)
+          current_revision_id = COALESCE(excluded.current_revision_id, pull_request_monitor_feedback_items.current_revision_id),
+          origin = COALESCE(excluded.origin, pull_request_monitor_feedback_items.origin),
+          origin_thread_id = COALESCE(excluded.origin_thread_id, pull_request_monitor_feedback_items.origin_thread_id),
+          child_disposition = COALESCE(excluded.child_disposition, pull_request_monitor_feedback_items.child_disposition),
+          reviewer_disposition = COALESCE(excluded.reviewer_disposition, pull_request_monitor_feedback_items.reviewer_disposition)
       `.pipe(
         Effect.mapError((cause) => storeError("Failed to upsert feedback item.", cause)),
         Effect.asVoid,
@@ -438,7 +472,9 @@ export const PullRequestMonitorFeedbackStore = {
             disposition_note = ${input.note},
             disposition_at = ${input.at},
             disposition_by_thread_id = ${input.byThreadId},
-            status = ${input.status}
+            status = ${input.status},
+            child_disposition = COALESCE(${input.childDisposition ?? null}, child_disposition),
+            reviewer_disposition = COALESCE(${input.reviewerDisposition ?? null}, reviewer_disposition)
         WHERE item_id = ${input.itemId}
       `.pipe(
         Effect.mapError((cause) => storeError("Failed to set feedback disposition.", cause)),
@@ -448,10 +484,12 @@ export const PullRequestMonitorFeedbackStore = {
     const insertReport: PullRequestMonitorFeedbackStoreApi["insertReport"] = (report) =>
       sql`
         INSERT INTO pull_request_monitor_feedback_reports (
-          report_id, monitor_id, item_id, disposition, note, reporter_thread_id, created_at, recheck_requested
+          report_id, monitor_id, item_id, disposition, note, reporter_thread_id, created_at,
+          recheck_requested, actor_role
         ) VALUES (
           ${report.id}, ${report.monitorId}, ${report.itemId}, ${report.disposition},
-          ${report.note}, ${report.reporterThreadId}, ${report.createdAt}, 1
+          ${report.note}, ${report.reporterThreadId}, ${report.createdAt}, 1,
+          ${report.actorRole ?? "provider"}
         )
       `.pipe(
         Effect.mapError((cause) => storeError("Failed to insert feedback report.", cause)),
@@ -468,15 +506,19 @@ export const PullRequestMonitorFeedbackStore = {
                   disposition_note = ${input.note},
                   disposition_at = ${input.at},
                   disposition_by_thread_id = ${input.byThreadId},
-                  status = ${input.status}
+                  status = ${input.status},
+                  child_disposition = COALESCE(${input.childDisposition ?? null}, child_disposition),
+                  reviewer_disposition = COALESCE(${input.reviewerDisposition ?? null}, reviewer_disposition)
               WHERE item_id = ${input.itemId}
             `;
             yield* sql`
               INSERT INTO pull_request_monitor_feedback_reports (
-                report_id, monitor_id, item_id, disposition, note, reporter_thread_id, created_at, recheck_requested
+                report_id, monitor_id, item_id, disposition, note, reporter_thread_id, created_at,
+                recheck_requested, actor_role
               ) VALUES (
                 ${input.report.id}, ${input.report.monitorId}, ${input.report.itemId}, ${input.report.disposition},
-                ${input.report.note}, ${input.report.reporterThreadId}, ${input.report.createdAt}, 1
+                ${input.report.note}, ${input.report.reporterThreadId}, ${input.report.createdAt}, 1,
+                ${input.actorRole ?? "provider"}
               )
             `;
           }),

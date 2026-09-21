@@ -8,6 +8,7 @@ import { ModelSelection, ProjectScript } from "./orchestration.ts";
 import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
 import { AgentWorkflowDestinationMode, ReviewChangesScope } from "./agentWorkflows.ts";
+import { CollaborativeAcceptancePolicy } from "./collaborativeAcceptance.ts";
 import { AgentWorkflowSettings, CustomAgentWorkflowAutomationSettings } from "./workflowRuntime.ts";
 import { PullRequestListState } from "./pullRequest.ts";
 import { ThreadEnvMode, EnvironmentMachineKind } from "./environment.ts";
@@ -520,6 +521,14 @@ export const ServerSettings = Schema.Struct({
   chatExportDetail: ChatExportDetailSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS)),
   ),
+  /**
+   * Null means no policy has been explicitly selected. This preserves the
+   * opt-in boundary for installations created before collaborative acceptance
+   * existed; an explicit "off" policy remains distinguishable from absence.
+   */
+  collaborativeAcceptance: Schema.NullOr(CollaborativeAcceptancePolicy).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   agentWorkflows: AgentWorkflowSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   textGenerationModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(
@@ -708,6 +717,7 @@ export const ServerSettingsPatch = Schema.Struct({
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   chatExportDirectory: Schema.optionalKey(Schema.String),
   chatExportDetail: Schema.optionalKey(ChatExportDetailSettingsPatch),
+  collaborativeAcceptance: Schema.optionalKey(Schema.NullOr(CollaborativeAcceptancePolicy)),
   agentWorkflows: Schema.optionalKey(AgentWorkflowSettingsPatch),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   observability: Schema.optionalKey(

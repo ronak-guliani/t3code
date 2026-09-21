@@ -38,7 +38,13 @@ export function isActionableApprovalRequest(payload: unknown): boolean {
   );
 }
 
-function activityChangesShellSummary(
+/**
+ * Whether an appended activity can change the thread's shell row. Shared by
+ * the reconciler (which decides what to refresh) and the shell stream (which
+ * decides what to re-read): filtering in only one place either wastes work
+ * or starves the sidebar, so both must agree on the predicate.
+ */
+export function activityChangesShellSummary(
   activity: Extract<
     OrchestrationEvent,
     { type: "thread.activity-appended" }
@@ -89,7 +95,13 @@ export function projectionImpactForEvent(event: OrchestrationEvent): ProjectionI
       }
       break;
     case "thread.review-result-set":
+    case "thread.validation-requested":
+    case "thread.validation-request-failed":
     case "thread.validation-run-planned":
+    case "thread.validation-lifecycle-updated":
+    case "thread.validation-lease-claimed":
+    case "thread.validation-lease-released":
+    case "thread.validation-result-recorded":
     case "thread.validation-gate-updated":
     case "thread.proposed-plan-upserted":
     case "thread.approval-response-requested":

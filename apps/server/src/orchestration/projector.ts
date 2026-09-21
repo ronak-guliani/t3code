@@ -11,15 +11,24 @@ import {
   OrchestrationThread,
 } from "@t3tools/contracts";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
-import {
-  sameThreadPullRequest,
-  seedLegacyThreadPullRequestLink,
-  upsertLegacyThreadPullRequestLink,
-} from "@t3tools/shared/threadPullRequests";
+import { sameThreadPullRequest } from "@t3tools/shared/threadPullRequests";
 import { Effect, Schema } from "effect";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
-import { pullRequestFromReviewSnapshot } from "./reviewPullRequest.ts";
+import { acceptValidationResult, transitionValidationRunStatus } from "@t3tools/contracts";
+import {
+  MAX_THREAD_ACTIVITIES,
+  MAX_THREAD_CHECKPOINTS,
+  MAX_THREAD_MESSAGES,
+  MAX_THREAD_PROPOSED_PLANS,
+  checkpointStatusToLatestTurnState,
+  isNonAuthoritativeCheckpointStatus,
+  planMetaUpdatedPullRequestLinks,
+  resolveInitialThreadPullRequest,
+  selectRetainedMessageIds,
+  shouldPreserveActiveMessageId,
+  terminalTurnStateForSessionStatus,
+} from "./projection/ProjectionPolicy.ts";
 import {
   MessageSentPayloadSchema,
   ProjectCreatedPayload,
@@ -33,6 +42,8 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadCollaborationRequestUpdatedPayload,
+  ThreadCollaborationStateClearedPayload,
   ThreadPullRequestLinkedPayload,
   ThreadPullRequestRekeyedPayload,
   ThreadPullRequestUnlinkedPayload,
@@ -56,6 +67,12 @@ import {
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadValidationGateUpdatedPayload,
+  ThreadValidationRequestedPayload,
+  ThreadValidationRequestFailedPayload,
+  ThreadValidationLifecycleUpdatedPayload,
+  ThreadValidationLeaseClaimedPayload,
+  ThreadValidationLeaseReleasedPayload,
+  ThreadValidationResultRecordedPayload,
   ThreadValidationRunPlannedPayload,
   ThreadTurnDiffCompletedPayload,
   WorkflowArtifactCreatedPayload,
@@ -71,19 +88,10 @@ type ThreadPatch = Omit<
 > & {
   readonly workspaceBinding?: WorkspaceBinding | null;
 };
-export const MAX_THREAD_MESSAGES = 2_000;
-const MAX_THREAD_CHECKPOINTS = 500;
-export const MAX_THREAD_ACTIVITIES = 500;
-
-function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "speculative" | "error") {
-  if (status === "error") return "error" as const;
-  if (status === "missing") return "interrupted" as const;
-  if (status === "speculative") return "running" as const;
-  return "completed" as const;
-}
+export { MAX_THREAD_ACTIVITIES, MAX_THREAD_CHECKPOINTS, MAX_THREAD_MESSAGES };
 
 function isNonAuthoritativeCheckpoint(status: string | undefined): boolean {
-  return status === "missing" || status === "speculative";
+  return isNonAuthoritativeCheckpointStatus(status);
 }
 
 function latestTurnFromSession(
@@ -113,7 +121,7 @@ function latestTurnFromSession(
   if (thread.latestTurn?.state === "running") {
     return {
       ...thread.latestTurn,
-      state: session.status === "error" ? "error" : "interrupted",
+      state: terminalTurnStateForSessionStatus(session.status),
       completedAt: session.updatedAt,
     };
   }
@@ -155,61 +163,16 @@ function retainThreadMessagesAfterRevert(
   retainedTurnIds: ReadonlySet<string>,
   turnCount: number,
 ): ReadonlyArray<OrchestrationMessage> {
-  const retainedMessageIds = new Set<string>();
-  for (const message of messages) {
-    if (message.role === "system") {
-      retainedMessageIds.add(message.id);
-      continue;
-    }
-    if (message.turnId !== null && retainedTurnIds.has(message.turnId)) {
-      retainedMessageIds.add(message.id);
-    }
-  }
-
-  const retainedUserCount = messages.filter(
-    (message) => message.role === "user" && retainedMessageIds.has(message.id),
-  ).length;
-  const missingUserCount = Math.max(0, turnCount - retainedUserCount);
-  if (missingUserCount > 0) {
-    const fallbackUserMessages = messages
-      .filter(
-        (message) =>
-          message.role === "user" &&
-          !retainedMessageIds.has(message.id) &&
-          (message.turnId === null || retainedTurnIds.has(message.turnId)),
-      )
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      )
-      .slice(0, missingUserCount);
-    for (const message of fallbackUserMessages) {
-      retainedMessageIds.add(message.id);
-    }
-  }
-
-  const retainedAssistantCount = messages.filter(
-    (message) => message.role === "assistant" && retainedMessageIds.has(message.id),
-  ).length;
-  const missingAssistantCount = Math.max(0, turnCount - retainedAssistantCount);
-  if (missingAssistantCount > 0) {
-    const fallbackAssistantMessages = messages
-      .filter(
-        (message) =>
-          message.role === "assistant" &&
-          !retainedMessageIds.has(message.id) &&
-          (message.turnId === null || retainedTurnIds.has(message.turnId)),
-      )
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      )
-      .slice(0, missingAssistantCount);
-    for (const message of fallbackAssistantMessages) {
-      retainedMessageIds.add(message.id);
-    }
-  }
-
+  const retainedMessageIds = selectRetainedMessageIds(
+    messages.map((message) => ({
+      messageId: message.id,
+      turnId: message.turnId,
+      role: message.role,
+      createdAt: message.createdAt,
+    })),
+    retainedTurnIds,
+    turnCount,
+  );
   return messages.filter((message) => retainedMessageIds.has(message.id));
 }
 
@@ -377,9 +340,10 @@ export function projectEvent(
           event.type,
           "payload",
         );
-        const legacyReviewPullRequest = pullRequestFromReviewSnapshot(payload.reviewSnapshot);
-        const initialPullRequest =
-          payload.pullRequest !== undefined ? payload.pullRequest : legacyReviewPullRequest;
+        const { initialPullRequest, source } = resolveInitialThreadPullRequest({
+          pullRequest: payload.pullRequest,
+          reviewSnapshot: payload.reviewSnapshot,
+        });
         const thread: OrchestrationThread = yield* decodeForEvent(
           OrchestrationThread,
           {
@@ -405,10 +369,7 @@ export function projectEvent(
                   pullRequests: [
                     {
                       pullRequest: initialPullRequest,
-                      source:
-                        payload.pullRequest !== undefined
-                          ? ("created" as const)
-                          : ("recovered" as const),
+                      source: source ?? ("recovered" as const),
                       linkedAt: payload.createdAt,
                     },
                   ],
@@ -600,16 +561,14 @@ export function projectEvent(
                     pullRequest: payload.pullRequest,
                     ...(payload.pullRequest !== null
                       ? {
-                          pullRequests: upsertLegacyThreadPullRequestLink(
-                            seedLegacyThreadPullRequestLink(
-                              existingThread?.pullRequests,
-                              existingThread?.pullRequest,
-                              existingThread?.createdAt ?? payload.updatedAt,
-                            ),
-                            payload.pullRequest,
-                            payload.updatedAt,
-                            payload.pullRequestSource,
-                          ),
+                          pullRequests: planMetaUpdatedPullRequestLinks({
+                            existingLinks: existingThread?.pullRequests,
+                            existingLegacyPullRequest: existingThread?.pullRequest,
+                            createdAt: existingThread?.createdAt ?? payload.updatedAt,
+                            nextPullRequest: payload.pullRequest,
+                            updatedAt: payload.updatedAt,
+                            source: payload.pullRequestSource,
+                          }).allLinks,
                         }
                       : {}),
                   }
@@ -618,6 +577,48 @@ export function projectEvent(
             }),
           };
         }),
+      );
+
+    case "thread.collaboration-request-updated":
+      return decodeForEvent(
+        ThreadCollaborationRequestUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            collaborationRequests: (() => {
+              const existing =
+                nextBase.threads.find((thread) => thread.id === payload.threadId)
+                  ?.collaborationRequests ?? [];
+              const withoutRequest = existing.filter(
+                (request) => request.requestId !== payload.request.requestId,
+              );
+              return [...withoutRequest, payload.request].toSorted((left, right) =>
+                left.createdAt.localeCompare(right.createdAt),
+              );
+            })(),
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.collaboration-state-cleared":
+      return decodeForEvent(
+        ThreadCollaborationStateClearedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            collaborationRequests: [],
+            updatedAt: payload.clearedAt,
+          }),
+        })),
       );
 
     case "thread.pull-request-linked":
@@ -849,8 +850,185 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             validationRun: payload.run,
+            validationRequest: null,
             updatedAt: event.occurredAt,
           }),
+        })),
+      );
+
+    case "thread.validation-requested":
+      return decodeForEvent(
+        ThreadValidationRequestedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            validationRequest: payload.request,
+            updatedAt: event.occurredAt,
+          }),
+        })),
+      );
+
+    case "thread.validation-request-failed":
+      return decodeForEvent(
+        ThreadValidationRequestFailedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            ((): ThreadPatch => {
+              const current = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              if (current?.validationRequest?.requestId !== payload.failure.requestId) {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRequest: null,
+                updatedAt: event.occurredAt,
+              };
+            })(),
+          ),
+        })),
+      );
+
+    case "thread.validation-lifecycle-updated":
+      return decodeForEvent(
+        ThreadValidationLifecycleUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            (() => {
+              const current = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              const run = current?.validationRun;
+              if (!run || run.id !== payload.update.runId) {
+                return { updatedAt: event.occurredAt };
+              }
+              let validationRun: typeof run;
+              try {
+                validationRun = transitionValidationRunStatus(
+                  run,
+                  payload.update.status,
+                  payload.update.updatedAt,
+                );
+              } catch {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRun,
+                updatedAt: event.occurredAt,
+              };
+            })(),
+          ),
+        })),
+      );
+
+    case "thread.validation-lease-claimed":
+      return decodeForEvent(
+        ThreadValidationLeaseClaimedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            ((): ThreadPatch => {
+              const current = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              if (!current?.validationRun || current.validationRun.id !== payload.runId) {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRun: {
+                  ...current.validationRun,
+                  executorId: payload.lease.executorId,
+                  lease: payload.lease,
+                  updatedAt: event.occurredAt,
+                },
+                updatedAt: event.occurredAt,
+              };
+            })(),
+          ),
+        })),
+      );
+
+    case "thread.validation-lease-released":
+      return decodeForEvent(
+        ThreadValidationLeaseReleasedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            ((): ThreadPatch => {
+              const current = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              if (!current?.validationRun || current.validationRun.id !== payload.runId) {
+                return { updatedAt: event.occurredAt };
+              }
+              if (current.validationRun.lease?.id !== payload.leaseId) {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRun: {
+                  ...current.validationRun,
+                  lease: null,
+                  updatedAt: event.occurredAt,
+                },
+                updatedAt: event.occurredAt,
+              };
+            })(),
+          ),
+        })),
+      );
+
+    case "thread.validation-result-recorded":
+      return decodeForEvent(
+        ThreadValidationResultRecordedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            ((): ThreadPatch => {
+              const current = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              const run = current?.validationRun;
+              if (!run || run.id !== payload.result.runId) {
+                return { updatedAt: event.occurredAt };
+              }
+              let validationRun: typeof run;
+              try {
+                validationRun = acceptValidationResult(run, payload.result);
+              } catch {
+                return { updatedAt: event.occurredAt };
+              }
+              return {
+                validationRun,
+                updatedAt: event.occurredAt,
+              };
+            })(),
+          ),
         })),
       );
 
@@ -906,15 +1084,17 @@ export function projectEvent(
           event.type,
           "session",
         );
-        const session =
-          decodedSession.activeTurnId !== null && decodedSession.activeMessageId === undefined
-            ? {
-                ...decodedSession,
-                ...(thread.session?.activeMessageId !== undefined
-                  ? { activeMessageId: thread.session.activeMessageId }
-                  : {}),
-              }
-            : decodedSession;
+        const session = shouldPreserveActiveMessageId({
+          activeTurnId: decodedSession.activeTurnId,
+          activeMessageId: decodedSession.activeMessageId,
+        })
+          ? {
+              ...decodedSession,
+              ...(thread.session?.activeMessageId !== undefined
+                ? { activeMessageId: thread.session.activeMessageId }
+                : {}),
+            }
+          : decodedSession;
 
         return {
           ...nextBase,
@@ -1091,7 +1271,7 @@ export function projectEvent(
             (left, right) =>
               left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
           )
-          .slice(-200);
+          .slice(-MAX_THREAD_PROPOSED_PLANS);
 
         return {
           ...nextBase,
@@ -1197,7 +1377,7 @@ export function projectEvent(
           const proposedPlans = retainThreadProposedPlansAfterRevert(
             thread.proposedPlans,
             retainedTurnIds,
-          ).slice(-200);
+          ).slice(-MAX_THREAD_PROPOSED_PLANS);
           const activities = retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds);
 
           const latestCheckpoint = checkpoints.at(-1) ?? null;

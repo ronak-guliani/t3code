@@ -9,6 +9,18 @@ import {
 import { ProviderSetupError } from "./providerSetup.ts";
 import { UsageSummaryInput, UsageSummary, UsageReadError, UsagePricing } from "./usage.ts";
 import { NonNegativeInt } from "./baseSchemas.ts";
+import { ThreadId } from "./baseSchemas.ts";
+import {
+  CollaborativeAcceptanceAssessmentSubmission,
+  CollaborativeAcceptanceCaseLookupError,
+  CollaborativeAcceptanceCaseLookupInput,
+  CollaborativeAcceptanceCaseLookupResult,
+  CollaborativeAcceptanceCandidateSubmission,
+  CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptanceError,
+  CollaborativeAcceptancePauseReason,
+  CollaborativeAcceptanceStatus,
+} from "./collaborativeAcceptance.ts";
 import {
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
@@ -438,6 +450,14 @@ export const WS_METHODS = {
   pullRequestMonitorsSubmitFindings: "pullRequestMonitors.submitFindings",
   pullRequestMonitorsLaunchFallback: "pullRequestMonitors.launchFallback",
 
+  collaborativeAcceptanceSubmitCandidate: "collaborativeAcceptance.submitCandidate",
+  collaborativeAcceptanceRequestReview: "collaborativeAcceptance.requestReview",
+  collaborativeAcceptanceStatus: "collaborativeAcceptance.status",
+  collaborativeAcceptanceResolveForPullRequest: "collaborativeAcceptance.resolveForPullRequest",
+  collaborativeAcceptanceSubmitAssessment: "collaborativeAcceptance.submitAssessment",
+  collaborativeAcceptancePause: "collaborativeAcceptance.pause",
+  collaborativeAcceptanceResume: "collaborativeAcceptance.resume",
+
   // Streaming subscriptions
   subscribeGitStatus: "subscribeGitStatus",
   subscribeVcsStatus: "subscribeVcsStatus",
@@ -800,6 +820,80 @@ export const WsPullRequestMonitorsLaunchFallbackRpc = Rpc.make(
     payload: PullRequestMonitorLaunchFallbackInput,
     success: PullRequestMonitorLaunchFallbackResult,
     error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+  },
+);
+
+const CollaborativeAcceptanceCaseInput = Schema.Struct({
+  threadId: ThreadId,
+  caseId: CollaborativeAcceptanceCaseId,
+});
+
+export const WsCollaborativeAcceptanceSubmitCandidateRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceSubmitCandidate,
+  {
+    payload: Schema.Struct({
+      threadId: ThreadId,
+      submission: CollaborativeAcceptanceCandidateSubmission,
+    }),
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
+  },
+);
+
+export const WsCollaborativeAcceptanceRequestReviewRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceRequestReview,
+  {
+    payload: CollaborativeAcceptanceCaseInput,
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
+  },
+);
+
+export const WsCollaborativeAcceptanceStatusRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceStatus,
+  {
+    payload: CollaborativeAcceptanceCaseInput,
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
+  },
+);
+
+export const WsCollaborativeAcceptanceResolveForPullRequestRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceResolveForPullRequest,
+  {
+    payload: CollaborativeAcceptanceCaseLookupInput,
+    success: CollaborativeAcceptanceCaseLookupResult,
+    error: CollaborativeAcceptanceCaseLookupError,
+  },
+);
+
+export const WsCollaborativeAcceptanceSubmitAssessmentRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceSubmitAssessment,
+  {
+    payload: Schema.Struct({
+      threadId: ThreadId,
+      submission: CollaborativeAcceptanceAssessmentSubmission,
+    }),
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
+  },
+);
+
+export const WsCollaborativeAcceptancePauseRpc = Rpc.make(WS_METHODS.collaborativeAcceptancePause, {
+  payload: Schema.Struct({
+    ...CollaborativeAcceptanceCaseInput.fields,
+    reason: CollaborativeAcceptancePauseReason,
+  }),
+  success: CollaborativeAcceptanceStatus,
+  error: CollaborativeAcceptanceError,
+});
+
+export const WsCollaborativeAcceptanceResumeRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceResume,
+  {
+    payload: CollaborativeAcceptanceCaseInput,
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
   },
 );
 
@@ -1371,6 +1465,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsPullRequestMonitorsTransferRpc,
   WsPullRequestMonitorsSubmitFindingsRpc,
   WsPullRequestMonitorsLaunchFallbackRpc,
+  WsCollaborativeAcceptanceSubmitCandidateRpc,
+  WsCollaborativeAcceptanceRequestReviewRpc,
+  WsCollaborativeAcceptanceStatusRpc,
+  WsCollaborativeAcceptanceResolveForPullRequestRpc,
+  WsCollaborativeAcceptanceSubmitAssessmentRpc,
+  WsCollaborativeAcceptancePauseRpc,
+  WsCollaborativeAcceptanceResumeRpc,
   WsSubscribeDiscoveredLocalServersRpc,
   WsDeviceConfigureRpc,
   WsDeviceListRpc,

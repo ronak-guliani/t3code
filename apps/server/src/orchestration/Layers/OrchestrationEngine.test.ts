@@ -40,9 +40,13 @@ import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts"
 import { ServerConfig } from "../../config.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { makeSqlitePersistenceLive } from "../../persistence/Layers/Sqlite.ts";
+import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
@@ -2122,5 +2126,150 @@ describe("OrchestrationEngine", () => {
     ).rejects.toThrow("already exists");
 
     await system.dispose();
+  });
+  it("honors explicit current-checkout threads without allocating a worktree, and isolates legacy root bindings", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const initRepository = async (prefix: string): Promise<string> => {
+      const directory = await mkdtemp(join(tmpdir(), prefix));
+      execFileSync("git", ["init"], { cwd: directory });
+      execFileSync("git", ["config", "user.email", "t3-test@example.com"], {
+        cwd: directory,
+      });
+      execFileSync("git", ["config", "user.name", "t3-test"], { cwd: directory });
+      execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: directory });
+      return directory;
+    };
+    const explicitRepositoryDir = await initRepository("t3-explicit-checkout-");
+    // A separate repository so the legacy thread never contends with the
+    // explicit thread for ownership of the same checkout.
+    const legacyRepositoryDir = await initRepository("t3-legacy-checkout-");
+    const canonicalExplicitDir = await canonicalizeWorktreePath(explicitRepositoryDir);
+    const canonicalLegacyDir = await canonicalizeWorktreePath(legacyRepositoryDir);
+    const isolatedParentFor = (canonicalDir: string): string =>
+      join(
+        dirname(canonicalDir),
+        ".t3-thread-workspaces",
+        createHash("sha256").update(canonicalDir).digest("hex").slice(0, 16),
+      );
+    const explicitIsolatedParentDir = isolatedParentFor(canonicalExplicitDir);
+    const legacyIsolatedParentDir = isolatedParentFor(canonicalLegacyDir);
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+    };
+
+    const createProject = (projectId: ProjectId, workspaceRoot: string, commandId: string) =>
+      system.run(
+        engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make(commandId),
+          projectId,
+          title: projectId,
+          workspaceRoot,
+          createdAt: now(),
+        }),
+      );
+    const createCheckoutThread = (
+      threadId: ThreadId,
+      projectId: ProjectId,
+      commandId: string,
+      workspaceRoot: string,
+    ) =>
+      system.run(
+        engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(commandId),
+          threadId,
+          projectId,
+          title: threadId,
+          modelSelection,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: workspaceRoot,
+          createdAt: now(),
+        }),
+      );
+    const startTurn = (threadId: ThreadId, commandId: string, messageId: string) =>
+      system.run(
+        engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(commandId),
+          threadId,
+          message: {
+            messageId: asMessageId(messageId),
+            role: "user",
+            text: "hello",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now(),
+        }),
+      );
+
+    try {
+      const explicitProjectId = ProjectId.make("explicit-checkout-project");
+      await createProject(
+        explicitProjectId,
+        explicitRepositoryDir,
+        "explicit-checkout-project-create",
+      );
+
+      const explicitThreadId = ThreadId.make("explicit-checkout-thread");
+      await createCheckoutThread(
+        explicitThreadId,
+        explicitProjectId,
+        "explicit-checkout-thread-create",
+        explicitRepositoryDir,
+      );
+
+      let readModel = await system.run(engine.getReadModel());
+      const created = readModel.threads.find((entry) => entry.id === explicitThreadId);
+      expect(created?.worktreePath).toBe(canonicalExplicitDir);
+      expect(created?.workspaceBinding?.workspaceScope).toBe("project-checkout");
+
+      await startTurn(explicitThreadId, "explicit-checkout-turn", "explicit-checkout-msg");
+      readModel = await system.run(engine.getReadModel());
+      const afterTurn = readModel.threads.find((entry) => entry.id === explicitThreadId);
+      expect(afterTurn?.worktreePath).toBe(canonicalExplicitDir);
+      expect(afterTurn?.workspaceBinding?.workspaceScope).toBe("project-checkout");
+      expect(existsSync(explicitIsolatedParentDir)).toBe(false);
+
+      const legacyProjectId = ProjectId.make("legacy-checkout-project");
+      await createProject(legacyProjectId, legacyRepositoryDir, "legacy-checkout-project-create");
+      const legacyThreadId = ThreadId.make("legacy-checkout-thread");
+      await createCheckoutThread(
+        legacyThreadId,
+        legacyProjectId,
+        "legacy-checkout-thread-create",
+        legacyRepositoryDir,
+      );
+      // Simulate a legacy root binding: same persisted checkout path, but no
+      // recorded current-checkout scope.
+      await system.run(
+        engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("legacy-checkout-clear-binding"),
+          threadId: legacyThreadId,
+          workspaceBinding: null,
+        }),
+      );
+
+      await startTurn(legacyThreadId, "legacy-checkout-turn", "legacy-checkout-msg");
+      readModel = await system.run(engine.getReadModel());
+      const isolated = readModel.threads.find((entry) => entry.id === legacyThreadId);
+      expect(isolated?.worktreePath).not.toBe(canonicalLegacyDir);
+      expect(isolated?.worktreePath?.startsWith(`${legacyIsolatedParentDir}${sep}`)).toBe(true);
+      expect(isolated?.branch?.startsWith("t3/thread/")).toBe(true);
+      expect(isolated?.workspaceBinding?.workspaceScope).toBeUndefined();
+    } finally {
+      await system.dispose();
+      await rm(explicitIsolatedParentDir, { recursive: true, force: true });
+      await rm(legacyIsolatedParentDir, { recursive: true, force: true });
+      await rm(explicitRepositoryDir, { recursive: true, force: true });
+      await rm(legacyRepositoryDir, { recursive: true, force: true });
+    }
   });
 });

@@ -1,5 +1,6 @@
 import {
   ChatAttachment,
+  CollaborationRequest,
   EventId,
   IsoDateTime,
   MessageId,
@@ -36,6 +37,7 @@ import {
   ReviewSnapshot,
   ThreadNudging,
   ThreadPullRequestLink,
+  ValidationRequest,
   ValidationRun,
   WorkspaceBinding,
 } from "@t3tools/contracts";
@@ -62,7 +64,7 @@ import { ProjectionWorkflowRepository } from "../../persistence/Services/Project
 import { ProjectionWorkflowRepositoryLive } from "../../persistence/Layers/ProjectionWorkflows.ts";
 import { RepositoryIdentityResolver } from "../../project/Services/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
-import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "../projector.ts";
+import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "../projection/ProjectionPolicy.ts";
 // Per-thread cap for background-agent runs in shell snapshots.
 const MAX_BACKGROUND_AGENT_RUNS_PER_THREAD = 100;
 import {
@@ -135,10 +137,12 @@ const WorkspaceBindingDbSchema = Schema.NullOr(
 const ProjectionThreadDbRowSchema = Schema.Struct({
   ...ProjectionThread.fields,
   nudging: Schema.fromJsonString(ThreadNudging),
+  collaborationRequests: Schema.fromJsonString(Schema.Array(CollaborationRequest)),
   modelSelection: Schema.fromJsonString(ModelSelection),
   pullRequest: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation))),
   reviewSnapshot: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewSnapshot))),
   reviewResult: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewResult))),
+  validationRequest: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRequest))),
   validationRun: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRun))),
   pullRequests: Schema.fromJsonString(Schema.Array(ThreadPullRequestLink)),
   workspaceBinding: Schema.optionalKey(WorkspaceBindingDbSchema),
@@ -158,10 +162,12 @@ const ProjectionChatArchiveThreadDbRowSchema = Schema.Struct({
 const ProjectionThreadWithProjectTitleDbRowSchema = Schema.Struct({
   ...ProjectionThread.fields,
   nudging: Schema.fromJsonString(ThreadNudging),
+  collaborationRequests: Schema.fromJsonString(Schema.Array(CollaborationRequest)),
   modelSelection: Schema.fromJsonString(ModelSelection),
   pullRequest: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation))),
   reviewSnapshot: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewSnapshot))),
   reviewResult: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewResult))),
+  validationRequest: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRequest))),
   validationRun: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRun))),
   pullRequests: Schema.fromJsonString(Schema.Array(ThreadPullRequestLink)),
   workspaceBinding: Schema.optionalKey(WorkspaceBindingDbSchema),
@@ -533,6 +539,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     thread_id AS "threadId",
     project_id AS "projectId",
     parent_thread_id AS "parentThreadId",
+    collaboration_requests_json AS "collaborationRequests",
     title,
     model_selection_json AS "modelSelection",
     runtime_mode AS "runtimeMode",
@@ -557,6 +564,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     ), '[]') AS "pullRequests",
     review_snapshot_json AS "reviewSnapshot",
     review_result_json AS "reviewResult",
+    validation_request_json AS "validationRequest",
     validation_run_json AS "validationRun",
     latest_turn_id AS "latestTurnId",
     created_at AS "createdAt",
@@ -1188,6 +1196,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threads.thread_id AS "threadId",
           threads.project_id AS "projectId",
           threads.parent_thread_id AS "parentThreadId",
+          threads.collaboration_requests_json AS "collaborationRequests",
           threads.title,
           threads.model_selection_json AS "modelSelection",
           threads.runtime_mode AS "runtimeMode",
@@ -1212,6 +1221,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ), '[]') AS "pullRequests",
           threads.review_snapshot_json AS "reviewSnapshot",
           threads.review_result_json AS "reviewResult",
+          threads.validation_request_json AS "validationRequest",
           threads.validation_run_json AS "validationRun",
           threads.latest_turn_id AS "latestTurnId",
           threads.created_at AS "createdAt",
@@ -2031,6 +2041,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     ? { reviewSnapshot: row.reviewSnapshot }
                     : {}),
                   reviewResult: row.reviewResult ?? null,
+                  ...(row.validationRequest !== null && row.validationRequest !== undefined
+                    ? { validationRequest: row.validationRequest }
+                    : {}),
                   ...(row.validationRun !== null && row.validationRun !== undefined
                     ? { validationRun: row.validationRun }
                     : {}),
@@ -2049,6 +2062,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   pinOrderKey: row.pinOrderKey,
                   titleRegeneration: mapTitleRegeneration(row),
                   nudging: row.nudging,
+                  ...(row.collaborationRequests.length > 0
+                    ? { collaborationRequests: row.collaborationRequests }
+                    : {}),
                   deletedAt: row.deletedAt,
                   messages: messagesByThread.get(row.threadId) ?? [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
@@ -2599,6 +2615,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               : { workspaceBinding: threadRow.value.workspaceBinding }),
             pullRequest: threadRow.value.pullRequest ?? null,
             pullRequests: threadRow.value.pullRequests,
+            ...(threadRow.value.validationRequest !== null &&
+            threadRow.value.validationRequest !== undefined
+              ? { validationRequest: threadRow.value.validationRequest }
+              : {}),
             ...(threadRow.value.validationRun !== null &&
             threadRow.value.validationRun !== undefined
               ? { validationRun: threadRow.value.validationRun }
@@ -2798,6 +2818,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ? { reviewSnapshot: threadRow.value.reviewSnapshot }
           : {}),
         reviewResult: threadRow.value.reviewResult ?? null,
+        ...(threadRow.value.validationRequest !== null &&
+        threadRow.value.validationRequest !== undefined
+          ? { validationRequest: threadRow.value.validationRequest }
+          : {}),
         ...(threadRow.value.validationRun !== null && threadRow.value.validationRun !== undefined
           ? { validationRun: threadRow.value.validationRun }
           : {}),
