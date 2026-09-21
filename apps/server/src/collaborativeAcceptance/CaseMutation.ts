@@ -1,6 +1,7 @@
 import {
   CollaborativeAcceptanceCaseId,
   CollaborativeAcceptanceError,
+  PullRequestMonitorReviewCandidate,
   type CollaborativeAcceptanceAssessment,
   type CollaborativeAcceptanceCandidate,
   type CollaborativeAcceptanceCandidateSubmission,
@@ -12,12 +13,14 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { CollaborativeAcceptanceRepository } from "../persistence/Services/CollaborativeAcceptance.ts";
 import { advanceAcceptanceCandidate, evaluateAcceptance } from "./domain.ts";
 import { isCompleteAcceptanceAuthority } from "./authority.ts";
 
 type Repository = CollaborativeAcceptanceRepository["Service"];
+const decodeReviewCandidate = Schema.decodeUnknownEffect(PullRequestMonitorReviewCandidate);
 
 export type AcceptanceCaseMutationCommand =
   | {
@@ -164,6 +167,19 @@ const contractMatchesSubmission = (
   record.case.policy.reviewTrigger === submission.policy.reviewTrigger &&
   record.case.policy.automation === submission.policy.automation &&
   JSON.stringify(record.case.policy.budgets) === JSON.stringify(submission.policy.budgets);
+
+const validateReviewCandidate = (
+  candidate: CollaborativeAcceptanceCandidate,
+  caseId: CollaborativeAcceptanceCaseId,
+) =>
+  decodeReviewCandidate(candidate.reviewCandidate).pipe(
+    Effect.mapError(() =>
+      acceptanceError("Candidate review metadata is unavailable or invalid.", {
+        caseId,
+        reason: "contradictory-contract",
+      }),
+    ),
+  );
 
 export const makeAcceptanceCaseMutation = (
   repository: Repository,
@@ -323,6 +339,7 @@ export const makeAcceptanceCaseMutation = (
           ),
         );
       if (Option.isNone(existing)) {
+        yield* validateReviewCandidate(candidate, command.caseId);
         const acceptanceCase = {
           caseId: command.caseId,
           assignmentId: command.submission.assignmentId,
@@ -361,6 +378,8 @@ export const makeAcceptanceCaseMutation = (
       }
 
       const record = existing.value;
+      yield* validateReviewCandidate(candidate, command.caseId);
+      yield* validateReviewCandidate(record.case.currentCandidate, command.caseId);
       if (!contractMatchesSubmission(record, command.submission, candidate)) {
         return yield* acceptanceError(
           "Candidate provenance does not match the durable acceptance contract.",

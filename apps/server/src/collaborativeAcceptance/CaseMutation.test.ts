@@ -106,6 +106,7 @@ const submission: CollaborativeAcceptanceCandidateSubmission = {
 
 const makeRepository = () => {
   let record: CollaborativeAcceptanceRecord | null = null;
+  let saveCount = 0;
   const repository = {
     getByCaseId: () => Effect.succeed(Option.fromNullishOr(record)),
     save: (input: {
@@ -113,6 +114,7 @@ const makeRepository = () => {
       readonly expectedRevision: number | null;
     }) =>
       Effect.sync(() => {
+        saveCount += 1;
         if (record === null) {
           expect(input.expectedRevision).toBeNull();
           record = input.record;
@@ -128,6 +130,10 @@ const makeRepository = () => {
   return {
     repository,
     current: () => record,
+    replace: (next: CollaborativeAcceptanceRecord) => {
+      record = next;
+    },
+    saveCount: () => saveCount,
   };
 };
 
@@ -205,6 +211,76 @@ describe("AcceptanceCaseMutation", () => {
     expect(record.revision).toBe(1);
     expect(record.assessments).toHaveLength(1);
     expect(record.projection.collaborationStatus).toBe("parent-assessment-pending");
+  });
+
+  it("rejects malformed prior review metadata without advancing the durable candidate", async () => {
+    const fixture = makeRepository();
+    const mutation = makeAcceptanceCaseMutation(fixture.repository, () => timestamp);
+    const initial = await Effect.runPromise(
+      mutation.execute({
+        _tag: "submit-candidate",
+        caseId,
+        submission,
+        recipientThreadId: parentThreadId,
+        senderAuthority: authority,
+      }),
+    );
+    fixture.replace({
+      ...initial,
+      case: {
+        ...initial.case,
+        currentCandidate: {
+          ...initial.case.currentCandidate,
+          reviewCandidate: undefined,
+        },
+      },
+      candidates: initial.candidates.map((candidate) => ({
+        ...candidate,
+        reviewCandidate: undefined,
+      })),
+    });
+    const nextCandidateId = CollaborativeAcceptanceCandidateId.make("candidate-2");
+    const nextSubmission: CollaborativeAcceptanceCandidateSubmission = {
+      ...submission,
+      candidate: {
+        ...submission.candidate,
+        candidateId: nextCandidateId,
+        reviewEpoch: 2,
+        headSha: "head-2",
+      },
+      initialEvidence: [
+        {
+          ...submission.initialEvidence[0]!,
+          evidenceId: CollaborativeAcceptanceEvidenceId.make("evidence-2"),
+          candidateId: nextCandidateId,
+          headSha: "head-2",
+        },
+      ],
+      reviewCandidate: {
+        ...submission.reviewCandidate,
+        candidateId: nextCandidateId,
+        reviewEpoch: 2,
+        headSha: "head-2",
+      },
+    };
+
+    await expect(
+      Effect.runPromise(
+        mutation.execute({
+          _tag: "submit-candidate",
+          caseId,
+          submission: nextSubmission,
+          recipientThreadId: parentThreadId,
+          senderAuthority: authority,
+        }),
+      ),
+    ).rejects.toMatchObject({
+      message: "Candidate review metadata is unavailable or invalid.",
+    });
+
+    expect(fixture.saveCount()).toBe(1);
+    expect(fixture.current()?.case.currentCandidate.candidateId).toBe(candidateId);
+    expect(fixture.current()?.case.currentCandidate.reviewEpoch).toBe(1);
   });
 
   it("invalidates stale provider evidence before returning the typed failure", async () => {
