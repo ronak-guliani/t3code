@@ -15,6 +15,19 @@ export type AcceptanceAuthorityThread = {
   readonly nudging?: unknown;
 };
 
+export const isCompleteAcceptanceAuthority = (
+  authority: CollaborationExecutionAuthority,
+): boolean =>
+  authority.executionId.trim().length > 0 &&
+  authority.assignmentId !== undefined &&
+  authority.assignmentId.trim().length > 0 &&
+  Number.isSafeInteger(authority.generation) &&
+  authority.generation > 0 &&
+  authority.dispatchId !== null &&
+  authority.dispatchId.trim().length > 0 &&
+  authority.turnId !== null &&
+  authority.turnId.trim().length > 0;
+
 export const acceptanceAuthorityForThread = (
   thread: AcceptanceAuthorityThread,
 ): CollaborationExecutionAuthority | undefined => {
@@ -36,7 +49,7 @@ export const acceptanceAuthorityForThread = (
   ) {
     return undefined;
   }
-  return {
+  const authority = {
     executionId: `thread:${thread.id}`,
     assignmentId: delegation.assignmentId,
     threadId: ThreadId.make(thread.id),
@@ -44,6 +57,7 @@ export const acceptanceAuthorityForThread = (
     dispatchId: delegation.dispatchId,
     turnId: delegation.dispatchTurnId,
   };
+  return isCompleteAcceptanceAuthority(authority) ? authority : undefined;
 };
 
 export const acceptanceAuthorityMatchesThread = (
