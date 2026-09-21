@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import CollaborativeAcceptance from "./096_CollaborativeAcceptance.ts";
+import CollaborativeAcceptance from "./097_CollaborativeAcceptance.ts";
 
 const addColumnIfMissing = (columns: ReadonlyArray<{ readonly name: string }>, name: string) =>
   !columns.some((column) => column.name === name);

@@ -8,8 +8,8 @@ import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 it.effect("adds durable exchange provenance columns", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 98 });
     yield* runMigrations({ toMigrationInclusive: 99 });
+    yield* runMigrations({ toMigrationInclusive: 100 });
 
     const columns = yield* sql<{ readonly name: string }>`
       PRAGMA table_info(collaborative_acceptance_exchanges)
@@ -26,7 +26,7 @@ it.effect("adds durable exchange provenance columns", () =>
       indexes.some(({ name }) => name === "idx_collaborative_acceptance_exchanges_candidate"),
     );
 
-    yield* runMigrations({ toMigrationInclusive: 100 });
+    yield* runMigrations({ toMigrationInclusive: 101 });
     const caseColumns = yield* sql<{ readonly name: string }>`
       PRAGMA table_info(collaborative_acceptance_cases)
     `;

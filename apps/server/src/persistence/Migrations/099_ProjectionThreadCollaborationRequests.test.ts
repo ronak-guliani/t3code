@@ -4,7 +4,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
-import migration from "./098_ProjectionThreadCollaborationRequests.ts";
+import migration from "./099_ProjectionThreadCollaborationRequests.ts";
 
 const memory = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   effect.pipe(Effect.provide(NodeSqliteClient.layerMemory()));
@@ -12,7 +12,7 @@ const memory = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 it.effect("repairs a divergent projection ledger before adding the column", () =>
   memory(
     Effect.gen(function* () {
-      yield* runMigrations({ toMigrationInclusive: 97 });
+      yield* runMigrations({ toMigrationInclusive: 98 });
       const sql = yield* SqlClient.SqlClient;
       yield* sql`DROP TABLE projection_threads`;
 
@@ -29,7 +29,7 @@ it.effect("repairs a divergent projection ledger before adding the column", () =
 it.effect("is idempotent", () =>
   memory(
     Effect.gen(function* () {
-      yield* runMigrations({ toMigrationInclusive: 97 });
+      yield* runMigrations({ toMigrationInclusive: 98 });
       yield* migration;
       yield* migration;
 

@@ -44,7 +44,15 @@ import {
   ValidationGate,
   ValidationGateId,
   ValidationGateStatus,
+  ValidationLease,
+  ValidationRequest,
+  ValidationRequestFailure,
+  ValidationRequester,
+  ValidationRunLifecycleUpdate,
   ValidationRun,
+  ValidationScenario,
+  ValidationScope,
+  ValidationStructuredResult,
   ValidationTarget,
 } from "./validation.ts";
 
@@ -252,6 +260,10 @@ export const WorkspaceBinding = Schema.Struct({
   worktreePath: TrimmedNonEmptyString,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   generation: NonNegativeInt,
+  // Present only when the thread explicitly opted into the project checkout
+  // ("Current checkout"). Absent for isolated workspaces and for legacy
+  // bindings, which must keep isolating.
+  workspaceScope: Schema.optionalKey(Schema.Literals(["project-checkout"])),
 });
 export type WorkspaceBinding = typeof WorkspaceBinding.Type;
 
@@ -810,6 +822,7 @@ export const OrchestrationThread = Schema.Struct({
   pullRequests: Schema.optionalKey(Schema.Array(ThreadPullRequestLink)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   reviewResult: Schema.optionalKey(Schema.NullOr(ReviewResult)),
+  validationRequest: Schema.optionalKey(Schema.NullOr(ValidationRequest)),
   validationRun: Schema.optionalKey(Schema.NullOr(ValidationRun)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
@@ -896,6 +909,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   workspaceBinding: Schema.optionalKey(WorkspaceBinding),
   pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   pullRequests: Schema.optionalKey(Schema.Array(ThreadPullRequestLink)),
+  validationRequest: Schema.optionalKey(Schema.NullOr(ValidationRequest)),
   validationRun: Schema.optionalKey(Schema.NullOr(ValidationRun)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
@@ -1544,6 +1558,23 @@ const ThreadSessionStopCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadValidationRequestCommand = Schema.Struct({
+  type: Schema.Literal("thread.validation.request"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  scenarios: Schema.Array(ValidationScenario),
+  scope: ValidationScope,
+  requester: ValidationRequester,
+  requestedAt: IsoDateTime,
+});
+
+const ThreadValidationRequestFailedCommand = Schema.Struct({
+  type: Schema.Literal("thread.validation.request-failed"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  failure: ValidationRequestFailure,
+});
+
 const ThreadValidationRunPlanCommand = Schema.Struct({
   type: Schema.Literal("thread.validation-run.plan"),
   commandId: CommandId,
@@ -1554,11 +1585,54 @@ const ThreadValidationRunPlanCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadValidationRunPlanCoordinatorCommand = Schema.Struct({
+  type: Schema.Literal("thread.validation.coordinator-plan"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  run: ValidationRun,
+  createdAt: IsoDateTime,
+});
+
+const ThreadValidationLifecycleUpdateCommand = Schema.Struct({
+  type: Schema.Literal("thread.validation.lifecycle"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  update: ValidationRunLifecycleUpdate,
+});
+
+const ThreadValidationLeaseClaimCommand = Schema.Struct({
+  type: Schema.Literal("thread.validation.lease.claim"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  runId: TrimmedNonEmptyString,
+  lease: ValidationLease,
+  executorId: TrimmedNonEmptyString,
+  target: ValidationTarget,
+  claimedAt: IsoDateTime,
+});
+
+const ThreadValidationLeaseReleaseCommand = Schema.Struct({
+  type: Schema.Literal("thread.validation.lease.release"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  runId: TrimmedNonEmptyString,
+  leaseId: TrimmedNonEmptyString,
+  releasedAt: IsoDateTime,
+});
+
+const ThreadValidationResultRecordCommand = Schema.Struct({
+  type: Schema.Literal("thread.validation.result.record"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  result: ValidationStructuredResult,
+});
+
 const ThreadValidationGateUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.validation-gate.update"),
   commandId: CommandId,
   threadId: ThreadId,
   runId: TrimmedNonEmptyString,
+  leaseId: TrimmedNonEmptyString,
   executorId: TrimmedNonEmptyString,
   target: ValidationTarget,
   gateId: ValidationGateId,
@@ -1722,6 +1796,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
+  ThreadValidationRequestCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -1769,6 +1844,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
+  ThreadValidationRequestCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
@@ -1891,7 +1967,13 @@ export const InternalOrchestrationCommand = Schema.Union([
   WorkflowNodeWorkerStartCommand,
   WorkflowWorkerResultRecordCommand,
   WorkflowRunFinalizeCommand,
+  ThreadValidationRequestFailedCommand,
   ThreadValidationRunPlanCommand,
+  ThreadValidationRunPlanCoordinatorCommand,
+  ThreadValidationLifecycleUpdateCommand,
+  ThreadValidationLeaseClaimCommand,
+  ThreadValidationLeaseReleaseCommand,
+  ThreadValidationResultRecordCommand,
   ThreadValidationGateUpdateCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
@@ -1943,7 +2025,13 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.reverted",
   "thread.session-stop-requested",
   "thread.session-set",
+  "thread.validation-requested",
+  "thread.validation-request-failed",
   "thread.validation-run-planned",
+  "thread.validation-lifecycle-updated",
+  "thread.validation-lease-claimed",
+  "thread.validation-lease-released",
+  "thread.validation-result-recorded",
   "thread.validation-gate-updated",
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
@@ -2291,9 +2379,42 @@ export const ThreadSessionSetPayload = Schema.Struct({
   session: OrchestrationSession,
 });
 
+export const ThreadValidationRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  request: ValidationRequest,
+});
+
+export const ThreadValidationRequestFailedPayload = Schema.Struct({
+  threadId: ThreadId,
+  failure: ValidationRequestFailure,
+});
+
 export const ThreadValidationRunPlannedPayload = Schema.Struct({
   threadId: ThreadId,
   run: ValidationRun,
+});
+
+export const ThreadValidationLifecycleUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  update: ValidationRunLifecycleUpdate,
+});
+
+export const ThreadValidationLeaseClaimedPayload = Schema.Struct({
+  threadId: ThreadId,
+  runId: TrimmedNonEmptyString,
+  lease: ValidationLease,
+});
+
+export const ThreadValidationLeaseReleasedPayload = Schema.Struct({
+  threadId: ThreadId,
+  runId: TrimmedNonEmptyString,
+  leaseId: TrimmedNonEmptyString,
+  releasedAt: IsoDateTime,
+});
+
+export const ThreadValidationResultRecordedPayload = Schema.Struct({
+  threadId: ThreadId,
+  result: ValidationStructuredResult,
 });
 
 export const ThreadValidationGateUpdatedPayload = Schema.Struct({
@@ -2584,8 +2705,38 @@ export const OrchestrationEvent = Schema.Union([
   }),
   Schema.Struct({
     ...EventBaseFields,
+    type: Schema.Literal("thread.validation-requested"),
+    payload: ThreadValidationRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.validation-request-failed"),
+    payload: ThreadValidationRequestFailedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
     type: Schema.Literal("thread.validation-run-planned"),
     payload: ThreadValidationRunPlannedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.validation-lifecycle-updated"),
+    payload: ThreadValidationLifecycleUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.validation-lease-claimed"),
+    payload: ThreadValidationLeaseClaimedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.validation-lease-released"),
+    payload: ThreadValidationLeaseReleasedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.validation-result-recorded"),
+    payload: ThreadValidationResultRecordedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
