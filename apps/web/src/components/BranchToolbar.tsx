@@ -295,10 +295,14 @@ export const BranchToolbar = memo(function BranchToolbar({
                 activeWorktreePath={activeWorktreePath}
                 onEnvModeChange={onEnvModeChange}
               />
-              <BranchToolbarDeviceLabel
-                environmentId={environmentId}
-                availableEnvironments={availableEnvironments}
-              />
+              {/* The Run-on picker already names the device; only show the
+                  static label when there is no picker. */}
+              {showEnvironmentPicker ? null : (
+                <BranchToolbarDeviceLabel
+                  environmentId={environmentId}
+                  availableEnvironments={availableEnvironments}
+                />
+              )}
             </div>
           ) : (
             <div className="flex min-w-0 shrink-0 items-center gap-1">
@@ -319,10 +323,12 @@ export const BranchToolbar = memo(function BranchToolbar({
                 activeWorktreePath={activeWorktreePath}
                 onEnvModeChange={onEnvModeChange}
               />
-              <BranchToolbarDeviceLabel
-                environmentId={environmentId}
-                availableEnvironments={availableEnvironments}
-              />
+              {showEnvironmentPicker ? null : (
+                <BranchToolbarDeviceLabel
+                  environmentId={environmentId}
+                  availableEnvironments={availableEnvironments}
+                />
+              )}
             </div>
           )}
 

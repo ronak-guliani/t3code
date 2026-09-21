@@ -5136,7 +5136,7 @@ function ChatViewBody(
                     {...(canCheckoutPullRequestIntoThread
                       ? { onCheckoutPullRequestRequest: openPullRequestDialog }
                       : {})}
-                    {...(hasMultipleEnvironments
+                    {...(hasMultipleEnvironments || (routeKind === "draft" && draftId)
                       ? {
                           availableEnvironments: logicalProjectEnvironments,
                           onEnvironmentChange,
