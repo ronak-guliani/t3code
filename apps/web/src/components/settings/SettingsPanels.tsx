@@ -40,6 +40,7 @@ import {
   type ProviderInstanceId,
   type PullRequestListState,
   type ReviewChangesScope,
+  type CollaborativeAcceptancePolicy,
 } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime";
 import {
@@ -152,7 +153,9 @@ import {
   buildArchivedThreadGroupsFromSnapshots,
   buildProviderInstanceUpdatePatch,
   filterArchivedThreadGroups,
+  mergeCollaborativeAcceptancePolicy,
   runSequentiallySettled,
+  type CollaborativeAcceptancePolicyPatch,
 } from "./SettingsPanels.logic";
 import {
   SettingResetButton,
@@ -245,6 +248,24 @@ const WORKFLOW_DESTINATION_OPTIONS: ReadonlyArray<{
   { value: "new-chat", label: "New chat" },
   { value: "child-chat", label: "Child chat" },
 ];
+
+const COLLABORATIVE_ACCEPTANCE_AUTOMATION_OPTIONS = [
+  { value: "off", label: "Off" },
+  { value: "bounded", label: "Bounded" },
+  { value: "until-ready", label: "Continue until ready" },
+] as const;
+
+const COLLABORATIVE_ACCEPTANCE_TRIGGER_OPTIONS = [
+  { value: "manual", label: "Manual" },
+  { value: "first-candidate", label: "First eligible candidate" },
+  { value: "each-eligible-candidate", label: "Every eligible candidate" },
+] as const;
+
+const COLLABORATIVE_ACCEPTANCE_COMMENT_OPTIONS = [
+  { value: "blocking-only", label: "Blocking only" },
+  { value: "all-actionable-addressed", label: "All actionable feedback" },
+  { value: "all-review-threads-resolved", label: "All review threads resolved" },
+] as const;
 
 type HeaderSidebarToggleKey = keyof Pick<
   UnifiedSettings,
@@ -3886,6 +3907,286 @@ export function GeneralSettingsPanel() {
           }
         />
       </SettingsSection>
+    </SettingsPageContainer>
+  );
+}
+
+const DEFAULT_COLLABORATIVE_ACCEPTANCE_POLICY: CollaborativeAcceptancePolicy = {
+  automation: "bounded",
+  reviewTrigger: "first-candidate",
+  reviewWorkflow: { identity: "review-changes", version: "1" },
+  commentPolicy: "blocking-only",
+  budgets: {
+    exchanges: 3,
+    modelSpendCents: 0,
+    retries: 1,
+    disputeRounds: 1,
+    executionDurationSeconds: 0,
+    waitingDeadlineSeconds: 0,
+  },
+};
+
+function CollaborativeAcceptanceSettingsPanel() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  const policy = settings.collaborativeAcceptance;
+  const configuredPolicy = policy ?? DEFAULT_COLLABORATIVE_ACCEPTANCE_POLICY;
+  const policyRef = useRef(policy);
+  policyRef.current = policy;
+  const [validationMessage, setValidationMessage] = useState<string | null>(null);
+
+  const updatePolicy = useCallback(
+    (patch: CollaborativeAcceptancePolicyPatch) => {
+      const currentPolicy = policyRef.current;
+      if (!currentPolicy) return;
+      const nextPolicy = mergeCollaborativeAcceptancePolicy(currentPolicy, patch);
+      if (nextPolicy.automation === "bounded" && nextPolicy.budgets.exchanges < 1) {
+        setValidationMessage("Bounded automation needs at least one parent-child exchange.");
+        return;
+      }
+      if (
+        nextPolicy.reviewWorkflow.identity.trim().length === 0 ||
+        nextPolicy.reviewWorkflow.version.trim().length === 0
+      ) {
+        setValidationMessage("Choose a review workflow identity and version.");
+        return;
+      }
+      setValidationMessage(null);
+      policyRef.current = nextPolicy;
+      updateSettings({ collaborativeAcceptance: nextPolicy });
+    },
+    [updateSettings],
+  );
+
+  const updateBudget = useCallback(
+    (key: keyof CollaborativeAcceptancePolicy["budgets"], value: string) => {
+      const parsed = Number.parseInt(value.trim(), 10);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        setValidationMessage("Limits must be zero or greater.");
+        return;
+      }
+      updatePolicy({ budgets: { [key]: parsed } });
+    },
+    [updatePolicy],
+  );
+
+  return (
+    <SettingsSection title="PR collaboration automation">
+      <SettingsRow
+        title="Automation policy"
+        description="Choose whether the coordinator may exchange parent and child reviews. Existing users stay opted out until they choose a policy."
+        control={
+          <Select
+            value={policy?.automation ?? "unconfigured"}
+            onValueChange={(value) => {
+              if (value === "unconfigured") {
+                policyRef.current = null;
+                updateSettings({ collaborativeAcceptance: null });
+                setValidationMessage(null);
+                return;
+              }
+              const nextPolicy = mergeCollaborativeAcceptancePolicy(
+                policyRef.current ?? DEFAULT_COLLABORATIVE_ACCEPTANCE_POLICY,
+                {
+                  automation: value as CollaborativeAcceptancePolicy["automation"],
+                },
+              );
+              policyRef.current = nextPolicy;
+              updateSettings({ collaborativeAcceptance: nextPolicy });
+              setValidationMessage(null);
+            }}
+          >
+            <SelectTrigger
+              className="w-full sm:w-52"
+              aria-label="PR collaboration automation policy"
+            >
+              <SelectValue>
+                {policy
+                  ? COLLABORATIVE_ACCEPTANCE_AUTOMATION_OPTIONS.find(
+                      (option) => option.value === policy.automation,
+                    )?.label
+                  : "Not configured"}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              <SelectItem hideIndicator value="unconfigured">
+                Not configured
+              </SelectItem>
+              {COLLABORATIVE_ACCEPTANCE_AUTOMATION_OPTIONS.map((option) => (
+                <SelectItem hideIndicator key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        }
+      />
+
+      <div
+        className={policy ? undefined : "pointer-events-none opacity-50"}
+        aria-disabled={!policy}
+      >
+        <SettingsRow
+          title="Exchange budget"
+          description="Limit parent-child review exchanges, not raw assistant turns."
+          control={
+            <DraftInput
+              value={String(configuredPolicy.budgets.exchanges)}
+              inputMode="numeric"
+              onCommit={(value) => updateBudget("exchanges", value)}
+              aria-label="Parent-child exchange budget"
+            />
+          }
+        />
+        <SettingsRow
+          title="Review trigger"
+          description="Choose when the coordinator requests a review of an eligible candidate."
+          control={
+            <Select
+              value={configuredPolicy.reviewTrigger}
+              onValueChange={(value) => {
+                if (
+                  value === "manual" ||
+                  value === "first-candidate" ||
+                  value === "each-eligible-candidate"
+                ) {
+                  updatePolicy({ reviewTrigger: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-56" aria-label="PR review trigger">
+                <SelectValue>
+                  {
+                    COLLABORATIVE_ACCEPTANCE_TRIGGER_OPTIONS.find(
+                      (option) => option.value === configuredPolicy.reviewTrigger,
+                    )?.label
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {COLLABORATIVE_ACCEPTANCE_TRIGGER_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Review workflow"
+          description="Use the canonical workflow identity and version for candidate reviews."
+        >
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <DraftInput
+              value={configuredPolicy.reviewWorkflow.identity}
+              onCommit={(identity) =>
+                updatePolicy({
+                  reviewWorkflow: { identity: identity.trim() },
+                })
+              }
+              aria-label="Collaborative review workflow identity"
+              placeholder="Workflow identity"
+            />
+            <DraftInput
+              value={configuredPolicy.reviewWorkflow.version}
+              onCommit={(version) =>
+                updatePolicy({
+                  reviewWorkflow: { version: version.trim() },
+                })
+              }
+              aria-label="Collaborative review workflow version"
+              placeholder="Workflow version"
+            />
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          title="PR feedback policy"
+          description="Decide which findings must be addressed before acceptance."
+          control={
+            <Select
+              value={configuredPolicy.commentPolicy}
+              onValueChange={(value) => {
+                if (
+                  value === "blocking-only" ||
+                  value === "all-actionable-addressed" ||
+                  value === "all-review-threads-resolved"
+                ) {
+                  updatePolicy({ commentPolicy: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-56" aria-label="PR feedback policy">
+                <SelectValue>
+                  {
+                    COLLABORATIVE_ACCEPTANCE_COMMENT_OPTIONS.find(
+                      (option) => option.value === configuredPolicy.commentPolicy,
+                    )?.label
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {COLLABORATIVE_ACCEPTANCE_COMMENT_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Advanced limits"
+          description="Set independent zero-or-greater limits. Zero means no limit where supported."
+        >
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            {(
+              [
+                ["modelSpendCents", "Model spend (cents)"],
+                ["retries", "Retries"],
+                ["disputeRounds", "Dispute rounds"],
+                ["executionDurationSeconds", "Execution duration (seconds)"],
+                ["waitingDeadlineSeconds", "Waiting deadline (seconds)"],
+              ] as const
+            ).map(([key, label]) => (
+              <label key={key} className="grid gap-1 text-xs text-muted-foreground">
+                {label}
+                <DraftInput
+                  value={String(configuredPolicy.budgets[key])}
+                  inputMode="numeric"
+                  onCommit={(value) => updateBudget(key, value)}
+                  aria-label={label}
+                />
+              </label>
+            ))}
+          </div>
+        </SettingsRow>
+      </div>
+      <div className="px-4 pb-4 pt-3 text-xs sm:px-5" aria-live="polite">
+        {validationMessage ? (
+          <p className="text-destructive">{validationMessage}</p>
+        ) : policy ? (
+          <p className="text-muted-foreground">
+            {policy.automation === "bounded"
+              ? "Bounded mode is enabled with an explicit exchange budget."
+              : policy.automation === "until-ready"
+                ? "The coordinator may continue until the backend reports Ready now or a limit blocks it."
+                : "Collaboration is explicitly disabled."}
+          </p>
+        ) : (
+          <p className="text-muted-foreground">
+            Not configured. Selecting a policy opts this account into PR collaboration automation.
+          </p>
+        )}
+      </div>
+    </SettingsSection>
+  );
+}
+
+export function PullRequestCollaborationSettingsPanel() {
+  return (
+    <SettingsPageContainer>
+      <CollaborativeAcceptanceSettingsPanel />
     </SettingsPageContainer>
   );
 }

@@ -42,6 +42,42 @@ export function computeReadiness(
   if (snapshot.mergeability !== "mergeable") {
     blockers.push({ kind: "mergeability", detail: snapshot.mergeability });
   }
+  if (!snapshot.completeness.baseComparisonKnown) {
+    blockers.push({ kind: "base-comparison-unknown" });
+  }
+  if (!snapshot.completeness.reviewsComplete) {
+    blockers.push({ kind: "evidence-incomplete", detail: "reviews" });
+  }
+  if (!snapshot.completeness.reviewThreadsComplete) {
+    blockers.push({ kind: "evidence-incomplete", detail: "review-threads" });
+  }
+  if (!snapshot.completeness.issueCommentsComplete) {
+    blockers.push({ kind: "evidence-incomplete", detail: "issue-comments" });
+  }
+  if (!snapshot.completeness.checksComplete) {
+    blockers.push({ kind: "evidence-incomplete", detail: "checks" });
+  }
+  const requiredCheckCoverage = snapshot.requiredCheckCoverage;
+  if (requiredCheckCoverage === undefined) {
+    blockers.push({ kind: "required-check-coverage-unknown" });
+  } else {
+    const expected = new Set(requiredCheckCoverage.expected);
+    const observed = new Set(requiredCheckCoverage.observed.map((check) => check.name));
+    const missing = [...expected].filter((name) => !observed.has(name));
+    const extra = [...observed].filter((name) => !expected.has(name));
+    if (requiredCheckCoverage.completeness !== "complete" || missing.length > 0) {
+      blockers.push({
+        kind: "required-check-coverage-unknown",
+        detail:
+          missing.length > 0 ? `missing:${missing.join(",")}` : requiredCheckCoverage.completeness,
+      });
+    } else if (extra.length > 0) {
+      blockers.push({
+        kind: "required-check-coverage-unknown",
+        detail: `extra:${extra.join(",")}`,
+      });
+    }
+  }
 
   const currentChecks = snapshot.checkRuns.filter((check) => check.headSha === snapshot.headSha);
   if (currentChecks.length === 0) {
@@ -100,23 +136,11 @@ export function computeReadiness(
     });
   }
 
-  // Only claim "ready to merge" when every actionable merge-policy input was observed.
-  const evidenceSupportsReadyLabel =
-    snapshot.completeness.requiredChecksKnown &&
-    snapshot.completeness.checksComplete &&
-    snapshot.completeness.reviewsComplete &&
-    snapshot.completeness.reviewThreadsComplete &&
-    currentChecks.length > 0;
-
   if (blockers.length > 0) {
     return { ready: false, label: "blocked", blockers };
   }
 
-  return {
-    ready: true,
-    label: evidenceSupportsReadyLabel ? "ready-to-merge" : "no-known-blockers",
-    blockers: [],
-  };
+  return { ready: true, label: "ready-to-merge", blockers: [] };
 }
 
 export function formatBlockersSummary(readiness: PullRequestMonitorReadiness): string {

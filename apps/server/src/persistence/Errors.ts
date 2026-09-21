@@ -133,3 +133,22 @@ export type AuthPairingLinkRepositoryError = PersistenceSqlError | PersistenceDe
 export type AuthSessionRepositoryError = PersistenceSqlError | PersistenceDecodeError;
 
 export type ProjectionRepositoryError = PersistenceSqlError | PersistenceDecodeError;
+
+export class CollaborativeAcceptanceRepositoryConflict extends Schema.TaggedErrorClass<CollaborativeAcceptanceRepositoryConflict>()(
+  "CollaborativeAcceptanceRepositoryConflict",
+  {
+    caseId: Schema.String,
+    expectedRevision: Schema.NullOr(Schema.Number),
+    actualRevision: Schema.NullOr(Schema.Number),
+  },
+) {
+  override get message(): string {
+    return `Collaborative Acceptance revision conflict for ${this.caseId}: expected ${String(
+      this.expectedRevision,
+    )}, actual ${String(this.actualRevision)}`;
+  }
+}
+
+export type CollaborativeAcceptanceRepositoryError =
+  | ProjectionRepositoryError
+  | CollaborativeAcceptanceRepositoryConflict;

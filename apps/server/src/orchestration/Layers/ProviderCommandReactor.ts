@@ -1,16 +1,18 @@
 import {
   type ChatAttachment,
+  type CollaborationExecutionAuthority,
   CommandId,
   EventId,
   type ModelSelection,
-  type MessageId,
+  MessageId,
   type OrchestrationEvent,
+  type OrchestrationThread,
   ProviderDriverKind,
   type OrchestrationSession,
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
-  type TurnId,
+  TurnId,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import { Cache, Cause, Duration, Effect, Equal, Layer, Option, Schema, Stream } from "effect";
@@ -39,6 +41,10 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
 import { WorkspaceOwnershipRepositoryLive } from "../../persistence/Layers/WorkspaceOwnership.ts";
+import {
+  acceptanceAuthorityForThread,
+  acceptanceAuthorityMatchesThread,
+} from "../../collaborativeAcceptance/authority.ts";
 
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -113,6 +119,27 @@ export function providerErrorLabelFromInstanceHint(input: {
     input.instanceId ?? input.modelSelectionInstanceId ?? input.sessionProvider,
   );
 }
+
+export const validateProviderExecutionAuthority = (
+  thread: OrchestrationThread,
+  supplied: CollaborationExecutionAuthority | undefined,
+) => {
+  if (
+    supplied !== undefined &&
+    (supplied === null ||
+      typeof supplied !== "object" ||
+      !acceptanceAuthorityMatchesThread(supplied, thread))
+  ) {
+    return Effect.fail(
+      new ProviderAdapterRequestError({
+        provider: providerErrorLabel(thread.session?.providerName ?? undefined),
+        method: "thread.turn.start",
+        detail: `Thread '${thread.id}' received execution authority that does not match its current durable delegation.`,
+      }),
+    );
+  }
+  return Effect.succeed(supplied ?? acceptanceAuthorityForThread(thread));
+};
 
 function findProviderAdapterRequestError(
   cause: Cause.Cause<ProviderServiceError>,
@@ -429,6 +456,7 @@ const make = Effect.gen(function* () {
     createdAt: string,
     options?: {
       readonly modelSelection?: ModelSelection;
+      readonly executionAuthority?: CollaborationExecutionAuthority;
     },
   ) {
     const readModel = yield* orchestrationEngine.getReadModel();
@@ -437,6 +465,10 @@ const make = Effect.gen(function* () {
       return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
     }
 
+    const executionAuthority = yield* validateProviderExecutionAuthority(
+      thread,
+      options?.executionAuthority,
+    );
     const desiredRuntimeMode = thread.runtimeMode;
     const requestedModelSelection = options?.modelSelection;
     const resolveActiveSession = (threadId: ThreadId) =>
@@ -560,6 +592,7 @@ const make = Effect.gen(function* () {
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         runtimeMode: desiredRuntimeMode,
+        ...(executionAuthority === undefined ? {} : { executionAuthority }),
       });
 
     const bindSessionToThread = (session: ProviderSession) =>
@@ -669,6 +702,7 @@ const make = Effect.gen(function* () {
     readonly interactionMode?: "default" | "plan";
     readonly delegationAssignmentId?: MessageId;
     readonly delegationDispatchId?: string;
+    readonly executionAuthority?: CollaborationExecutionAuthority;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -677,11 +711,14 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
-    yield* ensureSessionForThread(
-      input.threadId,
-      input.createdAt,
-      input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {},
+    const executionAuthority = yield* validateProviderExecutionAuthority(
+      thread,
+      input.executionAuthority,
     );
+    yield* ensureSessionForThread(input.threadId, input.createdAt, {
+      ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+      ...(executionAuthority !== undefined ? { executionAuthority } : {}),
+    });
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }
@@ -727,6 +764,7 @@ const make = Effect.gen(function* () {
       ...(input.delegationDispatchId !== undefined
         ? { delegationDispatchId: input.delegationDispatchId }
         : {}),
+      ...(executionAuthority === undefined ? {} : { executionAuthority }),
     };
   });
 
@@ -1061,6 +1099,9 @@ const make = Effect.gen(function* () {
         : {}),
       ...(event.payload.delegationDispatchId !== undefined
         ? { delegationDispatchId: event.payload.delegationDispatchId }
+        : {}),
+      ...(event.payload.executionAuthority !== undefined
+        ? { executionAuthority: event.payload.executionAuthority }
         : {}),
       createdAt: event.payload.createdAt,
     }).pipe(

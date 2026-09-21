@@ -1,7 +1,7 @@
 import { readLocalApi } from "../localApi";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import type { Project, ThreadShell } from "../types";
-import type { EnvironmentId, PullRequestRef } from "@t3tools/contracts";
+import type { EnvironmentId, PullRequestRef, ScopedThreadRef } from "@t3tools/contracts";
 
 export function findPullRequestBrowserThread<
   T extends Pick<ThreadShell, "id" | "environmentId" | "projectId" | "archivedAt" | "pullRequest">,
@@ -22,6 +22,7 @@ export interface InternalPullRequestNavigation {
   readonly repository: string;
   readonly number: number;
   readonly url: string;
+  readonly threadRef?: ScopedThreadRef;
 }
 
 export const INTERNAL_PULL_REQUEST_NAVIGATION_EVENT = "t3:open-pull-request";
@@ -103,6 +104,7 @@ export function openPullRequestLink(
   // Structural rather than React.MouseEvent so keyboard activation shares it.
   event: { preventDefault: () => void; stopPropagation: () => void },
   prUrl: string,
+  threadRef?: ScopedThreadRef,
 ): void {
   event.preventDefault();
   event.stopPropagation();
@@ -111,7 +113,7 @@ export function openPullRequestLink(
   if (internalNavigation) {
     window.dispatchEvent(
       new CustomEvent<InternalPullRequestNavigation>(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, {
-        detail: internalNavigation,
+        detail: threadRef ? { ...internalNavigation, threadRef } : internalNavigation,
       }),
     );
     return;

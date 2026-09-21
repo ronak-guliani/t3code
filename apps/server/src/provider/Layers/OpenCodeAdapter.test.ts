@@ -68,7 +68,7 @@ const runtimeMock = {
     promptAsyncError: null as Error | null,
     closeError: null as Error | null,
     messages: [] as MessageEntry[],
-    sessionStatus: "idle" as "busy" | "idle",
+    sessionStatus: "idle" as "busy" | "idle" | undefined,
     subscribeFailures: 0,
     subscribeCalls: 0,
     subscribedEvents: [] as unknown[],
@@ -254,9 +254,12 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         },
         messages: async () => ({ data: runtimeMock.state.messages }),
         status: async () => ({
-          data: {
-            "http://127.0.0.1:9999/session": { type: runtimeMock.state.sessionStatus },
-          },
+          data:
+            runtimeMock.state.sessionStatus === undefined
+              ? {}
+              : {
+                  "http://127.0.0.1:9999/session": { type: runtimeMock.state.sessionStatus },
+                },
         }),
         revert: async ({ sessionID, messageID }: { sessionID: string; messageID?: string }) => {
           runtimeMock.state.revertCalls.push({
@@ -1825,6 +1828,127 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         );
         assert.equal(completed.length, 1);
       }),
+  );
+
+  it.effect("treats an omitted session status as idle after correlated output is present", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-omitted-idle-status");
+      const observed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Finish when idle sessions are omitted",
+        modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+      });
+      const prompt = runtimeMock.state.promptCalls.at(-1) as { messageID: string };
+
+      yield* sleep(150);
+      runtimeMock.state.messages = [
+        {
+          info: { id: prompt.messageID, role: "user" },
+          parts: [{ id: "user-part", type: "text", messageID: prompt.messageID, text: "Finish" }],
+        },
+        {
+          info: {
+            id: "assistant-omitted-idle-status",
+            role: "assistant",
+            parentID: prompt.messageID,
+          },
+          parts: [
+            {
+              id: "assistant-part",
+              messageID: "assistant-omitted-idle-status",
+              type: "text",
+              text: "Completed while absent from the active status map",
+              time: { start: 1, end: 2 },
+            },
+          ],
+        },
+      ];
+      runtimeMock.state.sessionStatus = undefined;
+
+      const events = Array.from(yield* Fiber.join(observed).pipe(Effect.timeout("2 seconds")));
+      const completed = events.filter(
+        (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+      );
+      assert.equal(completed.length, 1);
+    }),
+  );
+
+  it.effect("retains native idle evidence when the status endpoint remains stale busy", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-stale-busy-status");
+      runtimeMock.state.subscribedEventDelayMs = 50;
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.status",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            status: { type: "idle" },
+          },
+        },
+      ];
+      const observed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Finish despite stale polled status",
+        modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+      });
+      const prompt = runtimeMock.state.promptCalls.at(-1) as { messageID: string };
+
+      yield* sleep(150);
+      runtimeMock.state.messages = [
+        {
+          info: { id: prompt.messageID, role: "user" },
+          parts: [{ id: "user-part", type: "text", messageID: prompt.messageID, text: "Finish" }],
+        },
+        {
+          info: {
+            id: "assistant-stale-busy-status",
+            role: "assistant",
+            parentID: prompt.messageID,
+          },
+          parts: [
+            {
+              id: "assistant-part",
+              messageID: "assistant-stale-busy-status",
+              type: "text",
+              text: "Completed after native idle",
+              time: { start: 1, end: 2 },
+            },
+          ],
+        },
+      ];
+
+      const events = Array.from(yield* Fiber.join(observed).pipe(Effect.timeout("2 seconds")));
+      const completed = events.filter(
+        (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+      );
+      assert.equal(completed.length, 1);
+    }),
   );
 
   it.effect("does not fail a long-running prompt before its transcript is idle", () =>

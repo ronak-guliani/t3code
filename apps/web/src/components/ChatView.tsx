@@ -39,9 +39,9 @@ import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/proje
 import { truncate } from "@t3tools/shared/String";
 import { Debouncer } from "@tanstack/react-pacer";
 import {
+  type ComponentProps,
   memo,
   lazy,
-  type ComponentProps,
   type ReactNode,
   Suspense,
   useCallback,
@@ -150,6 +150,9 @@ import {
   type RightPanelSurface,
 } from "~/rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { ThreadPullRequestsPanel } from "./ThreadPullRequestsPanel";
+import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
+import { resolveThreadPullRequests } from "./ThreadPullRequestsPopover";
 import { DevicePanel } from "./device/DevicePanel";
 import { reconcileDeviceSessionPresentation } from "./device/reconcileDeviceSessionPresentation";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
@@ -205,6 +208,7 @@ import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { ChatTimelineSection, type ChatTimelineSectionHandle } from "./chat/ChatTimelineSection";
+import { RetainedRightPanelSurface } from "./chat/RetainedRightPanelSurface";
 import { ReviewFindingsCard } from "./chat/ReviewFindingsCard";
 import { formatReviewFindings } from "../lib/reviewFindingFormat";
 import { ChatHeader } from "./chat/ChatHeader";
@@ -214,7 +218,11 @@ import {
 } from "./chat/AgentWorkflowHeaderActions";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
-import { resolveEffectiveEnvMode, resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
+import {
+  resolveActiveProjectRef,
+  resolveEffectiveEnvMode,
+  resolveEnvironmentOptionLabel,
+} from "./BranchToolbar.logic";
 import { ProviderStatusBanner } from "./chat/ProviderStatusBanner";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import {
@@ -602,15 +610,10 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     ),
   );
   const draftThread = useComposerDraftStore((store) => store.getDraftThreadByRef(threadRef));
-  const projectRef = useMemo(() => {
-    if (serverThread) {
-      return scopeProjectRef(serverThread.environmentId, serverThread.projectId);
-    }
-    if (draftThread) {
-      return scopeProjectRef(draftThread.environmentId, draftThread.projectId);
-    }
-    return null;
-  }, [serverThread, draftThread]);
+  const projectRef = useMemo(
+    () => resolveActiveProjectRef(serverThread, draftThread),
+    [serverThread, draftThread],
+  );
   const projectEnvironmentId = projectRef?.environmentId;
   const projectProjectId = projectRef?.projectId;
   const project = useStore(
@@ -777,13 +780,9 @@ const RetainedPlanSurface = memo(function RetainedPlanSurface(
 ) {
   const { visible, ...planProps } = props;
   return (
-    <div
-      className={cn("h-full min-h-0", !visible && "hidden")}
-      data-chat-view-right-panel-surface={visible ? "plan" : undefined}
-      aria-hidden={!visible}
-    >
+    <RetainedRightPanelSurface visible={visible} surface="plan">
       <PlanSidebar {...planProps} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -791,13 +790,9 @@ const RetainedPreviewSurface = memo(function RetainedPreviewSurface(
   props: ComponentProps<typeof PreviewPanel>,
 ) {
   return (
-    <div
-      className={cn("h-full min-h-0", !props.visible && "hidden")}
-      data-chat-view-right-panel-surface={props.visible ? "preview" : undefined}
-      aria-hidden={!props.visible}
-    >
+    <RetainedRightPanelSurface visible={props.visible} surface="preview">
       <PreviewPanel {...props} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -808,11 +803,7 @@ const RetainedDiffSurface = memo(function RetainedDiffSurface(props: {
   readonly onDiffSearchChange: (nextSearch: DiffRouteSearch) => void;
 }) {
   return (
-    <div
-      className={cn("h-full min-h-0", !props.visible && "hidden")}
-      data-chat-view-right-panel-surface={props.visible ? "diff" : undefined}
-      aria-hidden={!props.visible}
-    >
+    <RetainedRightPanelSurface visible={props.visible} surface="diff">
       <Suspense fallback={null}>
         <RightPanelDiff
           threadRef={props.threadRef}
@@ -820,7 +811,7 @@ const RetainedDiffSurface = memo(function RetainedDiffSurface(props: {
           onDiffSearchChange={props.onDiffSearchChange}
         />
       </Suspense>
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -829,13 +820,9 @@ const RetainedInsightsSurface = memo(function RetainedInsightsSurface(
 ) {
   const { visible, ...insightsProps } = props;
   return (
-    <div
-      className={cn("h-full min-h-0", !visible && "hidden")}
-      data-chat-view-right-panel-surface={visible ? "insights" : undefined}
-      aria-hidden={!visible}
-    >
+    <RetainedRightPanelSurface visible={visible} surface="insights">
       <InsightsPanel {...insightsProps} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -843,13 +830,9 @@ const RetainedTerminalSurface = memo(function RetainedTerminalSurface(
   props: ComponentProps<typeof PersistentThreadTerminalDrawer>,
 ) {
   return (
-    <div
-      className={cn("h-full min-h-0", !props.visible && "hidden")}
-      data-chat-view-right-panel-surface={props.visible ? "terminal" : undefined}
-      aria-hidden={!props.visible}
-    >
+    <RetainedRightPanelSurface visible={props.visible} surface="terminal">
       <PersistentThreadTerminalDrawer {...props} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -861,13 +844,9 @@ const RetainedFileSurface = memo(function RetainedFileSurface(
 ) {
   const { visible, kind, ...fileProps } = props;
   return (
-    <div
-      className={cn("h-full min-h-0", !visible && "hidden")}
-      data-chat-view-right-panel-surface={visible ? kind : undefined}
-      aria-hidden={!visible}
-    >
+    <RetainedRightPanelSurface visible={visible} surface={kind}>
       <FilePreviewPanel {...fileProps} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -1028,6 +1007,7 @@ function ChatViewBody(
     (routeActiveSurface?.kind === "files" || routeActiveSurface?.kind === "file");
   const insightsOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "insights";
   const diffSurfaceOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "diff";
+  const pullRequestsOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "pull-requests";
   const setPlanSidebarOpen = useCallback(
     (open: boolean) => {
       // Close only the plan surface so thread switches / plan dismiss do not
@@ -2311,6 +2291,17 @@ function ChatViewBody(
     planSidebarDismissedForTurnRef.current =
       activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
   }, [activePlan?.turnId, activeThreadRef, sidebarProposedPlan?.turnId]);
+  const togglePullRequests = useCallback(() => {
+    if (!activeThreadRef) return;
+    const state = useRightPanelStore.getState();
+    const panel = state.byThreadKey[scopedThreadKey(activeThreadRef)];
+    const activeSurface = panel?.surfaces.find((surface) => surface.id === panel.activeSurfaceId);
+    if (panel?.isOpen && activeSurface?.kind === "pull-requests") {
+      state.close(activeThreadRef);
+      return;
+    }
+    state.open(activeThreadRef, "pull-requests");
+  }, [activeThreadRef]);
   const closeInsights = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().closeSurface(activeThreadRef, "insights");
   }, [activeThreadRef]);
@@ -2344,6 +2335,9 @@ function ChatViewBody(
   }, [activeThreadRef]);
   const addDeviceSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "device");
+  }, [activeThreadRef]);
+  const addPullRequestsSurface = useCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "pull-requests");
   }, [activeThreadRef]);
   const runProjectScript = useCallback(
     async (
@@ -2904,6 +2898,7 @@ function ChatViewBody(
     activeWorktreePath,
     hasServerThread: isServerThread,
     draftThreadEnvMode: isLocalDraftThread ? draftThread?.envMode : undefined,
+    projectCwd: activeProject?.cwd ?? null,
   });
   const canOverrideServerThreadEnvMode = Boolean(
     isServerThread && activeThread && activeThread.worktreePath === null,
@@ -3573,7 +3568,14 @@ function ChatViewBody(
                       runtimeMode,
                       interactionMode,
                       branch: activeThreadBranch,
-                      worktreePath: activeThread.worktreePath,
+                      // Explicit "Current checkout" choice binds the thread to the
+                      // project checkout so the server does not allocate an
+                      // isolated worktree. Worktree mode keeps worktreePath null
+                      // so a new worktree is created off the base branch.
+                      worktreePath:
+                        sendEnvMode === "local"
+                          ? (activeThread.worktreePath ?? activeProject.cwd)
+                          : activeThread.worktreePath,
                       ...(draftThread?.pullRequest
                         ? { pullRequest: draftThread.pullRequest }
                         : activeThread && "pullRequest" in activeThread && activeThread.pullRequest
@@ -4744,6 +4746,9 @@ function ChatViewBody(
       browserPreviewOpen,
       insightsOpen,
       diffOpen: diffSurfaceOpen,
+      pullRequestsAvailable:
+        resolveThreadPullRequests(activeThread?.pullRequests, activeThread?.pullRequest).length > 0,
+      pullRequestsOpen,
       isGitRepo,
       terminalToggleShortcutLabel,
       diffToggleShortcutLabel: diffPanelShortcutLabel,
@@ -4752,6 +4757,7 @@ function ChatViewBody(
       onToggleBrowserPreview: toggleBrowserPreview,
       onToggleInsights: toggleInsights,
       onToggleDiff,
+      onTogglePullRequests: togglePullRequests,
     }),
     [
       activeProject,
@@ -4767,7 +4773,11 @@ function ChatViewBody(
       terminalToggleShortcutLabel,
       toggleBrowserPreview,
       toggleInsights,
+      togglePullRequests,
       toggleTerminalVisibility,
+      pullRequestsOpen,
+      activeThread?.pullRequests,
+      activeThread?.pullRequest,
     ],
   );
   // A fresh JSX node every render would defeat ChatHeader's memo, re-rendering
@@ -4864,6 +4874,30 @@ function ChatViewBody(
               }}
             />
           ) : null;
+        case "pull-requests":
+          return activeThreadRef ? (
+            <ThreadPullRequestsPanel
+              key={surface.id}
+              threadRef={activeThreadRef}
+              links={activeThread?.pullRequests}
+              fallbackPullRequest={activeThread?.pullRequest}
+              visible={visible}
+            />
+          ) : null;
+        case "pull-request":
+          return (
+            <div className={cn("min-h-0 flex-1", !visible && "hidden")} key={surface.id}>
+              <PullRequestDetailPanel
+                environmentId={surface.environmentId}
+                reference={surface.reference}
+                onClose={() => {
+                  if (activeThreadRef) {
+                    useRightPanelStore.getState().closeSurface(activeThreadRef, surface.id);
+                  }
+                }}
+              />
+            </div>
+          );
         case "files":
         case "file":
           return activeThreadRef ? (
@@ -5197,6 +5231,7 @@ function ChatViewBody(
                 onAddDiff={addDiffSurface}
                 onAddInsights={addInsightsSurface}
                 onAddDevice={addDeviceSurface}
+                onAddPullRequests={addPullRequestsSurface}
                 maximized={rightPanelMaximized}
                 onToggleMaximize={toggleRightPanelMaximized}
               >
@@ -5256,6 +5291,7 @@ function ChatViewBody(
             onAddDiff={addDiffSurface}
             onAddInsights={addInsightsSurface}
             onAddDevice={addDeviceSurface}
+            onAddPullRequests={addPullRequestsSurface}
           >
             {renderRightPanelSurfaces()}
           </RightPanelTabs>

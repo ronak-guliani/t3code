@@ -33,6 +33,7 @@ interface ArchivedThreadDeleteContext {
   };
   readonly project: {
     readonly id: ProjectId;
+    readonly cwd?: string | null;
   };
   readonly threads: ReadonlyArray<{
     readonly id: ThreadId;
@@ -263,7 +264,11 @@ export function useThreadActions() {
             )
           : threadsForWorktreeCheck;
       const orphanedWorktreePath = thread
-        ? getOrphanedWorktreePathForThread(survivingThreads, threadRef.threadId)
+        ? getOrphanedWorktreePathForThread(
+            survivingThreads,
+            threadRef.threadId,
+            threadProject?.cwd ?? null,
+          )
         : null;
       const displayWorktreePath = orphanedWorktreePath
         ? formatWorktreePathForDisplay(orphanedWorktreePath)

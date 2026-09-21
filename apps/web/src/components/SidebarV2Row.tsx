@@ -163,6 +163,11 @@ export const SidebarV2Row = memo(function SidebarV2Row({
   );
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
 
+  const threadRef = scopeThreadRef(
+    thread.environmentId,
+    thread.virtualAgentRun?.parentThreadId ?? thread.id,
+  );
+
   const pullRequests = resolveThreadPullRequests(thread.pullRequests, thread.pullRequest);
 
   const statusLabel = resolveSidebarV2StatusLabel({
@@ -421,6 +426,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
                 <ThreadPullRequestsPopover
                   links={thread.pullRequests}
                   fallbackPullRequest={thread.pullRequest}
+                  threadRef={threadRef}
                 />
                 <ThreadBrowserOpenStatus
                   environmentId={thread.environmentId}
@@ -561,6 +567,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
                 <ThreadPullRequestsPopover
                   links={thread.pullRequests}
                   fallbackPullRequest={thread.pullRequest}
+                  threadRef={threadRef}
                 />
                 <SidebarThreadEnvironmentIcon environmentLabel={environmentLabel} />
               </span>
