@@ -36,7 +36,7 @@ import MigrationFeedback from "../persistence/Migrations/072_PullRequestMonitorF
 import MigrationOwnership from "../persistence/Migrations/073_PullRequestMonitorOwnership.ts";
 import MigrationFallback from "../persistence/Migrations/074_PullRequestMonitorFallback.ts";
 import MigrationRevisionIdentity from "../persistence/Migrations/076_PullRequestMonitorRevisionIdentity.ts";
-import MigrationReviewDisputes from "../persistence/Migrations/097_PullRequestMonitorReviewDisputes.ts";
+import MigrationReviewDisputes from "../persistence/Migrations/098_PullRequestMonitorReviewDisputes.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";

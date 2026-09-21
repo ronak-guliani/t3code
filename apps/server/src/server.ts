@@ -44,6 +44,18 @@ import { TurnLifecycleRuntimeLayerLive } from "./orchestration/Layers/TurnLifecy
 import { ThreadTitleReactorLive } from "./orchestration/Layers/ThreadTitleReactor.ts";
 import { QueuedTurnReactorLive } from "./orchestration/Layers/QueuedTurnReactor.ts";
 import { WorkflowCoordinatorReactorLive } from "./orchestration/Layers/WorkflowCoordinatorReactor.ts";
+import {
+  ValidationCoordinatorReactorLive,
+  ValidationCoordinatorTargetResolverLive,
+} from "./orchestration/Layers/ValidationCoordinatorReactor.ts";
+import { RepositoryValidationRunnerLive } from "./validation/RepositoryValidationRunner.ts";
+import {
+  ValidationArtifactStoreService,
+  makeFileValidationArtifactStore,
+} from "./validation/RepositoryValidationRunner.ts";
+import { ValidationEnvironmentServiceLive } from "./validation/ValidationEnvironmentService.ts";
+import { ValidationGateExecutorLive } from "./validation/ValidationGateExecutor.ts";
+import { BootstrapCredentialServiceLive } from "./auth/Layers/BootstrapCredentialService.ts";
 import { ReviewSnapshotVerifierLive } from "./orchestration/Layers/ReviewSnapshotVerifier.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
@@ -176,12 +188,38 @@ const PlatformServicesLive = Layer.unwrap(
   }),
 );
 
+const ValidationArtifactStoreLive = Layer.effect(
+  ValidationArtifactStoreService,
+  Effect.gen(function* () {
+    const config = yield* ServerConfig;
+    const { join } = yield* Effect.promise(() => import("node:path"));
+    return makeFileValidationArtifactStore(join(config.baseDir, "validation", "artifacts"));
+  }),
+);
+
+const ValidationGateExecutorWiredLive = ValidationGateExecutorLive.pipe(
+  Layer.provide(
+    RepositoryValidationRunnerLive.pipe(
+      Layer.provide(ProcessRunner.layer),
+      Layer.provide(ValidationArtifactStoreLive),
+    ),
+  ),
+  Layer.provide(ValidationEnvironmentServiceLive),
+  Layer.provide(BootstrapCredentialServiceLive),
+);
+
+const ValidationCoordinatorWiredLive = ValidationCoordinatorReactorLive.pipe(
+  Layer.provideMerge(ValidationCoordinatorTargetResolverLive),
+  Layer.provide(ValidationGateExecutorWiredLive),
+);
+
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(TurnLifecycleRuntimeLayerLive),
   Layer.provideMerge(ThreadTitleReactorLive),
   Layer.provideMerge(QueuedTurnReactorLive),
   Layer.provideMerge(WorkflowCoordinatorReactorLive),
+  Layer.provideMerge(ValidationCoordinatorWiredLive),
   Layer.provideMerge(ReviewSnapshotVerifierLive),
   Layer.provideMerge(ProjectionWorkflowRepositoryLive),
   Layer.provideMerge(ThreadDeletionReactorLive),

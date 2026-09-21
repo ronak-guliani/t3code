@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
+import { describe, expect, it, vi } from "vitest";
 
 import { EnvironmentId, ProjectId, type PullRequestListResult } from "@t3tools/contracts";
 
 import {
+  prefetchPullRequestDetail,
   pullRequestDiffInfiniteQueryOptions,
   pullRequestListInfiniteQueryOptions,
   pullRequestMutationKeys,
@@ -78,5 +80,39 @@ describe("pullRequestReactQuery", () => {
     expect(pullRequestMutationKeys.comment(ENVIRONMENT_ID)).not.toEqual(
       pullRequestMutationKeys.comment(null),
     );
+  });
+
+  it("prefetches the detail a hovered row is about to open", async () => {
+    const queryClient = new QueryClient();
+    const prefetch = vi
+      .spyOn(queryClient, "prefetchQuery")
+      .mockImplementation(() => Promise.resolve());
+    const reference = { projectId: PROJECT_ID, repository: "acme/web", number: 42 };
+
+    await prefetchPullRequestDetail(queryClient, {
+      environmentId: ENVIRONMENT_ID,
+      reference,
+    });
+
+    expect(prefetch).toHaveBeenCalledOnce();
+    expect(prefetch.mock.calls[0]?.[0]).toMatchObject({
+      queryKey: pullRequestQueryKeys.detail(ENVIRONMENT_ID, reference),
+    });
+    prefetch.mockRestore();
+  });
+
+  it("prefetches nothing without an environment", async () => {
+    const queryClient = new QueryClient();
+    const prefetch = vi
+      .spyOn(queryClient, "prefetchQuery")
+      .mockImplementation(() => Promise.resolve());
+
+    await prefetchPullRequestDetail(queryClient, {
+      environmentId: null,
+      reference: { projectId: PROJECT_ID, repository: "acme/web", number: 42 },
+    });
+
+    expect(prefetch).not.toHaveBeenCalled();
+    prefetch.mockRestore();
   });
 });
