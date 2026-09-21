@@ -38,7 +38,13 @@ export function isActionableApprovalRequest(payload: unknown): boolean {
   );
 }
 
-function activityChangesShellSummary(
+/**
+ * Whether an appended activity can change the thread's shell row. Shared by
+ * the reconciler (which decides what to refresh) and the shell stream (which
+ * decides what to re-read): filtering in only one place either wastes work
+ * or starves the sidebar, so both must agree on the predicate.
+ */
+export function activityChangesShellSummary(
   activity: Extract<
     OrchestrationEvent,
     { type: "thread.activity-appended" }
