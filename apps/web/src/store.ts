@@ -28,7 +28,11 @@ import {
 } from "@t3tools/client-runtime";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
-import { validationRunEquals } from "@t3tools/contracts";
+import {
+  acceptValidationResult,
+  transitionValidationRunStatus,
+  validationRunEquals,
+} from "@t3tools/contracts";
 import { Schema } from "effect";
 import { resolveModelSlugForProvider } from "@t3tools/shared/model";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
@@ -353,6 +357,9 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pullRequests: thread.pullRequests ?? [],
     ...(thread.reviewSnapshot !== undefined ? { reviewSnapshot: thread.reviewSnapshot } : {}),
     ...(thread.reviewResult !== undefined ? { reviewResult: thread.reviewResult } : {}),
+    ...(thread.validationRequest !== undefined && thread.validationRequest !== null
+      ? { validationRequest: thread.validationRequest }
+      : {}),
     ...(thread.validationRun !== undefined && thread.validationRun !== null
       ? { validationRun: thread.validationRun }
       : {}),
@@ -397,6 +404,9 @@ function mapThreadShell(
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
     pullRequests: thread.pullRequests ?? [],
+    ...(thread.validationRequest !== undefined && thread.validationRequest !== null
+      ? { validationRequest: thread.validationRequest }
+      : {}),
     ...(thread.validationRun !== undefined && thread.validationRun !== null
       ? { validationRun: thread.validationRun }
       : {}),
@@ -426,6 +436,9 @@ function mapThreadShell(
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
     pullRequests: thread.pullRequests ?? [],
+    ...(thread.validationRequest !== undefined && thread.validationRequest !== null
+      ? { validationRequest: thread.validationRequest }
+      : {}),
     ...(thread.validationRun !== undefined && thread.validationRun !== null
       ? { validationRun: thread.validationRun }
       : {}),
@@ -470,6 +483,9 @@ function toThreadShell(thread: Thread): ThreadShell {
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
     pullRequests: thread.pullRequests ?? [],
+    ...(thread.validationRequest !== undefined && thread.validationRequest !== null
+      ? { validationRequest: thread.validationRequest }
+      : {}),
     ...(thread.validationRun !== undefined && thread.validationRun !== null
       ? { validationRun: thread.validationRun }
       : {}),
@@ -2234,9 +2250,90 @@ function applyEnvironmentOrchestrationEvent(
     case "thread.validation-run-planned":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
+        validationRequest: null,
         validationRun: event.payload.run,
         updatedAt: event.occurredAt,
       }));
+
+    case "thread.validation-requested":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        validationRequest: event.payload.request,
+        updatedAt: event.occurredAt,
+      }));
+
+    case "thread.validation-request-failed":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        if (thread.validationRequest?.requestId !== event.payload.failure.requestId) {
+          return thread;
+        }
+        return {
+          ...thread,
+          validationRequest: null,
+          updatedAt: event.occurredAt,
+        };
+      });
+
+    case "thread.validation-lifecycle-updated":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        if (!thread.validationRun || thread.validationRun.id !== event.payload.update.runId) {
+          return thread;
+        }
+        return {
+          ...thread,
+          validationRun: transitionValidationRunStatus(
+            thread.validationRun,
+            event.payload.update.status,
+            event.payload.update.updatedAt,
+          ),
+          updatedAt: event.occurredAt,
+        };
+      });
+
+    case "thread.validation-lease-claimed":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        if (!thread.validationRun || thread.validationRun.id !== event.payload.runId) {
+          return thread;
+        }
+        return {
+          ...thread,
+          validationRun: {
+            ...thread.validationRun,
+            executorId: event.payload.lease.executorId,
+            lease: event.payload.lease,
+            updatedAt: event.occurredAt,
+          },
+          updatedAt: event.occurredAt,
+        };
+      });
+
+    case "thread.validation-lease-released":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        if (!thread.validationRun || thread.validationRun.id !== event.payload.runId) {
+          return thread;
+        }
+        return {
+          ...thread,
+          validationRun: {
+            ...thread.validationRun,
+            lease: null,
+            updatedAt: event.occurredAt,
+          },
+          updatedAt: event.occurredAt,
+        };
+      });
+
+    case "thread.validation-result-recorded":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        if (!thread.validationRun || thread.validationRun.id !== event.payload.result.runId) {
+          return thread;
+        }
+        return {
+          ...thread,
+          validationRun: acceptValidationResult(thread.validationRun, event.payload.result),
+          updatedAt: event.occurredAt,
+        };
+      });
 
     case "thread.validation-gate-updated":
       return updateThreadState(state, event.payload.threadId, (thread) => {

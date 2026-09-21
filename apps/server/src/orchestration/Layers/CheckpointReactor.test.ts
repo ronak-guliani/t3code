@@ -330,6 +330,7 @@ describe("CheckpointReactor", () => {
     readonly gitStatusRefreshCalls?: Array<string>;
     readonly failCheckpointCapture?: boolean;
     readonly beforeCheckpointCapture?: (ref: CheckpointRef) => Effect.Effect<void>;
+    readonly failDiffWithGenerationMismatch?: boolean;
     readonly awaitRuntimeEventProcessed?: (eventId: EventId) => Effect.Effect<void>;
     readonly useRuntimeIngestion?: boolean;
     readonly deferCheckpointStart?: boolean;
@@ -376,7 +377,9 @@ describe("CheckpointReactor", () => {
       streamStatus: () => Stream.empty,
     });
     const checkpointStoreLayer =
-      options?.failCheckpointCapture || options?.beforeCheckpointCapture
+      options?.failCheckpointCapture ||
+      options?.beforeCheckpointCapture ||
+      options?.failDiffWithGenerationMismatch
         ? Layer.effect(
             CheckpointStore,
             Effect.gen(function* () {
@@ -398,6 +401,17 @@ describe("CheckpointReactor", () => {
                         : checkpointStore.captureCheckpoint(input),
                     ),
                   ),
+                diffCheckpointFiles: (
+                  input: Parameters<typeof checkpointStore.diffCheckpointFiles>[0],
+                ) =>
+                  options?.failDiffWithGenerationMismatch
+                    ? Effect.fail(
+                        new CheckpointInvariantError({
+                          operation: "CheckpointStore.diffCheckpoints",
+                          detail: "The from checkpoint does not belong to workspace generation 1.",
+                        }),
+                      )
+                    : checkpointStore.diffCheckpointFiles(input),
               };
             }).pipe(Effect.provide(CheckpointStoreLive)),
           )
@@ -1648,6 +1662,33 @@ describe("CheckpointReactor", () => {
     );
     expect(turnDiffEvent?.payload.assistantMessageId).toBeNull();
     expect(thread.checkpoints[0]?.assistantMessageId).toBeNull();
+  });
+
+  it("does not append capture failure activity when diff spans a workspace generation change", async () => {
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      failDiffWithGenerationMismatch: true,
+    });
+
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-generation-mismatch"),
+      provider: ProviderDriverKind.make("codex"),
+
+      createdAt: new Date().toISOString(),
+      threadId: ThreadId.make("thread-1"),
+      turnId: asTurnId("turn-generation-mismatch"),
+      payload: { state: "completed" },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) => entry.checkpoints.length === 1);
+
+    expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+    expect(thread.checkpoints[0]?.files).toEqual([]);
+    expect(thread.checkpoints[0]?.turnFiles).toEqual([]);
+    expect(
+      thread.activities.some((activity) => activity.kind === "checkpoint.capture.failed"),
+    ).toBe(false);
   });
 
   it("captures fallback pre-turn baseline from project workspace root when worktree is unset", async () => {

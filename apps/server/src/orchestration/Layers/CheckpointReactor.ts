@@ -91,6 +91,23 @@ function isNonAuthoritativeCheckpoint(status: string): boolean {
   return status === "missing" || status === "speculative";
 }
 
+function isWorkspaceGenerationMismatch(error: unknown): boolean {
+  if (error === null || error === undefined || typeof error !== "object") {
+    return false;
+  }
+  const tag = (error as { readonly _tag?: unknown })._tag;
+  const detail =
+    (error as { readonly detail?: unknown }).detail ??
+    (error as { readonly message?: unknown }).message;
+  const isInvariant =
+    tag === "CheckpointInvariantError" || error instanceof CheckpointInvariantError;
+  return (
+    isInvariant &&
+    typeof detail === "string" &&
+    detail.includes("does not belong to workspace generation")
+  );
+}
+
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const runtimeIngestion = yield* ProviderRuntimeIngestionService;
@@ -294,7 +311,21 @@ const make = Effect.gen(function* () {
     // reflects files created or deleted during this turn.
     yield* workspaceEntries.invalidate(input.cwd);
 
-    const transitionFiles = yield* checkpointStore
+    const initialBaselineRef = checkpointBaselineRefForThreadTurn(input.threadId, 1);
+    const initialBaselineExists = yield* checkpointStore.hasCheckpointRef({
+      cwd: input.cwd,
+      checkpointRef: initialBaselineRef,
+    });
+    const snapshotBaselineRef = initialBaselineExists
+      ? initialBaselineRef
+      : checkpointRefForThreadTurn(input.threadId, 0);
+
+    // The transition diff (previous turn -> this turn) and the snapshot diff
+    // (baseline -> this turn) are independent read-only ranges over refs that
+    // already exist, so overlap them: each fans out to its own numstat plus
+    // name-status git processes, and serializing the two ranges doubles the
+    // file-summary latency gating checkpoint finalization.
+    const transitionFilesEffect = checkpointStore
       .diffCheckpointFiles({
         cwd: input.cwd,
         fromCheckpointRef,
@@ -307,12 +338,19 @@ const make = Effect.gen(function* () {
       .pipe(
         Effect.map(toCheckpointFiles),
         Effect.tapError((error) =>
-          appendCaptureFailureActivity({
-            threadId: input.threadId,
-            turnId: input.turnId,
-            detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
-            createdAt: input.createdAt,
-          }),
+          isWorkspaceGenerationMismatch(error)
+            ? Effect.logWarning("checkpoint turn diff skipped after workspace generation change", {
+                threadId: input.threadId,
+                turnId: input.turnId,
+                turnCount: input.turnCount,
+                detail: error.message,
+              })
+            : appendCaptureFailureActivity({
+                threadId: input.threadId,
+                turnId: input.turnId,
+                detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
+                createdAt: input.createdAt,
+              }),
         ),
         Effect.catch((error) =>
           Effect.logWarning("failed to derive checkpoint file summary", {
@@ -324,18 +362,10 @@ const make = Effect.gen(function* () {
         ),
       );
 
-    const initialBaselineRef = checkpointBaselineRefForThreadTurn(input.threadId, 1);
-    const initialBaselineExists = yield* checkpointStore.hasCheckpointRef({
-      cwd: input.cwd,
-      checkpointRef: initialBaselineRef,
-    });
-    const snapshotBaselineRef = initialBaselineExists
-      ? initialBaselineRef
-      : checkpointRefForThreadTurn(input.threadId, 0);
-    const snapshotFiles =
+    const snapshotFilesEffect =
       input.turnCount === 0
-        ? []
-        : yield* checkpointStore
+        ? Effect.succeed([])
+        : checkpointStore
             .diffCheckpointFiles({
               cwd: input.cwd,
               fromCheckpointRef: snapshotBaselineRef,
@@ -348,12 +378,22 @@ const make = Effect.gen(function* () {
             .pipe(
               Effect.map(toCheckpointFiles),
               Effect.tapError((error) =>
-                appendCaptureFailureActivity({
-                  threadId: input.threadId,
-                  turnId: input.turnId,
-                  detail: `Checkpoint captured, but snapshot diff summary is unavailable: ${error.message}`,
-                  createdAt: input.createdAt,
-                }),
+                isWorkspaceGenerationMismatch(error)
+                  ? Effect.logWarning(
+                      "checkpoint snapshot diff skipped after workspace generation change",
+                      {
+                        threadId: input.threadId,
+                        turnId: input.turnId,
+                        turnCount: input.turnCount,
+                        detail: error.message,
+                      },
+                    )
+                  : appendCaptureFailureActivity({
+                      threadId: input.threadId,
+                      turnId: input.turnId,
+                      detail: `Checkpoint captured, but snapshot diff summary is unavailable: ${error.message}`,
+                      createdAt: input.createdAt,
+                    }),
               ),
               Effect.catch((error) =>
                 Effect.logWarning("failed to derive checkpoint snapshot file summary", {
@@ -364,6 +404,11 @@ const make = Effect.gen(function* () {
                 }).pipe(Effect.as([])),
               ),
             );
+
+    const [transitionFiles, snapshotFiles] = yield* Effect.all(
+      [transitionFilesEffect, snapshotFilesEffect],
+      { concurrency: 2 },
+    );
 
     const priorCheckpointForTurn = input.thread.checkpoints.find(
       (checkpoint) => checkpoint.turnId === input.turnId,

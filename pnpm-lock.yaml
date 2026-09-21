@@ -964,6 +964,9 @@ importers:
       '@t3tools/shared':
         specifier: workspace:*
         version: link:../packages/shared
+      '@t3tools/tailscale':
+        specifier: workspace:*
+        version: link:../packages/tailscale
       effect:
         specifier: 4.0.0-beta.78
         version: 4.0.0-beta.78(patch_hash=0cae00735e0fe12c8489752232ec73762efe702c2fd518fa8f3790f9aa5f2b09)

@@ -1886,6 +1886,71 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("retains native idle evidence when the status endpoint remains stale busy", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-stale-busy-status");
+      runtimeMock.state.subscribedEventDelayMs = 50;
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.status",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            status: { type: "idle" },
+          },
+        },
+      ];
+      const observed = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Finish despite stale polled status",
+        modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "openai/gpt-5"),
+      });
+      const prompt = runtimeMock.state.promptCalls.at(-1) as { messageID: string };
+
+      yield* sleep(150);
+      runtimeMock.state.messages = [
+        {
+          info: { id: prompt.messageID, role: "user" },
+          parts: [{ id: "user-part", type: "text", messageID: prompt.messageID, text: "Finish" }],
+        },
+        {
+          info: {
+            id: "assistant-stale-busy-status",
+            role: "assistant",
+            parentID: prompt.messageID,
+          },
+          parts: [
+            {
+              id: "assistant-part",
+              messageID: "assistant-stale-busy-status",
+              type: "text",
+              text: "Completed after native idle",
+              time: { start: 1, end: 2 },
+            },
+          ],
+        },
+      ];
+
+      const events = Array.from(yield* Fiber.join(observed).pipe(Effect.timeout("2 seconds")));
+      const completed = events.filter(
+        (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+      );
+      assert.equal(completed.length, 1);
+    }),
+  );
+
   it.effect("does not fail a long-running prompt before its transcript is idle", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
