@@ -11,6 +11,7 @@
     "@effect/platform-node": "catalog:",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
+    "@t3tools/tailscale": "workspace:*",
     "effect": "catalog:",
     "yaml": "catalog:"
   },

@@ -13,6 +13,7 @@ import {
   type DpopPublicJwk,
 } from "@t3tools/shared/dpop";
 import { Effect, Layer } from "effect";
+import * as Redacted from "effect/Redacted";
 
 import type { ServerConfigShape } from "../../config.ts";
 import { ServerConfig } from "../../config.ts";
@@ -420,6 +421,50 @@ it.layer(NodeServices.layer)("ServerAuthLive", (it) => {
       Effect.provide(
         makeServerAuthLayer({
           desktopBootstrapToken: "desktop-bootstrap-token",
+        }),
+      ),
+    ),
+  );
+
+  it.effect("exchanges the reusable dev token for a dev-cookie owner session", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* ServerAuth;
+      const devToken = "reusable-dev-auth-token-that-is-long-enough";
+
+      const exchanged = yield* serverAuth.exchangeBootstrapCredential(devToken, requestMetadata);
+      expect(exchanged.sessionToken).toBe(devToken);
+      expect(exchanged.cookieName ?? "").toMatch(/^t3_dev_session_/);
+
+      const viaDevCookie = yield* serverAuth.authenticateHttpRequest({
+        cookies: { [exchanged.cookieName ?? ""]: devToken },
+        headers: {},
+      } as Parameters<ServerAuthShape["authenticateHttpRequest"]>[0]);
+      expect(viaDevCookie.role).toBe("owner");
+      expect(viaDevCookie.sessionId.startsWith("dev-auth-")).toBe(true);
+
+      const viaBearer = yield* serverAuth.authenticateHttpRequest(
+        makeAuthorizationRequest({
+          authorization: `Bearer ${devToken}`,
+          url: "http://localhost:13773/api/auth/session",
+        }),
+      );
+      expect(viaBearer.role).toBe("owner");
+
+      // A rejected normal credential never falls back to the dev token.
+      const rejected = yield* Effect.flip(
+        serverAuth.authenticateHttpRequest(
+          makeAuthorizationRequest({
+            authorization: "Bearer not-the-dev-token",
+            url: "http://localhost:13773/api/auth/session",
+          }),
+        ),
+      );
+      expect(rejected._tag).toBe("AuthError");
+    }).pipe(
+      Effect.provide(
+        makeServerAuthLayer({
+          devUrl: new URL("http://localhost:5733"),
+          devAuthToken: Redacted.make("reusable-dev-auth-token-that-is-long-enough"),
         }),
       ),
     ),

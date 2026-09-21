@@ -131,6 +131,7 @@ export function BranchToolbarBranchSelector({
       activeWorktreePath,
       hasServerThread,
       draftThreadEnvMode: draftThread?.envMode,
+      projectCwd: activeProject?.cwd ?? null,
     });
 
   // ---------------------------------------------------------------------------

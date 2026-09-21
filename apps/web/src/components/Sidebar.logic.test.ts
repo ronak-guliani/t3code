@@ -347,7 +347,7 @@ describe("resolveSidebarNewThreadEnvMode", () => {
 });
 
 describe("resolveSidebarNewThreadSeedContext", () => {
-  it("starts on the local main checkout instead of the configured worktree default", () => {
+  it("starts on a new worktree off main instead of inheriting thread context", () => {
     expect(
       resolveSidebarNewThreadSeedContext({
         projectId: "project-1",
@@ -367,7 +367,7 @@ describe("resolveSidebarNewThreadSeedContext", () => {
     ).toEqual({
       branch: "main",
       worktreePath: null,
-      envMode: "local",
+      envMode: "worktree",
     });
   });
 
@@ -386,7 +386,7 @@ describe("resolveSidebarNewThreadSeedContext", () => {
     ).toEqual({
       branch: "main",
       worktreePath: null,
-      envMode: "local",
+      envMode: "worktree",
     });
   });
 
@@ -410,11 +410,11 @@ describe("resolveSidebarNewThreadSeedContext", () => {
     ).toEqual({
       branch: "main",
       worktreePath: null,
-      envMode: "local",
+      envMode: "worktree",
     });
   });
 
-  it("uses the local main checkout when there is no matching active thread context", () => {
+  it("uses a new worktree off main when there is no matching active thread context", () => {
     expect(
       resolveSidebarNewThreadSeedContext({
         projectId: "project-2",
@@ -429,7 +429,7 @@ describe("resolveSidebarNewThreadSeedContext", () => {
     ).toEqual({
       branch: "main",
       worktreePath: null,
-      envMode: "local",
+      envMode: "worktree",
     });
   });
 });

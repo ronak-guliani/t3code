@@ -1033,7 +1033,7 @@ describe("composerDraftStore project draft thread mapping", () => {
       projectId,
       branch: null,
       worktreePath: null,
-      envMode: "local",
+      envMode: "worktree",
     });
   });
 
@@ -1055,7 +1055,7 @@ describe("composerDraftStore project draft thread mapping", () => {
       projectId,
       branch: null,
       worktreePath: null,
-      envMode: "local",
+      envMode: "worktree",
     });
   });
 });
