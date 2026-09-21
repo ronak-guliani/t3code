@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { ThreadId, TurnId } from "@t3tools/contracts";
 
-import { acceptanceAuthorityForThread, acceptanceAuthorityMatchesThread } from "./authority.ts";
+import {
+  acceptanceAuthorityForThread,
+  acceptanceAuthorityMatchesThread,
+  isCompleteAcceptanceAuthority,
+} from "./authority.ts";
 
 const validDelegation = {
   assignmentId: "assignment-1",
@@ -11,6 +15,18 @@ const validDelegation = {
 };
 
 describe("acceptanceAuthorityForThread", () => {
+  it("recognizes only complete authenticated execution tuples", () => {
+    const authority = acceptanceAuthorityForThread({
+      id: "thread-1",
+      nudging: { delegation: validDelegation },
+    });
+    expect(authority).toBeDefined();
+    expect(isCompleteAcceptanceAuthority(authority!)).toBe(true);
+    expect(isCompleteAcceptanceAuthority({ ...authority!, generation: 0 })).toBe(false);
+    expect(isCompleteAcceptanceAuthority({ ...authority!, dispatchId: null })).toBe(false);
+    expect(isCompleteAcceptanceAuthority({ ...authority!, turnId: null })).toBe(false);
+  });
+
   it("derives the complete authority tuple used by MCP, WebSocket, and provider paths", () => {
     expect(
       acceptanceAuthorityForThread({

@@ -16,7 +16,6 @@ import {
   type CollaborativeAcceptanceAssessment,
   type CollaborativeAcceptanceCandidate,
   type CollaborativeAcceptanceCandidateSubmission,
-  type CollaborativeAcceptanceCase,
   type CollaborativeAcceptanceCaseLookupInput,
   type CollaborativeAcceptanceCaseLookupResult,
   type CollaborativeAcceptanceExchange,
@@ -47,9 +46,7 @@ import * as Stream from "effect/Stream";
 import * as Crypto from "node:crypto";
 
 import {
-  advanceAcceptanceCandidate,
   cancelExchange,
-  evaluateAcceptance,
   reserveExchange,
   retryExchange,
   recordExchangeOutcome,
@@ -57,6 +54,8 @@ import {
   startExchange,
 } from "./domain.ts";
 import { selectCurrentAcceptanceCase } from "./caseLookup.ts";
+import { isCompleteAcceptanceAuthority } from "./authority.ts";
+import { makeAcceptanceCaseMutation } from "./CaseMutation.ts";
 import { CollaborativeAcceptanceRepository } from "../persistence/Services/CollaborativeAcceptance.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import {
@@ -103,16 +102,6 @@ const acceptanceError = (
     ...(input.reason === undefined ? {} : { reason: input.reason }),
   });
 
-const hasCompleteAuthority = (authority: CollaborationExecutionAuthority): boolean =>
-  authority.executionId.trim().length > 0 &&
-  authority.assignmentId !== undefined &&
-  authority.assignmentId.trim().length > 0 &&
-  authority.generation > 0 &&
-  authority.dispatchId !== null &&
-  authority.dispatchId.trim().length > 0 &&
-  authority.turnId !== null &&
-  authority.turnId.trim().length > 0;
-
 const bindAuthority = (
   authority: CollaborationExecutionAuthority,
   threadId: ThreadId,
@@ -125,7 +114,7 @@ const requireCompleteAuthority = (
   authority: CollaborationExecutionAuthority,
   caseId?: CollaborativeAcceptanceCaseId,
 ) =>
-  hasCompleteAuthority(authority)
+  isCompleteAcceptanceAuthority(authority)
     ? Effect.succeed(authority)
     : Effect.fail(
         acceptanceError(
@@ -279,6 +268,8 @@ export interface CollaborativeAcceptanceCoordinatorShape {
 
 const makeCoordinator = Effect.gen(function* () {
   const repository = yield* CollaborativeAcceptanceRepository;
+  const caseMutation = makeAcceptanceCaseMutation(repository);
+  const persist = caseMutation.persist;
   const engine = yield* OrchestrationEngineService;
   const projections = yield* ProjectionSnapshotQuery;
   const queuedTurns = yield* Effect.serviceOption(QueuedTurnReactor);
@@ -301,23 +292,7 @@ const makeCoordinator = Effect.gen(function* () {
     return lock.withPermit(effect);
   };
 
-  const load = (caseId: CollaborativeAcceptanceCaseId) =>
-    repository.getByCaseId({ caseId }).pipe(
-      Effect.mapError(() => acceptanceError("Could not load the acceptance case.", { caseId })),
-      Effect.flatMap((record) =>
-        Option.isSome(record)
-          ? Effect.succeed(record.value)
-          : Effect.fail(acceptanceError("Acceptance case not found.", { caseId })),
-      ),
-    );
-
-  const save = (input: {
-    readonly record: CollaborativeAcceptanceRecord;
-    readonly expectedRevision: number | null;
-  }) =>
-    repository
-      .save(input)
-      .pipe(Effect.mapError(() => acceptanceError("Acceptance case changed concurrently; retry.")));
+  const load = caseMutation.load;
 
   const isCasConflict = (error: unknown): boolean =>
     isCollaborativeAcceptanceError(error) &&
@@ -356,67 +331,6 @@ const makeCoordinator = Effect.gen(function* () {
         }),
       ),
     );
-
-  const currentProjection = (
-    record: CollaborativeAcceptanceRecord,
-    executionPhase: CollaborativeAcceptanceRecord["projection"]["executionPhase"] = "verifying",
-    pauseReason?: CollaborativeAcceptancePauseReason | null,
-  ) => {
-    const effectivePauseReason =
-      pauseReason === undefined ? record.projection.pauseReason : pauseReason;
-    const obligations = (record.obligations ?? [])
-      .filter(
-        (obligation) =>
-          obligation.status === "open" ||
-          obligation.status === "cancelled" ||
-          obligation.status === "superseded" ||
-          obligation.status === "unavailable" ||
-          obligation.status === "failed" ||
-          obligation.status === "needs-human",
-      )
-      .map((obligation) => obligation.obligationId);
-    const evaluation = evaluateAcceptance({
-      case: record.case,
-      candidate: record.case.currentCandidate,
-      executionPhase:
-        effectivePauseReason === undefined || effectivePauseReason === null
-          ? executionPhase
-          : "paused",
-      providerEvidence: record.providerEvidence ?? null,
-      evidence: record.evidence,
-      assessments: record.assessments,
-      collaborationObligations: obligations,
-      updatedAt: now(),
-    });
-    return {
-      ...evaluation.projection,
-      ...(effectivePauseReason === undefined || effectivePauseReason === null
-        ? {}
-        : { pauseReason: effectivePauseReason }),
-      ...(record.exchanges.find(
-        (exchange) => exchange.status === "reserved" || exchange.status === "committed",
-      )?.exchangeId === undefined
-        ? {}
-        : {
-            activeExchangeId: record.exchanges.find(
-              (exchange) => exchange.status === "reserved" || exchange.status === "committed",
-            )?.exchangeId,
-          }),
-    };
-  };
-
-  const invalidateProviderEvidence = (
-    record: CollaborativeAcceptanceRecord,
-    reason: CollaborativeAcceptancePauseReason = "provider-failure",
-  ) => {
-    const withoutEvidence = {
-      ...record,
-      providerEvidence: null,
-      projection: currentProjection({ ...record, providerEvidence: null }, "paused", reason),
-      case: { ...record.case, updatedAt: now() },
-    };
-    return save({ record: withoutEvidence, expectedRevision: record.revision });
-  };
 
   const wakeThread = (threadId: ThreadId): Effect.Effect<void, never> =>
     Option.match(queuedTurns, {
@@ -490,57 +404,8 @@ const makeCoordinator = Effect.gen(function* () {
     }
   };
 
-  const enforceLimits = (record: CollaborativeAcceptanceRecord) => {
-    const active = record.exchanges.find(
-      (exchange) => exchange.status === "reserved" || exchange.status === "committed",
-    );
-    const currentTime = Date.parse(now());
-    const budgets = record.case.policy.budgets;
-    let reason: CollaborativeAcceptancePauseReason | undefined;
-    if (
-      active?.status === "committed" &&
-      active.startedAt !== null &&
-      budgets.executionDurationSeconds > 0 &&
-      currentTime - Date.parse(active.startedAt) >= budgets.executionDurationSeconds * 1000
-    ) {
-      reason = "duration-limit";
-    } else if (
-      active !== undefined &&
-      budgets.waitingDeadlineSeconds > 0 &&
-      currentTime - Date.parse(active.startedAt ?? active.reservedAt) >=
-        budgets.waitingDeadlineSeconds * 1000
-    ) {
-      reason = "waiting-deadline";
-    } else if (
-      record.assessments.filter(
-        (assessment) =>
-          assessment.role === "parent-reviewer" &&
-          assessment.outcome !== "pass" &&
-          assessment.outcome !== "acknowledged",
-      ).length > 0 &&
-      record.assessments.filter(
-        (assessment) =>
-          assessment.role === "parent-reviewer" &&
-          assessment.outcome !== "pass" &&
-          assessment.outcome !== "acknowledged",
-      ).length >= budgets.disputeRounds
-    ) {
-      reason = "dispute-limit";
-    }
-    if (reason === undefined || record.projection.pauseReason === reason) {
-      return Effect.succeed(record);
-    }
-    const next = {
-      ...record,
-      projection: currentProjection(record, "paused", reason),
-      case: { ...record.case, updatedAt: now() },
-    };
-    return save({ record: next, expectedRevision: record.revision });
-  };
-
   const status = (caseId: CollaborativeAcceptanceCaseId) =>
-    load(caseId).pipe(
-      Effect.flatMap(enforceLimits),
+    caseMutation.execute({ _tag: "enforce-limits", caseId }).pipe(
       Effect.map((record) => ({
         record,
         pauseReason: record.projection.pauseReason ?? null,
@@ -603,7 +468,7 @@ const makeCoordinator = Effect.gen(function* () {
     );
 
   const enforceLimitsFresh = (caseId: CollaborativeAcceptanceCaseId) =>
-    retryCasConflict(load(caseId).pipe(Effect.flatMap(enforceLimits)));
+    retryCasConflict(caseMutation.execute({ _tag: "enforce-limits", caseId }));
 
   const decodeReviewCandidate = (
     candidate: CollaborativeAcceptanceCandidate,
@@ -617,189 +482,6 @@ const makeCoordinator = Effect.gen(function* () {
         }),
       ),
     );
-
-  const persistCandidate = (input: {
-    readonly submission: CollaborativeAcceptanceCandidateSubmission;
-    readonly senderThreadId: ThreadId;
-    readonly recipientThreadId: ThreadId;
-    readonly senderAuthority: CollaborationExecutionAuthority;
-  }) =>
-    Effect.gen(function* () {
-      const caseId =
-        input.submission.caseId ??
-        CollaborativeAcceptanceCaseId.make(`acceptance:${input.submission.assignmentId}`);
-      yield* requireCompleteAuthority(input.senderAuthority, caseId);
-      const expectedProvenance: CollaborativeAcceptanceProvenance = {
-        assignmentId: input.submission.assignmentId,
-        dispatchId: input.senderAuthority.dispatchId,
-        turnId: input.senderAuthority.turnId,
-        generation: input.senderAuthority.generation,
-        caseId,
-        candidateId: input.submission.candidate.candidateId,
-        headSha: input.submission.candidate.headSha,
-        contractRevision: input.submission.candidate.contractRevision,
-        reviewWorkflow: input.submission.candidate.reviewWorkflow,
-      };
-      if (
-        input.senderAuthority.assignmentId !== input.submission.assignmentId ||
-        (input.submission.candidate.provenance !== undefined &&
-          JSON.stringify(input.submission.candidate.provenance) !==
-            JSON.stringify(expectedProvenance))
-      ) {
-        return yield* acceptanceError(
-          "Candidate provenance does not match authenticated execution.",
-          {
-            caseId,
-            reason: "contradictory-contract",
-          },
-        );
-      }
-      const candidate = {
-        ...input.submission.candidate,
-        reviewCandidate: input.submission.reviewCandidate,
-        provenance: expectedProvenance,
-      };
-      const reviewCandidate = input.submission.reviewCandidate;
-      if (
-        reviewCandidate.caseId !== caseId ||
-        reviewCandidate.candidateId !== candidate.candidateId ||
-        reviewCandidate.reviewEpoch !== candidate.reviewEpoch ||
-        reviewCandidate.headSha !== candidate.headSha ||
-        reviewCandidate.contractRevision !== candidate.contractRevision ||
-        reviewCandidate.reviewWorkflow.identity !== candidate.reviewWorkflow.identity ||
-        reviewCandidate.reviewWorkflow.version !== candidate.reviewWorkflow.version
-      ) {
-        return yield* acceptanceError(
-          "Review-candidate provenance does not match the submitted candidate.",
-          { caseId, reason: "contradictory-contract" },
-        );
-      }
-      for (const evidence of input.submission.initialEvidence) {
-        if (
-          evidence.caseId !== caseId ||
-          evidence.candidateId !== candidate.candidateId ||
-          evidence.headSha !== candidate.headSha ||
-          !evidence.current ||
-          !evidence.complete
-        ) {
-          return yield* acceptanceError(
-            "Initial evidence must be complete, current, and bound to the submitted case, candidate, and head.",
-            { caseId, reason: "contradictory-contract" },
-          );
-        }
-      }
-      if (input.submission.initialEvidence.length === 0) {
-        return yield* acceptanceError("A candidate requires initial evidence.", {
-          caseId,
-          reason: "contradictory-contract",
-        });
-      }
-
-      const caller = yield* projections.getThreadDetailById(input.senderThreadId).pipe(
-        Effect.mapError(() =>
-          acceptanceError("Could not resolve the submitting thread.", { caseId }),
-        ),
-        Effect.flatMap((thread) =>
-          Option.isSome(thread)
-            ? Effect.succeed(thread.value)
-            : Effect.fail(acceptanceError("Submitting thread no longer exists.", { caseId })),
-        ),
-      );
-      if (!samePullRequest(caller, input.submission.pullRequest)) {
-        return yield* acceptanceError(
-          "Candidate submission requires an explicit durable pull-request association.",
-          { caseId, reason: "contradictory-contract" },
-        );
-      }
-
-      const existing = yield* repository
-        .getByCaseId({ caseId })
-        .pipe(
-          Effect.mapError(() => acceptanceError("Could not load the acceptance case.", { caseId })),
-        );
-      if (Option.isNone(existing)) {
-        const acceptanceCase: CollaborativeAcceptanceCase = {
-          caseId,
-          assignmentId: input.submission.assignmentId,
-          parentThreadId: input.recipientThreadId,
-          pullRequest: input.submission.pullRequest,
-          contractRevision: candidate.contractRevision,
-          currentCandidate: candidate,
-          criteria: input.submission.criteria,
-          policy: input.submission.policy,
-          createdAt: candidate.createdAt,
-          updatedAt: candidate.createdAt,
-        };
-        const baseProjection = {
-          caseId,
-          candidateId: candidate.candidateId,
-          headSha: candidate.headSha,
-          executionPhase: "verifying" as const,
-          collaborationStatus: "child-assessment-pending" as const,
-          acceptanceLifecycle: "pending" as const,
-          readiness: "no-known-blockers" as const,
-          reasons: [],
-          staleAssessmentIds: [],
-          updatedAt: candidate.createdAt,
-        };
-        const record: CollaborativeAcceptanceRecord = {
-          revision: 0,
-          case: acceptanceCase,
-          candidates: [candidate],
-          evidence: input.submission.initialEvidence,
-          assessments: [],
-          exchanges: [],
-          projection: currentProjection({
-            revision: 0,
-            case: acceptanceCase,
-            candidates: [candidate],
-            evidence: input.submission.initialEvidence,
-            assessments: [],
-            exchanges: [],
-            projection: baseProjection,
-          }),
-        };
-        return yield* Effect.succeed({ record, expectedRevision: null });
-      }
-
-      const record = existing.value;
-      if (
-        record.case.assignmentId !== input.submission.assignmentId ||
-        record.case.pullRequest.repository !== input.submission.pullRequest.repository ||
-        record.case.pullRequest.number !== input.submission.pullRequest.number ||
-        record.case.contractRevision !== candidate.contractRevision ||
-        record.case.policy.reviewWorkflow.identity !== candidate.reviewWorkflow.identity ||
-        record.case.policy.reviewWorkflow.version !== candidate.reviewWorkflow.version ||
-        record.case.policy.commentPolicy !== input.submission.policy.commentPolicy ||
-        record.case.policy.reviewTrigger !== input.submission.policy.reviewTrigger ||
-        record.case.policy.automation !== input.submission.policy.automation ||
-        JSON.stringify(record.case.policy.budgets) !==
-          JSON.stringify(input.submission.policy.budgets)
-      ) {
-        return yield* acceptanceError(
-          "Candidate provenance does not match the durable acceptance contract.",
-          { caseId, reason: "contradictory-contract" },
-        );
-      }
-      const transition = advanceAcceptanceCandidate(record.case, candidate);
-      if (!transition.ok) {
-        return yield* acceptanceError("Candidate review epoch must increase.", {
-          caseId,
-          reason: "contradictory-contract",
-        });
-      }
-      return {
-        record: {
-          ...record,
-          case: transition.acceptanceCase,
-          candidates: record.candidates.some((entry) => entry.candidateId === candidate.candidateId)
-            ? record.candidates
-            : [...record.candidates, candidate],
-          evidence: [...record.evidence, ...input.submission.initialEvidence],
-        },
-        expectedRevision: record.revision,
-      };
-    });
 
   const admitReview = (input: {
     readonly record: CollaborativeAcceptanceRecord;
@@ -992,19 +674,8 @@ const makeCoordinator = Effect.gen(function* () {
         exchanges: reserved.ledger.exchanges.map((item) =>
           item.exchangeId === exchangeId ? { ...item, admission } : item,
         ),
-        projection: currentProjection({
-          ...input.record,
-          obligations,
-          exchanges: reserved.ledger.exchanges.map((item) =>
-            item.exchangeId === exchangeId ? { ...item, admission } : item,
-          ),
-        }),
-        case: { ...input.record.case, updatedAt: now() },
       };
-      const persistedReservation = yield* save({
-        record: reservedRecord,
-        expectedRevision: input.record.revision,
-      });
+      const persistedReservation = yield* persist(reservedRecord);
       const latest = yield* load(caseId);
       if (latest.case.currentCandidate.headSha !== input.candidate.headSha) {
         const cancelled = reservedRecord.exchanges.map((item) =>
@@ -1012,15 +683,7 @@ const makeCoordinator = Effect.gen(function* () {
             ? { ...item, status: "cancelled" as const, cancelledAt: now() }
             : item,
         );
-        yield* save({
-          record: {
-            ...latest,
-            exchanges: cancelled,
-            projection: currentProjection({ ...latest, exchanges: cancelled }),
-            case: { ...latest.case, updatedAt: now() },
-          },
-          expectedRevision: latest.revision,
-        });
+        yield* persist({ ...latest, exchanges: cancelled });
         return yield* acceptanceError("Candidate changed before review dispatch.", {
           caseId,
           reason: "stale-head",
@@ -1032,13 +695,31 @@ const makeCoordinator = Effect.gen(function* () {
 
   const submitCandidate: CollaborativeAcceptanceCoordinatorShape["submitCandidate"] = (input) =>
     Effect.gen(function* () {
-      const persistedCandidate = yield* persistCandidate({
+      const caseId =
+        input.caseId ?? CollaborativeAcceptanceCaseId.make(`acceptance:${input.assignmentId}`);
+      const caller = yield* projections.getThreadDetailById(input.senderThreadId).pipe(
+        Effect.mapError(() =>
+          acceptanceError("Could not resolve the submitting thread.", { caseId }),
+        ),
+        Effect.flatMap((thread) =>
+          Option.isSome(thread)
+            ? Effect.succeed(thread.value)
+            : Effect.fail(acceptanceError("Submitting thread no longer exists.", { caseId })),
+        ),
+      );
+      if (!samePullRequest(caller, input.pullRequest)) {
+        return yield* acceptanceError(
+          "Candidate submission requires an explicit durable pull-request association.",
+          { caseId, reason: "contradictory-contract" },
+        );
+      }
+      const record = yield* caseMutation.execute({
+        _tag: "submit-candidate",
+        caseId,
         submission: input,
-        senderThreadId: input.senderThreadId,
         recipientThreadId: input.recipientThreadId,
         senderAuthority: input.senderAuthority,
       });
-      const record = persistedCandidate.record;
       const candidate = record.case.currentCandidate;
       const reviewCandidate = yield* decodeReviewCandidate(candidate, record.case.caseId);
       const previousCandidate = record.candidates.at(-2);
@@ -1065,19 +746,11 @@ const makeCoordinator = Effect.gen(function* () {
         (input.policy.reviewTrigger === "each-eligible-candidate" ||
           (input.policy.reviewTrigger === "first-candidate" &&
             !previouslyReviewedEligibleCandidate));
-      const persisted = yield* save({
-        record: {
-          ...record,
-          projection: currentProjection(record),
-          case: { ...record.case, updatedAt: now() },
-        },
-        expectedRevision: persistedCandidate.expectedRevision,
-      });
       if (!shouldTrigger || !eligibility.eligible) {
-        return { record: persisted, pauseReason: persisted.projection.pauseReason ?? null };
+        return { record, pauseReason: record.projection.pauseReason ?? null };
       }
       const reviewed = yield* admitReview({
-        record: persisted,
+        record,
         candidate,
         reviewCandidate,
         mode: eligibility.mode ?? "full",
@@ -1091,7 +764,10 @@ const makeCoordinator = Effect.gen(function* () {
 
   const requestReview: CollaborativeAcceptanceCoordinatorShape["requestReview"] = (input) =>
     Effect.gen(function* () {
-      const record = yield* load(input.caseId).pipe(Effect.flatMap(enforceLimits));
+      const record = yield* caseMutation.execute({
+        _tag: "enforce-limits",
+        caseId: input.caseId,
+      });
       const reviewCandidate = yield* decodeReviewCandidate(
         record.case.currentCandidate,
         input.caseId,
@@ -1225,19 +901,8 @@ const makeCoordinator = Effect.gen(function* () {
         exchanges: reserved.ledger.exchanges.map((item) =>
           item.exchangeId === exchangeId ? { ...item, admission } : item,
         ),
-        projection: currentProjection({
-          ...record,
-          obligations,
-          exchanges: reserved.ledger.exchanges.map((item) =>
-            item.exchangeId === exchangeId ? { ...item, admission } : item,
-          ),
-        }),
-        case: { ...record.case, updatedAt: now() },
       };
-      const persistedReservation = yield* save({
-        record: reservedRecord,
-        expectedRevision: record.revision,
-      });
+      const persistedReservation = yield* persist(reservedRecord);
       yield* dispatchAdmission(persistedReservation, exchange);
     });
 
@@ -1344,75 +1009,29 @@ const makeCoordinator = Effect.gen(function* () {
           now(),
         );
         if (outcome.ok) {
-          const next = {
+          yield* persist({
             ...record,
             exchanges: outcome.ledger.exchanges,
-            projection: currentProjection({
-              ...record,
-              exchanges: outcome.ledger.exchanges,
-            }),
-            case: { ...record.case, updatedAt: now() },
-          };
-          yield* save({ record: next, expectedRevision: record.revision });
+          });
         }
       }
       yield* wakeThread(location.request.senderThreadId);
     });
 
   const submitAssessment: CollaborativeAcceptanceCoordinatorShape["submitAssessment"] = (input) =>
-    Effect.gen(function* () {
-      const record = yield* load(input.caseId);
-      if (input.authority === undefined) {
-        return yield* acceptanceError("Assessment requires authenticated execution authority.", {
-          caseId: input.caseId,
-          reason: "contradictory-contract",
-        });
-      }
-      yield* requireCompleteAuthority(input.authority, input.caseId);
-      if (input.authority.assignmentId !== record.case.assignmentId) {
-        return yield* acceptanceError("Assessment assignment does not match the durable case.", {
-          caseId: input.caseId,
-          reason: "contradictory-contract",
-        });
-      }
-      const candidate = record.case.currentCandidate;
-      const assessment = input.assessment;
-      if (
-        assessment.caseId !== input.caseId ||
-        assessment.candidateId !== candidate.candidateId ||
-        assessment.headSha !== candidate.headSha ||
-        assessment.contractRevision !== candidate.contractRevision ||
-        assessment.reviewWorkflow.identity !== candidate.reviewWorkflow.identity ||
-        assessment.reviewWorkflow.version !== candidate.reviewWorkflow.version ||
-        assessment.outcome === "acknowledged"
-      ) {
-        return yield* acceptanceError(
-          "Assessment provenance does not match the current candidate.",
-          {
-            caseId: input.caseId,
-            reason: "contradictory-contract",
-          },
-        );
-      }
-      const next = {
-        ...record,
-        assessments: record.assessments.some(
-          (item) => item.assessmentId === assessment.assessmentId,
-        )
-          ? record.assessments
-          : [...record.assessments, assessment],
-      };
-      const saved = yield* save({
-        record: {
-          ...next,
-          projection: currentProjection(next),
-          case: { ...next.case, updatedAt: now() },
-        },
-        expectedRevision: record.revision,
-      });
-
-      return { record: saved, pauseReason: saved.projection.pauseReason ?? null };
-    });
+    caseMutation
+      .execute({
+        _tag: "submit-assessment",
+        caseId: input.caseId,
+        assessment: input.assessment,
+        authority: input.authority,
+      })
+      .pipe(
+        Effect.map((record) => ({
+          record,
+          pauseReason: record.projection.pauseReason ?? null,
+        })),
+      );
 
   const providerEvidenceFromSnapshot = (
     record: CollaborativeAcceptanceRecord,
@@ -1452,65 +1071,35 @@ const makeCoordinator = Effect.gen(function* () {
 
   const recordProviderEvidence: CollaborativeAcceptanceCoordinatorShape["recordProviderEvidence"] =
     (input) =>
-      Effect.gen(function* () {
-        const record = yield* load(input.caseId);
-        if (
-          input.evidence.caseId === undefined ||
-          input.evidence.sourceId === undefined ||
-          (input.evidence.caseId !== undefined && input.evidence.caseId !== input.caseId) ||
-          input.evidence.candidateId !== record.case.currentCandidate.candidateId ||
-          input.evidence.headSha !== record.case.currentCandidate.headSha
-        ) {
-          yield* invalidateProviderEvidence(record, "stale-head");
-          return yield* acceptanceError("Provider evidence is stale for the current candidate.", {
-            caseId: input.caseId,
-            reason: "stale-head",
-          });
-        }
-        const existing = record.providerEvidence;
-        const comparable = (
-          evidence: NonNullable<CollaborativeAcceptanceRecord["providerEvidence"]>,
-        ) => JSON.stringify({ ...evidence, observedAt: null });
-        if (
-          existing !== undefined &&
-          existing !== null &&
-          existing.sourceRevision === input.evidence.sourceRevision &&
-          comparable(existing) === comparable(input.evidence)
-        ) {
-          return {
+      caseMutation
+        .execute({
+          _tag: "record-provider-evidence",
+          caseId: input.caseId,
+          evidence: input.evidence,
+        })
+        .pipe(
+          Effect.map((record) => ({
             record,
             pauseReason: record.projection.pauseReason ?? null,
-          };
-        }
-        const next = { ...record, providerEvidence: input.evidence };
-        const saved = yield* save({
-          record: {
-            ...next,
-            projection: currentProjection(
-              next,
-              input.evidence.pullRequestState === "open" ? "monitoring" : "paused",
-              input.evidence.pullRequestState === "open" ? undefined : "closed-pull-request",
-            ),
-            case: { ...next.case, updatedAt: now() },
-          },
-          expectedRevision: record.revision,
-        });
-        return { record: saved, pauseReason: saved.projection.pauseReason ?? null };
-      });
+          })),
+        );
 
   const refreshProviderEvidenceFreshState: CollaborativeAcceptanceCoordinatorShape["refreshProviderEvidence"] =
     (caseId) =>
       Option.match(monitors, {
         onNone: () =>
-          load(caseId).pipe(
-            Effect.flatMap((record) =>
-              invalidateProviderEvidence(record, "participant-unavailable"),
+          caseMutation
+            .execute({
+              _tag: "invalidate-provider-evidence",
+              caseId,
+              reason: "participant-unavailable",
+            })
+            .pipe(
+              Effect.map((record) => ({
+                record,
+                pauseReason: record.projection.pauseReason ?? null,
+              })),
             ),
-            Effect.map((record) => ({
-              record,
-              pauseReason: record.projection.pauseReason ?? null,
-            })),
-          ),
         onSome: (service) =>
           Effect.gen(function* () {
             const record = yield* load(caseId);
@@ -1529,16 +1118,10 @@ const makeCoordinator = Effect.gen(function* () {
               });
             }
             if (context.latestSnapshot.headSha !== record.case.currentCandidate.headSha) {
-              const withoutEvidence = {
-                ...record,
-                providerEvidence: null,
-                case: { ...record.case, updatedAt: now() },
-              };
-              const next = {
-                ...withoutEvidence,
-                projection: currentProjection(withoutEvidence, "verifying"),
-              };
-              const saved = yield* save({ record: next, expectedRevision: record.revision });
+              const saved = yield* persist(
+                { ...record, providerEvidence: null },
+                { executionPhase: "verifying" },
+              );
               return { record: saved, pauseReason: saved.projection.pauseReason ?? null };
             }
             const evidence = providerEvidenceFromSnapshot(
@@ -1552,19 +1135,27 @@ const makeCoordinator = Effect.gen(function* () {
             Effect.catch((error) =>
               isCasConflict(error)
                 ? Effect.fail(error)
-                : load(caseId).pipe(
-                    Effect.flatMap((record) => invalidateProviderEvidence(record)),
-                    Effect.tap(() =>
-                      Effect.logWarning("collaborative-acceptance.provider-evidence-invalidated", {
-                        caseId,
-                        error,
-                      }),
+                : caseMutation
+                    .execute({
+                      _tag: "invalidate-provider-evidence",
+                      caseId,
+                      reason: "provider-failure",
+                    })
+                    .pipe(
+                      Effect.tap(() =>
+                        Effect.logWarning(
+                          "collaborative-acceptance.provider-evidence-invalidated",
+                          {
+                            caseId,
+                            error,
+                          },
+                        ),
+                      ),
+                      Effect.map((record) => ({
+                        record,
+                        pauseReason: record.projection.pauseReason ?? null,
+                      })),
                     ),
-                    Effect.map((record) => ({
-                      record,
-                      pauseReason: record.projection.pauseReason ?? null,
-                    })),
-                  ),
             ),
           ),
       });
@@ -1597,54 +1188,17 @@ const makeCoordinator = Effect.gen(function* () {
     });
 
   const pause: CollaborativeAcceptanceCoordinatorShape["pause"] = (caseId, reason, authority) =>
-    Effect.gen(function* () {
-      const record = yield* load(caseId);
-      if (authority === undefined) {
-        return yield* acceptanceError("Pause requires authenticated execution authority.", {
-          caseId,
-          reason: "contradictory-contract",
-        });
-      }
-      yield* requireCompleteAuthority(authority, caseId);
-      if (authority.assignmentId !== record.case.assignmentId) {
-        return yield* acceptanceError("Pause assignment does not match the durable case.", {
-          caseId,
-          reason: "contradictory-contract",
-        });
-      }
-      const next = {
-        ...record,
-        projection: currentProjection(record, "paused", reason),
-        case: { ...record.case, updatedAt: now() },
-      };
-      const saved = yield* save({ record: next, expectedRevision: record.revision });
-      return { record: saved, pauseReason: reason };
-    });
+    caseMutation
+      .execute({ _tag: "pause", caseId, reason, authority })
+      .pipe(Effect.map((record) => ({ record, pauseReason: reason })));
 
   const resume: CollaborativeAcceptanceCoordinatorShape["resume"] = (caseId, authority) =>
-    Effect.gen(function* () {
-      const record = yield* load(caseId);
-      if (authority === undefined) {
-        return yield* acceptanceError("Resume requires authenticated execution authority.", {
-          caseId,
-          reason: "contradictory-contract",
-        });
-      }
-      yield* requireCompleteAuthority(authority, caseId);
-      if (authority.assignmentId !== record.case.assignmentId) {
-        return yield* acceptanceError("Resume assignment does not match the durable case.", {
-          caseId,
-          reason: "contradictory-contract",
-        });
-      }
-      const next = {
-        ...record,
-        projection: currentProjection(record, "verifying", null),
-        case: { ...record.case, updatedAt: now() },
-      };
-      const saved = yield* save({ record: next, expectedRevision: record.revision });
-      return { record: saved, pauseReason: saved.projection.pauseReason ?? null };
-    });
+    caseMutation.execute({ _tag: "resume", caseId, authority }).pipe(
+      Effect.map((record) => ({
+        record,
+        pauseReason: record.projection.pauseReason ?? null,
+      })),
+    );
 
   const decodeAdmissionDelivery = (record: CollaborativeAcceptanceRecord, json: string) => {
     let parsed: unknown;
@@ -1700,13 +1254,9 @@ const makeCoordinator = Effect.gen(function* () {
               ? latest.obligations
               : resolveObligation(latest, latestExchange.requestId, "unavailable"),
         };
-        yield* save({
-          record: {
-            ...next,
-            projection: currentProjection(next, "paused", "ambiguous-outcome"),
-            case: { ...next.case, updatedAt: now() },
-          },
-          expectedRevision: latest.revision,
+        yield* persist(next, {
+          executionPhase: "paused",
+          pauseReason: "ambiguous-outcome",
         });
         return;
       }
@@ -1731,19 +1281,10 @@ const makeCoordinator = Effect.gen(function* () {
               }
             : item,
         );
-        yield* save({
-          record: {
-            ...latest,
-            exchanges: cancelled,
-            projection: currentProjection(
-              { ...latest, exchanges: cancelled },
-              "paused",
-              "stale-head",
-            ),
-            case: { ...latest.case, updatedAt: now() },
-          },
-          expectedRevision: latest.revision,
-        });
+        yield* persist(
+          { ...latest, exchanges: cancelled },
+          { executionPhase: "paused", pauseReason: "stale-head" },
+        );
         return;
       }
       const delivery = yield* decodeAdmissionDelivery(latest, admission.deliveryJson);
@@ -1793,14 +1334,9 @@ const makeCoordinator = Effect.gen(function* () {
             reason: "budget-exhausted",
           });
         }
-        dispatchReady = yield* save({
-          record: {
-            ...latest,
-            exchanges: started.ledger.exchanges,
-            projection: currentProjection({ ...latest, exchanges: started.ledger.exchanges }),
-            case: { ...latest.case, updatedAt: now() },
-          },
-          expectedRevision: latest.revision,
+        dispatchReady = yield* persist({
+          ...latest,
+          exchanges: started.ledger.exchanges,
         });
         dispatchExchange =
           dispatchReady.exchanges.find((item) => item.exchangeId === dispatchExchange.exchangeId) ??
@@ -1839,15 +1375,10 @@ const makeCoordinator = Effect.gen(function* () {
           exchange.requestId === undefined
             ? exhausted.obligations
             : resolveObligation(exhausted, exchange.requestId, "unavailable");
-        yield* save({
-          record: {
-            ...exhausted,
-            obligations,
-            projection: currentProjection(exhausted, "paused", "retry-limit"),
-            case: { ...exhausted.case, updatedAt: now() },
-          },
-          expectedRevision: dispatchReady.revision,
-        });
+        yield* persist(
+          { ...exhausted, obligations },
+          { executionPhase: "paused", pauseReason: "retry-limit" },
+        );
         return;
       }
       const pending = {
@@ -1865,14 +1396,7 @@ const makeCoordinator = Effect.gen(function* () {
             : item,
         ),
       };
-      const persistedAttempt = yield* save({
-        record: {
-          ...pending,
-          projection: currentProjection(pending),
-          case: { ...pending.case, updatedAt: now() },
-        },
-        expectedRevision: dispatchReady.revision,
-      });
+      const persistedAttempt = yield* persist(pending);
       const dispatchResult = yield* engine
         .dispatch({
           type: "thread.collaboration-request.create",
@@ -1940,23 +1464,17 @@ const makeCoordinator = Effect.gen(function* () {
             ? next.obligations
             : resolveObligation(next, exchange.requestId, unavailable ? "unavailable" : "failed")
           : next.obligations;
-        yield* save({
-          record: {
-            ...next,
-            obligations,
-            projection: currentProjection(
-              { ...next, obligations },
-              "paused",
-              permanent
-                ? unavailable
-                  ? "participant-unavailable"
-                  : "provider-failure"
-                : "ambiguous-outcome",
-            ),
-            case: { ...next.case, updatedAt: now() },
+        yield* persist(
+          { ...next, obligations },
+          {
+            executionPhase: "paused",
+            pauseReason: permanent
+              ? unavailable
+                ? "participant-unavailable"
+                : "provider-failure"
+              : "ambiguous-outcome",
           },
-          expectedRevision: persistedAttempt.revision,
-        });
+        );
         return;
       }
       const succeeded = {
@@ -1971,14 +1489,7 @@ const makeCoordinator = Effect.gen(function* () {
             : item,
         ),
       };
-      yield* save({
-        record: {
-          ...succeeded,
-          projection: currentProjection(succeeded),
-          case: { ...succeeded.case, updatedAt: now() },
-        },
-        expectedRevision: persistedAttempt.revision,
-      });
+      yield* persist(succeeded);
       yield* wakeThread(admission.recipientThreadId);
     });
 
@@ -2005,14 +1516,9 @@ const makeCoordinator = Effect.gen(function* () {
           now(),
         );
         if (outcome.ok && outcome.exchange.status !== exchange.status) {
-          next = yield* save({
-            record: {
-              ...next,
-              exchanges: outcome.ledger.exchanges,
-              projection: currentProjection({ ...next, exchanges: outcome.ledger.exchanges }),
-              case: { ...next.case, updatedAt: now() },
-            },
-            expectedRevision: next.revision,
+          next = yield* persist({
+            ...next,
+            exchanges: outcome.ledger.exchanges,
           });
         }
         if (request.status === "consumed" && request.terminalOutcome === "completed") {
@@ -2026,19 +1532,10 @@ const makeCoordinator = Effect.gen(function* () {
               exchange.requestId === undefined
                 ? next.obligations
                 : resolveObligation(next, exchange.requestId, "satisfied");
-            next = yield* save({
-              record: {
-                ...next,
-                exchanges: completed.ledger.exchanges,
-                ...(obligations === undefined ? {} : { obligations }),
-                projection: currentProjection({
-                  ...next,
-                  exchanges: completed.ledger.exchanges,
-                  ...(obligations === undefined ? {} : { obligations }),
-                }),
-                case: { ...next.case, updatedAt: now() },
-              },
-              expectedRevision: next.revision,
+            next = yield* persist({
+              ...next,
+              exchanges: completed.ledger.exchanges,
+              ...(obligations === undefined ? {} : { obligations }),
             });
           }
         } else if (request.status === "consumed") {
@@ -2053,19 +1550,10 @@ const makeCoordinator = Effect.gen(function* () {
               exchange.requestId === undefined
                 ? next.obligations
                 : resolveObligation(next, exchange.requestId, obligationStatus);
-            next = yield* save({
-              record: {
-                ...next,
-                exchanges: cancelled.ledger.exchanges,
-                obligations,
-                projection: currentProjection({
-                  ...next,
-                  exchanges: cancelled.ledger.exchanges,
-                  obligations,
-                }),
-                case: { ...next.case, updatedAt: now() },
-              },
-              expectedRevision: next.revision,
+            next = yield* persist({
+              ...next,
+              exchanges: cancelled.ledger.exchanges,
+              obligations,
             });
           }
         }
@@ -2098,19 +1586,10 @@ const makeCoordinator = Effect.gen(function* () {
                           ? "unavailable"
                           : "failed",
                 );
-          next = yield* save({
-            record: {
-              ...next,
-              exchanges: cancelled.ledger.exchanges,
-              obligations,
-              projection: currentProjection({
-                ...next,
-                exchanges: cancelled.ledger.exchanges,
-                obligations,
-              }),
-              case: { ...next.case, updatedAt: now() },
-            },
-            expectedRevision: next.revision,
+          next = yield* persist({
+            ...next,
+            exchanges: cancelled.ledger.exchanges,
+            obligations,
           });
         }
       }
