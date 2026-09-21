@@ -152,6 +152,7 @@ import {
 import { RightPanelTabs } from "./RightPanelTabs";
 import { ThreadPullRequestsPanel } from "./ThreadPullRequestsPanel";
 import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
+import { resolveThreadPullRequests } from "./ThreadPullRequestsPopover";
 import { DevicePanel } from "./device/DevicePanel";
 import { reconcileDeviceSessionPresentation } from "./device/reconcileDeviceSessionPresentation";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
@@ -1030,6 +1031,7 @@ function ChatViewBody(
     (routeActiveSurface?.kind === "files" || routeActiveSurface?.kind === "file");
   const insightsOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "insights";
   const diffSurfaceOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "diff";
+  const pullRequestsOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "pull-requests";
   const setPlanSidebarOpen = useCallback(
     (open: boolean) => {
       // Close only the plan surface so thread switches / plan dismiss do not
@@ -2313,6 +2315,17 @@ function ChatViewBody(
     planSidebarDismissedForTurnRef.current =
       activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
   }, [activePlan?.turnId, activeThreadRef, sidebarProposedPlan?.turnId]);
+  const togglePullRequests = useCallback(() => {
+    if (!activeThreadRef) return;
+    const state = useRightPanelStore.getState();
+    const panel = state.byThreadKey[scopedThreadKey(activeThreadRef)];
+    const activeSurface = panel?.surfaces.find((surface) => surface.id === panel.activeSurfaceId);
+    if (panel?.isOpen && activeSurface?.kind === "pull-requests") {
+      state.close(activeThreadRef);
+      return;
+    }
+    state.open(activeThreadRef, "pull-requests");
+  }, [activeThreadRef]);
   const closeInsights = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().closeSurface(activeThreadRef, "insights");
   }, [activeThreadRef]);
@@ -4749,6 +4762,9 @@ function ChatViewBody(
       browserPreviewOpen,
       insightsOpen,
       diffOpen: diffSurfaceOpen,
+      pullRequestsAvailable:
+        resolveThreadPullRequests(activeThread?.pullRequests, activeThread?.pullRequest).length > 0,
+      pullRequestsOpen,
       isGitRepo,
       terminalToggleShortcutLabel,
       diffToggleShortcutLabel: diffPanelShortcutLabel,
@@ -4757,6 +4773,7 @@ function ChatViewBody(
       onToggleBrowserPreview: toggleBrowserPreview,
       onToggleInsights: toggleInsights,
       onToggleDiff,
+      onTogglePullRequests: togglePullRequests,
     }),
     [
       activeProject,
@@ -4772,7 +4789,11 @@ function ChatViewBody(
       terminalToggleShortcutLabel,
       toggleBrowserPreview,
       toggleInsights,
+      togglePullRequests,
       toggleTerminalVisibility,
+      pullRequestsOpen,
+      activeThread?.pullRequests,
+      activeThread?.pullRequest,
     ],
   );
   // A fresh JSX node every render would defeat ChatHeader's memo, re-rendering
