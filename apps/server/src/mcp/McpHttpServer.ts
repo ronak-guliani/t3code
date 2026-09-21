@@ -27,6 +27,8 @@ import {
   PreviewSnapshotToolkit,
   PreviewStandardToolkit,
 } from "./toolkits/preview/tools.ts";
+import { PullRequestAssociationToolkitHandlersLive } from "./toolkits/pullRequestAssociation/handlers.ts";
+import { PullRequestAssociationToolkit } from "./toolkits/pullRequestAssociation/tools.ts";
 import { PullRequestMonitorToolkitHandlersLive } from "./toolkits/pullRequestMonitor/handlers.ts";
 import { PullRequestMonitorToolkit } from "./toolkits/pullRequestMonitor/tools.ts";
 import { CollaborativeAcceptanceToolkitHandlersLive } from "./toolkits/collaborativeAcceptance/handlers.ts";
@@ -530,6 +532,16 @@ export const PullRequestMonitorToolkitRegistrationLive = McpServer.toolkit(
   PullRequestMonitorToolkit,
 ).pipe(Layer.provide(PullRequestMonitorToolkitHandlersLive));
 
+/**
+ * Pull request association tools for provider sessions (OpenCode, Claude, and other
+ * provider-MCP consumers). Thread identity and checkout come from the per-session
+ * credential and the calling thread's bound worktree, so agents can only affect
+ * their own chat and never infer association from an ambient branch.
+ */
+export const PullRequestAssociationToolkitRegistrationLive = McpServer.toolkit(
+  PullRequestAssociationToolkit,
+).pipe(Layer.provide(PullRequestAssociationToolkitHandlersLive));
+
 export const CollaborativeAcceptanceToolkitRegistrationLive = McpServer.toolkit(
   CollaborativeAcceptanceToolkit,
 ).pipe(Layer.provide(CollaborativeAcceptanceToolkitHandlersLive));
@@ -556,12 +568,14 @@ const mcpTransport = (path: "/mcp" | "/mcp-device") =>
 
 export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
+  PullRequestAssociationToolkitRegistrationLive,
   PullRequestMonitorToolkitRegistrationLive,
   CollaborativeAcceptanceToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(mcpTransport("/mcp")));
 
 export const layerWithDevice = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
+  PullRequestAssociationToolkitRegistrationLive,
   PullRequestMonitorToolkitRegistrationLive,
   CollaborativeAcceptanceToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
