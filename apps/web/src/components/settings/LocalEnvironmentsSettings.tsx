@@ -1,5 +1,7 @@
 import type { DesktopBridge } from "@t3tools/contracts";
+import { FolderIcon, HardDriveIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { SettingsSection } from "./settingsLayout";
 
@@ -41,84 +43,111 @@ export function LocalEnvironmentsSettings() {
   };
   if (!bridge?.getLocalEnvironments) return null;
   return (
-    <SettingsSection title="Local environments">
-      <p className="text-xs text-muted-foreground">
-        A project folder can exist in multiple environments with different threads. Choose one
-        default to share between desktop and CLI. Switching does not merge or delete history.
-        Development launches and explicit data directories stay isolated.
-      </p>
-      <div className="flex gap-2 py-2">
-        <Button size="sm" disabled={busy} onClick={() => void refresh()}>
+    <SettingsSection
+      title="Local data"
+      description="A project folder can exist in multiple environments with different threads. Pick one default to share between desktop and CLI — switching never merges or deletes history."
+    >
+      <div className="flex flex-wrap items-center gap-2 px-4 py-3 sm:px-5">
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()}>
           Refresh
         </Button>
         <Button
           size="sm"
+          variant="outline"
           disabled={busy || !inspection?.canChooseDefault}
           onClick={() => void select()}
         >
-          Choose existing data directory
+          <FolderIcon aria-hidden className="size-3.5" />
+          Choose data directory
         </Button>
       </div>
       {error ? (
-        <p role="alert" className="text-xs text-destructive">
+        <p
+          role="alert"
+          className="border-t border-border/60 px-4 py-3 text-xs text-destructive sm:px-5"
+        >
           {error}
         </p>
       ) : null}
       {inspection?.selectionError ? (
-        <p role="alert" className="text-xs text-destructive">
+        <p
+          role="alert"
+          className="border-t border-border/60 px-4 py-3 text-xs text-destructive sm:px-5"
+        >
           {inspection.selectionError}
         </p>
       ) : null}
       {inspection && !inspection.canChooseDefault ? (
-        <p className="text-xs text-muted-foreground">
+        <p className="border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
           This launch is pinned to its data directory. Development apps and explicit T3CODE_HOME
           overrides do not follow the shared default.
         </p>
       ) : null}
-      {inspection?.environments.map((environment) => (
-        <div key={environment.baseDir} className="space-y-1 border-t py-3 text-xs">
-          <div className="flex items-center justify-between gap-2">
-            <strong>{environment.label}</strong>
-            {environment.baseDir === inspection.currentBaseDir ? (
-              <span>
-                Current ·{" "}
-                {inspection.ownership === "desktop"
-                  ? "Desktop managed"
-                  : "Attached; externally managed"}
-              </span>
-            ) : (
-              <Button
-                size="sm"
-                disabled={
-                  busy || !inspection.canChooseDefault || environment.status === "unavailable"
-                }
-                onClick={() => void select(environment.baseDir)}
-              >
-                Use as default
-              </Button>
-            )}
+      {inspection?.environments.map((environment) => {
+        const isCurrent = environment.baseDir === inspection.currentBaseDir;
+        return (
+          <div key={environment.baseDir} className="border-t border-border/60 px-4 py-4 sm:px-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+              <div className="flex min-w-0 flex-1 items-start gap-3">
+                <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40 text-muted-foreground">
+                  <HardDriveIcon aria-hidden className="size-4" />
+                </span>
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <h3 className="truncate text-sm font-medium text-foreground">
+                      {environment.label}
+                    </h3>
+                    {isCurrent ? (
+                      <Badge variant="outline" size="sm">
+                        Current ·{" "}
+                        {inspection.ownership === "desktop"
+                          ? "Desktop managed"
+                          : "Externally managed"}
+                      </Badge>
+                    ) : (
+                      <Badge
+                        variant={environment.status === "unavailable" ? "error" : "secondary"}
+                        size="sm"
+                      >
+                        {environment.status}
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="truncate font-mono text-[11px] text-muted-foreground/80">
+                    {environment.baseDir}
+                  </p>
+                  <p className="truncate text-[11px] text-muted-foreground/70">
+                    {[
+                      environment.origin ?? "Not running",
+                      `PID ${environment.pid ?? "—"}`,
+                      environment.serverVersion ?? "Build unknown",
+                    ].join(" · ")}
+                  </p>
+                  {environment.error ? (
+                    <p role="alert" className="text-xs text-destructive">
+                      {environment.error}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+              {!isCurrent ? (
+                <div className="flex shrink-0 items-center gap-2 pl-11 sm:pl-0">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={
+                      busy || !inspection.canChooseDefault || environment.status === "unavailable"
+                    }
+                    onClick={() => void select(environment.baseDir)}
+                  >
+                    Use as default
+                  </Button>
+                </div>
+              ) : null}
+            </div>
           </div>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-muted-foreground">
-            <dt>Environment ID</dt>
-            <dd className="break-all font-mono">{environment.environmentId}</dd>
-            <dt>Data directory</dt>
-            <dd className="break-all">{environment.baseDir}</dd>
-            <dt>Status</dt>
-            <dd>{environment.status}</dd>
-            <dt>Endpoint / PID</dt>
-            <dd>
-              {environment.origin ?? "Not running"} / {environment.pid ?? "—"}
-            </dd>
-            <dt>Server build</dt>
-            <dd>{environment.serverVersion ?? "Unavailable while offline"}</dd>
-          </dl>
-          {environment.error ? (
-            <p role="alert" className="text-destructive">
-              {environment.error}
-            </p>
-          ) : null}
-        </div>
-      ))}
+        );
+      })}
     </SettingsSection>
   );
 }
