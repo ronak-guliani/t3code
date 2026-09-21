@@ -41,7 +41,15 @@ export function filterArchivedShellSnapshot(
  * render from live activity rows rather than the thread row.
  */
 function activityChangesShellStreamSummary(activity: OrchestrationThreadActivity): boolean {
-  if (activity.kind === "task.started" || activity.kind === "task.completed") {
+  if (activity.kind === "task.started") {
+    return (
+      typeof activity.payload === "object" &&
+      activity.payload !== null &&
+      "taskType" in activity.payload &&
+      activity.payload.taskType === "background-agent"
+    );
+  }
+  if (activity.kind === "task.completed") {
     return true;
   }
   return activityChangesShellSummary(activity);

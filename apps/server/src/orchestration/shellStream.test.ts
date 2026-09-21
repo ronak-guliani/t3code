@@ -164,6 +164,7 @@ describe("toShellStreamEvent", () => {
       const { shellReads, results } = await runWithReadCounter([
         activityEvent("tool.updated", { detail: "running" }, 1),
         activityEvent("provider.approval.respond.failed", { detail: "boom" }, 2),
+        activityEvent("task.started", { taskType: "plan" }, 3),
       ]);
 
       expect(shellReads).toBe(0);
@@ -172,10 +173,10 @@ describe("toShellStreamEvent", () => {
 
     it("still re-reads the shell for approval, input, and task boundaries", async () => {
       const { shellReads, results } = await runWithReadCounter([
-        activityEvent("approval.requested", { requestKind: "command" }, 3),
-        activityEvent("user-input.requested", {}, 4),
-        activityEvent("task.started", {}, 5),
-        activityEvent("task.completed", {}, 6),
+        activityEvent("approval.requested", { requestKind: "command" }, 4),
+        activityEvent("user-input.requested", {}, 5),
+        activityEvent("task.started", { taskType: "background-agent" }, 6),
+        activityEvent("task.completed", {}, 7),
       ]);
 
       expect(shellReads).toBe(4);
