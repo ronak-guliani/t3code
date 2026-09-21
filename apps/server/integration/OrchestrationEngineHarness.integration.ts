@@ -66,6 +66,7 @@ import { ThreadDeletionReactor } from "../src/orchestration/Services/ThreadDelet
 import { ThreadTitleReactor } from "../src/orchestration/Services/ThreadTitleReactor.ts";
 import { QueuedTurnReactor } from "../src/orchestration/Services/QueuedTurnReactor.ts";
 import { WorkflowCoordinatorReactor } from "../src/orchestration/Services/WorkflowCoordinatorReactor.ts";
+import { ValidationCoordinatorReactor } from "../src/orchestration/Services/ValidationCoordinatorReactor.ts";
 import { OrchestrationReactor } from "../src/orchestration/Services/OrchestrationReactor.ts";
 import { ProjectionSnapshotQuery } from "../src/orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
@@ -381,6 +382,13 @@ export const makeOrchestrationIntegrationHarness = (
         Layer.succeed(ThreadDeletionReactor, {
           start: () => Effect.void,
           drain: Effect.void,
+        }),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(ValidationCoordinatorReactor, {
+          request: () => Effect.die("request should not be called in this test"),
+          reconcile: () => Effect.void,
+          start: () => Effect.void,
         }),
       ),
     );
