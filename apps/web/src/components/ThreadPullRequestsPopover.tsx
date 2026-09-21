@@ -1,4 +1,8 @@
-import type { GitPullRequestAssociation, ThreadPullRequestLink } from "@t3tools/contracts";
+import type {
+  GitPullRequestAssociation,
+  ScopedThreadRef,
+  ThreadPullRequestLink,
+} from "@t3tools/contracts";
 import { sameThreadPullRequest } from "@t3tools/shared/threadPullRequests";
 import { GitPullRequestIcon } from "lucide-react";
 
@@ -11,14 +15,23 @@ export function resolveThreadPullRequests(
   links: ReadonlyArray<ThreadPullRequestLink> | undefined,
   fallbackPullRequest: GitPullRequestAssociation | null | undefined,
 ): ReadonlyArray<GitPullRequestAssociation> {
-  const pullRequests = (links ?? []).map((link) => link.pullRequest);
+  // Most-recent-first: later links were appended as they were created, so
+  // reverse insertion order and break linkedAt ties by position. A distinct
+  // legacy fallback is the oldest association, so it goes last.
+  const recentFirst = (links ?? [])
+    .map((link, index) => ({ link, index }))
+    .sort((left, right) => {
+      const byLinkedAt = right.link.linkedAt.localeCompare(left.link.linkedAt);
+      return byLinkedAt !== 0 ? byLinkedAt : right.index - left.index;
+    })
+    .map(({ link }) => link.pullRequest);
   if (
     !fallbackPullRequest ||
-    pullRequests.some((pullRequest) => sameThreadPullRequest(pullRequest, fallbackPullRequest))
+    recentFirst.some((pullRequest) => sameThreadPullRequest(pullRequest, fallbackPullRequest))
   ) {
-    return pullRequests;
+    return recentFirst;
   }
-  return [fallbackPullRequest, ...pullRequests];
+  return [...recentFirst, fallbackPullRequest];
 }
 
 export function formatThreadPullRequestSummary(
@@ -35,9 +48,11 @@ export function formatThreadPullRequestSummary(
 export function ThreadPullRequestsPopover({
   links,
   fallbackPullRequest,
+  threadRef,
 }: {
   readonly links: ReadonlyArray<ThreadPullRequestLink> | undefined;
   readonly fallbackPullRequest: GitPullRequestAssociation | null | undefined;
+  readonly threadRef?: ScopedThreadRef;
 }) {
   const pullRequests = resolveThreadPullRequests(links, fallbackPullRequest);
   const primaryPullRequest = pullRequests[0];
@@ -99,7 +114,7 @@ export function ThreadPullRequestsPopover({
                 className="flex min-w-0 items-start gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
                 href={pullRequest.url}
                 onClick={(event) => {
-                  openPullRequestLink(event, pullRequest.url);
+                  openPullRequestLink(event, pullRequest.url, threadRef);
                 }}
               >
                 <GitPullRequestIcon

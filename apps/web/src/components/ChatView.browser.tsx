@@ -4495,7 +4495,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           ),
         "Unable to find sidebar title PR mark.",
       );
-      expect(prTrigger.textContent?.trim()).toBe("#205 + 1");
+      expect(prTrigger.textContent?.trim()).toBe("#206 + 1");
 
       prTrigger.focus();
       await userEvent.keyboard("{Enter}");
@@ -4504,25 +4504,25 @@ describe("ChatView timeline estimator parity (full app)", () => {
         .element(page.getByRole("dialog", { name: "Linked pull requests" }))
         .toBeVisible();
       const primaryPrLink = page.getByRole("link", {
-        name: /#205\s+open\s+Primary\s+feat\(web\): clickable PR number/i,
+        name: /#206\s+merged\s+Primary\s+fix\(web\): preserve linked PR popup interactions/i,
       });
       await expect.element(primaryPrLink).toBeVisible();
       await expect
         .element(
           page.getByRole("link", {
-            name: /#206\s+merged\s+fix\(web\): preserve linked PR popup interactions/i,
+            name: /#205\s+open\s+feat\(web\): clickable PR number/i,
           }),
         )
         .toBeVisible();
 
       const primaryPrAnchor = await waitForElement(
-        () => document.querySelector<HTMLAnchorElement>(`a[href="${prUrl}"]`),
+        () => document.querySelector<HTMLAnchorElement>(`a[href="${supportingPrUrl}"]`),
         "Unable to find primary linked pull request.",
       );
       primaryPrAnchor.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await vi.waitFor(
         () => {
-          expect(openSpy).toHaveBeenCalledWith(prUrl, "_blank", "noopener,noreferrer");
+          expect(openSpy).toHaveBeenCalledWith(supportingPrUrl, "_blank", "noopener,noreferrer");
         },
         { timeout: 4_000, interval: 16 },
       );
