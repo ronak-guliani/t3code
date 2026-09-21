@@ -135,6 +135,7 @@
 
 - Collaborative acceptance must reserve one deterministic exchange before creating its queued review request, bind every prompt and outcome to the immutable assignment/dispatch/turn/case/candidate/head tuple, and wake only through `QueuedTurnReactor`; child completion alone is never review evidence.
 - Collaborative acceptance recovery must subscribe once before its startup snapshot, reconcile response/queue terminal events live, and treat PR-monitor notifications as wakeups that re-read authoritative evidence. Persist a terminal dispatch outcome for unrecoverable legacy work so one malformed exchange cannot strand startup or create a retry storm.
+- Collaborative acceptance case writes must cross `AcceptanceCaseMutation`: it owns authority checks for domain commands, projection recomputation, timestamps, and revision-fenced persistence. Keep provider dispatch and monitor reads outside that seam, then persist their durable outcomes through it.
 
 - Skill triggers that include "draft a PR description" must branch to read-only delivery before staging or publishing; only a publication request authorizes creating a PR, which defaults to ready-for-review unless draft status is explicit.
 
