@@ -1,9 +1,14 @@
 import type {
+  CollaborationRequest,
+  CollaborativeAcceptanceCandidateId,
+  CollaborativeAcceptanceCaseId,
+  CommandId,
   OrchestrationEvent,
   OrchestrationReadModel,
   OrchestrationThread,
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
+import { REVIEW_CHANGES_WORKFLOW_ID } from "@t3tools/shared/workflows/reviewChanges";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -17,7 +22,12 @@ import {
   threadHasPendingInteraction,
 } from "../orchestration/commandInvariants.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { WorkflowCoordinatorReactor } from "../orchestration/Services/WorkflowCoordinatorReactor.ts";
+import { runReviewChangesWorkflow } from "../orchestration/reviewChangesWorkflow.ts";
 import { CollaborativeAcceptanceCoordinator } from "../collaborativeAcceptance/Coordinator.ts";
+import { GitCore } from "../git/Services/GitCore.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import { repositoryFromPullRequestUrl } from "./canonicalKey.ts";
 import { PullRequestMonitorService } from "./PullRequestMonitorService.ts";
 
@@ -138,11 +148,77 @@ function threadIdFromEvent(event: OrchestrationEvent): OrchestrationThread["id"]
 const pullRequestKey = (link: ThreadPullRequestLink): string =>
   `${link.pullRequest.url}:${link.pullRequest.number}`;
 
+export const dispatchAutomaticReviewWorkflow = <CancelError, WorkflowError>(input: {
+  readonly request: {
+    readonly caseId: CollaborativeAcceptanceCaseId;
+    readonly candidateId: CollaborativeAcceptanceCandidateId;
+    readonly headSha: string;
+    readonly workflowId: string;
+    readonly idempotencyKey: string;
+  };
+  readonly pullRequestNumber: number;
+  readonly readCurrentThread: () => Effect.Effect<OrchestrationThread | null>;
+  readonly cancelLegacySelfReview: (
+    thread: OrchestrationThread,
+    request: CollaborationRequest,
+  ) => Effect.Effect<void, CancelError>;
+  readonly runWorkflow: (input: {
+    readonly thread: OrchestrationThread;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly idempotencyKey: string;
+  }) => Effect.Effect<unknown, WorkflowError>;
+}) =>
+  Effect.gen(function* () {
+    if (input.request.workflowId !== REVIEW_CHANGES_WORKFLOW_ID) {
+      return yield* Effect.fail(
+        new Error(`Unsupported automatic review workflow '${input.request.workflowId}'.`),
+      );
+    }
+    const refreshedThread = yield* input.readCurrentThread();
+    if (refreshedThread === null || !creatorIsInactive(refreshedThread)) return;
+    yield* Effect.forEach(
+      (refreshedThread.collaborationRequests ?? []).filter(
+        (candidate) =>
+          candidate.kind === "review" &&
+          candidate.status === "waiting" &&
+          candidate.senderThreadId === refreshedThread.id &&
+          candidate.recipientThreadId === refreshedThread.id &&
+          candidate.caseId === input.request.caseId &&
+          candidate.candidateRefs.includes(input.request.candidateId),
+      ),
+      (candidate) => input.cancelLegacySelfReview(refreshedThread, candidate),
+      { discard: true },
+    );
+    yield* input.runWorkflow({
+      thread: refreshedThread,
+      pullRequestNumber: input.pullRequestNumber,
+      headSha: input.request.headSha,
+      idempotencyKey: input.request.idempotencyKey,
+    });
+  });
+
 const makeReactor = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
+  const projections = yield* ProjectionSnapshotQuery;
   const monitors = yield* PullRequestMonitorService;
   const acceptance = yield* CollaborativeAcceptanceCoordinator;
+  const git = yield* GitCore;
+  const serverSettings = yield* ServerSettingsService;
+  const workflowCoordinator = yield* Effect.serviceOption(WorkflowCoordinatorReactor);
   const pullRequestLocks = makeReferenceCountedKeyedLock();
+
+  const cancelLegacySelfReview = (thread: OrchestrationThread, request: CollaborationRequest) =>
+    engine
+      .dispatch({
+        type: "thread.collaboration-request.cancel",
+        commandId: `acceptance:cancel-legacy-self-review:${request.requestId}` as CommandId,
+        threadId: thread.id,
+        requestId: request.requestId,
+        actorAuthority: request.senderAuthority,
+        createdAt: new Date().toISOString(),
+      })
+      .pipe(Effect.asVoid);
 
   const currentThread = (threadId: OrchestrationThread["id"]) =>
     Effect.gen(function* () {
@@ -181,8 +257,8 @@ const makeReactor = Effect.gen(function* () {
         },
         readCurrentThread: () => currentThread(thread.id),
         submit: ({ thread: latestThread, observation }) =>
-          acceptance
-            .reconcileAutomaticCandidate({
+          Effect.gen(function* () {
+            const reconciled = yield* acceptance.reconcileAutomaticCandidate({
               parentThreadId: latestThread.id,
               pullRequest: {
                 projectId: latestThread.projectId,
@@ -191,8 +267,39 @@ const makeReactor = Effect.gen(function* () {
               },
               headSha: observation.headSha,
               sourceRevision: observation.sourceRevision,
-            })
-            .pipe(Effect.asVoid),
+            });
+            const request = reconciled.workflowRequest;
+            if (request === null) return;
+            yield* dispatchAutomaticReviewWorkflow({
+              request,
+              pullRequestNumber: observation.number,
+              readCurrentThread: () => currentThread(latestThread.id),
+              cancelLegacySelfReview,
+              runWorkflow: ({ thread, pullRequestNumber, headSha, idempotencyKey }) =>
+                runReviewChangesWorkflow(
+                  {
+                    git,
+                    orchestrationEngine: engine,
+                    projectionSnapshotQuery: projections,
+                    serverSettings,
+                    workflowCoordinator,
+                  },
+                  {
+                    workflowId: REVIEW_CHANGES_WORKFLOW_ID,
+                    threadId: thread.id,
+                    projectId: thread.projectId,
+                    input: {
+                      scope: "pull-request",
+                      pullRequestNumber,
+                    },
+                    destinationMode: "child-chat",
+                    trigger: "after-assistant-turn-completes",
+                    idempotencyKey,
+                  },
+                  { expectedHeadSha: headSha },
+                ),
+            });
+          }),
       });
     });
 
