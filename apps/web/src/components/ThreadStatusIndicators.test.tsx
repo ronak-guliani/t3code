@@ -12,13 +12,54 @@ const workingStatus: ThreadStatusPill = {
   presentation: "corner-badge",
 };
 
+const connectingStatus: ThreadStatusPill = {
+  label: "Connecting",
+  colorClass: "text-sky-600",
+  dotClass: "bg-sky-500",
+  pulse: true,
+  presentation: "label",
+};
+
+const completedStatus: ThreadStatusPill = {
+  label: "Completed",
+  colorClass: "text-emerald-600",
+  dotClass: "bg-emerald-500",
+  pulse: false,
+  presentation: "corner-badge",
+};
+
 describe("ThreadStatusLabel", () => {
-  it("marks the compact working dot to retain its pulse under native vibrancy", () => {
+  it("renders the slide spinner for the compact working status", () => {
     const html = renderToStaticMarkup(<ThreadStatusLabel compact status={workingStatus} />);
 
-    expect(html).toContain("animate-status-pulse");
+    expect(html).toContain("thread-slide");
+    expect(html).not.toContain("animate-status-pulse");
     expect(html).toContain("data-thread-status-pulse");
     expect(html).toContain("font-size:var(--app-sidebar-font-size)");
+    // Three sliding dots.
+    expect(html.match(/thread-slide-dot/g)?.length).toBe(3);
+  });
+
+  it("keeps the slide spinner exempt from the native vibrancy animation freeze", () => {
+    const html = renderToStaticMarkup(<ThreadStatusLabel compact status={workingStatus} />);
+
+    // Every animated node carries the marker so vibrancy preserves it.
+    expect(html.match(/data-thread-status-pulse/g)?.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("renders the slide spinner for the connecting label status", () => {
+    const html = renderToStaticMarkup(<ThreadStatusLabel status={connectingStatus} />);
+
+    expect(html).toContain("thread-slide");
+    expect(html).not.toContain("animate-status-pulse");
+    expect(html).toContain("Connecting");
+  });
+
+  it("keeps a static dot for non-pulsing statuses", () => {
+    const html = renderToStaticMarkup(<ThreadStatusLabel compact status={completedStatus} />);
+
+    expect(html).not.toContain("thread-slide");
+    expect(html).not.toContain("data-thread-status-pulse");
     expect(html).toContain("size-[0.583em]");
   });
 });

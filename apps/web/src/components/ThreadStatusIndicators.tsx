@@ -171,6 +171,24 @@ export function resolveTerminalThreadRef(thread: SidebarThreadSummary) {
   return scopeThreadRef(thread.environmentId, thread.virtualAgentRun?.parentThreadId ?? thread.id);
 }
 
+/**
+ * loading.dev "Slide" spinner — three dots sliding into the empty corner of
+ * a square — used for Working / Connecting thread rows instead of the
+ * pulsing status dot. Inherits `currentColor` so the sky tone comes from the
+ * surrounding status color class. Every node keeps
+ * `data-thread-status-pulse` so native vibrancy preserves this animation
+ * while freezing the rest of the row.
+ */
+export function ThreadSlideSpinner() {
+  return (
+    <span aria-hidden="true" data-thread-status-pulse="" className="thread-slide">
+      <span data-thread-status-pulse="" className="thread-slide-dot" />
+      <span data-thread-status-pulse="" className="thread-slide-dot" />
+      <span data-thread-status-pulse="" className="thread-slide-dot" />
+    </span>
+  );
+}
+
 export function ThreadStatusLabel({
   status,
   compact = false,
@@ -187,12 +205,13 @@ export function ThreadStatusLabel({
         className={`inline-flex size-3.5 shrink-0 items-center justify-center ${status.colorClass}`}
         style={{ fontSize: "var(--app-sidebar-font-size)" }}
       >
-        <span
-          data-thread-status-pulse={status.pulse ? "" : undefined}
-          className={`${compact ? "size-[0.583em]" : "size-[5px]"} rounded-full ${status.dotClass} ${
-            status.pulse ? "animate-status-pulse" : ""
-          }`}
-        />
+        {status.pulse ? (
+          <ThreadSlideSpinner />
+        ) : (
+          <span
+            className={`${compact ? "size-[0.583em]" : "size-[5px]"} rounded-full ${status.dotClass}`}
+          />
+        )}
         <span className="sr-only">{status.label}</span>
       </span>
     );
@@ -204,12 +223,11 @@ export function ThreadStatusLabel({
       className={`inline-flex items-center gap-1 ${status.colorClass}`}
       style={{ fontSize: "var(--app-sidebar-font-size)" }}
     >
-      <span
-        data-thread-status-pulse={status.pulse ? "" : undefined}
-        className={`size-[5px] rounded-full ${status.dotClass} ${
-          status.pulse ? "animate-status-pulse" : ""
-        }`}
-      />
+      {status.pulse ? (
+        <ThreadSlideSpinner />
+      ) : (
+        <span className={`size-[5px] rounded-full ${status.dotClass}`} />
+      )}
       <span className="hidden md:inline">{status.label}</span>
     </span>
   );
