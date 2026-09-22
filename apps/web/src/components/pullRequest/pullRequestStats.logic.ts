@@ -65,6 +65,27 @@ export function mergePullRequestDiffStats(
   return changed ? next : previous;
 }
 
+export function decoratePullRequestEntriesWithStats<Entry extends PullRequestStatsEntry>(
+  entries: ReadonlyArray<Entry>,
+  statsByRow: PullRequestDiffStats,
+): ReadonlyArray<Entry> {
+  let changed = false;
+  const decorated = entries.map((entry) => {
+    const stat = statsByRow.get(pullRequestDiffStatKey(entry));
+    if (
+      stat !== undefined &&
+      entry.additions === 0 &&
+      entry.deletions === 0 &&
+      (entry.additions !== stat.additions || entry.deletions !== stat.deletions)
+    ) {
+      changed = true;
+      return { ...entry, ...stat };
+    }
+    return entry;
+  });
+  return changed ? decorated : entries;
+}
+
 export function pullRequestStatsBatches(
   entriesByKey: ReadonlyMap<string, PullRequestStatsEntry>,
   keys: ReadonlySet<string>,

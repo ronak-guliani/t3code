@@ -1,6 +1,8 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 import type {
   OrchestrationProjectShell,
   ProjectId,
@@ -61,6 +63,36 @@ const teamRequestedChange: ProviderChangeRequest = {
   labels: [],
 };
 
+function repositoryProject(
+  id: string,
+  repository: string,
+  host = "github.com",
+): OrchestrationProjectShell {
+  return {
+    ...project,
+    id: id as ProjectId,
+    title: repository,
+    repositoryIdentity: {
+      ...project.repositoryIdentity!,
+      canonicalKey: `${host}/${repository}`,
+      locator: {
+        ...project.repositoryIdentity!.locator,
+        remoteUrl: `https://${host}/${repository}.git`,
+      },
+      displayName: repository,
+    },
+  };
+}
+
+function batchedChange(repository: string, number = 42) {
+  return {
+    ...teamRequestedChange,
+    number,
+    repository,
+    url: `https://github.com/${repository}/pull/${number}`,
+  };
+}
+
 function provider(): PullRequestProviderApi {
   return providerWith();
 }
@@ -105,26 +137,201 @@ function providerWith(overrides: Partial<PullRequestProviderApi> = {}): PullRequ
 function makeService(
   input: {
     readonly project?: OrchestrationProjectShell;
+    readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
     readonly provider?: PullRequestProviderApi;
+    readonly projectShellReads?: Pick<
+      ProjectionSnapshotQuery.ProjectionSnapshotQueryShape,
+      "getProjectShellById" | "getProjectShells"
+    >;
   } = {},
 ) {
+  const selectedProject = input.project ?? project;
+  const projects = input.projects ?? [selectedProject];
   return PullRequestService.make.pipe(
     Effect.provide(
       Layer.mergeAll(
         Layer.succeed(PullRequestProviderRegistry, fromProviders([input.provider ?? provider()])),
         Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
-          getShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 1,
-              projects: [input.project ?? project],
-              threads: [],
-              updatedAt: "2026-08-10T00:00:00Z",
+          getShellSnapshot: () => Effect.die("Pull-request reads must not hydrate shell history."),
+          getProjectShells:
+            input.projectShellReads?.getProjectShells ?? (() => Effect.succeed(projects)),
+          getProjectShellById:
+            input.projectShellReads?.getProjectShellById ??
+            ((projectId) => {
+              const matchingProject = projects.find((candidate) => candidate.id === projectId);
+              return Effect.succeed(
+                matchingProject === undefined ? Option.none() : Option.some(matchingProject),
+              );
             }),
         }),
       ),
     ),
   );
 }
+
+it.effect("falls back for the first uncertain cross-repository search miss", () =>
+  Effect.gen(function* () {
+    let fallbackCalls = 0;
+    const web = repositoryProject("web", "acme/web");
+    const docs = repositoryProject("docs", "acme/docs");
+    const service = yield* makeService({
+      projects: [web, docs],
+      provider: providerWith({
+        listChangeRequestsAcross: () =>
+          Effect.succeed({
+            items: [batchedChange("acme/web")],
+            truncated: false,
+          }),
+        listChangeRequests: ({ repository }) => {
+          fallbackCalls += 1;
+          return Effect.succeed({
+            items: repository === "acme/docs" ? [teamRequestedChange] : [],
+            truncated: false,
+            continues: true,
+          });
+        },
+      }),
+    });
+
+    const result = yield* service.list({ state: "open" });
+
+    assert.strictEqual(
+      result.entries.some((entry) => entry.repository === "acme/docs"),
+      true,
+    );
+    assert.strictEqual(fallbackCalls, 1);
+  }),
+);
+
+it.effect("suppresses a repeated fallback after a complete search proves visibility", () =>
+  Effect.gen(function* () {
+    let fallbackCalls = 0;
+    const web = repositoryProject("web", "acme/web");
+    const docs = repositoryProject("docs", "acme/docs");
+    const service = yield* makeService({
+      projects: [web, docs],
+      provider: providerWith({
+        listChangeRequestsAcross: ({ involvement }) =>
+          Effect.succeed({
+            items:
+              involvement === "all" ? [batchedChange("acme/web"), batchedChange("acme/docs")] : [],
+            truncated: false,
+          }),
+        listChangeRequests: () => {
+          fallbackCalls += 1;
+          return Effect.succeed({ items: [], truncated: false, continues: true });
+        },
+      }),
+    });
+
+    yield* service.list({ state: "open", involvement: "all" });
+    yield* service.list({ state: "open", involvement: "authored" });
+
+    assert.strictEqual(fallbackCalls, 0);
+  }),
+);
+
+it.effect("keeps incomplete search misses conservative and expires visibility evidence", () =>
+  Effect.gen(function* () {
+    let fallbackCalls = 0;
+    const web = repositoryProject("web", "acme/web");
+    const docs = repositoryProject("docs", "acme/docs");
+    const service = yield* makeService({
+      projects: [web, docs],
+      provider: providerWith({
+        listChangeRequestsAcross: ({ involvement }) =>
+          Effect.succeed({
+            items:
+              involvement === "all"
+                ? [batchedChange("acme/web"), batchedChange("acme/docs")]
+                : involvement === "reviewing"
+                  ? [batchedChange("acme/web")]
+                  : [],
+            truncated: involvement === "reviewing",
+          }),
+        listChangeRequests: () => {
+          fallbackCalls += 1;
+          return Effect.succeed({ items: [], truncated: false, continues: true });
+        },
+      }),
+    });
+
+    yield* service.list({ state: "open", involvement: "all" });
+    yield* service.list({ state: "open", involvement: "reviewing" });
+    assert.strictEqual(fallbackCalls, 1);
+
+    yield* TestClock.adjust("11 minutes");
+    yield* service.list({ state: "open", involvement: "authored" });
+    assert.strictEqual(fallbackCalls, 3);
+  }),
+);
+
+it.effect("isolates search visibility by repository and host", () =>
+  Effect.gen(function* () {
+    const fallbackCalls: string[] = [];
+    const web = repositoryProject("web", "acme/web");
+    const docs = repositoryProject("docs", "acme/docs");
+    const enterpriseWeb = repositoryProject("enterprise-web", "acme/web", "github.example.test");
+    const service = yield* makeService({
+      projects: [web, docs, enterpriseWeb],
+      provider: providerWith({
+        listChangeRequestsAcross: ({ host, involvement }) =>
+          Effect.succeed({
+            items:
+              host === "github.com" && involvement === "all" ? [batchedChange("acme/web")] : [],
+            truncated: false,
+          }),
+        listChangeRequests: ({ host, repository }) => {
+          fallbackCalls.push(`${host}/${repository}`);
+          return Effect.succeed({ items: [], truncated: false, continues: true });
+        },
+      }),
+    });
+
+    yield* service.list({ state: "open", involvement: "all" });
+    yield* service.list({ state: "open", involvement: "authored" });
+
+    assert.deepStrictEqual(fallbackCalls.toSorted(), [
+      "github.com/acme/docs",
+      "github.com/acme/docs",
+      "github.example.test/acme/web",
+      "github.example.test/acme/web",
+    ]);
+  }),
+);
+
+it.effect("uses targeted project shell reads for workspace and project-filtered paths", () =>
+  Effect.gen(function* () {
+    let allProjectReads = 0;
+    const projectReads: ProjectId[] = [];
+    const service = yield* makeService({
+      projectShellReads: {
+        getProjectShells: () => {
+          allProjectReads += 1;
+          return Effect.succeed([project]);
+        },
+        getProjectShellById: (projectId) => {
+          projectReads.push(projectId);
+          return Effect.succeed(Option.some(project));
+        },
+      },
+    });
+
+    yield* service.list({ state: "open" });
+    yield* service.comment({
+      projectId: project.id,
+      repository: "acme/web",
+      number: 42,
+      body: "Please merge this.",
+    });
+    yield* service.listStats({
+      refs: [{ projectId: project.id, repository: "acme/web", number: 42 }],
+    });
+
+    assert.strictEqual(allProjectReads, 2);
+    assert.deepStrictEqual(projectReads, [project.id]);
+  }),
+);
 
 it.effect("marks a team request only on a server-selected Reviewing result", () =>
   Effect.gen(function* () {

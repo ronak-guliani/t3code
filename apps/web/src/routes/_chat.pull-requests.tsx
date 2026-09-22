@@ -38,11 +38,15 @@ import {
   PullRequestDetailSurface,
   type PullRequestSurface,
 } from "../components/pullRequest/PullRequestDetailSurface";
+import { preloadPullRequestDetailPanel } from "../components/pullRequest/PullRequestDetailPanelBoundary";
 import { PullRequestFiltersMenu } from "../components/pullRequest/PullRequestFiltersMenu";
 import {
   appendUniquePullRequestEntries,
   appendUniquePullRequestErrors,
   isPullRequestListContinuation,
+  pullRequestEntryKey,
+  reusePullRequestEntries,
+  reusePullRequestErrors,
 } from "../components/pullRequest/pullRequestList.logic";
 import { PullRequestRow } from "../components/pullRequest/PullRequestRow";
 import { RightPanelSheet } from "../components/RightPanelSheet";
@@ -56,8 +60,8 @@ import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/Work
 import { WorkspacePageContainer } from "../components/WorkspacePageContainer";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import {
+  decoratePullRequestEntriesWithStats,
   mergePullRequestDiffStats,
-  pullRequestDiffStatKey,
   pullRequestStatsKey,
   pullRequestStatsRequestBatches,
   retainVisiblePullRequestStatsBatches,
@@ -269,7 +273,9 @@ function PullRequestsRoute() {
     ),
   });
   const [loadedList, setLoadedList] = useState<LoadedPullRequestList | null>(null);
-  const loadedForFilter = loadedList?.key === filterKey ? loadedList : null;
+  // Keep the last answered list visible while a new filter is loading so
+  // unchanged rows stay mounted and retain their local state.
+  const displayedList = loadedList;
 
   useEffect(() => {
     const answered = listQueries.some((query) => query.data !== undefined);
@@ -295,10 +301,10 @@ function PullRequestsRoute() {
         });
         const nextEntries = isContinuation
           ? appendUniquePullRequestEntries(previousEntries, data.entries)
-          : data.entries;
+          : reusePullRequestEntries(previousEntries, data.entries, pullRequestEntryKey);
         const nextErrors = isContinuation
           ? appendUniquePullRequestErrors(previousErrors, data.errors)
-          : data.errors;
+          : reusePullRequestErrors(previousErrors, data.errors);
 
         if (entriesByEnvironment[target.environmentId] !== nextEntries) {
           entriesByEnvironment[target.environmentId] = nextEntries;
@@ -315,22 +321,29 @@ function PullRequestsRoute() {
     });
   }, [filterKey, listQueries, listTargets, sentCursors]);
 
+  const entriesIdentityRef = useRef<
+    ReadonlyArray<
+      PullRequestListResult["entries"][number] & { readonly environmentId: EnvironmentId }
+    >
+  >([]);
   const entries = useMemo(() => {
-    if (loadedForFilter) {
-      return environmentTargets.flatMap(({ environmentId }) =>
-        (loadedForFilter.entriesByEnvironment[environmentId] ?? []).map((entry) => ({
-          ...entry,
-          environmentId,
-        })),
-      );
-    }
-    return listTargets.flatMap(({ environmentId }, index) =>
-      (listQueries[index]?.data?.entries ?? []).map((entry) => ({
-        ...entry,
-        environmentId,
-      })),
-    );
-  }, [environmentTargets, listQueries, listTargets, loadedForFilter]);
+    const next = displayedList
+      ? environmentTargets.flatMap(({ environmentId }) =>
+          (displayedList.entriesByEnvironment[environmentId] ?? []).map((entry) => ({
+            ...entry,
+            environmentId,
+          })),
+        )
+      : listTargets.flatMap(({ environmentId }, index) =>
+          (listQueries[index]?.data?.entries ?? []).map((entry) => ({
+            ...entry,
+            environmentId,
+          })),
+        );
+    const reused = reusePullRequestEntries(entriesIdentityRef.current, next, pullRequestEntryKey);
+    entriesIdentityRef.current = reused;
+    return reused;
+  }, [displayedList, environmentTargets, listQueries, listTargets]);
   const statsScopeKey = useMemo(
     () =>
       JSON.stringify([
@@ -478,13 +491,7 @@ function PullRequestsRoute() {
     setStatsByRow((previous) => mergePullRequestDiffStats(previous, received));
   }, [statsBatches, statsQueries]);
   const entriesWithStats = useMemo(
-    () =>
-      entries.map((entry) => {
-        const stat = statsByRow.get(pullRequestDiffStatKey(entry));
-        return stat && entry.additions === 0 && entry.deletions === 0
-          ? { ...entry, ...stat }
-          : entry;
-      }),
+    () => decoratePullRequestEntriesWithStats(entries, statsByRow),
     [entries, statsByRow],
   );
   const normalizedQuery = deferredQuery.trim().toLowerCase();
@@ -527,6 +534,7 @@ function PullRequestsRoute() {
     }) => {
       const targetEnvironmentId = entry.environmentId ?? environmentTargets[0]?.environmentId;
       if (!targetEnvironmentId) return;
+      void preloadPullRequestDetailPanel();
       void prefetchPullRequestDetail(queryClient, {
         environmentId: targetEnvironmentId,
         reference: {
@@ -789,9 +797,9 @@ function PullRequestsRoute() {
   const listIsPending = listQueries.some((query) => query.isPending) && entries.length === 0;
   const listIsFetching = listQueries.some((query) => query.isFetching);
   const listError = listQueries.find((query) => query.error)?.error;
-  const errors = loadedForFilter
+  const errors = displayedList
     ? environmentTargets.flatMap(
-        ({ environmentId }) => loadedForFilter.errorsByEnvironment[environmentId] ?? [],
+        ({ environmentId }) => displayedList.errorsByEnvironment[environmentId] ?? [],
       )
     : listQueries.flatMap((query) => query.data?.errors ?? []);
 
@@ -989,7 +997,7 @@ function PullRequestsRoute() {
                   {reviewRequestedEntries.map((entry) => (
                     <PullRequestRow
                       entry={entry}
-                      key={`${entry.environmentId}:${entry.projectId}:${entry.repository}#${entry.number}`}
+                      key={pullRequestEntryKey(entry)}
                       statsKey={pullRequestStatsKey(entry)}
                       statsRef={registerStatsRow}
                       matchedElsewhere={matchRowElsewhere(entry)}
@@ -1018,7 +1026,7 @@ function PullRequestsRoute() {
                   {otherEntries.map((entry) => (
                     <PullRequestRow
                       entry={entry}
-                      key={`${entry.environmentId}:${entry.projectId}:${entry.repository}#${entry.number}`}
+                      key={pullRequestEntryKey(entry)}
                       statsKey={pullRequestStatsKey(entry)}
                       statsRef={registerStatsRow}
                       matchedElsewhere={matchRowElsewhere(entry)}

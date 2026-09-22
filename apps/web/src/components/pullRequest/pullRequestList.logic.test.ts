@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import {
   appendUniquePullRequestEntries,
   isPullRequestListContinuation,
+  pullRequestEntryKey,
+  reusePullRequestEntries,
 } from "./pullRequestList.logic";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
@@ -52,5 +54,72 @@ describe("pull request list pagination", () => {
     expect(
       appendUniquePullRequestEntries([first], [first, second]).map((item) => item.number),
     ).toEqual([1, 2]);
+  });
+
+  it("reuses unchanged rows while preserving changed nested data", () => {
+    const previous: PullRequestListEntry[] = [
+      {
+        ...entry(1),
+        author: { login: "octocat", name: "The Octocat", avatarUrl: null },
+        labels: [{ name: "bug", color: "d73a4a" }],
+      },
+      entry(2),
+    ];
+    const first = previous[0]!;
+    const second = previous[1]!;
+    const unchanged: PullRequestListEntry = {
+      ...first,
+      author: { ...first.author! },
+      labels: [{ ...first.labels[0]! }],
+    };
+    const changed: PullRequestListEntry = {
+      ...second,
+      author: { ...second.author!, name: "A different Octocat" },
+    };
+
+    const reused = reusePullRequestEntries(previous, [unchanged, changed], pullRequestEntryKey);
+
+    expect(reused[0]).toBe(previous[0]);
+    expect(reused[1]).toBe(changed);
+    expect(reused).not.toBe(previous);
+  });
+
+  it("returns the previous array when a refresh only rebuilds nested values", () => {
+    const previous: PullRequestListEntry[] = [
+      {
+        ...entry(1),
+        author: { login: "octocat", name: "The Octocat", avatarUrl: null },
+        labels: [{ name: "bug", color: "d73a4a" }],
+      },
+    ];
+    const first = previous[0]!;
+    const next: PullRequestListEntry[] = [
+      {
+        ...first,
+        author: { ...first.author! },
+        labels: [{ ...first.labels[0]! }],
+      },
+    ];
+
+    expect(reusePullRequestEntries(previous, next, pullRequestEntryKey)).toBe(previous);
+  });
+
+  it("keeps host-scoped rows distinct", () => {
+    const github = entry(1);
+    const enterprise = { ...github, host: "github.example.com" };
+
+    expect(pullRequestEntryKey(github)).not.toBe(pullRequestEntryKey(enterprise));
+  });
+
+  it("reuses rows when pagination changes their order", () => {
+    const previous = [entry(1), entry(2)];
+    const next = [{ ...previous[1]! }, { ...previous[0]! }];
+
+    const reused = reusePullRequestEntries(previous, next, pullRequestEntryKey);
+
+    expect(reused).not.toBe(previous);
+    expect(reused).toEqual([previous[1], previous[0]]);
+    expect(reused[0]).toBe(previous[1]);
+    expect(reused[1]).toBe(previous[0]);
   });
 });
