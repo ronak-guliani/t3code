@@ -173,7 +173,7 @@ export function resolveTerminalThreadRef(thread: SidebarThreadSummary) {
 
 export function ThreadSlideSpinner() {
   return (
-    <span aria-hidden="true" data-thread-status-pulse="" className="thread-slide">
+    <span aria-hidden="true" data-thread-status-pulse="" className="thread-slide text-white">
       <span data-thread-status-pulse="" className="thread-slide-dot" />
       <span data-thread-status-pulse="" className="thread-slide-dot" />
       <span data-thread-status-pulse="" className="thread-slide-dot" />
