@@ -103,6 +103,7 @@ import Migration0098 from "./Migrations/098_PullRequestMonitorReviewDisputes.ts"
 import Migration0099 from "./Migrations/099_ProjectionThreadCollaborationRequests.ts";
 import Migration0100 from "./Migrations/100_CollaborativeAcceptanceCoordinator.ts";
 import Migration0101 from "./Migrations/101_CollaborativeAcceptanceDurability.ts";
+import Migration0102 from "./Migrations/102_CollaborativeAcceptanceParentThreadIndex.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -205,6 +206,7 @@ export const migrationEntries = [
   [99, "ProjectionThreadCollaborationRequests", Migration0099],
   [100, "CollaborativeAcceptanceCoordinator", Migration0100],
   [101, "CollaborativeAcceptanceDurability", Migration0101],
+  [102, "CollaborativeAcceptanceParentThreadIndex", Migration0102],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

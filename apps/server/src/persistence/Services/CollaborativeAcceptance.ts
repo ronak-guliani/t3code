@@ -35,6 +35,12 @@ export interface CollaborativeAcceptanceRepositoryShape {
     ReadonlyArray<CollaborativeAcceptanceRecord>,
     CollaborativeAcceptanceRepositoryError
   >;
+  readonly listByParentThreadId: (input: {
+    readonly parentThreadId: string;
+  }) => Effect.Effect<
+    ReadonlyArray<CollaborativeAcceptanceRecord>,
+    CollaborativeAcceptanceRepositoryError
+  >;
   readonly listAll: () => Effect.Effect<
     ReadonlyArray<CollaborativeAcceptanceRecord>,
     CollaborativeAcceptanceRepositoryError

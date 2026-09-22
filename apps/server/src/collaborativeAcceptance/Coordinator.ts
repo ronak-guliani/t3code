@@ -888,11 +888,30 @@ const makeCoordinator = Effect.gen(function* () {
       Effect.gen(function* () {
         const assignmentId = createdPullRequestAssignment(input);
         const deterministicCaseId = createdPullRequestCaseId(assignmentId);
-        const records = yield* repository.listAll().pipe(
+        const records = yield* repository.getByCaseId({ caseId: deterministicCaseId }).pipe(
           Effect.mapError(() =>
             acceptanceError("Could not load collaborative acceptance cases.", {
               reason: "ambiguous-outcome",
             }),
+          ),
+          Effect.flatMap((deterministic) =>
+            Option.isSome(deterministic)
+              ? Effect.succeed([deterministic.value])
+              : repository.listByParentThreadId({ parentThreadId: input.parentThreadId }).pipe(
+                  Effect.mapError(() =>
+                    acceptanceError("Could not load collaborative acceptance cases.", {
+                      reason: "ambiguous-outcome",
+                    }),
+                  ),
+                  Effect.map((candidates) =>
+                    candidates.filter(
+                      (record) =>
+                        record.case.pullRequest.projectId === input.pullRequest.projectId &&
+                        record.case.pullRequest.repository === input.pullRequest.repository &&
+                        record.case.pullRequest.number === input.pullRequest.number,
+                    ),
+                  ),
+                ),
           ),
         );
         const selection = selectCurrentAcceptanceCase({

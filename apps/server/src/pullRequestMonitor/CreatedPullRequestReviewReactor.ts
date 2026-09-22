@@ -59,6 +59,38 @@ export function creatorIsInactive(thread: OrchestrationThread): boolean {
   return !threadHasInFlightTurn(thread) && !threadHasPendingInteraction(thread);
 }
 
+export interface ReferenceCountedKeyedLock {
+  readonly withLock: <A, E, R>(
+    key: string,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
+  readonly size: () => number;
+}
+
+export function makeReferenceCountedKeyedLock(): ReferenceCountedKeyedLock {
+  const locks = new Map<string, { readonly semaphore: Semaphore.Semaphore; users: number }>();
+
+  return {
+    withLock: (key, effect) =>
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const entry = locks.get(key) ?? { semaphore: Semaphore.makeUnsafe(1), users: 0 };
+          entry.users += 1;
+          locks.set(key, entry);
+          return entry;
+        }),
+        (entry) => entry.semaphore.withPermit(effect),
+        (entry) =>
+          Effect.sync(() => {
+            if (locks.get(key) !== entry) return;
+            entry.users -= 1;
+            if (entry.users === 0) locks.delete(key);
+          }),
+      ),
+    size: () => locks.size,
+  };
+}
+
 export const reconcileCreatedPullRequestReview = (
   thread: OrchestrationThread,
   reconciliation: CreatedPullRequestReviewReconciliation,
@@ -110,19 +142,7 @@ const makeReactor = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const monitors = yield* PullRequestMonitorService;
   const acceptance = yield* CollaborativeAcceptanceCoordinator;
-  const locks = new Map<string, Semaphore.Semaphore>();
-
-  const withPullRequestLock = <A, E>(
-    key: string,
-    effect: Effect.Effect<A, E>,
-  ): Effect.Effect<A, E> => {
-    let lock = locks.get(key);
-    if (lock === undefined) {
-      lock = Semaphore.makeUnsafe(1);
-      locks.set(key, lock);
-    }
-    return lock.withPermit(effect);
-  };
+  const pullRequestLocks = makeReferenceCountedKeyedLock();
 
   const currentThread = (threadId: OrchestrationThread["id"]) =>
     Effect.gen(function* () {
@@ -134,7 +154,7 @@ const makeReactor = Effect.gen(function* () {
     Effect.gen(function* () {
       yield* reconcileCreatedPullRequestReview(thread, {
         runExclusive: (link, effect) =>
-          withPullRequestLock(`${thread.id}:${pullRequestKey(link)}`, effect),
+          pullRequestLocks.withLock(`${thread.id}:${pullRequestKey(link)}`, effect),
         refresh: (link) => {
           const repository = repositoryFromPullRequestUrl(link.pullRequest.url);
           if (repository === null) return Effect.succeed(null);

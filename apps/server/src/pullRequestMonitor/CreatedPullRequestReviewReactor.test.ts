@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 
 import {
   createdPullRequestLinks,
+  makeReferenceCountedKeyedLock,
   reconcileCreatedPullRequestReview,
 } from "./CreatedPullRequestReviewReactor.ts";
 
@@ -54,6 +55,14 @@ const observation = (headSha: string, state: "open" | "closed" | "merged" = "ope
 });
 
 describe("created pull-request review reconciliation", () => {
+  it.effect("cleans keyed lock entries after the final holder releases", () =>
+    Effect.gen(function* () {
+      const locks = makeReferenceCountedKeyedLock();
+      yield* locks.withLock("thread:pull-request", Effect.void);
+      assert.strictEqual(locks.size(), 0);
+    }),
+  );
+
   it("admits an inactive created PR with the authoritative current head", async () => {
     const submitted: string[] = [];
     let refreshCount = 0;
