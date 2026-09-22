@@ -33,7 +33,7 @@ describe("ThreadStatusLabel", () => {
     const html = renderToStaticMarkup(<ThreadStatusLabel compact status={workingStatus} />);
 
     expect(html).toContain("thread-slide");
-    expect(html).toContain("text-white");
+    expect(html).toContain("text-black dark:text-white");
     expect(html).not.toContain("animate-status-pulse");
     expect(html).toContain("data-thread-status-pulse");
     expect(html).toContain("font-size:var(--app-sidebar-font-size)");
