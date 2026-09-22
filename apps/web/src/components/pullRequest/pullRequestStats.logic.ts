@@ -56,7 +56,7 @@ export function mergePullRequestDiffStats(
     const previousValue = previous.get(key);
     if (
       previousValue?.additions !== value.additions ||
-      previousValue.deletions !== value.deletions
+      previousValue?.deletions !== value.deletions
     ) {
       next.set(key, value);
       changed = true;
