@@ -8,7 +8,6 @@ import {
 import { classifyMarkdownImageSource } from "@t3tools/client-runtime/markdown-images";
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
-import { commandProgramName } from "@t3tools/client-runtime/work-log/command-label";
 import { extractChangedFilePathCandidatesFromToolPayload } from "@t3tools/shared/toolChangedFiles";
 
 export function isWorktreeSetupActivity(kind: string): boolean {
@@ -86,8 +85,8 @@ export function compactWorkEntryLabel(entry: WorkLogPresentationEntry): string {
       : `${verb("Editing", "Edited")} ${filename || "files"}`;
   }
   if (action === "command") {
-    const program = commandProgramName(entry.command ?? "");
-    return `${verb("Running", "Ran")} ${program && !/^(?:bash|zsh|sh|fish):$/.test(program) ? program : "command"}`;
+    const command = entry.command?.replace(/\s+/gu, " ").trim();
+    return `${verb("Running", "Ran")} ${command || "command"}`;
   }
   if (action === "skill") {
     const name =
