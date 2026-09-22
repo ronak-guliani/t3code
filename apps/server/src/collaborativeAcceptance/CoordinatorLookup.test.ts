@@ -85,6 +85,7 @@ const repository = {
   save: () => Effect.die("unused"),
   getByCaseId: () => Effect.succeed(Option.some(currentRecord)),
   listByAssignmentId: () => Effect.succeed([currentRecord]),
+  listByParentThreadId: () => Effect.succeed([currentRecord]),
   listAll: () => Effect.succeed([currentRecord]),
 };
 
@@ -98,6 +99,85 @@ const testLayer = CollaborativeAcceptanceCoordinatorLive.pipe(
     ),
   ),
 );
+
+it.effect("uses deterministic and parent-thread lookups instead of scanning all cases", () => {
+  let parentThreadLookupCount = 0;
+  const targetedRepository = {
+    ...repository,
+    getByCaseId: () => Effect.succeed(Option.none()),
+    listByParentThreadId: () =>
+      Effect.sync(() => {
+        parentThreadLookupCount += 1;
+        return [];
+      }),
+    listAll: () => Effect.die("automatic reconciliation must not scan all cases"),
+  };
+  const targetedLayer = CollaborativeAcceptanceCoordinatorLive.pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        Layer.succeed(CollaborativeAcceptanceRepository, targetedRepository),
+        Layer.succeed(OrchestrationEngineService, {} as OrchestrationEngineShape),
+        Layer.succeed(ProjectionSnapshotQuery, {} as ProjectionSnapshotQueryShape),
+        ServerSettingsService.layerTest(),
+      ),
+    ),
+  );
+
+  return Effect.gen(function* () {
+    const coordinator = yield* CoordinatorService;
+    const result = yield* coordinator.reconcileAutomaticCandidate({
+      parentThreadId: ThreadId.make("thread-service"),
+      pullRequest,
+      headSha: "head-current",
+      sourceRevision: "monitor-current",
+    });
+
+    assert.isNull(result.record);
+    assert.strictEqual(parentThreadLookupCount, 1);
+  }).pipe(Effect.provide(targetedLayer));
+});
+
+it.effect("preserves ambiguity detection for deterministic and legacy cases", () => {
+  const legacyRecord = {
+    ...currentRecord,
+    case: {
+      ...currentRecord.case,
+      caseId: CollaborativeAcceptanceCaseId.make("case-service-legacy"),
+    },
+    projection: {
+      ...currentRecord.projection,
+      caseId: CollaborativeAcceptanceCaseId.make("case-service-legacy"),
+    },
+  } as CollaborativeAcceptanceRecord;
+  const ambiguityRepository = {
+    ...repository,
+    listByParentThreadId: () => Effect.succeed([legacyRecord]),
+  };
+  const ambiguityLayer = CollaborativeAcceptanceCoordinatorLive.pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        Layer.succeed(CollaborativeAcceptanceRepository, ambiguityRepository),
+        Layer.succeed(OrchestrationEngineService, {} as OrchestrationEngineShape),
+        Layer.succeed(ProjectionSnapshotQuery, {} as ProjectionSnapshotQueryShape),
+        ServerSettingsService.layerTest(),
+      ),
+    ),
+  );
+
+  return Effect.gen(function* () {
+    const coordinator = yield* CoordinatorService;
+    const exit = yield* Effect.exit(
+      coordinator.reconcileAutomaticCandidate({
+        parentThreadId: ThreadId.make("thread-service"),
+        pullRequest,
+        headSha: "head-current",
+        sourceRevision: "monitor-current",
+      }),
+    );
+
+    assert.equal(exit._tag, "Failure");
+  }).pipe(Effect.provide(ambiguityLayer));
+});
 
 it.effect("resolves the current case and includes its durable status", () =>
   Effect.gen(function* () {

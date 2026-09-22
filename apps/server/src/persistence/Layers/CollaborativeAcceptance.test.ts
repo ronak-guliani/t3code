@@ -202,6 +202,26 @@ repositoryLayer("Collaborative acceptance repository", (it) => {
     }),
   );
 
+  it.effect("lists cases by parent thread for targeted pull-request lookup", () =>
+    Effect.gen(function* () {
+      const repository = yield* CollaborativeAcceptanceRepository;
+      const input = record("parent-thread");
+      const other = record("parent-thread-other");
+
+      yield* repository.save({ record: input, expectedRevision: null });
+      yield* repository.save({ record: other, expectedRevision: null });
+
+      const result = yield* repository.listByParentThreadId({
+        parentThreadId: input.case.parentThreadId,
+      });
+
+      assert.deepStrictEqual(
+        result.map(({ case: acceptanceCase }) => acceptanceCase.caseId),
+        [input.case.caseId],
+      );
+    }),
+  );
+
   it.effect("lists all immutable case records for PR lookup", () =>
     Effect.gen(function* () {
       const repository = yield* CollaborativeAcceptanceRepository;

@@ -27,6 +27,7 @@ import {
 
 const caseIdInput = Schema.Struct({ caseId: CollaborativeAcceptanceCaseId });
 const assignmentIdInput = Schema.Struct({ assignmentId: Schema.String });
+const parentThreadIdInput = Schema.Struct({ parentThreadId: Schema.String });
 const isCollaborativeAcceptanceRepositoryConflict = Schema.is(
   CollaborativeAcceptanceRepositoryConflict,
 );
@@ -213,6 +214,30 @@ const makeRepository = Effect.gen(function* () {
         obligations_json AS obligations
       FROM collaborative_acceptance_cases
       WHERE assignment_id = ${assignmentId}
+      ORDER BY updated_at DESC, case_id ASC
+    `,
+  });
+
+  const listCaseRowsByParentThread = SqlSchema.findAll({
+    Request: parentThreadIdInput,
+    Result: Schema.Struct({
+      caseId: CollaborativeAcceptanceCaseId,
+      revision: Schema.Number,
+      case: CollaborativeAcceptanceCaseDbRow.fields.case,
+      projection: CollaborativeAcceptanceCaseDbRow.fields.projection,
+      providerEvidence: CollaborativeAcceptanceCaseDbRow.fields.providerEvidence,
+      obligations: CollaborativeAcceptanceCaseDbRow.fields.obligations,
+    }),
+    execute: ({ parentThreadId }) => sql`
+      SELECT
+        case_id AS "caseId",
+        revision,
+        case_json AS "case",
+        projection_json AS projection,
+        provider_evidence_json AS "providerEvidence",
+        obligations_json AS obligations
+      FROM collaborative_acceptance_cases
+      WHERE parent_thread_id = ${parentThreadId}
       ORDER BY updated_at DESC, case_id ASC
     `,
   });
@@ -418,13 +443,23 @@ const makeRepository = Effect.gen(function* () {
       ),
     );
 
+  const listByParentThreadId: CollaborativeAcceptanceRepositoryShape["listByParentThreadId"] = (
+    input,
+  ) =>
+    listCaseRowsByParentThread(input).pipe(
+      Effect.flatMap((rows) => Effect.all(rows.map((row) => loadRecord(row)))),
+      Effect.mapError(
+        toPersistenceSqlError("CollaborativeAcceptanceRepository.listByParentThreadId"),
+      ),
+    );
+
   const listAll: CollaborativeAcceptanceRepositoryShape["listAll"] = () =>
     listAllCaseRows({}).pipe(
       Effect.flatMap((rows) => Effect.all(rows.map((row) => loadRecord(row)))),
       Effect.mapError(toPersistenceSqlError("CollaborativeAcceptanceRepository.listAll")),
     );
 
-  return { save, getByCaseId, listByAssignmentId, listAll };
+  return { save, getByCaseId, listByAssignmentId, listByParentThreadId, listAll };
 });
 
 export const CollaborativeAcceptanceRepositoryLive = Layer.effect(
