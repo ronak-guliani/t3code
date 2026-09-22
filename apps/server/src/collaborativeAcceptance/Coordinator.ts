@@ -910,13 +910,6 @@ const makeCoordinator = Effect.gen(function* () {
           selection._tag === "selected"
             ? selection.record
             : records.find((record) => record.case.caseId === deterministicCaseId);
-        if (existing?.projection.acceptanceLifecycle === "accepted") {
-          return {
-            record: existing,
-            pauseReason: existing.projection.pauseReason ?? null,
-          };
-        }
-
         const settings = yield* serverSettings.getSettings.pipe(
           Effect.mapError(() =>
             acceptanceError("Could not load collaborative acceptance settings.", {
