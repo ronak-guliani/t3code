@@ -4,6 +4,7 @@ import * as Persistence from "effect/unstable/persistence/Persistence";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { TestClock } from "effect/testing";
 import type {
   OrchestrationProjectShell,
   ProjectId,
@@ -304,6 +305,32 @@ it.effect("reuses detail counts for later list stats reads", () =>
       { projectId: project.id, repository: "acme/web", number: 42, additions: 1, deletions: 0 },
     ]);
   }),
+);
+
+it.effect("serves stale list stats while refreshing an expired batch", () =>
+  Effect.gen(function* () {
+    let statsCalls = 0;
+    const reference = { projectId: project.id, repository: "acme/web", number: 42 };
+    const service = yield* makeService({
+      provider: providerWith({
+        listChangeRequestStats: () =>
+          Effect.sync(() => {
+            statsCalls += 1;
+            return [{ repository: "acme/web", number: 42, additions: 1, deletions: 0 }];
+          }),
+      }),
+    });
+
+    const first = yield* service.listStats({ refs: [reference] });
+    assert.strictEqual(statsCalls, 1);
+
+    yield* TestClock.adjust("61 seconds");
+    const second = yield* service.listStats({ refs: [reference] });
+    assert.deepStrictEqual(second, first);
+
+    yield* Effect.yieldNow;
+    assert.strictEqual(statsCalls, 2);
+  }).pipe(Effect.provide(TestClock.layer())),
 );
 
 it.effect("keeps listings cached for mutations that only change one pull request", () =>

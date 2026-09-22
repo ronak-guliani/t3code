@@ -1692,6 +1692,10 @@ export const make = Effect.gen(function* () {
       timeToLive: (exit) => (Exit.isSuccess(exit) ? LIST_STATS_CACHE_TTL : Duration.zero),
     },
   );
+  const staleListStats = staleWhileRevalidate<PullRequestListStatsResult>(
+    LIST_STALE_WINDOW,
+    LIST_STATS_CACHE_CAPACITY,
+  );
   const statsBatchKey = (refs: Iterable<PullRequestRef>) =>
     JSON.stringify([
       listingsEpoch,
@@ -1720,7 +1724,8 @@ export const make = Effect.gen(function* () {
       }
     }
     if (missing.size === 0) return { stats: held };
-    const { result, at } = yield* Cache.get(listStatsCache, statsBatchKey(missing.values())).pipe(
+    const key = statsBatchKey(missing.values());
+    const { result, at } = yield* staleListStats(key, Cache.get(listStatsCache, key)).pipe(
       Effect.flatMap((value) =>
         Clock.currentTimeMillis.pipe(Effect.map((at) => ({ result: value, at }))),
       ),
