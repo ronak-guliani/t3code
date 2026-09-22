@@ -1,5 +1,6 @@
 import type { EnvironmentId, PullRequestRef } from "@t3tools/contracts";
-import React, { lazy, Suspense, type ReactNode } from "react";
+import { Button } from "../ui/button";
+import React, { lazy, Suspense, useCallback, useState, type ReactNode } from "react";
 
 type PullRequestDetailPanelModule = {
   readonly default: typeof import("./PullRequestDetailPanel").PullRequestDetailPanel;
@@ -8,19 +9,25 @@ type PullRequestDetailPanelModule = {
 let pullRequestDetailPanelPromise: Promise<PullRequestDetailPanelModule> | undefined;
 
 function loadPullRequestDetailPanel(): Promise<PullRequestDetailPanelModule> {
-  return (pullRequestDetailPanelPromise ??= import("./PullRequestDetailPanel").then(
-    ({ PullRequestDetailPanel }) => ({ default: PullRequestDetailPanel }),
-  ));
+  if (pullRequestDetailPanelPromise !== undefined) return pullRequestDetailPanelPromise;
+
+  pullRequestDetailPanelPromise = import("./PullRequestDetailPanel")
+    .then(({ PullRequestDetailPanel }) => ({ default: PullRequestDetailPanel }))
+    .catch((error: unknown) => {
+      pullRequestDetailPanelPromise = undefined;
+      throw error;
+    });
+  return pullRequestDetailPanelPromise;
 }
 
-const LazyPullRequestDetailPanel = lazy(loadPullRequestDetailPanel);
+let LazyPullRequestDetailPanel = lazy(loadPullRequestDetailPanel);
 
 export function preloadPullRequestDetailPanel(): Promise<void> {
   return loadPullRequestDetailPanel().then(() => undefined);
 }
 
 class PullRequestDetailPanelErrorBoundary extends React.Component<
-  { readonly children: ReactNode },
+  { readonly children: ReactNode; readonly onRetry: () => void },
   { readonly error: unknown }
 > {
   override state: { readonly error: unknown } = { error: null };
@@ -39,6 +46,9 @@ class PullRequestDetailPanelErrorBoundary extends React.Component<
         <div role="alert" className="flex min-h-0 flex-1 flex-col gap-2 p-4 text-sm">
           <p className="font-medium text-destructive">Could not load pull request details.</p>
           <p className="text-muted-foreground">{message}</p>
+          <Button className="self-start" size="sm" variant="outline" onClick={this.props.onRetry}>
+            Retry
+          </Button>
         </div>
       );
     }
@@ -56,8 +66,17 @@ export function PullRequestDetailPanelBoundary({
   readonly reference: PullRequestRef;
   readonly onClose: () => void;
 }) {
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [LazyPanel, setLazyPanel] = useState(() => LazyPullRequestDetailPanel);
+  const retry = useCallback(() => {
+    pullRequestDetailPanelPromise = undefined;
+    LazyPullRequestDetailPanel = lazy(loadPullRequestDetailPanel);
+    setLazyPanel(() => LazyPullRequestDetailPanel);
+    setLoadAttempt((attempt) => attempt + 1);
+  }, []);
+
   return (
-    <PullRequestDetailPanelErrorBoundary>
+    <PullRequestDetailPanelErrorBoundary key={loadAttempt} onRetry={retry}>
       <Suspense
         fallback={
           <div role="status" className="p-4 text-sm text-muted-foreground">
@@ -65,11 +84,7 @@ export function PullRequestDetailPanelBoundary({
           </div>
         }
       >
-        <LazyPullRequestDetailPanel
-          environmentId={environmentId}
-          reference={reference}
-          onClose={onClose}
-        />
+        <LazyPanel environmentId={environmentId} reference={reference} onClose={onClose} />
       </Suspense>
     </PullRequestDetailPanelErrorBoundary>
   );
