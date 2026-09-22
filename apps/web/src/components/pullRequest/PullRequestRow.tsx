@@ -1,5 +1,5 @@
 import type { EnvironmentId, PullRequestListEntry } from "@t3tools/contracts";
-import { memo } from "react";
+import { memo, type RefCallback } from "react";
 
 import { cn } from "~/lib/utils";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
@@ -59,6 +59,8 @@ function PullRequestRowLabels({ labels }: { readonly labels: PullRequestListEntr
 function PullRequestRowImpl({
   entry,
   selected,
+  statsKey,
+  statsRef,
   matchedElsewhere,
   onSelect,
   onHoverStart,
@@ -67,6 +69,8 @@ function PullRequestRowImpl({
 }: {
   readonly entry: PullRequestRowEntry;
   readonly selected: boolean;
+  readonly statsKey?: string;
+  readonly statsRef?: RefCallback<HTMLButtonElement>;
   /**
    * A search found this, but in something the row does not show — a
    * description, a comment, a commit message.
@@ -84,6 +88,8 @@ function PullRequestRowImpl({
 }) {
   return (
     <button
+      ref={statsRef}
+      data-pull-request-stats-key={statsKey}
       type="button"
       aria-current={selected ? "true" : undefined}
       onClick={() => onSelect(entry)}

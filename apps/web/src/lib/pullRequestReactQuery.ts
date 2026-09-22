@@ -11,6 +11,7 @@ import type {
   PullRequestDiffResult,
   PullRequestInvalidateInput,
   PullRequestListInput,
+  PullRequestListResult,
   PullRequestListStatsInput,
   PullRequestListStatsResult,
   PullRequestRef,
@@ -203,6 +204,21 @@ export function pullRequestListInfiniteQueryOptions(input: {
       }
       return undefined;
     },
+    enabled: input.environmentId !== null && (input.enabled ?? true),
+    staleTime: PULL_REQUEST_STALE_TIME_MS,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+  });
+}
+
+export function pullRequestListQueryOptions(input: {
+  readonly environmentId: EnvironmentId | null;
+  readonly request: PullRequestListInput;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<PullRequestListResult>({
+    queryKey: pullRequestQueryKeys.list(input.environmentId, input.request),
+    queryFn: () => requirePullRequestApi(input.environmentId).list(input.request),
     enabled: input.environmentId !== null && (input.enabled ?? true),
     staleTime: PULL_REQUEST_STALE_TIME_MS,
     refetchOnWindowFocus: true,
