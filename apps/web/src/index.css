@@ -1136,14 +1136,6 @@ label:has(> select#reasoning-effort) select {
   }
 }
 
-/* Thread working spinner — replicates the loading.dev "Slide" spinner
-   (MIT, https://github.com/jakubkrehel/loading): three dots sliding into
-   the empty corner of a square. Replaces the pulsing blue status dot for
-   Working / Connecting threads in the sidebar. Geometry matches the
-   original (34% dots, 20% gap, 158.8% travel); duration matches its 2400ms
-   default. Sized in em so it tracks the sidebar font-size setting.
-   Dots keep `data-thread-status-pulse` in markup so native vibrancy keeps
-   this animation alive while freezing everything else in the row. */
 .thread-slide {
   position: relative;
   flex: none;

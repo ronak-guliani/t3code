@@ -36,14 +36,12 @@ describe("ThreadStatusLabel", () => {
     expect(html).not.toContain("animate-status-pulse");
     expect(html).toContain("data-thread-status-pulse");
     expect(html).toContain("font-size:var(--app-sidebar-font-size)");
-    // Three sliding dots.
     expect(html.match(/thread-slide-dot/g)?.length).toBe(3);
   });
 
   it("keeps the slide spinner exempt from the native vibrancy animation freeze", () => {
     const html = renderToStaticMarkup(<ThreadStatusLabel compact status={workingStatus} />);
 
-    // Every animated node carries the marker so vibrancy preserves it.
     expect(html.match(/data-thread-status-pulse/g)?.length).toBeGreaterThanOrEqual(4);
   });
 

@@ -171,14 +171,6 @@ export function resolveTerminalThreadRef(thread: SidebarThreadSummary) {
   return scopeThreadRef(thread.environmentId, thread.virtualAgentRun?.parentThreadId ?? thread.id);
 }
 
-/**
- * loading.dev "Slide" spinner — three dots sliding into the empty corner of
- * a square — used for Working / Connecting thread rows instead of the
- * pulsing status dot. Inherits `currentColor` so the sky tone comes from the
- * surrounding status color class. Every node keeps
- * `data-thread-status-pulse` so native vibrancy preserves this animation
- * while freezing the rest of the row.
- */
 export function ThreadSlideSpinner() {
   return (
     <span aria-hidden="true" data-thread-status-pulse="" className="thread-slide">
