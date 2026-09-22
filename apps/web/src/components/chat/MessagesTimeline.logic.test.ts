@@ -1254,8 +1254,9 @@ describe("workspace handoff rows", () => {
     expect(rows.map((row) => row.kind)).toEqual([
       "message",
       "reasoning",
-      "message",
       "workspace-handoff",
+      "reasoning",
+      "message",
       "reasoning",
       "message",
     ]);
@@ -1269,22 +1270,25 @@ describe("workspace handoff rows", () => {
     expect(markerRow?.origin.worktreePath).toBe("/tmp/handoff");
   });
 
-  it("defers the mid-turn marker past the turn it was requested in", () => {
+  it("places work logged after the move below the transition", () => {
     const rows = deriveHandoffRows();
 
     const markerIndex = rows.findIndex((row) => row.kind === "workspace-handoff");
-    const preHandoffAssistantIndex = rows.findIndex(
-      (row) => row.kind === "message" && row.message.id === "assistant-1",
+    const postHandoffReasoning = rows.find(
+      (row) =>
+        row.kind === "reasoning" && row.rows.some((nestedRow) => nestedRow.id === "work-b-entry"),
     );
 
-    // The marker is emitted mid-turn but must not split that turn's work: the
-    // pre-handoff tool activity still collapses into a single reasoning group.
-    const reasoningRow = rows.find(
+    expect(markerIndex).toBeGreaterThan(-1);
+    expect(rows.findIndex((row) => row.kind === "reasoning")).toBeLessThan(markerIndex);
+    expect(postHandoffReasoning).toBeDefined();
+    expect(rows.indexOf(postHandoffReasoning!)).toBeGreaterThan(markerIndex);
+
+    const preHandoffReasoning = rows.find(
       (row): row is Extract<(typeof rows)[number], { kind: "reasoning" }> =>
-        row.kind === "reasoning",
+        row.kind === "reasoning" && row.rows.some((nestedRow) => nestedRow.id === "work-a-entry"),
     );
-    expect(reasoningRow?.rows.map((row) => row.id)).toEqual(["work-a-entry", "work-b-entry"]);
-    expect(markerIndex).toBeGreaterThan(preHandoffAssistantIndex);
+    expect(preHandoffReasoning?.rows.map((row) => row.id)).toEqual(["work-a-entry"]);
   });
 
   it("moves the suppressed continuation revert anchor onto the marker", () => {
