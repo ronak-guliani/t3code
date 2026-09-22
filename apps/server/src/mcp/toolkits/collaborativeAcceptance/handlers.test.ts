@@ -56,6 +56,7 @@ const coordinator: CollaborativeAcceptanceCoordinatorShape = {
   submitAssessment: () => Effect.die("unused"),
   recordProviderEvidence: () => Effect.die("unused"),
   refreshProviderEvidence: () => Effect.die("unused"),
+  reconcileAutomaticCandidate: () => Effect.die("unused"),
   pause: () => Effect.die("unused"),
   resume: () => Effect.die("unused"),
   start: () => Effect.die("unused"),
