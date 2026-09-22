@@ -423,9 +423,7 @@ export const makeAcceptanceCaseMutation = (
         {
           ...record,
           case: transition.acceptanceCase,
-          candidates: record.candidates.some((entry) => entry.candidateId === candidate.candidateId)
-            ? record.candidates
-            : [...record.candidates, candidate],
+          candidates: [...record.candidates, candidate],
           evidence: [...record.evidence, ...command.submission.initialEvidence],
         },
         { expectedRevision: record.revision },
