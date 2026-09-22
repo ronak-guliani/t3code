@@ -1,19 +1,56 @@
 import { readLocalApi } from "../localApi";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import type { Project, ThreadShell } from "../types";
-import type { EnvironmentId, PullRequestRef, ScopedThreadRef } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  GitPullRequestAssociation,
+  PullRequestRef,
+  ScopedThreadRef,
+} from "@t3tools/contracts";
+
+function pullRequestMatchesReference(
+  pullRequest: GitPullRequestAssociation,
+  reference: PullRequestRef,
+): boolean {
+  return (
+    pullRequest.number === reference.number &&
+    githubPullRequestNavigation(pullRequest.url)?.repository.toLowerCase() ===
+      reference.repository.toLowerCase()
+  );
+}
 
 export function findPullRequestBrowserThread<
-  T extends Pick<ThreadShell, "id" | "environmentId" | "projectId" | "archivedAt" | "pullRequest">,
+  T extends Pick<
+    ThreadShell,
+    "id" | "environmentId" | "projectId" | "archivedAt" | "pullRequest" | "pullRequests"
+  >,
 >(threads: readonly T[], environmentId: EnvironmentId, reference: PullRequestRef): T | undefined {
   return threads.find(
     (thread) =>
       thread.environmentId === environmentId &&
       thread.projectId === reference.projectId &&
       !thread.archivedAt &&
-      thread.pullRequest?.number === reference.number &&
-      githubPullRequestNavigation(thread.pullRequest.url)?.repository.toLowerCase() ===
-        reference.repository.toLowerCase(),
+      ((thread.pullRequest !== null &&
+        thread.pullRequest !== undefined &&
+        pullRequestMatchesReference(thread.pullRequest, reference)) ||
+        thread.pullRequests?.some((link) =>
+          pullRequestMatchesReference(link.pullRequest, reference),
+        ) === true),
+  );
+}
+
+export function findPullRequestCreationThread<
+  T extends Pick<ThreadShell, "environmentId" | "projectId" | "pullRequests">,
+>(threads: readonly T[], environmentId: EnvironmentId, reference: PullRequestRef): T | undefined {
+  return threads.find(
+    (thread) =>
+      thread.environmentId === environmentId &&
+      thread.projectId === reference.projectId &&
+      thread.pullRequests?.some(
+        (link) =>
+          (link.source === "created" || link.source === "agent" || link.source === "recovered") &&
+          pullRequestMatchesReference(link.pullRequest, reference),
+      ) === true,
   );
 }
 

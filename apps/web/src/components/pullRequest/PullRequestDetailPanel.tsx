@@ -10,9 +10,11 @@ import type {
   PullRequestMonitorStatusResult,
 } from "@t3tools/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import {
   ArrowDownUpIcon,
   ArrowLeftIcon,
+  ChevronDownIcon,
   ChevronRightIcon,
   CircleDotIcon,
   ExternalLinkIcon,
@@ -26,6 +28,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { lazy, Suspense, useMemo, useState, type ReactNode } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import ChatMarkdown from "../ChatMarkdown";
 import { Badge } from "../ui/badge";
@@ -59,8 +62,12 @@ import { useOpenLink } from "~/browser/useOpenLink";
 import { isWebUrl } from "~/browser/browserLinkTarget";
 import { selectThreadShellsAcrossEnvironments, useStore } from "~/store";
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import { findPullRequestBrowserThread } from "~/lib/openPullRequestLink";
+import {
+  findPullRequestBrowserThread,
+  findPullRequestCreationThread,
+} from "~/lib/openPullRequestLink";
 import { presentCollaborativeAcceptanceStatus } from "./collaborativeAcceptancePresentation";
+import type { ThreadShell } from "~/types";
 
 import {
   EMPTY_PENDING_REVIEW_COMMENTS,
@@ -213,12 +220,21 @@ function PullRequestCollaborationStatusCard({
   status,
   acceptance,
   controls,
+  environmentId,
+  creatorThread,
+  creatorThreadLabel,
+  reviewThread,
+  onNavigateThread,
 }: {
   readonly status: PullRequestMonitorStatusResult | undefined;
   readonly acceptance: CollaborativeAcceptanceStatus | undefined;
+  readonly environmentId: EnvironmentId;
+  readonly creatorThread: Pick<ThreadShell, "id" | "title"> | null;
+  readonly creatorThreadLabel: "Created in" | "Linked from";
+  readonly reviewThread: Pick<ThreadShell, "id" | "title"> | null;
+  readonly onNavigateThread: () => void;
   readonly controls: {
     readonly canControl: boolean;
-    readonly hasCaseId: boolean;
     readonly isLoading: boolean;
     readonly error: string | null;
     readonly isPaused: boolean;
@@ -244,99 +260,152 @@ function PullRequestCollaborationStatusCard({
   const exchangeCount = record?.exchanges.filter(
     (exchange) => exchange.status !== "cancelled",
   ).length;
+  const openFindingCount = status?.openFeedback.length ?? 0;
+  const additionalBlockers = blockers.filter(
+    (blocker) => (blocker.detail ?? blocker.kind) !== presentation.blocker,
+  );
+  const threadLinks = [
+    creatorThread ? { label: creatorThreadLabel, thread: creatorThread } : null,
+    reviewThread ? { label: "Review findings from", thread: reviewThread } : null,
+  ].filter(
+    (
+      entry,
+    ): entry is {
+      readonly label: string;
+      readonly thread: Pick<ThreadShell, "id" | "title">;
+    } => entry !== null,
+  );
 
   return (
-    <section
-      className="rounded-xl border border-border/70 bg-card/60 p-3"
+    <details
+      className="group rounded-xl border border-border/70 bg-card/60"
       aria-label="Pull request collaboration status"
-      aria-live="polite"
     >
-      <div className="flex items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold">Collaboration status</h2>
-        {candidateHead ? (
-          <code
-            className="max-w-40 truncate text-[11px] text-muted-foreground"
-            title={candidateHead}
+      <summary className="flex cursor-pointer list-none items-center gap-3 rounded-xl px-3 py-2.5 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+        <span className="min-w-0 flex-1">
+          <h2 className="text-xs font-medium text-muted-foreground">Collaboration</h2>
+          <span
+            aria-live="polite"
+            className="block truncate text-sm font-semibold"
+            title={presentation.headline}
           >
-            {candidateHead.slice(0, 12)}
-          </code>
+            {presentation.headline}
+          </span>
+        </span>
+        {openFindingCount > 0 ? (
+          <Badge className="shrink-0" variant="secondary">
+            {openFindingCount} finding{openFindingCount === 1 ? "" : "s"}
+          </Badge>
+        ) : null}
+        <ChevronDownIcon
+          aria-hidden="true"
+          className="size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none"
+        />
+      </summary>
+      <div className="border-t border-border/70 px-3 py-3">
+        {presentation.blocker ? (
+          <p className="text-xs text-muted-foreground">{presentation.blocker}</p>
+        ) : null}
+        {threadLinks.length > 0 ? (
+          <dl className="mt-3 grid gap-2 text-xs">
+            {threadLinks.map(({ label, thread }) => (
+              <div className="grid min-w-0 grid-cols-[7rem_minmax(0,1fr)] gap-2" key={label}>
+                <dt className="text-muted-foreground">{label}</dt>
+                <dd className="min-w-0">
+                  <Link
+                    className="block truncate font-medium text-foreground underline-offset-2 hover:underline"
+                    params={{ environmentId, threadId: thread.id }}
+                    title={thread.title}
+                    to="/$environmentId/$threadId"
+                    onClick={(event) => {
+                      if (
+                        event.button === 0 &&
+                        !event.metaKey &&
+                        !event.ctrlKey &&
+                        !event.shiftKey &&
+                        !event.altKey
+                      ) {
+                        onNavigateThread();
+                      }
+                    }}
+                  >
+                    {thread.title}
+                  </Link>
+                </dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+        <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+          {(
+            [
+              ["Automation", presentation.execution],
+              ["Review exchange", presentation.collaboration],
+              ["Acceptance", presentation.acceptance],
+              ["Merge readiness", presentation.readiness],
+            ] as const
+          ).map(([label, value]) => (
+            <div className="min-w-0" key={label}>
+              <dt className="text-muted-foreground">{label}</dt>
+              <dd className="truncate font-medium" title={value}>
+                {value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        {additionalBlockers.length > 0 ? (
+          <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
+            {additionalBlockers.slice(0, 3).map((blocker) => (
+              <li className="break-words" key={`${blocker.kind}-${blocker.detail ?? ""}`}>
+                {blocker.detail ?? blocker.kind}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {record ? (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Evidence {completeEvidence}/{currentEvidence.length} complete · {openObligations} open
+            obligation{openObligations === 1 ? "" : "s"} · {exchangeCount}/{exchangeBudget}{" "}
+            exchanges
+          </p>
+        ) : null}
+        {!controls.canControl && (controls.isLoading || controls.error) ? (
+          <p className="mt-3 text-xs text-muted-foreground">
+            {controls.isLoading
+              ? "Loading acceptance details…"
+              : `Acceptance details unavailable: ${controls.error}`}
+          </p>
+        ) : null}
+        {candidateHead ? (
+          <p className="mt-3 text-[11px] text-muted-foreground">
+            Revision{" "}
+            <code className="font-mono" title={candidateHead} translate="no">
+              {candidateHead.slice(0, 12)}
+            </code>
+          </p>
+        ) : null}
+        {controls.canControl ? (
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              disabled={controls.isPending}
+              size="xs"
+              variant="outline"
+              onClick={controls.isPaused ? controls.onResume : controls.onPause}
+            >
+              {controls.isPaused ? "Resume Automation" : "Pause Automation"}
+            </Button>
+            <Button
+              disabled={controls.isPending}
+              size="xs"
+              variant="outline"
+              onClick={controls.onRequestReview}
+            >
+              Request Review
+            </Button>
+          </div>
         ) : null}
       </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        {(
-          [
-            ["Execution", presentation.execution],
-            ["Collaboration", presentation.collaboration],
-            ["Acceptance", presentation.acceptance],
-            ["Readiness", presentation.readiness],
-          ] as const
-        ).map(([label, value]) => (
-          <div key={label} className="min-w-0 rounded-lg bg-muted/50 px-2.5 py-2">
-            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              {label}
-            </div>
-            <div className="truncate text-xs font-medium" title={value}>
-              {value}
-            </div>
-          </div>
-        ))}
-      </div>
-      {presentation.blocker ? (
-        <p className="mt-3 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">Why:</span> {presentation.blocker}
-        </p>
-      ) : null}
-      {blockers.length > 0 ? (
-        <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-          {blockers.slice(0, 3).map((blocker) => (
-            <li key={`${blocker.kind}-${blocker.detail ?? ""}`}>
-              {blocker.detail ?? blocker.kind}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {status?.openFeedback.length ? (
-        <p className="mt-2 text-xs text-muted-foreground">
-          {status.openFeedback.length} open finding{status.openFeedback.length === 1 ? "" : "s"} ·{" "}
-          {status.recentEvents.length} recent event{status.recentEvents.length === 1 ? "" : "s"}
-        </p>
-      ) : null}
-      {record ? (
-        <p className="mt-2 text-xs text-muted-foreground">
-          Evidence {completeEvidence}/{currentEvidence.length} complete · {openObligations} open
-          obligation{openObligations === 1 ? "" : "s"} · exchanges {exchangeCount}/{exchangeBudget}
-        </p>
-      ) : null}
-      {!controls.canControl ? (
-        <p className="mt-3 text-xs text-muted-foreground">
-          {controls.isLoading
-            ? "Loading canonical acceptance status…"
-            : controls.hasCaseId && controls.error
-              ? `Canonical acceptance status unavailable: ${controls.error}`
-              : "No collaborative acceptance case is currently associated with this pull request."}
-        </p>
-      ) : null}
-      {controls.canControl ? (
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Button
-            disabled={controls.isPending}
-            size="xs"
-            variant="outline"
-            onClick={controls.isPaused ? controls.onResume : controls.onPause}
-          >
-            {controls.isPaused ? "Resume automation" : "Pause automation"}
-          </Button>
-          <Button
-            disabled={controls.isPending}
-            size="xs"
-            variant="outline"
-            onClick={controls.onRequestReview}
-          >
-            Request review
-          </Button>
-        </div>
-      ) : null}
-    </section>
+    </details>
   );
 }
 
@@ -505,13 +574,16 @@ export function PullRequestDetailPanel({
     null,
   );
   const detail = toDetailView(detailQuery.data, activityQuery.data);
-  const owner = useStore((state) =>
-    findPullRequestBrowserThread(
-      selectThreadShellsAcrossEnvironments(state),
-      environmentId,
-      reference,
-    ),
+  const threads = useStore(useShallow(selectThreadShellsAcrossEnvironments));
+  const owner = useMemo(
+    () => findPullRequestBrowserThread(threads, environmentId, reference),
+    [environmentId, reference, threads],
   );
+  const creatorThread = useMemo(
+    () => findPullRequestCreationThread(threads, environmentId, reference) ?? null,
+    [environmentId, reference, threads],
+  );
+  const sourceThread = creatorThread ?? owner ?? null;
   const acceptanceProvenance = useMemo(() => {
     for (const findingDetail of monitorContextQuery.data?.findingDetails ?? []) {
       const provenance = findingDetail.finding?.acceptanceProvenance;
@@ -520,6 +592,21 @@ export function PullRequestDetailPanel({
     return null;
   }, [monitorContextQuery.data?.findingDetails]);
   const acceptanceThreadId = monitorQuery.data?.monitor?.ownerThreadId ?? owner?.id ?? null;
+  const reviewThreadId =
+    monitorQuery.data?.monitor?.linkedReviewThreadId ??
+    monitorContextQuery.data?.findingDetails?.find(
+      (findingDetail) => findingDetail.reviewThreadId !== null,
+    )?.reviewThreadId ??
+    null;
+  const reviewThread = useMemo(
+    () =>
+      reviewThreadId === null
+        ? null
+        : (threads.find(
+            (thread) => thread.environmentId === environmentId && thread.id === reviewThreadId,
+          ) ?? null),
+    [environmentId, reviewThreadId, threads],
+  );
   const acceptanceLookupQuery = useQuery(
     collaborativeAcceptanceLookupQueryOptions({
       environmentId,
@@ -590,7 +677,6 @@ export function PullRequestDetailPanel({
       acceptanceThreadId !== null &&
       acceptanceStatus?.record !== null &&
       acceptanceStatus?.record !== undefined,
-    hasCaseId: acceptanceCaseId !== null,
     isLoading:
       acceptanceThreadId !== null &&
       (acceptanceLookupQuery.isLoading ||
@@ -1130,7 +1216,12 @@ export function PullRequestDetailPanel({
             <PullRequestCollaborationStatusCard
               acceptance={acceptanceStatus}
               controls={acceptanceControls}
+              creatorThread={sourceThread}
+              creatorThreadLabel={creatorThread ? "Created in" : "Linked from"}
+              environmentId={environmentId}
+              reviewThread={reviewThread}
               status={monitorQuery.data}
+              onNavigateThread={onClose}
             />
           </div>
         ) : monitorQuery.isError ? (

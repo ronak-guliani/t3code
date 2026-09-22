@@ -5,6 +5,7 @@ import type {
 } from "@t3tools/contracts";
 
 export type PullRequestOrthogonalStatus = {
+  readonly headline: string;
   readonly execution: string;
   readonly collaboration: string;
   readonly acceptance: string;
@@ -70,48 +71,62 @@ export function presentCollaborativeAcceptanceStatus(input: {
       acceptanceEvidenceIncomplete ||
       missingEvidence ||
       headMoved;
-    return {
-      execution:
-        failClosed && providerRefreshFailed
+    const execution =
+      failClosed && providerRefreshFailed
+        ? "Monitoring paused"
+        : projection.executionPhase === "paused"
           ? "Monitoring paused"
-          : projection.executionPhase === "paused"
-            ? "Monitoring paused"
-            : projection.executionPhase === "needs-human"
+          : projection.executionPhase === "needs-human"
+            ? "Needs human"
+            : projection.executionPhase === "verifying"
+              ? "Applying feedback"
+              : "Working";
+    const collaboration =
+      projection.collaborationStatus === "exchange-pending"
+        ? "Request queued"
+        : projection.collaborationStatus === "child-assessment-pending"
+          ? "Waiting on child"
+          : projection.collaborationStatus === "parent-assessment-pending"
+            ? "Waiting on parent"
+            : projection.collaborationStatus === "human-input-required"
               ? "Needs human"
-              : projection.executionPhase === "verifying"
+              : projection.collaborationStatus === "changes-requested"
                 ? "Applying feedback"
-                : "Working",
-      collaboration:
-        projection.collaborationStatus === "exchange-pending"
-          ? "Request queued"
-          : projection.collaborationStatus === "child-assessment-pending"
-            ? "Waiting on child"
-            : projection.collaborationStatus === "parent-assessment-pending"
-              ? "Waiting on parent"
-              : projection.collaborationStatus === "human-input-required"
-                ? "Needs human"
-                : projection.collaborationStatus === "changes-requested"
-                  ? "Applying feedback"
-                  : "Waiting automatically",
-      acceptance:
-        providerRefreshFailed || terminalMonitor
-          ? "Monitoring"
-          : projection.acceptanceLifecycle === "accepted"
-            ? "Accepted"
-            : projection.acceptanceLifecycle === "monitoring"
-              ? "Monitoring"
-              : projection.acceptanceLifecycle === "awaiting-review"
-                ? "Reviewing candidate"
-                : projection.acceptanceLifecycle === "changes-requested"
-                  ? "Applying feedback"
-                  : "Working",
-      readiness: failClosed
-        ? "Blocked"
-        : projection.readiness === "ready-now"
-          ? "Ready now"
-          : projection.readiness === "no-known-blockers"
-            ? "No known blockers"
-            : "Blocked",
+                : "Waiting automatically";
+    const acceptance =
+      providerRefreshFailed || terminalMonitor
+        ? "Monitoring"
+        : projection.acceptanceLifecycle === "accepted"
+          ? "Accepted"
+          : projection.acceptanceLifecycle === "monitoring"
+            ? "Monitoring"
+            : projection.acceptanceLifecycle === "awaiting-review"
+              ? "Reviewing candidate"
+              : projection.acceptanceLifecycle === "changes-requested"
+                ? "Applying feedback"
+                : "Working";
+    const presentedReadiness = failClosed
+      ? "Blocked"
+      : projection.readiness === "ready-now"
+        ? "Ready now"
+        : projection.readiness === "no-known-blockers"
+          ? "No known blockers"
+          : "Blocked";
+    return {
+      headline:
+        presentedReadiness === "Ready now"
+          ? "Ready to merge"
+          : execution === "Monitoring paused"
+            ? "Automation paused"
+            : execution === "Needs human" || collaboration === "Needs human"
+              ? "Needs your input"
+              : acceptance === "Applying feedback"
+                ? "Changes in progress"
+                : collaboration,
+      execution,
+      collaboration,
+      acceptance,
+      readiness: presentedReadiness,
       blocker: projection.reasons[0] ?? failClosedReason ?? null,
     };
   }
@@ -128,46 +143,56 @@ export function presentCollaborativeAcceptanceStatus(input: {
     !incompleteEvidence;
   const acceptanceUnavailable =
     input.acceptance?.record === null || input.acceptance?.record === undefined;
+  const execution = providerRefreshFailed
+    ? "Monitoring paused"
+    : monitor?.status === "monitoring"
+      ? "Working"
+      : monitor?.status === "ready"
+        ? "Monitoring"
+        : monitor?.status === "stopped"
+          ? "Monitoring paused"
+          : "Needs human";
+  const collaboration =
+    automationReason?.kind === "needs-human"
+      ? "Needs human"
+      : automationReason?.kind === "waiting-automatic"
+        ? "Waiting automatically"
+        : input.monitor?.ownerCandidates?.length
+          ? "Request queued"
+          : "No active exchange";
+  const presentedReadiness = readyNow
+    ? "Ready now"
+    : acceptanceUnavailable ||
+        providerRefreshFailed ||
+        incompleteEvidence ||
+        acceptanceEvidenceIncomplete ||
+        missingEvidence ||
+        headMoved
+      ? "Waiting for evidence"
+      : readiness?.label === "no-known-blockers"
+        ? "No known blockers"
+        : readiness
+          ? "Blocked"
+          : "Waiting for evidence";
   return {
-    execution: providerRefreshFailed
-      ? "Monitoring paused"
-      : monitor?.status === "monitoring"
-        ? "Working"
-        : monitor?.status === "ready"
-          ? "Monitoring"
-          : monitor?.status === "stopped"
-            ? "Monitoring paused"
-            : "Needs human",
-    collaboration:
-      automationReason?.kind === "needs-human"
-        ? "Needs human"
-        : automationReason?.kind === "waiting-automatic"
-          ? "Waiting automatically"
-          : input.monitor?.ownerCandidates?.length
-            ? "Request queued"
-            : "No active exchange",
+    headline: readyNow
+      ? "Ready to merge"
+      : providerRefreshFailed || execution === "Monitoring paused"
+        ? "Automation paused"
+        : automationReason?.kind === "needs-human"
+          ? "Needs your input"
+          : acceptanceUnavailable
+            ? "Waiting for acceptance"
+            : presentedReadiness,
+    execution,
+    collaboration,
     acceptance:
       input.acceptance?.record !== null && input.acceptance?.record !== undefined
         ? "Monitoring"
-        : "Acceptance status unavailable",
-    readiness: readyNow
-      ? "Ready now"
-      : acceptanceUnavailable ||
-          providerRefreshFailed ||
-          incompleteEvidence ||
-          acceptanceEvidenceIncomplete ||
-          missingEvidence ||
-          headMoved
-        ? "Waiting for evidence"
-        : readiness?.label === "no-known-blockers"
-          ? "No known blockers"
-          : readiness
-            ? "Blocked"
-            : "Waiting for evidence",
+        : "Not started",
+    readiness: presentedReadiness,
     blocker:
-      (acceptanceUnavailable
-        ? "Canonical collaborative acceptance status is unavailable for this PR."
-        : null) ??
+      (acceptanceUnavailable ? "No acceptance run is linked to this pull request yet." : null) ??
       failClosedReason ??
       input.monitor?.automationBlockReason ??
       readiness?.blockers[0]?.detail ??
