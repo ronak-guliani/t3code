@@ -123,6 +123,7 @@ import { routes as remoteAccessRoutes } from "./remoteAccess/http.ts";
 import { connectHttpApiRoutesLayer } from "./cloud/http.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { pullRequestHttpApiRoutesLayer } from "./pullRequest/http.ts";
+import * as PullRequestReadCache from "./pullRequest/PullRequestReadCache.ts";
 import { layer as PullRequestProviderRegistryLive } from "./pullRequest/PullRequestProviderRegistry.ts";
 import { layer as PullRequestServiceLive } from "./pullRequest/PullRequestService.ts";
 import { layer as pullRequestMonitorFeedbackServiceLayer } from "./pullRequestMonitor/PullRequestMonitorFeedbackService.ts";
@@ -278,6 +279,7 @@ const GitLayerLive = Layer.empty.pipe(
 
 const PullRequestLayerLive = PullRequestServiceLive.pipe(
   Layer.provideMerge(PullRequestProviderRegistryLive),
+  Layer.provideMerge(PullRequestReadCache.layer),
 );
 
 const PullRequestMonitorFeedbackServiceLive = pullRequestMonitorFeedbackServiceLayer.pipe(
