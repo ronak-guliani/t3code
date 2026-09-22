@@ -61,7 +61,7 @@ Network checks cover pairing and recovery too. Exempt only the intentional boots
 requests aborted by a recorded navigation, and tracing fetch cancellation after an exact 204
 acknowledgement. A blanket pairing-phase or aborted-request exclusion is not valid.
 
-Use this skill for the web client. This checkout does not install a `test-t3-mobile` skill. For mobile testing, use the existing app-specific tooling and an isolated backend, or state clearly that mobile validation is unavailable rather than following a missing workflow.
+Use this skill for the web client. For native mobile testing (simulator builds, Maestro flows, on-device captures), load the `test-t3-mobile` skill instead; it covers the Expo app with an isolated backend. If neither skill's requirements can be met, state clearly that the validation is unavailable rather than following a missing workflow.
 
 ## Start an isolated web environment
 

@@ -1,5 +1,5 @@
 import { type EnvironmentShellSummary } from "@t3tools/client-runtime/state/shell";
-import { type NetworkStatus } from "@t3tools/client-runtime/connection";
+import { type ConnectionRouteKind, type NetworkStatus } from "@t3tools/client-runtime/connection";
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { EnvironmentId, ServerConfig } from "@t3tools/contracts";
 
@@ -10,9 +10,12 @@ export interface WorkspaceEnvironment {
   readonly environmentLabel: string;
   readonly displayUrl: string;
   readonly isRelayManaged: boolean;
+  readonly isEnabled: boolean;
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
   readonly connectionErrorTraceId: string | null;
+  readonly routeKind?: ConnectionRouteKind | null;
+  readonly routeSwitching?: boolean;
 }
 
 export interface WorkspaceState {
@@ -38,9 +41,12 @@ export function projectWorkspaceEnvironment(
     environmentLabel: environment.label,
     displayUrl: environment.displayUrl ?? "",
     isRelayManaged: environment.relayManaged,
+    isEnabled: environment.entry.enabled,
     connectionState: environment.connection.phase,
     connectionError: environment.connection.error,
     connectionErrorTraceId: environment.connection.traceId,
+    routeKind: environment.connection.routeKind,
+    routeSwitching: environment.connection.routeSwitching,
   };
 }
 
@@ -63,6 +69,9 @@ function overallConnectionState(
   if (environments.some((environment) => environment.connectionState === "connecting")) {
     return "connecting";
   }
+  if (environments.some((environment) => environment.connectionState === "unsupported")) {
+    return "unsupported";
+  }
   if (environments.some((environment) => environment.connectionState === "error")) {
     return "error";
   }
@@ -78,11 +87,21 @@ export function projectWorkspaceState(input: {
   readonly environments: ReadonlyArray<WorkspaceEnvironment>;
   readonly shellSummary: EnvironmentShellSummary;
 }): WorkspaceState {
-  const connectingEnvironments = input.environments.filter(
+  // Switched-off environments still count as saved connections, but they do
+  // not drive the overall connection state or surface their last error.
+  const activeEnvironments = input.environments.filter((environment) => environment.isEnabled);
+  const connectingEnvironments = activeEnvironments.filter(
     (environment) =>
       environment.connectionState === "connecting" ||
       environment.connectionState === "reconnecting",
   );
+  const connectionState = overallConnectionState(activeEnvironments, input.networkStatus);
+  // Prefer the error belonging to the aggregate phase so mixed states cannot
+  // pair one environment's phase title with another's failure detail.
+  const phaseError = activeEnvironments.find(
+    (environment) =>
+      environment.connectionState === connectionState && environment.connectionError !== null,
+  )?.connectionError;
 
   return {
     isLoadingConnections: !input.isReady,
@@ -91,13 +110,15 @@ export function projectWorkspaceState(input: {
     hasPendingShellSnapshot: input.shellSummary.hasSynchronizingShell,
     hasReadyEnvironment:
       input.networkStatus !== "offline" &&
-      input.environments.some((environment) => environment.connectionState === "connected"),
+      activeEnvironments.some((environment) => environment.connectionState === "connected"),
     hasConnectingEnvironment: connectingEnvironments.length > 0,
     connectingEnvironments,
-    connectionState: overallConnectionState(input.environments, input.networkStatus),
+    connectionState,
     connectionError:
-      input.environments.find((environment) => environment.connectionError !== null)
-        ?.connectionError ?? null,
+      phaseError ??
+      activeEnvironments.find((environment) => environment.connectionError !== null)
+        ?.connectionError ??
+      null,
     shellSnapshotError: input.shellSummary.firstError,
     latestCachedSnapshotReceivedAt: input.shellSummary.latestSnapshotUpdatedAt,
     networkStatus: input.networkStatus,

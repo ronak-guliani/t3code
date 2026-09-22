@@ -337,28 +337,73 @@ export function mobileThreadTreeRows(
   options: {
     readonly selectedThreadKey?: string | null | undefined;
     readonly revealThreadKeys?: ReadonlySet<string> | undefined;
+    /** Show every nested thread inline under its parent. Main lists set this;
+        search and filtered views keep passing an explicit reveal set. */
+    readonly includeAllDescendants?: boolean | undefined;
+    /** Thread keys whose inline children stay hidden behind the parent
+        chevron. Ancestors of the selected thread always force-expand so
+        navigation targets never vanish; reveal matches stay reachable
+        through the Related pill instead of overriding the collapse. */
+    readonly collapsedKeys?: ReadonlySet<string> | undefined;
   } = {},
 ): MobileThreadTreeRow[] {
+  // An explicit collapse always wins, except along the selected
+  // conversation's ancestor path: every ancestor above the selected thread
+  // forces open so navigation targets never vanish. The selected thread
+  // itself stays collapsible so its own chevron never looks dead.
+  // Active/unread reveal matches stay reachable through the Related pill
+  // and the rolled-up group status instead of overriding the user's collapse.
+  const parentByKey = new Map<string, string>();
+  {
+    const pending = [...nodes];
+    while (pending.length > 0) {
+      const node = pending.pop()!;
+      for (const child of node.children) {
+        parentByKey.set(child.threadKey, node.threadKey);
+        pending.push(child);
+      }
+    }
+  }
+  const forced = new Set<string>();
+  const forceLine = (threadKey: string | null | undefined) => {
+    let key = threadKey;
+    while (key !== undefined && key !== null && !forced.has(key)) {
+      forced.add(key);
+      key = parentByKey.get(key);
+    }
+  };
+  // Force only the ancestor path: the selected thread itself stays
+  // collapsible so its own chevron never looks dead.
+  const selectedParent =
+    options.selectedThreadKey == null
+      ? options.selectedThreadKey
+      : parentByKey.get(options.selectedThreadKey);
+  forceLine(selectedParent);
   const rows: MobileThreadTreeRow[] = [];
-  const pending: Array<{ node: MobileThreadTreeNode; depth: number }> = [];
+  const pending: Array<{ node: MobileThreadTreeNode; depth: number; ancestorsOpen: boolean }> = [];
   for (let index = nodes.length - 1; index >= 0; index--) {
-    pending.push({ node: nodes[index]!, depth: 0 });
+    pending.push({ node: nodes[index]!, depth: 0, ancestorsOpen: true });
   }
   while (pending.length > 0) {
-    const { node, depth } = pending.pop()!;
-    // Keep quiet descendants behind the group control; callers explicitly reveal
-    // active, unread, or matching chats alongside the selected iPad conversation.
-    if (
+    const { node, depth, ancestorsOpen } = pending.pop()!;
+    // Main lists render the full inline family. Filtered callers (search,
+    // related-group screens) keep quiet descendants behind an explicit reveal
+    // set alongside the selected conversation.
+    const matchesFilter =
       depth === 0 ||
+      options.includeAllDescendants === true ||
       node.threadKey === options.selectedThreadKey ||
-      options.revealThreadKeys?.has(node.threadKey)
-    ) {
+      options.revealThreadKeys?.has(node.threadKey);
+    const expanded =
+      node.descendantCount > 0 &&
+      (options.collapsedKeys?.has(node.threadKey) !== true || forced.has(node.threadKey));
+    if (matchesFilter && ancestorsOpen) {
       rows.push({
         thread: node.thread,
         threadKey: node.threadKey,
         depth,
         hasChildren: node.descendantCount > 0,
-        isExpanded: false,
+        isExpanded: expanded,
         childCount: node.descendantCount,
         displayStatus: node.rolledUpStatus,
         archiveBlocked: node.archiveBlocked,
@@ -368,8 +413,9 @@ export function mobileThreadTreeRows(
         relatedChildCount: node.relatedChildCount ?? node.descendantCount,
       });
     }
+    const childrenOpen = ancestorsOpen && expanded;
     for (let index = node.children.length - 1; index >= 0; index--) {
-      pending.push({ node: node.children[index]!, depth: depth + 1 });
+      pending.push({ node: node.children[index]!, depth: depth + 1, ancestorsOpen: childrenOpen });
     }
   }
   return rows;

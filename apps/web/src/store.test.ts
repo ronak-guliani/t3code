@@ -172,6 +172,7 @@ function makeState(thread: Thread): AppState {
         branch: thread.branch,
         worktreePath: thread.worktreePath,
         pullRequest: thread.pullRequest ?? null,
+        pullRequests: thread.pullRequests ?? [],
       },
     },
     threadSessionById: {
@@ -769,6 +770,67 @@ describe("setThreadBranch", () => {
 });
 
 describe("incremental orchestration updates", () => {
+  it("updates active thread links from live link and unlink events", () => {
+    const workspacePullRequest = {
+      number: 150,
+      title: "Workspace PR",
+      url: "https://example.test/pr/150",
+      baseBranch: "main",
+      headBranch: "feature/workspace",
+      state: "open" as const,
+    };
+    const supportingPullRequest = {
+      number: 151,
+      title: "Supporting PR",
+      url: "https://example.test/pr/151",
+      baseBranch: "main",
+      headBranch: "feature/supporting",
+      state: "open" as const,
+    };
+    const thread = makeThread({
+      pullRequest: workspacePullRequest,
+      pullRequests: [
+        { pullRequest: workspacePullRequest, source: "created", linkedAt: "2026-02-27T00:00:00Z" },
+      ],
+    });
+    let state = makeState(thread);
+
+    state = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.pull-request-linked", {
+        threadId: thread.id,
+        link: {
+          pullRequest: supportingPullRequest,
+          source: "manual",
+          linkedAt: "2026-02-27T00:00:01Z",
+        },
+        updatedAt: "2026-02-27T00:00:01Z",
+      }),
+      localEnvironmentId,
+    );
+    expect(
+      selectThreadByRef(state, scopeThreadRef(localEnvironmentId, thread.id))?.pullRequests,
+    ).toEqual([
+      { pullRequest: workspacePullRequest, source: "created", linkedAt: "2026-02-27T00:00:00Z" },
+      { pullRequest: supportingPullRequest, source: "manual", linkedAt: "2026-02-27T00:00:01Z" },
+    ]);
+
+    state = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.pull-request-unlinked", {
+        threadId: thread.id,
+        pullRequest: workspacePullRequest,
+        updatedAt: "2026-02-27T00:00:02Z",
+      }),
+      localEnvironmentId,
+    );
+    const updatedThread = selectThreadByRef(state, scopeThreadRef(localEnvironmentId, thread.id));
+    expect(updatedThread?.pullRequest).toBeNull();
+    expect(updatedThread?.pullRequests).toEqual([
+      { pullRequest: supportingPullRequest, source: "manual", linkedAt: "2026-02-27T00:00:01Z" },
+    ]);
+  });
+
   it("keeps sidebar activity aligned with a live assistant message", () => {
     const thread = makeThread();
     const state = makeState(thread);
@@ -997,6 +1059,14 @@ describe("incremental orchestration updates", () => {
         updatedAt: "2026-05-01T20:40:15.000Z",
         archivedAt: null,
         deletedAt: null,
+        validationRequest: {
+          requestId: "request-pending",
+          threadId,
+          scenarios: [],
+          scope: "changed-behavior",
+          requester: { id: "user-1", kind: "user" },
+          requestedAt: "2026-05-01T20:40:10.000Z",
+        },
         messages: [],
         proposedPlans: [],
         activities: [],
@@ -1019,6 +1089,7 @@ describe("incremental orchestration updates", () => {
     );
 
     expect(threadsOf(next)[0]?.session?.resumeCursor).toEqual(resumeCursor);
+    expect(threadsOf(next)[0]?.validationRequest?.requestId).toBe("request-pending");
     expect(threadsOf(next)[0]?.hasMoreActivities).toBe(true);
     expect(threadsOf(next)[0]?.hasMoreCurrentTurnActivities).toBe(true);
     expect(
@@ -2525,6 +2596,7 @@ describe("insights lifecycle retention", () => {
       makeEvent("thread.meta-updated", {
         threadId: peerId,
         pullRequest,
+        pullRequestSource: "created",
         updatedAt: "2026-02-27T00:00:02.000Z",
       }),
       localEnvironmentId,
@@ -2532,5 +2604,78 @@ describe("insights lifecycle retention", () => {
     expect(
       selectThreadByRef(withCreatedPr, scopeThreadRef(localEnvironmentId, peerId))?.pullRequest,
     ).toEqual(pullRequest);
+    expect(
+      selectThreadByRef(withCreatedPr, scopeThreadRef(localEnvironmentId, peerId))?.pullRequests,
+    ).toEqual([
+      {
+        pullRequest,
+        source: "created",
+        linkedAt: "2026-02-27T00:00:02.000Z",
+      },
+    ]);
+  });
+
+  it("retains every pull request created in a thread in creation order", () => {
+    const firstPullRequest = {
+      number: 399,
+      title: "First pull request",
+      url: "https://github.com/acme/app/pull/399",
+      baseBranch: "main",
+      headBranch: "feature/first",
+      state: "open" as const,
+    };
+    const secondPullRequest = {
+      ...firstPullRequest,
+      number: 400,
+      title: "Second pull request",
+      url: "https://github.com/acme/app/pull/400",
+      headBranch: "feature/second",
+    };
+    const threadId = ThreadId.make("thread-multiple-prs");
+    const created = applyOrchestrationEvent(
+      makeState(makeThread()),
+      makeEvent("thread.created", {
+        threadId,
+        projectId: ProjectId.make("project-1"),
+        title: "Multiple PRs",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        runtimeMode: DEFAULT_RUNTIME_MODE,
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        branch: "feature/first",
+        worktreePath: null,
+        pullRequest: firstPullRequest,
+        createdAt: "2026-09-17T00:00:00.000Z",
+        updatedAt: "2026-09-17T00:00:00.000Z",
+      }),
+      localEnvironmentId,
+    );
+    const next = applyOrchestrationEvent(
+      created,
+      makeEvent("thread.meta-updated", {
+        threadId,
+        pullRequest: secondPullRequest,
+        pullRequestSource: "created",
+        updatedAt: "2026-09-17T00:01:00.000Z",
+      }),
+      localEnvironmentId,
+    );
+    const thread = selectThreadByRef(next, scopeThreadRef(localEnvironmentId, threadId));
+
+    expect(thread?.pullRequest).toEqual(secondPullRequest);
+    expect(thread?.pullRequests).toEqual([
+      {
+        pullRequest: firstPullRequest,
+        source: "created",
+        linkedAt: "2026-09-17T00:00:00.000Z",
+      },
+      {
+        pullRequest: secondPullRequest,
+        source: "created",
+        linkedAt: "2026-09-17T00:01:00.000Z",
+      },
+    ]);
   });
 });

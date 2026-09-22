@@ -38,7 +38,9 @@ import {
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
+  type PullRequestListState,
   type ReviewChangesScope,
+  type CollaborativeAcceptancePolicy,
 } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime";
 import {
@@ -62,6 +64,31 @@ import {
   DEFAULT_UI_DENSITY,
   DEFAULT_UI_FONT,
   DEFAULT_UNIFIED_SETTINGS,
+  DEFAULT_HEADER_SHOW_PROJECT_SCRIPTS,
+  DEFAULT_HEADER_SHOW_OPEN_IN,
+  DEFAULT_HEADER_SHOW_GIT_ACTIONS,
+  DEFAULT_HEADER_SHOW_WORKFLOWS,
+  DEFAULT_HEADER_SHOW_WORKFLOW_RUNS,
+  DEFAULT_HEADER_SHOW_EXPORT_CHAT,
+  DEFAULT_HEADER_SHOW_INSIGHTS_TOGGLE,
+  DEFAULT_HEADER_SHOW_BROWSER_TOGGLE,
+  DEFAULT_HEADER_SHOW_FILES_TOGGLE,
+  DEFAULT_HEADER_SHOW_TERMINAL_TOGGLE,
+  DEFAULT_HEADER_SHOW_DIFF_TOGGLE,
+  DEFAULT_SIDEBAR_SHOW_SEARCH,
+  DEFAULT_SIDEBAR_SHOW_PULL_REQUESTS,
+  DEFAULT_SIDEBAR_SHOW_SKILLS,
+  DEFAULT_SIDEBAR_SHOW_NEW_THREAD,
+  DEFAULT_HEADER_EXPORT_CONFIRM,
+  DEFAULT_PROJECT_SCRIPTS_CONFIRM_RUN,
+  DEFAULT_OPEN_IN_UPDATE_PREFERRED,
+  DEFAULT_GIT_CONFIRM_DEFAULT_BRANCH,
+  DEFAULT_GIT_SHOW_QUICK_ACTION,
+  DEFAULT_WORKFLOW_CONFIRM_RUN,
+  DEFAULT_WORKFLOW_PREWARM_ON_HOVER,
+  DEFAULT_WORKFLOW_RUNS_SHOW_BADGE,
+  DEFAULT_SIDEBAR_SEARCH_SHOW_SHORTCUT,
+  DEFAULT_SIDEBAR_NEW_THREAD_CONFIRM,
   type CodeFont,
   type FontSize,
   type MessagePreviewLineCount,
@@ -70,6 +97,7 @@ import {
   type ThreadCompletionNotificationMode,
   type UiDensity,
   type UiFont,
+  type UnifiedSettings,
 } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
 import { Equal } from "effect";
@@ -87,6 +115,7 @@ import { TraitsPicker } from "../chat/TraitsPicker";
 import { resolveAndPersistPreferredEditor } from "../../editorPreferences";
 import { isElectron } from "../../env";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { DeviceSettings } from "./DeviceSettings";
 import { useTheme } from "../../hooks/useTheme";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
@@ -124,7 +153,9 @@ import {
   buildArchivedThreadGroupsFromSnapshots,
   buildProviderInstanceUpdatePatch,
   filterArchivedThreadGroups,
+  mergeCollaborativeAcceptancePolicy,
   runSequentiallySettled,
+  type CollaborativeAcceptancePolicyPatch,
 } from "./SettingsPanels.logic";
 import {
   SettingResetButton,
@@ -217,6 +248,230 @@ const WORKFLOW_DESTINATION_OPTIONS: ReadonlyArray<{
   { value: "new-chat", label: "New chat" },
   { value: "child-chat", label: "Child chat" },
 ];
+
+const COLLABORATIVE_ACCEPTANCE_AUTOMATION_OPTIONS = [
+  { value: "off", label: "Off" },
+  { value: "bounded", label: "Bounded" },
+  { value: "until-ready", label: "Continue until ready" },
+] as const;
+
+const COLLABORATIVE_ACCEPTANCE_TRIGGER_OPTIONS = [
+  { value: "manual", label: "Manual" },
+  { value: "first-candidate", label: "First eligible candidate" },
+  { value: "each-eligible-candidate", label: "Every eligible candidate" },
+] as const;
+
+const COLLABORATIVE_ACCEPTANCE_COMMENT_OPTIONS = [
+  { value: "blocking-only", label: "Blocking only" },
+  { value: "all-actionable-addressed", label: "All actionable feedback" },
+  { value: "all-review-threads-resolved", label: "All review threads resolved" },
+] as const;
+
+type HeaderSidebarToggleKey = keyof Pick<
+  UnifiedSettings,
+  | "headerShowProjectScripts"
+  | "headerShowOpenIn"
+  | "headerShowGitActions"
+  | "headerShowWorkflows"
+  | "headerShowWorkflowRuns"
+  | "headerShowExportChat"
+  | "headerShowInsightsToggle"
+  | "headerShowBrowserToggle"
+  | "headerShowFilesToggle"
+  | "headerShowTerminalToggle"
+  | "headerShowDiffToggle"
+  | "sidebarShowSearch"
+  | "sidebarShowPullRequests"
+  | "sidebarShowSkills"
+  | "sidebarShowNewThread"
+  | "headerExportConfirm"
+  | "projectScriptsConfirmRun"
+  | "openInUpdatePreferred"
+  | "gitConfirmDefaultBranch"
+  | "gitShowQuickAction"
+  | "workflowConfirmRun"
+  | "workflowPrewarmOnHover"
+  | "workflowRunsShowBadge"
+  | "sidebarSearchShowShortcut"
+  | "sidebarNewThreadConfirm"
+>;
+
+const HEADER_VISIBILITY_ROWS: ReadonlyArray<{
+  key: HeaderSidebarToggleKey;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: "headerShowProjectScripts",
+    title: "Project scripts",
+    description: "Show project action runner in the chat header.",
+  },
+  {
+    key: "headerShowOpenIn",
+    title: "Open in editor",
+    description: "Show the open-in-editor picker in the chat header.",
+  },
+  {
+    key: "headerShowGitActions",
+    title: "Git actions",
+    description: "Show commit, push, and PR actions in the chat header.",
+  },
+  {
+    key: "headerShowWorkflows",
+    title: "Workflows",
+    description: "Show agent workflow buttons in the chat header.",
+  },
+  {
+    key: "headerShowWorkflowRuns",
+    title: "Workflow runs",
+    description: "Show the workflow runs popover in the chat header.",
+  },
+  {
+    key: "headerShowExportChat",
+    title: "Export chat",
+    description: "Show the export-chat button in the chat header.",
+  },
+];
+
+const PANEL_TOGGLE_ROWS: ReadonlyArray<{
+  key: HeaderSidebarToggleKey;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: "headerShowInsightsToggle",
+    title: "Insights toggle",
+    description: "Show the insights panel toggle.",
+  },
+  {
+    key: "headerShowBrowserToggle",
+    title: "Browser toggle",
+    description: "Show the browser preview toggle.",
+  },
+  {
+    key: "headerShowFilesToggle",
+    title: "Files toggle",
+    description: "Show the file browser toggle.",
+  },
+  {
+    key: "headerShowTerminalToggle",
+    title: "Terminal toggle",
+    description: "Show the terminal drawer toggle.",
+  },
+  { key: "headerShowDiffToggle", title: "Diff toggle", description: "Show the diff panel toggle." },
+];
+
+const SIDEBAR_VISIBILITY_ROWS: ReadonlyArray<{
+  key: HeaderSidebarToggleKey;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: "sidebarShowSearch",
+    title: "Search",
+    description: "Show Search in the sidebar top actions.",
+  },
+  {
+    key: "sidebarShowPullRequests",
+    title: "Pull requests",
+    description: "Show Pull Requests in the sidebar top actions.",
+  },
+  {
+    key: "sidebarShowSkills",
+    title: "Skills",
+    description: "Show Skills in the sidebar top actions.",
+  },
+  {
+    key: "sidebarShowNewThread",
+    title: "New thread",
+    description: "Show New thread in the sidebar top actions.",
+  },
+];
+
+const HEADER_BEHAVIOR_ROWS: ReadonlyArray<{
+  key: HeaderSidebarToggleKey;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: "headerExportConfirm",
+    title: "Confirm before export",
+    description: "Ask for confirmation before exporting a chat.",
+  },
+  {
+    key: "projectScriptsConfirmRun",
+    title: "Confirm script runs",
+    description: "Ask for confirmation before running a project script.",
+  },
+  {
+    key: "openInUpdatePreferred",
+    title: "Remember preferred editor",
+    description: "Update the preferred editor when picking from the Open-in menu.",
+  },
+  {
+    key: "gitConfirmDefaultBranch",
+    title: "Confirm default-branch git actions",
+    description: "Show the default-branch confirmation for push and PR actions.",
+  },
+  {
+    key: "gitShowQuickAction",
+    title: "Git quick action",
+    description: "Show the one-click git quick action beside the git menu.",
+  },
+  {
+    key: "workflowConfirmRun",
+    title: "Confirm workflow runs",
+    description: "Ask for confirmation before running a header workflow.",
+  },
+  {
+    key: "workflowPrewarmOnHover",
+    title: "Prewarm workflows on hover",
+    description: "Prewarm provider sessions and PR data when hovering workflow buttons.",
+  },
+  {
+    key: "workflowRunsShowBadge",
+    title: "Workflow badge count",
+    description: "Show the running-workflow count badge on the runs button.",
+  },
+  {
+    key: "sidebarSearchShowShortcut",
+    title: "Search shortcut hint",
+    description: "Include the keyboard shortcut in the Search tooltip.",
+  },
+  {
+    key: "sidebarNewThreadConfirm",
+    title: "Confirm new thread",
+    description: "Ask for confirmation before creating a thread from the sidebar.",
+  },
+];
+
+const HEADER_SIDEBAR_DEFAULTS: Record<HeaderSidebarToggleKey, boolean> = {
+  headerShowProjectScripts: DEFAULT_HEADER_SHOW_PROJECT_SCRIPTS,
+  headerShowOpenIn: DEFAULT_HEADER_SHOW_OPEN_IN,
+  headerShowGitActions: DEFAULT_HEADER_SHOW_GIT_ACTIONS,
+  headerShowWorkflows: DEFAULT_HEADER_SHOW_WORKFLOWS,
+  headerShowWorkflowRuns: DEFAULT_HEADER_SHOW_WORKFLOW_RUNS,
+  headerShowExportChat: DEFAULT_HEADER_SHOW_EXPORT_CHAT,
+  headerShowInsightsToggle: DEFAULT_HEADER_SHOW_INSIGHTS_TOGGLE,
+  headerShowBrowserToggle: DEFAULT_HEADER_SHOW_BROWSER_TOGGLE,
+  headerShowFilesToggle: DEFAULT_HEADER_SHOW_FILES_TOGGLE,
+  headerShowTerminalToggle: DEFAULT_HEADER_SHOW_TERMINAL_TOGGLE,
+  headerShowDiffToggle: DEFAULT_HEADER_SHOW_DIFF_TOGGLE,
+  sidebarShowSearch: DEFAULT_SIDEBAR_SHOW_SEARCH,
+  sidebarShowPullRequests: DEFAULT_SIDEBAR_SHOW_PULL_REQUESTS,
+  sidebarShowSkills: DEFAULT_SIDEBAR_SHOW_SKILLS,
+  sidebarShowNewThread: DEFAULT_SIDEBAR_SHOW_NEW_THREAD,
+  headerExportConfirm: DEFAULT_HEADER_EXPORT_CONFIRM,
+  projectScriptsConfirmRun: DEFAULT_PROJECT_SCRIPTS_CONFIRM_RUN,
+  openInUpdatePreferred: DEFAULT_OPEN_IN_UPDATE_PREFERRED,
+  gitConfirmDefaultBranch: DEFAULT_GIT_CONFIRM_DEFAULT_BRANCH,
+  gitShowQuickAction: DEFAULT_GIT_SHOW_QUICK_ACTION,
+  workflowConfirmRun: DEFAULT_WORKFLOW_CONFIRM_RUN,
+  workflowPrewarmOnHover: DEFAULT_WORKFLOW_PREWARM_ON_HOVER,
+  workflowRunsShowBadge: DEFAULT_WORKFLOW_RUNS_SHOW_BADGE,
+  sidebarSearchShowShortcut: DEFAULT_SIDEBAR_SEARCH_SHOW_SHORTCUT,
+  sidebarNewThreadConfirm: DEFAULT_SIDEBAR_NEW_THREAD_CONFIRM,
+};
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 
@@ -394,6 +649,20 @@ function formatMessagePreviewLineCount(lineCount: MessagePreviewLineCount): stri
 
 function isFontSize(value: unknown): value is FontSize {
   return FONT_SIZE_OPTIONS.some((option) => String(option.value) === String(value));
+}
+
+const PULL_REQUESTS_STATE_OPTIONS: ReadonlyArray<{
+  readonly value: PullRequestListState;
+  readonly label: string;
+}> = [
+  { value: "open", label: "Open" },
+  { value: "all", label: "All states" },
+  { value: "closed", label: "Closed" },
+  { value: "merged", label: "Merged" },
+];
+
+function isPullRequestListState(value: unknown): value is PullRequestListState {
+  return PULL_REQUESTS_STATE_OPTIONS.some((option) => option.value === value);
 }
 
 function isReviewChangesScope(value: unknown): value is ReviewChangesScope {
@@ -887,6 +1156,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap
         ? ["Diff line wrapping"]
         : []),
+      ...(settings.pullRequestsDefaultState !== DEFAULT_UNIFIED_SETTINGS.pullRequestsDefaultState
+        ? ["Pull requests default state"]
+        : []),
+      ...(settings.pullRequestsCodeFontSize !== DEFAULT_UNIFIED_SETTINGS.pullRequestsCodeFontSize
+        ? ["Pull requests code font size"]
+        : []),
       ...(settings.browserAutoShowFloatingPreview !==
       DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview
         ? ["Agent browser preview"]
@@ -922,6 +1197,13 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(!Equal.equals(settings.agentWorkflows, DEFAULT_UNIFIED_SETTINGS.agentWorkflows)
         ? ["Agent workflows"]
         : []),
+      ...(Object.keys(HEADER_SIDEBAR_DEFAULTS).some(
+        (key) =>
+          settings[key as HeaderSidebarToggleKey] !==
+          HEADER_SIDEBAR_DEFAULTS[key as HeaderSidebarToggleKey],
+      )
+        ? ["Header & sidebar buttons"]
+        : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
       ...(areProviderSettingsDirty ? ["Providers"] : []),
     ],
@@ -943,17 +1225,44 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.codeFont,
       settings.defaultThreadEnvMode,
       settings.diffWordWrap,
+      settings.gitConfirmDefaultBranch,
+      settings.gitShowQuickAction,
+      settings.headerExportConfirm,
+      settings.headerShowBrowserToggle,
+      settings.headerShowDiffToggle,
+      settings.headerShowExportChat,
+      settings.headerShowFilesToggle,
+      settings.headerShowGitActions,
+      settings.headerShowInsightsToggle,
+      settings.headerShowOpenIn,
+      settings.headerShowProjectScripts,
+      settings.headerShowTerminalToggle,
+      settings.headerShowWorkflowRuns,
+      settings.headerShowWorkflows,
+      settings.openInUpdatePreferred,
+      settings.projectScriptsConfirmRun,
+      settings.pullRequestsDefaultState,
+      settings.pullRequestsCodeFontSize,
       settings.enableAssistantStreaming,
       settings.agentWorkflows,
       settings.sidebarFontSize,
       settings.sidebarMetaFontSize,
+      settings.sidebarNewThreadConfirm,
       settings.sidebarRowSpacing,
+      settings.sidebarSearchShowShortcut,
+      settings.sidebarShowNewThread,
+      settings.sidebarShowPullRequests,
+      settings.sidebarShowSearch,
+      settings.sidebarShowSkills,
       settings.sidebarTranslucency,
       settings.threadCompletionNotifications,
       settings.timestampFormat,
       settings.toolFontSize,
       settings.uiDensity,
       settings.uiFont,
+      settings.workflowConfirmRun,
+      settings.workflowPrewarmOnHover,
+      settings.workflowRunsShowBadge,
       theme,
     ],
   );
@@ -979,6 +1288,42 @@ export function useSettingsRestore(onRestored?: () => void) {
   };
 }
 
+function HeaderSidebarToggleRows({
+  rows,
+  settings,
+  updateSettings,
+}: {
+  readonly rows: ReadonlyArray<{
+    readonly key: HeaderSidebarToggleKey;
+    readonly title: string;
+    readonly description: string;
+  }>;
+  readonly settings: UnifiedSettings;
+  readonly updateSettings: (patch: Partial<UnifiedSettings>) => void;
+}) {
+  return rows.map((row) => (
+    <SettingsRow
+      key={row.key}
+      title={row.title}
+      description={row.description}
+      resetAction={
+        settings[row.key] !== HEADER_SIDEBAR_DEFAULTS[row.key] ? (
+          <SettingResetButton
+            label={row.title.toLowerCase()}
+            onClick={() => updateSettings({ [row.key]: HEADER_SIDEBAR_DEFAULTS[row.key] })}
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={settings[row.key]}
+          onCheckedChange={(checked) => updateSettings({ [row.key]: Boolean(checked) })}
+        />
+      }
+    />
+  ));
+}
+
 export function GeneralSettingsPanel() {
   const browserEnvironmentId = usePrimaryEnvironmentId();
   const { theme, setTheme } = useTheme();
@@ -996,6 +1341,8 @@ export function GeneralSettingsPanel() {
   >({});
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isPickingChatExportDirectory, setIsPickingChatExportDirectory] = useState(false);
+  const [isExportingActiveChats, setIsExportingActiveChats] = useState(false);
+  const [isImportingChatArchive, setIsImportingChatArchive] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [newBrowserProfileName, setNewBrowserProfileName] = useState("");
   const [browserProfileNames, setBrowserProfileNames] = useState<Record<string, string>>({});
@@ -1251,6 +1598,62 @@ export function GeneralSettingsPanel() {
       setIsPickingChatExportDirectory(false);
     }
   }, [isPickingChatExportDirectory, settings.chatExportDirectory, updateSettings]);
+
+  const exportActiveChats = useCallback(async () => {
+    if (isExportingActiveChats) return;
+    setIsExportingActiveChats(true);
+    try {
+      const result = await ensureLocalApi().server.exportActiveChats();
+      toastManager.add(
+        stackedThreadToast({
+          type: "success",
+          title: `Exported ${result.threadCount} active chat${result.threadCount === 1 ? "" : "s"}`,
+          description: result.path,
+        }),
+      );
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not export active chats",
+          description:
+            error instanceof Error ? error.message : "An error occurred while exporting chats.",
+        }),
+      );
+    } finally {
+      setIsExportingActiveChats(false);
+    }
+  }, [isExportingActiveChats]);
+
+  const importChatArchive = useCallback(async () => {
+    if (isImportingChatArchive) return;
+    setIsImportingChatArchive(true);
+    try {
+      const path = await ensureLocalApi().dialogs.pickFolder(
+        settings.chatExportDirectory ? { initialPath: settings.chatExportDirectory } : undefined,
+      );
+      if (!path) return;
+      const result = await ensureLocalApi().server.importChatArchive({ path });
+      toastManager.add(
+        stackedThreadToast({
+          type: "success",
+          title: `Imported ${result.threadCount} chat${result.threadCount === 1 ? "" : "s"}`,
+          description: "The chats are available in a new reference-only sidebar folder.",
+        }),
+      );
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not import chat archive",
+          description:
+            error instanceof Error ? error.message : "An error occurred while importing chats.",
+        }),
+      );
+    } finally {
+      setIsImportingChatArchive(false);
+    }
+  }, [isImportingChatArchive, settings.chatExportDirectory]);
 
   const updateChatExportDetail = useCallback(
     (patch: Partial<typeof settings.chatExportDetail>) => {
@@ -1681,6 +2084,29 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) => updateSettings({ sidebarV2Enabled: Boolean(checked) })}
             />
           }
+        />
+      </SettingsSection>
+
+      <SettingsSection title="Header & sidebar buttons">
+        <HeaderSidebarToggleRows
+          rows={HEADER_VISIBILITY_ROWS}
+          settings={settings}
+          updateSettings={updateSettings}
+        />
+        <HeaderSidebarToggleRows
+          rows={PANEL_TOGGLE_ROWS}
+          settings={settings}
+          updateSettings={updateSettings}
+        />
+        <HeaderSidebarToggleRows
+          rows={SIDEBAR_VISIBILITY_ROWS}
+          settings={settings}
+          updateSettings={updateSettings}
+        />
+        <HeaderSidebarToggleRows
+          rows={HEADER_BEHAVIOR_ROWS}
+          settings={settings}
+          updateSettings={updateSettings}
         />
       </SettingsSection>
 
@@ -2222,6 +2648,119 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
+      <SettingsSection title="Pull requests">
+        <SettingsRow
+          title="Default list state"
+          description="State filter the pull requests page starts with when the URL names none."
+          resetAction={
+            settings.pullRequestsDefaultState !==
+            DEFAULT_UNIFIED_SETTINGS.pullRequestsDefaultState ? (
+              <SettingResetButton
+                label="pull requests default state"
+                onClick={() =>
+                  updateSettings({
+                    pullRequestsDefaultState: DEFAULT_UNIFIED_SETTINGS.pullRequestsDefaultState,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.pullRequestsDefaultState}
+              onValueChange={(value) => {
+                if (isPullRequestListState(value)) {
+                  updateSettings({ pullRequestsDefaultState: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Pull requests default state">
+                <SelectValue>
+                  {PULL_REQUESTS_STATE_OPTIONS.find(
+                    (option) => option.value === settings.pullRequestsDefaultState,
+                  )?.label ?? "Open"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {PULL_REQUESTS_STATE_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Diff code font size"
+          description="Font size for code in pull request diffs."
+          resetAction={
+            settings.pullRequestsCodeFontSize !==
+            DEFAULT_UNIFIED_SETTINGS.pullRequestsCodeFontSize ? (
+              <SettingResetButton
+                label="pull requests code font size"
+                onClick={() =>
+                  updateSettings({
+                    pullRequestsCodeFontSize: DEFAULT_UNIFIED_SETTINGS.pullRequestsCodeFontSize,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={String(settings.pullRequestsCodeFontSize)}
+              onValueChange={(value) => {
+                const num = Number(value);
+                if (isFontSize(num)) {
+                  updateSettings({ pullRequestsCodeFontSize: num });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Pull requests code font size">
+                <SelectValue>
+                  {FONT_SIZE_OPTIONS.find(
+                    (option) => option.value === settings.pullRequestsCodeFontSize,
+                  )?.label ?? "12px"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {FONT_SIZE_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={String(option.value)}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Wrap long diff lines"
+          description="Wrap instead of horizontally scrolling long lines in pull request diffs."
+          resetAction={
+            settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap ? (
+              <SettingResetButton
+                label="pull requests diff line wrapping"
+                onClick={() =>
+                  updateSettings({
+                    diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.diffWordWrap}
+              onCheckedChange={(checked) => updateSettings({ diffWordWrap: Boolean(checked) })}
+              aria-label="Wrap long lines in pull request diffs"
+            />
+          }
+        />
+      </SettingsSection>
+
+      <DeviceSettings />
+
       <SettingsSection title="Preferences">
         <SettingsRow
           title="Agent browser access"
@@ -2252,7 +2791,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Agent browser preview"
-          description="Show a floating browser preview when an agent uses browser automation."
+          description="Show a floating browser or device preview when an agent uses automation."
           resetAction={
             settings.browserAutoShowFloatingPreview !==
             DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview ? (
@@ -2273,7 +2812,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ browserAutoShowFloatingPreview: Boolean(checked) })
               }
-              aria-label="Show a floating preview during agent browser automation"
+              aria-label="Show a floating preview during agent browser or device automation"
             />
           }
         />
@@ -2892,7 +3431,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Chat export directory"
-          description="Markdown chat exports are saved here before opening in your preferred editor."
+          description="Markdown exports and bulk chat archive folders are saved here."
           resetAction={
             settings.chatExportDirectory !== DEFAULT_UNIFIED_SETTINGS.chatExportDirectory ? (
               <SettingResetButton
@@ -2928,6 +3467,47 @@ export function GeneralSettingsPanel() {
                   <FolderOpenIcon className="size-3.5" />
                 )}
                 Choose
+              </Button>
+            </div>
+          }
+        />
+
+        <SettingsRow
+          title="Transfer active chats"
+          description="Export every non-archived chat, or import a T3 chat archive as a reference-only sidebar folder."
+          control={
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void exportActiveChats()}
+                disabled={
+                  isExportingActiveChats ||
+                  isImportingChatArchive ||
+                  settings.chatExportDirectory.trim().length === 0
+                }
+              >
+                {isExportingActiveChats ? (
+                  <LoaderIcon className="size-3.5 animate-spin" />
+                ) : (
+                  <ArchiveIcon className="size-3.5" />
+                )}
+                Export active chats
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void importChatArchive()}
+                disabled={isImportingChatArchive || isExportingActiveChats}
+              >
+                {isImportingChatArchive ? (
+                  <LoaderIcon className="size-3.5 animate-spin" />
+                ) : (
+                  <FolderOpenIcon className="size-3.5" />
+                )}
+                Import chat folder
               </Button>
             </div>
           }
@@ -3327,6 +3907,286 @@ export function GeneralSettingsPanel() {
           }
         />
       </SettingsSection>
+    </SettingsPageContainer>
+  );
+}
+
+const DEFAULT_COLLABORATIVE_ACCEPTANCE_POLICY: CollaborativeAcceptancePolicy = {
+  automation: "bounded",
+  reviewTrigger: "first-candidate",
+  reviewWorkflow: { identity: "review-changes", version: "1" },
+  commentPolicy: "blocking-only",
+  budgets: {
+    exchanges: 3,
+    modelSpendCents: 0,
+    retries: 1,
+    disputeRounds: 1,
+    executionDurationSeconds: 0,
+    waitingDeadlineSeconds: 0,
+  },
+};
+
+function CollaborativeAcceptanceSettingsPanel() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  const policy = settings.collaborativeAcceptance;
+  const configuredPolicy = policy ?? DEFAULT_COLLABORATIVE_ACCEPTANCE_POLICY;
+  const policyRef = useRef(policy);
+  policyRef.current = policy;
+  const [validationMessage, setValidationMessage] = useState<string | null>(null);
+
+  const updatePolicy = useCallback(
+    (patch: CollaborativeAcceptancePolicyPatch) => {
+      const currentPolicy = policyRef.current;
+      if (!currentPolicy) return;
+      const nextPolicy = mergeCollaborativeAcceptancePolicy(currentPolicy, patch);
+      if (nextPolicy.automation === "bounded" && nextPolicy.budgets.exchanges < 1) {
+        setValidationMessage("Bounded automation needs at least one parent-child exchange.");
+        return;
+      }
+      if (
+        nextPolicy.reviewWorkflow.identity.trim().length === 0 ||
+        nextPolicy.reviewWorkflow.version.trim().length === 0
+      ) {
+        setValidationMessage("Choose a review workflow identity and version.");
+        return;
+      }
+      setValidationMessage(null);
+      policyRef.current = nextPolicy;
+      updateSettings({ collaborativeAcceptance: nextPolicy });
+    },
+    [updateSettings],
+  );
+
+  const updateBudget = useCallback(
+    (key: keyof CollaborativeAcceptancePolicy["budgets"], value: string) => {
+      const parsed = Number.parseInt(value.trim(), 10);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        setValidationMessage("Limits must be zero or greater.");
+        return;
+      }
+      updatePolicy({ budgets: { [key]: parsed } });
+    },
+    [updatePolicy],
+  );
+
+  return (
+    <SettingsSection title="PR collaboration automation">
+      <SettingsRow
+        title="Automation policy"
+        description="Choose whether the coordinator may exchange parent and child reviews. Existing users stay opted out until they choose a policy."
+        control={
+          <Select
+            value={policy?.automation ?? "unconfigured"}
+            onValueChange={(value) => {
+              if (value === "unconfigured") {
+                policyRef.current = null;
+                updateSettings({ collaborativeAcceptance: null });
+                setValidationMessage(null);
+                return;
+              }
+              const nextPolicy = mergeCollaborativeAcceptancePolicy(
+                policyRef.current ?? DEFAULT_COLLABORATIVE_ACCEPTANCE_POLICY,
+                {
+                  automation: value as CollaborativeAcceptancePolicy["automation"],
+                },
+              );
+              policyRef.current = nextPolicy;
+              updateSettings({ collaborativeAcceptance: nextPolicy });
+              setValidationMessage(null);
+            }}
+          >
+            <SelectTrigger
+              className="w-full sm:w-52"
+              aria-label="PR collaboration automation policy"
+            >
+              <SelectValue>
+                {policy
+                  ? COLLABORATIVE_ACCEPTANCE_AUTOMATION_OPTIONS.find(
+                      (option) => option.value === policy.automation,
+                    )?.label
+                  : "Not configured"}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              <SelectItem hideIndicator value="unconfigured">
+                Not configured
+              </SelectItem>
+              {COLLABORATIVE_ACCEPTANCE_AUTOMATION_OPTIONS.map((option) => (
+                <SelectItem hideIndicator key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        }
+      />
+
+      <div
+        className={policy ? undefined : "pointer-events-none opacity-50"}
+        aria-disabled={!policy}
+      >
+        <SettingsRow
+          title="Exchange budget"
+          description="Limit parent-child review exchanges, not raw assistant turns."
+          control={
+            <DraftInput
+              value={String(configuredPolicy.budgets.exchanges)}
+              inputMode="numeric"
+              onCommit={(value) => updateBudget("exchanges", value)}
+              aria-label="Parent-child exchange budget"
+            />
+          }
+        />
+        <SettingsRow
+          title="Review trigger"
+          description="Choose when the coordinator requests a review of an eligible candidate."
+          control={
+            <Select
+              value={configuredPolicy.reviewTrigger}
+              onValueChange={(value) => {
+                if (
+                  value === "manual" ||
+                  value === "first-candidate" ||
+                  value === "each-eligible-candidate"
+                ) {
+                  updatePolicy({ reviewTrigger: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-56" aria-label="PR review trigger">
+                <SelectValue>
+                  {
+                    COLLABORATIVE_ACCEPTANCE_TRIGGER_OPTIONS.find(
+                      (option) => option.value === configuredPolicy.reviewTrigger,
+                    )?.label
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {COLLABORATIVE_ACCEPTANCE_TRIGGER_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Review workflow"
+          description="Use the canonical workflow identity and version for candidate reviews."
+        >
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <DraftInput
+              value={configuredPolicy.reviewWorkflow.identity}
+              onCommit={(identity) =>
+                updatePolicy({
+                  reviewWorkflow: { identity: identity.trim() },
+                })
+              }
+              aria-label="Collaborative review workflow identity"
+              placeholder="Workflow identity"
+            />
+            <DraftInput
+              value={configuredPolicy.reviewWorkflow.version}
+              onCommit={(version) =>
+                updatePolicy({
+                  reviewWorkflow: { version: version.trim() },
+                })
+              }
+              aria-label="Collaborative review workflow version"
+              placeholder="Workflow version"
+            />
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          title="PR feedback policy"
+          description="Decide which findings must be addressed before acceptance."
+          control={
+            <Select
+              value={configuredPolicy.commentPolicy}
+              onValueChange={(value) => {
+                if (
+                  value === "blocking-only" ||
+                  value === "all-actionable-addressed" ||
+                  value === "all-review-threads-resolved"
+                ) {
+                  updatePolicy({ commentPolicy: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-56" aria-label="PR feedback policy">
+                <SelectValue>
+                  {
+                    COLLABORATIVE_ACCEPTANCE_COMMENT_OPTIONS.find(
+                      (option) => option.value === configuredPolicy.commentPolicy,
+                    )?.label
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {COLLABORATIVE_ACCEPTANCE_COMMENT_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Advanced limits"
+          description="Set independent zero-or-greater limits. Zero means no limit where supported."
+        >
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            {(
+              [
+                ["modelSpendCents", "Model spend (cents)"],
+                ["retries", "Retries"],
+                ["disputeRounds", "Dispute rounds"],
+                ["executionDurationSeconds", "Execution duration (seconds)"],
+                ["waitingDeadlineSeconds", "Waiting deadline (seconds)"],
+              ] as const
+            ).map(([key, label]) => (
+              <label key={key} className="grid gap-1 text-xs text-muted-foreground">
+                {label}
+                <DraftInput
+                  value={String(configuredPolicy.budgets[key])}
+                  inputMode="numeric"
+                  onCommit={(value) => updateBudget(key, value)}
+                  aria-label={label}
+                />
+              </label>
+            ))}
+          </div>
+        </SettingsRow>
+      </div>
+      <div className="px-4 pb-4 pt-3 text-xs sm:px-5" aria-live="polite">
+        {validationMessage ? (
+          <p className="text-destructive">{validationMessage}</p>
+        ) : policy ? (
+          <p className="text-muted-foreground">
+            {policy.automation === "bounded"
+              ? "Bounded mode is enabled with an explicit exchange budget."
+              : policy.automation === "until-ready"
+                ? "The coordinator may continue until the backend reports Ready now or a limit blocks it."
+                : "Collaboration is explicitly disabled."}
+          </p>
+        ) : (
+          <p className="text-muted-foreground">
+            Not configured. Selecting a policy opts this account into PR collaboration automation.
+          </p>
+        )}
+      </div>
+    </SettingsSection>
+  );
+}
+
+export function PullRequestCollaborationSettingsPanel() {
+  return (
+    <SettingsPageContainer>
+      <CollaborativeAcceptanceSettingsPanel />
     </SettingsPageContainer>
   );
 }

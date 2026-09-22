@@ -45,6 +45,8 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "setColorScheme",
   "listTabs",
   "openAndSnapshot",
+  "recordingTransfer",
+  "preflight",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -459,6 +461,15 @@ export const PreviewAutomationEvaluateInput = Schema.Struct({
 });
 export type PreviewAutomationEvaluateInput = typeof PreviewAutomationEvaluateInput.Type;
 
+/**
+ * Object-wrapped evaluation result. The wrapper keeps the MCP output shape
+ * stable when the page returns null, undefined, or a primitive.
+ */
+export const PreviewAutomationEvaluateResult = Schema.Struct({
+  value: Schema.Unknown,
+});
+export type PreviewAutomationEvaluateResult = typeof PreviewAutomationEvaluateResult.Type;
+
 export const PreviewAutomationWaitForInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
   selector: Schema.optional(LegacySelector).annotate({
@@ -558,6 +569,11 @@ const PreviewAutomationSnapshotBodyFields = {
     width: Schema.Int,
     height: Schema.Int,
   }),
+  /**
+   * Server-persisted screenshot location, present only when the snapshot was
+   * requested with `save: true` and the capture was stored as evidence.
+   */
+  screenshotPath: Schema.optional(Schema.String),
   /** Optional compact diagnostic summary for model context. */
   diagnosticsSummary: Schema.optional(Schema.String),
 };
@@ -586,6 +602,12 @@ export const DEFAULT_SNAPSHOT_MAX_SCREENSHOT_EDGE = 1280;
 export const DEFAULT_SNAPSHOT_MAX_CONSOLE_ENTRIES = 40;
 export const DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES = 40;
 export const DEFAULT_LOCATOR_CANDIDATE_LIMIT = 5;
+/**
+ * Hard ceiling for serialized snapshot metadata text returned over MCP.
+ * Per-field budgets keep captures context-safe; this final ceiling guards
+ * the serialized output after hosts apply their own budgets.
+ */
+export const PREVIEW_SNAPSHOT_FINAL_TEXT_BUDGET_BYTES = 60_000;
 
 const OptionalPositiveInt = (description: string, maximum: number) =>
   Schema.optional(
@@ -594,8 +616,16 @@ const OptionalPositiveInt = (description: string, maximum: number) =>
       .annotate({ description }),
   ).annotate({ description });
 
+const PreviewAutomationSnapshotSaveFields = {
+  save: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Persist the screenshot as a server-side evidence file and return its screenshotPath. Defaults to false.",
+  }),
+};
+
 export const PreviewAutomationSnapshotInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
+  ...PreviewAutomationSnapshotSaveFields,
   includeConsole: Schema.optional(Schema.Boolean).annotate({
     description:
       "Include console entries. Defaults to true (errors/warnings preferred when reducing).",
@@ -665,6 +695,7 @@ export type PreviewAutomationListTabsInput = typeof PreviewAutomationListTabsInp
 
 export const PreviewAutomationOpenAndSnapshotInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
+  ...PreviewAutomationSnapshotSaveFields,
   url: Schema.optional(BoundedUrl).annotate({
     description: `Optional initial page URL. ${URL_GUIDANCE} Omit to open a blank tab (or pass target instead).`,
   }),
@@ -752,6 +783,117 @@ export const PreviewAutomationOpenAndSnapshotInput = Schema.Struct({
 export type PreviewAutomationOpenAndSnapshotInput =
   typeof PreviewAutomationOpenAndSnapshotInput.Type;
 
+export const PreviewAutomationPreflightInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  url: Schema.optional(BoundedUrl).annotate({
+    description:
+      "Optional target or pairing URL to inspect. Pairing paths, query parameters, and fragments are never opened or returned.",
+  }),
+  target: Schema.optional(
+    BrowserNavigationTarget.annotate({
+      description: "Optional environment-relative target to inspect without opening a pairing URL.",
+    }),
+  ),
+  expectedEnvironmentId: Schema.optional(EnvironmentId).annotate({
+    description:
+      "Optional expected identity of the target app. Omit when the target identity is not known in advance.",
+  }),
+  open: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Open or attach a blank collaborative tab when no tab is attached. Defaults to false.",
+    }),
+  ),
+  reuseExistingTab: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Reuse the requested/current tab when true (default); set false to request a new tab.",
+    }),
+  ),
+  timeoutMs: OptionalTimeoutMs,
+})
+  .check(
+    Schema.makeFilter((input) => {
+      if (input.tabId !== undefined && input.reuseExistingTab === false) {
+        return "tabId cannot be combined with reuseExistingTab=false.";
+      }
+      return (
+        !(input.url !== undefined && input.target !== undefined) ||
+        "Provide at most one of url or target."
+      );
+    }),
+  )
+  .annotate({
+    description:
+      "Check browser support/attachment, MCP credential validity, and an optional target before pairing. This operation never opens the supplied URL.",
+  });
+export type PreviewAutomationPreflightInput = typeof PreviewAutomationPreflightInput.Type;
+
+export const PreviewAutomationPreflightBrowser = Schema.Struct({
+  supported: Schema.Boolean,
+  available: Schema.Boolean,
+  visible: Schema.Boolean,
+  tabAttached: Schema.Boolean,
+  tabId: Schema.NullOr(PreviewTabId),
+});
+export type PreviewAutomationPreflightBrowser = typeof PreviewAutomationPreflightBrowser.Type;
+
+export const PreviewAutomationPreflightTargetReachability = Schema.Literals([
+  "not-requested",
+  "not-checked",
+  "reachable",
+  "unreachable",
+]);
+export type PreviewAutomationPreflightTargetReachability =
+  typeof PreviewAutomationPreflightTargetReachability.Type;
+
+export const PreviewAutomationPreflightTargetApp = Schema.Literals([
+  "not-requested",
+  "unknown",
+  "expected-t3-app",
+  "not-t3-app",
+  "not-configured",
+]);
+export type PreviewAutomationPreflightTargetApp = typeof PreviewAutomationPreflightTargetApp.Type;
+
+export const PreviewAutomationPreflightRecovery = Schema.Literals([
+  "none",
+  "open-browser",
+  "reconnect-required",
+  "configure-target",
+  "resolve-environment-mismatch",
+  "use-supported-browser",
+  "retry-target",
+  "retry-browser",
+  "pair-after-preflight",
+]);
+export type PreviewAutomationPreflightRecovery = typeof PreviewAutomationPreflightRecovery.Type;
+
+export const PreviewAutomationPreflightResult = Schema.Struct({
+  /**
+   * Server tab id when known. The broker uses this to pin the agent session
+   * after preflight opens or reuses a tab.
+   */
+  tabId: Schema.optional(PreviewTabId),
+  browser: PreviewAutomationPreflightBrowser,
+  mcp: Schema.Struct({
+    credential: Schema.Literal("valid"),
+  }),
+  target: Schema.Struct({
+    requested: Schema.Boolean,
+    reachability: PreviewAutomationPreflightTargetReachability,
+    app: PreviewAutomationPreflightTargetApp,
+    origin: Schema.NullOr(Schema.String),
+    environmentId: Schema.NullOr(EnvironmentId),
+    status: Schema.NullOr(Schema.Int),
+  }),
+  recovery: Schema.Struct({
+    kind: PreviewAutomationPreflightRecovery,
+    message: Schema.String,
+  }),
+});
+export type PreviewAutomationPreflightResult = typeof PreviewAutomationPreflightResult.Type;
+
 export const PreviewAutomationRecordingStatus = Schema.Struct({
   tabId: PreviewTabId,
   recording: Schema.Boolean,
@@ -766,8 +908,46 @@ export const PreviewAutomationRecordingArtifact = Schema.Struct({
   mimeType: Schema.String,
   sizeBytes: Schema.Int,
   createdAt: Schema.String,
+  /**
+   * True when `path` was transferred to the agent environment's server and is
+   * readable there. Absent/false means `path` is local to the browser host
+   * that recorded it (older hosts, or a failed transfer with graceful
+   * fallback to the host-local path).
+   */
+  transferred: Schema.optional(Schema.Boolean),
 });
 export type PreviewAutomationRecordingArtifact = typeof PreviewAutomationRecordingArtifact.Type;
+
+/**
+ * Maximum recording payload accepted over the automation channel in one
+ * transfer. Mirrors the screenshot bound so a single finished recording can
+ * move without chunking.
+ */
+export const PREVIEW_RECORDING_TRANSFER_MAX_BYTES = 64 * 1024 * 1024;
+
+export const PreviewAutomationRecordingTransferInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  recordingId: Schema.String.annotate({
+    description: "Recording id from a previous preview_recording_stop artifact.",
+  }),
+}).annotate({
+  description:
+    "Fetches finished recording bytes from the browser host so the server can store an agent-readable copy.",
+});
+export type PreviewAutomationRecordingTransferInput =
+  typeof PreviewAutomationRecordingTransferInput.Type;
+
+export const PreviewAutomationRecordingTransferResult = Schema.Struct({
+  id: Schema.String,
+  tabId: PreviewTabId,
+  mimeType: Schema.String,
+  sizeBytes: Schema.Int,
+  createdAt: Schema.String,
+  /** Base64-encoded recording bytes. */
+  data: Schema.String,
+});
+export type PreviewAutomationRecordingTransferResult =
+  typeof PreviewAutomationRecordingTransferResult.Type;
 
 export const PreviewAutomationClientId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 export type PreviewAutomationClientId = typeof PreviewAutomationClientId.Type;
@@ -918,6 +1098,18 @@ export class PreviewAutomationPinnedHostUnsupportedOperationError extends Schema
 ) {
   override get message(): string {
     return `Pinned preview automation host ${this.clientId} does not support ${this.operation}. Start a new provider session in a desktop runtime that supports it.`;
+  }
+}
+
+export class PreviewAutomationNoSupportedHostError extends Schema.TaggedErrorClass<PreviewAutomationNoSupportedHostError>()(
+  "PreviewAutomationNoSupportedHostError",
+  {
+    ...PreviewAutomationScopeErrorFields,
+    connectedClientCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  },
+) {
+  override get message(): string {
+    return `No connected preview automation host supports ${this.operation}; the browser host may be an older mixed-version client.`;
   }
 }
 
@@ -1102,6 +1294,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationUnavailableError,
   PreviewAutomationNoAvailableHostError,
   PreviewAutomationPinnedHostUnsupportedOperationError,
+  PreviewAutomationNoSupportedHostError,
   PreviewAutomationUnsupportedClientError,
   PreviewAutomationTabNotFoundError,
   PreviewAutomationTimeoutError,

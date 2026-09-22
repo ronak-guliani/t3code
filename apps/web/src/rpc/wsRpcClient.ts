@@ -9,6 +9,13 @@ import {
   type ServerSettingsPatch,
   WS_METHODS,
 } from "@t3tools/contracts";
+import type {
+  CollaborativeAcceptanceAssessmentSubmission,
+  CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptanceCandidateSubmission,
+  CollaborativeAcceptancePauseReason,
+  ThreadId,
+} from "@t3tools/contracts";
 import { applyGitStatusStreamEvent } from "@t3tools/shared/git";
 import { Effect, Stream } from "effect";
 
@@ -99,6 +106,17 @@ export interface WsRpcClient {
       readonly focusHost: RpcUnaryMethod<typeof WS_METHODS.previewAutomationFocusHost>;
     };
   };
+  readonly device: {
+    readonly configure: RpcUnaryMethod<typeof WS_METHODS.deviceConfigure>;
+    readonly list: RpcUnaryMethod<typeof WS_METHODS.deviceList>;
+    readonly testHost: RpcUnaryMethod<typeof WS_METHODS.deviceTestHost>;
+    readonly open: RpcUnaryMethod<typeof WS_METHODS.deviceOpen>;
+    readonly close: RpcUnaryMethod<typeof WS_METHODS.deviceClose>;
+    readonly shutdown: RpcUnaryMethod<typeof WS_METHODS.deviceShutdown>;
+    readonly detail: RpcUnaryMethod<typeof WS_METHODS.deviceDetail>;
+    readonly action: RpcUnaryMethod<typeof WS_METHODS.deviceAction>;
+    readonly onState: RpcStreamMethod<typeof WS_METHODS.subscribeDeviceState>;
+  };
   readonly shell: {
     readonly openInEditor: (input: {
       readonly cwd: Parameters<LocalApi["shell"]["openInEditor"]>[0];
@@ -161,6 +179,21 @@ export interface WsRpcClient {
     readonly submitFindings: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsSubmitFindings>;
     readonly launchFallback: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsLaunchFallback>;
   };
+  readonly collaborativeAcceptance: {
+    readonly submitCandidate: RpcUnaryMethod<
+      typeof WS_METHODS.collaborativeAcceptanceSubmitCandidate
+    >;
+    readonly requestReview: RpcUnaryMethod<typeof WS_METHODS.collaborativeAcceptanceRequestReview>;
+    readonly status: RpcUnaryMethod<typeof WS_METHODS.collaborativeAcceptanceStatus>;
+    readonly resolveForPullRequest: RpcUnaryMethod<
+      typeof WS_METHODS.collaborativeAcceptanceResolveForPullRequest
+    >;
+    readonly submitAssessment: RpcUnaryMethod<
+      typeof WS_METHODS.collaborativeAcceptanceSubmitAssessment
+    >;
+    readonly pause: RpcUnaryMethod<typeof WS_METHODS.collaborativeAcceptancePause>;
+    readonly resume: RpcUnaryMethod<typeof WS_METHODS.collaborativeAcceptanceResume>;
+  };
   readonly workflow: {
     readonly run: RpcUnaryMethod<typeof WS_METHODS.workflowRun>;
   };
@@ -181,6 +214,8 @@ export interface WsRpcClient {
     readonly updateSettings: (
       patch: ServerSettingsPatch,
     ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverUpdateSettings>>;
+    readonly exportActiveChats: RpcUnaryNoArgMethod<typeof WS_METHODS.serverExportActiveChats>;
+    readonly importChatArchive: RpcUnaryMethod<typeof WS_METHODS.serverImportChatArchive>;
     readonly exportThreadMarkdown: RpcUnaryMethod<typeof WS_METHODS.serverExportThreadMarkdown>;
     readonly subscribeConfig: RpcStreamMethod<typeof WS_METHODS.subscribeServerConfig>;
     readonly subscribeLifecycle: RpcStreamMethod<typeof WS_METHODS.subscribeServerLifecycle>;
@@ -292,6 +327,23 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
           transport.request((client) => client[WS_METHODS.previewAutomationFocusHost](input)),
       },
     },
+    device: {
+      configure: (input) =>
+        transport.request((client) => client[WS_METHODS.deviceConfigure](input)),
+      list: (input) => transport.request((client) => client[WS_METHODS.deviceList](input)),
+      testHost: (input) => transport.request((client) => client[WS_METHODS.deviceTestHost](input)),
+      open: (input) => transport.request((client) => client[WS_METHODS.deviceOpen](input)),
+      close: (input) => transport.request((client) => client[WS_METHODS.deviceClose](input)),
+      shutdown: (input) => transport.request((client) => client[WS_METHODS.deviceShutdown](input)),
+      detail: (input) => transport.request((client) => client[WS_METHODS.deviceDetail](input)),
+      action: (input) => transport.request((client) => client[WS_METHODS.deviceAction](input)),
+      onState: (listener, options) =>
+        transport.subscribe(
+          (client) => client[WS_METHODS.subscribeDeviceState]({}),
+          listener,
+          options,
+        ),
+    },
     shell: {
       openInEditor: (input) =>
         transport.request((client) => client[WS_METHODS.shellOpenInEditor](input)),
@@ -398,6 +450,39 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       launchFallback: (input) =>
         transport.request((client) => client[WS_METHODS.pullRequestMonitorsLaunchFallback](input)),
     },
+    collaborativeAcceptance: {
+      submitCandidate: (input: {
+        readonly threadId: ThreadId;
+        readonly submission: CollaborativeAcceptanceCandidateSubmission;
+      }) =>
+        transport.request((client) =>
+          client[WS_METHODS.collaborativeAcceptanceSubmitCandidate](input),
+        ),
+      requestReview: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.collaborativeAcceptanceRequestReview](input),
+        ),
+      status: (input) =>
+        transport.request((client) => client[WS_METHODS.collaborativeAcceptanceStatus](input)),
+      resolveForPullRequest: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.collaborativeAcceptanceResolveForPullRequest](input),
+        ),
+      submitAssessment: (input: {
+        readonly threadId: ThreadId;
+        readonly submission: CollaborativeAcceptanceAssessmentSubmission;
+      }) =>
+        transport.request((client) =>
+          client[WS_METHODS.collaborativeAcceptanceSubmitAssessment](input),
+        ),
+      pause: (input: {
+        readonly threadId: ThreadId;
+        readonly caseId: CollaborativeAcceptanceCaseId;
+        readonly reason: CollaborativeAcceptancePauseReason;
+      }) => transport.request((client) => client[WS_METHODS.collaborativeAcceptancePause](input)),
+      resume: (input) =>
+        transport.request((client) => client[WS_METHODS.collaborativeAcceptanceResume](input)),
+    },
     workflow: {
       run: (input) => transport.request((client) => client[WS_METHODS.workflowRun](input)),
     },
@@ -415,6 +500,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       getSettings: () => transport.request((client) => client[WS_METHODS.serverGetSettings]({})),
       updateSettings: (patch) =>
         transport.request((client) => client[WS_METHODS.serverUpdateSettings]({ patch })),
+      exportActiveChats: () =>
+        transport.request((client) => client[WS_METHODS.serverExportActiveChats]({})),
+      importChatArchive: (input) =>
+        transport.request((client) => client[WS_METHODS.serverImportChatArchive](input)),
       exportThreadMarkdown: (input) =>
         transport.request((client) => client[WS_METHODS.serverExportThreadMarkdown](input)),
       subscribeConfig: (listener, options) =>

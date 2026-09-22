@@ -38,6 +38,8 @@ import { isGitRepository } from "../../git/Utils.ts";
 import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
 import { WorkspaceEntries } from "../../workspace/Services/WorkspaceEntries.ts";
 import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
+import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
+import { WorkspaceOwnershipRepositoryLive } from "../../persistence/Layers/WorkspaceOwnership.ts";
 
 type ReactorInput =
   | {
@@ -89,6 +91,23 @@ function isNonAuthoritativeCheckpoint(status: string): boolean {
   return status === "missing" || status === "speculative";
 }
 
+function isWorkspaceGenerationMismatch(error: unknown): boolean {
+  if (error === null || error === undefined || typeof error !== "object") {
+    return false;
+  }
+  const tag = (error as { readonly _tag?: unknown })._tag;
+  const detail =
+    (error as { readonly detail?: unknown }).detail ??
+    (error as { readonly message?: unknown }).message;
+  const isInvariant =
+    tag === "CheckpointInvariantError" || error instanceof CheckpointInvariantError;
+  return (
+    isInvariant &&
+    typeof detail === "string" &&
+    detail.includes("does not belong to workspace generation")
+  );
+}
+
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const runtimeIngestion = yield* ProviderRuntimeIngestionService;
@@ -98,6 +117,20 @@ const make = Effect.gen(function* () {
   const workspaceEntries = yield* WorkspaceEntries;
   const gitStatusBroadcaster = yield* GitStatusBroadcaster;
   const coordinator = yield* CheckoutCoordinator;
+  const workspaceOwnership = yield* WorkspaceOwnershipRepository;
+
+  const assertThreadWorkspaceOwned = (thread: {
+    readonly id: ThreadId;
+    readonly workspaceBinding?: {
+      readonly canonicalPath: string;
+      readonly worktreePath: string;
+      readonly branch: string | null;
+      readonly generation: number;
+    };
+  }) =>
+    thread.workspaceBinding === undefined
+      ? Effect.void
+      : workspaceOwnership.assertOwned(thread.workspaceBinding, thread.id);
 
   const appendRevertFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -228,6 +261,12 @@ const make = Effect.gen(function* () {
       }>;
       readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
       readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
+      readonly workspaceBinding?: {
+        readonly canonicalPath: string;
+        readonly worktreePath: string;
+        readonly branch: string | null;
+        readonly generation: number;
+      };
     };
     readonly cwd: string;
     readonly turnCount: number;
@@ -235,6 +274,7 @@ const make = Effect.gen(function* () {
     readonly assistantMessageId: MessageId | undefined;
     readonly createdAt: string;
   }) {
+    yield* assertThreadWorkspaceOwned(input.thread);
     const fromTurnCount = Math.max(0, input.turnCount - 1);
     const baselineCheckpointRef = checkpointBaselineRefForThreadTurn(
       input.threadId,
@@ -264,28 +304,53 @@ const make = Effect.gen(function* () {
     yield* checkpointStore.captureCheckpoint({
       cwd: input.cwd,
       checkpointRef: targetCheckpointRef,
+      ...(input.workspaceBinding !== undefined ? { workspaceBinding: input.workspaceBinding } : {}),
     });
 
     // Invalidate the workspace entry cache so the @-mention file picker
     // reflects files created or deleted during this turn.
     yield* workspaceEntries.invalidate(input.cwd);
 
-    const transitionFiles = yield* checkpointStore
+    const initialBaselineRef = checkpointBaselineRefForThreadTurn(input.threadId, 1);
+    const initialBaselineExists = yield* checkpointStore.hasCheckpointRef({
+      cwd: input.cwd,
+      checkpointRef: initialBaselineRef,
+    });
+    const snapshotBaselineRef = initialBaselineExists
+      ? initialBaselineRef
+      : checkpointRefForThreadTurn(input.threadId, 0);
+
+    // The transition diff (previous turn -> this turn) and the snapshot diff
+    // (baseline -> this turn) are independent read-only ranges over refs that
+    // already exist, so overlap them: each fans out to its own numstat plus
+    // name-status git processes, and serializing the two ranges doubles the
+    // file-summary latency gating checkpoint finalization.
+    const transitionFilesEffect = checkpointStore
       .diffCheckpointFiles({
         cwd: input.cwd,
         fromCheckpointRef,
         toCheckpointRef: targetCheckpointRef,
         fallbackFromToHead: false,
+        ...(input.workspaceBinding !== undefined
+          ? { workspaceBinding: input.workspaceBinding }
+          : {}),
       })
       .pipe(
         Effect.map(toCheckpointFiles),
         Effect.tapError((error) =>
-          appendCaptureFailureActivity({
-            threadId: input.threadId,
-            turnId: input.turnId,
-            detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
-            createdAt: input.createdAt,
-          }),
+          isWorkspaceGenerationMismatch(error)
+            ? Effect.logWarning("checkpoint turn diff skipped after workspace generation change", {
+                threadId: input.threadId,
+                turnId: input.turnId,
+                turnCount: input.turnCount,
+                detail: error.message,
+              })
+            : appendCaptureFailureActivity({
+                threadId: input.threadId,
+                turnId: input.turnId,
+                detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
+                createdAt: input.createdAt,
+              }),
         ),
         Effect.catch((error) =>
           Effect.logWarning("failed to derive checkpoint file summary", {
@@ -297,33 +362,38 @@ const make = Effect.gen(function* () {
         ),
       );
 
-    const initialBaselineRef = checkpointBaselineRefForThreadTurn(input.threadId, 1);
-    const initialBaselineExists = yield* checkpointStore.hasCheckpointRef({
-      cwd: input.cwd,
-      checkpointRef: initialBaselineRef,
-    });
-    const snapshotBaselineRef = initialBaselineExists
-      ? initialBaselineRef
-      : checkpointRefForThreadTurn(input.threadId, 0);
-    const snapshotFiles =
+    const snapshotFilesEffect =
       input.turnCount === 0
-        ? []
-        : yield* checkpointStore
+        ? Effect.succeed([])
+        : checkpointStore
             .diffCheckpointFiles({
               cwd: input.cwd,
               fromCheckpointRef: snapshotBaselineRef,
               toCheckpointRef: targetCheckpointRef,
               fallbackFromToHead: false,
+              ...(input.workspaceBinding !== undefined
+                ? { workspaceBinding: input.workspaceBinding }
+                : {}),
             })
             .pipe(
               Effect.map(toCheckpointFiles),
               Effect.tapError((error) =>
-                appendCaptureFailureActivity({
-                  threadId: input.threadId,
-                  turnId: input.turnId,
-                  detail: `Checkpoint captured, but snapshot diff summary is unavailable: ${error.message}`,
-                  createdAt: input.createdAt,
-                }),
+                isWorkspaceGenerationMismatch(error)
+                  ? Effect.logWarning(
+                      "checkpoint snapshot diff skipped after workspace generation change",
+                      {
+                        threadId: input.threadId,
+                        turnId: input.turnId,
+                        turnCount: input.turnCount,
+                        detail: error.message,
+                      },
+                    )
+                  : appendCaptureFailureActivity({
+                      threadId: input.threadId,
+                      turnId: input.turnId,
+                      detail: `Checkpoint captured, but snapshot diff summary is unavailable: ${error.message}`,
+                      createdAt: input.createdAt,
+                    }),
               ),
               Effect.catch((error) =>
                 Effect.logWarning("failed to derive checkpoint snapshot file summary", {
@@ -334,6 +404,11 @@ const make = Effect.gen(function* () {
                 }).pipe(Effect.as([])),
               ),
             );
+
+    const [transitionFiles, snapshotFiles] = yield* Effect.all(
+      [transitionFilesEffect, snapshotFilesEffect],
+      { concurrency: 2 },
+    );
 
     const priorCheckpointForTurn = input.thread.checkpoints.find(
       (checkpoint) => checkpoint.turnId === input.turnId,
@@ -467,6 +542,7 @@ const make = Effect.gen(function* () {
       if (!thread) {
         return;
       }
+      yield* assertThreadWorkspaceOwned(thread);
 
       // When a primary turn is active, only that turn may produce completion checkpoints.
       if (thread.session?.activeTurnId && !sameId(thread.session.activeTurnId, turnId)) {
@@ -522,6 +598,9 @@ const make = Effect.gen(function* () {
         status: checkpointStatusFromRuntime(event.payload.state),
         assistantMessageId: undefined,
         createdAt: event.createdAt,
+        ...(thread.workspaceBinding !== undefined
+          ? { workspaceBinding: thread.workspaceBinding }
+          : {}),
       }).pipe(
         Effect.catch((error) =>
           completeTurnWithoutCheckpoint({
@@ -608,6 +687,9 @@ const make = Effect.gen(function* () {
       status: "ready",
       assistantMessageId: event.payload.assistantMessageId ?? undefined,
       createdAt: event.payload.completedAt,
+      ...(thread.workspaceBinding !== undefined
+        ? { workspaceBinding: thread.workspaceBinding }
+        : {}),
     });
   });
 
@@ -643,6 +725,9 @@ const make = Effect.gen(function* () {
         cwd: checkpointCwd,
         checkpointRef: baselineCheckpointRef,
         compareContents: false,
+        ...(thread.workspaceBinding !== undefined
+          ? { workspaceBinding: thread.workspaceBinding }
+          : {}),
       });
       if (baselineMatchesWorkspace) {
         return;
@@ -651,6 +736,9 @@ const make = Effect.gen(function* () {
       yield* checkpointStore.captureCheckpoint({
         cwd: checkpointCwd,
         checkpointRef: baselineCheckpointRef,
+        ...(thread.workspaceBinding !== undefined
+          ? { workspaceBinding: thread.workspaceBinding }
+          : {}),
       });
       yield* receiptBus.publish({
         type: "checkpoint.baseline.captured",
@@ -812,10 +900,26 @@ const make = Effect.gen(function* () {
     );
     const revertGuardRef = checkpointRevertGuardRefForThread(event.payload.threadId);
 
+    // A delayed revert may arrive after this thread's workspace claim was
+    // released or reassigned. Fence the mutation boundary so the restore
+    // cannot rewrite the index and working tree of the new owner.
+    yield* assertThreadWorkspaceOwned(thread);
+
     yield* checkpointStore.captureCheckpoint({
       cwd: sessionRuntime.value.cwd,
       checkpointRef: revertGuardRef,
+      ...(thread.workspaceBinding !== undefined
+        ? { workspaceBinding: thread.workspaceBinding }
+        : {}),
     });
+
+    // Re-check ownership at the restore mutation boundary. The assertion
+    // above only covers guard capture: a concurrent handoff can
+    // release/reassign the checkout in between, and the restore below would
+    // then rewrite the index and working tree of the new owner. This sits
+    // outside the restore effect on purpose so a stale claim skips the
+    // guard-restore compensation as well.
+    yield* assertThreadWorkspaceOwned(thread);
 
     let providerRolledBack = false;
     let revertCommitted = false;
@@ -825,6 +929,9 @@ const make = Effect.gen(function* () {
         cwd: sessionRuntime.value.cwd,
         checkpointRef: targetCheckpointRef,
         fallbackToHead: event.payload.turnCount === 0 && !initialBaselineExists,
+        ...(thread.workspaceBinding !== undefined
+          ? { workspaceBinding: thread.workspaceBinding }
+          : {}),
       });
       if (!restored) {
         return yield* new CheckpointInvariantError({
@@ -887,6 +994,9 @@ const make = Effect.gen(function* () {
               .restoreCheckpoint({
                 cwd: sessionRuntime.value.cwd,
                 checkpointRef: revertGuardRef,
+                ...(thread.workspaceBinding !== undefined
+                  ? { workspaceBinding: thread.workspaceBinding }
+                  : {}),
               })
               .pipe(
                 Effect.flatMap((restored) =>
@@ -1072,4 +1182,5 @@ const make = Effect.gen(function* () {
 
 export const CheckpointReactorLive = Layer.effect(CheckpointReactor, make).pipe(
   Layer.provideMerge(CheckoutCoordinatorLive),
+  Layer.provideMerge(WorkspaceOwnershipRepositoryLive),
 );

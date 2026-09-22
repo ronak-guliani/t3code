@@ -39,7 +39,8 @@ import { type RelayEnvironmentView, useConnectionController } from "./useConnect
 
 interface CloudEnvironmentRowsProps {
   readonly connectedCloudEnvironments: ReadonlyArray<ConnectedEnvironmentSummary>;
-  readonly onReconnectEnvironment: (environmentId: EnvironmentId) => void;
+  readonly onSetEnvironmentEnabled: (environmentId: EnvironmentId, enabled: boolean) => void;
+  readonly onRemoveEnvironment: (environmentId: EnvironmentId) => void;
   readonly showcaseAvailableEnvironments?: ReadonlyArray<RelayEnvironmentView>;
   readonly showcaseSignedIn?: boolean;
   /**
@@ -128,11 +129,6 @@ function CloudEnvironmentRowsContent(
     [controller],
   );
 
-  const handleDisconnectCloudEnvironment = useCallback(
-    (environmentId: EnvironmentId) => controller.removeEnvironment(environmentId),
-    [controller],
-  );
-
   const handleToggleCloudError = useCallback((environmentId: string) => {
     setExpandedErrorId((current) => (current === environmentId ? null : environmentId));
   }, []);
@@ -175,8 +171,10 @@ function CloudEnvironmentRowsContent(
               key={environment.environmentId}
               environment={environment}
               borderTop={index !== 0}
-              onConnect={() => props.onReconnectEnvironment(environment.environmentId)}
-              onDisconnect={() => handleDisconnectCloudEnvironment(environment.environmentId)}
+              onSetEnabled={(enabled) =>
+                props.onSetEnvironmentEnabled(environment.environmentId, enabled)
+              }
+              onRemove={() => props.onRemoveEnvironment(environment.environmentId)}
               errorExpanded={expandedErrorId === environment.environmentId}
               onToggleError={() => handleToggleCloudError(environment.environmentId)}
               onDeregister={
@@ -262,36 +260,40 @@ function ConnectedCloudEnvironmentRow(props: {
   readonly environment: ConnectedEnvironmentSummary;
   readonly borderTop: boolean;
   readonly errorExpanded: boolean;
-  readonly onConnect: () => void;
-  readonly onDisconnect: () => void;
+  readonly onSetEnabled: (enabled: boolean) => void;
+  readonly onRemove: () => void;
   readonly onToggleError: () => void;
 }) {
   const serverConfig = useAtomValue(
     serverEnvironment.configValueAtom(props.environment.environmentId),
   );
   return (
-    <View>
+    <Pressable
+      onLongPress={props.onRemove}
+      accessibilityHint="Long press to remove from this device"
+    >
       <CloudEnvironmentRowShell
         borderTop={props.borderTop}
-        connectionError={props.environment.connectionError}
-        connectionErrorTraceId={props.environment.connectionErrorTraceId}
-        connectionState={props.environment.connectionState}
+        connectionError={props.environment.isEnabled ? props.environment.connectionError : null}
+        connectionErrorTraceId={
+          props.environment.isEnabled ? props.environment.connectionErrorTraceId : null
+        }
+        connectionState={
+          props.environment.isEnabled ? props.environment.connectionState : "available"
+        }
         errorExpanded={props.errorExpanded}
         label={props.environment.environmentLabel}
         environmentId={props.environment.environmentId}
         onDeregister={props.onDeregister}
         machine={resolveEnvironmentMachineKind(serverConfig)}
-        onValueChange={(enabled) => {
-          if (enabled) {
-            props.onConnect();
-            return;
-          }
-          props.onDisconnect();
-        }}
+        onValueChange={props.onSetEnabled}
         onToggleError={props.onToggleError}
-        value={props.environment.connectionState !== "available"}
+        statusText={props.environment.isEnabled ? undefined : "Off on this device"}
+        routeKind={props.environment.isEnabled ? props.environment.routeKind : null}
+        routeSwitching={props.environment.isEnabled ? props.environment.routeSwitching : false}
+        value={props.environment.isEnabled}
       />
-    </View>
+    </Pressable>
   );
 }
 
@@ -347,18 +349,30 @@ function CloudEnvironmentRowShell(props: {
   readonly onToggleError: () => void;
   readonly onValueChange: (enabled: boolean) => void;
   readonly statusText?: string;
+  readonly routeKind?: ConnectedEnvironmentSummary["routeKind"];
+  readonly routeSwitching?: boolean;
   readonly value: boolean;
 }) {
   const isRetrying =
     props.connectionState === "connecting" || props.connectionState === "reconnecting";
   const shouldPulse = isRetrying;
-  const statusText =
+  const connectionStatus =
     props.statusText ??
     connectionStatusText({
       phase: props.connectionState,
       error: props.connectionError,
       traceId: props.connectionErrorTraceId,
+      routeSwitching: props.routeSwitching,
     });
+  const routeText =
+    props.routeKind === "lan"
+      ? "LAN"
+      : props.routeKind === "tailscale"
+        ? "Tailscale"
+        : props.routeKind === "relay"
+          ? "Relay"
+          : null;
+  const statusText = routeText ? `${routeText} · ${connectionStatus}` : connectionStatus;
   const statusClassName = props.connectionError
     ? "text-adaptive-rose-500-400"
     : "text-foreground-muted";
@@ -481,6 +495,7 @@ function CloudEnvironmentRowShell(props: {
         </StatusContainer>
       </View>
       <ThemedSwitch
+        accessibilityLabel={`Enable ${props.label}`}
         disabled={props.disabled}
         onValueChange={props.onValueChange}
         value={props.value}

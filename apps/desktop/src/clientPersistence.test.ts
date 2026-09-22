@@ -76,6 +76,8 @@ const clientSettings: ClientSettings = {
   confirmThreadDelete: false,
   codeFont: "jetbrains-mono",
   diffWordWrap: true,
+  pullRequestsDefaultState: "open",
+  pullRequestsCodeFontSize: 12,
   favorites: [],
   providerModelPreferences: {},
   sidebarProjectGroupingMode: "repository_path",
@@ -89,6 +91,31 @@ const clientSettings: ClientSettings = {
   timestampFormat: "24-hour",
   uiDensity: "default",
   uiFont: "geist",
+  headerShowProjectScripts: true,
+  headerShowOpenIn: true,
+  headerShowGitActions: true,
+  headerShowWorkflows: true,
+  headerShowWorkflowRuns: true,
+  headerShowExportChat: true,
+  headerShowInsightsToggle: true,
+  headerShowBrowserToggle: true,
+  headerShowFilesToggle: true,
+  headerShowTerminalToggle: true,
+  headerShowDiffToggle: true,
+  sidebarShowSearch: true,
+  sidebarShowPullRequests: true,
+  sidebarShowSkills: true,
+  sidebarShowNewThread: true,
+  headerExportConfirm: false,
+  projectScriptsConfirmRun: false,
+  openInUpdatePreferred: true,
+  gitConfirmDefaultBranch: true,
+  gitShowQuickAction: true,
+  workflowConfirmRun: false,
+  workflowPrewarmOnHover: true,
+  workflowRunsShowBadge: true,
+  sidebarSearchShowShortcut: true,
+  sidebarNewThreadConfirm: false,
 };
 
 const savedRegistryRecord: PersistedSavedEnvironmentRecord = {
@@ -101,6 +128,20 @@ const savedRegistryRecord: PersistedSavedEnvironmentRecord = {
 };
 
 describe("clientPersistence", () => {
+  it("keeps pause intent across encrypted credential renewal and resume", () => {
+    const registryPath = makeTempPath("saved-environments.json");
+    const secretStorage = makeSecretStorage(true);
+    const input = { registryPath, environmentId: savedRegistryRecord.environmentId, secretStorage };
+    writeSavedEnvironmentRegistry(registryPath, [savedRegistryRecord]);
+    writeSavedEnvironmentSecret({ ...input, secret: "saved-secret" });
+    writeSavedEnvironmentRegistry(registryPath, [{ ...savedRegistryRecord, enabled: false }]);
+    expect(readSavedEnvironmentRegistry(registryPath)[0]?.enabled).toBe(false);
+    expect(readSavedEnvironmentSecret(input)).toBe("saved-secret");
+    writeSavedEnvironmentSecret({ ...input, secret: "renewed-secret" });
+    expect(readSavedEnvironmentRegistry(registryPath)[0]?.enabled).toBe(false);
+    writeSavedEnvironmentRegistry(registryPath, [{ ...savedRegistryRecord, enabled: true }]);
+    expect(readSavedEnvironmentSecret(input)).toBe("renewed-secret");
+  });
   it("persists and reloads client settings", () => {
     const settingsPath = makeTempPath("client-settings.json");
 

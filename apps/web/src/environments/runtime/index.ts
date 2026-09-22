@@ -22,6 +22,7 @@ export {
   getPrimaryEnvironmentConnection,
   readEnvironmentConnection,
   reconnectSavedEnvironment,
+  setSavedEnvironmentEnabled,
   removeSavedEnvironment,
   requireEnvironmentConnection,
   resetEnvironmentServiceForTests,

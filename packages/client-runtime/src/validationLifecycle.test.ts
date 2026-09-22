@@ -1,0 +1,430 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  acceptValidationResult,
+  applyValidationEvent,
+  claimValidationLease,
+  decideValidationRecovery,
+  isValidationLifecycleEvent,
+  planValidationCoordinatorRun,
+  planValidationRun,
+  reduceValidationReadiness,
+  transitionValidationRunStatus,
+  transitionValidationGate,
+  validationRunEquals,
+  validationTargetEquals,
+  type ValidationLifecycleState,
+} from "./validationLifecycle.ts";
+import type { ValidationTarget } from "@t3tools/contracts";
+
+const target: ValidationTarget = {
+  workspaceRoot: "/workspace",
+  worktreePath: "/workspace/.worktree",
+  branch: "feat/validation",
+  revision: "abc123",
+  dirtyStateFingerprint: "dirty-1",
+  environmentIdentity: "env-1",
+};
+
+const run = () =>
+  planValidationRun({
+    id: "run-1",
+    threadId: "thread-1" as never,
+    target,
+    requestedAt: "2026-09-16T12:00:00.000Z",
+  });
+
+describe("validation runs", () => {
+  it("keeps never-started self-test optional and readiness blocked by required gates", () => {
+    const planned = run();
+    expect(planned.gates.find((gate) => gate.id === "self-test")?.status).toBe("not-required");
+    expect(reduceValidationReadiness(planned, target)).toBe("not-ready");
+  });
+
+  it("requires a running gate before it can pass, fail, or interrupt", () => {
+    const planned = run();
+    expect(() =>
+      transitionValidationGate(
+        planned,
+        {
+          gateId: "repository-tests",
+          status: "failed",
+          command: "pnpm test",
+          startedAt: null,
+          completedAt: "2026-09-16T12:01:00.000Z",
+          exitCode: 1,
+          outputRef: null,
+          blockerReason: null,
+          diagnostics: [],
+        },
+        "2026-09-16T12:01:00.000Z",
+      ),
+    ).toThrow();
+  });
+
+  it("keeps repository and browser outcomes independent", () => {
+    let current = run();
+    current = transitionValidationGate(
+      current,
+      {
+        gateId: "repository-tests",
+        status: "running",
+        command: "pnpm test",
+        startedAt: "2026-09-16T12:01:00.000Z",
+        completedAt: null,
+        exitCode: null,
+        outputRef: null,
+        blockerReason: null,
+        diagnostics: [],
+      },
+      "2026-09-16T12:01:00.000Z",
+    );
+    current = transitionValidationGate(
+      current,
+      {
+        gateId: "repository-tests",
+        status: "passed",
+        command: "pnpm test",
+        startedAt: "2026-09-16T12:01:00.000Z",
+        completedAt: "2026-09-16T12:10:00.000Z",
+        exitCode: 0,
+        outputRef: "output://tests",
+        blockerReason: null,
+        diagnostics: [],
+      },
+      "2026-09-16T12:10:00.000Z",
+    );
+    current = transitionValidationGate(
+      current,
+      {
+        gateId: "browser-validation",
+        status: "running",
+        command: "real-client browser validation",
+        startedAt: "2026-09-16T12:11:00.000Z",
+        completedAt: null,
+        exitCode: null,
+        outputRef: null,
+        blockerReason: null,
+        diagnostics: [],
+      },
+      "2026-09-16T12:11:00.000Z",
+    );
+    current = transitionValidationGate(
+      current,
+      {
+        gateId: "browser-validation",
+        status: "blocked",
+        command: "real-client browser validation",
+        startedAt: "2026-09-16T12:11:00.000Z",
+        completedAt: "2026-09-16T12:12:00.000Z",
+        exitCode: null,
+        outputRef: null,
+        blockerReason: "Browser is not attached",
+        diagnostics: ["Attach a local browser tab and retry."],
+      },
+      "2026-09-16T12:12:00.000Z",
+    );
+    expect(current.gates.find((gate) => gate.id === "repository-tests")?.status).toBe("passed");
+    expect(current.gates.find((gate) => gate.id === "browser-validation")?.status).toBe("blocked");
+    expect(reduceValidationReadiness(current, target)).toBe("not-ready");
+  });
+
+  it("marks changed revision or dirty state stale", () => {
+    const planned = run();
+    expect(validationTargetEquals(target, { ...target, revision: "def456" })).toBe(false);
+    expect(
+      reduceValidationReadiness(planned, { ...target, dirtyStateFingerprint: "dirty-2" }),
+    ).toBe("stale");
+  });
+
+  it("compares decoded validation runs by value", () => {
+    const planned = run();
+    expect(validationRunEquals(planned, structuredClone(planned))).toBe(true);
+    expect(
+      validationRunEquals(
+        planned,
+        structuredClone({
+          ...planned,
+          updatedAt: "2026-09-16T12:01:00.000Z",
+        }),
+      ),
+    ).toBe(false);
+    expect(validationRunEquals(planned, { ...planned, status: "running" })).toBe(false);
+    expect(
+      validationRunEquals(planned, {
+        ...planned,
+        lease: {
+          id: "lease-1",
+          executorId: "executor-1",
+          claimedAt: "2026-09-16T12:00:01.000Z",
+          expiresAt: "2026-09-16T12:01:00.000Z",
+        },
+      }),
+    ).toBe(false);
+    expect(
+      validationRunEquals(planned, {
+        ...planned,
+        gates: planned.gates.map((gate, index) =>
+          index === 0 ? { ...gate, kind: "lint" as const } : gate,
+        ),
+      }),
+    ).toBe(false);
+  });
+
+  it("plans dynamic gates without trusting a caller-supplied target", () => {
+    const planned = planValidationCoordinatorRun({
+      id: "run-dynamic",
+      requestId: "request-1",
+      threadId: "thread-1" as never,
+      target,
+      scenarios: [{ id: "opens-settings", description: "Opens settings" }],
+      scope: "full",
+      requester: { id: "user-1", kind: "user" },
+      requestedAt: "2026-09-16T12:00:00.000Z",
+    });
+
+    expect(planned.status).toBe("planned");
+    expect(planned.gates.map((gate) => gate.kind)).toEqual([
+      "format",
+      "lint",
+      "typecheck",
+      "full-tests",
+      "browser-scenario",
+      "pairing-self-test",
+    ]);
+    expect(planned.gates[4]?.id).toContain("opens-settings");
+    expect(planned.target).toBe(target);
+  });
+
+  it("accepts only legal run lifecycle transitions", () => {
+    let current = planValidationCoordinatorRun({
+      id: "run-lifecycle",
+      requestId: "request-2",
+      threadId: "thread-1" as never,
+      target,
+      scenarios: [],
+      scope: "changed-behavior",
+      requester: { id: "system", kind: "system" },
+      requestedAt: "2026-09-16T12:00:00.000Z",
+    });
+    current = transitionValidationRunStatus(current, "preparing", "2026-09-16T12:00:01.000Z");
+    current = transitionValidationRunStatus(current, "running", "2026-09-16T12:00:02.000Z");
+    current = transitionValidationRunStatus(current, "blocked", "2026-09-16T12:00:03.000Z");
+    expect(() =>
+      transitionValidationRunStatus(current, "ready", "2026-09-16T12:00:04.000Z"),
+    ).toThrow("cannot transition");
+  });
+
+  it("requires a running gate and structured result before a gate passes", () => {
+    let current = planValidationCoordinatorRun({
+      id: "run-result",
+      requestId: "request-3",
+      threadId: "thread-1" as never,
+      target,
+      scenarios: [],
+      scope: "changed-behavior",
+      requester: { id: "system", kind: "system" },
+      requestedAt: "2026-09-16T12:00:00.000Z",
+    });
+    const result = {
+      id: "result-1",
+      runId: current.id,
+      gateId: current.gates[0]!.id,
+      attemptId: "attempt-1",
+      leaseId: "lease:run-result",
+      executorId: "executor-1",
+      target,
+      status: "passed" as const,
+      observedAt: "2026-09-16T12:00:01.000Z",
+      completedAt: "2026-09-16T12:00:02.000Z",
+      exitCode: 0,
+      outputRef: "output://focused",
+      blockerReason: null,
+      diagnostics: [],
+    };
+    expect(() => acceptValidationResult(current, result)).toThrow("run is planned");
+
+    current = {
+      ...current,
+      status: "running",
+      executorId: "executor-1",
+      gates: current.gates.map((gate, index) =>
+        index === 0
+          ? {
+              ...gate,
+              status: "running" as const,
+              startedAt: "2026-09-16T12:00:01.000Z",
+            }
+          : gate,
+      ),
+      lease: {
+        id: "lease:run-result",
+        executorId: "executor-1",
+        claimedAt: "2026-09-16T12:00:01.000Z",
+        expiresAt: "2026-09-16T12:01:00.000Z",
+      },
+    };
+    const accepted = acceptValidationResult(current, result);
+    expect(accepted.gates[0]?.result?.id).toBe("result-1");
+    expect(accepted.gates[0]?.status).toBe("passed");
+    const duplicateBase = { ...accepted, status: "running" as const };
+    expect(acceptValidationResult(duplicateBase, result)).toBe(duplicateBase);
+    expect(() => acceptValidationResult(duplicateBase, { ...result, id: "result-2" })).toThrow(
+      "does not match the existing attempt",
+    );
+    expect(() =>
+      acceptValidationResult(duplicateBase, { ...result, leaseId: "lease:stale" }),
+    ).toThrow("not attached to the active lease");
+    expect(() =>
+      acceptValidationResult(duplicateBase, { ...result, executorId: "executor-stale" }),
+    ).toThrow("not owned by the active executor");
+    expect(() =>
+      acceptValidationResult(duplicateBase, {
+        ...result,
+        completedAt: "2026-09-16T12:02:00.000Z",
+      }),
+    ).toThrow("after the active lease expired");
+
+    for (const status of ["preparing", "blocked", "ready", "stale"] as const) {
+      expect(() => acceptValidationResult({ ...current, status }, result)).toThrow(
+        `run is ${status}`,
+      );
+    }
+  });
+
+  it("fences lease claims and makes restart recovery deterministic", () => {
+    const planned = planValidationCoordinatorRun({
+      id: "run-recovery",
+      requestId: "request-recovery",
+      threadId: "thread-1" as never,
+      target,
+      scenarios: [],
+      scope: "changed-behavior",
+      requester: { id: "system", kind: "system" },
+      requestedAt: "2026-09-16T12:00:00.000Z",
+    });
+    const lease = {
+      id: "lease-recovery",
+      executorId: "executor-1",
+      claimedAt: "2026-09-16T12:00:01.000Z",
+      expiresAt: "2026-09-16T12:30:00.000Z",
+    };
+    const claimed = claimValidationLease(planned, lease, target, "2026-09-16T12:00:01.000Z");
+    expect(claimValidationLease(claimed, lease, target, "2026-09-16T12:00:02.000Z")).toBe(claimed);
+    expect(() =>
+      claimValidationLease(claimed, lease, { ...target, revision: "stale" }, lease.claimedAt),
+    ).toThrow("target does not match");
+
+    const interrupted = {
+      ...claimed,
+      status: "interrupted" as const,
+      gates: claimed.gates.map((gate, index) =>
+        index === 0 ? { ...gate, status: "interrupted" as const } : gate,
+      ),
+    };
+    expect(decideValidationRecovery(interrupted)).toEqual({
+      type: "resume-interrupted",
+      gateIds: [interrupted.gates[0]!.id],
+      reason: "Gate reset to pending after the run was interrupted.",
+    });
+
+    const running = {
+      ...claimed,
+      status: "running" as const,
+      gates: claimed.gates.map((gate, index) =>
+        index === 0
+          ? {
+              ...gate,
+              status: "running" as const,
+              startedAt: "2026-09-16T12:00:01.000Z",
+            }
+          : gate,
+      ),
+    };
+    expect(decideValidationRecovery(running)).toEqual({
+      type: "interrupt-running",
+      gateId: running.gates[0]!.id,
+      reason: "Reactor restarted during gate execution.",
+    });
+  });
+
+  it("applies lifecycle events through one deterministic reducer", () => {
+    const planned = planValidationCoordinatorRun({
+      id: "run-events",
+      requestId: "request-events",
+      threadId: "thread-1" as never,
+      target,
+      scenarios: [],
+      scope: "changed-behavior",
+      requester: { id: "system", kind: "system" },
+      requestedAt: "2026-09-16T12:00:00.000Z",
+    });
+    const baseEvent = {
+      eventId: "event-1",
+      sequence: 1,
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      occurredAt: "2026-09-16T12:00:00.000Z",
+    } as const;
+    const event = <T extends object>(
+      type: string,
+      payload: T,
+      occurredAt: string = baseEvent.occurredAt,
+    ) =>
+      ({
+        ...baseEvent,
+        type,
+        payload,
+        occurredAt,
+      }) as never;
+
+    let state: ValidationLifecycleState = { request: null, run: null };
+    state = applyValidationEvent(
+      state,
+      event("thread.validation-run-planned", { threadId: "thread-1", run: planned }),
+    );
+    state = applyValidationEvent(
+      state,
+      event(
+        "thread.validation-lifecycle-updated",
+        {
+          threadId: "thread-1",
+          update: {
+            runId: planned.id,
+            status: "preparing",
+            reason: null,
+            updatedAt: "2026-09-16T12:00:01.000Z",
+          },
+        },
+        "2026-09-16T12:00:01.000Z",
+      ),
+    );
+    state = applyValidationEvent(
+      state,
+      event(
+        "thread.validation-lease-claimed",
+        {
+          threadId: "thread-1",
+          runId: planned.id,
+          lease: {
+            id: "lease-events",
+            executorId: "executor-1",
+            claimedAt: "2026-09-16T12:00:02.000Z",
+            expiresAt: "2026-09-16T12:30:00.000Z",
+          },
+        },
+        "2026-09-16T12:00:02.000Z",
+      ),
+    );
+    expect(state.run?.lease?.id).toBe("lease-events");
+    expect(
+      isValidationLifecycleEvent(
+        event("thread.validation-run-planned", { threadId: "thread-1", run: planned }),
+      ),
+    ).toBe(true);
+  });
+});

@@ -84,6 +84,7 @@ import {
 import {
   buildThreadListV2Items,
   buildThreadListV2ListItems,
+  threadListV2ItemsAreEqual,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   type ThreadListV2ListItem,
@@ -345,6 +346,22 @@ function ThreadNavigationSidebarPane(
     });
   }, []);
   const hasSearchQuery = props.searchQuery.trim().length > 0;
+  // Inline subchat groups collapse per parent thread key. Empty means every
+  // group renders expanded; search suspends collapse in the list builders.
+  const [collapsedThreadKeys, setCollapsedThreadKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const toggleCollapsedThread = useCallback((threadKey: string) => {
+    setCollapsedThreadKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(threadKey)) {
+        next.delete(threadKey);
+      } else {
+        next.add(threadKey);
+      }
+      return next;
+    });
+  }, []);
   const listLayout = useMemo(
     () =>
       threadListV2Enabled
@@ -357,6 +374,7 @@ function ThreadNavigationSidebarPane(
             threadChildReadAt,
             threadCompletionReadAt,
             selectedThreadKey: props.selectedThreadKey,
+            collapsedThreadKeys,
           }),
     [
       threadListV2Enabled,
@@ -367,6 +385,7 @@ function ThreadNavigationSidebarPane(
       dismissedAgentRunKeys,
       threadChildReadAt,
       threadCompletionReadAt,
+      collapsedThreadKeys,
     ],
   );
 
@@ -470,6 +489,13 @@ function ThreadNavigationSidebarPane(
     );
     return pinned.map((thread) => `${thread.environmentId}:${thread.id}`);
   }, [pinReorderEnvironmentIds, threads]);
+  // O(1) position flags for the pinned Move up/down menu items. The render
+  // path calls this per row, so an indexOf scan here would make each render
+  // pass O(n^2) in the pinned count.
+  const arrangedPinnedIndexByKey = useMemo(
+    () => new Map(arrangedPinnedKeys.map((key, index) => [key, index] as const)),
+    [arrangedPinnedKeys],
+  );
   const threadListV2Layout = useMemo(() => {
     if (!threadListV2Enabled)
       return {
@@ -497,6 +523,7 @@ function ThreadNavigationSidebarPane(
       snoozedShelfExpanded,
       settledShelfExpanded,
       selectedThreadKey: props.selectedThreadKey ?? null,
+      collapsedThreadKeys,
     });
   }, [
     nowMinute,
@@ -515,6 +542,7 @@ function ThreadNavigationSidebarPane(
     threadListV2Enabled,
     threads,
     selectedProjectScope,
+    collapsedThreadKeys,
   ]);
   // Re-partition the moment the earliest snooze expires (clamped to the
   // signed-32-bit setTimeout range; far-future wakes re-arm at the clamp).
@@ -746,40 +774,23 @@ function ThreadNavigationSidebarPane(
   );
   const sidebarItemsAreEqual = useCallback(
     (previous: SidebarListItem, item: SidebarListItem): boolean => {
-      if (previous.type === "v2-thread" && item.type === "v2-thread") {
-        return (
-          previous.key === item.key &&
-          previous.item.thread === item.item.thread &&
-          previous.item.hierarchy?.depth === item.item.hierarchy?.depth &&
-          previous.item.hierarchy?.isExpanded === item.item.hierarchy?.isExpanded &&
-          previous.item.hierarchy?.childCount === item.item.hierarchy?.childCount &&
-          previous.item.hierarchy?.relatedChildCount === item.item.hierarchy?.relatedChildCount &&
-          previous.item.hierarchy?.displayStatus === item.item.hierarchy?.displayStatus &&
-          previous.item.hierarchy?.relatedStatus === item.item.hierarchy?.relatedStatus &&
-          previous.item.hierarchy?.archiveBlocked === item.item.hierarchy?.archiveBlocked &&
-          previous.item.hierarchy?.latestRelatedNotificationAt ===
-            item.item.hierarchy?.latestRelatedNotificationAt &&
-          previous.item.status === item.item.status &&
-          previous.item.variant === item.item.variant &&
-          previous.item.snoozed === item.item.snoozed &&
-          previous.item.pinned === item.item.pinned &&
-          previous.snoozeWakeLabelText === item.snoozeWakeLabelText
-        );
+      if (
+        (previous.type === "v2-thread" ||
+          previous.type === "v2-pending" ||
+          previous.type === "v2-snoozed-shelf" ||
+          previous.type === "v2-settled-shelf") &&
+        (item.type === "v2-thread" ||
+          item.type === "v2-pending" ||
+          item.type === "v2-snoozed-shelf" ||
+          item.type === "v2-settled-shelf")
+      ) {
+        // Cross-type v2 pairs are never equal; same-type pairs use the
+        // shared v2 equality so both lists recycle identically.
+        if (previous.type !== item.type) return false;
+        return threadListV2ItemsAreEqual(previous, item);
       }
       if (previous.type === "v2-show-more" && item.type === "v2-show-more") {
         return previous.hiddenCount === item.hiddenCount;
-      }
-      if (previous.type === "v2-pending" && item.type === "v2-pending") {
-        return (
-          previous.pendingTask === item.pendingTask &&
-          previous.showPendingDivider === item.showPendingDivider
-        );
-      }
-      if (previous.type === "v2-snoozed-shelf" && item.type === "v2-snoozed-shelf") {
-        return previous.count === item.count && previous.expanded === item.expanded;
-      }
-      if (previous.type === "v2-settled-shelf" && item.type === "v2-settled-shelf") {
-        return previous.count === item.count && previous.expanded === item.expanded;
       }
       if (
         previous.type === "v2-thread" ||
@@ -868,11 +879,11 @@ function ThreadNavigationSidebarPane(
               pinningSupported={pinningEnvironmentIds.has(thread.environmentId)}
               pinReorderSupported={pinReorderEnvironmentIds.has(thread.environmentId)}
               canMovePinnedUp={
-                arrangedPinnedKeys.indexOf(`${thread.environmentId}:${thread.id}`) > 0
+                (arrangedPinnedIndexByKey.get(`${thread.environmentId}:${thread.id}`) ?? -1) > 0
               }
               canMovePinnedDown={(() => {
-                const index = arrangedPinnedKeys.indexOf(`${thread.environmentId}:${thread.id}`);
-                return index !== -1 && index < arrangedPinnedKeys.length - 1;
+                const index = arrangedPinnedIndexByKey.get(`${thread.environmentId}:${thread.id}`);
+                return index !== undefined && index < arrangedPinnedIndexByKey.size - 1;
               })()}
               onSnoozeThread={snoozeThread}
               onUnsnoozeThread={unsnoozeThread}
@@ -882,6 +893,7 @@ function ThreadNavigationSidebarPane(
               onMovePinnedThread={movePinnedThread}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
+              onToggleExpanded={toggleCollapsedThread}
               simultaneousSwipeGesture={sidebarScrollGesture}
             />
           );
@@ -978,6 +990,7 @@ function ThreadNavigationSidebarPane(
               onSelectThread={handleSelectThread}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
+              onToggleExpanded={toggleCollapsedThread}
               simultaneousSwipeGesture={sidebarScrollGesture}
             />
           );
@@ -996,7 +1009,7 @@ function ThreadNavigationSidebarPane(
     },
     [
       archiveThread,
-      arrangedPinnedKeys,
+      arrangedPinnedIndexByKey,
       confirmDeletePendingTask,
       confirmDeleteThread,
       handleSelectThread,
@@ -1025,6 +1038,7 @@ function ThreadNavigationSidebarPane(
       snoozeEnvironmentIds,
       snoozeThread,
       nowMinute,
+      toggleCollapsedThread,
       toggleSettledShelf,
       toggleSnoozedShelf,
       unpinThread,

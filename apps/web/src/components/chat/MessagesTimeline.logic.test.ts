@@ -1,17 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { MessageId, TurnId } from "@t3tools/contracts";
 import type { TimelineEntry } from "../../session-logic";
+import type { TurnDiffSummary } from "../../types";
 import {
   collectReviewOutputMessageIds,
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
+  deriveRevertTurnCountByUserMessageId,
   EMPTY_REVIEW_OUTPUT_MESSAGE_IDS,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveExternalActionUrl,
   shouldHandleInternalActionClick,
   stabilizeReadonlyStringSet,
+  stabilizeResponseMetaByTurnId,
+  stabilizeStringMap,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 
@@ -1250,8 +1254,9 @@ describe("workspace handoff rows", () => {
     expect(rows.map((row) => row.kind)).toEqual([
       "message",
       "reasoning",
-      "message",
       "workspace-handoff",
+      "reasoning",
+      "message",
       "reasoning",
       "message",
     ]);
@@ -1265,22 +1270,25 @@ describe("workspace handoff rows", () => {
     expect(markerRow?.origin.worktreePath).toBe("/tmp/handoff");
   });
 
-  it("defers the mid-turn marker past the turn it was requested in", () => {
+  it("places work logged after the move below the transition", () => {
     const rows = deriveHandoffRows();
 
     const markerIndex = rows.findIndex((row) => row.kind === "workspace-handoff");
-    const preHandoffAssistantIndex = rows.findIndex(
-      (row) => row.kind === "message" && row.message.id === "assistant-1",
+    const postHandoffReasoning = rows.find(
+      (row) =>
+        row.kind === "reasoning" && row.rows.some((nestedRow) => nestedRow.id === "work-b-entry"),
     );
 
-    // The marker is emitted mid-turn but must not split that turn's work: the
-    // pre-handoff tool activity still collapses into a single reasoning group.
-    const reasoningRow = rows.find(
+    expect(markerIndex).toBeGreaterThan(-1);
+    expect(rows.findIndex((row) => row.kind === "reasoning")).toBeLessThan(markerIndex);
+    expect(postHandoffReasoning).toBeDefined();
+    expect(rows.indexOf(postHandoffReasoning!)).toBeGreaterThan(markerIndex);
+
+    const preHandoffReasoning = rows.find(
       (row): row is Extract<(typeof rows)[number], { kind: "reasoning" }> =>
-        row.kind === "reasoning",
+        row.kind === "reasoning" && row.rows.some((nestedRow) => nestedRow.id === "work-a-entry"),
     );
-    expect(reasoningRow?.rows.map((row) => row.id)).toEqual(["work-a-entry", "work-b-entry"]);
-    expect(markerIndex).toBeGreaterThan(preHandoffAssistantIndex);
+    expect(preHandoffReasoning?.rows.map((row) => row.id)).toEqual(["work-a-entry"]);
   });
 
   it("moves the suppressed continuation revert anchor onto the marker", () => {
@@ -1418,5 +1426,173 @@ describe("stabilizeReadonlyStringSet", () => {
     const second = stabilizeReadonlyStringSet(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS, first);
     expect(second).toBe(first);
     expect(second).toBe(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS);
+  });
+});
+
+describe("stabilizeStringMap", () => {
+  it("reuses the previous map when entries are unchanged", () => {
+    const previous = new Map([
+      ["#1", "https://example.com/1"],
+      ["#2", "https://example.com/2"],
+    ]);
+    const next = new Map([
+      ["#1", "https://example.com/1"],
+      ["#2", "https://example.com/2"],
+    ]);
+
+    expect(stabilizeStringMap(next, previous)).toBe(previous);
+  });
+
+  it("returns the next map when an entry value changes", () => {
+    const previous = new Map([["#1", "https://example.com/1"]]);
+    const next = new Map([["#1", "https://example.com/other"]]);
+
+    expect(stabilizeStringMap(next, previous)).toBe(next);
+  });
+});
+
+describe("stabilizeResponseMetaByTurnId", () => {
+  const settled = TurnId.make("turn-settled");
+  const active = TurnId.make("turn-active");
+
+  it("reuses settled entry objects when only the active turn changes", () => {
+    const settledEntry = { model: "mock-model", usedTokens: 100 };
+    const previous = new Map([
+      [settled, settledEntry],
+      [active, { model: "mock-model", usedTokens: 1 }],
+    ]);
+    // Fresh objects with equal settled values, as rebuilt from threadActivities.
+    const next = new Map([
+      [settled, { model: "mock-model", usedTokens: 100 }],
+      [active, { model: "mock-model", usedTokens: 2 }],
+    ]);
+
+    const stabilized = stabilizeResponseMetaByTurnId(next, previous);
+    expect(stabilized).not.toBe(next);
+    expect(stabilized.get(settled)).toBe(settledEntry);
+    expect(stabilized.get(active)).toEqual({ model: "mock-model", usedTokens: 2 });
+  });
+
+  it("returns the previous map when every entry is identical", () => {
+    const previous = new Map([[settled, { model: "mock-model" }]]);
+    const next = new Map(previous);
+
+    expect(stabilizeResponseMetaByTurnId(next, previous)).toBe(previous);
+  });
+
+  it("uses the new value when a settled entry value changes", () => {
+    const previous = new Map([[settled, { model: "mock-model", usedTokens: 100 }]]);
+    const next = new Map([[settled, { model: "mock-model", usedTokens: 101 }]]);
+
+    const stabilized = stabilizeResponseMetaByTurnId(next, previous);
+    expect(stabilized.get(settled)).toBe(next.get(settled));
+  });
+});
+
+describe("deriveRevertTurnCountByUserMessageId", () => {
+  const userEntry = (id: string): TimelineEntry => ({
+    kind: "message",
+    id: `entry-${id}`,
+    createdAt: "2026-09-08T10:00:00.000Z",
+    message: {
+      id: MessageId.make(id),
+      role: "user",
+      text: id,
+      createdAt: "2026-09-08T10:00:00.000Z",
+      streaming: false,
+    },
+  });
+  const assistantEntry = (id: string, turnId: string): TimelineEntry => ({
+    kind: "message",
+    id: `entry-${id}`,
+    createdAt: "2026-09-08T10:00:01.000Z",
+    message: {
+      id: MessageId.make(id),
+      role: "assistant",
+      text: id,
+      turnId: TurnId.make(turnId),
+      createdAt: "2026-09-08T10:00:01.000Z",
+      streaming: false,
+    },
+  });
+  const summaryFor = (
+    messageId: string,
+    turnId: string,
+    checkpointTurnCount?: number,
+  ): [string, TurnDiffSummary] => [
+    messageId,
+    {
+      turnId: TurnId.make(turnId),
+      completedAt: "2026-09-08T10:00:02.000Z",
+      files: [],
+      ...(checkpointTurnCount === undefined ? {} : { checkpointTurnCount }),
+    },
+  ];
+  const derive = (
+    timelineEntries: TimelineEntry[],
+    summaries: Array<ReturnType<typeof summaryFor>>,
+    inferred: Record<string, number> = {},
+  ) =>
+    deriveRevertTurnCountByUserMessageId({
+      timelineEntries,
+      turnDiffSummaryByAssistantMessageId: new Map(
+        summaries.map(([messageId, summary]) => [MessageId.make(messageId), summary] as const),
+      ),
+      inferredCheckpointTurnCountByTurnId: inferred as Record<
+        ReturnType<typeof TurnId.make>,
+        number
+      >,
+    });
+
+  it("resolves each user message against the first summarized assistant reply", () => {
+    const result = derive(
+      [userEntry("user-1"), assistantEntry("assistant-1", "turn-1")],
+      [summaryFor("assistant-1", "turn-1", 3)],
+    );
+    expect([...result]).toEqual([[MessageId.make("user-1"), 2]]);
+  });
+
+  it("skips summary-less assistant messages and keeps scanning", () => {
+    const result = derive(
+      [
+        userEntry("user-1"),
+        assistantEntry("assistant-1", "turn-1"),
+        assistantEntry("assistant-2", "turn-1"),
+      ],
+      [summaryFor("assistant-2", "turn-1", 2)],
+    );
+    expect([...result]).toEqual([[MessageId.make("user-1"), 1]]);
+  });
+
+  it("discards the pending user on a non-numeric summary", () => {
+    const result = derive(
+      [
+        userEntry("user-1"),
+        assistantEntry("assistant-1", "turn-1"),
+        userEntry("user-2"),
+        assistantEntry("assistant-2", "turn-2"),
+      ],
+      [summaryFor("assistant-1", "turn-1"), summaryFor("assistant-2", "turn-2", 4)],
+    );
+    // assistant-1's summary carries no count and no inferred count exists, so
+    // user-1 is discarded while user-2 resolves normally.
+    expect([...result]).toEqual([[MessageId.make("user-2"), 3]]);
+  });
+
+  it("discards the pending user when another user message follows", () => {
+    const result = derive(
+      [userEntry("user-1"), userEntry("user-2"), assistantEntry("assistant-2", "turn-2")],
+      [summaryFor("assistant-2", "turn-2", 1)],
+    );
+    expect([...result]).toEqual([[MessageId.make("user-2"), 0]]);
+  });
+
+  it("falls back to inferred checkpoint counts and clamps at zero", () => {
+    const result = derive(
+      [userEntry("user-1"), assistantEntry("assistant-1", "turn-1")],
+      [summaryFor("assistant-1", "turn-1")],
+      { "turn-1": 1 },
+    );
+    expect([...result]).toEqual([[MessageId.make("user-1"), 0]]);
   });
 });

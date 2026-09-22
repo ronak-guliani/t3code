@@ -9,7 +9,9 @@ import {
   Schema,
   Stream,
 } from "effect";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
+import * as NodePath from "@effect/platform-node/NodePath";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import * as Socket from "effect/unstable/socket/Socket";
 import {
@@ -25,7 +27,10 @@ import {
   DispatchResult,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationReadThreadInput,
+  OrchestrationReadThreadResult,
   OrchestrationShellStreamItem,
+  OrchestrationReadThreadInputError,
   ORCHESTRATION_WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -37,6 +42,16 @@ import { resolveBaseDir } from "../os-jank.ts";
 import { inspectPersistedServerRuntimeState, runtimePidIsAlive } from "../serverRuntimeState.ts";
 import { resolveCliEnvironmentCandidate, withAccountEnvironment } from "./accountEnvironment.ts";
 import { readEnvironmentRegistry, type CliEnvironmentCandidate } from "./environmentRegistry.ts";
+import { withRpcDeadlines } from "./rpcDeadline.ts";
+import { buildRevision } from "../buildIdentity.ts";
+import { projectThreadDetailSnapshot } from "../orchestration/ActivityPayloadProjection.ts";
+import { OrchestrationProjectionSnapshotQueryDependenciesLive } from "../orchestration/runtimeLayer.ts";
+import { OrchestrationProjectionSnapshotQueryLive } from "../orchestration/Layers/ProjectionSnapshotQuery.ts";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionSnapshotQueryShape,
+} from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { makeRuntimeSqliteLayer } from "../persistence/Layers/Sqlite.ts";
 
 export interface CliLiveTargetFlags {
   readonly url: Option.Option<string>;
@@ -50,6 +65,11 @@ export const makeCommandId = (tag: string): CommandId =>
   CommandId.make(`cli:${tag}:${crypto.randomUUID()}`);
 
 export const nowIso = (): string => new Date().toISOString();
+
+export const cliCompatibilityMessage = (subject: string): string =>
+  `CLI_SERVER_INCOMPATIBLE: CLI ${buildRevision} could not decode ${subject}. ` +
+  "Use the CLI from the running server's build, or update the CLI and server together. " +
+  "Run 't3 installation identity --json' to inspect the executable; package versions alone may match across different builds.";
 
 export class CliPayloadError extends Schema.TaggedErrorClass<CliPayloadError>()("CliPayloadError", {
   message: Schema.String,
@@ -91,8 +111,9 @@ const decodeShellSnapshot = HttpClientResponse.schemaBodyJson(OrchestrationShell
 const decodeThreadSnapshot = HttpClientResponse.schemaBodyJson(OrchestrationThreadDetailSnapshot);
 const decodeDispatchResult = HttpClientResponse.schemaBodyJson(DispatchResult);
 const decodeWsToken = HttpClientResponse.schemaBodyJson(AuthWebSocketTokenResult);
-const makeWsRpcClient = RpcClient.make(WsRpcGroup);
+const makeWsRpcClient = RpcClient.make(WsRpcGroup).pipe(Effect.map(withRpcDeadlines));
 const isCliRpcError = Schema.is(CliRpcError);
+const isOrchestrationReadThreadInputError = Schema.is(OrchestrationReadThreadInputError);
 export const isDefinitiveCommandRejectionError = (error: unknown): boolean =>
   isCliRpcError(error) && error.definitiveCommandRejection === true;
 const isCliLiveTargetError = Schema.is(CliLiveTargetError);
@@ -460,7 +481,7 @@ export const fetchLiveOrchestrationShellSnapshot = (origin: string, bearerToken:
       Effect.mapError(
         (cause) =>
           new CliRpcError({
-            message: "Failed to decode orchestration shell snapshot.",
+            message: cliCompatibilityMessage("orchestration shell snapshot"),
             cause,
           }),
       ),
@@ -497,7 +518,7 @@ export const fetchLiveOrchestrationThreadSnapshot = (
       Effect.mapError(
         (cause) =>
           new CliRpcError({
-            message: "Failed to decode thread snapshot.",
+            message: cliCompatibilityMessage("thread snapshot"),
             cause,
           }),
       ),
@@ -512,6 +533,101 @@ export const fetchLiveOrchestrationThreadSnapshot = (
           )}s. Is the T3 server responsive?`,
         }),
     }),
+  );
+
+const isImplicitLocalReadTarget = (
+  target: ResolvedCliLiveTarget,
+): target is Extract<ResolvedCliLiveTarget, { readonly kind: "bearer" }> & {
+  readonly baseDir: string;
+  readonly token?: undefined;
+} =>
+  target.kind === "bearer" &&
+  target.token === undefined &&
+  target.baseDir !== undefined &&
+  (target.source === "implicit-local" || target.source === "explicit-base-dir");
+
+const withLocalProjectionSnapshotQuery = <A, E, R>(
+  baseDir: string,
+  origin: string,
+  run: (query: ProjectionSnapshotQueryShape) => Effect.Effect<A, E, R>,
+) =>
+  Effect.gen(function* () {
+    const localTarget = yield* resolveLocalRuntimeTarget(baseDir, {
+      source: "explicit-base-dir",
+      selectionReason: "--base-dir",
+    });
+    if (localTarget.origin !== origin) {
+      return yield* new CliLiveTargetError({
+        message:
+          `Refusing to read from '${baseDir}' because its live server origin changed from ` +
+          `'${origin}' to '${localTarget.origin}'.`,
+      });
+    }
+    const paths = yield* deriveServerPaths(baseDir, undefined);
+    const sqliteLayer = makeRuntimeSqliteLayer({
+      filename: paths.dbPath,
+      readonly: true,
+      disableWAL: true,
+      spanAttributes: {
+        "db.name": "t3.db",
+        "service.name": "t3-cli-read",
+      },
+    });
+    const queryLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
+      Layer.provideMerge(OrchestrationProjectionSnapshotQueryDependenciesLive),
+      Layer.provideMerge(sqliteLayer),
+    );
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        return yield* run(yield* ProjectionSnapshotQuery);
+      }).pipe(Effect.provide(queryLayer)),
+    );
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodePath.layer)));
+
+const mapLocalProjectionReadError = (cause: unknown, subject: string): CliRpcError =>
+  new CliRpcError({
+    message: `Failed to read local ${subject}.`,
+    cause,
+  });
+
+const getLocalShellSnapshot = (baseDir: string, origin: string) =>
+  withLocalProjectionSnapshotQuery(baseDir, origin, (query) =>
+    query
+      .getShellSnapshot()
+      .pipe(Effect.mapError((cause) => mapLocalProjectionReadError(cause, "shell snapshot"))),
+  );
+
+const getLocalThreadSnapshot = (
+  baseDir: string,
+  origin: string,
+  threadId: import("@t3tools/contracts").ThreadId,
+) =>
+  withLocalProjectionSnapshotQuery(baseDir, origin, (query) =>
+    query.getThreadDetailSnapshotById(threadId).pipe(
+      Effect.flatMap((snapshot) =>
+        Option.isSome(snapshot)
+          ? Effect.succeed(projectThreadDetailSnapshot(snapshot.value))
+          : Effect.fail(new CliRpcError({ message: `Thread ${threadId} was not found.` })),
+      ),
+      Effect.mapError((cause) =>
+        isCliRpcError(cause) ? cause : mapLocalProjectionReadError(cause, "thread snapshot"),
+      ),
+    ),
+  );
+
+const readLocalThread = (baseDir: string, origin: string, input: OrchestrationReadThreadInput) =>
+  withLocalProjectionSnapshotQuery(baseDir, origin, (query) =>
+    query
+      .readThread(input)
+      .pipe(
+        Effect.mapError((cause) =>
+          isOrchestrationReadThreadInputError(cause)
+            ? new CliRpcError({ message: cause.message })
+            : isCliRpcError(cause)
+              ? cause
+              : mapLocalProjectionReadError(cause, "thread history"),
+        ),
+      ),
   );
 
 const dispatchCommand = (
@@ -743,8 +859,63 @@ export const getLiveOrchestrationShellSnapshot = (flags: CliLiveTargetFlags) =>
           ),
       );
     }
+    if (isImplicitLocalReadTarget(target)) {
+      return yield* getLocalShellSnapshot(target.baseDir, target.origin);
+    }
     return yield* withBorrowedBearerTokenForTarget(target, ({ origin, bearerToken }) =>
       fetchLiveOrchestrationShellSnapshot(origin, bearerToken),
+    );
+  }).pipe(Effect.provide(FetchHttpClient.layer));
+
+export const readLiveThread = (flags: CliLiveTargetFlags, input: OrchestrationReadThreadInput) =>
+  Effect.gen(function* () {
+    const target = yield* resolveLiveTarget(flags);
+    if (target.kind === "account") {
+      return yield* withResolvedLiveRpcClient(target, (client) =>
+        client[ORCHESTRATION_WS_METHODS.readThread](input),
+      );
+    }
+    if (isImplicitLocalReadTarget(target)) {
+      return yield* readLocalThread(target.baseDir, target.origin, input);
+    }
+    return yield* withBorrowedBearerTokenForTarget(target, ({ origin, bearerToken }) =>
+      Effect.gen(function* () {
+        const http = yield* HttpClient.HttpClient;
+        const request = yield* HttpClientRequest.post(
+          `${origin}/api/orchestration/thread-read`,
+        ).pipe(HttpClientRequest.bearerToken(bearerToken), HttpClientRequest.bodyJson(input));
+        const response = yield* http.execute(request);
+        if (response.status === 404) {
+          return yield* new CliRpcError({
+            message:
+              "CLI_SERVER_INCOMPATIBLE: This server does not support targeted thread reads. Update the server and CLI together; --full retains the legacy detail read.",
+          });
+        }
+        if (response.status < 200 || response.status >= 300) {
+          const body = yield* response.json;
+          const detail =
+            typeof body === "object" &&
+            body !== null &&
+            "error" in body &&
+            typeof body.error === "string"
+              ? body.error
+              : `HTTP ${response.status}`;
+          return yield* new CliRpcError({ message: `Thread read failed: ${detail}` });
+        }
+        return yield* HttpClientResponse.schemaBodyJson(OrchestrationReadThreadResult)(
+          response,
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new CliRpcError({ message: cliCompatibilityMessage("thread history"), cause }),
+          ),
+        );
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: LIVE_REQUEST_TIMEOUT,
+          orElse: () => new CliRpcError({ message: "Timed out reading thread after 10s." }),
+        }),
+      ),
     );
   }).pipe(Effect.provide(FetchHttpClient.layer));
 
@@ -800,6 +971,13 @@ export const withLiveSnapshotClient = <A, E, R>(
             }),
           ),
       );
+    }
+    if (isImplicitLocalReadTarget(target)) {
+      return yield* run({
+        getSnapshot: getLocalShellSnapshot(target.baseDir, target.origin),
+        getThreadSnapshot: (threadId) =>
+          getLocalThreadSnapshot(target.baseDir, target.origin, threadId),
+      });
     }
     return yield* withBorrowedBearerTokenForTarget(target, ({ origin, bearerToken }) =>
       run({

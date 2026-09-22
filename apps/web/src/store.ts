@@ -28,9 +28,19 @@ import {
 } from "@t3tools/client-runtime";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
+import {
+  applyValidationEvent,
+  isValidationLifecycleEvent,
+  validationRunEquals,
+} from "@t3tools/client-runtime/validation-lifecycle";
 import { Schema } from "effect";
 import { resolveModelSlugForProvider } from "@t3tools/shared/model";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
+import {
+  sameThreadPullRequest,
+  seedLegacyThreadPullRequestLink,
+  upsertLegacyThreadPullRequestLink,
+} from "@t3tools/shared/threadPullRequests";
 import { create } from "zustand";
 import {
   type ChatMessage,
@@ -116,6 +126,7 @@ export interface EnvironmentState {
 }
 
 export interface AppState {
+  disabledEnvironmentIds?: ReadonlyArray<EnvironmentId>;
   activeEnvironmentId: EnvironmentId | null;
   environmentStateById: Record<string, EnvironmentState>;
 }
@@ -298,6 +309,7 @@ function mapProject(
 ): Project {
   return {
     id: project.id,
+    kind: project.kind ?? "workspace",
     environmentId,
     name: project.title,
     cwd: project.workspaceRoot,
@@ -342,8 +354,15 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
+    pullRequests: thread.pullRequests ?? [],
     ...(thread.reviewSnapshot !== undefined ? { reviewSnapshot: thread.reviewSnapshot } : {}),
     ...(thread.reviewResult !== undefined ? { reviewResult: thread.reviewResult } : {}),
+    ...(thread.validationRequest !== undefined && thread.validationRequest !== null
+      ? { validationRequest: thread.validationRequest }
+      : {}),
+    ...(thread.validationRun !== undefined && thread.validationRun !== null
+      ? { validationRun: thread.validationRun }
+      : {}),
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
     activities: thread.activities.map((activity) => ({ ...activity })),
     activityContext: thread.activityContext?.map((activity) => ({ ...activity })) ?? [],
@@ -384,6 +403,13 @@ function mapThreadShell(
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
+    pullRequests: thread.pullRequests ?? [],
+    ...(thread.validationRequest !== undefined && thread.validationRequest !== null
+      ? { validationRequest: thread.validationRequest }
+      : {}),
+    ...(thread.validationRun !== undefined && thread.validationRun !== null
+      ? { validationRun: thread.validationRun }
+      : {}),
   };
   const session = thread.session ? mapSession(thread.session) : null;
   const turnState: ThreadTurnState = {
@@ -409,6 +435,13 @@ function mapThreadShell(
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
+    pullRequests: thread.pullRequests ?? [],
+    ...(thread.validationRequest !== undefined && thread.validationRequest !== null
+      ? { validationRequest: thread.validationRequest }
+      : {}),
+    ...(thread.validationRun !== undefined && thread.validationRun !== null
+      ? { validationRun: thread.validationRun }
+      : {}),
     latestUserMessageAt: thread.latestUserMessageAt,
     latestChildNotificationAt: thread.latestChildNotificationAt ?? null,
     hasPendingApprovals: thread.hasPendingApprovals,
@@ -449,6 +482,13 @@ function toThreadShell(thread: Thread): ThreadShell {
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
+    pullRequests: thread.pullRequests ?? [],
+    ...(thread.validationRequest !== undefined && thread.validationRequest !== null
+      ? { validationRequest: thread.validationRequest }
+      : {}),
+    ...(thread.validationRun !== undefined && thread.validationRun !== null
+      ? { validationRun: thread.validationRun }
+      : {}),
   };
 }
 
@@ -468,6 +508,23 @@ function sourceProposedPlansEqual(
   if (left === right) return true;
   if (left === undefined || right === undefined) return false;
   return left.threadId === right.threadId && left.planId === right.planId;
+}
+
+function threadPullRequestLinksEqual(
+  left: ReadonlyArray<NonNullable<ThreadShell["pullRequests"]>[number]>,
+  right: ReadonlyArray<NonNullable<ThreadShell["pullRequests"]>[number]>,
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((leftLink, index) => {
+    const rightLink = right[index];
+    return (
+      rightLink !== undefined &&
+      leftLink.source === rightLink.source &&
+      leftLink.linkedAt === rightLink.linkedAt &&
+      pullRequestsEqual(leftLink.pullRequest, rightLink.pullRequest)
+    );
+  });
 }
 
 function latestTurnsEqual(
@@ -553,6 +610,8 @@ function sidebarThreadSummariesEqual(
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
     pullRequestsEqual(left.pullRequest, right.pullRequest) &&
+    threadPullRequestLinksEqual(left.pullRequests ?? [], right.pullRequests ?? []) &&
+    validationRunEquals(left.validationRun, right.validationRun) &&
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.latestChildNotificationAt === right.latestChildNotificationAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
@@ -651,6 +710,8 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
     pullRequestsEqual(left.pullRequest, right.pullRequest) &&
+    threadPullRequestLinksEqual(left.pullRequests ?? [], right.pullRequests ?? []) &&
+    validationRunEquals(left.validationRun, right.validationRun) &&
     resumeCursorsEqual(left.nudging, right.nudging)
   );
 }
@@ -1807,6 +1868,24 @@ function applyEnvironmentOrchestrationEvent(
   event: OrchestrationEvent,
   environmentId: EnvironmentId,
 ): EnvironmentState {
+  if (isValidationLifecycleEvent(event)) {
+    return updateThreadState(state, event.payload.threadId, (thread) => {
+      const validation = applyValidationEvent(
+        {
+          request: thread.validationRequest ?? null,
+          run: thread.validationRun ?? null,
+        },
+        event,
+      );
+      return {
+        ...thread,
+        validationRequest: validation.request,
+        validationRun: validation.run,
+        updatedAt: event.occurredAt,
+      };
+    });
+  }
+
   switch (event.type) {
     case "workflow.run-requested":
     case "workflow.artifact-created":
@@ -1825,6 +1904,7 @@ function applyEnvironmentOrchestrationEvent(
       const nextProject = mapProject(
         {
           id: event.payload.projectId,
+          kind: event.payload.kind ?? "workspace",
           title: event.payload.title,
           workspaceRoot: event.payload.workspaceRoot,
           repositoryIdentity: event.payload.repositoryIdentity ?? null,
@@ -1936,6 +2016,17 @@ function applyEnvironmentOrchestrationEvent(
           ...(event.payload.pullRequest !== undefined
             ? { pullRequest: event.payload.pullRequest }
             : {}),
+          ...(event.payload.pullRequest !== undefined && event.payload.pullRequest !== null
+            ? {
+                pullRequests: [
+                  {
+                    pullRequest: event.payload.pullRequest,
+                    source: "created" as const,
+                    linkedAt: event.payload.createdAt,
+                  },
+                ],
+              }
+            : {}),
           ...(event.payload.reviewSnapshot !== undefined
             ? { reviewSnapshot: event.payload.reviewSnapshot }
             : {}),
@@ -2026,6 +2117,76 @@ function applyEnvironmentOrchestrationEvent(
         ...(event.payload.pullRequest !== undefined
           ? { pullRequest: event.payload.pullRequest }
           : {}),
+        ...(event.payload.pullRequest !== undefined && event.payload.pullRequest !== null
+          ? {
+              pullRequests: upsertLegacyThreadPullRequestLink(
+                seedLegacyThreadPullRequestLink(
+                  thread.pullRequests,
+                  thread.pullRequest,
+                  thread.createdAt,
+                ),
+                event.payload.pullRequest,
+                event.payload.updatedAt,
+                event.payload.pullRequestSource,
+              ),
+            }
+          : {}),
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.pull-request-linked":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const existingLinks = thread.pullRequests ?? [];
+        const existingIndex = existingLinks.findIndex((link) =>
+          sameThreadPullRequest(link.pullRequest, event.payload.link.pullRequest),
+        );
+        const pullRequests =
+          existingIndex < 0
+            ? [...existingLinks, event.payload.link]
+            : existingLinks.map((link, index) =>
+                index === existingIndex ? event.payload.link : link,
+              );
+        return {
+          ...thread,
+          pullRequests,
+          updatedAt: event.payload.updatedAt,
+        };
+      });
+
+    case "thread.pull-request-unlinked":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        ...(thread.pullRequest !== undefined
+          ? {
+              pullRequest:
+                thread.pullRequest === null ||
+                sameThreadPullRequest(thread.pullRequest, event.payload.pullRequest)
+                  ? null
+                  : thread.pullRequest,
+            }
+          : {}),
+        pullRequests: (thread.pullRequests ?? []).filter(
+          (link) => !sameThreadPullRequest(link.pullRequest, event.payload.pullRequest),
+        ),
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.pull-request-rekeyed":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        ...(thread.pullRequest !== undefined &&
+        thread.pullRequest !== null &&
+        sameThreadPullRequest(thread.pullRequest, event.payload.previousPullRequest)
+          ? { pullRequest: event.payload.link.pullRequest }
+          : {}),
+        pullRequests: [
+          ...(thread.pullRequests ?? []).filter(
+            (link) =>
+              !sameThreadPullRequest(link.pullRequest, event.payload.previousPullRequest) &&
+              !sameThreadPullRequest(link.pullRequest, event.payload.link.pullRequest),
+          ),
+          event.payload.link,
+        ],
         updatedAt: event.payload.updatedAt,
       }));
 
@@ -2503,10 +2664,12 @@ export function applyOrchestrationEvents(
 
 function getEnvironmentEntries(
   state: AppState,
+  includePaused = false,
 ): ReadonlyArray<readonly [EnvironmentId, EnvironmentState]> {
-  return Object.entries(state.environmentStateById) as unknown as ReadonlyArray<
-    readonly [EnvironmentId, EnvironmentState]
-  >;
+  return Object.entries(state.environmentStateById).filter(
+    ([environmentId]) =>
+      includePaused || !state.disabledEnvironmentIds?.some((id) => id === environmentId),
+  ) as unknown as ReadonlyArray<readonly [EnvironmentId, EnvironmentState]>;
 }
 
 interface ProjectsAcrossEnvironmentsCache {
@@ -2594,8 +2757,11 @@ export function selectWorkflowRunsForParentThread(
     : EMPTY_WORKFLOW_RUNS;
 }
 
-export function selectProjectsAcrossEnvironments(state: AppState): Project[] {
-  const entries = getEnvironmentEntries(state);
+export function selectProjectsAcrossEnvironments(
+  state: AppState,
+  includePaused = false,
+): Project[] {
+  const entries = getEnvironmentEntries(state, includePaused);
   const slices = entries.map(([environmentId, environmentState]) => ({
     environmentId,
     projectIds: environmentState.projectIds,
@@ -2633,8 +2799,11 @@ export function selectThreadShellsAcrossEnvironments(state: AppState): ThreadShe
   );
 }
 
-export function selectSidebarThreadsAcrossEnvironments(state: AppState): SidebarThreadSummary[] {
-  const entries = getEnvironmentEntries(state);
+export function selectSidebarThreadsAcrossEnvironments(
+  state: AppState,
+  includePaused = false,
+): SidebarThreadSummary[] {
+  const entries = getEnvironmentEntries(state, includePaused);
   const slices = entries.map(([environmentId, environmentState]) => ({
     environmentId,
     threadIds: environmentState.threadIds,

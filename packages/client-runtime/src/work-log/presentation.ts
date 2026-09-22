@@ -8,7 +8,6 @@ import {
 import { classifyMarkdownImageSource } from "@t3tools/client-runtime/markdown-images";
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
-import { commandProgramName } from "@t3tools/client-runtime/work-log/command-label";
 import { extractChangedFilePathCandidatesFromToolPayload } from "@t3tools/shared/toolChangedFiles";
 
 export function isWorktreeSetupActivity(kind: string): boolean {
@@ -86,8 +85,8 @@ export function compactWorkEntryLabel(entry: WorkLogPresentationEntry): string {
       : `${verb("Editing", "Edited")} ${filename || "files"}`;
   }
   if (action === "command") {
-    const program = commandProgramName(entry.command ?? "");
-    return `${verb("Running", "Ran")} ${program && !/^(?:bash|zsh|sh|fish):$/.test(program) ? program : "command"}`;
+    const command = entry.command?.replace(/\s+/gu, " ").trim();
+    return `${verb("Running", "Ran")} ${command || "command"}`;
   }
   if (action === "skill") {
     const name =
@@ -119,6 +118,41 @@ export function hasWorkLogToolData(data: unknown): boolean {
   if (typeof data === "string") return data.trim().length > 0;
   if (data !== null && typeof data === "object") return Object.keys(data).length > 0;
   return data !== undefined && data !== null;
+}
+
+/**
+ * Runtime activities carry their human-readable text in `payload.message`,
+ * with optional extra context in `payload.detail` (a string or an object such
+ * as the OpenCode retry status). Tool-detail extraction only reads a string
+ * `detail`, so without this the message never reaches the work-log row and
+ * the row renders with nothing to expand.
+ */
+export function extractRuntimeActivityDetail(
+  payload: Record<string, unknown> | null,
+): string | null {
+  if (!payload) return null;
+  const message = nonEmptyString(payload.message);
+  const detail = payload.detail;
+  if (typeof detail === "string") {
+    const detailText = detail.trim();
+    if (detailText.length > 0) {
+      if (!message) return detailText;
+      if (detailText === message) return message;
+      return `${message}\n\n${detailText}`;
+    }
+    return message;
+  }
+  if (!message) return null;
+  if (detail === undefined || detail === null) return message;
+  let serialized: string | null = null;
+  try {
+    serialized = JSON.stringify(detail, null, 2)?.trim() ?? null;
+  } catch {
+    serialized = null;
+  }
+  if (!serialized || serialized === "{}" || serialized === "[]") return message;
+  if (serialized === message) return message;
+  return `${message}\n\n${serialized}`;
 }
 
 /** Display paths need no Git pathspec normalization: absolute provider paths are valid labels. */
@@ -327,6 +361,7 @@ export type ToolGroupAction =
   | "edit"
   | "command"
   | "browser"
+  | "device"
   | "code-search"
   | "search"
   | "skill"
@@ -390,6 +425,15 @@ const T3_MCP_TOOL_LABELS: Record<
   preview_set_appearance: ["Set", "Setting", "Set", "preview browser appearance"],
   preview_recording_start: ["Start", "Starting", "Started", "recording the preview browser"],
   preview_recording_stop: ["Stop", "Stopping", "Stopped", "recording the preview browser"],
+  device_list: ["List", "Listing", "Listed", "simulators and emulators"],
+  device_open: ["Open", "Opening", "Opened", "a device in the Device panel"],
+  device_screenshot: [
+    "Take a screenshot of",
+    "Taking a screenshot of",
+    "Took a screenshot of",
+    "the device",
+  ],
+  device_close: ["Close", "Closing", "Closed", "a device"],
 };
 
 function resolveT3McpToolPresentation(value: string | undefined, status: string | undefined) {
@@ -416,7 +460,11 @@ function resolveT3McpToolPresentation(value: string | undefined, status: string 
 
   return {
     displayName: `${verb} ${detail}`,
-    icon: name.startsWith("preview_") ? ("browser" as const) : ("t3-code" as const),
+    icon: name.startsWith("preview_")
+      ? ("browser" as const)
+      : name.startsWith("device_")
+        ? ("device" as const)
+        : ("t3-code" as const),
   };
 }
 
@@ -771,6 +819,8 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
       return `Changed ${count} ${count === 1 ? "file" : "files"}`;
     case "command":
       return `Ran ${count} ${count === 1 ? "command" : "commands"}`;
+    case "device":
+      return `Used device controls ${count} ${count === 1 ? "time" : "times"}`;
     case "browser":
       return `Used browser ${count} ${count === 1 ? "time" : "times"}`;
     case "search":
@@ -856,7 +906,9 @@ export function omitSupersededLifecycleMarkers<T>(
     }
   }
 
-  return reversedEntries.toReversed();
+  // Hermes lacks toReversed; this array is local, so reversing it cannot mutate the input.
+  // oxlint-disable-next-line unicorn/no-array-reverse
+  return reversedEntries.reverse();
 }
 
 export function toolGroupSummaryKind(

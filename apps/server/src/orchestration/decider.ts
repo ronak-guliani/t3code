@@ -19,6 +19,7 @@ import {
   listThreadsByProjectId,
   requireProject,
   requireProjectAbsent,
+  requireWritableProjectForThread,
   requireThread,
   requireThreadAbsent,
   requireThreadNotArchived,
@@ -28,21 +29,42 @@ import {
   threadHasQueuedTurnStart,
   threadHasSettlementOverride,
   threadIsSnoozed,
+  CHILD_DECISION_BLOCKED_DETAIL,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
 import { assistantTurnCount } from "./Utils.ts";
 import { findCanonicalActiveWorktreeOwner } from "./worktreeOwnership.ts";
-import { childNudgePrompt, isAutomaticChildNudgeBlocked, queueChildNudge } from "./childNudging.ts";
+import {
+  childNudgePrompt,
+  childWakeReason,
+  isAutomaticChildNudgeBlocked,
+  queueChildNudge,
+} from "./childNudging.ts";
 import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
 import {
+  sameThreadPullRequest,
+  sameThreadPullRequestAssociation,
+} from "@t3tools/shared/threadPullRequests";
+import {
+  bindDelegationExecution,
   childReportDedupeKey,
   classifyChildReport,
-  hasReportReceipt,
   legacyUpdateId,
-  mintDispatch,
   mintDispatchRecord,
+  transitionDelegationExecution,
+  type RecordedReportOutcome,
 } from "./dispatchAuthority.ts";
+import {
+  acceptValidationResult,
+  claimValidationLease,
+  isValidationRunTerminal,
+  planValidationRun,
+  transitionValidationGate,
+  transitionValidationRunStatus,
+  validationTargetEquals,
+  validationRunEffectiveStatus,
+} from "@t3tools/client-runtime/validation-lifecycle";
 
 const FORK_TITLE_PREFIX = "Forked: ";
 /**
@@ -84,6 +106,156 @@ function withEventBase(
     commandId: input.commandId,
     correlationId: input.commandId,
     metadata: input.metadata ?? {},
+  };
+}
+
+function collaborationRequestLocation(readModel: OrchestrationReadModel, requestId: string) {
+  for (const thread of readModel.threads) {
+    const request = thread.collaborationRequests?.find((entry) => entry.requestId === requestId);
+    if (request) return { thread, request };
+  }
+  return null;
+}
+
+function executionAuthorityMatches(
+  expected: {
+    readonly executionId: string;
+    readonly assignmentId?: string;
+    readonly threadId?: string;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+  actual: {
+    readonly executionId: string;
+    readonly assignmentId?: string;
+    readonly threadId?: string;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+) {
+  return (
+    expected.executionId === actual.executionId &&
+    (expected.assignmentId === undefined && actual.assignmentId === undefined
+      ? true
+      : expected.assignmentId === actual.assignmentId) &&
+    (expected.threadId === undefined && actual.threadId === undefined
+      ? true
+      : expected.threadId === actual.threadId) &&
+    expected.generation === actual.generation &&
+    expected.dispatchId === actual.dispatchId &&
+    expected.turnId === actual.turnId
+  );
+}
+
+function collaborationResponseAuthorityMatches(
+  admission: {
+    readonly executionId: string;
+    readonly assignmentId?: string;
+    readonly threadId?: string;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+  active: {
+    readonly executionId: string;
+    readonly assignmentId?: string;
+    readonly threadId?: string;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+) {
+  const strict =
+    admission.assignmentId !== undefined ||
+    admission.dispatchId !== null ||
+    admission.turnId !== null;
+  return (
+    admission.executionId === active.executionId &&
+    (!strict ||
+      (admission.assignmentId !== undefined &&
+        admission.assignmentId === active.assignmentId &&
+        admission.threadId === active.threadId &&
+        admission.generation === active.generation &&
+        admission.dispatchId === active.dispatchId &&
+        admission.turnId === active.turnId))
+  );
+}
+
+function collaborationRequestEvent(
+  command: OrchestrationCommand,
+  threadId: ThreadId,
+  request: unknown,
+  action:
+    | "created"
+    | "responded"
+    | "consumed"
+    | "superseded"
+    | "cancelled"
+    | "reopened"
+    | "override"
+    | "response-rejected",
+  updatedAt: string,
+) {
+  return {
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: updatedAt,
+      commandId: command.commandId,
+    }),
+    type: "thread.collaboration-request-updated" as const,
+    payload: {
+      threadId,
+      action,
+      request,
+      updatedAt,
+    },
+  };
+}
+
+function collaborationQueueEvent(
+  command: OrchestrationCommand,
+  threadId: ThreadId,
+  delivery: {
+    queuedTurnId: string;
+    message: unknown;
+    modelSelection?: unknown;
+    titleSeed?: string;
+    runtimeMode: unknown;
+    interactionMode: unknown;
+  },
+  origin: unknown,
+  createdAt: string,
+) {
+  return {
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: createdAt,
+      commandId: command.commandId,
+    }),
+    type: "thread.queued-turn-created" as const,
+    payload: {
+      threadId,
+      queuedTurn: {
+        id: delivery.queuedTurnId,
+        threadId,
+        message: delivery.message,
+        ...(delivery.modelSelection !== undefined
+          ? { modelSelection: delivery.modelSelection }
+          : {}),
+        ...(delivery.titleSeed !== undefined ? { titleSeed: delivery.titleSeed } : {}),
+        runtimeMode: delivery.runtimeMode,
+        interactionMode: delivery.interactionMode,
+        origin,
+        createdAt,
+        updatedAt: createdAt,
+        failedAt: null,
+        failureMessage: null,
+      },
+    },
   };
 }
 
@@ -368,6 +540,11 @@ function buildTurnStartEvents(input: {
   readonly interactionMode: TurnStartRequestedPayload["interactionMode"];
   readonly sourceProposedPlan: TurnStartRequestedPayload["sourceProposedPlan"];
   readonly source?: TurnStartRequestedPayload["source"];
+  readonly delegationAssignmentId?: TurnStartRequestedPayload["delegationAssignmentId"];
+  readonly delegationDispatchId?: TurnStartRequestedPayload["delegationDispatchId"];
+  readonly delegationTransition?: TurnStartRequestedPayload["delegationTransition"];
+  readonly executionAuthority?: TurnStartRequestedPayload["executionAuthority"];
+  readonly workspaceBinding?: TurnStartRequestedPayload["workspaceBinding"];
   readonly at: string;
 }): {
   readonly userMessageEvent: PlannedOrchestrationEvent;
@@ -411,6 +588,19 @@ function buildTurnStartEvents(input: {
         ? { sourceProposedPlan: input.sourceProposedPlan }
         : {}),
       ...(input.source !== undefined ? { source: input.source } : {}),
+      ...(input.delegationAssignmentId !== undefined
+        ? { delegationAssignmentId: input.delegationAssignmentId }
+        : {}),
+      ...(input.delegationDispatchId !== undefined
+        ? { delegationDispatchId: input.delegationDispatchId }
+        : {}),
+      ...(input.delegationTransition !== undefined
+        ? { delegationTransition: input.delegationTransition }
+        : {}),
+      ...(input.executionAuthority !== undefined
+        ? { executionAuthority: input.executionAuthority }
+        : {}),
+      ...(input.workspaceBinding !== undefined ? { workspaceBinding: input.workspaceBinding } : {}),
       createdAt: input.at,
     },
   };
@@ -510,11 +700,395 @@ const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   command,
   readModel,
+  recordedReportOutcome,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
+  readonly recordedReportOutcome?: RecordedReportOutcome;
 }): Effect.fn.Return<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
   switch (command.type) {
+    case "thread.validation.request": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.validationRequest?.requestId === command.commandId) {
+        return [];
+      }
+      if (thread.validationRequest !== null && thread.validationRequest !== undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A validation request is already pending for this thread.",
+        });
+      }
+      if (thread.validationRun !== null && thread.validationRun !== undefined) {
+        if (thread.validationRun.requestId === command.commandId) {
+          return [];
+        }
+        if (!isValidationRunTerminal(validationRunEffectiveStatus(thread.validationRun))) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A validation run already exists for this thread.",
+          });
+        }
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.requestedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-requested",
+        payload: {
+          threadId: command.threadId,
+          request: {
+            requestId: command.commandId,
+            threadId: command.threadId,
+            scenarios: command.scenarios,
+            scope: command.scope,
+            requester: command.requester,
+            requestedAt: command.requestedAt,
+          },
+        },
+      };
+    }
+
+    case "thread.validation.request-failed": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.validationRequest?.requestId !== command.failure.requestId) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.failure.failedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-request-failed",
+        payload: {
+          threadId: command.threadId,
+          failure: command.failure,
+        },
+      };
+    }
+
+    case "thread.validation.coordinator-plan": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        thread.validationRun !== null &&
+        thread.validationRun !== undefined &&
+        thread.validationRun.id !== command.run.id &&
+        !isValidationRunTerminal(validationRunEffectiveStatus(thread.validationRun))
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A validation run is already planned for this thread.",
+        });
+      }
+      if (thread.validationRun?.id === command.run.id) {
+        return [];
+      }
+      if (thread.validationRequest?.requestId !== command.run.requestId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation plan does not match the pending validation request.",
+        });
+      }
+      if (command.run.threadId !== command.threadId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation plan thread does not match the command thread.",
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-run-planned",
+        payload: {
+          threadId: command.threadId,
+          run: command.run,
+        },
+      };
+    }
+
+    case "thread.validation.lifecycle": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const run = thread.validationRun;
+      if (!run || run.id !== command.update.runId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation lifecycle update does not match the active run.",
+        });
+      }
+      const next = yield* Effect.try({
+        try: () =>
+          transitionValidationRunStatus(run, command.update.status, command.update.updatedAt),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail:
+              cause instanceof Error ? cause.message : "Invalid validation lifecycle transition.",
+          }),
+      });
+      if (
+        (run.status ?? "planned") === (next.status ?? "planned") &&
+        run.updatedAt === next.updatedAt
+      ) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.update.updatedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-lifecycle-updated",
+        payload: {
+          threadId: command.threadId,
+          update: command.update,
+        },
+      };
+    }
+
+    case "thread.validation.lease.claim": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const run = thread.validationRun;
+      if (!run || run.id !== command.runId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation lease claim does not match the active run.",
+        });
+      }
+      if (command.executorId !== command.lease.executorId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation lease executor does not match the claiming executor.",
+        });
+      }
+      const next = yield* Effect.try({
+        try: () => claimValidationLease(run, command.lease, command.target, command.claimedAt),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: cause instanceof Error ? cause.message : "Invalid validation lease claim.",
+          }),
+      });
+      if (next === run) return [];
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.claimedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-lease-claimed",
+        payload: {
+          threadId: command.threadId,
+          runId: command.runId,
+          lease: command.lease,
+        },
+      };
+    }
+
+    case "thread.validation.lease.release": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        !thread.validationRun ||
+        thread.validationRun.id !== command.runId ||
+        thread.validationRun.lease?.id !== command.leaseId
+      ) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.releasedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-lease-released",
+        payload: {
+          threadId: command.threadId,
+          runId: command.runId,
+          leaseId: command.leaseId,
+          releasedAt: command.releasedAt,
+        },
+      };
+    }
+
+    case "thread.validation.result.record": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const run = thread.validationRun;
+      if (!run || run.id !== command.result.runId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation result does not match the active run.",
+        });
+      }
+      if (!run.lease || run.lease.executorId !== command.result.executorId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation result is not authorized by the active lease.",
+        });
+      }
+      yield* Effect.try({
+        try: () => acceptValidationResult(run, command.result),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: cause instanceof Error ? cause.message : "Invalid validation result.",
+          }),
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.result.completedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-result-recorded",
+        payload: {
+          threadId: command.threadId,
+          result: command.result,
+        },
+      };
+    }
+
+    case "chat-archive.import": {
+      yield* requireProjectAbsent({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
+      if (command.threads.length === 0) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A chat archive import requires at least one chat.",
+        });
+      }
+      const threadIds = new Set(command.threads.map((thread) => thread.threadId));
+      if (threadIds.size !== command.threads.length) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A chat archive import cannot contain duplicate chat identifiers.",
+        });
+      }
+      for (const thread of command.threads) {
+        yield* requireThreadAbsent({
+          readModel,
+          command,
+          threadId: thread.threadId,
+        });
+        if (thread.parentThreadId !== null && !threadIds.has(thread.parentThreadId)) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Imported parent '${thread.parentThreadId}' is missing.`,
+          });
+        }
+      }
+
+      const events: PlannedOrchestrationEvent[] = [
+        {
+          ...withEventBase({
+            aggregateKind: "project",
+            aggregateId: command.projectId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "project.created",
+          payload: {
+            projectId: command.projectId,
+            kind: "chat-import",
+            title: command.title,
+            workspaceRoot: command.workspaceRoot,
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: command.createdAt,
+            updatedAt: command.createdAt,
+          },
+        },
+      ];
+      for (const thread of command.threads) {
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.threadId,
+            occurredAt: thread.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.created",
+          payload: {
+            threadId: thread.threadId,
+            projectId: command.projectId,
+            parentThreadId: thread.parentThreadId,
+            title: thread.title,
+            modelSelection: thread.modelSelection,
+            runtimeMode: thread.runtimeMode,
+            pendingRuntimeMode: null,
+            interactionMode: thread.interactionMode,
+            branch: null,
+            worktreePath: null,
+            createdAt: thread.createdAt,
+            updatedAt: thread.updatedAt,
+          },
+        });
+        for (const message of thread.messages) {
+          events.push({
+            ...withEventBase({
+              aggregateKind: "thread",
+              aggregateId: thread.threadId,
+              occurredAt: message.createdAt,
+              commandId: command.commandId,
+            }),
+            type: "thread.message-sent",
+            payload: {
+              threadId: thread.threadId,
+              messageId: message.messageId,
+              role: message.role,
+              text: message.text,
+              turnId: message.turnId,
+              streaming: false,
+              createdAt: message.createdAt,
+              updatedAt: message.updatedAt,
+            },
+          });
+        }
+      }
+      return events;
+    }
+
     case "project.create": {
       yield* requireProjectAbsent({
         readModel,
@@ -532,6 +1106,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "project.created",
         payload: {
           projectId: command.projectId,
+          kind: "workspace",
           title: command.title,
           workspaceRoot: command.workspaceRoot,
           defaultModelSelection: command.defaultModelSelection ?? null,
@@ -641,11 +1216,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ? command.delegation
           : { ...command.delegation, ...mintDispatchRecord(command.delegation.dispatchSequence) }
         : undefined;
-      yield* requireProject({
+      const project = yield* requireProject({
         readModel,
         command,
         projectId: command.projectId,
       });
+      if (project.kind === "chat-import") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Imported chat folders are reference-only and cannot create new chats.",
+        });
+      }
       yield* requireThreadAbsent({
         readModel,
         command,
@@ -690,6 +1271,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           ...(command.pullRequest !== undefined ? { pullRequest: command.pullRequest } : {}),
           ...(command.reviewSnapshot !== undefined
             ? { reviewSnapshot: command.reviewSnapshot }
@@ -701,7 +1285,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.fork": {
-      const sourceThread = yield* requireThread({
+      const sourceThread = yield* requireWritableProjectForThread({
         readModel,
         command,
         threadId: command.sourceThreadId,
@@ -1033,6 +1617,532 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.collaboration-request.create": {
+      const sender = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const recipient = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.recipientThreadId,
+      });
+      const duplicate = collaborationRequestLocation(readModel, command.requestId);
+      if (duplicate) {
+        return [];
+      }
+      const transportContextMismatch =
+        command.transportContext !== undefined &&
+        command.transportContext !== null &&
+        (command.transportContext.exchangeId !== command.exchangeId ||
+          command.caseId !== command.transportContext.caseId);
+      const provenanceMismatch =
+        command.monitorProvenance !== undefined &&
+        command.monitorProvenance !== null &&
+        (command.monitorProvenance.caseId !== command.caseId ||
+          command.monitorProvenance.candidateId !== command.candidateRefs[0] ||
+          command.monitorProvenance.findingRevisionId !== command.findingRefs[0] ||
+          command.monitorProvenance.transportContext?.exchangeId !== command.exchangeId);
+      if (
+        !executionAuthorityMatches(command.senderAuthority, command.producingExecution) ||
+        transportContextMismatch ||
+        provenanceMismatch
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "The request authority and acceptance transport context must be immutable and correlated.",
+        });
+      }
+      if (
+        command.blocking &&
+        (sender.collaborationRequests ?? []).some(
+          (request) =>
+            request.blocking &&
+            request.status === "waiting" &&
+            request.producingExecution.executionId === command.producingExecution.executionId &&
+            request.producingExecution.generation === command.producingExecution.generation,
+        )
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only one blocking collaboration request is allowed per execution generation.",
+        });
+      }
+      const reciprocal = (recipient.collaborationRequests ?? []).find(
+        (request) =>
+          request.blocking &&
+          request.status === "waiting" &&
+          request.senderThreadId === recipient.id &&
+          request.recipientThreadId === sender.id,
+      );
+      const directCycle =
+        command.blocking &&
+        reciprocal !== undefined &&
+        (sender.parentThreadId === recipient.id || recipient.parentThreadId === sender.id);
+      const status = directCycle
+        ? "needs-human"
+        : command.blocking
+          ? "waiting"
+          : "notification-delivered";
+      const terminalOutcome = directCycle ? "needs-human" : !command.blocking ? "completed" : null;
+      const request = {
+        requestId: command.requestId,
+        kind: command.kind,
+        exchangeId: command.exchangeId,
+        senderThreadId: sender.id,
+        recipientThreadId: recipient.id,
+        blocking: command.blocking,
+        ...(command.caseId !== undefined ? { caseId: command.caseId } : {}),
+        ...(command.transportContext !== undefined
+          ? { transportContext: command.transportContext }
+          : {}),
+        senderAuthority: command.senderAuthority,
+        recipientAuthority: command.recipientAuthority,
+        producingExecution: command.producingExecution,
+        payloadRef: command.payloadRef,
+        candidateRefs: Object.freeze([...command.candidateRefs]),
+        findingRefs: Object.freeze([...command.findingRefs]),
+        ...(command.monitorProvenance !== undefined
+          ? {
+              monitorProvenance:
+                command.monitorProvenance === null
+                  ? null
+                  : Object.freeze({
+                      ...command.monitorProvenance,
+                      transportContext:
+                        command.monitorProvenance.transportContext === null
+                          ? null
+                          : Object.freeze({
+                              ...command.monitorProvenance.transportContext,
+                            }),
+                      workflow: Object.freeze({ ...command.monitorProvenance.workflow }),
+                      requiredCoverage: Object.freeze({
+                        ...command.monitorProvenance.requiredCoverage,
+                        required: Object.freeze([
+                          ...command.monitorProvenance.requiredCoverage.required,
+                        ]),
+                        covered: Object.freeze([
+                          ...command.monitorProvenance.requiredCoverage.covered,
+                        ]),
+                      }),
+                      location:
+                        command.monitorProvenance.location === null
+                          ? null
+                          : Object.freeze({ ...command.monitorProvenance.location }),
+                    }),
+            }
+          : {}),
+        supersedesRequestId: command.supersedesRequestId ?? null,
+        deliveryQueuedTurnId: directCycle ? null : command.delivery.queuedTurnId,
+        responseDeliveryQueuedTurnId: null,
+        responseRef: null,
+        response: null,
+        consumedExecution: null,
+        status,
+        terminalOutcome,
+        createdAt: command.createdAt,
+        updatedAt: command.createdAt,
+      };
+      const superseded = command.supersedesRequestId
+        ? collaborationRequestLocation(readModel, command.supersedesRequestId)
+        : null;
+      if (
+        command.supersedesRequestId !== undefined &&
+        (superseded === null ||
+          superseded.request.senderThreadId !== sender.id ||
+          superseded.request.recipientThreadId !== recipient.id ||
+          !superseded.request.blocking ||
+          superseded.request.status !== "waiting")
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only the bound sender may supersede its active blocking request.",
+        });
+      }
+      const events = [];
+      if (superseded !== null) {
+        const retired = {
+          ...superseded.request,
+          status: "superseded",
+          terminalOutcome: "superseded",
+          updatedAt: command.createdAt,
+        };
+        for (const threadId of new Set([
+          superseded.request.senderThreadId,
+          superseded.request.recipientThreadId,
+        ])) {
+          events.push(
+            collaborationRequestEvent(command, threadId, retired, "superseded", command.createdAt),
+          );
+        }
+        for (const [queuedTurnId, ownerThreadId] of [
+          [superseded.request.deliveryQueuedTurnId, superseded.request.recipientThreadId],
+          [superseded.request.responseDeliveryQueuedTurnId, superseded.request.senderThreadId],
+        ] as const) {
+          if (queuedTurnId === null) continue;
+          events.push({
+            ...withEventBase({
+              aggregateKind: "thread",
+              aggregateId: ownerThreadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            }),
+            type: "thread.queued-turn-deleted" as const,
+            payload: {
+              threadId: ownerThreadId,
+              queuedTurnId,
+              deletedAt: command.createdAt,
+            },
+          });
+        }
+      }
+      events.push(
+        collaborationRequestEvent(command, sender.id, request, "created", command.createdAt),
+        collaborationRequestEvent(command, recipient.id, request, "created", command.createdAt),
+      );
+      if (!directCycle) {
+        events.push(
+          collaborationQueueEvent(
+            command,
+            recipient.id,
+            command.delivery,
+            {
+              kind: "collaboration-request",
+              requestId: request.requestId,
+              exchangeId: request.exchangeId,
+            },
+            command.createdAt,
+          ),
+        );
+      }
+      return events;
+    }
+
+    case "thread.collaboration-request.respond": {
+      const location = collaborationRequestLocation(readModel, command.requestId);
+      if (!location) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Unknown collaboration request '${command.requestId}'.`,
+        });
+      }
+      const { request } = location;
+      if (
+        request.recipientThreadId !== command.threadId ||
+        request.exchangeId !== command.exchangeId ||
+        !collaborationResponseAuthorityMatches(
+          request.recipientAuthority,
+          command.responderAuthority,
+        ) ||
+        request.status !== "waiting"
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The collaboration request is no longer available for response.",
+        });
+      }
+      const response = {
+        responseId: command.responseId,
+        requestId: request.requestId,
+        exchangeId: request.exchangeId,
+        responderThreadId: command.threadId,
+        responderAuthority: command.responderAuthority,
+        payloadRef: command.payloadRef,
+        outcome: command.outcome,
+        createdAt: command.createdAt,
+      };
+      const nextRequest = {
+        ...request,
+        status: "response-ready",
+        responseDeliveryQueuedTurnId: command.delivery.queuedTurnId,
+        responseRef: response.responseId,
+        response,
+        updatedAt: command.createdAt,
+      };
+      const events = [
+        collaborationRequestEvent(
+          command,
+          request.senderThreadId,
+          nextRequest,
+          "responded",
+          command.createdAt,
+        ),
+        collaborationRequestEvent(
+          command,
+          request.recipientThreadId,
+          nextRequest,
+          "responded",
+          command.createdAt,
+        ),
+        collaborationQueueEvent(
+          command,
+          request.senderThreadId,
+          command.delivery,
+          {
+            kind: "collaboration-response",
+            requestId: request.requestId,
+            responseId: response.responseId,
+            exchangeId: request.exchangeId,
+          },
+          command.createdAt,
+        ),
+      ];
+      return events;
+    }
+
+    case "thread.collaboration-request.consume": {
+      const location = collaborationRequestLocation(readModel, command.requestId);
+      if (!location || location.request.senderThreadId !== command.threadId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The collaboration request is not owned by this thread.",
+        });
+      }
+      const { request } = location;
+      const consumedAuthorityMatches =
+        request.producingExecution.assignmentId === undefined
+          ? request.producingExecution.executionId === command.consumedExecution.executionId &&
+            command.consumedExecution.generation > request.producingExecution.generation
+          : request.producingExecution.assignmentId === command.consumedExecution.assignmentId &&
+            request.producingExecution.threadId === command.consumedExecution.threadId &&
+            request.producingExecution.dispatchId === command.consumedExecution.dispatchId &&
+            request.producingExecution.executionId === command.consumedExecution.executionId &&
+            command.consumedExecution.generation > request.producingExecution.generation &&
+            command.consumedExecution.turnId !== null;
+      if (
+        request.status !== "response-ready" ||
+        request.responseRef !== command.responseId ||
+        request.response === null ||
+        !consumedAuthorityMatches ||
+        request.senderThreadId !== command.threadId ||
+        (request.producingExecution.threadId !== undefined &&
+          request.producingExecution.threadId !== command.threadId)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The response cannot be consumed by this execution generation.",
+        });
+      }
+      const nextRequest = {
+        ...request,
+        status: "consumed",
+        consumedExecution: command.consumedExecution,
+        terminalOutcome: request.response.outcome,
+        updatedAt: command.createdAt,
+      };
+      const events = [
+        collaborationRequestEvent(
+          command,
+          command.threadId,
+          nextRequest,
+          "consumed",
+          command.createdAt,
+        ),
+      ];
+      if (request.recipientThreadId !== command.threadId) {
+        events.push(
+          collaborationRequestEvent(
+            command,
+            request.recipientThreadId,
+            nextRequest,
+            "consumed",
+            command.createdAt,
+          ),
+        );
+      }
+      return events;
+    }
+
+    case "thread.collaboration-request.supersede":
+    case "thread.collaboration-request.cancel":
+    case "thread.collaboration-request.override": {
+      const location = collaborationRequestLocation(readModel, command.requestId);
+      if (!location) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Unknown collaboration request '${command.requestId}'.`,
+        });
+      }
+      const request = location.request;
+      const isSupersede = command.type === "thread.collaboration-request.supersede";
+      const isOverride = command.type === "thread.collaboration-request.override";
+      const actorIsSender = command.threadId === request.senderThreadId;
+      const actorIsRecipient = command.threadId === request.recipientThreadId;
+      const actorAuthority = "actorAuthority" in command ? command.actorAuthority : undefined;
+      const actorIsBound = isOverride
+        ? actorIsSender || actorIsRecipient
+        : actorIsSender
+          ? actorAuthority !== undefined &&
+            executionAuthorityMatches(request.senderAuthority, actorAuthority)
+          : actorIsRecipient &&
+            actorAuthority !== undefined &&
+            executionAuthorityMatches(request.recipientAuthority, actorAuthority);
+      if (
+        !actorIsBound ||
+        (isSupersede && !actorIsSender) ||
+        (isSupersede &&
+          !readModel.threads.some((thread) =>
+            (thread.collaborationRequests ?? []).some(
+              (entry) =>
+                entry.requestId === command.supersededByRequestId &&
+                entry.supersedesRequestId === request.requestId &&
+                entry.senderThreadId === request.senderThreadId &&
+                entry.recipientThreadId === request.recipientThreadId,
+            ),
+          ))
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "The collaboration request mutation is not authorized for this request authority.",
+        });
+      }
+      const nextRequest = {
+        ...request,
+        status: isSupersede ? "superseded" : isOverride ? command.outcome : "cancelled",
+        terminalOutcome: isSupersede ? "superseded" : isOverride ? command.outcome : "cancelled",
+        updatedAt: command.createdAt,
+      };
+      const events = [
+        collaborationRequestEvent(
+          command,
+          location.thread.id,
+          nextRequest,
+          isSupersede ? "superseded" : isOverride ? "override" : "cancelled",
+          command.createdAt,
+        ),
+      ];
+      const otherThreadId =
+        request.senderThreadId === location.thread.id
+          ? request.recipientThreadId
+          : request.senderThreadId;
+      if (otherThreadId !== location.thread.id) {
+        events.push(
+          collaborationRequestEvent(
+            command,
+            otherThreadId,
+            nextRequest,
+            isSupersede ? "superseded" : isOverride ? "override" : "cancelled",
+            command.createdAt,
+          ),
+        );
+      }
+      for (const queuedTurnId of [
+        request.deliveryQueuedTurnId,
+        request.responseDeliveryQueuedTurnId,
+      ]) {
+        if (queuedTurnId === null) continue;
+        const ownerThreadId =
+          queuedTurnId === request.deliveryQueuedTurnId
+            ? request.recipientThreadId
+            : request.senderThreadId;
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: ownerThreadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.queued-turn-deleted",
+          payload: {
+            threadId: ownerThreadId,
+            queuedTurnId,
+            deletedAt: command.createdAt,
+          },
+        });
+      }
+      return events;
+    }
+
+    case "thread.collaboration-response.delete": {
+      const location = collaborationRequestLocation(readModel, command.requestId);
+      if (
+        !location ||
+        !(
+          (location.request.senderThreadId === command.threadId &&
+            executionAuthorityMatches(location.request.senderAuthority, command.actorAuthority)) ||
+          (location.request.recipientThreadId === command.threadId &&
+            executionAuthorityMatches(location.request.recipientAuthority, command.actorAuthority))
+        ) ||
+        location.request.responseRef !== command.responseId ||
+        location.request.status !== "response-ready" ||
+        location.request.response === null ||
+        !["stale", "needs-human"].includes(location.request.response.outcome)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only the current failed response can be deleted and reopened.",
+        });
+      }
+      const nextRequest = {
+        ...location.request,
+        status: "waiting",
+        responseDeliveryQueuedTurnId: null,
+        responseRef: null,
+        response: null,
+        updatedAt: command.createdAt,
+      };
+      const events = [
+        collaborationRequestEvent(
+          command,
+          command.threadId,
+          nextRequest,
+          "reopened",
+          command.createdAt,
+        ),
+      ];
+      if (location.request.recipientThreadId !== command.threadId) {
+        events.push(
+          collaborationRequestEvent(
+            command,
+            location.request.recipientThreadId,
+            nextRequest,
+            "reopened",
+            command.createdAt,
+          ),
+        );
+      }
+      if (location.request.responseDeliveryQueuedTurnId !== null) {
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.queued-turn-deleted",
+          payload: {
+            threadId: location.request.senderThreadId,
+            queuedTurnId: location.request.responseDeliveryQueuedTurnId,
+            deletedAt: command.createdAt,
+          },
+        });
+      }
+      return events;
+    }
+
+    case "thread.collaboration-state.clear":
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.collaboration-state-cleared",
+        payload: {
+          threadId: command.threadId,
+          clearedAt: command.createdAt,
+        },
+      };
+
     case "thread.meta.update": {
       const thread = yield* requireThread({
         readModel,
@@ -1128,7 +2238,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.branch !== undefined ? { branch: command.branch } : {}),
           ...(command.worktreePath !== undefined ? { worktreePath: command.worktreePath } : {}),
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           ...(command.pullRequest !== undefined ? { pullRequest: command.pullRequest } : {}),
+          ...(command.pullRequestSource !== undefined
+            ? { pullRequestSource: command.pullRequestSource }
+            : {}),
           ...(command.pullRequestOwnership !== undefined
             ? { pullRequestOwnership: command.pullRequestOwnership }
             : {}),
@@ -1347,6 +2463,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           updatedAt: occurredAt,
         },
       };
@@ -1355,6 +2474,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         role: "marker",
         branch: command.branch,
         worktreePath: command.worktreePath,
+        ...(command.workspaceBinding !== undefined
+          ? { workspaceBinding: command.workspaceBinding }
+          : {}),
       } as const;
       // The marker is the invariant of a handoff: it records the workspace move
       // whether the thread continues on a generated continuation or on a turn
@@ -1433,6 +2555,119 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.pull-request.link": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = nowIso();
+      const existing = (thread.pullRequests ?? []).find((link) =>
+        sameThreadPullRequest(link.pullRequest, command.pullRequest),
+      );
+      const source =
+        command.source === "manual" ? (existing?.source ?? command.source) : command.source;
+      if (
+        existing &&
+        existing.source === source &&
+        sameThreadPullRequestAssociation(existing.pullRequest, command.pullRequest)
+      ) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.pull-request-linked",
+        payload: {
+          threadId: command.threadId,
+          link: {
+            pullRequest: command.pullRequest,
+            source,
+            linkedAt: existing?.linkedAt ?? occurredAt,
+          },
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.pull-request.unlink": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const hasLink = (thread.pullRequests ?? []).some((link) =>
+        sameThreadPullRequest(link.pullRequest, command.pullRequest),
+      );
+      const clearsLegacyPullRequest =
+        thread.pullRequest !== null &&
+        thread.pullRequest !== undefined &&
+        sameThreadPullRequest(thread.pullRequest, command.pullRequest);
+      if (!hasLink && !clearsLegacyPullRequest) {
+        return [];
+      }
+      const occurredAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.pull-request-unlinked",
+        payload: {
+          threadId: command.threadId,
+          pullRequest: command.pullRequest,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.pull-request.rekey": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (sameThreadPullRequest(command.previousPullRequest, command.pullRequest)) {
+        return [];
+      }
+      const existing = (thread.pullRequests ?? []).find((link) =>
+        sameThreadPullRequest(link.pullRequest, command.previousPullRequest),
+      );
+      const clearsLegacyPullRequest =
+        thread.pullRequest !== null &&
+        thread.pullRequest !== undefined &&
+        sameThreadPullRequest(thread.pullRequest, command.previousPullRequest);
+      if (!existing && !clearsLegacyPullRequest) {
+        return [];
+      }
+      const occurredAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.pull-request-rekeyed",
+        payload: {
+          threadId: command.threadId,
+          previousPullRequest: command.previousPullRequest,
+          link: {
+            pullRequest: command.pullRequest,
+            source: existing?.source ?? "manual",
+            linkedAt: existing?.linkedAt ?? occurredAt,
+          },
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
     case "thread.runtime-mode.set": {
       yield* requireThread({
         readModel,
@@ -1503,6 +2738,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.start": {
+      yield* requireWritableProjectForThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
       const targetThread = yield* requireThreadReadyForTurnStart({
         readModel,
         command,
@@ -1541,6 +2781,35 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Proposed plan '${sourceProposedPlan?.planId}' belongs to thread '${sourceThread.id}' in a different project.`,
         });
       }
+      const activeDelegation =
+        targetThread.nudging?.delegation?.completedAt === null
+          ? targetThread.nudging.delegation
+          : undefined;
+      const executionAuthority =
+        activeDelegation?.dispatchId !== undefined &&
+        activeDelegation.dispatchSequence !== undefined &&
+        activeDelegation.dispatchTurnId !== undefined &&
+        activeDelegation.dispatchTurnId !== null
+          ? {
+              executionId: `thread:${targetThread.id}`,
+              assignmentId: activeDelegation.assignmentId,
+              threadId: targetThread.id,
+              generation: activeDelegation.dispatchSequence,
+              dispatchId: activeDelegation.dispatchId,
+              turnId: activeDelegation.dispatchTurnId,
+            }
+          : undefined;
+      if (activeDelegation?.decision) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: CHILD_DECISION_BLOCKED_DETAIL,
+        });
+      }
+      const execution =
+        activeDelegation?.dispatchTurnId != null
+          ? transitionDelegationExecution(activeDelegation, "continued")
+          : null;
+      const turnDelegation = execution?.delegation ?? activeDelegation;
       const { userMessageEvent, turnStartRequestedEvent } = buildTurnStartEvents({
         commandId: command.commandId,
         threadId: command.threadId,
@@ -1556,6 +2825,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         interactionMode: targetThread.interactionMode,
         sourceProposedPlan,
         source: command.source,
+        ...(turnDelegation?.dispatchId
+          ? {
+              delegationAssignmentId: turnDelegation.assignmentId,
+              delegationDispatchId: turnDelegation.dispatchId,
+              delegationTransition: turnDelegation.dispatchReason ?? "assigned",
+            }
+          : {}),
+        ...(executionAuthority !== undefined ? { executionAuthority } : {}),
+        ...(command.workspaceBinding !== undefined
+          ? { workspaceBinding: command.workspaceBinding }
+          : {}),
         at: command.createdAt,
       });
       const occurredAt = command.createdAt;
@@ -1592,10 +2872,48 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
+      const delegationEvents =
+        execution && targetThread.nudging
+          ? [
+              nudgingMetaEvent(targetThread, turnStartRequestedEvent, {
+                ...targetThread.nudging,
+                delegation: execution.delegation,
+              }),
+            ]
+          : [];
+      const workspaceBindingEvent =
+        command.workspaceBinding !== undefined &&
+        (targetThread.workspaceBinding?.generation !== command.workspaceBinding.generation ||
+          targetThread.workspaceBinding?.canonicalPath !== command.workspaceBinding.canonicalPath)
+          ? [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread",
+                  aggregateId: command.threadId,
+                  occurredAt,
+                  commandId: command.commandId,
+                }),
+                type: "thread.meta-updated" as const,
+                payload: {
+                  threadId: command.threadId,
+                  branch: command.workspaceBinding.branch,
+                  worktreePath: command.workspaceBinding.worktreePath,
+                  workspaceBinding: command.workspaceBinding,
+                  updatedAt: occurredAt,
+                },
+              },
+            ]
+          : [];
       return appendChildLifecycleNotification({
         readModel,
         childThread: targetThread,
-        sourceEvents: [userMessageEvent, turnStartRequestedEvent, ...lifecycleEvents],
+        sourceEvents: [
+          ...workspaceBindingEvent,
+          userMessageEvent,
+          turnStartRequestedEvent,
+          ...delegationEvents,
+          ...lifecycleEvents,
+        ],
         sourceEvent: turnStartRequestedEvent,
         lifecycle: "started",
         sourceKey: command.message.messageId,
@@ -1605,6 +2923,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.queued-turn.create": {
+      yield* requireWritableProjectForThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
       const thread = yield* requireThread({
         readModel,
         command,
@@ -1814,6 +3137,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.queued-turn.dispatch": {
+      yield* requireWritableProjectForThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
       const { thread: targetThread, queuedTurn } = yield* requireQueuedTurn({
         readModel,
         command,
@@ -1871,6 +3199,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Queued turn '${command.queuedTurnId}' is failed and must be edited before dispatch.`,
         });
       }
+      const nudging = targetThread.nudging;
+      const activeDelegation =
+        nudging?.delegation?.completedAt === null ? nudging.delegation : undefined;
+      const responseDispatched = activeDelegation?.pendingResponse?.queuedTurnId === queuedTurn.id;
+      if (activeDelegation?.decision && !responseDispatched) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: CHILD_DECISION_BLOCKED_DETAIL,
+        });
+      }
+      const execution =
+        activeDelegation?.dispatchTurnId != null
+          ? transitionDelegationExecution(activeDelegation, "continued")
+          : null;
+      const turnDelegation = execution?.delegation ?? activeDelegation;
       const events: PlannedOrchestrationEvent[] = [];
       if (queuedTurn.modelSelection !== undefined) {
         events.push({
@@ -1920,6 +3263,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
+      // Persist an isolated workspace binding admitted for this dispatch. The
+      // turn-start-requested payload below carries the binding for provenance,
+      // but no projector applies it to the thread; without this meta-updated
+      // event the provider would keep executing in the stale worktree while
+      // the claimed isolated workspace sits unused.
+      if (
+        command.workspaceBinding !== undefined &&
+        (targetThread.workspaceBinding?.generation !== command.workspaceBinding.generation ||
+          targetThread.workspaceBinding?.canonicalPath !== command.workspaceBinding.canonicalPath)
+      ) {
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.dispatchedAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.meta-updated",
+          payload: {
+            threadId: command.threadId,
+            branch: command.workspaceBinding.branch,
+            worktreePath: command.workspaceBinding.worktreePath,
+            workspaceBinding: command.workspaceBinding,
+            updatedAt: command.dispatchedAt,
+          },
+        });
+      }
       const { userMessageEvent, turnStartRequestedEvent } = buildTurnStartEvents({
         commandId: command.commandId,
         threadId: command.threadId,
@@ -1940,6 +3310,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         runtimeMode: isNudge ? targetThread.runtimeMode : queuedTurn.runtimeMode,
         interactionMode: isNudge ? targetThread.interactionMode : queuedTurn.interactionMode,
         sourceProposedPlan: queuedTurn.sourceProposedPlan,
+        workspaceBinding: command.workspaceBinding ?? targetThread.workspaceBinding ?? undefined,
+        ...(turnDelegation?.dispatchId
+          ? {
+              delegationAssignmentId: turnDelegation.assignmentId,
+              delegationDispatchId: turnDelegation.dispatchId,
+              delegationTransition: turnDelegation.dispatchReason ?? "assigned",
+            }
+          : {}),
         at: command.dispatchedAt,
       });
       const dispatchedEvent: PlannedOrchestrationEvent = {
@@ -1958,19 +3336,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           dispatchedAt: command.dispatchedAt,
         },
       };
-      const nudging = targetThread.nudging;
-      const responseDispatched =
-        nudging?.delegation?.pendingResponse?.queuedTurnId === queuedTurn.id;
       const waitSatisfied =
         isNudge && nudging?.wait && !nudging.wait.satisfiedAt && childWaitIsSatisfied(nudging.wait);
       const nudgingEvents =
-        responseDispatched || waitSatisfied
+        execution || responseDispatched || waitSatisfied
           ? [
               nudgingMetaEvent(targetThread, dispatchedEvent, {
                 ...nudging,
-                ...(responseDispatched
-                  ? { delegation: { ...nudging.delegation, pendingResponse: null } }
-                  : {}),
+                ...(execution
+                  ? { delegation: execution.delegation }
+                  : responseDispatched
+                    ? { delegation: { ...nudging.delegation, pendingResponse: null } }
+                    : {}),
                 ...(waitSatisfied
                   ? { wait: { ...nudging.wait, satisfiedAt: command.dispatchedAt } }
                   : {}),
@@ -2149,6 +3526,105 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         : [stopped, nudgingMetaEvent(thread, stopped, { ...thread.nudging, paused: true })];
     }
 
+    case "thread.validation-run.plan": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        thread.validationRun !== null &&
+        thread.validationRun !== undefined &&
+        validationTargetEquals(thread.validationRun.target, command.target)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A validation run is already planned for this thread.",
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-run-planned",
+        payload: {
+          threadId: command.threadId,
+          run: planValidationRun({
+            id: command.runId,
+            threadId: command.threadId,
+            executorId: command.executorId,
+            target: command.target,
+            requestedAt: command.createdAt,
+          }),
+        },
+      };
+    }
+
+    case "thread.validation-gate.update": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (!thread.validationRun || thread.validationRun.id !== command.runId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation gate update does not match the active validation run.",
+        });
+      }
+      if (
+        thread.validationRun.executorId !== command.executorId ||
+        thread.validationRun.lease?.id !== command.leaseId ||
+        !validationTargetEquals(thread.validationRun.target, command.target)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation gate update is not owned by the active lease and target executor.",
+        });
+      }
+      const run = yield* Effect.try({
+        try: () =>
+          transitionValidationGate(
+            thread.validationRun,
+            {
+              gateId: command.gateId,
+              status: command.status,
+              command: command.command,
+              startedAt: command.startedAt,
+              completedAt: command.completedAt,
+              exitCode: command.exitCode,
+              outputRef: command.outputRef,
+              blockerReason: command.blockerReason,
+              diagnostics: command.diagnostics,
+            },
+            command.createdAt,
+          ),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: cause instanceof Error ? cause.message : "Invalid validation gate transition.",
+          }),
+      });
+      const gate = run.gates.find((candidate) => candidate.id === command.gateId);
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-gate-updated",
+        payload: {
+          threadId: command.threadId,
+          runId: command.runId,
+          gate,
+        },
+      };
+    }
+
     case "thread.session.set": {
       const thread = yield* requireThread({
         readModel,
@@ -2193,32 +3669,69 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       ) {
         const boundTurn = (bindingDelegation.dispatchTurnId as string | null | undefined) ?? null;
         if (boundTurn === null) {
-          const [dispatchId, dispatchSequence] = mintDispatch(bindingDelegation.dispatchSequence);
+          const bindableDelegation = bindingDelegation.dispatchId
+            ? bindingDelegation
+            : { ...bindingDelegation, ...mintDispatchRecord(bindingDelegation.dispatchSequence) };
           sourceEvents.push(
             nudgingMetaEvent(thread, sessionSetEvent, {
               ...thread.nudging,
-              delegation: {
-                ...bindingDelegation,
-                dispatchId: bindingDelegation.dispatchId ?? dispatchId,
-                dispatchSequence: bindingDelegation.dispatchId
-                  ? (bindingDelegation.dispatchSequence ?? 1)
-                  : dispatchSequence,
-                dispatchTurnId: nextActiveTurn,
-              },
+              delegation: bindDelegationExecution(bindableDelegation, nextActiveTurn),
             }),
           );
         } else if (boundTurn !== nextActiveTurn) {
-          const [dispatchId, dispatchSequence] = mintDispatch(bindingDelegation.dispatchSequence);
+          const replacement = transitionDelegationExecution(bindingDelegation, "replaced");
           sourceEvents.push(
             nudgingMetaEvent(thread, sessionSetEvent, {
               ...thread.nudging,
-              delegation: {
-                ...bindingDelegation,
-                dispatchId,
-                dispatchSequence,
-                dispatchTurnId: nextActiveTurn,
-              },
+              delegation: bindDelegationExecution(replacement.delegation, nextActiveTurn),
             }),
+          );
+          if (replacement.retiredPendingResponseQueuedTurnId !== null) {
+            sourceEvents.push({
+              ...withEventBase({
+                aggregateKind: "thread",
+                aggregateId: thread.id,
+                occurredAt: command.createdAt,
+                commandId: command.commandId,
+              }),
+              causationEventId: sessionSetEvent.eventId,
+              type: "thread.queued-turn-deleted",
+              payload: {
+                threadId: thread.id,
+                queuedTurnId: replacement.retiredPendingResponseQueuedTurnId,
+                deletedAt: command.createdAt,
+              },
+            });
+          }
+        }
+      }
+      if (nextActiveTurn !== null && nextActiveTurn !== prevActiveTurn) {
+        const responseReady = (thread.collaborationRequests ?? []).find(
+          (request) =>
+            request.status === "response-ready" &&
+            request.response !== null &&
+            request.responseDeliveryQueuedTurnId !== null,
+        );
+        if (responseReady) {
+          sourceEvents.push(
+            collaborationRequestEvent(
+              command,
+              thread.id,
+              {
+                ...responseReady,
+                status: "consumed",
+                consumedExecution: {
+                  executionId: command.session.providerInstanceId ?? thread.id,
+                  generation: responseReady.producingExecution.generation + 1,
+                  dispatchId: responseReady.producingExecution.dispatchId,
+                  turnId: nextActiveTurn,
+                },
+                terminalOutcome: responseReady.response.outcome,
+                updatedAt: command.createdAt,
+              },
+              "consumed",
+              command.createdAt,
+            ),
           );
         }
       }
@@ -2302,8 +3815,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             "The active execution changed since this replacement was prepared; refresh and retry with the current dispatch.",
         });
       }
-      const [dispatchId, dispatchSequence] = mintDispatch(delegation.dispatchSequence ?? 1);
-      return {
+      const pendingResponseId = delegation.pendingResponse?.queuedTurnId ?? null;
+      const unrelatedQueuedTurns = (thread.queuedTurns ?? []).filter(
+        (queuedTurn) => queuedTurn.id !== pendingResponseId,
+      );
+      if (unrelatedQueuedTurns.length > 0) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "Replacement requires an empty child queue apart from its pending decision answer.",
+        });
+      }
+      if ((thread.queuedTurns ?? []).some((queuedTurn) => queuedTurn.id === command.queuedTurnId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Queued turn '${command.queuedTurnId}' already exists on thread '${command.threadId}'.`,
+        });
+      }
+      const replacement = transitionDelegationExecution(delegation, "replaced");
+      const metaUpdated: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -2315,16 +3845,56 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           nudging: {
             ...thread.nudging,
-            delegation: {
-              ...delegation,
-              dispatchId,
-              dispatchSequence,
-              dispatchTurnId: null,
-            },
+            delegation: replacement.delegation,
           },
           updatedAt: command.createdAt,
         },
       };
+      const queued: PlannedOrchestrationEvent = {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        causationEventId: metaUpdated.eventId,
+        type: "thread.queued-turn-created",
+        payload: {
+          threadId: command.threadId,
+          queuedTurn: {
+            id: command.queuedTurnId,
+            threadId: command.threadId,
+            message: command.message,
+            ...(command.modelSelection ? { modelSelection: command.modelSelection } : {}),
+            runtimeMode: command.runtimeMode,
+            interactionMode: command.interactionMode,
+            createdAt: command.createdAt,
+            updatedAt: command.createdAt,
+            failedAt: null,
+            failureMessage: null,
+          },
+        },
+      };
+      const retiredAnswer =
+        replacement.retiredPendingResponseQueuedTurnId === null
+          ? []
+          : [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread" as const,
+                  aggregateId: command.threadId,
+                  occurredAt: command.createdAt,
+                  commandId: command.commandId,
+                }),
+                type: "thread.queued-turn-deleted" as const,
+                payload: {
+                  threadId: command.threadId,
+                  queuedTurnId: replacement.retiredPendingResponseQueuedTurnId,
+                  deletedAt: command.createdAt,
+                },
+              },
+            ];
+      return [...retiredAnswer, metaUpdated, queued];
     }
 
     case "thread.message.assistant.delta": {
@@ -2503,6 +4073,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         childThreadId: thread.id,
         childTitle: thread.title,
         kind,
+        wakeReason: childWakeReason({ kind }),
         summary,
         ...(resultMessage ? { sourceMessageId: resultMessage.id } : {}),
       };
@@ -2540,8 +4111,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       const parent = yield* requireThread({ readModel, command, threadId: child.parentThreadId });
       if (
-        (command.assignmentId !== undefined && command.assignmentId !== delegation.assignmentId) ||
-        (delegation.assignedAt !== undefined && command.assignmentId === undefined)
+        recordedReportOutcome === undefined &&
+        ((command.assignmentId !== undefined && command.assignmentId !== delegation.assignmentId) ||
+          (delegation.assignedAt !== undefined && command.assignmentId === undefined))
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -2554,11 +4126,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "The parent thread has been deleted.",
         });
       }
-      const effectiveDispatchId = command.dispatchId ?? delegation.dispatchId ?? undefined;
+      const reportAssignmentId = command.assignmentId ?? delegation.assignmentId;
+      const reportDispatchId = command.dispatchId ?? delegation.dispatchId ?? undefined;
       const expectedDecisionId = childReportDedupeKey({
         childThreadId: child.id,
-        dispatchId: effectiveDispatchId,
-        assignmentId: delegation.assignmentId,
+        dispatchId: reportDispatchId,
+        originTurnId: command.originTurnId,
+        assignmentId: reportAssignmentId,
         reportId: command.reportId,
       });
       const verdict = classifyChildReport({
@@ -2566,11 +4140,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         claimedDispatchId: command.dispatchId,
         claimedTurnId: command.originTurnId,
         kind: command.kind,
-        hasReceipt: hasReportReceipt(child, {
-          reportId: command.reportId,
-          assignmentId: delegation.assignmentId,
-          dispatchId: effectiveDispatchId,
-        }),
+        recordedOutcome: recordedReportOutcome,
       });
       const verdictActivity = (summary: string): PlannedOrchestrationEvent => ({
         ...withEventBase({
@@ -2589,8 +4159,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             summary,
             payload: {
               reportId: command.reportId,
-              assignmentId: delegation.assignmentId,
-              ...(effectiveDispatchId ? { dispatchId: effectiveDispatchId } : {}),
+              assignmentId: reportAssignmentId,
+              ...(command.dispatchId ? { dispatchId: command.dispatchId } : {}),
               ...(command.originTurnId ? { originTurnId: command.originTurnId } : {}),
               dispatchVerdict: verdict,
             },
@@ -2602,6 +4172,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         },
       });
+      if (recordedReportOutcome !== undefined) {
+        return verdictActivity(
+          `Recorded ${recordedReportOutcome} outcome replayed for report '${command.reportId}' without applying it again.`,
+        );
+      }
       if (verdict !== "accepted") {
         return verdictActivity(
           verdict === "already-recorded"
@@ -2647,15 +4222,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const report = {
         id: childReportDedupeKey({
           childThreadId: child.id,
-          dispatchId: effectiveDispatchId,
-          assignmentId: delegation.assignmentId,
+          dispatchId: reportDispatchId,
+          originTurnId: command.originTurnId,
+          assignmentId: reportAssignmentId,
           reportId: command.reportId,
         }),
-        assignmentId: delegation.assignmentId,
-        ...(effectiveDispatchId ? { dispatchId: effectiveDispatchId } : {}),
+        assignmentId: reportAssignmentId,
+        ...(reportDispatchId ? { dispatchId: reportDispatchId } : {}),
         childThreadId: child.id,
         childTitle: child.title,
         kind: command.kind,
+        wakeReason: childWakeReason({ kind: command.kind }),
         summary: command.summary,
         ...(command.decision !== undefined ? { decision: command.decision } : {}),
         ...(command.canContinue !== undefined ? { canContinue: command.canContinue } : {}),
@@ -2774,7 +4351,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "workflow.run.request": {
-      const parentThread = yield* requireThread({
+      const parentThread = yield* requireWritableProjectForThread({
         readModel,
         command,
         threadId: command.parentThreadId,
@@ -2958,11 +4535,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     default: {
-      command satisfies never;
-      const fallback = command as never as { type: string };
+      const unexpectedCommand: never = command;
+      const commandType = String(unexpectedCommand);
       return yield* new OrchestrationCommandInvariantError({
-        commandType: fallback.type,
-        detail: `Unknown command type: ${fallback.type}`,
+        commandType,
+        detail: `Unknown command type: ${commandType}`,
       });
     }
   }

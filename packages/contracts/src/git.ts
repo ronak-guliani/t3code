@@ -256,6 +256,8 @@ const GitStatusLocalShape = {
   hasOriginRemote: Schema.Boolean,
   isDefaultBranch: Schema.Boolean,
   branch: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  revision: Schema.optional(TrimmedNonEmptyStringSchema),
+  dirtyStateFingerprint: Schema.optional(TrimmedNonEmptyStringSchema),
   hasWorkingTreeChanges: Schema.Boolean,
   workingTree: GitStatusWorkingTree,
 };

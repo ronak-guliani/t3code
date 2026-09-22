@@ -1,10 +1,15 @@
-import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
+import {
+  type ConnectionRouteKind,
+  type EnvironmentConnectionPhase,
+} from "@t3tools/client-runtime/connection";
 import { EnvironmentId, ThreadId, type ServerConfig } from "@t3tools/contracts";
 
 export interface EnvironmentRuntimeState {
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
   readonly connectionErrorTraceId: string | null;
+  readonly routeKind?: ConnectionRouteKind | null;
+  readonly routeSwitching?: boolean;
   readonly serverConfig: ServerConfig | null;
 }
 
@@ -13,9 +18,13 @@ export interface ConnectedEnvironmentSummary {
   readonly environmentLabel: string;
   readonly displayUrl: string;
   readonly isRelayManaged: boolean;
+  /** False when the user switched the environment off in Settings. */
+  readonly isEnabled: boolean;
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
   readonly connectionErrorTraceId: string | null;
+  readonly routeKind?: ConnectionRouteKind | null;
+  readonly routeSwitching?: boolean;
 }
 
 export interface SelectedThreadRef {

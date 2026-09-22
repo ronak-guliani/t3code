@@ -29,9 +29,12 @@ import {
   GitHubCliError,
   PullRequestUnavailableError,
   PullRequestMonitorError,
+  CollaborativeAcceptanceCaseLookupError,
+  CollaborativeAcceptanceError,
   RpcClientId,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
+  type OrchestrationThread,
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
   type OrchestrationThreadStreamItem,
@@ -49,9 +52,12 @@ import {
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
   MessageId,
+  ProjectId,
+  ServerChatArchiveError,
   ServerProviderListCommandsError,
   ServerExportThreadMarkdownError,
   ThreadId,
+  TurnId,
   type TerminalEvent,
   type TerminalError,
   type TerminalAttachStreamEvent,
@@ -62,6 +68,7 @@ import {
   type WorkflowRunInput,
   type WorkflowRunResult,
   type WorkflowWorkerConfig,
+  type PullRequestRef,
   WorkflowRunId,
   WorkflowArtifactId,
   WorkflowNodeId,
@@ -131,6 +138,12 @@ import {
 import { isThreadDetailEvent } from "./orchestration/threadDetailEvents.ts";
 import { collectActiveThreadSubtree } from "./orchestration/threadHierarchy.ts";
 import {
+  createChatArchiveManifest,
+  importedMessageText,
+  readChatArchive,
+  writeChatArchive,
+} from "./orchestration/chatArchive.ts";
+import {
   createThreadMarkdownExportFilename,
   formatThreadMarkdownExport,
 } from "./orchestration/threadMarkdownExport.ts";
@@ -160,6 +173,7 @@ import { ServerAuth, type AuthenticatedSession } from "./auth/Services/ServerAut
 import { rpcAuthorizationLayer } from "./auth/RpcAuthorization.ts";
 import { PreviewManager } from "./preview/Manager.ts";
 import { PortDiscovery } from "./preview/PortScanner.ts";
+import * as DeviceService from "./device/DeviceService.ts";
 import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
 import {
   BootstrapCredentialService,
@@ -171,10 +185,13 @@ import {
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
 import { expandHomePath } from "./pathExpansion.ts";
+import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { repositoryFromPullRequestUrl } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
 import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorService.ts";
+import { CollaborativeAcceptanceCoordinator } from "./collaborativeAcceptance/Coordinator.ts";
+import { acceptanceAuthorityForThread } from "./collaborativeAcceptance/authority.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -266,6 +283,8 @@ const makeWsRpcLayer = (
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const deviceHostContext =
+        yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngineService;
@@ -300,11 +319,82 @@ const makeWsRpcLayer = (
       const sessions = yield* SessionCredentialService;
       const previewManager = yield* PreviewManager;
       const portDiscovery = yield* PortDiscovery;
+      const deviceService = yield* DeviceService.DeviceService;
       const previewAutomationBroker = yield* PreviewAutomationBroker;
       const pullRequests = yield* Effect.serviceOption(PullRequestService.PullRequestService);
       const pullRequestMonitors = yield* Effect.serviceOption(
         PullRequestMonitors.PullRequestMonitorService,
       );
+      const acceptanceCoordinator = yield* Effect.serviceOption(CollaborativeAcceptanceCoordinator);
+      const withAcceptance = <A>(
+        operation: (
+          service: CollaborativeAcceptanceCoordinator["Service"],
+        ) => Effect.Effect<A, CollaborativeAcceptanceError>,
+      ): Effect.Effect<A, CollaborativeAcceptanceError> =>
+        Option.match(acceptanceCoordinator, {
+          onNone: () =>
+            Effect.fail(
+              new CollaborativeAcceptanceError({
+                message: "Collaborative acceptance is unavailable in this environment.",
+              }),
+            ),
+          onSome: operation,
+        });
+      const resolveAcceptanceThread = (threadId: ThreadId) =>
+        projectionSnapshotQuery.getThreadDetailById(threadId).pipe(
+          Effect.mapError(
+            () =>
+              new CollaborativeAcceptanceError({
+                message: "Could not resolve the acceptance thread.",
+              }),
+          ),
+          Effect.flatMap((thread) =>
+            Option.isSome(thread)
+              ? Effect.succeed(thread.value)
+              : Effect.fail(
+                  new CollaborativeAcceptanceError({
+                    message: "Acceptance thread is unavailable.",
+                    reason: "participant-unavailable",
+                  }),
+                ),
+          ),
+        );
+      const withAcceptanceLookup = <A>(
+        operation: (
+          service: CollaborativeAcceptanceCoordinator["Service"],
+        ) => Effect.Effect<A, CollaborativeAcceptanceCaseLookupError>,
+      ): Effect.Effect<A, CollaborativeAcceptanceCaseLookupError> =>
+        Option.match(acceptanceCoordinator, {
+          onNone: () =>
+            Effect.fail(
+              new CollaborativeAcceptanceCaseLookupError({
+                message: "Collaborative acceptance is unavailable in this environment.",
+                reason: "unavailable",
+              }),
+            ),
+          onSome: operation,
+        });
+      const hasDurablePullRequestAssociation = (
+        thread: OrchestrationThread,
+        pullRequest: PullRequestRef,
+      ): boolean =>
+        thread.projectId === pullRequest.projectId &&
+        [
+          ...(thread.pullRequest === undefined || thread.pullRequest === null
+            ? []
+            : [thread.pullRequest]),
+          ...(thread.linkedPullRequest === undefined || thread.linkedPullRequest === null
+            ? []
+            : [thread.linkedPullRequest]),
+          ...(thread.branchPullRequest === undefined || thread.branchPullRequest === null
+            ? []
+            : [thread.branchPullRequest]),
+          ...(thread.pullRequests ?? []).map((link) => link.pullRequest),
+        ].some(
+          (association) =>
+            association.number === pullRequest.number &&
+            repositoryFromPullRequestUrl(association.url) === pullRequest.repository,
+        );
       const withPullRequestMonitors = <A, E>(
         f: (
           service: PullRequestMonitors.PullRequestMonitorService["Service"],
@@ -1162,29 +1252,36 @@ const makeWsRpcLayer = (
               projectionSnapshotQuery.searchTranscript?.(input.query) ??
               Effect.succeed({ matches: [] })
             ).pipe(
-              Effect.flatMap((result) =>
-                Effect.forEach(result.matches.slice(0, input.limit ?? 50), (match) =>
-                  projectionSnapshotQuery.getThreadDetailById(match.threadId).pipe(
-                    Effect.map((thread) =>
-                      Option.map(thread, (value) => ({
-                        threadId: match.threadId,
-                        projectId: value.projectId,
-                        source: match.role,
-                        snippet: match.excerpt.slice(0, 240),
-                        messageCreatedAt: match.updatedAt,
-                      })),
-                    ),
-                  ),
-                ),
-              ),
-              Effect.map((matches) => ({
-                matches: matches.flatMap((match) =>
-                  Option.match(match, {
-                    onNone: () => [],
-                    onSome: (value) => [value],
-                  }),
-                ),
-              })),
+              Effect.flatMap((result) => {
+                const matches = result.matches.slice(0, input.limit ?? 50);
+                if (matches.length === 0) {
+                  return Effect.succeed({ matches: [] });
+                }
+                // Narrow project lookup: search results need only the owning
+                // project id per match. Hydrating full thread details here
+                // cost ~9 heavy queries per match (messages, activities,
+                // plans, turns) decoding payloads the caller discards.
+                return projectionSnapshotQuery
+                  .listThreadProjectIds(matches.map((match) => match.threadId))
+                  .pipe(
+                    Effect.map((projectIds) => ({
+                      matches: matches.flatMap((match) => {
+                        const projectId = projectIds.get(match.threadId);
+                        return projectId === undefined
+                          ? []
+                          : [
+                              {
+                                threadId: match.threadId,
+                                projectId,
+                                source: match.role,
+                                snippet: match.excerpt.slice(0, 240),
+                                messageCreatedAt: match.updatedAt,
+                              },
+                            ];
+                      }),
+                    })),
+                  );
+              }),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationGetSnapshotError({
@@ -1193,6 +1290,12 @@ const makeWsRpcLayer = (
                   }),
               ),
             ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.readThread]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.readThread,
+            projectionSnapshotQuery.readThread(input),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.getThreadSnapshot]: (input) =>
@@ -1512,7 +1615,18 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverUpdateSettings]: ({ patch }) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateSettings,
-            serverSettings.updateSettings(patch).pipe(Effect.map(redactServerSettingsForClient)),
+            Effect.gen(function* () {
+              const deviceHosts = patch.deviceHosts
+                ? yield* remoteSshDeviceHosts(patch.deviceHosts).pipe(
+                    Effect.provide(deviceHostContext),
+                  )
+                : undefined;
+              const settings = yield* serverSettings.updateSettings({
+                ...patch,
+                ...(deviceHosts ? { deviceHosts } : {}),
+              });
+              return redactServerSettingsForClient(settings);
+            }),
             {
               "rpc.aggregate": "server",
             },
@@ -1525,6 +1639,138 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.sidebarUpdateState, sidebarState.update(input), {
             "rpc.aggregate": "sidebar",
           }),
+        [WS_METHODS.serverExportActiveChats]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverExportActiveChats,
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerChatArchiveError({
+                      message: cause.message,
+                      cause,
+                    }),
+                ),
+              );
+              const exportDirectory = settings.chatExportDirectory.trim();
+              if (exportDirectory.length === 0) {
+                return yield* new ServerChatArchiveError({
+                  message: "Set a chat export directory in Settings before exporting.",
+                });
+              }
+              const threads = yield* projectionSnapshotQuery.getActiveChatArchiveEntries().pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerChatArchiveError({
+                      message: "Unable to load active chats for export.",
+                      cause,
+                    }),
+                ),
+              );
+              if (threads.length === 0) {
+                return yield* new ServerChatArchiveError({
+                  message: "There are no active chats to export.",
+                });
+              }
+              const manifest = createChatArchiveManifest({
+                threads,
+                exportedAt: new Date(),
+              });
+              const path = yield* Effect.tryPromise({
+                try: () => writeChatArchive(exportDirectory, manifest),
+                catch: (cause) =>
+                  new ServerChatArchiveError({
+                    message: "Unable to write the chat archive.",
+                    cause,
+                  }),
+              });
+              return { path, threadCount: threads.length };
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverImportChatArchive]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverImportChatArchive,
+            Effect.gen(function* () {
+              const manifest = yield* Effect.tryPromise({
+                try: () => readChatArchive(input.path),
+                catch: (cause) =>
+                  new ServerChatArchiveError({
+                    message:
+                      cause instanceof Error ? cause.message : "Unable to read the chat archive.",
+                    cause,
+                  }),
+              });
+              const sourceProjectTitles = new Set(
+                manifest.threads.map((thread) => thread.sourceProjectTitle),
+              );
+              const projectId = ProjectId.make(crypto.randomUUID());
+              const threadIdBySourceId = new Map(
+                manifest.threads.map(
+                  (thread) => [thread.sourceThreadId, ThreadId.make(crypto.randomUUID())] as const,
+                ),
+              );
+              const threads = manifest.threads.map((thread) => {
+                const turnIdBySourceId = new Map<string, TurnId>();
+                return {
+                  threadId: threadIdBySourceId.get(thread.sourceThreadId)!,
+                  parentThreadId:
+                    thread.sourceParentThreadId === null
+                      ? null
+                      : (threadIdBySourceId.get(thread.sourceParentThreadId) ?? null),
+                  title:
+                    sourceProjectTitles.size > 1
+                      ? `${thread.sourceProjectTitle}: ${thread.title}`
+                      : thread.title,
+                  modelSelection: thread.modelSelection,
+                  runtimeMode: thread.runtimeMode,
+                  interactionMode: thread.interactionMode,
+                  createdAt: thread.createdAt,
+                  updatedAt: thread.updatedAt,
+                  messages: thread.messages.map((message) => {
+                    const turnId =
+                      message.sourceTurnId === null
+                        ? null
+                        : (turnIdBySourceId.get(message.sourceTurnId) ??
+                          (() => {
+                            const id = TurnId.make(crypto.randomUUID());
+                            turnIdBySourceId.set(message.sourceTurnId!, id);
+                            return id;
+                          })());
+                    return {
+                      messageId: MessageId.make(crypto.randomUUID()),
+                      role: message.role,
+                      text: importedMessageText(message),
+                      turnId,
+                      createdAt: message.createdAt,
+                      updatedAt: message.updatedAt,
+                    };
+                  }),
+                };
+              });
+              yield* orchestrationEngine
+                .dispatch({
+                  type: "chat-archive.import",
+                  commandId: CommandId.make(crypto.randomUUID()),
+                  projectId,
+                  title: manifest.title,
+                  workspaceRoot: NodePath.resolve(input.path),
+                  threads,
+                  createdAt: new Date().toISOString(),
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ServerChatArchiveError({
+                        message: "Unable to import the chat archive.",
+                        cause,
+                      }),
+                  ),
+                );
+              return { projectId, threadCount: threads.length };
+            }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.workflowRun]: (input) =>
           observeRpcEffect(WS_METHODS.workflowRun, runWorkflow(input), {
             "rpc.aggregate": "workflow",
@@ -2127,6 +2373,158 @@ const makeWsRpcLayer = (
             withPullRequestMonitors((service) => service.launchFallback(input)),
             { "rpc.aggregate": "pullRequestMonitors" },
           ),
+        [WS_METHODS.collaborativeAcceptanceSubmitCandidate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceSubmitCandidate,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const sender = yield* resolveAcceptanceThread(input.threadId);
+                const existing =
+                  input.submission.caseId === undefined
+                    ? null
+                    : (yield* service.status(input.submission.caseId)).record;
+                const recipientThreadId =
+                  existing?.case.parentThreadId ?? sender.parentThreadId ?? sender.id;
+                const recipient = yield* resolveAcceptanceThread(recipientThreadId);
+                const senderAuthority = acceptanceAuthorityForThread(sender);
+                const recipientAuthority = acceptanceAuthorityForThread(recipient);
+                if (senderAuthority === undefined || recipientAuthority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.submitCandidate({
+                  ...input.submission,
+                  senderThreadId: sender.id,
+                  recipientThreadId,
+                  senderAuthority,
+                  recipientAuthority,
+                });
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceRequestReview]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceRequestReview,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const record = (yield* service.status(input.caseId)).record;
+                if (record === null) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance case not found.",
+                    caseId: input.caseId,
+                  });
+                }
+                const sender = yield* resolveAcceptanceThread(input.threadId);
+                const recipient = yield* resolveAcceptanceThread(record.case.parentThreadId);
+                const senderAuthority = acceptanceAuthorityForThread(sender);
+                const recipientAuthority = acceptanceAuthorityForThread(recipient);
+                if (senderAuthority === undefined || recipientAuthority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.requestReview({
+                  caseId: input.caseId,
+                  senderThreadId: sender.id,
+                  recipientThreadId: recipient.id,
+                  assignmentId: record.case.assignmentId,
+                  senderAuthority,
+                  recipientAuthority,
+                });
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceStatus]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceStatus,
+            withAcceptance((service) => service.status(input.caseId)),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceResolveForPullRequest]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceResolveForPullRequest,
+            withAcceptanceLookup((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId).pipe(
+                  Effect.mapError(
+                    () =>
+                      new CollaborativeAcceptanceCaseLookupError({
+                        message: "The acceptance thread is unavailable.",
+                        reason: "unavailable",
+                      }),
+                  ),
+                );
+                if (!hasDurablePullRequestAssociation(thread, input.pullRequest)) {
+                  return yield* new CollaborativeAcceptanceCaseLookupError({
+                    message: "The pull request is not durably associated with this thread.",
+                    reason:
+                      thread.projectId === input.pullRequest.projectId
+                        ? "not-found"
+                        : "unauthorized",
+                  });
+                }
+                return yield* service.resolveForPullRequest(input);
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceSubmitAssessment]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceSubmitAssessment,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId);
+                const authority = acceptanceAuthorityForThread(thread);
+                if (authority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.submitAssessment({
+                  ...input.submission,
+                  authority,
+                });
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptancePause]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptancePause,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId);
+                const authority = acceptanceAuthorityForThread(thread);
+                if (authority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.pause(input.caseId, input.reason, authority);
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceResume]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceResume,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId);
+                const authority = acceptanceAuthorityForThread(thread);
+                if (authority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.resume(input.caseId, authority);
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
 
         [WS_METHODS.subscribeGitStatus]: (input) =>
           observeRpcStream(
@@ -2638,6 +3036,44 @@ const makeWsRpcLayer = (
           observeRpcStream(WS_METHODS.subscribePreviewEvents, previewManager.events, {
             "rpc.aggregate": "preview",
           }),
+        [WS_METHODS.deviceConfigure]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceConfigure, deviceService.configure(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceTestHost]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceTestHost, deviceService.testHost(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceList]: (_input) =>
+          observeRpcEffect(WS_METHODS.deviceList, deviceService.list, {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceOpen]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceOpen, deviceService.open(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceClose]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceClose, deviceService.close(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceShutdown]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceShutdown, deviceService.shutdown(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceDetail]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceDetail, deviceService.detail(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.deviceAction]: (input) =>
+          observeRpcEffect(WS_METHODS.deviceAction, deviceService.action(input), {
+            "rpc.aggregate": "device",
+          }),
+        [WS_METHODS.subscribeDeviceState]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeDeviceState,
+            DeviceService.stateStream(deviceService),
+            { "rpc.aggregate": "device" },
+          ),
         [WS_METHODS.subscribeDiscoveredLocalServers]: (_input) =>
           observeRpcStream(
             WS_METHODS.subscribeDiscoveredLocalServers,
@@ -2813,7 +3249,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               sessions.markConnected(session.sessionId),
               backgroundPolicy.registerConnection(session.sessionId, backgroundConnection),
             ],
-            { discard: true },
+            { discard: true, concurrency: "unbounded" },
           ),
           () =>
             Effect.logInfo("websocket connected", {
@@ -2835,7 +3271,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                 backgroundPolicy.removeConnection(session.sessionId, backgroundConnection),
                 sessions.markDisconnected(session.sessionId),
               ],
-              { discard: true },
+              { discard: true, concurrency: "unbounded" },
             ),
         );
       }).pipe(Effect.catchTag("AuthError", respondToAuthError)),

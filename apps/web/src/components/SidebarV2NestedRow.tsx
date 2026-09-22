@@ -3,6 +3,8 @@ import { memo, useCallback } from "react";
 
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import type { ProviderInstanceEntry } from "../providerInstances";
+import { sidebarThreadKey } from "../sidebarThreadTree";
+import { useThreadSelectionStore } from "../threadSelectionStore";
 import type { SidebarThreadSummary } from "../types";
 import { cn } from "~/lib/utils";
 import { getSidebarThreadPrewarmKey } from "./SidebarThreadPrewarmer";
@@ -31,7 +33,9 @@ export interface SidebarV2NestedRowProps {
   readonly childCount: number;
   /** Self or any active descendant is mid-turn; archive would hide that work. */
   readonly archiveBlocked: boolean;
-  readonly onOpen: (thread: SidebarThreadSummary) => void;
+  // The click event drives multi-select: Ctrl/Cmd toggles and Shift extends a
+  // range, while keyboard activation passes none and always opens the thread.
+  readonly onOpen: (thread: SidebarThreadSummary, event?: React.MouseEvent) => void;
   readonly onToggleExpanded: (thread: SidebarThreadSummary, isExpanded: boolean) => void;
   readonly onArchive: (thread: SidebarThreadSummary) => void;
   readonly onDismissAgentRun: (thread: SidebarThreadSummary) => void;
@@ -61,6 +65,11 @@ export const SidebarV2NestedRow = memo(function SidebarV2NestedRow({
   onDismissAgentRun,
 }: SidebarV2NestedRowProps) {
   const { environmentLabel } = useThreadEnvironmentLabel(thread);
+  // Subscribed inside the memoized row (rather than passed as a prop) so only
+  // rows whose selection actually changes re-render.
+  const isSelected = useThreadSelectionStore((state) =>
+    state.selectedThreadKeys.has(sidebarThreadKey(thread)),
+  );
   const runningTerminalIds = useTerminalStateStore(
     (state) =>
       selectThreadTerminalState(state.terminalStateByThreadKey, resolveTerminalThreadRef(thread))
@@ -69,7 +78,10 @@ export const SidebarV2NestedRow = memo(function SidebarV2NestedRow({
 
   const agentRun = thread.virtualAgentRun;
 
-  const handleOpen = useCallback(() => onOpen(thread), [onOpen, thread]);
+  const handleOpen = useCallback(
+    (event: React.MouseEvent) => onOpen(thread, event),
+    [onOpen, thread],
+  );
   const handleArchive = useCallback(
     (event: React.MouseEvent) => {
       event.stopPropagation();
@@ -108,7 +120,7 @@ export const SidebarV2NestedRow = memo(function SidebarV2NestedRow({
 
   return (
     <SidebarMenuItem
-      className="group/thread relative"
+      className={cn("group/thread relative", isSelected && "rounded-lg ring-1 ring-primary/30")}
       data-thread-prewarm-key={getSidebarThreadPrewarmKey(thread)}
     >
       <Tooltip>
@@ -116,11 +128,21 @@ export const SidebarV2NestedRow = memo(function SidebarV2NestedRow({
           delay={200}
           render={
             <SidebarMenuButton
-              className="h-auto min-h-0 gap-[var(--app-sidebar-row-line-gap)] px-[var(--app-sidebar-row-padding-x)] py-[calc(var(--app-sidebar-row-padding-y)*0.6)] text-[length:var(--app-sidebar-font-size)] transition-none"
+              className={cn(
+                "h-auto min-h-0 gap-[var(--app-sidebar-row-line-gap)] px-[var(--app-sidebar-row-padding-x)] py-[calc(var(--app-sidebar-row-padding-y)*0.6)] text-[length:var(--app-sidebar-font-size)] transition-none",
+                isSelected && "bg-primary/10 hover:bg-primary/15",
+              )}
               isActive={active}
               onClick={handleOpen}
               onKeyDown={handleRowKeyDown}
-              render={<div role="button" tabIndex={0} />}
+              render={
+                <div
+                  aria-selected={isSelected}
+                  data-selected={isSelected ? "true" : undefined}
+                  role="button"
+                  tabIndex={0}
+                />
+              }
               style={{
                 paddingLeft: `${
                   Math.min(depth, MAX_NESTED_INDENT_DEPTH) * NESTED_INDENT_EM +

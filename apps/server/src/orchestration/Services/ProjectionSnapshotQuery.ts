@@ -8,6 +8,7 @@
  */
 import type {
   OrchestrationCheckpointSummary,
+  OrchestrationGetSnapshotError,
   OrchestrationGetThreadActivitiesInput,
   OrchestrationGetThreadActivitiesResult,
   OrchestrationProject,
@@ -16,9 +17,13 @@ import type {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadShell,
+  OrchestrationReadThreadInput,
+  OrchestrationReadThreadInputError,
+  OrchestrationReadThreadResult,
   OrchestrationSearchTranscriptResult,
   ProjectId,
   ThreadId,
+  WorkspaceBinding,
 } from "@t3tools/contracts";
 import { Context } from "effect";
 import type { Option } from "effect";
@@ -36,6 +41,7 @@ export interface ProjectionThreadCheckpointContext {
   readonly projectId: ProjectId;
   readonly workspaceRoot: string;
   readonly worktreePath: string | null;
+  readonly workspaceBinding?: WorkspaceBinding | null;
   readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
 }
 
@@ -49,10 +55,40 @@ export interface ProjectionThreadDetailSnapshot {
   readonly thread: OrchestrationThread;
 }
 
+export type ProjectionChatArchiveMessage = Pick<
+  OrchestrationThread["messages"][number],
+  "role" | "text" | "attachments" | "turnId" | "createdAt" | "updatedAt"
+>;
+
+export type ProjectionChatArchiveThread = Pick<
+  OrchestrationThread,
+  | "id"
+  | "parentThreadId"
+  | "title"
+  | "modelSelection"
+  | "runtimeMode"
+  | "interactionMode"
+  | "createdAt"
+  | "updatedAt"
+> & {
+  readonly messages: ReadonlyArray<ProjectionChatArchiveMessage>;
+};
+
+export interface ProjectionChatArchiveEntry {
+  readonly thread: ProjectionChatArchiveThread;
+  readonly project: Pick<OrchestrationProjectShell, "title" | "workspaceRoot">;
+}
+
 /**
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
+  readonly readThread: (
+    input: OrchestrationReadThreadInput,
+  ) => Effect.Effect<
+    OrchestrationReadThreadResult,
+    OrchestrationReadThreadInputError | OrchestrationGetSnapshotError
+  >;
   /**
    * Read the latest orchestration projection snapshot.
    *
@@ -69,6 +105,15 @@ export interface ProjectionSnapshotQueryShape {
    */
   readonly getShellSnapshot: () => Effect.Effect<
     OrchestrationShellSnapshot,
+    ProjectionRepositoryError
+  >;
+
+  /**
+   * Read all active chats and their complete message history in one consistent
+   * transaction for portable archive export.
+   */
+  readonly getActiveChatArchiveEntries: () => Effect.Effect<
+    ReadonlyArray<ProjectionChatArchiveEntry>,
     ProjectionRepositoryError
   >;
 
@@ -148,6 +193,18 @@ export interface ProjectionSnapshotQueryShape {
   readonly searchTranscript?: (
     query: string,
   ) => Effect.Effect<OrchestrationSearchTranscriptResult, ProjectionRepositoryError>;
+  /**
+   * Batch-resolve owning projects for live threads in a single narrow query.
+   *
+   * Used by search enrichment, which needs only the project id per match:
+   * hydrating full thread details (messages, activities, plans, turns) per
+   * match costs ~9 heavy queries each and decodes payloads the caller
+   * discards. Soft-deleted threads are excluded, matching
+   * `getThreadDetailById` filtering; unknown ids are simply absent.
+   */
+  readonly listThreadProjectIds: (
+    threadIds: ReadonlyArray<ThreadId>,
+  ) => Effect.Effect<ReadonlyMap<ThreadId, ProjectId>, ProjectionRepositoryError>;
 }
 
 /**

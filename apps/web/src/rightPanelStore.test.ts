@@ -182,4 +182,58 @@ describe("rightPanelStore", () => {
       false,
     );
   });
+
+  it("keeps pull requests as independently addressable panel tabs", () => {
+    const store = useRightPanelStore.getState();
+    const first = {
+      environmentId: EnvironmentId.make("environment-test"),
+      reference: {
+        projectId: "project-a" as never,
+        repository: "owner/repo",
+        number: 12,
+      },
+      host: "github.com",
+    };
+    const second = {
+      ...first,
+      reference: { ...first.reference, number: 13 },
+    };
+
+    store.openPullRequest(ref, first);
+    store.openPullRequest(ref, second);
+    store.activateSurface(ref, "pull-request:environment-test:project-a:owner/repo:12");
+
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, ref),
+    ).toMatchObject({
+      isOpen: true,
+      activeSurfaceId: "pull-request:environment-test:project-a:owner/repo:12",
+      surfaces: [
+        {
+          id: "pull-request:environment-test:project-a:owner/repo:12",
+          kind: "pull-request",
+          reference: { number: 12 },
+        },
+        {
+          id: "pull-request:environment-test:project-a:owner/repo:13",
+          kind: "pull-request",
+          reference: { number: 13 },
+        },
+      ],
+    });
+  });
+
+  it("opens the linked pull request list as a singleton panel tab", () => {
+    const store = useRightPanelStore.getState();
+    store.open(ref, "pull-requests");
+    store.open(ref, "pull-requests");
+
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, ref),
+    ).toMatchObject({
+      isOpen: true,
+      activeSurfaceId: "pull-requests",
+      surfaces: [{ id: "pull-requests", kind: "pull-requests" }],
+    });
+  });
 });

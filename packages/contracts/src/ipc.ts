@@ -65,8 +65,11 @@ import {
 import type { ProviderInstanceId } from "./providerInstance.ts";
 import type {
   ServerConfig,
+  ServerExportActiveChatsResult,
   ServerExportThreadMarkdownInput,
   ServerExportThreadMarkdownResult,
+  ServerImportChatArchiveInput,
+  ServerImportChatArchiveResult,
   ServerListSkillsResult,
   ServerProviderListCommandsInput,
   ServerProviderPrewarmSessionInput,
@@ -151,6 +154,15 @@ import type {
   PullRequestMonitorSubmitFindingsResult,
   PullRequestMonitorTransferInput,
 } from "./pullRequestMonitor.ts";
+import type {
+  CollaborativeAcceptanceAssessmentSubmission,
+  CollaborativeAcceptanceCaseLookupInput,
+  CollaborativeAcceptanceCaseLookupResult,
+  CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptanceCandidateSubmission,
+  CollaborativeAcceptancePauseReason,
+  CollaborativeAcceptanceStatus,
+} from "./collaborativeAcceptance.ts";
 import { ServerSettings, type ClientSettings, type ServerSettingsPatch } from "./settings.ts";
 import { Schema } from "effect";
 
@@ -238,6 +250,7 @@ export interface DesktopEnvironmentBootstrap {
 }
 
 export interface PersistedSavedEnvironmentRecord {
+  enabled?: boolean;
   environmentId: EnvironmentId;
   label: string;
   wsBaseUrl: string;
@@ -1007,6 +1020,10 @@ export interface LocalApi {
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
+    exportActiveChats: () => Promise<ServerExportActiveChatsResult>;
+    importChatArchive: (
+      input: ServerImportChatArchiveInput,
+    ) => Promise<ServerImportChatArchiveResult>;
     exportThreadMarkdown: (
       input: ServerExportThreadMarkdownInput,
     ) => Promise<ServerExportThreadMarkdownResult>;
@@ -1127,7 +1144,41 @@ export interface EnvironmentApi {
       input: PullRequestMonitorLaunchFallbackInput,
     ) => Promise<PullRequestMonitorLaunchFallbackResult>;
   };
+  collaborativeAcceptance: {
+    submitCandidate: (input: {
+      readonly threadId: ThreadId;
+      readonly submission: CollaborativeAcceptanceCandidateSubmission;
+    }) => Promise<CollaborativeAcceptanceStatus>;
+    requestReview: (input: {
+      readonly threadId: ThreadId;
+      readonly caseId: CollaborativeAcceptanceCaseId;
+    }) => Promise<CollaborativeAcceptanceStatus>;
+    status: (input: {
+      readonly threadId: ThreadId;
+      readonly caseId: CollaborativeAcceptanceCaseId;
+    }) => Promise<CollaborativeAcceptanceStatus>;
+    resolveForPullRequest: (
+      input: CollaborativeAcceptanceCaseLookupInput,
+    ) => Promise<CollaborativeAcceptanceCaseLookupResult>;
+    submitAssessment: (input: {
+      readonly threadId: ThreadId;
+      readonly submission: CollaborativeAcceptanceAssessmentSubmission;
+    }) => Promise<CollaborativeAcceptanceStatus>;
+    pause: (input: {
+      readonly threadId: ThreadId;
+      readonly caseId: CollaborativeAcceptanceCaseId;
+      readonly reason: CollaborativeAcceptancePauseReason;
+    }) => Promise<CollaborativeAcceptanceStatus>;
+    resume: (input: {
+      readonly threadId: ThreadId;
+      readonly caseId: CollaborativeAcceptanceCaseId;
+    }) => Promise<CollaborativeAcceptanceStatus>;
+  };
   server: {
+    exportActiveChats: () => Promise<ServerExportActiveChatsResult>;
+    importChatArchive: (
+      input: ServerImportChatArchiveInput,
+    ) => Promise<ServerImportChatArchiveResult>;
     refreshProviders: (input?: {
       readonly instanceId?: ProviderInstanceId;
       readonly cwd?: string;

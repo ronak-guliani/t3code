@@ -36,8 +36,9 @@ import { OrchestrationEventStore } from "../../persistence/Services/Orchestratio
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
 import { WorktreeCleanupJobRepositoryLive } from "../../persistence/Layers/WorktreeCleanupJobs.ts";
-import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
 import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
+import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
+import { WorkspaceOwnershipRepositoryLive } from "../../persistence/Layers/WorkspaceOwnership.ts";
 import { ThreadUrlBuilder } from "../../threadUrl.ts";
 import {
   OrchestrationCommandInvariantError,
@@ -46,7 +47,15 @@ import {
   type OrchestrationDispatchError,
 } from "../Errors.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
+import { childReportDedupeKey } from "../dispatchAuthority.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
+import {
+  admitWorkspaceCommand,
+  canonicalizeCommandWorktree,
+  cleanupWorktreePath,
+  isWorktreeCleanupPending,
+  type WorkspaceAdmissionDeps,
+} from "../workspaceAdmission.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import type { ProjectionReceipt } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -72,6 +81,7 @@ function commandToAggregateRef(command: OrchestrationCommand): {
 } {
   switch (command.type) {
     case "project.create":
+    case "chat-archive.import":
     case "project.meta.update":
     case "project.delete":
       return {
@@ -103,6 +113,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const worktreeCleanupJobs = yield* WorktreeCleanupJobRepository;
   const threadUrls = yield* Effect.serviceOption(ThreadUrlBuilder);
   const coordinator = yield* CheckoutCoordinator;
+  const workspaceOwnership = yield* WorkspaceOwnershipRepository;
 
   let readModel = createEmptyReadModel(new Date().toISOString());
 
@@ -225,67 +236,48 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       ),
     );
 
-  const commandWorktreePath = (command: OrchestrationCommand): string | null => {
-    switch (command.type) {
-      case "thread.create":
-        return command.worktreePath;
-      case "thread.meta.update":
-        return command.worktreePath ?? null;
-      case "thread.workspace.handoff":
-        return command.worktreePath;
-      default:
-        return null;
-    }
-  };
-
-  const cleanupWorktreePath = (
-    command: OrchestrationCommand,
+  const reportIdentityForCommand = (
+    command: Extract<OrchestrationCommand, { type: "thread.child.report" }>,
     model: OrchestrationReadModel,
-  ): string | null => {
-    const directPath = commandWorktreePath(command);
-    if (directPath !== null) {
-      return directPath;
-    }
-    switch (command.type) {
-      case "thread.unarchive":
-      case "thread.queued-turn.create":
-      case "thread.queued-turn.dispatch":
-        return model.threads.find((thread) => thread.id === command.threadId)?.worktreePath ?? null;
-      case "thread.turn.start":
-        return (
-          model.threads.find((thread) => thread.id === command.threadId)?.worktreePath ??
-          command.bootstrap?.createThread?.worktreePath ??
-          null
-        );
-      default:
-        return null;
-    }
+  ) => {
+    const delegation = model.threads.find((thread) => thread.id === command.threadId)?.nudging
+      ?.delegation;
+    const assignmentId = command.assignmentId ?? delegation?.assignmentId;
+    if (!assignmentId) return null;
+    return {
+      reportKey: childReportDedupeKey({
+        childThreadId: command.threadId,
+        dispatchId: command.dispatchId,
+        originTurnId: command.originTurnId,
+        assignmentId,
+        reportId: command.reportId,
+      }),
+      assignmentId,
+    };
   };
 
-  const canonicalizeCommandWorktree = Effect.fn("canonicalizeCommandWorktree")(function* (
-    command: OrchestrationCommand,
-  ) {
-    const worktreePath = commandWorktreePath(command);
-    if (worktreePath === null) {
-      return command;
-    }
-    const canonicalPath = yield* Effect.promise(() => canonicalizeWorktreePath(worktreePath));
-    switch (command.type) {
-      case "thread.create":
-      case "thread.meta.update":
-      case "thread.workspace.handoff":
-        return { ...command, worktreePath: canonicalPath };
-      default:
-        return command;
-    }
-  });
+  const findRecordedReportOutcome = (reportKey: string) =>
+    sql<{ readonly outcome: string }>`
+      SELECT outcome
+      FROM delegation_report_receipts
+      WHERE report_key = ${reportKey}
+    `.pipe(
+      Effect.map((rows) => {
+        const outcome = rows[0]?.outcome;
+        return outcome === "accepted" || outcome === "stale" ? outcome : undefined;
+      }),
+      Effect.mapError(toPersistenceSqlError("OrchestrationEngine.reportReceipt:query")),
+    );
 
-  const isWorktreeCleanupPending = Effect.fn("isWorktreeCleanupPending")(function* (
-    worktreePath: string,
-  ) {
-    const canonicalPath = yield* Effect.promise(() => canonicalizeWorktreePath(worktreePath));
-    return yield* worktreeCleanupJobs.hasReservationByPath(canonicalPath);
-  });
+  // Live read-model accessors for workspace admission. The closures read the
+  // current model at call time, preserving dispatch-time visibility.
+  const admissionDeps: WorkspaceAdmissionDeps = {
+    findThread: (threadId) => readModel.threads.find((entry) => entry.id === threadId),
+    findProject: (projectId) => readModel.projects.find((entry) => entry.id === projectId),
+    claimOwnership: (input) => workspaceOwnership.claim(input),
+    hasCleanupReservationByPath: (canonicalPath) =>
+      worktreeCleanupJobs.hasReservationByPath(canonicalPath),
+  };
 
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
     const dispatchStartSequence = readModel.snapshotSequence;
@@ -313,6 +305,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         yield* PubSub.publish(eventPubSub, persistedEvent);
       }
     });
+    // Canonical path admitted by this dispatch attempt (the Git top-level
+    // ownership key). Recorded for failure compensation below: recomputing it
+    // from the command input would miss the claimed row when a handoff
+    // targets a subdirectory of the worktree.
+    let admittedCanonicalPath: string | undefined;
 
     const process = Effect.exit(
       Effect.gen(function* () {
@@ -344,14 +341,27 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 : undefined;
             return dispatchResult(command, existingReceipt.value.resultSequence, replayedVerdict);
           }
+
           return yield* new OrchestrationCommandPreviouslyRejectedError({
             commandId: envelope.command.commandId,
             detail: existingReceipt.value.error ?? "Previously rejected.",
           });
         }
 
-        const worktreePath = cleanupWorktreePath(command, readModel);
-        if (worktreePath !== null && (yield* isWorktreeCleanupPending(worktreePath))) {
+        const previousWorkspaceBinding =
+          command.type === "thread.workspace.handoff"
+            ? readModel.threads.find((thread) => thread.id === command.threadId)?.workspaceBinding
+            : undefined;
+        const admittedCommand = yield* admitWorkspaceCommand(admissionDeps, command);
+        admittedCanonicalPath =
+          "workspaceBinding" in admittedCommand
+            ? admittedCommand.workspaceBinding?.canonicalPath
+            : undefined;
+        const worktreePath = cleanupWorktreePath(admittedCommand, readModel.threads);
+        if (
+          worktreePath !== null &&
+          (yield* isWorktreeCleanupPending(admissionDeps, worktreePath))
+        ) {
           return yield* new OrchestrationCommandWorktreeCleanupPendingError({
             commandType: command.type,
             worktreePath,
@@ -376,17 +386,27 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }
         }
 
+        const reportIdentity =
+          command.type === "thread.child.report"
+            ? reportIdentityForCommand(command, readModel)
+            : null;
+        const recordedReportOutcome =
+          reportIdentity === null
+            ? undefined
+            : yield* findRecordedReportOutcome(reportIdentity.reportKey);
         const eventBase = yield* decideOrchestrationCommand({
-          command,
+          command: admittedCommand,
           readModel,
+          ...(recordedReportOutcome !== undefined ? { recordedReportOutcome } : {}),
         });
         const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
         // A failed metadata precondition is an accepted no-op. Persist its
         // receipt so retrying the same command cannot apply it to a later state.
         if (
           eventBases.length === 0 &&
-          command.type === "thread.meta.update" &&
-          (command.expectedUpdatedAt !== undefined || command.expectedWorkspaceCwd !== undefined)
+          admittedCommand.type === "thread.meta.update" &&
+          (admittedCommand.expectedUpdatedAt !== undefined ||
+            admittedCommand.expectedWorkspaceCwd !== undefined)
         ) {
           yield* commandReceiptRepository.upsert({
             commandId: command.commandId,
@@ -449,6 +469,37 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 });
               }
 
+              if (command.type === "thread.child.report" && reportIdentity !== null) {
+                const outcome = reportVerdictForCommand(command.commandId, committedEvents);
+                if (outcome === "accepted" || outcome === "stale") {
+                  yield* sql`
+                    INSERT INTO delegation_report_receipts (
+                      report_key,
+                      command_id,
+                      child_thread_id,
+                      assignment_id,
+                      dispatch_id,
+                      origin_turn_id,
+                      report_id,
+                      outcome,
+                      created_at
+                    )
+                    VALUES (
+                      ${reportIdentity.reportKey},
+                      ${command.commandId},
+                      ${command.threadId},
+                      ${reportIdentity.assignmentId},
+                      ${command.dispatchId ?? null},
+                      ${command.originTurnId ?? null},
+                      ${command.reportId},
+                      ${outcome},
+                      ${command.createdAt}
+                    )
+                    ON CONFLICT(report_key) DO NOTHING
+                  `;
+                }
+              }
+
               yield* commandReceiptRepository.upsert({
                 commandId: envelope.command.commandId,
                 aggregateKind: lastSavedEvent.aggregateKind,
@@ -476,6 +527,24 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           );
 
         readModel = committedCommand.nextReadModel;
+        if (
+          admittedCommand.type === "thread.workspace.handoff" &&
+          previousWorkspaceBinding !== undefined &&
+          admittedCommand.workspaceBinding !== undefined &&
+          previousWorkspaceBinding.canonicalPath !== admittedCommand.workspaceBinding.canonicalPath
+        ) {
+          yield* workspaceOwnership
+            .release(admittedCommand.threadId, previousWorkspaceBinding.canonicalPath)
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logError("workspace handoff committed but old ownership remains held", {
+                  threadId: admittedCommand.threadId,
+                  canonicalPath: previousWorkspaceBinding.canonicalPath,
+                  error,
+                }),
+              ),
+            );
+        }
         yield* Effect.forEach(committedCommand.projectionReceipts, (receipt) => receipt.reconcile, {
           concurrency: 1,
           discard: true,
@@ -504,7 +573,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }
         }
         return dispatchResult(
-          command,
+          admittedCommand,
           committedCommand.lastSequence,
           command.type === "thread.child.report"
             ? reportVerdictForCommand(command.commandId, committedCommand.committedEvents)
@@ -544,6 +613,51 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
           const error = Cause.squash(exit.cause) as OrchestrationDispatchError;
           if (!isOrchestrationCommandPreviouslyRejectedError(error)) {
+            const releaseFailedAdmission = Effect.gen(function* () {
+              const failedThreadId = (() => {
+                switch (envelope.command.type) {
+                  case "thread.create":
+                    return envelope.command.threadId;
+                  case "thread.turn.start":
+                    return envelope.command.bootstrap?.createThread === undefined
+                      ? undefined
+                      : envelope.command.threadId;
+                  default:
+                    return undefined;
+                }
+              })();
+              if (
+                failedThreadId !== undefined &&
+                !readModel.threads.some((thread) => thread.id === failedThreadId)
+              ) {
+                yield* workspaceOwnership.release(failedThreadId);
+              }
+
+              const transferCommand =
+                envelope.command.type === "thread.workspace.handoff" ||
+                envelope.command.type === "thread.meta.update"
+                  ? envelope.command
+                  : undefined;
+              if (transferCommand !== undefined && admittedCanonicalPath !== undefined) {
+                const currentThread = readModel.threads.find(
+                  (thread) => thread.id === transferCommand.threadId,
+                );
+                if (admittedCanonicalPath !== currentThread?.workspaceBinding?.canonicalPath) {
+                  yield* workspaceOwnership.release(
+                    transferCommand.threadId,
+                    admittedCanonicalPath,
+                  );
+                }
+              }
+            }).pipe(
+              Effect.catch((cleanupError) =>
+                Effect.logWarning("failed to compensate workspace admission", {
+                  commandId: envelope.command.commandId,
+                  cleanupError,
+                }),
+              ),
+            );
+            yield* releaseFailedAdmission;
             yield* reconcileReadModelAfterDispatchFailure.pipe(
               Effect.catch(() =>
                 Effect.logWarning(
@@ -577,7 +691,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       ),
     );
     const command = envelope.command;
-    const cleanupPath = cleanupWorktreePath(command, readModel);
+    const cleanupPath = cleanupWorktreePath(command, readModel.threads);
     const requiresWorktreeLock =
       cleanupPath !== null ||
       command.type === "thread.archive" ||
@@ -662,4 +776,5 @@ export const OrchestrationEngineLive = Layer.effect(
 ).pipe(
   Layer.provideMerge(WorktreeCleanupJobRepositoryLive),
   Layer.provideMerge(CheckoutCoordinatorLive),
+  Layer.provideMerge(WorkspaceOwnershipRepositoryLive),
 );

@@ -1,4 +1,9 @@
-import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  CollaborationExecutionAuthority,
+  EnvironmentId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -14,6 +19,8 @@ import { revokeActivePreviewAutomationProviderSession } from "./PreviewAutomatio
 export interface McpCredentialRequest {
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
+  readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
+  readonly executionAuthority?: CollaborationExecutionAuthority;
 }
 
 export interface McpIssuedCredential {
@@ -27,6 +34,8 @@ export interface McpProviderSessionConfig {
   readonly providerInstanceId: ProviderInstanceId;
   readonly endpoint: string;
   readonly authorizationHeader: string;
+  readonly capabilities: ReadonlySet<McpInvocationContext.McpCapability>;
+  readonly executionAuthority?: CollaborationExecutionAuthority;
 }
 
 export interface McpSessionRegistryShape {
@@ -107,10 +116,10 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   });
   const currentTimeMillis = options.now ? Effect.sync(options.now) : Clock.currentTimeMillis;
   const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_LIVENESS_WINDOW_MS;
-  const endpoint =
+  const endpointBase =
     httpServer.address._tag === "TcpAddress"
-      ? `http://${getHttpMcpEndpointHost(httpServer.address.hostname)}:${httpServer.address.port}/mcp`
-      : "http://127.0.0.1/mcp";
+      ? `http://${getHttpMcpEndpointHost(httpServer.address.hostname)}:${httpServer.address.port}`
+      : "http://127.0.0.1";
 
   const hashToken = (token: string) =>
     crypto
@@ -200,15 +209,22 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         threadId: ThreadId.make(request.threadId),
         providerSessionId,
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
-        capabilities: new Set(["preview"]),
+        capabilities: request.capabilities ?? new Set(["preview"]),
         issuedAt,
+        ...(request.executionAuthority === undefined
+          ? {}
+          : { executionAuthority: request.executionAuthority }),
       };
       const config: McpProviderSessionConfig = {
         environmentId,
         threadId: scope.threadId,
         providerSessionId,
         providerInstanceId: scope.providerInstanceId,
-        endpoint,
+        endpoint: `${endpointBase}${scope.capabilities.has("device") ? "/mcp-device" : "/mcp"}`,
+        capabilities: scope.capabilities,
+        ...(scope.executionAuthority === undefined
+          ? {}
+          : { executionAuthority: scope.executionAuthority }),
         authorizationHeader: `Bearer ${rawToken}`,
       };
       yield* modifyState((current) => {

@@ -1,5 +1,7 @@
 import {
+  CollaborativeAcceptanceCaseId,
   CommandId,
+  DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   type DesktopBridge,
   EnvironmentId,
@@ -116,6 +118,15 @@ const rpcClientMock = {
     transfer: vi.fn(),
     submitFindings: vi.fn(),
     launchFallback: vi.fn(),
+  },
+  collaborativeAcceptance: {
+    submitCandidate: vi.fn(),
+    requestReview: vi.fn(),
+    status: vi.fn(),
+    resolveForPullRequest: vi.fn(),
+    submitAssessment: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
   },
   workflow: {
     run: vi.fn(),
@@ -418,6 +429,28 @@ describe("wsApi", () => {
     expect(rpcClientMock.server.refreshProviders).toHaveBeenCalledWith(input);
   });
 
+  it("forwards collaborative acceptance PR lookups through the environment API", async () => {
+    const input = {
+      threadId: ThreadId.make("thread-acceptance"),
+      pullRequest: {
+        projectId: ProjectId.make("project-acceptance"),
+        repository: "owner/repository",
+        number: 42,
+      },
+    };
+    const result = {
+      caseId: CollaborativeAcceptanceCaseId.make("case-acceptance"),
+      status: { record: null, pauseReason: null },
+    };
+    rpcClientMock.collaborativeAcceptance.resolveForPullRequest.mockResolvedValue(result);
+    const { createEnvironmentApi } = await import("./environmentApi");
+
+    const api = createEnvironmentApi(rpcClientMock as never);
+
+    await expect(api.collaborativeAcceptance.resolveForPullRequest(input)).resolves.toEqual(result);
+    expect(rpcClientMock.collaborativeAcceptance.resolveForPullRequest).toHaveBeenCalledWith(input);
+  });
+
   it("forwards terminal and shell stream events", async () => {
     const { createEnvironmentApi } = await import("./environmentApi");
 
@@ -670,6 +703,7 @@ describe("wsApi", () => {
 
   it("reads and writes persistence through the desktop bridge when available", async () => {
     const clientSettings = {
+      ...DEFAULT_CLIENT_SETTINGS,
       autoOpenPlanSidebar: false,
       browserDefaultViewport: { _tag: "fill" as const },
       browserDefaultZoomFactor: 1 as const,
@@ -697,6 +731,8 @@ describe("wsApi", () => {
       confirmThreadDelete: false,
       codeFont: "jetbrains-mono" as const,
       diffWordWrap: true,
+      pullRequestsDefaultState: "open" as const,
+      pullRequestsCodeFontSize: 12,
       favorites: [],
       providerModelPreferences: {},
       sidebarProjectGroupingMode: "repository_path" as const,
@@ -757,6 +793,7 @@ describe("wsApi", () => {
     const { createLocalApi } = await import("./localApi");
     const api = createLocalApi(rpcClientMock as never);
     const clientSettings = {
+      ...DEFAULT_CLIENT_SETTINGS,
       autoOpenPlanSidebar: false,
       browserDefaultViewport: { _tag: "fill" as const },
       browserDefaultZoomFactor: 1 as const,
@@ -784,6 +821,8 @@ describe("wsApi", () => {
       confirmThreadDelete: false,
       codeFont: "jetbrains-mono" as const,
       diffWordWrap: true,
+      pullRequestsDefaultState: "open" as const,
+      pullRequestsCodeFontSize: 12,
       favorites: [],
       providerModelPreferences: {},
       sidebarProjectGroupingMode: "repository_path" as const,

@@ -3,6 +3,7 @@ import {
   ActivityIcon,
   DiffIcon,
   FolderTreeIcon,
+  GitPullRequestIcon,
   GlobeIcon,
   TerminalSquareIcon,
 } from "lucide-react";
@@ -10,6 +11,7 @@ import {
 import { cn } from "~/lib/utils";
 import { Toggle } from "../ui/toggle";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { useSettings } from "~/hooks/useSettings";
 
 export interface ChatPanelTogglesState {
   terminalAvailable: boolean;
@@ -19,6 +21,8 @@ export interface ChatPanelTogglesState {
   browserPreviewOpen: boolean;
   insightsOpen: boolean;
   diffOpen: boolean;
+  pullRequestsAvailable: boolean;
+  pullRequestsOpen: boolean;
   isGitRepo: boolean;
   terminalToggleShortcutLabel: string | null;
   diffToggleShortcutLabel: string | null;
@@ -27,6 +31,7 @@ export interface ChatPanelTogglesState {
   onToggleBrowserPreview: () => void;
   onToggleInsights: () => void;
   onToggleDiff: () => void;
+  onTogglePullRequests: () => void;
 }
 
 interface ChatPanelTogglesProps extends ChatPanelTogglesState {
@@ -60,6 +65,8 @@ export const ChatPanelToggles = memo(function ChatPanelToggles({
   browserPreviewOpen,
   insightsOpen,
   diffOpen,
+  pullRequestsAvailable,
+  pullRequestsOpen,
   isGitRepo,
   terminalToggleShortcutLabel,
   diffToggleShortcutLabel,
@@ -68,9 +75,26 @@ export const ChatPanelToggles = memo(function ChatPanelToggles({
   onToggleBrowserPreview,
   onToggleInsights,
   onToggleDiff,
+  onTogglePullRequests,
 }: ChatPanelTogglesProps) {
   const isRail = orientation === "vertical";
   const tooltipSide = isRail ? "left" : "bottom";
+  const showInsights = useSettings((s) => s.headerShowInsightsToggle);
+  const showBrowser = useSettings((s) => s.headerShowBrowserToggle);
+  const showFiles = useSettings((s) => s.headerShowFilesToggle);
+  const showTerminal = useSettings((s) => s.headerShowTerminalToggle);
+  const showDiff = useSettings((s) => s.headerShowDiffToggle);
+
+  if (
+    !showInsights &&
+    !showBrowser &&
+    !showFiles &&
+    !showTerminal &&
+    !showDiff &&
+    !pullRequestsAvailable
+  ) {
+    return null;
+  }
 
   return (
     <div
@@ -84,110 +108,139 @@ export const ChatPanelToggles = memo(function ChatPanelToggles({
       )}
       data-chat-panel-toggles={orientation}
     >
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Toggle
-              className={TOGGLE_CLASS}
-              pressed={insightsOpen}
-              onPressedChange={onToggleInsights}
-              aria-label="Toggle insights panel"
-              variant="outline"
-              size="xs"
-            >
-              <ActivityIcon className="size-3" />
-            </Toggle>
-          }
-        />
-        <TooltipPopup side={tooltipSide}>Toggle insights panel</TooltipPopup>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Toggle
-              className={TOGGLE_CLASS}
-              pressed={browserPreviewOpen}
-              onPressedChange={onToggleBrowserPreview}
-              aria-label="Toggle browser preview"
-              variant="outline"
-              size="xs"
-            >
-              <GlobeIcon className="size-3" />
-            </Toggle>
-          }
-        />
-        <TooltipPopup side={tooltipSide}>Toggle browser preview</TooltipPopup>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Toggle
-              className={TOGGLE_CLASS}
-              pressed={filesOpen}
-              onPressedChange={onToggleFiles}
-              aria-label="Toggle file browser"
-              variant="outline"
-              size="xs"
-              disabled={!filesAvailable}
-            >
-              <FolderTreeIcon className="size-3" />
-            </Toggle>
-          }
-        />
-        <TooltipPopup side={tooltipSide}>
-          {filesAvailable
-            ? "Toggle file browser"
-            : "File browser is unavailable until this thread has an active project."}
-        </TooltipPopup>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Toggle
-              className={TOGGLE_CLASS}
-              pressed={terminalOpen}
-              onPressedChange={onToggleTerminal}
-              aria-label="Toggle terminal drawer"
-              variant="outline"
-              size="xs"
-              disabled={!terminalAvailable}
-            >
-              <TerminalSquareIcon className="size-3" />
-            </Toggle>
-          }
-        />
-        <TooltipPopup side={tooltipSide}>
-          {!terminalAvailable
-            ? "Terminal is unavailable until this thread has an active project."
-            : terminalToggleShortcutLabel
-              ? `Toggle terminal drawer (${terminalToggleShortcutLabel})`
-              : "Toggle terminal drawer"}
-        </TooltipPopup>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Toggle
-              className={TOGGLE_CLASS}
-              pressed={diffOpen}
-              onPressedChange={onToggleDiff}
-              aria-label="Toggle diff panel"
-              variant="outline"
-              size="xs"
-              disabled={!isGitRepo && !diffOpen}
-            >
-              <DiffIcon className="size-3" />
-            </Toggle>
-          }
-        />
-        <TooltipPopup side={tooltipSide}>
-          {!isGitRepo && !diffOpen
-            ? "Diff panel is unavailable because this project is not a git repository."
-            : diffToggleShortcutLabel
-              ? `Toggle diff panel (${diffToggleShortcutLabel})`
-              : "Toggle diff panel"}
-        </TooltipPopup>
-      </Tooltip>
+      {showInsights ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Toggle
+                className={TOGGLE_CLASS}
+                pressed={insightsOpen}
+                onPressedChange={onToggleInsights}
+                aria-label="Toggle insights panel"
+                variant="outline"
+                size="xs"
+              >
+                <ActivityIcon className="size-3" />
+              </Toggle>
+            }
+          />
+          <TooltipPopup side={tooltipSide}>Toggle insights panel</TooltipPopup>
+        </Tooltip>
+      ) : null}
+      {showBrowser ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Toggle
+                className={TOGGLE_CLASS}
+                pressed={browserPreviewOpen}
+                onPressedChange={onToggleBrowserPreview}
+                aria-label="Toggle browser preview"
+                variant="outline"
+                size="xs"
+              >
+                <GlobeIcon className="size-3" />
+              </Toggle>
+            }
+          />
+          <TooltipPopup side={tooltipSide}>Toggle browser preview</TooltipPopup>
+        </Tooltip>
+      ) : null}
+      {showFiles ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Toggle
+                className={TOGGLE_CLASS}
+                pressed={filesOpen}
+                onPressedChange={onToggleFiles}
+                aria-label="Toggle file browser"
+                variant="outline"
+                size="xs"
+                disabled={!filesAvailable}
+              >
+                <FolderTreeIcon className="size-3" />
+              </Toggle>
+            }
+          />
+          <TooltipPopup side={tooltipSide}>
+            {filesAvailable
+              ? "Toggle file browser"
+              : "File browser is unavailable until this thread has an active project."}
+          </TooltipPopup>
+        </Tooltip>
+      ) : null}
+      {showTerminal ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Toggle
+                className={TOGGLE_CLASS}
+                pressed={terminalOpen}
+                onPressedChange={onToggleTerminal}
+                aria-label="Toggle terminal drawer"
+                variant="outline"
+                size="xs"
+                disabled={!terminalAvailable}
+              >
+                <TerminalSquareIcon className="size-3" />
+              </Toggle>
+            }
+          />
+          <TooltipPopup side={tooltipSide}>
+            {!terminalAvailable
+              ? "Terminal is unavailable until this thread has an active project."
+              : terminalToggleShortcutLabel
+                ? `Toggle terminal drawer (${terminalToggleShortcutLabel})`
+                : "Toggle terminal drawer"}
+          </TooltipPopup>
+        </Tooltip>
+      ) : null}
+      {showDiff ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Toggle
+                className={TOGGLE_CLASS}
+                pressed={diffOpen}
+                onPressedChange={onToggleDiff}
+                aria-label="Toggle diff panel"
+                variant="outline"
+                size="xs"
+                disabled={!isGitRepo && !diffOpen}
+              >
+                <DiffIcon className="size-3" />
+              </Toggle>
+            }
+          />
+          <TooltipPopup side={tooltipSide}>
+            {!isGitRepo && !diffOpen
+              ? "Diff panel is unavailable because this project is not a git repository."
+              : diffToggleShortcutLabel
+                ? `Toggle diff panel (${diffToggleShortcutLabel})`
+                : "Toggle diff panel"}
+          </TooltipPopup>
+        </Tooltip>
+      ) : null}
+      {pullRequestsAvailable ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Toggle
+                className={TOGGLE_CLASS}
+                pressed={pullRequestsOpen}
+                onPressedChange={onTogglePullRequests}
+                aria-label="Toggle pull requests panel"
+                variant="outline"
+                size="xs"
+              >
+                <GitPullRequestIcon className="size-3" />
+              </Toggle>
+            }
+          />
+          <TooltipPopup side={tooltipSide}>Toggle pull requests panel</TooltipPopup>
+        </Tooltip>
+      ) : null}
     </div>
   );
 });

@@ -18,6 +18,7 @@ import {
   isTailscaleServePortConfigured,
   isTailscaleIpv4Address,
   parseTailscaleMagicDnsName,
+  parseTailscaleServeMappings,
   parseTailscaleServePortConfigured,
   parseTailscaleServePortTarget,
   parseTailscaleStatus,
@@ -171,6 +172,40 @@ describe("tailscale", () => {
 
       assert.equal(yield* parseTailscaleServePortTarget(status, 8443), "http://127.0.0.1:13773");
       assert.isNull(yield* parseTailscaleServePortTarget(status, 7443));
+    }),
+  );
+
+  it.effect("parses all Serve mappings without exposing raw configuration", () =>
+    Effect.gen(function* () {
+      const mappings = yield* parseTailscaleServeMappings(
+        JSON.stringify({
+          Web: {
+            "desktop.tail.ts.net:443": {
+              Handlers: { "/": { Proxy: "http://127.0.0.1:13773" } },
+            },
+            "desktop.tail.ts.net:8443": {
+              Handlers: { "/": { Proxy: "http://[::1]:13773" } },
+            },
+            "desktop.tail.ts.net:9443": {
+              Handlers: { "/": { File: "/private/path" } },
+            },
+          },
+        }),
+      );
+
+      assert.deepEqual(mappings, [
+        {
+          magicDnsName: "desktop.tail.ts.net",
+          servePort: 443,
+          target: "http://127.0.0.1:13773",
+        },
+        {
+          magicDnsName: "desktop.tail.ts.net",
+          servePort: 8443,
+          target: "http://[::1]:13773",
+        },
+      ]);
+      assert.notInclude(JSON.stringify(mappings), "/private/path");
     }),
   );
 

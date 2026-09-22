@@ -17,6 +17,7 @@ import { extractToolCommandInput } from "@t3tools/shared/toolActivity";
 import {
   commandDetailRepeatsCommand,
   compactWorkEntryLabel,
+  extractRuntimeActivityDetail,
   groupRepeatedWorkEntries,
   hasWorkLogToolData,
   extractCommandOutputText,
@@ -164,7 +165,7 @@ export type ThreadFeedEntry =
       readonly summaryKind: ToolGroupSummaryKind;
       readonly toolSurface?: WorkLogEntry["toolSurface"];
       readonly toolIcon?: WorkLogEntry["toolIcon"];
-      readonly summaryToolIcon?: "browser" | "t3-code";
+      readonly summaryToolIcon?: "browser" | "device" | "t3-code";
       readonly hasFailure: boolean;
       readonly live: boolean;
       readonly shimmer: boolean;
@@ -533,7 +534,13 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const viewedImagePath = asTrimmedString(asRecord(payload?.data)?.imagePath);
   const commandOutput = commandPreview.command ? extractCommandOutputText(payload?.data) : null;
   const output = commandOutput ? stripTrailingExitCode(commandOutput).output : null;
-  if (!taskDetailAsLabel && output) {
+  const runtimeDetail =
+    activity.kind === "runtime.warning" || activity.kind === "runtime.error"
+      ? extractRuntimeActivityDetail(payload)
+      : null;
+  if (!taskDetailAsLabel && runtimeDetail) {
+    entry.detail = runtimeDetail;
+  } else if (!taskDetailAsLabel && output) {
     entry.detail = output;
   } else if (!taskDetailAsLabel && typeof payload?.detail === "string") {
     const detail = stripTrailingExitCode(payload.detail).output;

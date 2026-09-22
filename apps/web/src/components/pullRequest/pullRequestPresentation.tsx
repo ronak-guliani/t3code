@@ -2,6 +2,7 @@ import type {
   PullRequestActor,
   PullRequestCheckStatus,
   PullRequestMergeability,
+  PullRequestMergeMethod,
   PullRequestState,
 } from "@t3tools/contracts";
 import {
@@ -20,6 +21,7 @@ import { Children, isValidElement, type ReactNode } from "react";
 import { cn } from "~/lib/utils";
 
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { isWebUrl, splitFencedCodeBlocks } from "./pullRequestMarkdownUtils";
 
 /**
  * How a pull request's state reads on this page. Draft outranks conflicts: a
@@ -230,6 +232,28 @@ export function PullRequestMetaLine({
 }
 
 /**
+ * The verdict a submitted review carries, read the way the host reports it.
+ * Approvals and change requests must not wear the same badge: a timeline
+ * where they do makes every review read as mere discussion. A null variant
+ * means the plain "Review" label rather than a verdict pill.
+ */
+export function pullRequestReviewVerdictPresentation(reviewState: string | null): {
+  readonly label: string;
+  readonly variant: "success" | "error" | "outline" | null;
+} {
+  switch (reviewState?.toUpperCase()) {
+    case "APPROVED":
+      return { label: "Approved", variant: "success" };
+    case "CHANGES_REQUESTED":
+      return { label: "Changes requested", variant: "error" };
+    case "DISMISSED":
+      return { label: "Review dismissed", variant: "outline" };
+    default:
+      return { label: "Review", variant: null };
+  }
+}
+
+/**
  * Normalizes a label color to a CSS color, or null when it is absent. Label
  * colors arrive as bare hex without the leading `#`.
  */
@@ -281,32 +305,30 @@ export function toRenderablePullRequestMarkdown(body: string): string {
     .trim();
 }
 
-function splitFencedCodeBlocks(body: string): string[] {
-  const segments: string[] = [];
-  const openingFence = /^ {0,3}(`{3,}|~{3,})[^\r\n]*(?:\r?\n|$)/gm;
-  let proseStart = 0;
+function escapeMarkdownLabel(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("[", "\\[").replaceAll("]", "\\]");
+}
 
-  for (const opening of body.matchAll(openingFence)) {
-    if (opening.index === undefined || opening.index < proseStart) continue;
-    const fence = opening[1]!;
-    const closingFence = new RegExp(
-      `^ {0,3}${fence[0]}{${fence.length},}[ \\t]*(?:\\r?\\n|$)`,
-      "gm",
-    );
-    closingFence.lastIndex = opening.index + opening[0].length;
-    const closing = closingFence.exec(body);
-    const fenceEnd = closing ? closingFence.lastIndex : body.length;
+function escapeMarkdownHref(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
+}
 
-    segments.push(body.slice(proseStart, opening.index), body.slice(opening.index, fenceEnd));
-    proseStart = fenceEnd;
-  }
-
-  segments.push(body.slice(proseStart));
-  return segments;
+function htmlAttribute(attributes: string, name: string): string | undefined {
+  const pattern = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i");
+  const match = pattern.exec(attributes);
+  return match?.[1] ?? match?.[2];
 }
 
 function transformPullRequestMarkdown(body: string): string {
   let text = body;
+  text = text.replace(/<img\b(?:(?:"[^"]*"|'[^']*'|[^'">])*)>/gi, (tag: string) => {
+    const attributes = tag.slice(4, -1);
+    const source = htmlAttribute(attributes, "src");
+    if (!source || !isWebUrl(source)) {
+      return "";
+    }
+    return `![${escapeMarkdownLabel(htmlAttribute(attributes, "alt") ?? "image")}](${escapeMarkdownHref(source)})`;
+  });
   text = text.replace(/<details\b[^>]*>([\s\S]*?)<\/details>/gi, (_match, inner: string) => {
     const summary = inner.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/i)?.[1] ?? "";
     const rest = inner.replace(/<summary\b[^>]*>[\s\S]*?<\/summary>/i, "");
@@ -323,12 +345,8 @@ function transformPullRequestMarkdown(body: string): string {
         label
           .replace(/<[^>]+>/g, " ")
           .replace(/\s+/g, " ")
-          .trim()
-          .replaceAll("\\", "\\\\")
-          .replaceAll("[", "\\[")
-          .replaceAll("]", "\\]") || href;
-      const cleanHref = href.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
-      return `[${cleanLabel}](${cleanHref})`;
+          .trim() || href;
+      return `[${escapeMarkdownLabel(cleanLabel)}](${escapeMarkdownHref(href)})`;
     },
   );
   text = text.replace(/<br\s*\/?>/gi, "\n");
@@ -341,12 +359,7 @@ function transformPullRequestMarkdown(body: string): string {
     (_match, uri: string | undefined, email: string | undefined) => {
       const target = uri ?? email!;
       const href = uri ?? `mailto:${email}`;
-      const cleanLabel = target
-        .replaceAll("\\", "\\\\")
-        .replaceAll("[", "\\[")
-        .replaceAll("]", "\\]");
-      const cleanHref = href.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
-      return `[${cleanLabel}](${cleanHref})`;
+      return `[${escapeMarkdownLabel(target)}](${escapeMarkdownHref(href)})`;
     },
   );
   text = text.replace(/<[^>]+>/g, "");
@@ -463,4 +476,38 @@ export function pullRequestActionLabel(
     case "reopen":
       return "Reopen";
   }
+}
+
+export interface PullRequestMergeSelection {
+  readonly allowedMergeMethods: readonly PullRequestMergeMethod[];
+  readonly selectedMergeMethod: PullRequestMergeMethod | null;
+  readonly showMergeMethodPicker: boolean;
+}
+
+/**
+ * Merge-strategy selection for the PR summary actions. The host reports every
+ * method it knows plus per-method availability; the picker offers only the
+ * allowed ones and falls back to the first allowed method when the reviewer's
+ * override is missing or no longer allowed. The picker shows only when merge
+ * itself is available and there is a real choice to make. The selected method
+ * is the `mergeMethod` sent with the destructive merge request.
+ */
+export function resolvePullRequestMergeSelection(input: {
+  readonly canMerge: boolean;
+  readonly mergeMethods: readonly PullRequestMergeMethod[];
+  readonly mergeCapabilities: Record<PullRequestMergeMethod, boolean>;
+  readonly override: PullRequestMergeMethod | null;
+}): PullRequestMergeSelection {
+  const allowedMergeMethods = input.mergeMethods.filter(
+    (method) => input.mergeCapabilities[method],
+  );
+  const selectedMergeMethod =
+    (input.override && allowedMergeMethods.includes(input.override)
+      ? input.override
+      : allowedMergeMethods[0]) ?? null;
+  return {
+    allowedMergeMethods,
+    selectedMergeMethod,
+    showMergeMethodPicker: input.canMerge && allowedMergeMethods.length > 1,
+  };
 }

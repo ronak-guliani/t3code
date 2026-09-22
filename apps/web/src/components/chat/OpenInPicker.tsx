@@ -153,10 +153,12 @@ export const OpenInPicker = memo(function OpenInPicker({
   keybindings,
   availableEditors,
   openInCwd,
+  updatePreferredOnSelect = true,
 }: {
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   openInCwd: string | null;
+  updatePreferredOnSelect?: boolean;
 }) {
   const [preferredEditor, setPreferredEditor] = usePreferredEditor(availableEditors);
   const options = useMemo(
@@ -172,9 +174,11 @@ export const OpenInPicker = memo(function OpenInPicker({
       const editor = editorId ?? preferredEditor;
       if (!editor) return;
       void api.shell.openInEditor(openInCwd, editor);
-      setPreferredEditor(editor);
+      if (updatePreferredOnSelect) {
+        setPreferredEditor(editor);
+      }
     },
-    [preferredEditor, openInCwd, setPreferredEditor],
+    [preferredEditor, openInCwd, setPreferredEditor, updatePreferredOnSelect],
   );
 
   const openFavoriteEditorShortcutLabel = useMemo(

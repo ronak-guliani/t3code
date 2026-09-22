@@ -11,9 +11,12 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { PNG } from "pngjs";
 
 import packageJson from "../../package.json" with { type: "json" };
+import type { McpAuthError } from "@t3tools/contracts";
+import { enforceFinalSnapshotTextBudget } from "@t3tools/shared/previewAutomationBudgets";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { resolveBrowserEvidenceDir, saveBrowserEvidenceFile } from "./PreviewEvidence.ts";
 import {
   PreviewSnapshotToolkitHandlersLive,
   PreviewStandardToolkitHandlersLive,
@@ -26,12 +29,25 @@ import {
 } from "./toolkits/preview/tools.ts";
 import { PullRequestMonitorToolkitHandlersLive } from "./toolkits/pullRequestMonitor/handlers.ts";
 import { PullRequestMonitorToolkit } from "./toolkits/pullRequestMonitor/tools.ts";
+import { CollaborativeAcceptanceToolkitHandlersLive } from "./toolkits/collaborativeAcceptance/handlers.ts";
+import { CollaborativeAcceptanceToolkit } from "./toolkits/collaborativeAcceptance/tools.ts";
+import * as DeviceService from "../device/DeviceService.ts";
+import {
+  DeviceScreenshotToolkitHandlersLive,
+  DeviceStandardToolkitHandlersLive,
+} from "./toolkits/device/handlers.ts";
+import {
+  DeviceScreenshotTool,
+  DeviceScreenshotToolkit,
+  DeviceStandardToolkit,
+} from "./toolkits/device/tools.ts";
 
 export const invalidMcpCredentialBody = {
   error: "invalid_mcp_credential",
+  recovery: "reconnect-required",
   message:
     "The T3 Code MCP session credential is invalid or expired. Restart the chat/session to reconnect browser automation.",
-} as const;
+} as const satisfies McpAuthError;
 
 export const invalidMcpCredentialResponse = HttpServerResponse.jsonUnsafe(
   {
@@ -72,6 +88,37 @@ export const normalizeMcpHttpResponse = (
     : response;
 };
 
+const filterAdvertisedTools = (
+  response: HttpServerResponse.HttpServerResponse,
+  capabilities: ReadonlySet<McpInvocationContext.McpCapability>,
+): HttpServerResponse.HttpServerResponse => {
+  if (response.body._tag !== "Uint8Array") return response;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(response.body.body)) as {
+      readonly result?: { readonly tools?: ReadonlyArray<{ readonly name?: string }> };
+    };
+    if (!payload.result?.tools) return response;
+    return HttpServerResponse.jsonUnsafe(
+      {
+        ...payload,
+        result: {
+          ...payload.result,
+          tools: payload.result.tools.filter(
+            (tool) =>
+              (capabilities.has("device") || !tool.name?.startsWith("device_")) &&
+              (capabilities.has("preview") || !tool.name?.startsWith("preview_")),
+          ),
+        },
+      },
+      { status: response.status, headers: response.headers },
+    );
+  } catch {
+    return response;
+  }
+};
+
+export const filterAdvertisedToolsForTest = filterAdvertisedTools;
+
 const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
   Effect.map(
     (registry): McpAuthMiddleware =>
@@ -91,6 +138,7 @@ const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
         }
         return yield* httpEffect.pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.map((response) => filterAdvertisedTools(response, invocation.capabilities)),
           Effect.map(normalizeMcpHttpResponse),
         );
       }),
@@ -133,7 +181,17 @@ const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
   }).pipe(Effect.as(result));
 };
 
-export const encodePreviewSnapshotResult = async (encodedResult: unknown) => {
+export interface PreviewSnapshotEncodeOptions {
+  /** Persist the screenshot as server-side evidence and return its screenshotPath. */
+  readonly save?: boolean | undefined;
+  /** Explicit evidence directory (tests). Defaults to the shared evidence dir. */
+  readonly evidenceDir?: string | undefined;
+}
+
+export const encodePreviewSnapshotResult = async (
+  encodedResult: unknown,
+  options?: PreviewSnapshotEncodeOptions,
+) => {
   const snapshot = encodedResult as {
     readonly screenshot: {
       readonly mimeType: "image/png";
@@ -143,7 +201,9 @@ export const encodePreviewSnapshotResult = async (encodedResult: unknown) => {
     };
     readonly [key: string]: unknown;
   };
-  const { screenshot, ...page } = snapshot;
+  // A host-provided screenshotPath is never trusted: only the path returned
+  // by saveBrowserEvidenceFile below is presented as server-persisted evidence.
+  const { screenshot, screenshotPath: _hostScreenshotPath, ...page } = snapshot;
   const bytes = Buffer.from(screenshot.data, "base64");
   const boundedPng =
     screenshot.width > 0 &&
@@ -186,34 +246,55 @@ export const encodePreviewSnapshotResult = async (encodedResult: unknown) => {
     decoded.height !== screenshot.height ||
     decoded.data.length !== screenshot.width * screenshot.height * 4
   ) {
+    // Budget the exact payloads returned below, after their error fields are
+    // appended, so neither can exceed the ceiling.
+    const structured = enforceFinalSnapshotTextBudget({
+      ...metadata,
+      error: {
+        _tag: "PreviewScreenshotInvalid",
+        operation: "snapshot",
+        message:
+          "The browser returned an empty, oversized, or undecodable screenshot. Page text is diagnostic only; visual validation did not pass. Reveal the browser, wait for rendering, and retry the snapshot.",
+      },
+    });
+    const textPayload = enforceFinalSnapshotTextBudget({
+      ...metadata,
+      error:
+        "Visual capture failed. Reveal the browser and retry; do not publish this capture as evidence.",
+    });
     return new McpSchema.CallToolResult({
       isError: true,
-      structuredContent: {
-        ...metadata,
-        error: {
-          _tag: "PreviewScreenshotInvalid",
-          operation: "snapshot",
-          message:
-            "The browser returned an empty, oversized, or undecodable screenshot. Page text is diagnostic only; visual validation did not pass. Reveal the browser, wait for rendering, and retry the snapshot.",
-        },
-      },
+      structuredContent: structured,
       content: [
         {
           type: "text",
-          text: JSON.stringify({
-            ...metadata,
-            error:
-              "Visual capture failed. Reveal the browser and retry; do not publish this capture as evidence.",
-          }),
+          text: JSON.stringify(textPayload),
         },
       ],
     });
   }
+  let screenshotPath: string | undefined;
+  if (options?.save === true) {
+    try {
+      screenshotPath = await saveBrowserEvidenceFile({
+        directory: resolveBrowserEvidenceDir(options.evidenceDir),
+        prefix: "preview-snapshot",
+        extension: "png",
+        bytes,
+      });
+    } catch {
+      screenshotPath = undefined;
+    }
+  }
+  const budgeted = enforceFinalSnapshotTextBudget({
+    ...metadata,
+    ...(screenshotPath === undefined ? {} : { screenshotPath }),
+  });
   return new McpSchema.CallToolResult({
     isError: false,
-    structuredContent: metadata,
+    structuredContent: budgeted,
     content: [
-      { type: "text", text: JSON.stringify(metadata) },
+      { type: "text", text: JSON.stringify(budgeted) },
       {
         type: "image",
         data: new Uint8Array(bytes),
@@ -263,7 +344,11 @@ const registerPreviewSnapshotTool = Effect.fn("McpHttpServer.registerPreviewSnap
             Effect.matchCauseEffect({
               onFailure: previewSnapshotFailure,
               onSuccess: ({ encodedResult }) =>
-                Effect.promise(() => encodePreviewSnapshotResult(encodedResult)),
+                Effect.promise(() =>
+                  encodePreviewSnapshotResult(encodedResult, {
+                    save: (payload as { readonly save?: boolean }).save === true,
+                  }),
+                ),
             }),
           );
         }),
@@ -274,6 +359,154 @@ const registerPreviewSnapshotTool = Effect.fn("McpHttpServer.registerPreviewSnap
 const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot")(function* () {
   yield* registerPreviewSnapshotTool(PreviewSnapshotTool, "preview_snapshot");
   yield* registerPreviewSnapshotTool(PreviewOpenAndSnapshotTool, "preview_open_and_snapshot");
+});
+
+interface ImageToolResult {
+  readonly screenshot: {
+    readonly mimeType: "image/png";
+    readonly data: string;
+    readonly width: number;
+    readonly height: number;
+  };
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Failures surface only their tag: the remote message may carry renderer or
+ * device output the agent should not see, and the tag is what it can act on.
+ */
+const imageToolFailure =
+  (toolName: string, operation: string, failureText: string) =>
+  <E>(cause: Cause.Cause<E>) => {
+    if (Cause.hasInterrupts(cause) || cause.reasons.some(Cause.isDieReason)) {
+      return Effect.failCause(cause).pipe(Effect.orDie);
+    }
+    const failures = cause.reasons.filter(Cause.isFailReason);
+    const firstFailure = failures[0]?.error;
+    const errorTag =
+      typeof firstFailure === "object" &&
+      firstFailure !== null &&
+      "_tag" in firstFailure &&
+      typeof firstFailure._tag === "string"
+        ? firstFailure._tag
+        : `${toolName}Error`;
+    const result = new McpSchema.CallToolResult({
+      isError: true,
+      structuredContent: {
+        error: {
+          _tag: errorTag,
+          operation,
+          failureCount: failures.length,
+        },
+      },
+      content: [{ type: "text", text: failureText }],
+    });
+    return Effect.logWarning(`${toolName} failed`, {
+      operation,
+      errorTag,
+      failureCount: failures.length,
+    }).pipe(Effect.as(result));
+  };
+
+/**
+ * `McpServer.toolkit` serializes every result as JSON text, which is the
+ * wrong shape for a screenshot: the model needs image content. Tools whose
+ * result carries a `screenshot` field are registered by hand so the PNG goes
+ * out as an image block and the rest of the payload as JSON metadata.
+ */
+const registerImageTool = <T extends Tool.Any, E, R>(
+  tool: T,
+  handle: (payload: Tool.Parameters<T>) => Effect.Effect<{ readonly encodedResult: unknown }, E, R>,
+  provide: (
+    effect: Effect.Effect<{ readonly encodedResult: unknown }, E, R>,
+  ) => Effect.Effect<
+    { readonly encodedResult: unknown },
+    E,
+    McpInvocationContext.McpInvocationContext
+  >,
+  operation: string,
+  failureText: string,
+) =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    yield* server.addTool({
+      tool: new McpSchema.Tool({
+        name: tool.name,
+        description: Tool.getDescription(tool),
+        inputSchema: Tool.getJsonSchema(tool),
+        annotations: {
+          ...Context.getOption(tool.annotations, Tool.Title).pipe(
+            Option.map((title) => ({ title })),
+            Option.getOrUndefined,
+          ),
+          readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
+          destructiveHint: Context.get(tool.annotations, Tool.Destructive),
+          idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
+          openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+        },
+      }),
+      annotations: tool.annotations,
+      handle: (payload) =>
+        Effect.withFiber((fiber) => {
+          const invocation = Context.getUnsafe(
+            fiber.context,
+            McpInvocationContext.McpInvocationContext,
+          );
+          return provide(handle(payload as Tool.Parameters<T>)).pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+            Effect.matchCauseEffect({
+              onFailure: imageToolFailure(tool.name, operation, failureText),
+              onSuccess: ({ encodedResult }) => {
+                const { screenshot, ...rest } = encodedResult as ImageToolResult;
+                const includeImage =
+                  (payload as { readonly includeImage?: boolean } | undefined)?.includeImage !==
+                  false;
+                const metadata = {
+                  ...rest,
+                  screenshot: {
+                    mimeType: screenshot.mimeType,
+                    width: screenshot.width,
+                    height: screenshot.height,
+                  },
+                };
+                return Effect.succeed(
+                  new McpSchema.CallToolResult({
+                    isError: false,
+                    structuredContent: metadata,
+                    content: [
+                      { type: "text", text: JSON.stringify(metadata) },
+                      ...(includeImage
+                        ? [
+                            {
+                              type: "image" as const,
+                              data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
+                              mimeType: screenshot.mimeType,
+                            },
+                          ]
+                        : []),
+                    ],
+                  }),
+                );
+              },
+            }),
+          );
+        }),
+    });
+  });
+
+const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreenshot")(function* () {
+  const devices = yield* DeviceService.DeviceService;
+  const built = yield* DeviceScreenshotToolkit;
+  yield* registerImageTool(
+    DeviceScreenshotTool,
+    (payload) =>
+      built
+        .handle("device_screenshot", payload)
+        .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption)),
+    (effect) => effect.pipe(Effect.provideService(DeviceService.DeviceService, devices)),
+    "screenshot",
+    "Device screenshot failed.",
+  );
 });
 
 const PreviewStandardToolkitRegistrationLive = McpServer.toolkit(PreviewStandardToolkit).pipe(
@@ -297,13 +530,39 @@ export const PullRequestMonitorToolkitRegistrationLive = McpServer.toolkit(
   PullRequestMonitorToolkit,
 ).pipe(Layer.provide(PullRequestMonitorToolkitHandlersLive));
 
-const McpTransportLive = McpServer.layerHttp({
-  name: "T3 Code",
-  version: packageJson.version,
-  path: "/mcp",
-}).pipe(Layer.provide(McpAuthMiddlewareLive));
+export const CollaborativeAcceptanceToolkitRegistrationLive = McpServer.toolkit(
+  CollaborativeAcceptanceToolkit,
+).pipe(Layer.provide(CollaborativeAcceptanceToolkitHandlersLive));
+
+const DeviceStandardToolkitRegistrationLive = McpServer.toolkit(DeviceStandardToolkit).pipe(
+  Layer.provide(DeviceStandardToolkitHandlersLive),
+);
+
+const DeviceScreenshotRegistrationLive = Layer.effectDiscard(registerDeviceScreenshot()).pipe(
+  Layer.provide(DeviceScreenshotToolkitHandlersLive),
+);
+
+export const DeviceToolkitRegistrationLive = Layer.mergeAll(
+  DeviceStandardToolkitRegistrationLive,
+  DeviceScreenshotRegistrationLive,
+);
+
+const mcpTransport = (path: "/mcp" | "/mcp-device") =>
+  McpServer.layerHttp({
+    name: "T3 Code",
+    version: packageJson.version,
+    path,
+  }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
 export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestMonitorToolkitRegistrationLive,
-).pipe(Layer.provideMerge(McpTransportLive));
+  CollaborativeAcceptanceToolkitRegistrationLive,
+).pipe(Layer.provideMerge(mcpTransport("/mcp")));
+
+export const layerWithDevice = Layer.mergeAll(
+  PreviewToolkitRegistrationLive,
+  PullRequestMonitorToolkitRegistrationLive,
+  CollaborativeAcceptanceToolkitRegistrationLive,
+  DeviceToolkitRegistrationLive,
+).pipe(Layer.provideMerge(mcpTransport("/mcp-device")));

@@ -1,4 +1,5 @@
 import type {
+  CollaborativeAcceptancePolicy,
   EnvironmentId,
   OrchestrationShellSnapshot,
   ProviderDriverKind,
@@ -9,6 +10,26 @@ import type {
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import type { Project, ThreadShell } from "../../types";
+
+export type CollaborativeAcceptancePolicyPatch = Omit<
+  Partial<CollaborativeAcceptancePolicy>,
+  "reviewWorkflow" | "budgets"
+> & {
+  readonly reviewWorkflow?: Partial<CollaborativeAcceptancePolicy["reviewWorkflow"]>;
+  readonly budgets?: Partial<CollaborativeAcceptancePolicy["budgets"]>;
+};
+
+export function mergeCollaborativeAcceptancePolicy(
+  policy: CollaborativeAcceptancePolicy,
+  patch: CollaborativeAcceptancePolicyPatch,
+): CollaborativeAcceptancePolicy {
+  return {
+    ...policy,
+    ...patch,
+    reviewWorkflow: { ...policy.reviewWorkflow, ...patch.reviewWorkflow },
+    budgets: { ...policy.budgets, ...patch.budgets },
+  };
+}
 
 export function buildProviderInstanceUpdatePatch(input: {
   readonly settings: Pick<ServerSettings, "providers" | "providerInstances">;

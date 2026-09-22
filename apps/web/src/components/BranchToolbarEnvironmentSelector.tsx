@@ -34,7 +34,12 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
     () =>
       availableEnvironments.map((env) => ({
         value: env.environmentId,
-        label: `${env.label} · ${env.environmentId.slice(0, 6)}`,
+        // With a single device there is nothing to disambiguate, so show
+        // just the name. With several, keep the id suffix.
+        label:
+          availableEnvironments.length > 1
+            ? `${env.label} · ${env.environmentId.slice(0, 6)}`
+            : env.label,
       })),
     [availableEnvironments],
   );
@@ -78,7 +83,13 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
                 ) : (
                   <CloudIcon className="size-3" />
                 )}
-                {env.label} · {env.environmentId.slice(0, 6)}
+                {availableEnvironments.length > 1 ? (
+                  <>
+                    {env.label} · {env.environmentId.slice(0, 6)}
+                  </>
+                ) : (
+                  env.label
+                )}
               </span>
             </SelectItem>
           ))}

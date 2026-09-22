@@ -7,6 +7,7 @@ import {
   compactWorkEntryLabel,
   deriveWorkGroupActivity,
   workGroupReceiptLabel,
+  extractRuntimeActivityDetail,
   extractWorkLogToolLifecycleStatus,
   groupConsecutiveWorkEntries,
   groupRepeatedWorkEntries,
@@ -207,7 +208,7 @@ describe("live activity strips", () => {
     },
   );
 
-  it("uses concise cross-platform filenames and command names without dropping detail", () => {
+  it("uses concise cross-platform filenames and complete one-line commands", () => {
     const entry = { ...read("a.ts"), detail: "C:\\work\\src\\a.ts" };
     expect(compactWorkEntryLabel(entry)).toBe("Read a.ts");
     expect(entry.detail).toBe("C:\\work\\src\\a.ts");
@@ -218,7 +219,29 @@ describe("live activity strips", () => {
         command: "pnpm test --run",
         toolLifecycleStatus: "inProgress",
       }),
-    ).toBe("Running pnpm");
+    ).toBe("Running pnpm test --run");
+    expect(
+      compactWorkEntryLabel({
+        label: "Ran command",
+        tone: "tool",
+        command: "git status --short &&\n git branch --show-current",
+        toolLifecycleStatus: "completed",
+      }),
+    ).toBe("Ran git status --short && git branch --show-current");
+  });
+
+  it("uses the basename from read-tool input metadata", () => {
+    expect(
+      compactWorkEntryLabel({
+        label: "Read file",
+        tone: "tool",
+        toolData: {
+          toolName: "view",
+          rawInput: { path: "./.agents/skills/vercel-react-best-practices/AGENTS.md" },
+        },
+        toolLifecycleStatus: "completed",
+      }),
+    ).toBe("Read AGENTS.md");
   });
 
   it("prefers the complete input path over a shortened provider preview", () => {
@@ -528,6 +551,19 @@ describe("resolveWorkEntryToolPresentation", () => {
     });
   });
 
+  it("labels device tools with the device icon", () => {
+    expect(
+      resolveWorkEntryToolPresentation({
+        label: "mcp__t3-code__device_open",
+        toolLifecycleStatus: "completed",
+      }),
+    ).toEqual({ displayName: "Opened a device in the Device panel", icon: "device" });
+    expect(resolveWorkEntryToolPresentation({ label: "t3-code · device_screenshot" })).toEqual({
+      displayName: "Taking a screenshot of the device",
+      icon: "device",
+    });
+  });
+
   it("uses structured MCP identity when the provider supplies a custom title", () => {
     expect(
       resolveWorkEntryToolPresentation({
@@ -796,6 +832,44 @@ describe("command work-log details", () => {
         data: { command: "pnpm test" },
       }),
     ).toBe(false);
+  });
+});
+
+describe("extractRuntimeActivityDetail", () => {
+  it("surfaces the message when no detail is present", () => {
+    expect(extractRuntimeActivityDetail({ message: "Retrying after 429" })).toBe(
+      "Retrying after 429",
+    );
+  });
+
+  it("falls back to a string detail when the message is missing", () => {
+    expect(extractRuntimeActivityDetail({ detail: "Bash is unusable" })).toBe("Bash is unusable");
+  });
+
+  it("dedupes an identical string detail", () => {
+    expect(extractRuntimeActivityDetail({ message: "Same text", detail: "Same text" })).toBe(
+      "Same text",
+    );
+  });
+
+  it("combines a distinct string detail with the message", () => {
+    expect(extractRuntimeActivityDetail({ message: "Retry 2/5", detail: "rate limited" })).toBe(
+      "Retry 2/5\n\nrate limited",
+    );
+  });
+
+  it("stringifies an object detail alongside the message", () => {
+    const detail = extractRuntimeActivityDetail({
+      message: "Retrying",
+      detail: { type: "retry", attempt: 2 },
+    });
+    expect(detail).toContain("Retrying");
+    expect(detail).toContain('"attempt": 2');
+  });
+
+  it("returns null when neither message nor detail is present", () => {
+    expect(extractRuntimeActivityDetail(null)).toBeNull();
+    expect(extractRuntimeActivityDetail({})).toBeNull();
   });
 });
 

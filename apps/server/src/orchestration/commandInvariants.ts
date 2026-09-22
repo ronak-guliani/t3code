@@ -39,6 +39,15 @@ export function listThreadsByProjectId(
   return readModel.threads.filter((thread) => thread.projectId === projectId);
 }
 
+/**
+ * Detail for the invariant that blocks turn starts and unrelated queued-turn
+ * dispatches while a child decision is pending. Only the correlated decision
+ * response (pendingResponse) may dispatch. Shared with QueuedTurnReactor so a
+ * reword here cannot silently revert the reactor to failing queued turns.
+ */
+export const CHILD_DECISION_BLOCKED_DETAIL =
+  "Resolve the current child decision through its correlated response before continuing.";
+
 export function requireProject(input: {
   readonly readModel: OrchestrationReadModel;
   readonly command: OrchestrationCommand;
@@ -53,6 +62,26 @@ export function requireProject(input: {
       input.command.type,
       `Project '${input.projectId}' does not exist for command '${input.command.type}'.`,
     ),
+  );
+}
+
+export function requireWritableProjectForThread(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly threadId: ThreadId;
+}): Effect.Effect<OrchestrationThread, OrchestrationCommandInvariantError> {
+  return requireThread(input).pipe(
+    Effect.flatMap((thread) => {
+      const project = findProjectById(input.readModel, thread.projectId);
+      return project?.kind === "chat-import"
+        ? Effect.fail(
+            invariantError(
+              input.command.type,
+              `Imported chat '${input.threadId}' is reference-only and cannot start agent work.`,
+            ),
+          )
+        : Effect.succeed(thread);
+    }),
   );
 }
 

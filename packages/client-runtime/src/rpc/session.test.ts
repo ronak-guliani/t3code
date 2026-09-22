@@ -281,7 +281,7 @@ describe("RpcSessionFactory", () => {
         }),
       );
       const connection = yield* driver
-        .connect({ target: TARGET, profile: Option.none() }, () => Effect.void)
+        .connect({ target: TARGET, profile: Option.none(), enabled: true }, () => Effect.void)
         .pipe(Effect.exit, Effect.forkChild);
       const socket = yield* awaitSocket(sockets);
       expect(validated).toBe(false);

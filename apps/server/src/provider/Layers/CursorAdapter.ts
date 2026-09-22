@@ -48,6 +48,7 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
+import { appendT3ExecutionContext } from "../executionContext.ts";
 import { acpPermissionOutcome, mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
 import { type AcpSessionRuntimeShape } from "../acp/AcpSessionRuntime.ts";
 import {
@@ -913,9 +914,8 @@ export function makeCursorAdapter(
         });
 
         const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
-        if (input.input?.trim()) {
-          promptParts.push({ type: "text", text: input.input.trim() });
-        }
+        const promptText = appendT3ExecutionContext(input.input, input, turnId);
+        if (promptText) promptParts.push({ type: "text", text: promptText });
         if (input.attachments && input.attachments.length > 0) {
           for (const attachment of input.attachments) {
             const attachmentPath = resolveAttachmentPath({

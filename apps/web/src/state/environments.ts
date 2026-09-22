@@ -27,6 +27,7 @@ export function useEnvironments(): { readonly environments: readonly Environment
     const byId = new Map<EnvironmentId, EnvironmentPresentation>();
     if (primary) byId.set(primary.environmentId, primary);
     for (const record of Object.values(savedById)) {
+      if (record.enabled === false) continue;
       byId.set(record.environmentId, {
         environmentId: record.environmentId,
         label: record.label,

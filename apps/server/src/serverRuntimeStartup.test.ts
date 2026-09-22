@@ -241,6 +241,7 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
         Effect.provideService(ProjectionSnapshotQuery, {
           getSnapshot: () => Effect.die("unused"),
           getShellSnapshot: () => Effect.die("unused"),
+          getActiveChatArchiveEntries: () => Effect.die("unused"),
           getSnapshotSequence: () => Effect.die("unused"),
           getCounts: () =>
             Deferred.await(releaseCounts).pipe(
@@ -257,7 +258,9 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
           getThreadShellProjectContextById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
+          listThreadProjectIds: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
+          readThread: () => Effect.die("unused"),
         }),
         Effect.provideService(AnalyticsService, {
           record: () => Effect.void,
@@ -297,6 +300,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
       Effect.provideService(ProjectionSnapshotQuery, {
         getSnapshot: () => Effect.die("unused"),
         getShellSnapshot: () => Effect.die("unused"),
+        getActiveChatArchiveEntries: () => Effect.die("unused"),
         getSnapshotSequence: () => Effect.die("unused"),
         getCounts: () => Effect.die("unused"),
         getActiveProjectByWorkspaceRoot: () =>
@@ -319,7 +323,9 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         getThreadShellProjectContextById: () => Effect.die("unused"),
         getThreadDetailById: () => Effect.die("unused"),
         getThreadDetailSnapshotById: () => Effect.die("unused"),
+        listThreadProjectIds: () => Effect.die("unused"),
         getThreadActivitiesPage: () => Effect.die("unused"),
+        readThread: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {
         getReadModel: () => Effect.die("unused"),
@@ -355,6 +361,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
       Effect.provideService(ProjectionSnapshotQuery, {
         getSnapshot: () => Effect.die("unused"),
         getShellSnapshot: () => Effect.die("unused"),
+        getActiveChatArchiveEntries: () => Effect.die("unused"),
         getSnapshotSequence: () => Effect.die("unused"),
         getCounts: () => Effect.die("unused"),
         getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
@@ -365,7 +372,9 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
         getThreadShellProjectContextById: () => Effect.die("unused"),
         getThreadDetailById: () => Effect.die("unused"),
         getThreadDetailSnapshotById: () => Effect.die("unused"),
+        listThreadProjectIds: () => Effect.die("unused"),
         getThreadActivitiesPage: () => Effect.die("unused"),
+        readThread: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {
         getReadModel: () => Effect.die("unused"),

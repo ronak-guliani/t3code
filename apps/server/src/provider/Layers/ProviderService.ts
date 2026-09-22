@@ -10,6 +10,7 @@
  * @module ProviderServiceLive
  */
 import {
+  CollaborationExecutionAuthority,
   ModelSelection,
   NonNegativeInt,
   ThreadId,
@@ -38,6 +39,7 @@ import {
   withMetrics,
 } from "../../observability/Metrics.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import type * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import {
   type ProviderAdapterError,
   ProviderUnsupportedError,
@@ -123,6 +125,7 @@ function toRuntimePayloadFromSession(
   session: ProviderSession,
   extra?: {
     readonly modelSelection?: unknown;
+    readonly executionAuthority?: CollaborationExecutionAuthority;
     readonly lastRuntimeEvent?: string;
     readonly lastRuntimeEventAt?: string;
   },
@@ -133,6 +136,9 @@ function toRuntimePayloadFromSession(
     activeTurnId: session.activeTurnId ?? null,
     lastError: session.lastError ?? null,
     ...(extra?.modelSelection !== undefined ? { modelSelection: extra.modelSelection } : {}),
+    ...(extra?.executionAuthority !== undefined
+      ? { executionAuthority: extra.executionAuthority }
+      : {}),
     ...(extra?.lastRuntimeEvent !== undefined ? { lastRuntimeEvent: extra.lastRuntimeEvent } : {}),
     ...(extra?.lastRuntimeEventAt !== undefined
       ? { lastRuntimeEventAt: extra.lastRuntimeEventAt }
@@ -156,10 +162,22 @@ function readPersistedCwd(
   if (!runtimePayload || typeof runtimePayload !== "object" || Array.isArray(runtimePayload)) {
     return undefined;
   }
+
   const rawCwd = "cwd" in runtimePayload ? runtimePayload.cwd : undefined;
   if (typeof rawCwd !== "string") return undefined;
   const trimmed = rawCwd.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readPersistedExecutionAuthority(
+  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
+): CollaborationExecutionAuthority | undefined {
+  if (!runtimePayload || typeof runtimePayload !== "object" || Array.isArray(runtimePayload)) {
+    return undefined;
+  }
+  const raw =
+    "executionAuthority" in runtimePayload ? runtimePayload.executionAuthority : undefined;
+  return Schema.is(CollaborationExecutionAuthority)(raw) ? raw : undefined;
 }
 
 const dieOnMissingBindingInstanceId = (
@@ -248,19 +266,35 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const getAdapter = (instanceId: ProviderInstanceId) =>
     getInstance(instanceId).pipe(Effect.map((instance) => instance.adapter));
 
-  const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
+  const prepareMcpSession = (
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    executionAuthority?: CollaborationExecutionAuthority,
+  ) =>
     serverSettings.getSettings.pipe(
-      Effect.map((settings) => settings.enableAgentBrowserAccess),
+      Effect.map((settings) => {
+        const capabilities = new Set<McpInvocationContext.McpCapability>();
+        if (settings.enableAgentBrowserAccess) capabilities.add("preview");
+        if (settings.enableDeviceSupport && settings.enableAgentDeviceAccess) {
+          capabilities.add("device");
+        }
+        return capabilities;
+      }),
       Effect.catch((cause) =>
         Effect.logWarning("provider.mcp.settings-read-failed", {
           threadId,
           providerInstanceId,
           cause,
-        }).pipe(Effect.as(false)),
+        }).pipe(Effect.as(new Set<McpInvocationContext.McpCapability>())),
       ),
-      Effect.flatMap((enabled) =>
-        enabled
-          ? issueMcpCredential({ threadId, providerInstanceId })
+      Effect.flatMap((capabilities) =>
+        capabilities.size > 0
+          ? issueMcpCredential({
+              threadId,
+              providerInstanceId,
+              capabilities,
+              ...(executionAuthority === undefined ? {} : { executionAuthority }),
+            })
           : revokeMcpCredential(threadId, providerInstanceId).pipe(Effect.as(undefined)),
       ),
     );
@@ -302,6 +336,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     threadId: ThreadId,
     extra?: {
       readonly modelSelection?: unknown;
+      readonly executionAuthority?: CollaborationExecutionAuthority;
       readonly lastRuntimeEvent?: string;
       readonly lastRuntimeEventAt?: string;
     },
@@ -434,7 +469,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
       const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
 
-      const credential = yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
+      const executionAuthority = readPersistedExecutionAuthority(input.binding.runtimePayload);
+      const credential = yield* prepareMcpSession(
+        input.binding.threadId,
+        bindingInstanceId,
+        executionAuthority,
+      );
       const resumed = yield* adapter
         .startSession({
           threadId: input.binding.threadId,
@@ -631,7 +671,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             "provider.cwd.effective": effectiveCwd ?? "",
           });
           const adapter = instanceInfo.adapter;
-          const credential = yield* prepareMcpSession(threadId, resolvedInstanceId);
+          const credential = yield* prepareMcpSession(
+            threadId,
+            resolvedInstanceId,
+            input.executionAuthority,
+          );
           const session = yield* adapter
             .startSession({
               ...input,
@@ -661,6 +705,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           });
           yield* upsertSessionBinding(sessionWithInstance, threadId, {
             modelSelection: input.modelSelection,
+            ...(input.executionAuthority === undefined
+              ? {}
+              : { executionAuthority: input.executionAuthority }),
           });
           yield* analytics.record("provider.session.started", {
             provider: sessionWithInstance.provider,
@@ -804,6 +851,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
           runtimePayload: {
             ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+            ...(input.executionAuthority === undefined
+              ? {}
+              : { executionAuthority: input.executionAuthority }),
             activeTurnId: null,
             lastRuntimeEvent: "provider.sendTurn",
             lastRuntimeEventAt: new Date().toISOString(),

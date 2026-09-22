@@ -35,7 +35,10 @@ export interface ExecuteGitInput {
   readonly stdin?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly allowNonZeroExit?: boolean;
-  readonly timeoutMs?: number;
+  readonly timeoutMs?: number | null;
+  // Network-bound commands (push/fetch/pull) set this to stay out of the
+  // short-command pool without changing their timeout deadline.
+  readonly bypassProcessPool?: boolean;
   readonly maxOutputBytes?: number;
   readonly truncateOutputAtMaxBytes?: boolean;
   readonly progress?: ExecuteGitProgress;

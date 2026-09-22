@@ -18,6 +18,7 @@ import {
   nestedThreadCompletionMarker,
   nestedThreadParentError,
   relatedThreadRows,
+  type MobileThreadTreeRow,
 } from "./mobile-thread-hierarchy";
 import { applyShellStreamEvent } from "@t3tools/client-runtime";
 import {
@@ -29,6 +30,9 @@ import {
   resolveThreadListV2Status,
   resolveThreadListV2SwipeActions,
   sortThreadsForListV2,
+  threadListV2ItemsAreEqual,
+  type ThreadListV2Item,
+  type ThreadListV2ListItem,
 } from "./threadListV2";
 
 const environmentId = EnvironmentId.make("environment-1");
@@ -128,6 +132,8 @@ describe("mobile nested threads", () => {
       expect(layout([leaf, child, parent, other]).items.map((item) => item.thread.id)).toEqual([
         "other",
         "parent",
+        "child",
+        "leaf",
       ]);
       expect(
         relatedThreadRows(
@@ -168,13 +174,71 @@ describe("mobile nested threads", () => {
     ).toMatchObject({ displayStatus: "approval", relatedStatus: "ready" });
   });
 
-  it("keeps the inbox flat while retaining the selected iPad conversation", () => {
-    expect(layout([leaf, parent, child]).items.map((item) => item.thread.id)).toEqual(["parent"]);
+  it("collapses inline subchats behind the parent while keeping the group reachable", () => {
+    const collapsed = new Set([`${environmentId}:parent`]);
+    const result = layout([leaf, parent, child], { collapsedThreadKeys: collapsed });
+    expect(result.items.map((item) => item.thread.id)).toEqual(["parent"]);
+    expect(result.items[0]?.hierarchy).toMatchObject({
+      isExpanded: false,
+      childCount: 2,
+      relatedChildCount: 2,
+    });
+  });
+
+  it("lets an explicit collapse win over active children", () => {
+    const workingChild = { ...child, hasPendingQueuedTurn: true };
+    const collapsed = new Set([`${environmentId}:parent`]);
+    const result = layout([parent, workingChild], { collapsedThreadKeys: collapsed });
+    expect(result.items.map((item) => item.thread.id)).toEqual(["parent"]);
+    expect(result.items[0]?.hierarchy).toMatchObject({ isExpanded: false, childCount: 1 });
+  });
+
+  it("forces collapsed ancestors open for the selected conversation", () => {
+    const collapsed = new Set([`${environmentId}:parent`]);
+    const items = layout([leaf, parent, child], {
+      collapsedThreadKeys: collapsed,
+      selectedThreadKey: `${environmentId}:leaf`,
+    }).items;
+    expect(items.map((item) => [item.thread.id, item.hierarchy?.depth])).toEqual([
+      ["parent", 0],
+      ["child", 1],
+      ["leaf", 2],
+    ]);
+    expect(items[0]?.hierarchy?.isExpanded).toBe(true);
+  });
+
+  it("lets a selected parent stay collapsed so its chevron responds", () => {
+    const collapsed = new Set([`${environmentId}:parent`]);
+    const items = layout([leaf, parent, child], {
+      collapsedThreadKeys: collapsed,
+      selectedThreadKey: `${environmentId}:parent`,
+    }).items;
+    expect(items.map((item) => item.thread.id)).toEqual(["parent"]);
+    expect(items[0]?.hierarchy).toMatchObject({ isExpanded: false, childCount: 2 });
+  });
+
+  it("suspends collapse while searching so matches never hide", () => {
+    const collapsed = new Set([`${environmentId}:parent`]);
+    expect(
+      layout([leaf, parent, child], {
+        collapsedThreadKeys: collapsed,
+        searchQuery: "Leaf",
+      }).items.map((item) => item.thread.id),
+    ).toEqual(["parent", "leaf"]);
+  });
+
+  it("shows nested threads inline while retaining the selected iPad conversation", () => {
+    expect(layout([leaf, parent, child]).items.map((item) => item.thread.id)).toEqual([
+      "parent",
+      "child",
+      "leaf",
+    ]);
     const items = layout([leaf, parent, child], {
       selectedThreadKey: `${environmentId}:leaf`,
     }).items;
     expect(items.map((item) => [item.thread.id, item.hierarchy?.depth])).toEqual([
       ["parent", 0],
+      ["child", 1],
       ["leaf", 2],
     ]);
   });
@@ -387,6 +451,8 @@ describe("mobile nested threads", () => {
     });
     expect(layout([parent, child, newer, other]).items.map((item) => item.thread.id)).toEqual([
       "parent",
+      "newer",
+      "child",
       "other",
     ]);
     expect(
@@ -460,7 +526,12 @@ describe("mobile nested threads", () => {
     expect(layout(threads, { searchQuery: "Parent" }).items.map((item) => item.thread.id)).toEqual([
       "parent",
     ]);
-    expect(layout(threads).items.map((item) => item.thread.id)).toEqual(["parent", "sibling"]);
+    expect(layout(threads).items.map((item) => item.thread.id)).toEqual([
+      "parent",
+      "child",
+      "leaf",
+      "sibling",
+    ]);
   });
 
   it("uses an errored session timestamp when a failed child has no completed turn", () => {
@@ -535,7 +606,7 @@ describe("mobile nested threads", () => {
       selectedThreadKey: `${environmentId}:leaf`,
     });
     expect(result.settledCount).toBe(2);
-    expect(result.items.map((item) => item.thread.id)).toEqual(["parent", "leaf"]);
+    expect(result.items.map((item) => item.thread.id)).toEqual(["parent", "child", "leaf"]);
   });
 
   it("shows provider background runs as local children, never as independent server threads", () => {
@@ -1313,6 +1384,31 @@ describe("buildThreadListV2Items", () => {
     ]);
   });
 
+  it("filters by linked pull request", () => {
+    const { items } = buildThreadListV2Items({
+      threads: [
+        makeThread({
+          id: ThreadId.make("match"),
+          title: "Unrelated title",
+          pullRequest: {
+            number: 10839,
+            url: "https://github.com/pingdotgg/t3code/pull/10839",
+            title: "Find linked PR threads",
+            baseBranch: "main",
+            headBranch: "feat/search",
+            state: "open",
+          },
+        }),
+        makeThread({ id: ThreadId.make("miss"), title: "Other work" }),
+      ],
+      environmentId: null,
+      searchQuery: "https://github.com/pingdotgg/t3code/pull/10839?tab=files",
+      now: NOW,
+    });
+
+    expect(items.map((item) => item.thread.id)).toEqual(["match"]);
+  });
+
   it("includes a thread matched by message content", () => {
     const thread = makeThread({
       id: ThreadId.make("content-match"),
@@ -1566,5 +1662,138 @@ describe("buildThreadListV2ListItems", () => {
       "v2-settled-shelf",
       "v2-thread",
     ]);
+  });
+});
+
+describe("threadListV2ItemsAreEqual", () => {
+  const thread = makeThread({ id: ThreadId.make("equal-row"), title: "Row" });
+  const hierarchy = (overrides: Partial<MobileThreadTreeRow> = {}): MobileThreadTreeRow => ({
+    thread,
+    threadKey: "environment-1:equal-row",
+    depth: 0,
+    hasChildren: true,
+    isExpanded: true,
+    childCount: 1,
+    displayStatus: "ready",
+    archiveBlocked: false,
+    ...overrides,
+  });
+  const threadItem = (
+    hierarchyOverrides: Partial<MobileThreadTreeRow> = {},
+    itemOverrides: Partial<ThreadListV2Item> = {},
+  ): ThreadListV2ListItem => ({
+    type: "v2-thread",
+    key: "v2-thread:environment-1:equal-row",
+    item: {
+      thread,
+      hierarchy: hierarchy(hierarchyOverrides),
+      status: "ready",
+      variant: "card",
+      snoozed: false,
+      pinned: false,
+      isLast: false,
+      ...itemOverrides,
+    },
+    snoozeWakeLabelText: undefined,
+  });
+
+  it("treats fresh-but-identical rows as equal so toggles skip unchanged rows", () => {
+    // Layout rebuilds mint new objects on every toggle; the equality must
+    // see through that to the consumed fields.
+    expect(threadListV2ItemsAreEqual(threadItem(), threadItem())).toBe(true);
+  });
+
+  it("notices collapse, status, and thread changes", () => {
+    expect(threadListV2ItemsAreEqual(threadItem(), threadItem({ isExpanded: false }))).toBe(false);
+    expect(threadListV2ItemsAreEqual(threadItem(), threadItem({}, { status: "working" }))).toBe(
+      false,
+    );
+    expect(
+      threadListV2ItemsAreEqual(
+        threadItem(),
+        threadItem(
+          {},
+          {
+            thread: makeThread({ id: ThreadId.make("other-row"), title: "Other" }),
+          },
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it("compares shelves and pending rows by their consumed fields", () => {
+    const shelf: ThreadListV2ListItem = {
+      type: "v2-snoozed-shelf",
+      key: "v2-snoozed-shelf",
+      count: 2,
+      expanded: false,
+    };
+    expect(threadListV2ItemsAreEqual(shelf, { ...shelf })).toBe(true);
+    expect(threadListV2ItemsAreEqual(shelf, { ...shelf, count: 3 })).toBe(false);
+    expect(threadListV2ItemsAreEqual(shelf, { ...shelf, expanded: true })).toBe(false);
+    expect(threadListV2ItemsAreEqual(threadItem(), shelf)).toBe(false);
+    expect(threadListV2ItemsAreEqual(shelf, threadItem())).toBe(false);
+  });
+});
+
+describe("threadListV2 toggle invalidation scope", () => {
+  const top = makeThread({ id: ThreadId.make("scope-top"), title: "Top" });
+  const mid = makeThread({ id: ThreadId.make("scope-mid"), title: "Mid" });
+  const childA = makeThread({
+    id: ThreadId.make("scope-child-a"),
+    title: "Child A",
+    parentThreadId: mid.id,
+  });
+  const childB = makeThread({
+    id: ThreadId.make("scope-child-b"),
+    title: "Child B",
+    parentThreadId: mid.id,
+  });
+  const bottom = makeThread({ id: ThreadId.make("scope-bottom"), title: "Bottom" });
+  const threads = [top, mid, childA, childB, bottom];
+  const toListItems = (collapsedThreadKeys: ReadonlySet<string>): ThreadListV2ListItem[] => {
+    const scoped = buildThreadListV2Items({
+      threads,
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      collapsedThreadKeys,
+    });
+    return buildThreadListV2ListItems({
+      items: scoped.items,
+      pendingTasks: [],
+      snoozedCount: scoped.snoozedCount,
+      snoozedShelfHeaderIndex: scoped.snoozedShelfHeaderIndex,
+      settledCount: scoped.settledCount,
+      settledShelfHeaderIndex: scoped.settledShelfHeaderIndex,
+    });
+  };
+
+  it("invalidates only the toggled parent row on collapse", () => {
+    const before = toListItems(new Set());
+    const after = toListItems(new Set([`${environmentId}:scope-mid`]));
+    expect(before.map((item) => item.key)).toEqual([
+      // Same timestamps sort by id: bottom, mid (+ children), top.
+      "v2-thread:environment-1:scope-bottom",
+      "v2-thread:environment-1:scope-mid",
+      "v2-thread:environment-1:scope-child-a",
+      "v2-thread:environment-1:scope-child-b",
+      "v2-thread:environment-1:scope-top",
+    ]);
+    expect(after.map((item) => item.key)).toEqual([
+      "v2-thread:environment-1:scope-bottom",
+      "v2-thread:environment-1:scope-mid",
+      "v2-thread:environment-1:scope-top",
+    ]);
+    const beforeByKey = new Map(before.map((item) => [item.key, item]));
+    for (const item of after) {
+      const previous = beforeByKey.get(item.key);
+      expect(previous).toBeDefined();
+      // Only the collapsed parent flips equality; siblings above and below
+      // keep every consumed field, so the recycled list reuses their views.
+      expect(threadListV2ItemsAreEqual(previous as ThreadListV2ListItem, item)).toBe(
+        item.key !== "v2-thread:environment-1:scope-mid",
+      );
+    }
   });
 });

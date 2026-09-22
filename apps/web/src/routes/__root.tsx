@@ -6,6 +6,7 @@ import {
   type ErrorComponentProps,
   useLocation,
   useNavigate,
+  useParams,
 } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
@@ -51,6 +52,7 @@ import {
   ensureEnvironmentConnectionBootstrapped,
   getPrimaryEnvironmentConnection,
   startEnvironmentConnectionService,
+  useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import { configureClientTracing } from "../observability/clientTracing";
 import {
@@ -69,6 +71,13 @@ import {
   type InternalPullRequestNavigation,
   openExternalPullRequestLink,
 } from "../lib/openPullRequestLink";
+import { useRightPanelStore } from "../rightPanelStore";
+import {
+  buildThreadRouteParams,
+  clearThreadNavigationRouteSearch,
+  resolveThreadRouteTarget,
+  threadRouteTargetsEqual,
+} from "../threadRoutes";
 import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
 import { selectProjectsAcrossEnvironments } from "../store";
 
@@ -155,10 +164,15 @@ function InternalPullRequestNavigationHandler() {
   const descriptor = usePrimaryEnvironmentDescriptor();
   const environmentId = usePrimaryEnvironmentId();
   const projects = useStore(selectProjectsAcrossEnvironments);
+  const savedEnvironmentRuntime = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  const routeTarget = useParams({
+    strict: false,
+    select: (params) => resolveThreadRouteTarget(params),
+  });
 
   useEffect(() => {
     const open = (event: Event) => {
-      const { host, number, repository, url } = (
+      const { host, number, repository, url, threadRef } = (
         event as CustomEvent<InternalPullRequestNavigation>
       ).detail;
       if (
@@ -170,6 +184,44 @@ function InternalPullRequestNavigationHandler() {
         repository.length === 0
       ) {
         return;
+      }
+      if (threadRef) {
+        const threadProject = findGitHubPullRequestProject(projects, {
+          environmentId: threadRef.environmentId,
+          host,
+          repository,
+        });
+        if (threadProject) {
+          const threadDescriptor =
+            threadRef.environmentId === environmentId
+              ? descriptor
+              : (savedEnvironmentRuntime[threadRef.environmentId]?.descriptor ?? null);
+          if (!threadDescriptor?.capabilities.pullRequests) {
+            openExternalPullRequestLink(url);
+            return;
+          }
+          useRightPanelStore.getState().openPullRequest(threadRef, {
+            environmentId: threadRef.environmentId,
+            reference: {
+              projectId: threadProject.id,
+              repository,
+              number,
+            },
+            host,
+            url,
+          });
+          // Right-panel state renders only for the active chat. When the row
+          // belongs to another thread, open that thread so the surface above
+          // is visible instead of silently updating hidden state.
+          if (!threadRouteTargetsEqual(routeTarget, { kind: "server", threadRef })) {
+            void navigate({
+              to: "/$environmentId/$threadId",
+              params: buildThreadRouteParams(threadRef),
+              search: clearThreadNavigationRouteSearch,
+            });
+          }
+          return;
+        }
       }
       const project = findGitHubPullRequestProject(projects, {
         environmentId,
@@ -194,7 +246,7 @@ function InternalPullRequestNavigationHandler() {
     };
     window.addEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, open);
     return () => window.removeEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, open);
-  }, [descriptor?.capabilities.pullRequests, environmentId, navigate, projects]);
+  }, [descriptor, environmentId, navigate, projects, routeTarget, savedEnvironmentRuntime]);
 
   return null;
 }

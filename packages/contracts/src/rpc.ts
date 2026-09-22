@@ -9,6 +9,18 @@ import {
 import { ProviderSetupError } from "./providerSetup.ts";
 import { UsageSummaryInput, UsageSummary, UsageReadError, UsagePricing } from "./usage.ts";
 import { NonNegativeInt } from "./baseSchemas.ts";
+import { ThreadId } from "./baseSchemas.ts";
+import {
+  CollaborativeAcceptanceAssessmentSubmission,
+  CollaborativeAcceptanceCaseLookupError,
+  CollaborativeAcceptanceCaseLookupInput,
+  CollaborativeAcceptanceCaseLookupResult,
+  CollaborativeAcceptanceCandidateSubmission,
+  CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptanceError,
+  CollaborativeAcceptancePauseReason,
+  CollaborativeAcceptanceStatus,
+} from "./collaborativeAcceptance.ts";
 import {
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
@@ -31,6 +43,21 @@ import {
   FilesystemBrowseResult,
   FilesystemBrowseError,
 } from "./filesystem.ts";
+import {
+  DeviceActionInput,
+  DeviceCloseInput,
+  DeviceConfigureInput,
+  DeviceDetail,
+  DeviceDetailInput,
+  DeviceError,
+  DeviceListInput,
+  SshDeviceHostConfig,
+  DeviceHostSummary,
+  DeviceOpenInput,
+  DeviceSession,
+  DeviceServiceState,
+  DeviceShutdownInput,
+} from "./device.ts";
 import {
   AssetAccessError,
   AssetCreateUrlInput,
@@ -79,6 +106,7 @@ import {
   OrchestrationGetFullThreadDiffStateError,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetSnapshotError,
+  OrchestrationReadThreadInputError,
   OrchestrationGetThreadActivitiesError,
   OrchestrationGetThreadActivitiesInput,
   OrchestrationGetTurnDiffError,
@@ -150,9 +178,14 @@ import {
 import {
   ServerConfigStreamEvent,
   ServerConfig,
+  ServerChatArchiveError,
+  ServerExportActiveChatsInput,
+  ServerExportActiveChatsResult,
   ServerExportThreadMarkdownError,
   ServerExportThreadMarkdownInput,
   ServerExportThreadMarkdownResult,
+  ServerImportChatArchiveInput,
+  ServerImportChatArchiveResult,
   ServerLifecycleStreamEvent,
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryInput,
@@ -364,6 +397,8 @@ export const WS_METHODS = {
   serverUpdateProvider: "server.updateProvider",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
+  serverExportActiveChats: "server.exportActiveChats",
+  serverImportChatArchive: "server.importChatArchive",
   serverExportThreadMarkdown: "server.exportThreadMarkdown",
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
@@ -376,6 +411,16 @@ export const WS_METHODS = {
   // Sidebar state
   sidebarGetState: "sidebar.getState",
   sidebarUpdateState: "sidebar.updateState",
+
+  // Device methods
+  deviceConfigure: "device.configure",
+  deviceList: "device.list",
+  deviceTestHost: "device.testHost",
+  deviceOpen: "device.open",
+  deviceClose: "device.close",
+  deviceShutdown: "device.shutdown",
+  deviceDetail: "device.detail",
+  deviceAction: "device.action",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -405,6 +450,14 @@ export const WS_METHODS = {
   pullRequestMonitorsSubmitFindings: "pullRequestMonitors.submitFindings",
   pullRequestMonitorsLaunchFallback: "pullRequestMonitors.launchFallback",
 
+  collaborativeAcceptanceSubmitCandidate: "collaborativeAcceptance.submitCandidate",
+  collaborativeAcceptanceRequestReview: "collaborativeAcceptance.requestReview",
+  collaborativeAcceptanceStatus: "collaborativeAcceptance.status",
+  collaborativeAcceptanceResolveForPullRequest: "collaborativeAcceptance.resolveForPullRequest",
+  collaborativeAcceptanceSubmitAssessment: "collaborativeAcceptance.submitAssessment",
+  collaborativeAcceptancePause: "collaborativeAcceptance.pause",
+  collaborativeAcceptanceResume: "collaborativeAcceptance.resume",
+
   // Streaming subscriptions
   subscribeGitStatus: "subscribeGitStatus",
   subscribeVcsStatus: "subscribeVcsStatus",
@@ -417,6 +470,7 @@ export const WS_METHODS = {
   subscribeSidebarState: "subscribeSidebarState",
   subscribePreviewEvents: "subscribePreviewEvents",
   subscribeDiscoveredLocalServers: "subscribeDiscoveredLocalServers",
+  subscribeDeviceState: "subscribeDeviceState",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -507,6 +561,18 @@ export const WsServerExportThreadMarkdownRpc = Rpc.make(WS_METHODS.serverExportT
   payload: ServerExportThreadMarkdownInput,
   success: ServerExportThreadMarkdownResult,
   error: ServerExportThreadMarkdownError,
+});
+
+export const WsServerExportActiveChatsRpc = Rpc.make(WS_METHODS.serverExportActiveChats, {
+  payload: ServerExportActiveChatsInput,
+  success: ServerExportActiveChatsResult,
+  error: ServerChatArchiveError,
+});
+
+export const WsServerImportChatArchiveRpc = Rpc.make(WS_METHODS.serverImportChatArchive, {
+  payload: ServerImportChatArchiveInput,
+  success: ServerImportChatArchiveResult,
+  error: ServerChatArchiveError,
 });
 
 export const WsProjectsSearchEntriesRpc = Rpc.make(WS_METHODS.projectsSearchEntries, {
@@ -754,6 +820,80 @@ export const WsPullRequestMonitorsLaunchFallbackRpc = Rpc.make(
     payload: PullRequestMonitorLaunchFallbackInput,
     success: PullRequestMonitorLaunchFallbackResult,
     error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+  },
+);
+
+const CollaborativeAcceptanceCaseInput = Schema.Struct({
+  threadId: ThreadId,
+  caseId: CollaborativeAcceptanceCaseId,
+});
+
+export const WsCollaborativeAcceptanceSubmitCandidateRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceSubmitCandidate,
+  {
+    payload: Schema.Struct({
+      threadId: ThreadId,
+      submission: CollaborativeAcceptanceCandidateSubmission,
+    }),
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
+  },
+);
+
+export const WsCollaborativeAcceptanceRequestReviewRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceRequestReview,
+  {
+    payload: CollaborativeAcceptanceCaseInput,
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
+  },
+);
+
+export const WsCollaborativeAcceptanceStatusRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceStatus,
+  {
+    payload: CollaborativeAcceptanceCaseInput,
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
+  },
+);
+
+export const WsCollaborativeAcceptanceResolveForPullRequestRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceResolveForPullRequest,
+  {
+    payload: CollaborativeAcceptanceCaseLookupInput,
+    success: CollaborativeAcceptanceCaseLookupResult,
+    error: CollaborativeAcceptanceCaseLookupError,
+  },
+);
+
+export const WsCollaborativeAcceptanceSubmitAssessmentRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceSubmitAssessment,
+  {
+    payload: Schema.Struct({
+      threadId: ThreadId,
+      submission: CollaborativeAcceptanceAssessmentSubmission,
+    }),
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
+  },
+);
+
+export const WsCollaborativeAcceptancePauseRpc = Rpc.make(WS_METHODS.collaborativeAcceptancePause, {
+  payload: Schema.Struct({
+    ...CollaborativeAcceptanceCaseInput.fields,
+    reason: CollaborativeAcceptancePauseReason,
+  }),
+  success: CollaborativeAcceptanceStatus,
+  error: CollaborativeAcceptanceError,
+});
+
+export const WsCollaborativeAcceptanceResumeRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceResume,
+  {
+    payload: CollaborativeAcceptanceCaseInput,
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
   },
 );
 
@@ -1100,6 +1240,58 @@ export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
   stream: true,
 });
 
+export const WsDeviceTestHostRpc = Rpc.make(WS_METHODS.deviceTestHost, {
+  payload: SshDeviceHostConfig,
+  success: DeviceHostSummary,
+  error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
+});
+
+export const WsDeviceListRpc = Rpc.make(WS_METHODS.deviceList, {
+  payload: DeviceListInput,
+  success: DeviceServiceState,
+  error: DeviceError,
+});
+
+export const WsDeviceConfigureRpc = Rpc.make(WS_METHODS.deviceConfigure, {
+  payload: DeviceConfigureInput,
+  success: DeviceServiceState,
+  error: DeviceError,
+});
+
+export const WsDeviceOpenRpc = Rpc.make(WS_METHODS.deviceOpen, {
+  payload: DeviceOpenInput,
+  success: DeviceSession,
+  error: DeviceError,
+});
+
+export const WsDeviceCloseRpc = Rpc.make(WS_METHODS.deviceClose, {
+  payload: DeviceCloseInput,
+  error: DeviceError,
+});
+
+export const WsDeviceShutdownRpc = Rpc.make(WS_METHODS.deviceShutdown, {
+  payload: DeviceShutdownInput,
+  error: DeviceError,
+});
+
+export const WsDeviceDetailRpc = Rpc.make(WS_METHODS.deviceDetail, {
+  payload: DeviceDetailInput,
+  success: DeviceDetail,
+  error: DeviceError,
+});
+
+export const WsDeviceActionRpc = Rpc.make(WS_METHODS.deviceAction, {
+  payload: DeviceActionInput,
+  success: DeviceDetail,
+  error: DeviceError,
+});
+
+export const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
+  payload: Schema.Struct({}),
+  success: DeviceServiceState,
+  stream: true,
+});
+
 export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
   payload: Schema.Struct({}),
   success: SourceControlDiscoveryResult,
@@ -1211,6 +1403,11 @@ export const WsOrchestrationGetArchivedShellSnapshotRpc = Rpc.make(
 );
 
 export const WsRpcGroup = RpcGroup.make(
+  Rpc.make(ORCHESTRATION_WS_METHODS.readThread, {
+    payload: OrchestrationRpcSchemas.readThread.input,
+    success: OrchestrationRpcSchemas.readThread.output,
+    error: Schema.Union([OrchestrationReadThreadInputError, OrchestrationGetSnapshotError]),
+  }),
   WsServerProbeRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
@@ -1225,6 +1422,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpdateSettingsRpc,
   WsSidebarGetStateRpc,
   WsSidebarUpdateStateRpc,
+  WsServerExportActiveChatsRpc,
+  WsServerImportChatArchiveRpc,
   WsServerExportThreadMarkdownRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsListEntriesRpc,
@@ -1266,7 +1465,23 @@ export const WsRpcGroup = RpcGroup.make(
   WsPullRequestMonitorsTransferRpc,
   WsPullRequestMonitorsSubmitFindingsRpc,
   WsPullRequestMonitorsLaunchFallbackRpc,
+  WsCollaborativeAcceptanceSubmitCandidateRpc,
+  WsCollaborativeAcceptanceRequestReviewRpc,
+  WsCollaborativeAcceptanceStatusRpc,
+  WsCollaborativeAcceptanceResolveForPullRequestRpc,
+  WsCollaborativeAcceptanceSubmitAssessmentRpc,
+  WsCollaborativeAcceptancePauseRpc,
+  WsCollaborativeAcceptanceResumeRpc,
   WsSubscribeDiscoveredLocalServersRpc,
+  WsDeviceConfigureRpc,
+  WsDeviceListRpc,
+  WsDeviceTestHostRpc,
+  WsDeviceOpenRpc,
+  WsDeviceCloseRpc,
+  WsDeviceShutdownRpc,
+  WsDeviceDetailRpc,
+  WsDeviceActionRpc,
+  WsSubscribeDeviceStateRpc,
   WsSubscribeGitStatusRpc,
   WsGitPullRpc,
   WsGitRefreshStatusRpc,

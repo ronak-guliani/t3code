@@ -4,11 +4,13 @@ import {
   ApprovalRequestId,
   EventId,
   IsoDateTime,
+  MessageId,
   ProviderItemId,
   ThreadId,
   TurnId,
 } from "./baseSchemas.ts";
 import {
+  CollaborationExecutionAuthority,
   ChatAttachment,
   ModelSelection,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -62,6 +64,12 @@ export const ProviderSessionStartInput = Schema.Struct({
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,
+  /**
+   * Server-authenticated execution binding for provider-created MCP sessions.
+   * Provider callers may omit this for non-collaboration sessions; acceptance
+   * mutations reject scopes without a complete binding.
+   */
+  executionAuthority: Schema.optional(CollaborationExecutionAuthority),
 });
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
@@ -87,6 +95,9 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  delegationAssignmentId: Schema.optional(MessageId),
+  delegationDispatchId: Schema.optional(TrimmedNonEmptyString),
+  executionAuthority: Schema.optional(CollaborationExecutionAuthority),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 

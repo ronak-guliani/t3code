@@ -2,8 +2,10 @@ import * as Effect from "effect/Effect";
 import type {
   PreviewAutomationOperation,
   PreviewAutomationOpenInput,
+  PreviewAutomationPreflightResult,
   PreviewAutomationRecordingArtifact,
   PreviewAutomationRecordingStatus,
+  PreviewAutomationRecordingTransferResult,
   PreviewAutomationResizeResult,
   PreviewAutomationSetColorSchemeResult,
   PreviewAutomationOpenAndSnapshotResult,
@@ -12,9 +14,15 @@ import type {
   PreviewAutomationTabsResult,
   PreviewTabId,
 } from "@t3tools/contracts";
+import { PREVIEW_RECORDING_TRANSFER_MAX_BYTES } from "@t3tools/contracts";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import {
+  recordingExtensionForMimeType,
+  resolveBrowserEvidenceDir,
+  saveBrowserEvidenceFile,
+} from "../../PreviewEvidence.ts";
 import { PreviewSnapshotToolkit, PreviewStandardToolkit, PreviewToolkit } from "./tools.ts";
 
 export function normalizePreviewOpenInput(
@@ -41,7 +49,7 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
   import("@t3tools/contracts").PreviewAutomationError,
   McpInvocationContext.McpInvocationContext | PreviewAutomationBroker.PreviewAutomationBroker
 > {
-  const scope = yield* McpInvocationContext.requireMcpCapability("preview");
+  const scope = yield* McpInvocationContext.requirePreviewCapability();
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   return yield* broker.invoke<A>({
     scope,
@@ -63,6 +71,52 @@ const invokeTargeted = <A>(
   const { tabId, ...operationInput } = input;
   return invoke<A>(operation, operationInput, timeoutMs, tabId);
 };
+
+/**
+ * Pull finished recording bytes from the browser host and store an
+ * agent-readable copy next to the server. Any failure (older host without
+ * `recordingTransfer`, evicted renderer cache, oversized payload, disk error)
+ * falls back to the host-local artifact so stopping a recording never fails
+ * because the transfer did.
+ */
+const transferRecordingToServer = (
+  tabId: PreviewTabId | undefined,
+  artifact: PreviewAutomationRecordingArtifact,
+): Effect.Effect<
+  PreviewAutomationRecordingArtifact,
+  unknown,
+  McpInvocationContext.McpInvocationContext | PreviewAutomationBroker.PreviewAutomationBroker
+> =>
+  Effect.gen(function* () {
+    const transfer = yield* invoke<PreviewAutomationRecordingTransferResult>(
+      "recordingTransfer",
+      { recordingId: artifact.id },
+      undefined,
+      tabId,
+    );
+    const bytes = Buffer.from(transfer.data, "base64");
+    if (
+      bytes.length === 0 ||
+      bytes.length !== transfer.sizeBytes ||
+      bytes.length > PREVIEW_RECORDING_TRANSFER_MAX_BYTES
+    ) {
+      yield* Effect.logWarning("discarding corrupt recording transfer", {
+        recordingId: artifact.id,
+        expectedBytes: transfer.sizeBytes,
+        actualBytes: bytes.length,
+      });
+      return artifact;
+    }
+    const path = yield* Effect.tryPromise(() =>
+      saveBrowserEvidenceFile({
+        directory: resolveBrowserEvidenceDir(),
+        prefix: `browser-recording-${artifact.id}`,
+        extension: recordingExtensionForMimeType(transfer.mimeType),
+        bytes,
+      }),
+    );
+    return { ...artifact, path, transferred: true as const };
+  });
 
 const handlers = {
   preview_status: (input) => invokeTargeted<PreviewAutomationStatus>("status", input ?? {}),
@@ -86,6 +140,8 @@ const handlers = {
       input.timeoutMs,
     );
   },
+  preview_preflight: (input) =>
+    invokeTargeted<PreviewAutomationPreflightResult>("preflight", input, input.timeoutMs),
   preview_navigate: (input) =>
     invokeTargeted<PreviewAutomationStatus>("navigate", input, input.timeoutMs),
   preview_resize: (input) =>
@@ -100,13 +156,21 @@ const handlers = {
   preview_press: (input) => invokeTargeted<void>("press", input).pipe(Effect.as(null)),
   preview_scroll: (input) => invokeTargeted<void>("scroll", input).pipe(Effect.as(null)),
   preview_evaluate: (input) =>
-    invokeTargeted<unknown>("evaluate", input).pipe(Effect.map((result) => result ?? null)),
+    invokeTargeted<unknown>("evaluate", input).pipe(
+      Effect.map((result) => ({ value: result ?? null })),
+    ),
   preview_wait_for: (input) =>
     invokeTargeted<void>("waitFor", input, input.timeoutMs).pipe(Effect.as(null)),
   preview_recording_start: (input) =>
     invokeTargeted<PreviewAutomationRecordingStatus>("recordingStart", input ?? {}),
   preview_recording_stop: (input) =>
-    invokeTargeted<PreviewAutomationRecordingArtifact>("recordingStop", input ?? {}),
+    invokeTargeted<PreviewAutomationRecordingArtifact>("recordingStop", input ?? {}).pipe(
+      Effect.flatMap((artifact) =>
+        transferRecordingToServer(input?.tabId, artifact).pipe(
+          Effect.orElseSucceed(() => artifact),
+        ),
+      ),
+    ),
 } satisfies Parameters<typeof PreviewToolkit.toLayer>[0];
 
 const { preview_snapshot, preview_open_and_snapshot, ...standardHandlers } = handlers;

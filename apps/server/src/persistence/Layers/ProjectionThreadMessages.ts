@@ -5,9 +5,12 @@ import { ChatAttachment, MessageOrigin } from "@t3tools/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
+  DeleteProjectionThreadMessagesByIdsInput,
   GetLatestUserMessageAtInput,
   GetProjectionThreadMessageInput,
+  ProjectionThreadMessageAttachmentRef,
   ProjectionThreadMessageRepository,
+  ProjectionThreadMessageRevertKey,
   type ProjectionThreadMessageRepositoryShape,
   DeleteProjectionThreadMessagesInput,
   ListProjectionThreadMessagesInput,
@@ -158,6 +161,47 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       `,
   });
 
+  // Revert trimming only inspects identity/ordering columns: text,
+  // attachments, and origins are never selected or JSON-decoded.
+  const listProjectionThreadMessageRevertKeyRows = SqlSchema.findAll({
+    Request: ListProjectionThreadMessagesInput,
+    Result: ProjectionThreadMessageRevertKey,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          message_id AS "messageId",
+          turn_id AS "turnId",
+          role,
+          created_at AS "createdAt"
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId}
+        ORDER BY created_at ASC, message_id ASC
+      `,
+  });
+
+  const ProjectionThreadMessageAttachmentRefDbRowSchema =
+    ProjectionThreadMessageAttachmentRef.mapFields(
+      Struct.assign({
+        attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
+      }),
+    );
+
+  // Attachment reconciliation only needs attachment references: message text
+  // and origins are never selected or decoded.
+  const listProjectionThreadMessageAttachmentRefRows = SqlSchema.findAll({
+    Request: ListProjectionThreadMessagesInput,
+    Result: ProjectionThreadMessageAttachmentRefDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          message_id AS "messageId",
+          attachments_json AS "attachments"
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId}
+        ORDER BY created_at ASC, message_id ASC
+      `,
+  });
+
   const getLatestUserMessageAtRow = SqlSchema.findOne({
     Request: GetLatestUserMessageAtInput,
     Result: Schema.Struct({ latestUserMessageAt: Schema.NullOr(Schema.String) }),
@@ -178,6 +222,18 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
         DELETE FROM projection_thread_messages
         WHERE thread_id = ${threadId}
       `,
+  });
+
+  const deleteProjectionThreadMessageRowsByIds = SqlSchema.void({
+    Request: DeleteProjectionThreadMessagesByIdsInput,
+    execute: ({ threadId, messageIds }) =>
+      messageIds.length === 0
+        ? sql`DELETE FROM projection_thread_messages WHERE 1 = 0`
+        : sql`
+          DELETE FROM projection_thread_messages
+          WHERE thread_id = ${threadId}
+            AND message_id IN ${sql.in(messageIds)}
+        `,
   });
 
   const upsert: ProjectionThreadMessageRepositoryShape["upsert"] = (row) =>
@@ -201,10 +257,37 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       Effect.map((rows) => rows.map(toProjectionThreadMessage)),
     );
 
+  const listRevertKeysByThreadId: ProjectionThreadMessageRepositoryShape["listRevertKeysByThreadId"] =
+    (input) =>
+      listProjectionThreadMessageRevertKeyRows(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionThreadMessageRepository.listRevertKeysByThreadId:query"),
+        ),
+      );
+
+  const listAttachmentRefsByThreadId: ProjectionThreadMessageRepositoryShape["listAttachmentRefsByThreadId"] =
+    (input) =>
+      listProjectionThreadMessageAttachmentRefRows(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlError(
+            "ProjectionThreadMessageRepository.listAttachmentRefsByThreadId:query",
+          ),
+        ),
+      );
+
   const deleteByThreadId: ProjectionThreadMessageRepositoryShape["deleteByThreadId"] = (input) =>
     deleteProjectionThreadMessageRows(input).pipe(
       Effect.mapError(
         toPersistenceSqlError("ProjectionThreadMessageRepository.deleteByThreadId:query"),
+      ),
+    );
+
+  const deleteByMessageIds: ProjectionThreadMessageRepositoryShape["deleteByMessageIds"] = (
+    input,
+  ) =>
+    deleteProjectionThreadMessageRowsByIds(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionThreadMessageRepository.deleteByMessageIds:query"),
       ),
     );
 
@@ -222,7 +305,10 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
     upsert,
     getByMessageId,
     listByThreadId,
+    listRevertKeysByThreadId,
+    listAttachmentRefsByThreadId,
     deleteByThreadId,
+    deleteByMessageIds,
     getLatestUserMessageAt,
   } satisfies ProjectionThreadMessageRepositoryShape;
 });

@@ -66,6 +66,43 @@ background-service prompt when shown. Without `--connect`, the command only upda
 Re-run it after pulling future CLI fixes; merging or updating source alone does not update
 installed binaries.
 
+### Agent CLI reliability
+
+New provider processes inherit a private `t3` launcher for the running server's CLI build
+and `T3CODE_HOME`, rather than an unrelated installation on PATH. Restart an existing provider
+session after updating the server. This does not replace the user's installed `t3`. Packaged
+`--version` includes the build commit when available; `installation identity --json` also
+reports the executable and entrypoint. If snapshot decoding reports `CLI_SERVER_INCOMPATIBLE`,
+update both components or use the server-matched launcher.
+
+Management-command stdout is reserved for results; diagnostics and failures go to stderr.
+Invalid-argument help also goes to stderr; requested help stays on stdout without an error.
+Failures exit nonzero and include a JSON `error` with `code` and `message`. Stream commands
+remain long-lived; individual unary WebSocket RPC replies have a 30-second deadline. A timeout
+does not prove a mutation was rejected: inspect its outcome before retrying. Mutations are not
+automatically replayed.
+
+`chat show` now resolves an ID or unambiguous title without downloading the global shell.
+History views return the newest 50 entries in chronological order, without checkpoints:
+
+```sh
+t3 chat show THREAD_ID
+t3 chat show THREAD_ID --messages --limit 20
+t3 chat show THREAD_ID --activities --limit 20
+t3 chat show THREAD_ID --messages --before CURSOR_FROM_PAGE_BEFORE
+t3 chat show THREAD_ID --full
+```
+
+Pages expose `page.hasMore` and `page.before`; cursors are bound to the thread and history
+view. The maximum page size is 200. `--full` preserves the previous detail shape, including
+checkpoints, recent activities, and pending-request context. It is also the explicit legacy
+read for older servers without the targeted-read API. Archived threads remain readable.
+The three history view flags are mutually exclusive, and pagination is unavailable with `--full`.
+The targeted HTTP API returns 400 for invalid requests, ambiguous/missing threads, and invalid
+cursors; internal repository failures remain 500.
+Use `--full` instead of `--messages` in scripts that require the previous combined detail
+shape. Pending approval and question listings include requests outside the recent activity window.
+
 `t3 service install` installs the exact packaged CLI and its installed production dependencies as a per-user service and starts it immediately. The private snapshot includes native assets, does not depend on the original checkout's `node_modules`, and is checked before replacing a working service. Re-running install repairs the definition and replaces the runtime, so run it again from the newly installed packaged CLI after an upgrade.
 
 For T3 Connect, start with `t3 connect --role host`: sign in and accept the background-service prompt. You do
@@ -158,12 +195,13 @@ cancel; automation must pass `--yes`. It removes the account registration for al
 not projects, history, or drafts. It does **not** revoke already-issued sessions. Disable an
 enabled host first so it cannot automatically register again.
 
-| Action                                    | Effect                                                                               |
-| ----------------------------------------- | ------------------------------------------------------------------------------------ |
-| Disconnect/remove on this client          | Removes this device's connection; local removal may clear its drafts and outbox.     |
-| `t3 connect disable --base-dir ...`       | Stops this host's Connect exposure while retaining account sign-in and registration. |
-| `t3 connect deregister --environment ...` | Removes the account registration, including an offline host.                         |
-| `t3 connect unlink --base-dir ...`        | Disables this host and removes its account registration.                             |
+| Action                                    | Effect                                                                                |
+| ----------------------------------------- | ------------------------------------------------------------------------------------- |
+| Switch off on this client                 | Pauses retries on this device; keeps credentials, cached history, drafts, and outbox. |
+| Remove from this device                   | Forgets this device's connection; local removal may clear its drafts and outbox.      |
+| `t3 connect disable --base-dir ...`       | Stops this host's Connect exposure while retaining account sign-in and registration.  |
+| `t3 connect deregister --environment ...` | Removes the account registration, including an offline host.                          |
+| `t3 connect unlink --base-dir ...`        | Disables this host and removes its account registration.                              |
 
 The current relay lists stable IDs, labels, endpoints, and registration dates. It does not
 expose actual tunnel quota usage/limits, last-seen time, installation type, or build. Clients
@@ -434,3 +472,37 @@ tailscale serve status
 Scan the printed QR code in the RN app or open the same canonical URL in a browser. Tailscale Serve persists independently across T3 restarts. Use the exact per-port removal command printed by `t3 pair`; avoid `tailscale serve reset`, which removes unrelated mappings too.
 
 The service definition contains its startup paths and selected non-secret configuration. Pairing/session credentials still grant workstation access: use Tailnet ACLs, revoke unused T3 sessions, protect the workstation account, and do not expose the port directly to an untrusted network.
+
+### Automatic endpoint discovery
+
+Authenticated clients can read `GET /api/remote-access/endpoints` with an
+environment session carrying `relay:read`. The response is the additive
+`AdvertisedEndpoint[]` contract: it may include the live listener's loopback,
+LAN, private-network, and public candidates, plus a Tailscale IP or an already
+configured Tailscale Serve HTTPS mapping. A missing route on an older server is
+treated as no discovery candidates.
+
+Discovery uses the listener address family and actual bound port, including
+ephemeral ports. Wildcard listeners are projected only onto usable interfaces
+in the same family; loopback, link-local, and multicast addresses are not
+invented as LAN candidates, while private Docker/VM bridge addresses remain
+eligible. Existing Tailscale Serve mappings are inspected read-only and are
+advertised only when their loopback proxy target and HTTPS environment identity
+match this server. Discovery never enables Serve, changes firewall exposure, or
+turns plain LAN HTTP into an implicitly trusted transport. `401` means there is
+no authenticated environment session and `403` means the session lacks
+`relay:read`.
+
+## Pausing a saved connection
+
+In Settings -> Connections, switch a saved environment off to pause it **on this
+client only**. The choice survives restarts, stops connection retries, and hides
+that environment's projects and threads from combined workspace lists. Credentials,
+cached history, and drafts are retained; switch it back on to reconnect without
+pairing again. On mobile, saved direct connections and T3 Connect rows use the
+same switch. Long-press a saved T3 Connect row to remove it instead.
+
+Pausing does not stop the host service or server-side agent work, disable remote
+access, or affect other clients. **Remove from this device** forgets the saved
+connection and requires pairing again. **Deregister from account** is a separate
+account-wide action.

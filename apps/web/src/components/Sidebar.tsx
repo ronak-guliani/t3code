@@ -181,6 +181,7 @@ import {
   resolveExistingThreadDraftPreview,
   shouldRenderSidebarDraft,
   resolveThreadRowClassName,
+  resolveSidebarThreadClickKind,
   resolveThreadStatusPill,
   orderItemsByPreferredIds,
   shouldClearThreadSelectionOnMouseDown,
@@ -223,6 +224,7 @@ import {
 } from "../sidebarThreadTree";
 import { compactSidebarTimeLabel } from "./SidebarV2.logic";
 import { SidebarHoverThreadPrewarmer } from "./SidebarThreadPrewarmer";
+import { resolveThreadPullRequests, ThreadPullRequestsPopover } from "./ThreadPullRequestsPopover";
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -393,7 +395,11 @@ interface SidebarThreadRowProps {
   dismissAgentRun: (parentThreadId: ThreadId, taskId: string) => void;
   setThreadPinned: (projectKey: string, threadKey: string, pinned: boolean) => void;
   toggleThreadExpanded: (threadKey: string, isExpanded: boolean) => void;
-  openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
+  openPrLink: (
+    event: React.MouseEvent<HTMLElement>,
+    prUrl: string,
+    threadRef?: ScopedThreadRef,
+  ) => void;
   projectKey: string;
   sortable?: {
     attributes: ReturnType<typeof useSortable>["attributes"];
@@ -475,7 +481,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     (state) =>
       selectThreadTerminalState(state.terminalStateByThreadKey, threadRef).runningTerminalIds,
   );
-  const prStatus = prStatusIndicator(thread.pullRequest);
+  const pullRequests = resolveThreadPullRequests(thread.pullRequests, thread.pullRequest);
+  const prStatus = prStatusIndicator(pullRequests[0]);
   const handleOpenDiscoveredPort = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       const port = discoveredPorts[0];
@@ -544,16 +551,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         });
         return;
       }
-      const isMac = isMacPlatform(navigator.platform);
-      const isModKey = isMac ? event.metaKey : event.ctrlKey;
-
-      if (event.shiftKey && !isModKey) {
-        event.preventDefault();
-        event.stopPropagation();
-        setThreadPinned(projectKey, threadKey, !isPinned);
-        return;
-      }
-
+      // Modifier clicks are selection gestures owned by handleThreadClick
+      // (Ctrl/Cmd toggles, Shift extends a range). Pinning stays on the row's
+      // overflow menu so Shift+Click can select.
       handleParentThreadSelected(threadKey, props.hasChildren);
       handleThreadClick(event, threadRef, orderedProjectThreadKeys);
     },
@@ -562,11 +562,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       handleThreadClick,
       handleParentThreadSelected,
       clearSelection,
-      isPinned,
       navigate,
       orderedProjectThreadKeys,
-      projectKey,
-      setThreadPinned,
       threadKey,
       threadRef,
       virtualAgentRun,
@@ -726,10 +723,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const handleOpenPrSelected = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
       if (prStatus) {
-        openPrLink(event, prStatus.url);
+        openPrLink(event, prStatus.url, threadRef);
       }
     },
-    [openPrLink, prStatus],
+    [openPrLink, prStatus, threadRef],
   );
   // The row surface is a role="button"; without this the menu trigger's click
   // would bubble up and open the thread behind the menu.
@@ -880,7 +877,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   · {composerDraftPreview}
                 </span>
               ) : null}
-              {prStatus ? (
+              {pullRequests.length > 0 ? (
                 <>
                   <span
                     aria-hidden="true"
@@ -889,24 +886,16 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   >
                     ·
                   </span>
-                  <button
-                    type="button"
-                    data-thread-selection-safe
+                  <span
                     data-testid={`thread-pr-link-${thread.id}`}
-                    aria-label={prStatus.tooltip}
-                    title={prStatus.tooltip}
-                    className={cn(
-                      "shrink-0 cursor-pointer font-mono tabular-nums outline-hidden transition-colors hover:underline focus-visible:ring-1 focus-visible:ring-ring",
-                      prStatus.colorClass,
-                    )}
                     style={{ fontSize: "var(--app-sidebar-font-size)" }}
-                    // Pinned rows put dnd-kit listeners on the parent <li>; without
-                    // this guard a slight move while clicking starts a drag.
-                    onPointerDown={stopPropagationOnPointerDown}
-                    onClick={handleOpenPrSelected}
                   >
-                    #{prStatus.number}
-                  </button>
+                    <ThreadPullRequestsPopover
+                      links={thread.pullRequests}
+                      fallbackPullRequest={thread.pullRequest}
+                      threadRef={threadRef}
+                    />
+                  </span>
                 </>
               ) : null}
             </span>
@@ -1080,7 +1069,11 @@ interface SidebarProjectThreadListProps {
     draggedThreadKey: string,
     targetThreadKey: string,
   ) => void;
-  openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
+  openPrLink: (
+    event: React.MouseEvent<HTMLElement>,
+    prUrl: string,
+    threadRef?: ScopedThreadRef,
+  ) => void;
   /**
    * Threads are indented to sit under their project header. With the header
    * hidden there is nothing to nest beneath, so the indent is dropped.
@@ -2182,19 +2175,22 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       threadRef: ScopedThreadRef,
       orderedProjectThreadKeys: readonly string[],
     ) => {
-      const isMac = isMacPlatform(navigator.platform);
-      const isModClick = isMac ? event.metaKey : event.ctrlKey;
-      const isShiftClick = event.shiftKey;
       const threadKey = scopedThreadKey(threadRef);
       const currentSelectionCount = useThreadSelectionStore.getState().selectedThreadKeys.size;
+      const clickKind = resolveSidebarThreadClickKind({
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
+        isMac: isMacPlatform(navigator.platform),
+      });
 
-      if (isModClick) {
+      if (clickKind === "toggle") {
         event.preventDefault();
         toggleThreadSelection(threadKey);
         return;
       }
 
-      if (isShiftClick) {
+      if (clickKind === "range") {
         event.preventDefault();
         rangeSelectTo(threadKey, orderedProjectThreadKeys);
         return;
@@ -2708,26 +2704,28 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
               </TooltipPopup>
             </Tooltip>
           )}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <div className="pointer-events-none absolute top-1 right-1.5 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
-                  <button
-                    type="button"
-                    aria-label={`Create new thread in ${project.displayName}`}
-                    data-testid="new-thread-button"
-                    className="inline-flex size-5 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-                    onClick={handleCreateThreadClick}
-                  >
-                    <SquarePenIcon className="size-3.5" />
-                  </button>
-                </div>
-              }
-            />
-            <TooltipPopup side="top">
-              {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
-            </TooltipPopup>
-          </Tooltip>
+          {project.kind !== "chat-import" ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <div className="pointer-events-none absolute top-1 right-1.5 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
+                    <button
+                      type="button"
+                      aria-label={`Create new thread in ${project.displayName}`}
+                      data-testid="new-thread-button"
+                      className="inline-flex size-5 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                      onClick={handleCreateThreadClick}
+                    >
+                      <SquarePenIcon className="size-3.5" />
+                    </button>
+                  </div>
+                }
+              />
+              <TooltipPopup side="top">
+                {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
+              </TooltipPopup>
+            </Tooltip>
+          ) : null}
         </div>
       )}
 
@@ -3446,7 +3444,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
               </TooltipTrigger>
               <TooltipPopup side="right">Add project</TooltipPopup>
             </Tooltip>
-            {activeFilterProject ? (
+            {activeFilterProject && activeFilterProject.kind !== "chat-import" ? (
               <Tooltip>
                 <TooltipTrigger
                   render={

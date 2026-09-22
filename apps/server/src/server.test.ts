@@ -12,6 +12,8 @@ import * as Context from "effect/Context";
 
 import {
   CommandId,
+  CollaborativeAcceptanceCaseId,
+  type CollaborationExecutionAuthority,
   AuthWebSocketTicketResult,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
@@ -23,6 +25,8 @@ import {
   MOBILE_V1_SERVER_CAPABILITIES,
   MobileServerMessage,
   OpenError,
+  OrchestrationGetSnapshotError,
+  OrchestrationReadThreadInputError,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
   type OrchestrationThread,
@@ -60,6 +64,7 @@ import {
   Exit,
   FileSystem,
   Layer,
+  Logger,
   ManagedRuntime,
   Option,
   Path,
@@ -83,10 +88,15 @@ import { vi } from "vitest";
 import type { ServerConfigShape } from "./config.ts";
 import { deriveServerPaths, ServerConfig } from "./config.ts";
 import { CloudHttpRuntimeLayerLive, RemoteAccessLayerLive, makeRoutesLayer } from "./server.ts";
+import * as ServerAdvertisedEndpoints from "./remoteAccess/ServerAdvertisedEndpoints.ts";
 import { CheckoutCoordinatorLive } from "./git/CheckoutCoordinator.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import { attachmentRelativePath } from "./attachmentStore.ts";
-import { getLiveOrchestrationShellSnapshot } from "./cli/client.ts";
+import {
+  getLiveOrchestrationShellSnapshot,
+  readLiveThread,
+  withRpcClientForBearerToken,
+} from "./cli/client.ts";
 import {
   CheckpointDiffQuery,
   type CheckpointDiffQueryShape,
@@ -106,6 +116,10 @@ import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
 } from "./orchestration/Services/OrchestrationEngine.ts";
+import {
+  CollaborativeAcceptanceCoordinator,
+  type CollaborativeAcceptanceCoordinatorShape,
+} from "./collaborativeAcceptance/Coordinator.ts";
 import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
 import {
   ProjectionSnapshotQuery,
@@ -125,6 +139,7 @@ import { TerminalManager, type TerminalManagerShape } from "./terminal/Services/
 import { PreviewManager } from "./preview/Manager.ts";
 import { PortDiscovery } from "./preview/PortScanner.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
+import * as DeviceService from "./device/DeviceService.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import {
   BrowserTraceCollector,
@@ -390,6 +405,7 @@ const buildAppUnderTest = (options?: {
     repositoryIdentityResolver?: Partial<RepositoryIdentityResolverShape>;
     providerService?: Partial<ProviderServiceShape>;
     relayClient?: Partial<RelayClientShape>;
+    collaborativeAcceptanceCoordinator?: Partial<CollaborativeAcceptanceCoordinatorShape>;
   };
 }) =>
   Effect.gen(function* () {
@@ -543,16 +559,47 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(PreviewManager)({
-          open: () => Effect.die("Not implemented in server test."),
-          navigate: () => Effect.die("Not implemented in server test."),
-          reportStatus: () => Effect.void,
-          resize: () => Effect.die("Not implemented in server test."),
-          refresh: () => Effect.void,
-          close: () => Effect.void,
-          list: () => Effect.succeed({ sessions: [], serverEpoch: "test-epoch", revision: 0 }),
-          events: Stream.empty,
-        }),
+        Layer.merge(
+          Layer.mock(PreviewManager)({
+            open: () => Effect.die("Not implemented in server test."),
+            navigate: () => Effect.die("Not implemented in server test."),
+            reportStatus: () => Effect.void,
+            resize: () => Effect.die("Not implemented in server test."),
+            refresh: () => Effect.void,
+            close: () => Effect.void,
+            list: () => Effect.succeed({ sessions: [], serverEpoch: "test-epoch", revision: 0 }),
+            events: Stream.empty,
+          }),
+          Layer.mock(DeviceService.DeviceService)({
+            agentCli: Effect.die("Not implemented in server test."),
+            agentTarget: () => Effect.die("Not implemented in server test."),
+            state: Effect.succeed({
+              hosts: [],
+              hostStatus: "disabled",
+              hostStatuses: {},
+              devices: [],
+              sessions: [],
+              onboardingCompleted: false,
+              agentAccessEnabled: false,
+              hubBasePath: DeviceService.DEVICE_HUB_ROUTE_PREFIX,
+              revision: 0,
+            }),
+            subscribe: Effect.die("Not implemented in server test."),
+            configure: () => Effect.die("Not implemented in server test."),
+            list: Effect.die("Not implemented in server test."),
+            open: () => Effect.die("Not implemented in server test."),
+            close: () => Effect.void,
+            shutdown: () => Effect.void,
+            detail: () => Effect.die("Not implemented in server test."),
+            action: () => Effect.die("Not implemented in server test."),
+            screenshot: () => Effect.die("Not implemented in server test."),
+            readiness: () => Effect.die("Not implemented in server test."),
+            readinessIfSupported: () => Effect.succeed(null),
+            agentReadinessIfSupported: () => Effect.succeed(null),
+            currentReadiness: () => Effect.succeed(null),
+            sessionsForThread: () => Effect.succeed([]),
+          }),
+        ),
       ),
       Layer.provide(PreviewAutomationBroker.layer),
       Layer.provide(
@@ -582,26 +629,44 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(ProjectionSnapshotQuery)({
-          getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: new Date(0).toISOString(),
-            }),
-          getSnapshotSequence: () => Effect.succeed(0),
-          getProjectShellById: () => Effect.succeed(Option.none()),
-          getThreadShellById: () => Effect.succeed(Option.none()),
-          getThreadDetailById: () => Effect.succeed(Option.none()),
-          getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
-          getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
-          getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
-          getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
-          getThreadCheckpointContext: () => Effect.succeed(Option.none()),
-          ...options?.layers?.projectionSnapshotQuery,
-        }),
+        Layer.merge(
+          Layer.mock(ProjectionSnapshotQuery)({
+            getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 0,
+                projects: [],
+                threads: [],
+                updatedAt: new Date(0).toISOString(),
+              }),
+            getSnapshotSequence: () => Effect.succeed(0),
+            getProjectShellById: () => Effect.succeed(Option.none()),
+            getThreadShellById: () => Effect.succeed(Option.none()),
+            getThreadDetailById: () => Effect.succeed(Option.none()),
+            getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
+            listThreadProjectIds: () => Effect.die("unused"),
+            getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
+            getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+            getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+            getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+            ...options?.layers?.projectionSnapshotQuery,
+          }),
+          Layer.mock(CollaborativeAcceptanceCoordinator)({
+            submitCandidate: () => Effect.die("Not implemented in server test."),
+            requestReview: () => Effect.die("Not implemented in server test."),
+            requestCollaboration: () => Effect.die("Not implemented in server test."),
+            respondToRequest: () => Effect.die("Not implemented in server test."),
+            dispositionFinding: () => Effect.die("Not implemented in server test."),
+            submitAssessment: () => Effect.die("Not implemented in server test."),
+            recordProviderEvidence: () => Effect.die("Not implemented in server test."),
+            refreshProviderEvidence: () => Effect.die("Not implemented in server test."),
+            status: () => Effect.succeed({ record: null, pauseReason: null }),
+            pause: () => Effect.die("Not implemented in server test."),
+            resume: () => Effect.die("Not implemented in server test."),
+            start: () => Effect.die("Not implemented in server test."),
+            ...options?.layers?.collaborativeAcceptanceCoordinator,
+          }),
+        ),
       ),
       Layer.provideMerge(
         WorktreeCleanupJobRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
@@ -684,9 +749,17 @@ const buildAppUnderTest = (options?: {
           ...options?.layers?.diffStateQuery,
         }),
       ),
-    );
+    ) as unknown as Layer.Layer<never>;
 
-    const appLayer = servedRoutesLayer.pipe(
+    const servedRoutesWithDiscoveryLayer = servedRoutesLayer.pipe(
+      Layer.provide(
+        Layer.succeed(ServerAdvertisedEndpoints.ServerAdvertisedEndpoints, {
+          getEndpoints: Effect.succeed([]),
+        }),
+      ),
+    ) as unknown as Layer.Layer<never>;
+
+    const appLayer = servedRoutesWithDiscoveryLayer.pipe(
       Layer.provide(
         Layer.mock(BrowserTraceCollector)({
           record: () => Effect.void,
@@ -1106,24 +1179,24 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         namedCurve: "P-256",
       });
       let credential = "";
+      let relayCredential = "";
       yield* buildAppUnderTest({
         onAuthReady: (auth) =>
-          auth
-            .issuePairingCredential({
+          Effect.gen(function* () {
+            const proofKeyThumbprint = computeDpopJwkThumbprint(
+              publicKey.export({ format: "jwk" }) as DpopPublicJwk,
+            );
+            const first = yield* auth.issuePairingCredential({
               label: "Cross-origin DPoP test",
-              proofKeyThumbprint: computeDpopJwkThumbprint(
-                publicKey.export({ format: "jwk" }) as DpopPublicJwk,
-              ),
-            })
-            .pipe(
-              Effect.tap((issued) =>
-                Effect.sync(() => {
-                  credential = issued.credential;
-                }),
-              ),
-              Effect.orDie,
-              Effect.asVoid,
-            ),
+              proofKeyThumbprint,
+            });
+            const second = yield* auth.issuePairingCredential({
+              label: "Cross-origin DPoP discovery test",
+              proofKeyThumbprint,
+            });
+            credential = first.credential;
+            relayCredential = second.credential;
+          }).pipe(Effect.orDie),
       });
       const tokenUrl = yield* getHttpServerUrl("/oauth/token");
       const ticketUrl = yield* getHttpServerUrl("/api/auth/websocket-ticket");
@@ -1141,7 +1214,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.equal(preflight.status, 204);
         assertBrowserApiCorsHeaders(preflight.headers);
       }
-      const proof = (url: string, accessToken?: string) => {
+      const proof = (url: string, accessToken?: string, method = "POST") => {
         const header = Buffer.from(
           JSON.stringify({
             typ: "dpop+jwt",
@@ -1151,7 +1224,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ).toString("base64url");
         const payload = Buffer.from(
           JSON.stringify({
-            htm: "POST",
+            htm: method,
             htu: url,
             iat: Math.floor(Date.now() / 1_000),
             jti: NodeCrypto.randomUUID(),
@@ -1182,6 +1255,31 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const replay = yield* Effect.promise(() => fetch(ticketUrl, { method: "POST", headers }));
       assert.equal(replay.status, 401);
       assertBrowserApiCorsHeaders(replay.headers);
+      const discoveryUrl = yield* getHttpServerUrl("/api/remote-access/endpoints");
+      const deniedDiscovery = yield* Effect.promise(() =>
+        fetch(discoveryUrl, {
+          headers: {
+            authorization: `DPoP ${accessToken}`,
+            dpop: proof(discoveryUrl, accessToken, "GET"),
+          },
+        }),
+      );
+      assert.equal(deniedDiscovery.status, 403);
+      const relayAccessToken = yield* exchangeAccessToken(
+        ["relay:read"],
+        relayCredential,
+        proof(tokenUrl),
+      );
+      const discovered = yield* Effect.promise(() =>
+        fetch(discoveryUrl, {
+          headers: {
+            authorization: `DPoP ${relayAccessToken}`,
+            dpop: proof(discoveryUrl, relayAccessToken, "GET"),
+          },
+        }),
+      );
+      assert.equal(discovered.status, 200);
+      assert.isTrue(Array.isArray(yield* Effect.promise(() => discovered.json())));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
   it.effect(
@@ -1405,6 +1503,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         const body = yield* Effect.promise(() => status.text());
         assert.notInclude(body, "connectorToken");
         assert.include(body, '"enabled":false');
+        const discoveryUrl = yield* getHttpServerUrl("/api/remote-access/endpoints");
+        const discovered = yield* Effect.promise(() =>
+          fetch(discoveryUrl, { headers: { authorization: headers.authorization } }),
+        );
+        const discoveredText = yield* Effect.promise(() => discovered.text());
+        assert.equal(discovered.status, 200, discoveredText);
+        assert.equal(discovered.headers.get("cache-control"), "no-store");
+        const discoveredBody: unknown = JSON.parse(discoveredText);
+        assert.isTrue(Array.isArray(discoveredBody));
         const pairingTokenUrl = yield* getHttpServerUrl("/api/auth/pairing-token");
         const createClientCredential = Effect.promise(async () => {
           const response = await fetch(pairingTokenUrl, {
@@ -1486,6 +1593,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         const url = yield* getHttpServerUrl("/api/remote-access");
         const operations = [
           { method: "GET", url, requiredScope: "relay:read", allowedStatus: 200 },
+          {
+            method: "GET",
+            url: `${url}/endpoints`,
+            requiredScope: "relay:read",
+            allowedStatus: 200,
+          },
           { method: "POST", url, requiredScope: "relay:write", allowedStatus: 400 },
           { method: "POST", url: `${url}/pair`, requiredScope: "access:write", allowedStatus: 400 },
         ];
@@ -2175,6 +2288,232 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("routes acceptance pause through the authenticated websocket authority tuple", () =>
+    Effect.gen(function* () {
+      const authority = {
+        executionId: `thread:${defaultThreadId}`,
+        assignmentId: "assignment-ws-authority",
+        threadId: defaultThreadId,
+        generation: 4,
+        dispatchId: "dispatch-ws-authority",
+        turnId: TurnId.make("turn-ws-authority"),
+      };
+      const acceptanceThread = {
+        ...makeDefaultOrchestrationReadModel().threads[0],
+        id: defaultThreadId,
+        nudging: {
+          delegation: {
+            assignmentId: authority.assignmentId,
+            dispatchSequence: authority.generation,
+            dispatchId: authority.dispatchId,
+            dispatchTurnId: authority.turnId,
+            followUp: "automatic",
+            completedAt: null,
+          },
+        },
+      } as unknown as OrchestrationThread;
+      let seenAuthority: CollaborationExecutionAuthority | undefined;
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(acceptanceThread)),
+          },
+          collaborativeAcceptanceCoordinator: {
+            pause: (_caseId, _reason, receivedAuthority) =>
+              Effect.sync(() => {
+                seenAuthority = receivedAuthority;
+                return { record: null, pauseReason: "retry-limit" };
+              }),
+          },
+        },
+      });
+
+      const { response: bootstrapResponse, cookie } = yield* bootstrapBrowserSession();
+      assert.equal(bootstrapResponse.status, 200);
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.collaborativeAcceptancePause]({
+            threadId: defaultThreadId,
+            caseId: CollaborativeAcceptanceCaseId.make("case-ws-authority"),
+            reason: "retry-limit",
+          }),
+        ),
+      );
+
+      assert.equal(result.pauseReason, "retry-limit");
+      assert.deepEqual(seenAuthority, authority);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("rejects websocket acceptance calls without a complete bound authority tuple", () =>
+    Effect.gen(function* () {
+      const incompleteThread = {
+        ...makeDefaultOrchestrationReadModel().threads[0],
+        id: defaultThreadId,
+        nudging: {
+          delegation: {
+            assignmentId: "assignment-ws-incomplete",
+            dispatchSequence: 4,
+            dispatchId: "",
+            dispatchTurnId: null,
+            followUp: "automatic",
+            completedAt: null,
+          },
+        },
+      } as unknown as OrchestrationThread;
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(incompleteThread)),
+          },
+        },
+      });
+
+      const { cookie } = yield* bootstrapBrowserSession();
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+      const error = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.collaborativeAcceptancePause]({
+              threadId: defaultThreadId,
+              caseId: CollaborativeAcceptanceCaseId.make("case-ws-incomplete"),
+              reason: "retry-limit",
+            }),
+          ),
+        ),
+      );
+
+      assertInclude(String(error), "authenticated active execution authority");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("resolves the current acceptance case from a durable PR association", () =>
+    Effect.gen(function* () {
+      const pullRequest = {
+        projectId: ProjectId.make("project-acceptance-lookup"),
+        repository: "owner/repository",
+        number: 42,
+      };
+      const acceptanceThread = {
+        ...makeDefaultOrchestrationReadModel().threads[0],
+        id: defaultThreadId,
+        projectId: pullRequest.projectId,
+        pullRequest: {
+          number: pullRequest.number,
+          title: "Acceptance PR",
+          url: "https://github.com/owner/repository/pull/42",
+          baseBranch: "main",
+          headBranch: "feature/acceptance",
+          state: "open",
+        },
+      } as unknown as OrchestrationThread;
+      const status = { record: null, pauseReason: null };
+      let seenInput:
+        | {
+            readonly threadId: ThreadId;
+            readonly pullRequest: typeof pullRequest;
+          }
+        | undefined;
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(acceptanceThread)),
+          },
+          collaborativeAcceptanceCoordinator: {
+            resolveForPullRequest: (input) =>
+              Effect.sync(() => {
+                seenInput = input;
+                return {
+                  caseId: CollaborativeAcceptanceCaseId.make("case-current"),
+                  status,
+                };
+              }),
+          },
+        },
+      });
+
+      const { cookie } = yield* bootstrapBrowserSession();
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.collaborativeAcceptanceResolveForPullRequest]({
+            threadId: defaultThreadId,
+            pullRequest,
+          }),
+        ),
+      );
+
+      assert.equal(result.caseId, CollaborativeAcceptanceCaseId.make("case-current"));
+      assert.deepEqual(result.status, status);
+      assert.deepEqual(seenInput, { threadId: defaultThreadId, pullRequest });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("rejects PR lookup when the authenticated thread belongs to another project", () =>
+    Effect.gen(function* () {
+      const acceptanceThread = {
+        ...makeDefaultOrchestrationReadModel().threads[0],
+        id: defaultThreadId,
+        projectId: ProjectId.make("project-owned-by-thread"),
+      } as unknown as OrchestrationThread;
+      let called = false;
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(acceptanceThread)),
+          },
+          collaborativeAcceptanceCoordinator: {
+            resolveForPullRequest: () =>
+              Effect.sync(() => {
+                called = true;
+                return {
+                  caseId: CollaborativeAcceptanceCaseId.make("case-should-not-resolve"),
+                  status: { record: null, pauseReason: null },
+                };
+              }),
+          },
+        },
+      });
+
+      const { cookie } = yield* bootstrapBrowserSession();
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+      const error = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.collaborativeAcceptanceResolveForPullRequest]({
+              threadId: defaultThreadId,
+              pullRequest: {
+                projectId: ProjectId.make("project-other"),
+                repository: "owner/repository",
+                number: 42,
+              },
+            }),
+          ),
+        ),
+      );
+
+      assertInclude(String(error), "not durably associated");
+      assert.isFalse(called);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect(
     "rejects websocket rpc handshake when a session token is only provided via query string",
     () =>
@@ -2450,6 +2789,119 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(snapshot.threads.length, 338);
       assert.equal(snapshot.snapshotSequence, 338);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes bounded thread reads over HTTP and WebSocket without full snapshots", () =>
+    Effect.gen(function* () {
+      const input = { thread: defaultThreadId, view: "messages", limit: 2 } as const;
+      const expected = {
+        thread: makeDefaultOrchestrationThreadShell(),
+        messages: [],
+        page: { hasMore: false, before: null },
+      };
+      let reads = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getSnapshot: () => Effect.die("Targeted reads must not load the full snapshot"),
+            getShellSnapshot: () => Effect.die("Targeted reads must not load the shell snapshot"),
+            readThread: (request) =>
+              Effect.sync(() => {
+                assert.deepStrictEqual(request, input);
+                reads++;
+                return expected;
+              }),
+          },
+        },
+      });
+      const origin = yield* getHttpServerUrl();
+      const bearerToken = yield* getAuthenticatedBearerSessionToken();
+      const httpResult = yield* readLiveThread(
+        {
+          url: Option.some(origin),
+          token: Option.some(bearerToken),
+          baseDir: Option.none(),
+          environment: Option.none(),
+        },
+        input,
+      );
+      const rpcResult = yield* withRpcClientForBearerToken(origin, bearerToken, (client) =>
+        client[ORCHESTRATION_WS_METHODS.readThread](input),
+      ).pipe(Effect.provide(FetchHttpClient.layer));
+      assert.deepStrictEqual(httpResult, expected);
+      assert.deepStrictEqual(rpcResult, expected);
+      assert.equal(reads, 2);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "distinguishes thread-read input failures from repository failures over HTTP and RPC",
+    () => {
+      const loggedErrors: unknown[] = [];
+      const logger = Logger.make(({ logLevel, message }) => {
+        if (logLevel === "Error") loggedErrors.push(message);
+      });
+      return Effect.gen(function* () {
+        yield* buildAppUnderTest({
+          layers: {
+            projectionSnapshotQuery: {
+              readThread: (input) =>
+                Effect.fail(
+                  input.thread === "repository-failure"
+                    ? new OrchestrationGetSnapshotError({
+                        message: "Failed to read thread history.",
+                        cause: new Error("Repository unavailable"),
+                      })
+                    : new OrchestrationReadThreadInputError({ message: "Invalid history cursor." }),
+                ),
+            },
+          },
+        });
+        const origin = yield* getHttpServerUrl();
+        const bearerToken = yield* getAuthenticatedBearerSessionToken();
+        loggedErrors.length = 0;
+        for (const input of [
+          { thread: defaultThreadId, view: "messages", before: "invalid-cursor" },
+          { thread: defaultThreadId, view: "messages", limit: 201 },
+        ]) {
+          const response = yield* HttpClient.post("/api/orchestration/thread-read", {
+            headers: { authorization: `Bearer ${bearerToken}` },
+            body: HttpBody.text(JSON.stringify(input), "application/json"),
+          });
+          assert.equal(response.status, 400);
+          assert.deepStrictEqual(yield* response.json, {
+            error: input.limit === 201 ? "Invalid thread read request." : "Invalid history cursor.",
+          });
+        }
+        assert.deepStrictEqual(loggedErrors, []);
+        const response = yield* HttpClient.post("/api/orchestration/thread-read", {
+          headers: { authorization: `Bearer ${bearerToken}` },
+          body: HttpBody.text(
+            JSON.stringify({ thread: "repository-failure", view: "messages" }),
+            "application/json",
+          ),
+        });
+        assert.equal(response.status, 500);
+        assert.deepStrictEqual(yield* response.json, { error: "Failed to read thread history." });
+        assert.equal(loggedErrors.length, 1);
+        for (const [thread, expectedTag] of [
+          [defaultThreadId, "OrchestrationReadThreadInputError"],
+          ["repository-failure", "OrchestrationGetSnapshotError"],
+        ] as const) {
+          const error = yield* withRpcClientForBearerToken(origin, bearerToken, (client) =>
+            client[ORCHESTRATION_WS_METHODS.readThread]({ thread, view: "messages" }),
+          ).pipe(Effect.provide(FetchHttpClient.layer), Effect.flip);
+          assert.deepInclude(error, { _tag: expectedTag });
+        }
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeHttpServer.layerTest,
+            Logger.layer([logger], { mergeWithExisting: false }),
+          ),
+        ),
+      );
+    },
   );
 
   it.effect("loads a thread detail without hydrating the shell snapshot", () =>
@@ -5690,6 +6142,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   it.effect("routes websocket rpc orchestration methods", () =>
     Effect.gen(function* () {
       const now = new Date().toISOString();
+      // Records search enrichment lookups: searchThreads must resolve
+      // projects with a single batched call, never per-match hydration.
+      const projectLookupCalls: ThreadId[][] = [];
       const snapshot = {
         snapshotSequence: 1,
         updatedAt: now,
@@ -5734,7 +6189,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           projectionSnapshotQuery: {
             getSnapshot: () => Effect.succeed(snapshot),
-            getThreadDetailById: () => Effect.succeed(Option.some(snapshot.threads[0]!)),
+            getThreadDetailById: () => Effect.die("searchThreads must not hydrate thread details"),
+            listThreadProjectIds: (threadIds) => {
+              projectLookupCalls.push([...threadIds]);
+              return Effect.succeed(
+                new Map([[ThreadId.make("thread-1"), ProjectId.make("project-a")]]),
+              );
+            },
             searchTranscript: () =>
               Effect.succeed({
                 matches: [
@@ -5834,6 +6295,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           messageCreatedAt: now,
         },
       ]);
+      assert.deepStrictEqual(projectLookupCalls, [[ThreadId.make("thread-1")]]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

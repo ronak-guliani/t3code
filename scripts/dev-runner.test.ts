@@ -8,6 +8,9 @@ import {
   checkPortAvailabilityOnHosts,
   createDevRunnerEnv,
   findFirstAvailableOffset,
+  isBrowserAllowedPort,
+  isProxiableBindHost,
+  resolveDevT3Home,
   resolveModePortOffsets,
   resolveOffset,
 } from "./dev-runner.ts";
@@ -94,6 +97,109 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         );
 
         assert.ok(error.includes("Invalid T3CODE_PORT_OFFSET"));
+      }),
+    );
+
+    it.effect("derives a stable offset from the worktree path", () =>
+      Effect.sync(() => {
+        const first = resolveOffset({
+          portOffset: undefined,
+          devInstance: undefined,
+          worktreePath: "/repo/.t3-thread-workspaces/abc123",
+        });
+        const second = resolveOffset({
+          portOffset: undefined,
+          devInstance: undefined,
+          worktreePath: "/repo/.t3-thread-workspaces/abc123",
+        });
+        assert.ok(first.offset >= 1);
+        assert.ok(first.offset <= 3000);
+        assert.deepStrictEqual(second, first);
+        assert.ok(first.source.startsWith("worktree "));
+      }),
+    );
+
+    it.effect("keeps default ports outside a worktree", () =>
+      Effect.sync(() => {
+        assert.deepStrictEqual(resolveOffset({ portOffset: undefined, devInstance: undefined }), {
+          offset: 0,
+          source: "default ports",
+        });
+      }),
+    );
+  });
+
+  describe("isProxiableBindHost", () => {
+    it.effect("accepts loopback and wildcards, rejects LAN IPs", () =>
+      Effect.sync(() => {
+        for (const host of ["", "localhost", "127.0.0.1", "::1", "0.0.0.0", "::"]) {
+          assert.equal(isProxiableBindHost(host), true, host || "(empty)");
+        }
+        assert.equal(isProxiableBindHost("192.168.1.10"), false);
+      }),
+    );
+  });
+
+  describe("isBrowserAllowedPort", () => {
+    it.effect("rejects fetch-blocked ports", () =>
+      Effect.sync(() => {
+        assert.equal(isBrowserAllowedPort(5733), true);
+        assert.equal(isBrowserAllowedPort(6000), false);
+        assert.equal(isBrowserAllowedPort(22), false);
+      }),
+    );
+  });
+
+  describe("resolveDevT3Home", () => {
+    it.effect("prefers --home-dir over worktree and ambient homes", () =>
+      Effect.sync(() => {
+        assert.equal(
+          resolveDevT3Home({
+            flagHome: "/tmp/explicit",
+            worktreeHome: "/repo/.t3-work/.t3",
+            envHome: "/home/user/.t3-dev",
+          }),
+          "/tmp/explicit",
+        );
+      }),
+    );
+
+    it.effect("prefers the worktree home over ambient T3CODE_HOME", () =>
+      Effect.sync(() => {
+        assert.equal(
+          resolveDevT3Home({
+            flagHome: undefined,
+            worktreeHome: "/repo/.t3-work/.t3",
+            envHome: "/home/user/.t3-dev",
+          }),
+          "/repo/.t3-work/.t3",
+        );
+      }),
+    );
+
+    it.effect("falls back to ambient T3CODE_HOME outside a worktree", () =>
+      Effect.sync(() => {
+        assert.equal(
+          resolveDevT3Home({
+            flagHome: undefined,
+            worktreeHome: undefined,
+            envHome: "/home/user/.t3-dev",
+          }),
+          "/home/user/.t3-dev",
+        );
+        assert.equal(
+          resolveDevT3Home({ flagHome: undefined, worktreeHome: undefined, envHome: undefined }),
+          undefined,
+        );
+      }),
+    );
+
+    it.effect("ignores blank selections", () =>
+      Effect.sync(() => {
+        assert.equal(
+          resolveDevT3Home({ flagHome: "  ", worktreeHome: "/repo/.t3", envHome: "/home/.t3-dev" }),
+          "/repo/.t3",
+        );
       }),
     );
   });
@@ -291,6 +397,29 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         assert.equal(env.T3CODE_PORT, "13773");
         assert.equal(env.VITE_HTTP_URL, "http://localhost:13773");
         assert.equal(env.VITE_WS_URL, "ws://localhost:13773");
+      }),
+    );
+
+    it.effect("defaults T3CODE_NO_BROWSER=1 unless explicitly enabled", () =>
+      Effect.gen(function* () {
+        const base = {
+          mode: "dev",
+          baseEnv: {},
+          serverOffset: 0,
+          webOffset: 0,
+          t3Home: undefined,
+          autoBootstrapProjectFromCwd: undefined,
+          logWebSocketEvents: undefined,
+          host: undefined,
+          port: undefined,
+          devUrl: undefined,
+        } as const;
+
+        const defaulted = yield* createDevRunnerEnv({ ...base, noBrowser: undefined });
+        assert.equal(defaulted.T3CODE_NO_BROWSER, "1");
+
+        const enabled = yield* createDevRunnerEnv({ ...base, noBrowser: false });
+        assert.equal(enabled.T3CODE_NO_BROWSER, "0");
       }),
     );
   });

@@ -55,4 +55,21 @@ describe("waitForBackendStartupReady", () => {
       }),
     ).rejects.toBe(error);
   });
+
+  it("keeps waiting for the listening signal after the HTTP probe times out", async () => {
+    let resolveListening!: () => void;
+    const listeningPromise = new Promise<void>((resolve) => {
+      resolveListening = resolve;
+    });
+    const readiness = waitForBackendStartupReady({
+      listeningPromise,
+      waitForHttpReady: () => Promise.reject(new Error("HTTP readiness timed out")),
+      cancelHttpWait: vi.fn(),
+    });
+
+    await Promise.resolve();
+    resolveListening();
+
+    await expect(readiness).resolves.toBe("listening");
+  });
 });

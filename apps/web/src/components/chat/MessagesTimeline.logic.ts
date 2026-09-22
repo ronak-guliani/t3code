@@ -137,6 +137,96 @@ export function stabilizeReadonlyStringSet(
   return previous;
 }
 
+/** Reuse the previous map when string key/value entries are unchanged. */
+export function stabilizeStringMap(
+  next: ReadonlyMap<string, string>,
+  previous: ReadonlyMap<string, string> | undefined,
+): ReadonlyMap<string, string> {
+  if (previous === undefined || previous === next) {
+    return next;
+  }
+  if (previous.size !== next.size) {
+    return next;
+  }
+  for (const [key, value] of next) {
+    if (previous.get(key) !== value) {
+      return next;
+    }
+  }
+  return previous;
+}
+
+export interface StabilizableAssistantResponseMeta {
+  readonly model?: string | undefined;
+  readonly usedTokens?: number | undefined;
+  readonly cost?: { readonly amount: number; readonly currency: string } | undefined;
+}
+
+/** Shallow value equality for per-turn response metadata entries. */
+export function isAssistantResponseMetaEqual(
+  a: StabilizableAssistantResponseMeta,
+  b: StabilizableAssistantResponseMeta,
+): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (a.model !== b.model || a.usedTokens !== b.usedTokens) {
+    return false;
+  }
+  if (a.cost === b.cost) {
+    return true;
+  }
+  if (a.cost === undefined || b.cost === undefined) {
+    return false;
+  }
+  return a.cost.amount === b.cost.amount && a.cost.currency === b.cost.currency;
+}
+
+/**
+ * Reuse previous per-turn entry objects (and the map itself) when values are
+ * unchanged. Producers rebuild fresh `{...existing}` objects on every
+ * `threadActivities` change, which would otherwise defeat the memoized
+ * assistant presentational below even for untouched settled turns.
+ */
+export function stabilizeResponseMetaByTurnId<
+  TurnKey,
+  Meta extends StabilizableAssistantResponseMeta,
+>(
+  next: ReadonlyMap<TurnKey, Meta>,
+  previous: ReadonlyMap<TurnKey, Meta> | undefined,
+): ReadonlyMap<TurnKey, Meta> {
+  if (previous === undefined || previous === next) {
+    return next;
+  }
+  if (previous.size !== next.size) {
+    return next;
+  }
+  // Reuse previous entry objects when values are equal so memoized consumers
+  // below keep stable props across streaming chunks, even while the active
+  // turn's entry changes every chunk. When every entry is already identical,
+  // return the previous map itself.
+  let identical = true;
+  let changed = false;
+  const result = new Map<TurnKey, Meta>();
+  for (const [key, value] of next) {
+    const previousValue = previous.get(key);
+    if (previousValue === undefined || !isAssistantResponseMetaEqual(previousValue, value)) {
+      result.set(key, value);
+      identical = false;
+      changed = true;
+      continue;
+    }
+    result.set(key, previousValue);
+    if (previousValue !== value) {
+      identical = false;
+    }
+  }
+  if (changed) {
+    return result;
+  }
+  return identical ? previous : result;
+}
+
 export function computeMessageDurationStart(
   messages: ReadonlyArray<TimelineDurationMessage>,
 ): Map<string, string> {
@@ -176,6 +266,49 @@ export function resolveAssistantMessageCopyState({
   };
 }
 
+/**
+ * Maps each user message to the checkpoint turn count of the turn that
+ * answered it (minus one, for revert targeting). Each user message resolves
+ * against the first following assistant message carrying a numeric
+ * checkpoint turn count; assistants without summaries are skipped, while a
+ * non-numeric summary or a following user message discards the pending user.
+ *
+ * Single forward pass over already-ordered entries.
+ */
+export function deriveRevertTurnCountByUserMessageId(input: {
+  timelineEntries: ReadonlyArray<TimelineEntry>;
+  turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
+  inferredCheckpointTurnCountByTurnId: Record<TurnId, number>;
+}): Map<MessageId, number> {
+  const byUserMessageId = new Map<MessageId, number>();
+  let pendingUserMessageId: MessageId | null = null;
+  for (const entry of input.timelineEntries) {
+    if (!entry || entry.kind !== "message") {
+      continue;
+    }
+    if (entry.message.role === "user") {
+      pendingUserMessageId = entry.message.id;
+      continue;
+    }
+    if (pendingUserMessageId === null) {
+      continue;
+    }
+    const summary = input.turnDiffSummaryByAssistantMessageId.get(entry.message.id);
+    if (!summary) {
+      continue;
+    }
+    const turnCount =
+      summary.checkpointTurnCount ?? input.inferredCheckpointTurnCountByTurnId[summary.turnId];
+    const userMessageId = pendingUserMessageId;
+    pendingUserMessageId = null;
+    if (typeof turnCount !== "number") {
+      continue;
+    }
+    byUserMessageId.set(userMessageId, Math.max(0, turnCount - 1));
+  }
+  return byUserMessageId;
+}
+
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   completionDividerBeforeEntryId: string | null;
@@ -197,7 +330,10 @@ export function deriveMessagesTimelineRows(input: {
   >();
   let nullTurnResponseIndex = 0;
   let lastDurationBoundary: string | null = null;
-  const pendingHandoffRows: Extract<BaseMessagesTimelineRow, { kind: "workspace-handoff" }>[] = [];
+  const handoffRowsAwaitingContinuation: Extract<
+    BaseMessagesTimelineRow,
+    { kind: "workspace-handoff" }
+  >[] = [];
 
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
     const timelineEntry = input.timelineEntries[index];
@@ -264,44 +400,43 @@ export function deriveMessagesTimelineRows(input: {
     }
     const durationStart = lastDurationBoundary ?? message.createdAt;
 
-    // Workspace handoffs render as a single transition marker. The marker
-    // message is emitted mid-turn, when the provider calls the handoff tool, so
-    // it is deferred to the next turn boundary rather than splitting the turn's
-    // work in half. The continuation that resumes the task in the new worktree
-    // is T3 boilerplate: it stays a turn boundary but never becomes a bubble,
-    // and it hands its revert anchor to the marker so the post-handoff turn
-    // remains revertable.
+    // Workspace handoffs render as a single transition marker. The marker is
+    // emitted when the provider moves worktrees, so it must stay in that exact
+    // position: work logged after the move belongs below the transition rather
+    // than being rendered above it while we wait for the hidden continuation.
+    // The continuation remains a turn boundary but never becomes a bubble, and
+    // it hands its revert anchor to the marker so the post-handoff turn stays
+    // revertable.
     if (message.origin?.kind === "workspace-handoff") {
       if (message.origin.role === "marker") {
-        pendingHandoffRows.push({
+        const handoffRow: Extract<BaseMessagesTimelineRow, { kind: "workspace-handoff" }> = {
           kind: "workspace-handoff",
           id: timelineEntry.id,
           createdAt: timelineEntry.createdAt,
           origin: message.origin,
-        });
+        };
+        nextRows.push(handoffRow);
+        handoffRowsAwaitingContinuation.push(handoffRow);
+        lastDurationBoundary = handoffRow.createdAt;
       } else {
         const revertTurnCount = input.revertTurnCountByUserMessageId.get(message.id);
-        const lastPendingRow = pendingHandoffRows.at(-1);
-        if (lastPendingRow) {
+        const lastHandoffRow = handoffRowsAwaitingContinuation.pop();
+        if (lastHandoffRow) {
           if (revertTurnCount !== undefined) {
-            lastPendingRow.revertMessageId = message.id;
-            lastPendingRow.revertTurnCount = revertTurnCount;
+            lastHandoffRow.revertMessageId = message.id;
+            lastHandoffRow.revertTurnCount = revertTurnCount;
           }
-          // The continuation already moved the boundary as a user message, but
-          // it is never rendered. Anchor elapsed time to the marker instead so
-          // the post-handoff turn does not report a duration measured from a
-          // row the user cannot see.
-          lastDurationBoundary = lastPendingRow.createdAt;
+          // The hidden continuation is still a user-role turn boundary. Keep
+          // elapsed time anchored to the visible transition rather than to the
+          // boilerplate row the user never sees.
+          lastDurationBoundary = lastHandoffRow.createdAt;
         }
-        nextRows.push(...pendingHandoffRows);
-        pendingHandoffRows.length = 0;
       }
       continue;
     }
 
-    if (message.role === "user" && pendingHandoffRows.length > 0) {
-      nextRows.push(...pendingHandoffRows);
-      pendingHandoffRows.length = 0;
+    if (message.role === "user" && handoffRowsAwaitingContinuation.length > 0) {
+      handoffRowsAwaitingContinuation.length = 0;
     }
 
     const messageRow: Extract<BaseMessagesTimelineRow, { kind: "message" }> = {
@@ -335,8 +470,6 @@ export function deriveMessagesTimelineRows(input: {
       }
     }
   }
-
-  nextRows.push(...pendingHandoffRows);
 
   if (input.isWorking) {
     nextRows.push({
@@ -391,8 +524,18 @@ function collapseReasoningRows(
     // The handoff is a turn boundary, so the following response's elapsed time
     // is measured from the move rather than from the pre-handoff user message.
     if (row.kind === "workspace-handoff") {
-      collapsedRows.push(...reasoningRows);
-      reasoningRows = [];
+      if (reasoningRows.length > 0) {
+        const userRow = userIndex >= 0 ? collapsedRows[userIndex] : undefined;
+        const startedAt = userRow?.createdAt ?? reasoningRows[0]?.createdAt;
+        collapsedRows.push({
+          kind: "reasoning",
+          id: `reasoning:${row.id}:before`,
+          createdAt: reasoningRows[0]?.createdAt ?? row.createdAt,
+          workedFor: startedAt ? formatElapsed(startedAt, row.createdAt) : null,
+          rows: reasoningRows,
+        });
+        reasoningRows = [];
+      }
       collapsedRows.push(row);
       userIndex = collapsedRows.length - 1;
       continue;

@@ -860,6 +860,13 @@ label:has(> select#reasoning-effort) select {
   white-space: normal;
 }
 
+.chat-work-label-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+
 @media (hover: hover) and (pointer: fine) {
   .chat-work-trigger[aria-expanded="false"] > .lucide-chevron-right:last-child {
     opacity: 0;

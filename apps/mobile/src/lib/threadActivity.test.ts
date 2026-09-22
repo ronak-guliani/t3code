@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { codexFeedbackMessage } from "@t3tools/client-runtime/state/threads";
 import { groupConsecutiveWorkEntries } from "@t3tools/client-runtime/work-log/presentation";
 
@@ -26,6 +26,21 @@ import {
   type ThreadFeedActivity,
   type ThreadFeedEntry,
 } from "./threadActivity";
+
+// Match Hermes: these ES2023 array methods are absent on mobile.
+beforeEach(() => {
+  const methods = ["toSorted", "toReversed"] as const;
+  const descriptors = methods.map((method) =>
+    Object.getOwnPropertyDescriptor(Array.prototype, method),
+  );
+  for (const method of methods) Reflect.deleteProperty(Array.prototype, method);
+  return () => {
+    for (const [index, method] of methods.entries()) {
+      const descriptor = descriptors[index];
+      if (descriptor) Reflect.defineProperty(Array.prototype, method, descriptor);
+    }
+  };
+});
 
 describe("Codex feedback pseudo-messages", () => {
   it("keeps pending and completed feedback messages in the mobile thread body", () => {
@@ -825,6 +840,35 @@ describe("buildThreadFeed", () => {
     const [row] = group.activities;
     expect(workEntryRowLabel(row!.workEntry)).toBe(input.label);
     expect(row?.canExpand).toBe(input.canExpand);
+  });
+
+  it("expands a runtime warning whose message differs from its summary", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-runtime-message"),
+      projectId: ProjectId.make("project-1"),
+      title: "Runtime message",
+      activities: [
+        makeActivity({
+          id: EventId.make("runtime-message"),
+          kind: "runtime.warning",
+          summary: "Runtime warning",
+          createdAt: "2026-09-01T00:00:00.000Z",
+          payload: {
+            message: "Retrying after 429",
+            detail: { type: "retry", attempt: 2 },
+          },
+        }),
+      ],
+    });
+
+    const [group] = buildThreadFeed(thread);
+    expect(group?.type).toBe("activity-group");
+    if (group?.type !== "activity-group") return;
+    const [row] = group.activities;
+    expect(row?.workEntry.detail).toContain("Retrying after 429");
+    expect(row?.workEntry.detail).toContain('"attempt": 2');
+    expect(row?.canExpand).toBe(true);
+    expect(row?.getFullDetail()).toContain("Retrying after 429");
   });
 
   it("drops a truncated Claude echo of a long command", () => {
@@ -2486,13 +2530,13 @@ describe("buildThreadFeed", () => {
     ].flatMap((command) =>
       (
         [
-          { lifecycleStatus: "inProgress", summary: "Running pnpm", shimmer: true },
-          { lifecycleStatus: "completed", summary: "Ran pnpm", shimmer: false },
-          { lifecycleStatus: "failed", summary: "Failed pnpm", shimmer: false },
-          { lifecycleStatus: "declined", summary: "Declined pnpm", shimmer: false },
-          { lifecycleStatus: "stopped", summary: "Stopped pnpm", shimmer: false },
+          { lifecycleStatus: "inProgress", verb: "Running", shimmer: true },
+          { lifecycleStatus: "completed", verb: "Ran", shimmer: false },
+          { lifecycleStatus: "failed", verb: "Failed", shimmer: false },
+          { lifecycleStatus: "declined", verb: "Declined", shimmer: false },
+          { lifecycleStatus: "stopped", verb: "Stopped", shimmer: false },
         ] as const
-      ).map((state) => ({ command, ...state })),
+      ).map((state) => ({ command, summary: `${state.verb} ${command}`, ...state })),
     ),
   )(
     "keeps the command summary in sync with $lifecycleStatus: $command",
@@ -2598,7 +2642,7 @@ describe("buildThreadFeed", () => {
         {
           live: false,
           shimmer: false,
-          summary: lifecycleStatus === "inProgress" ? "Ran printf" : summary,
+          summary: lifecycleStatus === "inProgress" ? "Ran printf done" : summary,
         },
       ]);
 

@@ -1,6 +1,7 @@
 import { type ChildProcess as ChildProcessHandle, spawn } from "node:child_process";
 import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 import { killProcessTree } from "@t3tools/shared/processTree";
+import { Context, Duration, Effect, Layer, Schema } from "effect";
 
 export interface ProcessRunOptions {
   cwd?: string | undefined;
@@ -10,6 +11,12 @@ export interface ProcessRunOptions {
   allowNonZeroExit?: boolean | undefined;
   maxBufferBytes?: number | undefined;
   outputMode?: "error" | "truncate" | undefined;
+  /**
+   * Optional external abort: when aborted, the spawned process tree is
+   * terminated and the run rejects. Lets fiber interruption kill children
+   * instead of leaving them running past cancellation.
+   */
+  signal?: AbortSignal | undefined;
 }
 
 export interface ProcessRunResult {
@@ -22,6 +29,45 @@ export interface ProcessRunResult {
   stderrTruncated?: boolean | undefined;
 }
 
+export interface EffectProcessRunInput {
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+  readonly cwd?: string;
+  readonly spawnCwd?: string;
+  readonly timeout?: Duration.Input;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly stdin?: string;
+  readonly maxOutputBytes?: number;
+  readonly outputMode?: "error" | "truncate";
+  readonly timeoutBehavior?: "error" | "timedOutResult";
+  readonly signal?: AbortSignal;
+}
+
+export class ProcessSpawnError extends Schema.TaggedErrorClass<ProcessSpawnError>()(
+  "ProcessSpawnError",
+  {
+    command: Schema.String,
+    argumentCount: Schema.Number,
+    cause: Schema.Defect(),
+  },
+) {}
+
+export class ProcessRunner extends Context.Service<
+  ProcessRunner,
+  {
+    readonly run: (input: EffectProcessRunInput) => Effect.Effect<
+      Omit<ProcessRunResult, "signal"> & {
+        readonly signal?: NodeJS.Signals | null;
+        readonly stdoutTruncated: boolean;
+        readonly stderrTruncated: boolean;
+        readonly stdoutInvalidUtf8: boolean;
+        readonly stderrInvalidUtf8: boolean;
+      },
+      ProcessSpawnError
+    >;
+  }
+>()("t3/processRunner") {}
+
 function commandLabel(command: string, args: readonly string[]): string {
   return [command, ...args].join(" ");
 }
@@ -33,10 +79,15 @@ function normalizeSpawnError(command: string, args: readonly string[], error: un
 
   const maybeCode = (error as NodeJS.ErrnoException).code;
   if (maybeCode === "ENOENT") {
-    return new Error(`Command not found: ${command}`);
+    return Object.assign(new Error(`Command not found: ${command}`), { code: maybeCode });
   }
 
-  return new Error(`Failed to run ${commandLabel(command, args)}: ${error.message}`);
+  return Object.assign(
+    new Error(`Failed to run ${commandLabel(command, args)}: ${error.message}`),
+    {
+      ...(maybeCode ? { code: maybeCode } : {}),
+    },
+  );
 }
 
 const WINDOWS_COMMAND_NOT_FOUND_PATTERNS = [
@@ -142,6 +193,10 @@ export async function runProcess(
   const outputMode = options.outputMode ?? "error";
 
   return new Promise<ProcessRunResult>((resolve, reject) => {
+    if (options.signal?.aborted === true) {
+      reject(new Error(`Command aborted before it started: ${commandLabel(command, args)}.`));
+      return;
+    }
     const { command: spawnTarget, shell } = resolveWindowsSpawn(
       command,
       options.env ? { env: options.env } : {},
@@ -171,22 +226,53 @@ export async function runProcess(
       }, 1_000);
     }, timeoutMs);
 
-    const finalize = (callback: () => void): void => {
-      if (settled) return;
+    const finalize = (callback: () => void, preserveForceKill = false): void => {
+      if (settled) {
+        if (!preserveForceKill && forceKillTimer) {
+          clearTimeout(forceKillTimer);
+          forceKillTimer = null;
+        }
+        return;
+      }
       settled = true;
       clearTimeout(timeoutTimer);
-      if (forceKillTimer) {
+      if (!preserveForceKill && forceKillTimer) {
         clearTimeout(forceKillTimer);
+        forceKillTimer = null;
       }
+      if (abortListener !== null) {
+        options.signal?.removeEventListener("abort", abortListener);
+      }
+
       callback();
     };
 
     const fail = (error: Error): void => {
+      if (settled) return;
       killChild(child, "SIGTERM");
+      forceKillTimer = setTimeout(() => {
+        killChild(child, "SIGKILL");
+      }, 1_000);
       finalize(() => {
         reject(error);
-      });
+      }, true);
     };
+
+    const abortListener: (() => void) | null =
+      options.signal === undefined
+        ? null
+        : () => {
+            killChild(child, "SIGTERM");
+            forceKillTimer = setTimeout(() => {
+              killChild(child, "SIGKILL");
+            }, 1_000);
+            finalize(() => {
+              reject(new Error(`Command aborted: ${commandLabel(command, args)}.`));
+            }, true);
+          };
+    if (options.signal !== undefined && abortListener !== null) {
+      options.signal.addEventListener("abort", abortListener, { once: true });
+    }
 
     const appendOutput = (stream: "stdout" | "stderr", chunk: Buffer | string): Error | null => {
       const chunkBuffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
@@ -279,3 +365,37 @@ export async function runProcess(
     child.stdin.end();
   });
 }
+
+export const layer = Layer.succeed(
+  ProcessRunner,
+  ProcessRunner.of({
+    run: (input) =>
+      Effect.tryPromise({
+        try: () =>
+          runProcess(input.command, input.args, {
+            cwd: input.spawnCwd ?? input.cwd,
+            timeoutMs: input.timeout === undefined ? undefined : Duration.toMillis(input.timeout),
+            env: input.env,
+            stdin: input.stdin,
+            maxBufferBytes: input.maxOutputBytes,
+            outputMode: input.outputMode,
+            allowNonZeroExit: true,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+          }),
+        catch: (cause) =>
+          new ProcessSpawnError({
+            command: input.command,
+            argumentCount: input.args.length,
+            cause,
+          }),
+      }).pipe(
+        Effect.map((result) => ({
+          ...result,
+          stdoutTruncated: result.stdoutTruncated ?? false,
+          stderrTruncated: result.stderrTruncated ?? false,
+          stdoutInvalidUtf8: false,
+          stderrInvalidUtf8: false,
+        })),
+      ),
+  }),
+);

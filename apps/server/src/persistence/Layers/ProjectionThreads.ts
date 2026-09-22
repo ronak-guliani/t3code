@@ -13,19 +13,27 @@ import {
 } from "../Services/ProjectionThreads.ts";
 import {
   GitPullRequestAssociation,
+  CollaborationRequest,
   ModelSelection,
   ReviewResult,
   ReviewSnapshot,
   ThreadNudging,
+  ValidationRequest,
+  ValidationRun,
+  WorkspaceBinding,
 } from "@t3tools/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
   Struct.assign({
     nudging: Schema.fromJsonString(ThreadNudging),
+    collaborationRequests: Schema.fromJsonString(Schema.Array(CollaborationRequest)),
     modelSelection: Schema.fromJsonString(ModelSelection),
-    pullRequest: Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation)),
-    reviewSnapshot: Schema.fromJsonString(Schema.NullOr(ReviewSnapshot)),
-    reviewResult: Schema.fromJsonString(Schema.NullOr(ReviewResult)),
+    pullRequest: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation))),
+    reviewSnapshot: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewSnapshot))),
+    reviewResult: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ReviewResult))),
+    validationRequest: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRequest))),
+    validationRun: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(ValidationRun))),
+    workspaceBinding: Schema.NullOr(Schema.fromJsonString(Schema.NullOr(WorkspaceBinding))),
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;
@@ -39,6 +47,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       sql`
         INSERT INTO projection_threads (
           nudging_json,
+          collaboration_requests_json,
           thread_id,
           project_id,
           parent_thread_id,
@@ -49,9 +58,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           interaction_mode,
           branch,
           worktree_path,
+          workspace_binding_json,
           pull_request_json,
           review_snapshot_json,
           review_result_json,
+          validation_request_json,
+          validation_run_json,
           latest_turn_id,
           created_at,
           updated_at,
@@ -73,6 +85,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         )
         VALUES (
           ${JSON.stringify(row.nudging ?? {})},
+          ${JSON.stringify(row.collaborationRequests ?? [])},
           ${row.threadId},
           ${row.projectId},
           ${row.parentThreadId ?? null},
@@ -83,9 +96,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.interactionMode},
           ${row.branch},
           ${row.worktreePath},
+          ${JSON.stringify(row.workspaceBinding ?? null)},
           ${JSON.stringify(row.pullRequest ?? null)},
           ${JSON.stringify(row.reviewSnapshot ?? null)},
           ${JSON.stringify(row.reviewResult ?? null)},
+          ${JSON.stringify(row.validationRequest ?? null)},
+          ${JSON.stringify(row.validationRun ?? null)},
           ${row.latestTurnId},
           ${row.createdAt},
           ${row.updatedAt},
@@ -108,6 +124,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         ON CONFLICT (thread_id)
         DO UPDATE SET
           nudging_json = excluded.nudging_json,
+          collaboration_requests_json = excluded.collaboration_requests_json,
           project_id = excluded.project_id,
           parent_thread_id = excluded.parent_thread_id,
           title = excluded.title,
@@ -117,9 +134,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           interaction_mode = excluded.interaction_mode,
           branch = excluded.branch,
           worktree_path = excluded.worktree_path,
+          workspace_binding_json = excluded.workspace_binding_json,
           pull_request_json = excluded.pull_request_json,
           review_snapshot_json = excluded.review_snapshot_json,
           review_result_json = excluded.review_result_json,
+          validation_request_json = excluded.validation_request_json,
+          validation_run_json = excluded.validation_run_json,
           latest_turn_id = excluded.latest_turn_id,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at,
@@ -148,6 +168,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       sql`
         SELECT
           nudging_json AS "nudging",
+          collaboration_requests_json AS "collaborationRequests",
           thread_id AS "threadId",
           project_id AS "projectId",
           parent_thread_id AS "parentThreadId",
@@ -158,9 +179,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          workspace_binding_json AS "workspaceBinding",
           pull_request_json AS "pullRequest",
           review_snapshot_json AS "reviewSnapshot",
           review_result_json AS "reviewResult",
+          validation_request_json AS "validationRequest",
+          validation_run_json AS "validationRun",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -191,6 +215,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       sql`
         SELECT
           nudging_json AS "nudging",
+          collaboration_requests_json AS "collaborationRequests",
           thread_id AS "threadId",
           project_id AS "projectId",
           parent_thread_id AS "parentThreadId",
@@ -201,9 +226,12 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
+          workspace_binding_json AS "workspaceBinding",
           pull_request_json AS "pullRequest",
           review_snapshot_json AS "reviewSnapshot",
           review_result_json AS "reviewResult",
+          validation_request_json AS "validationRequest",
+          validation_run_json AS "validationRun",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",

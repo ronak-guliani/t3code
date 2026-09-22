@@ -54,8 +54,10 @@ import {
   LogLevel,
   Option,
   Path,
+  Redacted,
   References,
   Schema,
+  SchemaIssue,
   Stream,
 } from "effect";
 import { Argument, Command, Flag, GlobalFlag } from "effect/unstable/cli";
@@ -99,6 +101,7 @@ import { RepositoryIdentityResolverLive } from "./project/Layers/RepositoryIdent
 import { getAutoBootstrapDefaultModelSelection } from "./serverRuntimeStartup.ts";
 import { readPersistedServerRuntimeState } from "./serverRuntimeState.ts";
 import { DurationFromString } from "./cli/duration.ts";
+import { pendingActivitiesFor } from "./cli/pendingRequests.ts";
 import { WorkspacePaths } from "./workspace/Services/WorkspacePaths.ts";
 import { WorkspacePathsLive } from "./workspace/Layers/WorkspacePaths.ts";
 import {
@@ -110,6 +113,7 @@ import {
   getLiveOrchestrationShellSnapshot,
   isDefinitiveCommandRejectionError,
   printJson,
+  readLiveThread,
   readJsonPayload,
   resolveLiveTarget,
   runReconnectingStream,
@@ -321,6 +325,25 @@ const EnvServerConfig = Config.all({
     Config.map(Option.getOrUndefined),
   ),
   backgroundService: Config.boolean("T3CODE_BACKGROUND_SERVICE").pipe(Config.withDefault(false)),
+  devAuthToken: Config.redacted("T3CODE_DEV_AUTH_TOKEN").pipe(
+    Config.map((token) => Redacted.make(Redacted.value(token).trim())),
+    Config.mapOrFail((token) =>
+      Redacted.value(token).length === 0 || Redacted.value(token).length >= 32
+        ? Effect.succeed(token)
+        : Effect.fail(
+            new Config.ConfigError(
+              new Schema.SchemaError(
+                new SchemaIssue.InvalidValue(Option.none(), {
+                  message: "T3CODE_DEV_AUTH_TOKEN must contain at least 32 characters.",
+                }),
+              ),
+            ),
+          ),
+    ),
+    Config.option,
+    Config.map(Option.filter((token) => Redacted.value(token).length > 0)),
+    Config.map(Option.getOrUndefined),
+  ),
 });
 
 interface CliServerFlags {
@@ -485,6 +508,11 @@ export const resolveServerConfig = (
     );
     const logLevel = Option.getOrElse(cliLogLevel, () => env.logLevel);
 
+    // Reusable dev credential: only honored by web-mode dev servers (devUrl
+    // set). Desktop and non-development servers ignore it. Each environment
+    // seeds its own session row, so worktrees do not share auth state.
+    const devAuthToken = mode === "web" && devUrl !== undefined ? env.devAuthToken : undefined;
+
     const config: ServerConfigShape = {
       logLevel,
       traceMinLevel: env.traceMinLevel,
@@ -511,6 +539,7 @@ export const resolveServerConfig = (
       host,
       staticDir,
       devUrl,
+      devAuthToken,
       noBrowser,
       startupPresentation,
       desktopBootstrapToken,
@@ -1641,17 +1670,63 @@ const chatShowCommand = Command.make("show", {
   ...liveTargetFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
   messages: Flag.boolean("messages").pipe(Flag.withDefault(false)),
+  activities: Flag.boolean("activities").pipe(Flag.withDefault(false)),
+  full: Flag.boolean("full").pipe(
+    Flag.withDescription("Legacy full detail, including checkpoints and activity context."),
+  ),
+  limit: Flag.integer("limit").pipe(
+    Flag.optional,
+    Flag.withDescription("History page size (1-200; default 50)."),
+  ),
+  before: Flag.string("before").pipe(
+    Flag.optional,
+    Flag.withDescription("Opaque page.before cursor from the previous history page."),
+  ),
 }).pipe(
   Command.withDescription("Show a chat."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      if (!flags.messages) {
-        const snapshot = yield* getLiveOrchestrationShellSnapshot(flags);
-        const thread = yield* findThreadForCli(snapshot, flags.chat, { includeArchived: true });
-        return yield* printJson(threadSummary(thread));
+      if (
+        (flags.messages && flags.activities) ||
+        (flags.full &&
+          (flags.messages ||
+            flags.activities ||
+            Option.isSome(flags.limit) ||
+            Option.isSome(flags.before)))
+      ) {
+        return yield* new CliPayloadError({
+          message:
+            "Choose --messages, --activities, or --full; pagination cannot be used with --full.",
+        });
       }
-      yield* withThreadDetail(flags, flags.chat, ({ detail }) => printJson(detail), {
-        includeArchived: true,
+      if (flags.full) {
+        return yield* withThreadDetail(flags, flags.chat, ({ detail }) => printJson(detail), {
+          includeArchived: true,
+        });
+      }
+      const limit = Option.getOrUndefined(flags.limit);
+      if (limit !== undefined && (limit < 1 || limit > 200)) {
+        return yield* new CliPayloadError({ message: "--limit must be between 1 and 200." });
+      }
+      if (
+        !flags.messages &&
+        !flags.activities &&
+        (Option.isSome(flags.before) || limit !== undefined)
+      ) {
+        return yield* new CliPayloadError({
+          message: "Pagination requires --messages or --activities.",
+        });
+      }
+      const result = yield* readLiveThread(flags, {
+        thread: flags.chat,
+        view: flags.messages ? "messages" : flags.activities ? "activities" : "summary",
+        ...(limit !== undefined ? { limit } : {}),
+        ...(Option.isSome(flags.before) ? { before: flags.before.value } : {}),
+      });
+      yield* printJson({
+        ...threadSummary(result.thread),
+        ...(result.messages ? { messages: result.messages, page: result.page } : {}),
+        ...(result.activities ? { activities: result.activities, page: result.page } : {}),
       });
     }),
   ),
@@ -1684,40 +1759,6 @@ const readStringArrayJson = (raw: string, label: string) =>
     },
     catch: (cause) => new CliPayloadError({ message: `Invalid ${label}.`, cause }),
   });
-
-const getPayloadRequestId = (payload: unknown): string | undefined => {
-  if (!isJsonRecord(payload)) return undefined;
-  const requestId = payload.requestId;
-  return typeof requestId === "string" && requestId.length > 0 ? requestId : undefined;
-};
-
-const pendingActivitiesFor = (input: {
-  readonly thread: OrchestrationThread;
-  readonly requestedKind: string;
-  readonly resolvedKind: string;
-}) => {
-  const resolvedRequestIds = new Set(
-    input.thread.activities
-      .filter((activity) => activity.kind === input.resolvedKind)
-      .map((activity) => getPayloadRequestId(activity.payload))
-      .filter((requestId): requestId is string => requestId !== undefined),
-  );
-  return input.thread.activities
-    .filter((activity) => activity.kind === input.requestedKind)
-    .filter((activity) => {
-      const requestId = getPayloadRequestId(activity.payload);
-      return requestId !== undefined && !resolvedRequestIds.has(requestId);
-    })
-    .map((activity) => ({
-      threadId: input.thread.id,
-      threadTitle: input.thread.title,
-      requestId: getPayloadRequestId(activity.payload),
-      turnId: activity.turnId,
-      summary: activity.summary,
-      payload: activity.payload,
-      createdAt: activity.createdAt,
-    }));
-};
 
 const updateServerSettings = (flags: CliLiveTargetFlags, patch: ServerSettingsPatch) =>
   callWsRpc(flags, (client) => client[WS_METHODS.serverUpdateSettings]({ patch }));
@@ -2067,10 +2108,94 @@ const chatAssociatePrCommand = Command.make("associate-pr", {
             pullRequest: resolved.pullRequest,
             pullRequestOwnership: "transfer",
           });
+          yield* dispatch({
+            type: "thread.pull-request.link",
+            commandId: CommandId.make(crypto.randomUUID()),
+            threadId: thread.id,
+            pullRequest: resolved.pullRequest,
+            source: "agent",
+          });
           yield* printJson({ pullRequest: resolved.pullRequest, result });
         }),
       );
     }),
+  ),
+);
+
+const chatLinkPrCommand = Command.make("link-pr", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  reference: Argument.string("reference").pipe(
+    Argument.withDescription("Pull request URL, number, or explicit GitHub reference."),
+  ),
+  cwd: cwdFlag,
+}).pipe(
+  Command.withDescription("Link a pull request to a chat without changing its workspace PR."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const resolved = yield* callWsRpc(flags, (client) =>
+        client[WS_METHODS.gitResolvePullRequest]({ cwd: flags.cwd, reference: flags.reference }),
+      );
+      yield* withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
+        Effect.gen(function* () {
+          const result = yield* dispatch({
+            type: "thread.pull-request.link",
+            commandId: CommandId.make(crypto.randomUUID()),
+            threadId: thread.id,
+            pullRequest: resolved.pullRequest,
+            source: "manual",
+          });
+          yield* printJson({ pullRequest: resolved.pullRequest, result });
+        }),
+      );
+    }),
+  ),
+);
+
+const chatUnlinkPrCommand = Command.make("unlink-pr", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  reference: Argument.string("reference").pipe(
+    Argument.withDescription("Pull request URL, number, or explicit GitHub reference."),
+  ),
+  cwd: cwdFlag,
+}).pipe(
+  Command.withDescription("Unlink a pull request from a chat."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const resolved = yield* callWsRpc(flags, (client) =>
+        client[WS_METHODS.gitResolvePullRequest]({ cwd: flags.cwd, reference: flags.reference }),
+      );
+      yield* withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
+        Effect.gen(function* () {
+          const result = yield* dispatch({
+            type: "thread.pull-request.unlink",
+            commandId: CommandId.make(crypto.randomUUID()),
+            threadId: thread.id,
+            pullRequest: resolved.pullRequest,
+          });
+          yield* printJson({ pullRequest: resolved.pullRequest, result });
+        }),
+      );
+    }),
+  ),
+);
+
+const chatListPrCommand = Command.make("list-prs", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+}).pipe(
+  Command.withDescription("List pull requests linked to a chat."),
+  Command.withHandler((flags) =>
+    withThreadDispatch(flags, flags.chat, ({ thread }) =>
+      printJson({
+        pullRequests:
+          thread.pullRequests ??
+          (thread.pullRequest
+            ? [{ pullRequest: thread.pullRequest, source: "manual", linkedAt: thread.updatedAt }]
+            : []),
+      }),
+    ),
   ),
 );
 
@@ -2569,6 +2694,9 @@ const chatCommand = Command.make("chat").pipe(
     chatSetInteractionCommand,
     chatSetBranchCommand,
     chatAssociatePrCommand,
+    chatLinkPrCommand,
+    chatUnlinkPrCommand,
+    chatListPrCommand,
     chatHandoffCommand,
     chatSendCommand,
     chatNewCommand,
@@ -2631,19 +2759,16 @@ const chatCommand = Command.make("chat").pipe(
               : undefined;
             const presentedDispatchId = Option.getOrUndefined(flags.dispatchId);
             const originTurnId = Option.getOrUndefined(flags.originTurnId);
-            const dispatchId =
-              presentedDispatchId ?? thread.nudging?.delegation?.dispatchId ?? undefined;
+            const dispatchId = presentedDispatchId;
             const assignmentId =
               Option.getOrUndefined(flags.assignmentId) ??
               thread.nudging?.delegation?.assignmentId ??
               "";
-            // Older report_to_parent clients omit the dispatch. Resolve the
-            // active generation before receipt lookup so a new execution cannot
-            // replay a prior generation's command receipt. The immutable turn
-            // still proves which execution issued the report.
             const keyBase = dispatchId
               ? `child-report:${thread.id}:${dispatchId}:${assignmentId}:${flags.reportId}`
-              : `child-report:${thread.id}:${assignmentId}:${flags.reportId}`;
+              : originTurnId
+                ? `child-report:${thread.id}:turn:${originTurnId}:${assignmentId}:${flags.reportId}`
+                : `child-report:${thread.id}:${assignmentId}:${flags.reportId}`;
             return yield* dispatch({
               type: "thread.child.report",
               commandId: CommandId.make(originTurnId ? `${keyBase}:${originTurnId}` : keyBase),
@@ -2957,19 +3082,23 @@ const diffTurnCommand = Command.make("turn", {
   scope: Flag.choice("scope", ["turn", "snapshot"]).pipe(Flag.withDefault("snapshot")),
   ignoreWhitespace: ignoreWhitespaceFlag,
 }).pipe(
-  Command.withDescription("Get a turn diff."),
+  Command.withDescription("Get a turn diff for an active or archived thread."),
   Command.withHandler((flags) =>
-    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
-      Effect.gen(function* () {
-        const result = yield* client[ORCHESTRATION_WS_METHODS.getTurnDiff]({
-          threadId: thread.id,
-          fromTurnCount: Math.max(0, flags.turn - 1),
-          toTurnCount: flags.turn,
-          scope: flags.scope,
-          ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-        });
-        yield* printJson(result);
-      }),
+    withThreadRpc(
+      flags,
+      flags.chat,
+      ({ thread, client }) =>
+        Effect.gen(function* () {
+          const result = yield* client[ORCHESTRATION_WS_METHODS.getTurnDiff]({
+            threadId: thread.id,
+            fromTurnCount: Math.max(0, flags.turn - 1),
+            toTurnCount: flags.turn,
+            scope: flags.scope,
+            ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+          });
+          yield* printJson(result);
+        }),
+      { includeArchived: true },
     ),
   ),
 );
@@ -2980,19 +3109,23 @@ const diffThreadCommand = Command.make("thread", {
   toTurn: Flag.integer("to-turn").pipe(Flag.optional),
   ignoreWhitespace: ignoreWhitespaceFlag,
 }).pipe(
-  Command.withDescription("Get the full thread diff."),
+  Command.withDescription("Get the full diff for an active or archived thread."),
   Command.withHandler((flags) =>
-    withThreadDetailRpc(flags, flags.chat, ({ thread, detail, client }) =>
-      Effect.gen(function* () {
-        const toTurnCount =
-          Option.getOrUndefined(flags.toTurn) ?? latestCheckpointTurnCount(detail);
-        const result = yield* client[ORCHESTRATION_WS_METHODS.getFullThreadDiff]({
-          threadId: thread.id,
-          toTurnCount,
-          ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-        });
-        yield* printJson(result);
-      }),
+    withThreadDetailRpc(
+      flags,
+      flags.chat,
+      ({ thread, detail, client }) =>
+        Effect.gen(function* () {
+          const toTurnCount =
+            Option.getOrUndefined(flags.toTurn) ?? latestCheckpointTurnCount(detail);
+          const result = yield* client[ORCHESTRATION_WS_METHODS.getFullThreadDiff]({
+            threadId: thread.id,
+            toTurnCount,
+            ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+          });
+          yield* printJson(result);
+        }),
+      { includeArchived: true },
     ),
   ),
 );
@@ -3004,27 +3137,33 @@ const diffStateCommand = Command.make("state", {
   scope: Flag.choice("scope", ["turn", "snapshot"]).pipe(Flag.withDefault("snapshot")),
   ignoreWhitespace: ignoreWhitespaceFlag,
 }).pipe(
-  Command.withDescription("Get diff loading/error/state metadata."),
+  Command.withDescription(
+    "Get diff loading/error/state metadata for an active or archived thread.",
+  ),
   Command.withHandler((flags) =>
-    withThreadDetailRpc(flags, flags.chat, ({ thread, detail, client }) =>
-      Effect.gen(function* () {
-        const turn = Option.getOrUndefined(flags.turn);
-        const result =
-          turn === undefined
-            ? yield* client[ORCHESTRATION_WS_METHODS.getFullThreadDiffState]({
-                threadId: thread.id,
-                toTurnCount: latestCheckpointTurnCount(detail),
-                ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-              })
-            : yield* client[ORCHESTRATION_WS_METHODS.getTurnDiffState]({
-                threadId: thread.id,
-                fromTurnCount: Math.max(0, turn - 1),
-                toTurnCount: turn,
-                scope: flags.scope,
-                ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-              });
-        yield* printJson(result);
-      }),
+    withThreadDetailRpc(
+      flags,
+      flags.chat,
+      ({ thread, detail, client }) =>
+        Effect.gen(function* () {
+          const turn = Option.getOrUndefined(flags.turn);
+          const result =
+            turn === undefined
+              ? yield* client[ORCHESTRATION_WS_METHODS.getFullThreadDiffState]({
+                  threadId: thread.id,
+                  toTurnCount: latestCheckpointTurnCount(detail),
+                  ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+                })
+              : yield* client[ORCHESTRATION_WS_METHODS.getTurnDiffState]({
+                  threadId: thread.id,
+                  fromTurnCount: Math.max(0, turn - 1),
+                  toTurnCount: turn,
+                  scope: flags.scope,
+                  ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+                });
+          yield* printJson(result);
+        }),
+      { includeArchived: true },
     ),
   ),
 );
@@ -3038,10 +3177,12 @@ const checkpointListCommand = Command.make("list", {
   ...liveTargetFlags,
   chat: Argument.string("thread").pipe(Argument.withDescription("Thread id or title.")),
 }).pipe(
-  Command.withDescription("List thread checkpoints."),
+  Command.withDescription("List checkpoints for an active or archived thread."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      yield* withThreadDetail(flags, flags.chat, ({ detail }) => printJson(detail.checkpoints));
+      yield* withThreadDetail(flags, flags.chat, ({ detail }) => printJson(detail.checkpoints), {
+        includeArchived: true,
+      });
     }),
   ),
 );
@@ -4047,6 +4188,68 @@ const prMonitorCommand = Command.make("pr-monitor").pipe(
   ]),
 );
 
+// --- collaborative acceptance ---------------------------------------------
+const acceptanceStatusCommand = Command.make("status", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  caseId: Argument.string("case-id").pipe(Argument.withDescription("Acceptance case id.")),
+}).pipe(
+  Command.withDescription("Read the durable collaborative acceptance projection."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      client[WS_METHODS.collaborativeAcceptanceStatus]({
+        threadId: thread.id,
+        caseId: flags.caseId,
+      }).pipe(Effect.flatMap(printJson)),
+    ),
+  ),
+);
+
+const acceptancePauseCommand = Command.make("pause", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  caseId: Argument.string("case-id").pipe(Argument.withDescription("Acceptance case id.")),
+  reason: Argument.string("reason").pipe(
+    Argument.withDescription("Typed pause reason, for example budget-exhausted."),
+  ),
+}).pipe(
+  Command.withDescription("Pause collaborative acceptance automation."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      client[WS_METHODS.collaborativeAcceptancePause]({
+        threadId: thread.id,
+        caseId: flags.caseId,
+        reason: flags.reason,
+      }).pipe(Effect.flatMap(printJson)),
+    ),
+  ),
+);
+
+const acceptanceResumeCommand = Command.make("resume", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  caseId: Argument.string("case-id").pipe(Argument.withDescription("Acceptance case id.")),
+}).pipe(
+  Command.withDescription("Resume collaborative acceptance automation."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      client[WS_METHODS.collaborativeAcceptanceResume]({
+        threadId: thread.id,
+        caseId: flags.caseId,
+      }).pipe(Effect.flatMap(printJson)),
+    ),
+  ),
+);
+
+const acceptanceCommand = Command.make("acceptance").pipe(
+  Command.withDescription("Inspect and steer collaborative acceptance coordination."),
+  Command.withSubcommands([
+    acceptanceStatusCommand,
+    acceptancePauseCommand,
+    acceptanceResumeCommand,
+  ]),
+);
+
 const reviewCommand = Command.make("review", {
   ...liveTargetFlags,
   ...modelSelectionFlags,
@@ -4686,10 +4889,10 @@ const observabilityGetCommand = Command.make("get", {
   Command.withHandler((flags) =>
     withLiveRpcClient(flags, (client) =>
       Effect.gen(function* () {
-        const [settings, config] = yield* Effect.all([
-          client[WS_METHODS.serverGetSettings]({}),
-          client[WS_METHODS.serverGetConfig]({}),
-        ]);
+        const [settings, config] = yield* Effect.all(
+          [client[WS_METHODS.serverGetSettings]({}), client[WS_METHODS.serverGetConfig]({})],
+          { concurrency: "unbounded" },
+        );
         yield* printJson({ settings: settings.observability, runtime: config.observability });
       }),
     ),
@@ -5445,6 +5648,7 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
       projectCommand,
       chatCommand,
       prMonitorCommand,
+      acceptanceCommand,
       reviewCommand,
       approvalCommand,
       inputCommand,

@@ -2,6 +2,7 @@ import type { DiscoveredLocalServer, EnvironmentId } from "@t3tools/contracts";
 import { Globe, RadioTower } from "lucide-react";
 
 import { Empty, EmptyDescription, EmptyMedia, EmptyTitle } from "~/components/ui/empty";
+import { DiscoveryList } from "../ui/discovery-list";
 
 import { PreviewLocalServerCard } from "./PreviewLocalServerCard";
 import { useDiscoveredLocalServers } from "./useDiscoveredLocalServers";

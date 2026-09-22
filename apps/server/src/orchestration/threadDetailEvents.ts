@@ -6,6 +6,14 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     type:
       | "thread.message-sent"
       | "thread.review-result-set"
+      | "thread.validation-requested"
+      | "thread.validation-request-failed"
+      | "thread.validation-run-planned"
+      | "thread.validation-lifecycle-updated"
+      | "thread.validation-lease-claimed"
+      | "thread.validation-lease-released"
+      | "thread.validation-result-recorded"
+      | "thread.validation-gate-updated"
       | "thread.proposed-plan-upserted"
       | "thread.activity-appended"
       | "thread.child-lifecycle-notified"
@@ -22,6 +30,14 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
   switch (event.type) {
     case "thread.message-sent":
     case "thread.review-result-set":
+    case "thread.validation-requested":
+    case "thread.validation-request-failed":
+    case "thread.validation-run-planned":
+    case "thread.validation-lifecycle-updated":
+    case "thread.validation-lease-claimed":
+    case "thread.validation-lease-released":
+    case "thread.validation-result-recorded":
+    case "thread.validation-gate-updated":
     case "thread.proposed-plan-upserted":
     case "thread.activity-appended":
     case "thread.child-lifecycle-notified":

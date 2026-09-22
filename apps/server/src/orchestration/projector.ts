@@ -1,4 +1,9 @@
-import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
+import type {
+  OrchestrationEvent,
+  OrchestrationReadModel,
+  ThreadId,
+  WorkspaceBinding,
+} from "@t3tools/contracts";
 import {
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
@@ -6,10 +11,27 @@ import {
   OrchestrationThread,
 } from "@t3tools/contracts";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
+import { sameThreadPullRequest } from "@t3tools/shared/threadPullRequests";
 import { Effect, Schema } from "effect";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
-import { pullRequestFromReviewSnapshot } from "./reviewPullRequest.ts";
+import {
+  applyValidationEvent,
+  isValidationLifecycleEvent,
+} from "@t3tools/client-runtime/validation-lifecycle";
+import {
+  MAX_THREAD_ACTIVITIES,
+  MAX_THREAD_CHECKPOINTS,
+  MAX_THREAD_MESSAGES,
+  MAX_THREAD_PROPOSED_PLANS,
+  checkpointStatusToLatestTurnState,
+  isNonAuthoritativeCheckpointStatus,
+  planMetaUpdatedPullRequestLinks,
+  resolveInitialThreadPullRequest,
+  selectRetainedMessageIds,
+  shouldPreserveActiveMessageId,
+  terminalTurnStateForSessionStatus,
+} from "./projection/ProjectionPolicy.ts";
 import {
   MessageSentPayloadSchema,
   ProjectCreatedPayload,
@@ -23,6 +45,11 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadCollaborationRequestUpdatedPayload,
+  ThreadCollaborationStateClearedPayload,
+  ThreadPullRequestLinkedPayload,
+  ThreadPullRequestRekeyedPayload,
+  ThreadPullRequestUnlinkedPayload,
   ThreadPendingRuntimeModeSetPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadQueuedTurnCreatedPayload,
@@ -50,20 +77,16 @@ import {
   WorkflowWorkerResultRecordedPayload,
 } from "./Schemas.ts";
 
-type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
-export const MAX_THREAD_MESSAGES = 2_000;
-const MAX_THREAD_CHECKPOINTS = 500;
-export const MAX_THREAD_ACTIVITIES = 500;
-
-function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "speculative" | "error") {
-  if (status === "error") return "error" as const;
-  if (status === "missing") return "interrupted" as const;
-  if (status === "speculative") return "running" as const;
-  return "completed" as const;
-}
+type ThreadPatch = Omit<
+  Partial<Omit<OrchestrationThread, "id" | "projectId">>,
+  "workspaceBinding"
+> & {
+  readonly workspaceBinding?: WorkspaceBinding | null;
+};
+export { MAX_THREAD_ACTIVITIES, MAX_THREAD_CHECKPOINTS, MAX_THREAD_MESSAGES };
 
 function isNonAuthoritativeCheckpoint(status: string | undefined): boolean {
-  return status === "missing" || status === "speculative";
+  return isNonAuthoritativeCheckpointStatus(status);
 }
 
 function latestTurnFromSession(
@@ -93,7 +116,7 @@ function latestTurnFromSession(
   if (thread.latestTurn?.state === "running") {
     return {
       ...thread.latestTurn,
-      state: session.status === "error" ? "error" : "interrupted",
+      state: terminalTurnStateForSessionStatus(session.status),
       completedAt: session.updatedAt,
     };
   }
@@ -106,7 +129,16 @@ function updateThread(
   threadId: ThreadId,
   patch: ThreadPatch,
 ): OrchestrationThread[] {
-  return threads.map((thread) => (thread.id === threadId ? { ...thread, ...patch } : thread));
+  return threads.map((thread) => {
+    if (thread.id !== threadId) return thread;
+    const { workspaceBinding, ...patchWithoutBinding } = patch;
+    const nextThread = { ...thread, ...patchWithoutBinding };
+    if (workspaceBinding === null) {
+      const { workspaceBinding: _workspaceBinding, ...threadWithoutBinding } = nextThread;
+      return threadWithoutBinding;
+    }
+    return workspaceBinding === undefined ? nextThread : { ...nextThread, workspaceBinding };
+  });
 }
 
 function decodeForEvent<A>(
@@ -126,61 +158,16 @@ function retainThreadMessagesAfterRevert(
   retainedTurnIds: ReadonlySet<string>,
   turnCount: number,
 ): ReadonlyArray<OrchestrationMessage> {
-  const retainedMessageIds = new Set<string>();
-  for (const message of messages) {
-    if (message.role === "system") {
-      retainedMessageIds.add(message.id);
-      continue;
-    }
-    if (message.turnId !== null && retainedTurnIds.has(message.turnId)) {
-      retainedMessageIds.add(message.id);
-    }
-  }
-
-  const retainedUserCount = messages.filter(
-    (message) => message.role === "user" && retainedMessageIds.has(message.id),
-  ).length;
-  const missingUserCount = Math.max(0, turnCount - retainedUserCount);
-  if (missingUserCount > 0) {
-    const fallbackUserMessages = messages
-      .filter(
-        (message) =>
-          message.role === "user" &&
-          !retainedMessageIds.has(message.id) &&
-          (message.turnId === null || retainedTurnIds.has(message.turnId)),
-      )
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      )
-      .slice(0, missingUserCount);
-    for (const message of fallbackUserMessages) {
-      retainedMessageIds.add(message.id);
-    }
-  }
-
-  const retainedAssistantCount = messages.filter(
-    (message) => message.role === "assistant" && retainedMessageIds.has(message.id),
-  ).length;
-  const missingAssistantCount = Math.max(0, turnCount - retainedAssistantCount);
-  if (missingAssistantCount > 0) {
-    const fallbackAssistantMessages = messages
-      .filter(
-        (message) =>
-          message.role === "assistant" &&
-          !retainedMessageIds.has(message.id) &&
-          (message.turnId === null || retainedTurnIds.has(message.turnId)),
-      )
-      .toSorted(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      )
-      .slice(0, missingAssistantCount);
-    for (const message of fallbackAssistantMessages) {
-      retainedMessageIds.add(message.id);
-    }
-  }
-
+  const retainedMessageIds = selectRetainedMessageIds(
+    messages.map((message) => ({
+      messageId: message.id,
+      turnId: message.turnId,
+      role: message.role,
+      createdAt: message.createdAt,
+    })),
+    retainedTurnIds,
+    turnCount,
+  );
   return messages.filter((message) => retainedMessageIds.has(message.id));
 }
 
@@ -271,6 +258,28 @@ export function projectEvent(
     updatedAt: event.occurredAt,
   };
 
+  if (isValidationLifecycleEvent(event)) {
+    const currentThread = nextBase.threads.find((thread) => thread.id === event.payload.threadId);
+    if (!currentThread) {
+      return Effect.succeed(nextBase);
+    }
+    const validation = applyValidationEvent(
+      {
+        request: currentThread.validationRequest ?? null,
+        run: currentThread.validationRun ?? null,
+      },
+      event,
+    );
+    return Effect.succeed({
+      ...nextBase,
+      threads: updateThread(nextBase.threads, event.payload.threadId, {
+        validationRequest: validation.request,
+        validationRun: validation.run,
+        updatedAt: event.occurredAt,
+      }),
+    });
+  }
+
   switch (event.type) {
     case "project.created":
       return decodeForEvent(ProjectCreatedPayload, event.payload, event.type, "payload").pipe(
@@ -278,6 +287,7 @@ export function projectEvent(
           const existing = nextBase.projects.find((entry) => entry.id === payload.projectId);
           const nextProject = {
             id: payload.projectId,
+            ...(payload.kind === "chat-import" ? { kind: payload.kind } : {}),
             title: payload.title,
             workspaceRoot: payload.workspaceRoot,
             defaultModelSelection: payload.defaultModelSelection,
@@ -347,7 +357,10 @@ export function projectEvent(
           event.type,
           "payload",
         );
-        const legacyReviewPullRequest = pullRequestFromReviewSnapshot(payload.reviewSnapshot);
+        const { initialPullRequest, source } = resolveInitialThreadPullRequest({
+          pullRequest: payload.pullRequest,
+          reviewSnapshot: payload.reviewSnapshot,
+        });
         const thread: OrchestrationThread = yield* decodeForEvent(
           OrchestrationThread,
           {
@@ -364,11 +377,21 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
-            ...(payload.pullRequest !== undefined
-              ? { pullRequest: payload.pullRequest }
-              : legacyReviewPullRequest !== undefined
-                ? { pullRequest: legacyReviewPullRequest }
-                : {}),
+            ...(payload.workspaceBinding !== undefined
+              ? { workspaceBinding: payload.workspaceBinding }
+              : {}),
+            ...(initialPullRequest !== undefined ? { pullRequest: initialPullRequest } : {}),
+            ...(initialPullRequest !== undefined && initialPullRequest !== null
+              ? {
+                  pullRequests: [
+                    {
+                      pullRequest: initialPullRequest,
+                      source: source ?? ("recovered" as const),
+                      linkedAt: payload.createdAt,
+                    },
+                  ],
+                }
+              : {}),
             ...(payload.reviewSnapshot !== undefined
               ? { reviewSnapshot: payload.reviewSnapshot }
               : {}),
@@ -532,22 +555,176 @@ export function projectEvent(
 
     case "thread.meta-updated":
       return decodeForEvent(ThreadMetaUpdatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const existingThread = nextBase.threads.find((thread) => thread.id === payload.threadId);
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              ...(payload.nudging !== undefined ? { nudging: payload.nudging } : {}),
+              ...(payload.title !== undefined ? { title: payload.title } : {}),
+              ...(payload.titleRegeneration !== undefined
+                ? { titleRegeneration: payload.titleRegeneration }
+                : {}),
+              ...(payload.modelSelection !== undefined
+                ? { modelSelection: payload.modelSelection }
+                : {}),
+              ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
+              ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
+              ...(payload.workspaceBinding !== undefined
+                ? { workspaceBinding: payload.workspaceBinding }
+                : {}),
+              ...(payload.pullRequest !== undefined
+                ? {
+                    pullRequest: payload.pullRequest,
+                    ...(payload.pullRequest !== null
+                      ? {
+                          pullRequests: planMetaUpdatedPullRequestLinks({
+                            existingLinks: existingThread?.pullRequests,
+                            existingLegacyPullRequest: existingThread?.pullRequest,
+                            createdAt: existingThread?.createdAt ?? payload.updatedAt,
+                            nextPullRequest: payload.pullRequest,
+                            updatedAt: payload.updatedAt,
+                            source: payload.pullRequestSource,
+                          }).allLinks,
+                        }
+                      : {}),
+                  }
+                : {}),
+              updatedAt: payload.updatedAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.collaboration-request-updated":
+      return decodeForEvent(
+        ThreadCollaborationRequestUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
-            ...(payload.nudging !== undefined ? { nudging: payload.nudging } : {}),
-            ...(payload.title !== undefined ? { title: payload.title } : {}),
-            ...(payload.titleRegeneration !== undefined
-              ? { titleRegeneration: payload.titleRegeneration }
-              : {}),
-            ...(payload.modelSelection !== undefined
-              ? { modelSelection: payload.modelSelection }
-              : {}),
-            ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
-            ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
-            ...(payload.pullRequest !== undefined ? { pullRequest: payload.pullRequest } : {}),
+            collaborationRequests: (() => {
+              const existing =
+                nextBase.threads.find((thread) => thread.id === payload.threadId)
+                  ?.collaborationRequests ?? [];
+              const withoutRequest = existing.filter(
+                (request) => request.requestId !== payload.request.requestId,
+              );
+              return [...withoutRequest, payload.request].toSorted((left, right) =>
+                left.createdAt.localeCompare(right.createdAt),
+              );
+            })(),
             updatedAt: payload.updatedAt,
           }),
+        })),
+      );
+
+    case "thread.collaboration-state-cleared":
+      return decodeForEvent(
+        ThreadCollaborationStateClearedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            collaborationRequests: [],
+            updatedAt: payload.clearedAt,
+          }),
+        })),
+      );
+
+    case "thread.pull-request-linked":
+      return decodeForEvent(
+        ThreadPullRequestLinkedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pullRequests: (() => {
+              const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              if (!thread) return [];
+              const existing = thread.pullRequests ?? [];
+              const index = existing.findIndex((link) =>
+                sameThreadPullRequest(link.pullRequest, payload.link.pullRequest),
+              );
+              return index < 0
+                ? [...existing, payload.link]
+                : existing.map((link, linkIndex) => (linkIndex === index ? payload.link : link));
+            })(),
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.pull-request-unlinked":
+      return decodeForEvent(
+        ThreadPullRequestUnlinkedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            (() => {
+              const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              return {
+                ...(thread?.pullRequest &&
+                sameThreadPullRequest(thread.pullRequest, payload.pullRequest)
+                  ? { pullRequest: null }
+                  : {}),
+                pullRequests: (thread?.pullRequests ?? []).filter(
+                  (link) => !sameThreadPullRequest(link.pullRequest, payload.pullRequest),
+                ),
+                updatedAt: payload.updatedAt,
+              };
+            })(),
+          ),
+        })),
+      );
+
+    case "thread.pull-request-rekeyed":
+      return decodeForEvent(
+        ThreadPullRequestRekeyedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(
+            nextBase.threads,
+            payload.threadId,
+            (() => {
+              const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+              const pullRequests = [
+                ...(thread?.pullRequests ?? []).filter(
+                  (link) =>
+                    !sameThreadPullRequest(link.pullRequest, payload.previousPullRequest) &&
+                    !sameThreadPullRequest(link.pullRequest, payload.link.pullRequest),
+                ),
+                payload.link,
+              ];
+              return {
+                ...(thread?.pullRequest &&
+                sameThreadPullRequest(thread.pullRequest, payload.previousPullRequest)
+                  ? { pullRequest: payload.link.pullRequest }
+                  : {}),
+                pullRequests,
+                updatedAt: payload.updatedAt,
+              };
+            })(),
+          ),
         })),
       );
 
@@ -698,15 +875,17 @@ export function projectEvent(
           event.type,
           "session",
         );
-        const session =
-          decodedSession.activeTurnId !== null && decodedSession.activeMessageId === undefined
-            ? {
-                ...decodedSession,
-                ...(thread.session?.activeMessageId !== undefined
-                  ? { activeMessageId: thread.session.activeMessageId }
-                  : {}),
-              }
-            : decodedSession;
+        const session = shouldPreserveActiveMessageId({
+          activeTurnId: decodedSession.activeTurnId,
+          activeMessageId: decodedSession.activeMessageId,
+        })
+          ? {
+              ...decodedSession,
+              ...(thread.session?.activeMessageId !== undefined
+                ? { activeMessageId: thread.session.activeMessageId }
+                : {}),
+            }
+          : decodedSession;
 
         return {
           ...nextBase,
@@ -883,7 +1062,7 @@ export function projectEvent(
             (left, right) =>
               left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
           )
-          .slice(-200);
+          .slice(-MAX_THREAD_PROPOSED_PLANS);
 
         return {
           ...nextBase,
@@ -989,7 +1168,7 @@ export function projectEvent(
           const proposedPlans = retainThreadProposedPlansAfterRevert(
             thread.proposedPlans,
             retainedTurnIds,
-          ).slice(-200);
+          ).slice(-MAX_THREAD_PROPOSED_PLANS);
           const activities = retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds);
 
           const latestCheckpoint = checkpoints.at(-1) ?? null;

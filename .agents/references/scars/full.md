@@ -20,9 +20,11 @@
 - Runtime PID files published after HTTP startup are observations, not startup ownership. Hold a shared per-state-directory OS-backed claim before constructing runtime services/migrations, revalidate legacy runtime evidence under it, and never unlink the claim file to recover a crash.
 
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
+- Runtime warning/error activities carry user-facing text in `payload.message` with optional `payload.detail`; every client's work-log derivation must surface both, or the rows render with nothing to expand.
 - Session startup/resume and turn lifecycle require predictable recovery: terminal reconciliation must settle the matching projected turn and clear `session.activeTurnId`; preserve a pre-acknowledgement start failure's `messageId`; and preserve terminal provider-event ordering during normal adapter shutdown.
 - Provider `turn.aborted` events may arrive after interrupt handling clears `session.activeTurnId`: use durable per-turn abort activity to reject later completion signals, condition session writes on the expected active turn at command application, project resolved turn IDs into activity, and clear tool-update fingerprints.
 - `TurnLifecycleRuntime` owns provider-session reconciliation, provider intent execution, runtime-event ingestion, and completion checkpoint ordering behind one `start`/`drain` interface; reconcile sessions before starting workers, and keep explicit thread-title regeneration outside this module.
+- `ValidationLifecycle` owns validation planning, target fencing, lease transitions, restart recovery, gate scheduling/execution, and result persistence behind `request`/`reconcile`/`reconcileAll`; `ValidationCoordinatorReactor` only supplies event and timer wakeups, so lifecycle fixes remain testable without running the reactor.
 - Projection rows, projector cursors, and durable reconciliation intent must commit together; run shell-summary and attachment reconciliation only after commit, keep it idempotent, and resume pending work during bootstrap.
 - Attachment reconciliation must retain every persisted `ChatAttachment` variant through `attachmentRelativePath`, not just images; file attachments use `.bin`.
 - Startup reconciliation must retry until provider sessions are observable; never defer a timed-out startup sweep behind active lifecycle workers.
@@ -54,6 +56,8 @@
 - External-store selectors must return a referentially stable snapshot when their input state is unchanged; fresh arrays or wrapper objects can trigger React error #185 (maximum update depth exceeded).
 - Timeline structural sharing must compare collapsed `reasoning` rows by nested content, not `rows` array identity; `collapseReasoningRows` always allocates a fresh nested array, and reference equality defeats `useStableRows` so every stream chunk re-renders prior reasoning blocks.
 - Timeline row context must keep `reviewOutputMessageIds` referentially stable across stream chunks; a fresh empty/equal `Set` each render rebuilds `TimelineRowCtx` and forces every mounted chat row to re-render.
+- Timeline derivations keyed on store arrays must compare item refs, not array identity: the store rebuilds arrays on unrelated updates (e.g. streaming text chunks) with identical item refs, so plain `useMemo` re-derives per chunk. Reuse the previous result when lengths match and every ref is identical; same refs imply same data under the immutable store contract.
+- Workspace handoff markers must stay at their emitted timeline position; the hidden continuation may transfer its revert anchor later, but delaying the marker until that row lets post-handoff work logs render above the workspace transition.
 - Retained thread-detail subscriptions can advance session and turn state before the shell summary refreshes; reconcile those activity fields into the sidebar summary, but keep shell metadata authoritative and preserve summary identity for activity-only events.
 - Finalize checkpoints only after ingesting the matching `turn.completed`; a non-streaming assistant message is one segment, not a terminal turn. Always emit a terminal turn-diff event, including missing/error checkpoint status, so a turn cannot remain running.
 - Snapshot-first thread-detail and shell streams must attach and buffer before loading a lightweight initial snapshot; read cursor and rows in one transaction, then discard buffered events through that cursor. This prevents lost/replayed completions and invisible workers; refresh the shell before navigating when a returned worker is not routable.
@@ -66,6 +70,16 @@
 
 ## Provider tools and workspace ownership
 
+- Agent CLI stdout is a data boundary: send logs and failures to stderr, use the server-matched launcher rather than ambient PATH, and never infer matching protocol contracts from equal package versions.
+- OpenCode SSE connection success is not semantic progress: admit prompts only after the subscription is established, correlate each prompt with a client message ID, and reconcile transcript plus native status until correlated work is idle before projecting one terminal turn event. Replayed evidence must be idempotent, and interrupt/session replacement remains authoritative over delayed recovery results.
+- OpenCode prompt admission is not turn completion: long tool-heavy turns can remain busy for minutes after `promptAsync` returns, so recovery polling must back off and wait for native idle evidence instead of treating a short admission window as a failed turn.
+- OpenCode transcript pages may omit the prompt after a long turn; use an assistant's `parentID` for completion correlation without requiring the prompt row to be present in the page.
+- OpenCode's status map lists active sessions and may omit an idle session; a valid map without the current session is idle evidence, while a missing or invalid map remains unknown.
+- Preserve native OpenCode idle evidence until a later busy event or turn replacement; the status endpoint can remain stale-busy after the event stream reports idle, and polling must not erase stronger correlated completion evidence.
+- Pending CLI approvals/questions must combine `activityContext` with the recent activity window and honor terminal lifecycle events; a request outside the window is not resolved.
+- Thread history reads must filter and limit in SQL before decoding, omit unrelated checkpoints, and bind pagination cursors to thread/view. Unary RPC deadlines must not cap stream lifetime or imply that timed-out mutations were rejected.
+- Preserve typed thread-read input failures through HTTP and RPC; missing/ambiguous threads and invalid cursors are client errors, not error-logged repository failures.
+
 - Keep local provider health checks process-free when their contract promises CLI-only probing; workspace-specific discovery belongs in the explicit cwd refresh path, not an empty-inventory fallback that silently starts a temporary server.
 - Child processes terminated by a signal surface through Effect as `Unknown: ChildProcess.exitCode` with the signal only in the nested cause; preserve that cause before wrapping provider diagnostics.
 - Copilot ACP rejects client-supplied stdio MCP servers; expose T3 workspace handoff tools over authenticated loopback HTTP, inject the raw-worktree prohibition through a T3-owned custom-instructions directory, keep permission interception enabled in full-access mode, and fail raw `git worktree add`/`move` visibly so provider cwd, checkpoints, and diffs stay aligned. Inspect only normalized command-execution payloads for raw worktree mutations; MCP prompts may quote those commands as prohibitions. `git worktree remove` may run in-chat for cleanup.
@@ -73,6 +87,7 @@
 - Never auto-cancel a Copilot permission request just because its tool kind is unrecognized; MCP/dynamic tool calls arrive as kind `other` and a silent `cancelled` outcome reads to the model as user rejection, ending the turn early with no error. Let runtime mode decide, and keep the policy's actionable set aligned with `ProjectionPipeline.isActionableApprovalRequest`.
 - Copilot user-input detection must not scan tool arguments or content for question/plan keywords; a `send_to_thread` prompt discussing a "question" otherwise stalls on approval even in full-access mode.
 - OpenCode native tasks create descendant sessions without the parent's permission policy. Resolve request ownership through session ancestry, honor the owning thread's runtime mode, and surface descendant approvals/questions without forwarding child completion or content as the parent's. Map otherwise-unclassified permissions to actionable `dynamic_tool_call` requests, not UI-hidden `unknown`.
+- OpenCode SDK clients do not reliably scope POST requests from the client-level directory alone. Pass the thread directory explicitly when dynamically adding its MCP server or tools such as PR association can be registered against another project instance.
 - OpenCode agent options must follow the current interaction-mode policy, not an upstream legacy-settings shape. Filter retired agents at model-capability resolution so composer rendering, sticky selections, and server-side text-generation dispatch all converge on the same surviving default.
 - MCP tool implementations must not reuse the agent-facing `terminal` tool for internal spawns; its "executable name only" guard exists to constrain untrusted agent input and rejects the absolute `cliCommand` (`process.execPath`) that T3 workspace handoff tools legitimately need. Route trusted internal calls through `spawnCommand`, pass the active server `baseDir` to internal CLI calls so app flavors cannot cross-bind, and test handoff tools with an absolute CLI path rather than a PATH-resolved name.
 - An Electron desktop executable invoked with the embedded server `bin.mjs` must proxy that command with `ELECTRON_RUN_AS_NODE=1` before desktop bootstrap; otherwise a flavor-scoped CLI call can launch a second backend against the same database and its startup reaper can interrupt sessions owned by the first process.
@@ -95,6 +110,7 @@
 
 ## Delegation and handoff transactions
 
+- Delegated reports must freeze assignment, dispatch generation, and origin turn at execution start. Persist the accepted/stale outcome by that identity before applying current-authority checks on retries, and rotate execution authority atomically with decision retirement and replacement work so old questions or answers cannot survive replacement.
 - Reused children need explicit assignment identity on reports and a checkpoint generation fence; never infer a late report's assignment from the child's current metadata. Queue an assignment or decision response in the same transaction as its lifecycle change.
 - Execution authority is a (dispatch, turn) pair minted and bound server-side: mint the dispatch at delegation creation, bind/rotate it at session-turn transitions, and require reports to present the reporting execution's own turn from immutable per-prompt context. Never stamp MCP reports from a mutable session-wide active turn. Fence every attempt-scoped mutation path (explicit reports, checkpoint completions, runtime failures), including minted-but-unbound windows, before delegation, decision, wait, or queue mutation; return explicit accepted/already-recorded/stale verdicts through the dispatch result and keep pre-fence key formats byte-identical for upgrade replays.
 - Keep an undelivered decision response correlated with its original report until dispatch. Deleting it restores the question; deleting a queued assignment must terminate that assignment rather than strand it.
@@ -119,11 +135,18 @@
 
 ## PR reviews and checkpoint provenance
 
+- Collaborative acceptance must reserve one deterministic exchange before creating its queued review request, bind every prompt and outcome to the immutable assignment/dispatch/turn/case/candidate/head tuple, and wake only through `QueuedTurnReactor`; child completion alone is never review evidence.
+- Collaborative acceptance recovery must subscribe once before its startup snapshot, reconcile response/queue terminal events live, and treat PR-monitor notifications as wakeups that re-read authoritative evidence. Persist a terminal dispatch outcome for unrecoverable legacy work so one malformed exchange cannot strand startup or create a retry storm.
+- Collaborative acceptance case writes must cross `AcceptanceCaseMutation`: it owns authority checks for domain commands, projection recomputation, timestamps, and revision-fenced persistence. Keep provider dispatch and monitor reads outside that seam, then persist their durable outcomes through it.
+- Candidate mutation must decode both submitted and durable prior review metadata before saving. A post-save decode failure advances the epoch despite reporting failure, making an exact retry impossible.
+
 - Skill triggers that include "draft a PR description" must branch to read-only delivery before staging or publishing; only a publication request authorizes creating a PR, which defaults to ready-for-review unless draft status is explicit.
 
 - Review findings must never be silently dropped: reviewers cite file line numbers that often land on unchanged context, so anchor findings to any line the diff renders and only discard ones naming a file outside the reviewed diff. Review threads stay conversational — refresh the result on every turn that emits reviewer JSON, re-resolve the snapshot it is anchored to, and identify the raw-JSON message by content rather than assuming it is the last assistant message.
 - PR metadata writes preserve monitor ownership by default. Only commands carrying explicit transfer intent may replace an owner; inherited/refresh writes use ancestry only as an ownerless fallback, validated before a compare-and-swap claim.
 - Agent PR creation can succeed without the follow-up association tool. Recover from persisted, unambiguous assistant PR URLs only after fresh checkout validation; retry missing metadata after restart and guard dispatch against concurrent thread updates. Never infer an association from branch equality alone.
+- PR existence checks must include `state`: `gh pr view --json url` alone reuses MERGED/CLOSED PRs and pushes follow-up work onto dead branches. Require `state == OPEN` before reusing a branch/PR; otherwise branch fresh from the base for a new PR.
+- When replacing a thread's legacy `pullRequest`, seed any missing legacy association ahead of newer `pullRequests` in both live and durable projections; otherwise the first-created PR disappears or loses primary badge order.
 - Conditional metadata no-ops must be accepted and receipted by the real orchestration engine, not only the decider; the normal dispatch path rejects empty event batches. Exercise stale writes and receipt replay through the production engine.
 - Pull-request review snapshots must use the aggregate `gh pr diff`, never `--patch`; per-commit output repeats file paths and can make the renderer show an earlier commit while hiding later findings.
 - Shared Git checkpoint refs need worktree provenance; validate a baseline against the thread's current worktree before reuse after handoff. Full-thread diffs must use chat-attributed `turnFiles`, and only file-change activities may contribute paths.
@@ -168,6 +191,9 @@
 - Background-service health must use an instance-private PID-owned state file while the server also maintains shared CLI discovery state; a shared health file lets unrelated foreground servers satisfy or erase service health.
 - LaunchAgent bootstrap already starts `RunAtLoad` jobs: never immediately kill that process with `kickstart -k`. Wait for asynchronous bootout to fully unload before restarting, then wait boundedly for a running PID before probing it. Copy installed production dependencies with the CLI; a relocated `dist` alone cannot resolve external packages.
 - Connect origins must use the actual TCP listener address and port, mapping wildcard IPv4/IPv6 to their matching loopback addresses. Preserve IPv6 in the Node adapter patch (with URL brackets), and test through `NodeHttpServer.layer`, not fabricated addresses: upstream normalizes `::` to IPv4. `localhost` can reach another environment on the same port in the other family; a registered tunnel is not proof that the public endpoint identifies the intended host.
+- Automatic endpoint discovery must project only the live listener's family and bound port. Inspect existing Tailscale Serve mappings read-only, require their loopback target and environment descriptor to match this server, and never treat a public environment ID or DPoP alone as proof that an arbitrary listener is safe.
+- IPv4-only Tailnet IP synthesis must not gate IPv6 loopback Serve inspection; optional Serve command failures must preserve independently discovered IP endpoints.
+- Verified Serve mappings targeting `localhost` must survive wildcard matching and final IPv6 endpoint composition; retain descriptor identity checks because localhost can resolve to either family. Classify core private-network routes from reachability, not only addon provider IDs.
 
 ## Desktop browser surfaces
 
@@ -194,9 +220,17 @@
 - `Effect.all` defaults to sequential execution: independent I/O — especially `gh`/network calls — must pass `{ concurrency: "unbounded" }` or the latencies add up silently. Gate a client's pre-navigation wait on exactly what the destination route requires (thread existence), never on a stricter signal like the first turn being projected, or navigation blocks on work the route never needed.
 - Copilot ACP session startup splits into a thread-independent prefix (`spawn` + `initialize` + `authenticate`, ~650ms) and a thread-bound `session/new` (~1.5s) that carries the per-thread MCP bearer credential issued by `McpSessionRegistry`. Only the prefix may be prewarmed: adopting a fully-created session would attribute another thread's MCP tool calls to the wrong thread. Key a warmed process by everything that shapes the spawn (binary, runtime-mode args, cwd, env/custom-instructions dir), verify liveness and TTL before adopting, and apply the adopting thread's `mcpServers` last so no override can reintroduce a foreign credential.
 - Review-capture prewarm is one explicit prewarm/claim pair for one `pull-request` click only; never cache it in the shared resolver or use it for mutable working-tree scopes. A PR head can change, `git status --short` cannot validate an already-modified file's diff, and the post-review verifier needs a fresh snapshot. Park the deferred success value so waiter interruption cannot evict a healthy capture; prewarm RPCs should acknowledge only, not return the capture.
-- Archiving a parent thread archives its nested chats; if the active route is in that subtree, navigate to a new draft. Active shell snapshots omit archived threads, so archive screens must query the archived-shell snapshot and web/mobile archive events must emit explicit removals rather than re-querying the active shell.
+- Archiving a parent thread archives its nested chats; if the active route is in that subtree, navigate to a new draft. Direct `getShellSnapshot()` reads include non-deleted archived rows, so active-only consumers must filter `archivedAt`; archive screens must query the archived-shell snapshot and web/mobile archive events must emit explicit removals instead of relying on a shell re-query.
+- A process-wide subprocess budget must live in module scope (`Semaphore.makeUnsafe`), never in a per-instance Effect constructor: every WebSocket session builds its own service instance, so a constructor-scoped semaphore multiplies the intended cap per session. Wrap only the single-command execution boundary, outside the execution timeout and duration metric so queue waits neither time out commands nor pollute timings; never wrap a multi-command fan-out or the nested acquisitions deadlock once the pool is saturated.
 
 ## Pairing and environment recovery
+
+- SSH device startup must lock per host, not across the service; keep settings revocation coordinated with those locks so a slow remote install cannot block healthy hosts or publish readiness after access is disabled.
+- Persist agent endpoints under the adapter's reconnect lock using its current endpoint; a service-only lock cannot prevent a stale readiness snapshot from overwriting a new tunnel configuration.
+- Host IDs are environment-local. Cross-environment edits and removals must confirm the SSH destination before trusting an ID, and must not append a duplicate ID belonging to an unrelated host.
+- Saved-environment settings controls must consume incremental `settingsUpdated` events, not only config snapshots. Treat failed SSH probes as expected errors rendered per environment, not atom-command defects.
+
+- Pausing a saved environment persists client intent without removing credentials or owned data. Gate retries and in-flight connection completions, and exclude paused rows only from presentation; cleanup reconciliation must still see paused projects and threads.
 
 - Pairing input must accept raw credentials and same-origin `/pair` links without sending a URL as a token; reject cross-environment links before exchange, mask input, and clear rejected credentials before evidence capture.
 - Self-test success is scoped to the tested revision and scenarios. Keep file-integrity checks and upload receipts separate from functional assertions; a finished worker turn or a local recording path is not verified PR delivery.
@@ -221,6 +255,8 @@
 
 ## Streaming reconnects and workflow dispatch
 
+- Account-change handling must cancel and join route discovery before clearing promotion state in both normal and nested health-probe loops; discovery finalizers must not repopulate the previous account's overrides after cleanup.
+
 - Live `thread.message-sent` events that create or change `latestTurn` must reconcile the sidebar activity summary; a slow shell stream otherwise leaves the active row stale.
 - Custom workflow settings and chat actions must stay wired through `workflow.run`; built-in-only server guards make every configured prompt workflow fail as `workflow-not-found`. Built-in IDs remain reserved, and custom child/new-chat retries must reuse deterministic create/turn IDs instead of bootstrap-generated UUIDs.
 - A user interrupt can arrive after `thread.turn.start` is accepted but before its provider turn is acknowledged; keep cancellation intent until the provider returns its turn ID, suppress an unsent call, then interrupt an unacknowledged or active turn without aborting adapter lifecycle cleanup.
@@ -239,6 +275,7 @@
 - Effect RPC request IDs changed wire types across mobile releases; accept safe numeric and decimal-string IDs, normalize them internally, and echo each connection's original representation in chunks, exits, and defects.
 - Mobile capability flags are executable protocol promises: advertise a feature only when every current RPC it gates is implemented, and send explicit `false` when current clients distinguish disabled behavior from legacy absence.
 - Official `wsTicket` credentials are single-use while legacy `wsToken` credentials remain replayable; keep the ticket replay guard process-wide because HTTP issuance and WebSocket upgrade routes may materialize separate auth layer instances.
+- Port upstream connection gates through the fork's post-connect `ConnectionCompatibility.validate` path (driver calls it after session ready) rather than rewiring resolver brokers: a resolver descriptor fetch adds HttpClient layer requirements and a new failure mode to every platform. Widening `EnvironmentConnectionPhase` breaks exhaustive mobile switches (composer pill, status dot, tone, notices); fix every switch in the same change and let `tsc` on `@t3tools/mobile` prove it.
 
 ## Migration repairs
 
@@ -250,6 +287,7 @@
 
 ## Client state and completion
 
+- Settings controls that persist a whole nested object must merge each edit against a synchronously updated latest-value ref. Consecutive blur commits can run before React rerenders, so render-captured objects silently overwrite earlier sibling edits.
 - Activity strips must use tool lifecycle plus the owning turn, not the newest successful row, to decide liveness. Preserve lifecycle/output fields in timeline equality checks, and keep attention receipts and explicit disclosures visible across completion folding.
 - Carry inferred activity lifecycle into expanded detail entries before grouping; a live header must not hide its running call among completed history. Shimmer overlays enhance a persistent base icon, never replace it when reduced motion or focus disables the overlay.
 - Bound disclosure batches inside history groups, not just the number of group headers. Cache completed-turn labels against every contributing immutable group, and keep detail-expansion state out of history grouping dependencies.
@@ -270,17 +308,23 @@
 - Virtualized row items must own every primitive that changes their rendering. Derive receipt-aware status before list rendering and compare it in item equality; do not hide row state in render closures, whole-map props, or `extraData`, because mounted rows can remain stale after persistence updates.
 - Workspace handoff intentionally ends turn A and queues a continuation before turn B starts. Project non-failed queue presence onto the shell as `hasPendingQueuedTurn` (do not read detail-only `queuedTurnsByThreadId` for sidebar/notify). Treat that flag as still-working in status, archive guards, settle/snooze, and completion notifications so the idle gap does not flash "Done" / "Chat completed"; do not seed `notifiedTurnKeys` while the queue is pending.
 - Completion notifications must prefer a matching `insights.turn.completed` provider state over checkpoint-derived shell/detail state; `missing` checkpoint status and normal shutdown ordering can transiently or permanently misclassify a successful turn as interrupted. Briefly confirm fallback interruptions before notifying.
+- Sidebar expansion derived from the active descendant is not durable state: archiving a nested thread navigates away from its subtree and collapses every parent that was open only by reveal. Pin ancestor `threadExpandedById` overrides before the archive navigation so the visible tree keeps its exact state.
 
 ## Projection performance and service composition
 
 - Shell-summary projection refreshes scan full thread history; only run them for events that can change summary fields, and execute independent repository reads concurrently.
+- Shell stream mapping must skip `thread.activity-appended` events whose kind cannot change shell fields, using the same predicate as the reconciler filter plus `task.completed` always (it can settle a run) and `task.started` only when the payload carries taskType background-agent; otherwise every streaming activity costs a shell re-read (5 SELECTs plus a WS upsert) on the single SQLite connection.
 - Shell-summary refreshes must use targeted aggregate/lifecycle queries (MAX/COUNT/kind-filtered scans), not full-history list + in-JS derive: `NodeSqliteClient` is a single connection behind `Semaphore(1)`, so `Effect` fan-out cannot overlap SELECTs and fewer decoded rows is the only de-serialization lever.
 - Live activity windows are ordered and capped; fast-path new tail appends, but retain the dedupe/sort fallback for duplicate IDs, out-of-order events, and unsorted restored state.
 - Restart hydration must apply the live projector's per-thread activity cap in SQL before decoding payload JSON; full projection histories can exceed the V8 heap even when each live thread is bounded in memory.
+- Revert trimming must delete only trimmed rows in SQL from narrow key reads (message identity columns) or retained-turn sets; never list full histories, delete-all, and serially re-upsert retained rows. Retained rows must be left untouched: fewer decoded payloads plus zero rewrites is the only lever on the single-connection client.
 - Projection bootstrap must prune cursor rows for retired projector names; a renamed projector can otherwise pin a global minimum cursor and replay gigabytes of event history on every startup.
 - Projection bootstrap batches may commit independently, but state-derived attachment cleanup must wait for the entire replay; arbitrary batch boundaries can split a revert from a later event that restores a file reference.
 - Eager background-service layers must retain construction dependencies with `Layer.provideMerge`; a sibling runtime layer is not enough. Keep a full `makeServerLayer` build test because isolated sublayer tests can pass while packaged startup fails with a missing service.
+- Registries that construct supervisors later must capture and re-provide optional services from construction time; test calls outside the provider layer so an ambient test service cannot mask lost promotion state.
 - Flavor-scoped provider subprocesses must inherit `T3CODE_HOME`, and live CLI commands must honor it; reject runtime-state files owned by dead PIDs before borrowing auth so port reuse cannot surface as a misleading HTTP 401.
+- Output-budget truncation loops must converge: truncating a 501-char string to 500 chars plus an ellipsis is a fixed point that burns the iteration guard while larger fields wait. Gate re-truncation past the ellipsis length (or shrink by the measured overflow) and cover oversized page-controlled strings — titles, URLs, element names — with a regression test, or the advertised ceiling silently stops holding.
+- Implicit local CLI snapshot/history reads may use the running server's projection database through a read-only SQLite connection, but must revalidate runtime-state liveness and origin before opening it; explicit tokens, remote URLs, account environments, and mutation-capable clients stay on authenticated live paths.
 
 ## Test clocks and durable PR monitoring
 
@@ -295,10 +339,17 @@
 
 ## Projection schemas and checkout reservations
 
+- Whole-record read/replace persistence needs a durable revision fence: pure transition correctness does not prevent concurrent budget overspend or last-write-wins updates. Require an expected revision on every aggregate write and reject stale saves inside the transaction.
 - Projection schema changes must update repository SQL plus every full, shell, and targeted snapshot query and mapper; a passing projection write test does not prove reconnect or CLI reads decode.
+- Archived-thread reads must opt in at the CLI resolution seam; keep checkpoint/diff inspection opt-in and leave dispatch/revert helpers on the default active-thread filter.
+- Keep each `Effect.all` snapshot query tuple position aligned with its destructuring, and define SQL-backed `SqlSchema` queries inside the layer that owns the `SqlClient`; a misplaced query can shift `workflowRuns` to `undefined` or fail only when executed.
 - Automatic Git mutations must check cleanliness with `--untracked-files=all --ignore-submodules=none`; user status preferences can otherwise hide local work. Disable autostash and recheck checkout identity and active turns immediately before pulling.
 - Checkout reservations must never span orchestration dispatch or ingestion receipt waits: the command worker may already be waiting for that checkout to admit a turn. Establish completion exclusion before publishing idle state, keep it through checkpoint finalization, and lock the full HEAD/worktree/index snapshot sequence even when staging uses a temporary index.
+- Durable workspace ownership is separate from short checkout locks: claim the canonical Git worktree (or canonical non-Git directory) before a writing command is admitted, persist the owner and generation in SQLite, and reject root/null legacy collisions with actionable recovery instead of stashing, switching branches, or silently falling back. A completion event is not ownership transfer; idle writers retain their binding until explicit safe teardown.
+- Checkpoint capture and restore must use Git's registered nested-worktree inventory as pathspec exclusions and validate the checkpoint's recorded worktree provenance before `read-tree` or `clean`. This protects foreign nested worktrees while retaining normal staged, unstaged, untracked, and submodule behavior. Unrestricted providers can still mutate files outside T3's cooperative boundaries; ownership admission is not an OS sandbox.
 - A workspace handoff is not cleanup authorization. Discover released checkouts through Git's registered-worktree inventory; do not manufacture thread IDs and non-executable cleanup jobs to duplicate that inventory.
+- Ownership-claim compensation must be fenced per attempt, not per generation: same-thread claims share a generation, so mint a unique attempt token in both the filesystem ledger and the SQL row and require it on compensation. Filesystem writes are not transactional, so snapshot the pre-write ledger entry and restore it on failure instead of nulling — a failed reentrant claim must not destroy the live claim it overwrote.
+- Never `git stash pop` without an explicit ref in a multi-worktree repo: the stash is per-repository, not per-worktree, and a bare pop can apply another agent's entry. Prefer file-copy round-trips for mutation checks and restore foreign entries untouched.
 
 ## Mobile capabilities and cross-platform tests
 
@@ -318,12 +369,14 @@
 - Sidebar device markers belong in trailing metadata, not title text: omit primary-machine markers and raw IDs, keep remote names in tooltips, and cover hosted clients with no primary environment in both sidebar layouts.
 - Diff route search is thread-local UI state: clear it when sidebar navigation changes threads, but preserve it for the active thread so the split-layout store can restore each chat independently.
 - Composer skill discovery must map shared `~/.agents/skills` installations to every provider that reads them; otherwise live project skills appear while global skills silently disappear from `$` suggestions.
+- Browser fixtures that reduce full thread snapshots to shell rows must preserve every row-rendering primitive, including linked `pullRequests`; otherwise integration tests silently exercise legacy fallback data instead of the production shell path.
 - Electron native preview recording serializes only the display-media grant, not the recording lifetime; keep hidden guests composited and unthrottled until their activity lease ends, and pin each attached debugger wrapper until its control scope closes.
 - Background webviews at `z-index: -1` still show through native-vibrancy sidebars. Set unpresented host opacity to zero while keeping guest visibility and capture dimensions intact; restore opacity when presented.
 
 ## Checkpoint and snapshot atomicity
 
 - `CheckpointReactor.ts` carries `// @ts-nocheck`, so Effect API renames (e.g. `tapErrorCause` → `tapCause`) fail only at runtime; verify changes against its test suite, not typecheck.
+- Worse, a nonexistent Effect API inside a `// @ts-nocheck` file (fork beta vs upstream rc drift, e.g. `catchAllCause`) silently widens that file's inferred layer requirements to `unknown`, so typecheck breaks in dozens of unrelated test files with no error at the source. When porting upstream code, confirm every Effect combinator exists in the fork's effect version, and treat a sudden `unknown`-context cascade as a poisoned nocheck inference before touching the reporters.
 - Completion ingestion and checkpointing must share one provider subscription with an owned queue handoff; independent hot subscribers lose startup-gap events. Release checkout exclusions on failed handoff and worker cancellation, including queued completions.
 - `NodeSqliteClient` is one `DatabaseSync` connection behind `Semaphore(1)`: `Effect.all` concurrency cannot overlap SQLite SELECTs, and shell/full snapshot row reads must stay in one read transaction with `projection_state` or `subscribeShell` drops buffered live events through a mismatched `snapshotSequence`; regression tests must pause at the row/cursor boundary and queue a writer while that transaction is open, because whole-snapshot races do not prove atomicity.
 - Revert projection commits precede Git ref pruning; integration assertions must wait for the final revert-guard deletion before checking pruned refs. Session readiness alone does not prove a turn's checkpoint is finalized.
@@ -332,6 +385,7 @@
 
 - No-argument MCP parameters need an object-only schema, such as `Schema.Record(Schema.String, Schema.Never)`; `Schema.Struct({})` exports an object/array union. Do not add unused parameters to satisfy provider schema checks.
 - Auth bootstrap cache writes must belong to the current in-flight promise so reset cannot be undone by an older completion. Import auth test dependencies before test execution, not inside a timed test or its cleanup.
+- Direct HTTP authorization must use shared token-only renewal, not relay connection establishment; cached reads must mint no socket tickets or depend on relay availability, while rejected-token retries retain single-flight and account-identity guards.
 
 ## Mobile drafts and navigation
 

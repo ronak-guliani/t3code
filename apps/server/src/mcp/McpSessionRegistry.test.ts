@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { HttpServer } from "effect/unstable/http";
 
@@ -53,6 +53,42 @@ it.effect("advertises explicit bound hosts and normalizes wildcard and IPv6 host
     expect((yield* ipv6.issue({ threadId, providerInstanceId })).config.endpoint).toBe(
       "http://[2001:db8::1]:43123/mcp",
     );
+
+    expect(
+      (yield* explicit.issue({
+        threadId,
+        providerInstanceId,
+        capabilities: new Set(["preview", "device"]),
+      })).config.endpoint,
+    ).toBe("http://10.20.30.40:43123/mcp-device");
+  }),
+);
+
+it.effect("preserves the authenticated execution authority without inventing one", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const authority = {
+      executionId: "thread:thread-authority",
+      assignmentId: "assignment-authority",
+      threadId: ThreadId.make("thread-authority"),
+      generation: 3,
+      dispatchId: "dispatch-authority",
+      turnId: TurnId.make("turn-authority"),
+    };
+    const issued = yield* registry.issue({
+      threadId: ThreadId.make("thread-authority"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      executionAuthority: authority,
+    });
+    const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    expect((yield* registry.resolve(token))?.executionAuthority).toEqual(authority);
+
+    const unbound = yield* registry.issue({
+      threadId: ThreadId.make("thread-unbound"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+    const unboundToken = unbound.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    expect((yield* registry.resolve(unboundToken))?.executionAuthority).toBeUndefined();
   }),
 );
 

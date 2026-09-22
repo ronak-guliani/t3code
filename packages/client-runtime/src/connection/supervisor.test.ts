@@ -29,6 +29,7 @@ import {
 import * as RpcSession from "../rpc/session.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
+import * as ConnectionPromotion from "./promotion.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -45,11 +46,13 @@ const RELAY_TARGET = new RelayConnectionTarget({
 const TARGET_ENTRY: ConnectionCatalogEntry = {
   target: TARGET,
   profile: Option.none(),
+  enabled: true,
 };
 
 const RELAY_ENTRY: ConnectionCatalogEntry = {
   target: RELAY_TARGET,
   profile: Option.none(),
+  enabled: true,
 };
 
 const PREPARED_CONNECTION: PreparedConnection = {
@@ -113,6 +116,7 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
     attempt: number,
     target: ConnectionTarget,
   ) => Effect.Effect<PreparedConnection, ConnectionAttemptError>;
+  readonly open?: (attempt: number) => Effect.Effect<void, ConnectionAttemptError>;
   readonly ready?: (attempt: number) => Effect.Effect<void, ConnectionAttemptError>;
   readonly probe?: (attempt: number) => Effect.Effect<void, ConnectionAttemptError>;
 }) {
@@ -156,6 +160,7 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
     yield* reportProgress({ stage: "opening", prepared });
 
     const attempt = yield* Ref.updateAndGet(sessionCount, (count) => count + 1);
+    yield* options?.open?.(attempt) ?? Effect.void;
     const closed = yield* Deferred.make<never, ConnectionTransientError>();
     yield* Ref.update(closedSessions, (sessions) => [...sessions, closed]);
 
@@ -214,6 +219,19 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
     }),
   };
 });
+
+const directRoutePromotionLayer = (failures: Ref.Ref<number>) =>
+  Layer.succeed(
+    ConnectionPromotion.ConnectionPromotion,
+    ConnectionPromotion.ConnectionPromotion.of({
+      enabled: true,
+      overrideFor: () => Effect.succeed(Option.none()),
+      diagnosticFor: () => Effect.succeed(Option.none()),
+      reportOverrideFailed: () => Ref.update(failures, (count) => count + 1),
+      clear: () => Effect.void,
+      discover: () => Effect.succeed(Option.none()),
+    }),
+  );
 
 describe("EnvironmentSupervisor", () => {
   it.effect("exports each relay setup as a standalone linked trace that ends at readiness", () =>
@@ -283,6 +301,187 @@ describe("EnvironmentSupervisor", () => {
 
       expect(yield* Ref.get(harness.sessionCount)).toBe(1);
       expect(yield* Ref.get(harness.releaseCount)).toBe(0);
+    }),
+  );
+
+  it.effect("falls back immediately when opening a direct route fails", () =>
+    Effect.gen(function* () {
+      const overrideFailures = yield* Ref.make(0);
+      const directPrepared: PreparedConnection = {
+        ...PREPARED_CONNECTION,
+        routeKind: "lan",
+      };
+      const relayPrepared: PreparedConnection = {
+        ...PREPARED_CONNECTION,
+        routeKind: "relay",
+      };
+      const harness = yield* makeHarness({
+        prepare: (attempt) => Effect.succeed(attempt === 1 ? directPrepared : relayPrepared),
+        open: (attempt) =>
+          attempt === 1 ? Effect.fail(transient("Direct socket refused.")) : Effect.void,
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(harness.dependencies, directRoutePromotionLayer(overrideFailures)),
+        ),
+      );
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      expect(yield* Ref.get(overrideFailures)).toBe(1);
+      expect(yield* Ref.get(harness.prepareCount)).toBe(2);
+      expect(
+        (yield* SubscriptionRef.get(supervisor.prepared)).pipe(Option.getOrThrow).routeKind,
+      ).toBe("relay");
+      expect((yield* SubscriptionRef.get(supervisor.state)).routeKind).toBe("relay");
+    }),
+  );
+
+  it.effect("falls back immediately when synchronization of a direct route fails", () =>
+    Effect.gen(function* () {
+      const overrideFailures = yield* Ref.make(0);
+      const harness = yield* makeHarness({
+        prepare: (attempt) =>
+          Effect.succeed({
+            ...PREPARED_CONNECTION,
+            routeKind: attempt === 1 ? "tailscale" : "relay",
+          }),
+        ready: (attempt) =>
+          attempt === 1 ? Effect.fail(transient("Direct synchronization failed.")) : Effect.void,
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(harness.dependencies, directRoutePromotionLayer(overrideFailures)),
+        ),
+      );
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      expect(yield* Ref.get(overrideFailures)).toBe(1);
+      expect(yield* Ref.get(harness.prepareCount)).toBe(2);
+      expect(
+        (yield* SubscriptionRef.get(supervisor.prepared)).pipe(Option.getOrThrow).routeKind,
+      ).toBe("relay");
+    }),
+  );
+
+  it.effect("falls back immediately when a direct route setup times out", () =>
+    Effect.gen(function* () {
+      const overrideFailures = yield* Ref.make(0);
+      const harness = yield* makeHarness({
+        prepare: (attempt) =>
+          Effect.succeed({
+            ...PREPARED_CONNECTION,
+            routeKind: attempt === 1 ? "lan" : "relay",
+          }),
+        open: (attempt) => (attempt === 1 ? Effect.never : Effect.void),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(harness.dependencies, directRoutePromotionLayer(overrideFailures)),
+        ),
+      );
+
+      yield* TestClock.adjust("15 seconds");
+      yield* eventuallyState(supervisor.state, (state) => state.phase === "connected");
+      expect(yield* Ref.get(overrideFailures)).toBe(1);
+      expect(yield* Ref.get(harness.prepareCount)).toBe(2);
+      expect(
+        (yield* SubscriptionRef.get(supervisor.prepared)).pipe(Option.getOrThrow).routeKind,
+      ).toBe("relay");
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("does not cooldown a direct route for blocked authorization failures", () =>
+    Effect.gen(function* () {
+      const overrideFailures = yield* Ref.make(0);
+      const harness = yield* makeHarness({
+        prepare: () =>
+          Effect.succeed({
+            ...PREPARED_CONNECTION,
+            routeKind: "lan",
+          }),
+        open: () => Effect.fail(blocked("Direct authorization was revoked.")),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(harness.dependencies, directRoutePromotionLayer(overrideFailures)),
+        ),
+      );
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "blocked");
+      expect(yield* Ref.get(overrideFailures)).toBe(0);
+      expect(yield* Ref.get(harness.prepareCount)).toBe(1);
+    }),
+  );
+
+  it.effect("clears a failed direct route after established transport loss", () =>
+    Effect.gen(function* () {
+      const overrideFailures = yield* Ref.make(0);
+      const harness = yield* makeHarness({
+        prepare: (attempt) =>
+          Effect.succeed({
+            ...PREPARED_CONNECTION,
+            routeKind: attempt === 1 ? "lan" : "relay",
+          }),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(harness.dependencies, directRoutePromotionLayer(overrideFailures)),
+        ),
+      );
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.closeLatestSession(transient("Direct transport closed."));
+      yield* eventuallyState(
+        supervisor.state,
+        (state) => state.phase === "connected" && state.generation === 2,
+      );
+
+      expect(yield* Ref.get(overrideFailures)).toBe(1);
+      expect(yield* Ref.get(harness.prepareCount)).toBe(2);
+      expect(
+        (yield* SubscriptionRef.get(supervisor.prepared)).pipe(Option.getOrThrow).routeKind,
+      ).toBe("relay");
+    }),
+  );
+
+  it.effect("cancels direct setup on disconnect without late promotion or reconnection", () =>
+    Effect.gen(function* () {
+      const overrideFailures = yield* Ref.make(0);
+      const opening = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        prepare: () =>
+          Effect.succeed({
+            ...PREPARED_CONNECTION,
+            routeKind: "lan",
+          }),
+        open: () => Deferred.succeed(opening, undefined).pipe(Effect.andThen(Effect.never)),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(harness.dependencies, directRoutePromotionLayer(overrideFailures)),
+        ),
+      );
+
+      yield* Deferred.await(opening);
+      yield* supervisor.disconnect;
+      yield* awaitState(supervisor.state, (state) => state.phase === "available");
+      yield* Effect.yieldNow;
+
+      expect(yield* Ref.get(overrideFailures)).toBe(0);
+      expect(yield* Ref.get(harness.prepareCount)).toBe(1);
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
     }),
   );
 
@@ -857,6 +1056,81 @@ describe("EnvironmentSupervisor", () => {
       expect(yield* Ref.get(harness.releaseCount)).toBe(1);
     }),
   );
+
+  for (const duringProbe of [false, true]) {
+    it.effect(
+      `clears account promotion after stopping discovery${duringProbe ? " during a health probe" : ""}`,
+      () =>
+        Effect.gen(function* () {
+          const discoveryStarted = yield* Deferred.make<void>();
+          const probeStarted = yield* Deferred.make<void>();
+          const staleRoute: ConnectionPromotion.PromotedRoute = {
+            endpointId: "old-account-route",
+            currentHttpBaseUrl: TARGET.httpBaseUrl,
+            httpBaseUrl: "https://direct.example.test",
+            wsBaseUrl: "wss://direct.example.test",
+            kind: "tailscale",
+          };
+          const override = yield* Ref.make(Option.some(staleRoute));
+          const events = yield* Ref.make<ReadonlyArray<string>>([]);
+          const promotion = ConnectionPromotion.ConnectionPromotion.of({
+            enabled: true,
+            overrideFor: () => Ref.get(override),
+            diagnosticFor: () => Effect.succeed(Option.none()),
+            reportOverrideFailed: () => Ref.update(events, (values) => [...values, "cooled-down"]),
+            clear: () =>
+              Ref.set(override, Option.none()).pipe(
+                Effect.andThen(Ref.update(events, (values) => [...values, "cleared"])),
+              ),
+            discover: () =>
+              Deferred.succeed(discoveryStarted, undefined).pipe(
+                Effect.andThen(Effect.never),
+                Effect.ensuring(
+                  Ref.set(override, Option.some(staleRoute)).pipe(
+                    Effect.andThen(
+                      Ref.update(events, (values) => [...values, "discovery-stopped"]),
+                    ),
+                  ),
+                ),
+              ),
+          });
+          const harness = yield* makeHarness({
+            prepare: (attempt) =>
+              Effect.gen(function* () {
+                if (attempt > 1) {
+                  expect(yield* promotion.overrideFor(TARGET.environmentId)).toEqual(Option.none());
+                  yield* Ref.update(events, (values) => [...values, "prepared"]);
+                }
+                return {
+                  ...PREPARED_CONNECTION,
+                  target: RELAY_TARGET,
+                  routeKind: "relay" as const,
+                };
+              }),
+            probe: () =>
+              Deferred.succeed(probeStarted, undefined).pipe(Effect.andThen(Effect.never)),
+          });
+          const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+            initiallyDesired: true,
+          }).pipe(
+            Effect.provide(harness.dependencies),
+            Effect.provideService(ConnectionPromotion.ConnectionPromotion, promotion),
+          );
+          yield* Deferred.await(discoveryStarted);
+          if (duringProbe) {
+            yield* harness.wake("application-active-probe");
+            yield* Deferred.await(probeStarted);
+          }
+          yield* harness.wake("credentials-changed");
+          yield* awaitState(
+            supervisor.state,
+            (state) => state.phase === "connected" && state.generation === 2,
+          );
+          expect(yield* Ref.get(events)).toEqual(["discovery-stopped", "cleared", "prepared"]);
+          expect(yield* Ref.get(harness.releaseCount)).toBe(1);
+        }),
+    );
+  }
 
   it.effect("keeps a non-relay session during an in-flight probe when credentials change", () =>
     Effect.gen(function* () {

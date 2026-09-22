@@ -14,6 +14,7 @@ const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
 
 function environment(
   phase: EnvironmentPresentation["connection"]["phase"],
+  options?: { readonly error?: string },
 ): EnvironmentPresentation {
   const connectionId = `bearer:${ENVIRONMENT_ID}`;
   return {
@@ -36,10 +37,11 @@ function environment(
           wsBaseUrl: "wss://environment.example.test",
         }),
       ),
+      enabled: true,
     },
     connection: {
       phase,
-      error: phase === "error" ? "Connection failed." : null,
+      error: options?.error ?? (phase === "error" ? "Connection failed." : null),
       traceId: phase === "error" ? "trace-1" : null,
     },
     serverConfig: null,
@@ -64,6 +66,21 @@ const CACHED_SHELL_SUMMARY: EnvironmentShellSummary = {
 };
 
 describe("mobile workspace projection", () => {
+  it("keeps paused registrations without counting their errors or connection progress", () => {
+    const saved = environment("error");
+    const paused = { ...saved, entry: { ...saved.entry, enabled: false } };
+    const state = projectWorkspaceState({
+      isReady: true,
+      networkStatus: "online",
+      environments: [projectWorkspaceEnvironment(paused)],
+      shellSummary: EMPTY_SHELL_SUMMARY,
+    });
+    expect(state.hasConnections).toBe(true);
+    expect(state.hasReadyEnvironment).toBe(false);
+    expect(state.hasConnectingEnvironment).toBe(false);
+    expect(state.connectionError).toBeNull();
+    expect(state.connectionState).toBe("available");
+  });
   it("preserves explicit offline state without presenting it as a connection error", () => {
     const projected = projectWorkspaceEnvironment(environment("offline"));
 
@@ -119,5 +136,32 @@ describe("mobile workspace projection", () => {
     expect(state.hasPendingShellSnapshot).toBe(true);
     expect(state.hasReadyEnvironment).toBe(false);
     expect(state.connectionState).toBe("reconnecting");
+  });
+
+  it("pairs the aggregate unsupported phase with the unsupported environment's error", () => {
+    const failing = projectWorkspaceEnvironment({
+      ...environment("error"),
+      environmentId: EnvironmentId.make("environment-2"),
+    });
+    const unsupported = projectWorkspaceEnvironment({
+      ...environment("unsupported", {
+        error: "This client is not supported by this server.",
+      }),
+      environmentId: EnvironmentId.make("environment-3"),
+    });
+    for (const environments of [
+      [failing, unsupported],
+      [unsupported, failing],
+    ] as const) {
+      const state = projectWorkspaceState({
+        isReady: true,
+        networkStatus: "online",
+        environments: [...environments],
+        shellSummary: EMPTY_SHELL_SUMMARY,
+      });
+
+      expect(state.connectionState).toBe("unsupported");
+      expect(state.connectionError).toBe("This client is not supported by this server.");
+    }
   });
 });
