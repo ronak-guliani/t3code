@@ -17,6 +17,7 @@ describe("presentCollaborativeAcceptanceStatus", () => {
 
     expect(result.execution).toBe("Working");
     expect(result.collaboration).toBe("Request queued");
+    expect(result.headline).toBe("Waiting for acceptance");
   });
 
   it("does not claim ready now while evidence is incomplete", () => {
@@ -75,6 +76,7 @@ describe("presentCollaborativeAcceptanceStatus", () => {
     expect(result.execution).toBe("Monitoring paused");
     expect(result.acceptance).toBe("Monitoring");
     expect(result.readiness).toBe("Blocked");
+    expect(result.headline).toBe("Automation paused");
     expect(result.blocker).toBe("Provider unavailable");
   });
 
@@ -96,6 +98,7 @@ describe("presentCollaborativeAcceptanceStatus", () => {
     });
 
     expect(result.acceptance).toBe("Applying feedback");
+    expect(result.headline).toBe("Needs your input");
     expect(result.readiness).toBe("Blocked");
     expect(result.blocker).toBe("Parent assessment failed");
   });
@@ -161,7 +164,8 @@ describe("presentCollaborativeAcceptanceStatus", () => {
 
     expect(result.readiness).toBe("Waiting for evidence");
     expect(result.readiness).not.toBe("Ready now");
-    expect(result.acceptance).toBe("Acceptance status unavailable");
-    expect(result.blocker).toContain("Canonical collaborative acceptance status");
+    expect(result.acceptance).toBe("Not started");
+    expect(result.headline).toBe("Waiting for acceptance");
+    expect(result.blocker).toContain("No acceptance run");
   });
 });
