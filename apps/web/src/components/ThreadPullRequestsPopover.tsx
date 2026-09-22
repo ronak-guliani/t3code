@@ -64,8 +64,33 @@ export function ThreadPullRequestsPopover({
   const primaryStatus = prStatusIndicator(primaryPullRequest);
   const accessibilityLabel =
     pullRequests.length === 1
-      ? `${primaryStatus?.tooltip ?? summary}. Show linked pull request details`
+      ? `${primaryStatus?.tooltip ?? summary}. Open linked pull request details`
       : `${pullRequests.length} linked pull requests, starting with #${primaryPullRequest.number}. Show details`;
+  const triggerClassName = cn(
+    "shrink-0 cursor-pointer whitespace-nowrap font-mono tabular-nums outline-hidden transition-colors hover:underline focus-visible:ring-1 focus-visible:ring-ring",
+    primaryStatus?.colorClass ?? "text-sky-600 dark:text-sky-300/90",
+  );
+  const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+
+  if (pullRequests.length === 1) {
+    return (
+      <button
+        type="button"
+        data-thread-selection-safe
+        aria-label={accessibilityLabel}
+        title={accessibilityLabel}
+        className={triggerClassName}
+        onPointerDown={handlePointerDown}
+        onClick={(event) => {
+          openPullRequestLink(event, primaryPullRequest.url, threadRef);
+        }}
+      >
+        {summary}
+      </button>
+    );
+  }
 
   return (
     <Popover>
@@ -76,15 +101,13 @@ export function ThreadPullRequestsPopover({
             data-thread-selection-safe
             aria-label={accessibilityLabel}
             title={accessibilityLabel}
-            className={cn(
-              "shrink-0 cursor-pointer whitespace-nowrap font-mono tabular-nums outline-hidden transition-colors hover:underline focus-visible:ring-1 focus-visible:ring-ring",
-              primaryStatus?.colorClass ?? "text-sky-600 dark:text-sky-300/90",
-            )}
-            onPointerDown={(event) => {
-              event.stopPropagation();
-            }}
+            className={triggerClassName}
+            onPointerDown={handlePointerDown}
             onClick={(event) => {
               event.stopPropagation();
+            }}
+            onDoubleClick={(event) => {
+              openPullRequestLink(event, primaryPullRequest.url, threadRef);
             }}
           />
         }
