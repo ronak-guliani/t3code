@@ -1,13 +1,17 @@
 import {
   CommandId,
-  isValidationRunTerminal,
   type OrchestrationEvent,
   type ThreadId,
   type ValidationRequest,
   type ValidationRun,
   type ValidationTarget,
-  validationRunEffectiveStatus,
 } from "@t3tools/contracts";
+import {
+  decideValidationRecovery,
+  isValidationRunTerminal,
+  selectNextRunnableGate,
+  validationRunEffectiveStatus,
+} from "@t3tools/client-runtime/validation-lifecycle";
 import { Cause, Duration, Effect, Layer, Option, Stream } from "effect";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
@@ -23,7 +27,6 @@ import { selectFocusedTestFiles } from "../../validation/ValidationPolicy.ts";
 import {
   collectChangedPathsFromCheckpoints,
   planCoordinatorRunWithPolicy,
-  selectNextRunnableGate,
 } from "../../validation/ValidationPlanner.ts";
 import {
   isBrowserGateKind,
@@ -298,12 +301,14 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
     const run = thread?.validationRun;
     if (!thread || !run || !isValidationCoordinatorOwnedRun(run)) return;
     const status = validationRunEffectiveStatus(run);
-    if (status === "interrupted") {
+    const recovery = decideValidationRecovery(run);
+    if (recovery.type === "resume-interrupted") {
       const resumedAt = new Date().toISOString();
       const resetExecutorId = run.executorId;
       if (resetExecutorId && run.lease) {
-        for (const gate of run.gates) {
-          if (gate.status !== "interrupted") continue;
+        for (const gateId of recovery.gateIds) {
+          const gate = run.gates.find((candidate) => candidate.id === gateId);
+          if (!gate) continue;
           yield* orchestrationEngine.dispatch({
             type: "thread.validation-gate.update",
             commandId: commandId(run.id, `reset:${gate.id}:${run.updatedAt}`),
@@ -320,10 +325,7 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
             exitCode: null,
             outputRef: null,
             blockerReason: null,
-            diagnostics: [
-              ...gate.diagnostics,
-              "Gate reset to pending after the run was interrupted.",
-            ],
+            diagnostics: [...gate.diagnostics, recovery.reason],
             createdAt: resumedAt,
           });
         }
@@ -471,8 +473,9 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
 
     if (status !== "running") return;
 
-    const runningGate = run.gates.find((gate) => gate.status === "running");
-    if (runningGate) {
+    if (recovery.type === "interrupt-running") {
+      const runningGate = run.gates.find((gate) => gate.id === recovery.gateId);
+      if (!runningGate) return;
       const now = new Date().toISOString();
       yield* orchestrationEngine.dispatch({
         type: "thread.validation-gate.update",
@@ -490,7 +493,7 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
         exitCode: null,
         outputRef: runningGate.outputRef,
         blockerReason: null,
-        diagnostics: [...runningGate.diagnostics, "Reactor restarted while gate was running."],
+        diagnostics: [...runningGate.diagnostics, recovery.reason],
         createdAt: now,
       });
       yield* orchestrationEngine.dispatch({
@@ -500,7 +503,7 @@ const makeValidationCoordinatorReactor = Effect.gen(function* () {
         update: {
           runId: run.id,
           status: "interrupted",
-          reason: "Reactor restarted during gate execution.",
+          reason: recovery.reason,
           updatedAt: now,
         },
       });

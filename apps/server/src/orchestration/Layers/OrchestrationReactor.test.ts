@@ -10,7 +10,10 @@ import { ValidationCoordinatorReactor } from "../Services/ValidationCoordinatorR
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { isValidationCoordinatorOwnedRun } from "./ValidationCoordinatorReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
-import { planValidationCoordinatorRun, planValidationRun } from "@t3tools/contracts";
+import {
+  planValidationCoordinatorRun,
+  planValidationRun,
+} from "@t3tools/client-runtime/validation-lifecycle";
 
 describe("OrchestrationReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<OrchestrationReactor, never> | null = null;

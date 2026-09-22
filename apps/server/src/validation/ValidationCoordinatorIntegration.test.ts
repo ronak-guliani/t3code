@@ -1,11 +1,10 @@
+import type { ValidationStructuredResult, ValidationTarget } from "@t3tools/contracts";
 import {
   acceptValidationResult,
   planValidationRun,
   transitionValidationGate,
   transitionValidationRunStatus,
-  type ValidationStructuredResult,
-  type ValidationTarget,
-} from "@t3tools/contracts";
+} from "@t3tools/client-runtime/validation-lifecycle";
 import { CommandId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { DEFAULT_PROVIDER_INTERACTION_MODE } from "@t3tools/contracts";
 import { Effect, Exit } from "effect";

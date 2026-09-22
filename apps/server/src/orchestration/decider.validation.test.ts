@@ -1,8 +1,6 @@
 import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
-  planValidationCoordinatorRun,
-  planValidationRun,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -11,6 +9,10 @@ import {
   type ValidationRequest,
   type ValidationTarget,
 } from "@t3tools/contracts";
+import {
+  planValidationCoordinatorRun,
+  planValidationRun,
+} from "@t3tools/client-runtime/validation-lifecycle";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 

@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   acceptValidationResult,
+  applyValidationEvent,
+  claimValidationLease,
+  decideValidationRecovery,
+  isValidationLifecycleEvent,
   planValidationCoordinatorRun,
   planValidationRun,
   reduceValidationReadiness,
@@ -9,8 +13,9 @@ import {
   transitionValidationGate,
   validationRunEquals,
   validationTargetEquals,
-  type ValidationTarget,
-} from "./validation.ts";
+  type ValidationLifecycleState,
+} from "./validationLifecycle.ts";
+import type { ValidationTarget } from "@t3tools/contracts";
 
 const target: ValidationTarget = {
   workspaceRoot: "/workspace",
@@ -285,5 +290,141 @@ describe("validation runs", () => {
         `run is ${status}`,
       );
     }
+  });
+
+  it("fences lease claims and makes restart recovery deterministic", () => {
+    const planned = planValidationCoordinatorRun({
+      id: "run-recovery",
+      requestId: "request-recovery",
+      threadId: "thread-1" as never,
+      target,
+      scenarios: [],
+      scope: "changed-behavior",
+      requester: { id: "system", kind: "system" },
+      requestedAt: "2026-09-16T12:00:00.000Z",
+    });
+    const lease = {
+      id: "lease-recovery",
+      executorId: "executor-1",
+      claimedAt: "2026-09-16T12:00:01.000Z",
+      expiresAt: "2026-09-16T12:30:00.000Z",
+    };
+    const claimed = claimValidationLease(planned, lease, target, "2026-09-16T12:00:01.000Z");
+    expect(claimValidationLease(claimed, lease, target, "2026-09-16T12:00:02.000Z")).toBe(claimed);
+    expect(() =>
+      claimValidationLease(claimed, lease, { ...target, revision: "stale" }, lease.claimedAt),
+    ).toThrow("target does not match");
+
+    const interrupted = {
+      ...claimed,
+      status: "interrupted" as const,
+      gates: claimed.gates.map((gate, index) =>
+        index === 0 ? { ...gate, status: "interrupted" as const } : gate,
+      ),
+    };
+    expect(decideValidationRecovery(interrupted)).toEqual({
+      type: "resume-interrupted",
+      gateIds: [interrupted.gates[0]!.id],
+      reason: "Gate reset to pending after the run was interrupted.",
+    });
+
+    const running = {
+      ...claimed,
+      status: "running" as const,
+      gates: claimed.gates.map((gate, index) =>
+        index === 0
+          ? {
+              ...gate,
+              status: "running" as const,
+              startedAt: "2026-09-16T12:00:01.000Z",
+            }
+          : gate,
+      ),
+    };
+    expect(decideValidationRecovery(running)).toEqual({
+      type: "interrupt-running",
+      gateId: running.gates[0]!.id,
+      reason: "Reactor restarted during gate execution.",
+    });
+  });
+
+  it("applies lifecycle events through one deterministic reducer", () => {
+    const planned = planValidationCoordinatorRun({
+      id: "run-events",
+      requestId: "request-events",
+      threadId: "thread-1" as never,
+      target,
+      scenarios: [],
+      scope: "changed-behavior",
+      requester: { id: "system", kind: "system" },
+      requestedAt: "2026-09-16T12:00:00.000Z",
+    });
+    const baseEvent = {
+      eventId: "event-1",
+      sequence: 1,
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      occurredAt: "2026-09-16T12:00:00.000Z",
+    } as const;
+    const event = <T extends object>(
+      type: string,
+      payload: T,
+      occurredAt: string = baseEvent.occurredAt,
+    ) =>
+      ({
+        ...baseEvent,
+        type,
+        payload,
+        occurredAt,
+      }) as never;
+
+    let state: ValidationLifecycleState = { request: null, run: null };
+    state = applyValidationEvent(
+      state,
+      event("thread.validation-run-planned", { threadId: "thread-1", run: planned }),
+    );
+    state = applyValidationEvent(
+      state,
+      event(
+        "thread.validation-lifecycle-updated",
+        {
+          threadId: "thread-1",
+          update: {
+            runId: planned.id,
+            status: "preparing",
+            reason: null,
+            updatedAt: "2026-09-16T12:00:01.000Z",
+          },
+        },
+        "2026-09-16T12:00:01.000Z",
+      ),
+    );
+    state = applyValidationEvent(
+      state,
+      event(
+        "thread.validation-lease-claimed",
+        {
+          threadId: "thread-1",
+          runId: planned.id,
+          lease: {
+            id: "lease-events",
+            executorId: "executor-1",
+            claimedAt: "2026-09-16T12:00:02.000Z",
+            expiresAt: "2026-09-16T12:30:00.000Z",
+          },
+        },
+        "2026-09-16T12:00:02.000Z",
+      ),
+    );
+    expect(state.run?.lease?.id).toBe("lease-events");
+    expect(
+      isValidationLifecycleEvent(
+        event("thread.validation-run-planned", { threadId: "thread-1", run: planned }),
+      ),
+    ).toBe(true);
   });
 });

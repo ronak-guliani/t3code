@@ -57,13 +57,14 @@ import {
 } from "./dispatchAuthority.ts";
 import {
   acceptValidationResult,
+  claimValidationLease,
   isValidationRunTerminal,
   planValidationRun,
   transitionValidationGate,
   transitionValidationRunStatus,
   validationTargetEquals,
   validationRunEffectiveStatus,
-} from "@t3tools/contracts";
+} from "@t3tools/client-runtime/validation-lifecycle";
 
 const FORK_TITLE_PREFIX = "Forked: ";
 /**
@@ -882,30 +883,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "Validation lease claim does not match the active run.",
         });
       }
-      if (isValidationRunTerminal(validationRunEffectiveStatus(run))) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: "Validation lease claim cannot target a terminal run.",
-        });
-      }
-      if (!validationTargetEquals(run.target, command.target)) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: "Validation lease claim target does not match the planned target.",
-        });
-      }
       if (command.executorId !== command.lease.executorId) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "Validation lease executor does not match the claiming executor.",
         });
       }
-      if (run.lease !== null && run.lease.id !== command.lease.id) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: "Validation run already has an active lease.",
-        });
-      }
+      const next = yield* Effect.try({
+        try: () => claimValidationLease(run, command.lease, command.target, command.claimedAt),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: cause instanceof Error ? cause.message : "Invalid validation lease claim.",
+          }),
+      });
+      if (next === run) return [];
       return {
         ...withEventBase({
           aggregateKind: "thread",
