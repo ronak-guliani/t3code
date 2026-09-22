@@ -189,6 +189,68 @@ it.effect("refuses a mutation that names a repository outside the selected proje
   }),
 );
 
+it.effect("returns large diff slices intact without retaining them in either cache", () =>
+  Effect.gen(function* () {
+    let reads = 0;
+    const patch = "\u{1f4bb}".repeat(140_000);
+    const service = yield* makeService({
+      provider: providerWith({
+        getDiff: () =>
+          Effect.sync(() => {
+            reads += 1;
+            return { patch, truncated: false, nextCursor: "2" };
+          }),
+      }),
+    });
+    const reference = { projectId: project.id, repository: "acme/web", number: 1 };
+
+    for (const input of [
+      reference,
+      { ...reference, cursor: "2" },
+      { ...reference, commit: "a".repeat(40) },
+    ]) {
+      const before = reads;
+      assert.deepStrictEqual(yield* service.diff(input), {
+        patch,
+        truncated: false,
+        nextCursor: "2",
+      });
+      assert.deepStrictEqual(yield* service.diff(input), {
+        patch,
+        truncated: false,
+        nextCursor: "2",
+      });
+      assert.strictEqual(reads, before + 2);
+    }
+  }),
+);
+
+it.effect("caches a small replacement after releasing a large diff", () =>
+  Effect.gen(function* () {
+    let reads = 0;
+    const largePatch = "x".repeat(300_000);
+    const service = yield* makeService({
+      provider: providerWith({
+        getDiff: () =>
+          Effect.sync(() => {
+            reads += 1;
+            return {
+              patch: reads === 1 ? largePatch : "@@ small replacement",
+              truncated: false,
+              nextCursor: null,
+            };
+          }),
+      }),
+    });
+    const reference = { projectId: project.id, repository: "acme/web", number: 1 };
+
+    assert.strictEqual((yield* service.diff(reference)).patch, largePatch);
+    assert.strictEqual((yield* service.diff(reference)).patch, "@@ small replacement");
+    assert.strictEqual((yield* service.diff(reference)).patch, "@@ small replacement");
+    assert.strictEqual(reads, 2);
+  }),
+);
+
 it.effect("scopes viewer discovery to the project's GitHub host", () =>
   Effect.gen(function* () {
     const viewerInputs: Array<{ readonly cwd: string; readonly host: string }> = [];

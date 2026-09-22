@@ -109,6 +109,10 @@ const LIST_CACHE_CAPACITY = 64;
 const LIST_STATS_CACHE_CAPACITY = 32;
 const DETAIL_CACHE_CAPACITY = 128;
 const DIFF_CACHE_CAPACITY = 128;
+// Each diff cache can retain at most 64 MiB of patch text, counting UTF-16 storage.
+const MAX_CACHED_DIFF_PATCH_BYTES = 512 * 1024;
+const canCacheDiff = (value: PullRequestDiffResult) =>
+  value.patch.length * 2 <= MAX_CACHED_DIFF_PATCH_BYTES;
 
 export type PullRequestError = PullRequestUnavailableError | PullRequestOperationError;
 
@@ -1401,12 +1405,17 @@ export const make = Effect.gen(function* () {
    * part of every key, and a held answer under the old key is simply never asked for again — so
    * "give me truly fresh" still means exactly that.
    */
-  const staleWhileRevalidate = <A>(staleFor: Duration.Duration, capacity: number) => {
+  const staleWhileRevalidate = <A>(
+    staleFor: Duration.Duration,
+    capacity: number,
+    shouldHold: (value: A) => boolean = () => true,
+  ) => {
     const staleMs = Duration.toMillis(staleFor);
     const held = new Map<string, { readonly at: number; readonly value: A }>();
     const record = (key: string, value: A) =>
       Effect.map(Clock.currentTimeMillis, (at) => {
         held.delete(key);
+        if (!shouldHold(value)) return;
         if (held.size >= capacity) {
           const oldest = held.keys().next().value;
           if (oldest !== undefined) held.delete(oldest);
@@ -1643,6 +1652,7 @@ export const make = Effect.gen(function* () {
   const staleDiff = staleWhileRevalidate<PullRequestDiffResult>(
     DIFF_STALE_WINDOW,
     DIFF_CACHE_CAPACITY,
+    canCacheDiff,
   );
   const diff: PullRequestService["Service"]["diff"] = (input) => {
     const key = JSON.stringify([
@@ -1653,7 +1663,21 @@ export const make = Effect.gen(function* () {
       input.cursor ?? null,
       input.commit ?? null,
     ]);
-    return staleDiff(key, Cache.get(diffCache, key));
+    const read = Cache.get(diffCache, key).pipe(
+      Effect.tap((value) =>
+        canCacheDiff(value)
+          ? Effect.void
+          : Cache.getSuccess(diffCache, key).pipe(
+              Effect.flatMap((current) =>
+                Option.isSome(current) && current.value === value
+                  ? Cache.invalidate(diffCache, key)
+                  : Effect.void,
+              ),
+              Effect.uninterruptible,
+            ),
+      ),
+    );
+    return staleDiff(key, read);
   };
 
   const listStatsCache = yield* Cache.makeWith(
