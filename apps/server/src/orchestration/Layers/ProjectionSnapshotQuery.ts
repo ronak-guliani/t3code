@@ -275,6 +275,9 @@ const WorkspaceRootLookupInput = Schema.Struct({
 const ProjectIdLookupInput = Schema.Struct({
   projectId: ProjectId,
 });
+const ProjectShellsLookupInput = Schema.Struct({
+  projectIds: Schema.optional(Schema.Array(ProjectId)),
+});
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -619,14 +622,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
    * (filesystem work) for a project the client will never see.
    */
   const listLiveProjectRows = SqlSchema.findAll({
-    Request: Schema.Void,
+    Request: Schema.UndefinedOr(ProjectShellsLookupInput),
     Result: ProjectionProjectDbRowSchema,
-    execute: () =>
+    execute: (filter) =>
       sql`
         SELECT
           ${projectRowColumns}
         FROM projection_projects
         WHERE deleted_at IS NULL
+          AND ${
+            filter?.projectIds === undefined ? sql`1 = 1` : sql.in("project_id", filter.projectIds)
+          }
         ORDER BY created_at ASC, project_id ASC
       `,
   });
@@ -2477,6 +2483,41 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  const getProjectShells: ProjectionSnapshotQueryShape["getProjectShells"] = (projectIds) => {
+    if (projectIds?.length === 0) return Effect.succeed([]);
+    return listLiveProjectRows(
+      projectIds === undefined ? undefined : { projectIds: [...projectIds] },
+    ).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getProjectShells:query",
+          "ProjectionSnapshotQuery.getProjectShells:decodeRows",
+        ),
+      ),
+      Effect.flatMap((projects) => {
+        const workspaceRoots = [...new Set(projects.map((project) => project.workspaceRoot))];
+        return Effect.forEach(
+          workspaceRoots,
+          (workspaceRoot) =>
+            repositoryIdentityResolver
+              .resolve(workspaceRoot)
+              .pipe(Effect.map((identity) => [workspaceRoot, identity] as const)),
+          { concurrency: 4 },
+        ).pipe(
+          Effect.map((identities) => {
+            const identitiesByWorkspaceRoot = new Map(identities);
+            return projects.map((project) =>
+              mapProjectShellRow(
+                project,
+                identitiesByWorkspaceRoot.get(project.workspaceRoot) ?? null,
+              ),
+            );
+          }),
+        );
+      }),
+    );
+  };
+
   const getFirstActiveThreadIdByProjectId: ProjectionSnapshotQueryShape["getFirstActiveThreadIdByProjectId"] =
     (projectId) =>
       getFirstActiveThreadIdByProject({ projectId }).pipe(
@@ -3196,6 +3237,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getCounts,
     getActiveProjectByWorkspaceRoot,
     getProjectShellById,
+    getProjectShells,
     getFirstActiveThreadIdByProjectId,
     getThreadCheckpointContext,
     getThreadShellById,

@@ -5,6 +5,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import {
   PullRequestOperationError,
   type PullRequestProviderKind,
@@ -101,6 +102,8 @@ const DETAIL_STALE_WINDOW = Duration.minutes(5);
 const DIFF_STALE_WINDOW = Duration.minutes(10);
 /** How long one host's signed-in login is believed without asking its CLI again. */
 const VIEWER_CACHE_TTL = Duration.minutes(10);
+/** How long a complete host search may prove that a repository is represented in search. */
+const SEARCH_VISIBILITY_TTL = Duration.minutes(10);
 const LIST_CACHE_CAPACITY = 64;
 const LIST_STATS_CACHE_CAPACITY = 32;
 const DETAIL_CACHE_CAPACITY = 128;
@@ -362,7 +365,10 @@ export const make = Effect.gen(function* () {
   const listWorkspaceProjects = (
     filter: Pick<PullRequestListInput, "projectId" | "host">,
   ): Effect.Effect<WorkspaceProjects, PullRequestError> =>
-    projections.getShellSnapshot().pipe(
+    (filter.projectId === undefined
+      ? projections.getProjectShells()
+      : projections.getProjectShellById(filter.projectId).pipe(Effect.map(Option.toArray))
+    ).pipe(
       Effect.mapError(
         (error) =>
           new PullRequestOperationError({
@@ -371,11 +377,11 @@ export const make = Effect.gen(function* () {
             cause: error,
           }),
       ),
-      Effect.map((snapshot) => {
+      Effect.map((projects) => {
         const supported: SupportedProject[] = [];
         const viewerRoots = new Map<string, string[]>();
         const seen = new Set<string>();
-        for (const project of snapshot.projects) {
+        for (const project of projects) {
           if (filter.projectId !== undefined && project.id !== filter.projectId) continue;
           const kind: PullRequestProviderKind | undefined =
             project.repositoryIdentity?.provider === "github" ? "github" : undefined;
@@ -555,6 +561,13 @@ export const make = Effect.gen(function* () {
       labels: input.item.labels,
     };
   };
+
+  // A repository that has appeared in a complete host search is known to be indexed there.
+  // Empty authored/reviewing searches for that same repository are therefore real empty answers,
+  // not a reason to issue the per-repository fallback again.
+  const searchVisibleAt = new Map<string, number>();
+  const searchVisibilityKey = (host: string, repository: string) =>
+    `${host}\n${repository.trim().toLowerCase()}`;
 
   const listUncached: PullRequestService["Service"]["list"] = (input) =>
     Effect.gen(function* () {
@@ -754,66 +767,87 @@ export const make = Effect.gen(function* () {
             ? {}
             : { cursor: { updatedBefore: cursor.updatedBefore, delivered: cursor.delivered } }),
         }).pipe(
-          Effect.flatMap((page) => {
-            const rows = new Map<string, Array<ProviderChangeRequest>>();
-            for (const item of page.items) {
-              const key = item.repository.trim().toLowerCase();
-              const held = rows.get(key);
-              if (held === undefined) rows.set(key, [item]);
-              else held.push(item);
-            }
-            // The oldest row of the whole slice, which is how far every repository in it has now
-            // been read — including the ones that contributed nothing to it.
-            const boundary = page.items.reduce<string | null>(
-              (oldest, item) =>
-                oldest === null || item.updatedAt < oldest ? item.updatedAt : oldest,
-              null,
-            );
-            return Effect.forEach(
-              chunk,
-              (project): Effect.Effect<RepositoryBatch> => {
-                const fetched = rows.get(project.repository.trim().toLowerCase()) ?? [];
-                // GitHub does not index every repository for search — a renamed one answers for
-                // its old name with silence rather than with an error — so a repository the
-                // search said nothing at all about is read on its own, once, before it is
-                // believed. Only on its first slice: after that it has a boundary to carry on
-                // from, and silence past one means the rows are older rather than absent. That
-                // keeps a search-invisible repository from disappearing on a busy host, at the
-                // price of one request per repository with nothing in the first slice — which
-                // run together, and only there.
-                if (fetched.length === 0 && cursorOf(project) === undefined) {
-                  return readRepository(project);
+          Effect.flatMap((page) =>
+            Effect.flatMap(Clock.currentTimeMillis, (now) => {
+              for (const [key, visibleAt] of searchVisibleAt) {
+                if (now - visibleAt > Duration.toMillis(SEARCH_VISIBILITY_TTL)) {
+                  searchVisibleAt.delete(key);
                 }
-                const cursorHere = cursorOf(project);
-                const items =
-                  cursorHere === undefined
-                    ? fetched
-                    : fetched.filter(
-                        (item) =>
-                          item.updatedAt !== cursorHere.updatedBefore ||
-                          !cursorHere.seenAt.includes(item.number),
-                      );
-                return Effect.succeed({
-                  key: listCursorKey(project.host, project.repository),
-                  entries: items.map((item) =>
-                    toEntry({
-                      project,
-                      item,
-                      viewer,
-                      reviewingQuerySelected: input.involvement === "reviewing",
-                    }),
-                  ),
-                  errors: [],
-                  truncated: page.truncated,
-                  nextCursor:
-                    page.truncated && boundary !== null
-                      ? listCursorAt(cursorHere, boundary, fetched, items.length)
-                      : null,
-                });
-              },
-              { concurrency: REPOSITORY_CONCURRENCY },
-            );
-          }),
+              }
+              const rows = new Map<string, Array<ProviderChangeRequest>>();
+              for (const item of page.items) {
+                const key = item.repository.trim().toLowerCase();
+                const held = rows.get(key);
+                if (held === undefined) rows.set(key, [item]);
+                else held.push(item);
+                if (!page.truncated) {
+                  searchVisibleAt.set(searchVisibilityKey(first.host, item.repository), now);
+                }
+              }
+              // The oldest row of the whole slice, which is how far every repository in it has now
+              // been read — including the ones that contributed nothing to it.
+              const boundary = page.items.reduce<string | null>(
+                (oldest, item) =>
+                  oldest === null || item.updatedAt < oldest ? item.updatedAt : oldest,
+                null,
+              );
+              return Effect.forEach(
+                chunk,
+                (project): Effect.Effect<RepositoryBatch> => {
+                  const fetched = rows.get(project.repository.trim().toLowerCase()) ?? [];
+                  // GitHub does not index every repository for search — a renamed one answers for
+                  // its old name with silence rather than with an error — so a repository the
+                  // search said nothing at all about is read on its own, once, before it is
+                  // believed. Only on its first slice: after that it has a boundary to carry on
+                  // from, and silence past one means the rows are older rather than absent. That
+                  // keeps a search-invisible repository from disappearing on a busy host, at the
+                  // price of one request per repository with nothing in the first slice — which
+                  // run together, and only there.
+                  const lastVisible = searchVisibleAt.get(
+                    searchVisibilityKey(project.host, project.repository),
+                  );
+                  const searchIsKnownVisible =
+                    !page.truncated &&
+                    lastVisible !== undefined &&
+                    now - lastVisible <= Duration.toMillis(SEARCH_VISIBILITY_TTL);
+                  if (
+                    fetched.length === 0 &&
+                    cursorOf(project) === undefined &&
+                    !searchIsKnownVisible
+                  ) {
+                    return readRepository(project);
+                  }
+                  const cursorHere = cursorOf(project);
+                  const items =
+                    cursorHere === undefined
+                      ? fetched
+                      : fetched.filter(
+                          (item) =>
+                            item.updatedAt !== cursorHere.updatedBefore ||
+                            !cursorHere.seenAt.includes(item.number),
+                        );
+                  return Effect.succeed({
+                    key: listCursorKey(project.host, project.repository),
+                    entries: items.map((item) =>
+                      toEntry({
+                        project,
+                        item,
+                        viewer,
+                        reviewingQuerySelected: input.involvement === "reviewing",
+                      }),
+                    ),
+                    errors: [],
+                    truncated: page.truncated,
+                    nextCursor:
+                      page.truncated && boundary !== null
+                        ? listCursorAt(cursorHere, boundary, fetched, items.length)
+                        : null,
+                  });
+                },
+                { concurrency: REPOSITORY_CONCURRENCY },
+              );
+            }),
+          ),
           Effect.catch(separately),
         );
       };

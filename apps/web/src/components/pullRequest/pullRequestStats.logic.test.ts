@@ -2,6 +2,7 @@ import { EnvironmentId, ProjectId, type PullRequestListEntry } from "@t3tools/co
 import { describe, expect, it } from "vitest";
 
 import {
+  decoratePullRequestEntriesWithStats,
   mergePullRequestDiffStats,
   pullRequestStatsBatches,
   pullRequestDiffStatKey,
@@ -143,5 +144,26 @@ describe("pull request stats batching", () => {
         }),
       ),
     ).toEqual({ additions: 3, deletions: 4 });
+  });
+
+  it("decorates only rows whose deferred stats changed", () => {
+    const entries = [entry(1), { ...entry(2), additions: 4, deletions: 2 }];
+    const stats = new Map([
+      [pullRequestDiffStatKey(entries[0]!), { additions: 8, deletions: 5 }],
+      [pullRequestDiffStatKey(entries[1]!), { additions: 9, deletions: 9 }],
+    ]);
+
+    const decorated = decoratePullRequestEntriesWithStats(entries, stats);
+
+    expect(decorated[0]).not.toBe(entries[0]);
+    expect(decorated[0]).toMatchObject({ additions: 8, deletions: 5 });
+    expect(decorated[1]).toBe(entries[1]);
+  });
+
+  it("returns the same rows when deferred stats add no visible change", () => {
+    const entries = [entry(1)];
+    const stats = new Map([[pullRequestDiffStatKey(entries[0]!), { additions: 0, deletions: 0 }]]);
+
+    expect(decoratePullRequestEntriesWithStats(entries, stats)).toBe(entries);
   });
 });

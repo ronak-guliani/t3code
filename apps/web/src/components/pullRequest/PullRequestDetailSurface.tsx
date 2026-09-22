@@ -1,7 +1,7 @@
 import type { PullRequestRef } from "@t3tools/contracts";
 
 import type { RightPanelSurface } from "../../rightPanelStore";
-import { PullRequestDetailPanel } from "./PullRequestDetailPanel";
+import { PullRequestDetailPanelBoundary } from "./PullRequestDetailPanelBoundary";
 
 export type PullRequestSurface = Extract<RightPanelSurface, { kind: "pull-request" }>;
 
@@ -32,7 +32,7 @@ export function PullRequestDetailSurface({
   const reference: PullRequestRef = surface.reference;
   return (
     <div className="min-h-0 flex-1">
-      <PullRequestDetailPanel
+      <PullRequestDetailPanelBoundary
         key={surface.id}
         environmentId={surface.environmentId}
         reference={reference}

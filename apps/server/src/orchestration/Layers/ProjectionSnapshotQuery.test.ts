@@ -37,6 +37,80 @@ const projectionSnapshotLayer = it.layer(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+  it.effect("reads project shells without hydrating full shell history", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const cleanup = Effect.all([
+        sql`DELETE FROM projection_thread_activities WHERE thread_id = 'unrelated-thread'`,
+        sql`DELETE FROM projection_threads WHERE thread_id = 'unrelated-thread'`,
+        sql`DELETE FROM projection_projects WHERE project_id IN ('targeted-project', 'excluded-project')`,
+      ]).pipe(Effect.ignore);
+      yield* cleanup;
+      yield* Effect.gen(function* () {
+        yield* sql`
+          INSERT INTO projection_projects (
+            project_id,
+            title,
+            workspace_root,
+            scripts_json,
+            created_at,
+            updated_at,
+            deleted_at
+          )
+          VALUES
+            (
+              'targeted-project',
+              'Targeted Project',
+              '/tmp/targeted-project',
+              '[]',
+              '2026-09-16T00:00:00.000Z',
+              '2026-09-16T00:00:00.000Z',
+              NULL
+            ),
+            (
+              'excluded-project',
+              'Excluded Project',
+              '/tmp/excluded-project',
+              'invalid-json',
+              '2026-09-16T00:00:01.000Z',
+              '2026-09-16T00:00:01.000Z',
+              NULL
+            )
+        `;
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id,
+            project_id,
+            title,
+            model_selection_json,
+            runtime_mode,
+            interaction_mode,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            'unrelated-thread',
+            'targeted-project',
+            'Unrelated thread',
+            'invalid-json',
+            'full-access',
+            'default',
+            '2026-09-16T00:00:02.000Z',
+            '2026-09-16T00:00:02.000Z'
+          )
+        `;
+
+        const projects = yield* query.getProjectShells([asProjectId("targeted-project")]);
+
+        assert.deepStrictEqual(
+          projects.map((project) => project.id),
+          [asProjectId("targeted-project")],
+        );
+      }).pipe(Effect.ensuring(cleanup));
+    }),
+  );
+
   it.effect("reads bounded history by ID without hydrating unrelated threads or checkpoints", () =>
     Effect.gen(function* () {
       const query = yield* ProjectionSnapshotQuery;

@@ -151,7 +151,7 @@ import {
 } from "~/rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
 import { ThreadPullRequestsPanel } from "./ThreadPullRequestsPanel";
-import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
+import { PullRequestDetailPanelBoundary } from "./pullRequest/PullRequestDetailPanelBoundary";
 import { resolveThreadPullRequests } from "./ThreadPullRequestsPopover";
 import { DevicePanel } from "./device/DevicePanel";
 import { reconcileDeviceSessionPresentation } from "./device/reconcileDeviceSessionPresentation";
@@ -4887,7 +4887,7 @@ function ChatViewBody(
         case "pull-request":
           return (
             <div className={cn("min-h-0 flex-1", !visible && "hidden")} key={surface.id}>
-              <PullRequestDetailPanel
+              <PullRequestDetailPanelBoundary
                 environmentId={surface.environmentId}
                 reference={surface.reference}
                 onClose={() => {
