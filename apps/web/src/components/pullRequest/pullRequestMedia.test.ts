@@ -7,13 +7,25 @@ describe("splitPullRequestBody", () => {
     expect(
       splitPullRequestBody("Before\nhttps://github.com/user-attachments/assets/video-id\nAfter"),
     ).toEqual([
-      { id: "markdown:0", kind: "markdown", text: "Before" },
+      { id: "markdown:Before", kind: "markdown", text: "Before" },
       {
-        id: "video:1",
+        id: "video:https://github.com/user-attachments/assets/video-id",
         kind: "video",
         url: "https://github.com/user-attachments/assets/video-id",
       },
-      { id: "markdown:2", kind: "markdown", text: "After" },
+      { id: "markdown:After", kind: "markdown", text: "After" },
+    ]);
+  });
+
+  it("recognizes GitHub video attachments with a query string", () => {
+    expect(
+      splitPullRequestBody("https://github.com/user-attachments/assets/video-id?download=1"),
+    ).toEqual([
+      {
+        id: "video:https://github.com/user-attachments/assets/video-id?download=1",
+        kind: "video",
+        url: "https://github.com/user-attachments/assets/video-id?download=1",
+      },
     ]);
   });
 
@@ -31,11 +43,15 @@ describe("splitPullRequestBody", () => {
       ),
     ).toEqual([
       {
-        id: "markdown:0",
+        id: 'markdown:```html\n<video src="https://example.com/code.mp4"></video>\n```',
         kind: "markdown",
         text: '```html\n<video src="https://example.com/code.mp4"></video>\n```',
       },
-      { id: "video:1", kind: "video", url: "https://example.com/demo.webm" },
+      {
+        id: "video:https://example.com/demo.webm",
+        kind: "video",
+        url: "https://example.com/demo.webm",
+      },
     ]);
   });
 
@@ -46,7 +62,7 @@ describe("splitPullRequestBody", () => {
       ),
     ).toEqual([
       {
-        id: "markdown:0",
+        id: 'markdown:See <video src="https://example.com/demo.mp4"></video>\n<video src="javascript:alert(1)"></video>',
         kind: "markdown",
         text: 'See <video src="https://example.com/demo.mp4"></video>\n<video src="javascript:alert(1)"></video>',
       },

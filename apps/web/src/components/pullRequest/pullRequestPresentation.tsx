@@ -21,6 +21,7 @@ import { Children, isValidElement, type ReactNode } from "react";
 import { cn } from "~/lib/utils";
 
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { isWebUrl, splitFencedCodeBlocks } from "./pullRequestMarkdownUtils";
 
 /**
  * How a pull request's state reads on this page. Draft outranks conflicts: a
@@ -304,41 +305,29 @@ export function toRenderablePullRequestMarkdown(body: string): string {
     .trim();
 }
 
-function splitFencedCodeBlocks(body: string): string[] {
-  const segments: string[] = [];
-  const openingFence = /^ {0,3}(`{3,}|~{3,})[^\r\n]*(?:\r?\n|$)/gm;
-  let proseStart = 0;
+function escapeMarkdownLabel(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("[", "\\[").replaceAll("]", "\\]");
+}
 
-  for (const opening of body.matchAll(openingFence)) {
-    if (opening.index === undefined || opening.index < proseStart) continue;
-    const fence = opening[1]!;
-    const closingFence = new RegExp(
-      `^ {0,3}${fence[0]}{${fence.length},}[ \\t]*(?:\\r?\\n|$)`,
-      "gm",
-    );
-    closingFence.lastIndex = opening.index + opening[0].length;
-    const closing = closingFence.exec(body);
-    const fenceEnd = closing ? closingFence.lastIndex : body.length;
+function escapeMarkdownHref(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
+}
 
-    segments.push(body.slice(proseStart, opening.index), body.slice(opening.index, fenceEnd));
-    proseStart = fenceEnd;
-  }
-
-  segments.push(body.slice(proseStart));
-  return segments;
+function htmlAttribute(attributes: string, name: string): string | undefined {
+  const pattern = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i");
+  const match = pattern.exec(attributes);
+  return match?.[1] ?? match?.[2];
 }
 
 function transformPullRequestMarkdown(body: string): string {
   let text = body;
-  text = text.replace(/<img\b([^>]*)>/gi, (_match, attributes: string) => {
-    const source = /\bsrc\s*=\s*(["'])(.*?)\1/i.exec(attributes)?.[2];
-    if (!source || !/^https?:\/\//i.test(source)) {
+  text = text.replace(/<img\b(?:(?:"[^"]*"|'[^']*'|[^'">])*)>/gi, (tag: string) => {
+    const attributes = tag.slice(4, -1);
+    const source = htmlAttribute(attributes, "src");
+    if (!source || !isWebUrl(source)) {
       return "";
     }
-    const alt = /\balt\s*=\s*(["'])(.*?)\1/i.exec(attributes)?.[2] ?? "image";
-    const label = alt.replaceAll("\\", "\\\\").replaceAll("[", "\\[").replaceAll("]", "\\]");
-    const href = source.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
-    return `![${label}](${href})`;
+    return `![${escapeMarkdownLabel(htmlAttribute(attributes, "alt") ?? "image")}](${escapeMarkdownHref(source)})`;
   });
   text = text.replace(/<details\b[^>]*>([\s\S]*?)<\/details>/gi, (_match, inner: string) => {
     const summary = inner.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/i)?.[1] ?? "";
@@ -356,12 +345,8 @@ function transformPullRequestMarkdown(body: string): string {
         label
           .replace(/<[^>]+>/g, " ")
           .replace(/\s+/g, " ")
-          .trim()
-          .replaceAll("\\", "\\\\")
-          .replaceAll("[", "\\[")
-          .replaceAll("]", "\\]") || href;
-      const cleanHref = href.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
-      return `[${cleanLabel}](${cleanHref})`;
+          .trim() || href;
+      return `[${escapeMarkdownLabel(cleanLabel)}](${escapeMarkdownHref(href)})`;
     },
   );
   text = text.replace(/<br\s*\/?>/gi, "\n");
@@ -374,12 +359,7 @@ function transformPullRequestMarkdown(body: string): string {
     (_match, uri: string | undefined, email: string | undefined) => {
       const target = uri ?? email!;
       const href = uri ?? `mailto:${email}`;
-      const cleanLabel = target
-        .replaceAll("\\", "\\\\")
-        .replaceAll("[", "\\[")
-        .replaceAll("]", "\\]");
-      const cleanHref = href.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
-      return `[${cleanLabel}](${cleanHref})`;
+      return `[${escapeMarkdownLabel(target)}](${escapeMarkdownHref(href)})`;
     },
   );
   text = text.replace(/<[^>]+>/g, "");

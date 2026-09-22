@@ -1,32 +1,24 @@
+import { isWebUrl, nextMarkdownFence } from "./pullRequestMarkdownUtils";
+
 export type PullRequestBodySegment =
   | { readonly id: string; readonly kind: "markdown"; readonly text: string }
   | { readonly id: string; readonly kind: "video"; readonly url: string };
 
 const VIDEO_TAG_MAX_LINES = 8;
-const FENCE_PATTERN = /^\s{0,3}((?:`{3,})|(?:~{3,}))(.*)$/u;
 const INDENTED_CODE_PATTERN = /^(?: {4}|\t)/u;
 const VIDEO_TAG_PATTERN = /^\s*<video\b/iu;
 const VIDEO_TAG_END_PATTERN = /<\/video>\s*$/iu;
 const VIDEO_TAG_SRC_PATTERN = /<(?:video|source)\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/iu;
 const BARE_VIDEO_URL_PATTERN = /^<?(https?:\/\/\S+?)>?$/u;
 const VIDEO_EXTENSION_PATTERN = /\.(?:mp4|webm|mov|m4v|ogv)(?:$|[?#])/iu;
-const GITHUB_ATTACHMENT_PATTERN = /^https:\/\/github\.com\/user-attachments\/assets\/[\w-]+$/iu;
-
-function isWebUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:";
-  } catch {
-    return false;
-  }
-}
+const GITHUB_ATTACHMENT_PREFIX = "https://github.com/user-attachments/assets/";
 
 function videoUrlFromLine(line: string): string | null {
   const url = BARE_VIDEO_URL_PATTERN.exec(line.trim())?.[1];
   if (
     url === undefined ||
     !isWebUrl(url) ||
-    (!VIDEO_EXTENSION_PATTERN.test(url) && !GITHUB_ATTACHMENT_PATTERN.test(url))
+    (!VIDEO_EXTENSION_PATTERN.test(url) && !url.startsWith(GITHUB_ATTACHMENT_PREFIX))
   ) {
     return null;
   }
@@ -35,33 +27,30 @@ function videoUrlFromLine(line: string): string | null {
 
 export function splitPullRequestBody(body: string): ReadonlyArray<PullRequestBodySegment> {
   const segments: PullRequestBodySegment[] = [];
+  const segmentOccurrences = new Map<string, number>();
   const markdown: string[] = [];
   let openFence: string | null = null;
+  const createSegmentId = (kind: PullRequestBodySegment["kind"], value: string) => {
+    const base = `${kind}:${value}`;
+    const occurrence = segmentOccurrences.get(base) ?? 0;
+    segmentOccurrences.set(base, occurrence + 1);
+    return occurrence === 0 ? base : `${base}:${occurrence}`;
+  };
 
   const flushMarkdown = () => {
     const text = markdown.join("\n").replace(/^\n+/u, "").replace(/\s+$/u, "");
     markdown.length = 0;
     if (text.trim().length > 0) {
-      segments.push({ id: `markdown:${segments.length}`, kind: "markdown", text });
+      segments.push({ id: createSegmentId("markdown", text), kind: "markdown", text });
     }
   };
 
   const lines = body.split("\n");
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
-    const fenceMatch = FENCE_PATTERN.exec(line);
-    if (fenceMatch !== null) {
-      const fence = fenceMatch[1]!;
-      const closes =
-        openFence !== null &&
-        fence[0] === openFence[0] &&
-        fence.length >= openFence.length &&
-        fenceMatch[2]!.trim().length === 0;
-      if (openFence === null) {
-        openFence = fence;
-      } else if (closes) {
-        openFence = null;
-      }
+    const nextFence = nextMarkdownFence(openFence, line);
+    if (nextFence !== openFence) {
+      openFence = nextFence;
       markdown.push(line);
       continue;
     }
@@ -73,7 +62,11 @@ export function splitPullRequestBody(body: string): ReadonlyArray<PullRequestBod
     const bareVideoUrl = videoUrlFromLine(line);
     if (bareVideoUrl !== null) {
       flushMarkdown();
-      segments.push({ id: `video:${segments.length}`, kind: "video", url: bareVideoUrl });
+      segments.push({
+        id: createSegmentId("video", bareVideoUrl),
+        kind: "video",
+        url: bareVideoUrl,
+      });
       continue;
     }
 
@@ -92,7 +85,7 @@ export function splitPullRequestBody(body: string): ReadonlyArray<PullRequestBod
       : undefined;
     if (source !== undefined && isWebUrl(source)) {
       flushMarkdown();
-      segments.push({ id: `video:${segments.length}`, kind: "video", url: source });
+      segments.push({ id: createSegmentId("video", source), kind: "video", url: source });
       index = cursor;
     } else {
       markdown.push(line);
