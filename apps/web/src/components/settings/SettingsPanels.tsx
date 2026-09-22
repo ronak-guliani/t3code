@@ -18,6 +18,7 @@ import {
   type AgentWorkflowDestinationMode,
   DEFAULT_AGENT_WORKFLOW_AUTOMATION_COOLDOWN_MS,
   DEFAULT_AGENT_WORKFLOW_MAX_RUNS_PER_THREAD,
+  DEFAULT_PROVIDER_DRIVER_KIND,
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
   type DesktopLocalRebuildState,
@@ -473,7 +474,7 @@ const HEADER_SIDEBAR_DEFAULTS: Record<HeaderSidebarToggleKey, boolean> = {
   sidebarNewThreadConfirm: DEFAULT_SIDEBAR_NEW_THREAD_CONFIRM,
 };
 
-const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
+const DEFAULT_DRIVER_KIND = DEFAULT_PROVIDER_DRIVER_KIND;
 
 function withoutProviderInstanceKey<V>(
   record: Readonly<Record<ProviderInstanceId, V>> | undefined,

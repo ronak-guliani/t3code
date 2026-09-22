@@ -270,6 +270,13 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     expect(DEFAULT_SERVER_SETTINGS.providerInstances).toEqual({});
   });
 
+  it("defaults text generation to Copilot", () => {
+    expect(DEFAULT_SERVER_SETTINGS.textGenerationModelSelection).toMatchObject({
+      instanceId: "copilot",
+      model: "gpt-5.4-mini",
+    });
+  });
+
   it("decodes a fully empty config (legacy on-disk shape) without complaint", () => {
     const decoded = decodeServerSettings({});
     expect(decoded.providerInstances).toEqual({});

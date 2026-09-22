@@ -26,7 +26,7 @@ import {
   selectWorkflowRunsForParentThread as selectWorkflowRunsForParentThreadInRuntime,
   type WorkflowRuntimeState,
 } from "@t3tools/client-runtime";
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { DEFAULT_PROVIDER_DRIVER_KIND, ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
 import {
   applyValidationEvent,
@@ -1487,7 +1487,7 @@ function toLegacyProvider(providerName: string | null): ProviderDriverKind {
   if (isProviderDriverKind(providerName)) {
     return providerName;
   }
-  return ProviderDriverKind.make("codex");
+  return DEFAULT_PROVIDER_DRIVER_KIND;
 }
 
 function attachmentPreviewRoutePath(attachmentId: string): string {
