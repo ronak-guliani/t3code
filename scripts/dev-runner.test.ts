@@ -4,6 +4,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Path } from "effect";
 
 import {
+  buildDevRunnerArgs,
   checkPortAvailabilityOnHosts,
   createDevRunnerEnv,
   findFirstAvailableOffset,
@@ -12,6 +13,58 @@ import {
 } from "./dev-runner.ts";
 
 it.layer(NodeServices.layer)("dev-runner", (it) => {
+  describe("buildDevRunnerArgs", () => {
+    it.effect("places filters before the task for every development mode", () =>
+      Effect.sync(() => {
+        assert.deepStrictEqual(buildDevRunnerArgs("dev", []), [
+          "run",
+          "--parallel",
+          "--filter",
+          "@t3tools/contracts",
+          "--filter",
+          "@t3tools/web",
+          "--filter",
+          "t3",
+          "dev",
+        ]);
+        assert.deepStrictEqual(buildDevRunnerArgs("dev:server", []), [
+          "run",
+          "--filter",
+          "t3",
+          "dev",
+        ]);
+        assert.deepStrictEqual(buildDevRunnerArgs("dev:web", []), [
+          "run",
+          "--filter",
+          "@t3tools/web",
+          "dev",
+        ]);
+        assert.deepStrictEqual(buildDevRunnerArgs("dev:desktop", []), [
+          "run",
+          "--parallel",
+          "--filter",
+          "@t3tools/desktop",
+          "--filter",
+          "@t3tools/web",
+          "dev",
+        ]);
+      }),
+    );
+
+    it.effect("forwards additional arguments after the selected task", () =>
+      Effect.sync(() => {
+        assert.deepStrictEqual(buildDevRunnerArgs("dev:web", ["--host", "127.0.0.1"]), [
+          "run",
+          "--filter",
+          "@t3tools/web",
+          "dev",
+          "--host",
+          "127.0.0.1",
+        ]);
+      }),
+    );
+  });
+
   describe("resolveOffset", () => {
     it.effect("uses explicit T3CODE_PORT_OFFSET when provided", () =>
       Effect.sync(() => {

@@ -141,4 +141,10 @@ If completion is uncertain, keep the environment alive and mention that it is re
 - If the pairing URL is no longer visible, rerun `pair --base-dir <absolute-base-dir>`; do not pass `--dev-url` or `--base-url` to `pair`.
 - If the replacement token is rejected, verify that the CLI and server use the identical absolute base directory and web URL.
 - If the UI shows unexpected data, verify that every command uses the identical explicit base directory before editing anything.
+- If the backend and Vite are started separately, run `dev:server` and `dev:web` with the same
+  `T3CODE_DEV_INSTANCE` (or explicit port offset) and keep the browser on the Vite origin.
+  The runner must provide `VITE_DEV_SERVER_URL` for that origin plus `VITE_HTTP_URL` and
+  `VITE_WS_URL` for the backend. Credentialed `/api` requests then use Vite's same-origin
+  proxy; if `/api/auth/session` targets the backend URL directly and fails CORS, inspect this
+  environment wiring instead of loosening CORS or disabling credentials.
 - If ports move because another instance is running, trust the current dev-runner output rather than assuming ports `13773` and `5733`.
