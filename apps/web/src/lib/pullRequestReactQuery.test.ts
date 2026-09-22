@@ -1,11 +1,13 @@
 import { QueryClient } from "@tanstack/react-query";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { EnvironmentId, ProjectId, ThreadId, type PullRequestListResult } from "@t3tools/contracts";
 
+import * as environmentApi from "../environmentApi";
 import {
   prefetchPullRequestDetail,
   pullRequestDiffInfiniteQueryOptions,
+  pullRequestListQueryOptions,
   pullRequestListInfiniteQueryOptions,
   pullRequestMutationKeys,
   pullRequestQueryKeys,
@@ -13,6 +15,10 @@ import {
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-a");
 const PROJECT_ID = ProjectId.make("project-a");
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("pullRequestReactQuery", () => {
   it("scopes list keys by environment and filters", () => {
@@ -55,6 +61,74 @@ describe("pullRequestReactQuery", () => {
     } satisfies PullRequestListResult;
 
     expect(options.getNextPageParam(page, [page], null, [null])).toBeUndefined();
+  });
+
+  it("resolves the first page without fetching its continuation", async () => {
+    const request = { state: "open", projectId: PROJECT_ID, limit: 50 } as const;
+    const firstPage = {
+      viewers: {},
+      providers: [],
+      entries: [],
+      errors: [],
+      truncated: true,
+      nextCursors: { "github.com acme/web": "cursor-2" },
+    } satisfies PullRequestListResult;
+    const list = vi.fn().mockResolvedValue(firstPage);
+    vi.spyOn(environmentApi, "ensureEnvironmentApi").mockReturnValue({
+      pullRequests: { list },
+    } as never);
+
+    const result = await new QueryClient().fetchQuery(
+      pullRequestListQueryOptions({
+        environmentId: ENVIRONMENT_ID,
+        request,
+      }),
+    );
+
+    expect(result).toBe(firstPage);
+    expect(list).toHaveBeenCalledOnce();
+    expect(list).toHaveBeenCalledWith(request);
+  });
+
+  it("passes returned cursors only when loading a continuation", async () => {
+    const request = { state: "open", projectId: PROJECT_ID, limit: 50 } as const;
+    const firstPage = {
+      viewers: {},
+      providers: [],
+      entries: [],
+      errors: [],
+      truncated: true,
+      nextCursors: { "github.com acme/web": "cursor-2" },
+    } satisfies PullRequestListResult;
+    const secondPage = {
+      ...firstPage,
+      truncated: false,
+      nextCursors: {},
+    } satisfies PullRequestListResult;
+    const list = vi.fn().mockResolvedValueOnce(firstPage).mockResolvedValueOnce(secondPage);
+    vi.spyOn(environmentApi, "ensureEnvironmentApi").mockReturnValue({
+      pullRequests: { list },
+    } as never);
+    const queryClient = new QueryClient();
+
+    await queryClient.fetchQuery(
+      pullRequestListQueryOptions({
+        environmentId: ENVIRONMENT_ID,
+        request,
+      }),
+    );
+    await queryClient.fetchQuery(
+      pullRequestListQueryOptions({
+        environmentId: ENVIRONMENT_ID,
+        request: { ...request, cursors: firstPage.nextCursors },
+      }),
+    );
+
+    expect(list).toHaveBeenNthCalledWith(1, request);
+    expect(list).toHaveBeenNthCalledWith(2, {
+      ...request,
+      cursors: firstPage.nextCursors,
+    });
   });
 
   it("does not put diff continuation cursors in the infinite query key", () => {
