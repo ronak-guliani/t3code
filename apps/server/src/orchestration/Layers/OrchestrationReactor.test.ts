@@ -8,7 +8,7 @@ import { TurnLifecycleRuntime } from "../Services/TurnLifecycleRuntime.ts";
 import { WorkflowCoordinatorReactor } from "../Services/WorkflowCoordinatorReactor.ts";
 import { ValidationCoordinatorReactor } from "../Services/ValidationCoordinatorReactor.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
-import { isValidationCoordinatorOwnedRun } from "./ValidationCoordinatorReactor.ts";
+import { isValidationCoordinatorOwnedRun } from "../../validation/ValidationLifecycle.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
 import { planValidationCoordinatorRun, planValidationRun } from "@t3tools/contracts";
 

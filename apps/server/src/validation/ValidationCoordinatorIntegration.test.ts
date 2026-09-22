@@ -3,23 +3,29 @@ import {
   planValidationRun,
   transitionValidationGate,
   transitionValidationRunStatus,
+  type OrchestrationCommand,
   type ValidationStructuredResult,
   type ValidationTarget,
 } from "@t3tools/contracts";
 import { CommandId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { DEFAULT_PROVIDER_INTERACTION_MODE } from "@t3tools/contracts";
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Layer, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { decideOrchestrationCommand } from "../orchestration/decider.ts";
+import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
+import { ValidationCoordinatorTargetResolver } from "../orchestration/Services/ValidationCoordinatorReactor.ts";
 import {
   lifecycleCommandId,
+  makeValidationLifecycle,
   millisUntilNextLeaseExpiry,
   VALIDATION_LEASE_SWEEP_INTERVAL_MS,
   withValidationLeaseTimeout,
-} from "../orchestration/Layers/ValidationCoordinatorReactor.ts";
+} from "./ValidationLifecycle.ts";
 import { projectEvent } from "../orchestration/projector.ts";
 import type { OrchestrationReadModel } from "@t3tools/contracts";
+import { ValidationGateExecutor } from "./ValidationGateExecutor.ts";
 
 const now = "2026-09-18T00:00:00.000Z";
 const threadId = ThreadId.make("validation-thread");
@@ -33,7 +39,9 @@ const target: ValidationTarget = {
   environmentIdentity: "env-1",
 };
 
-const readModelWithRun = (run: ReturnType<typeof planValidationRun>): OrchestrationReadModel => ({
+const readModelWithRun = (
+  run: ReturnType<typeof planValidationRun> | null,
+): OrchestrationReadModel => ({
   snapshotSequence: 0,
   updatedAt: now,
   projects: [
@@ -123,6 +131,68 @@ const resultFor = (
 });
 
 describe("validation coordinator integration", () => {
+  it("owns planning, lease acquisition, and readiness behind the lifecycle interface", async () => {
+    let model = readModelWithRun(null);
+    const commands: OrchestrationCommand[] = [];
+    let sequence = 0;
+    const engine: OrchestrationEngineShape = {
+      getReadModel: () => Effect.succeed(model),
+      readEvents: () => Stream.empty,
+      dispatch: (command) =>
+        Effect.gen(function* () {
+          commands.push(command);
+          const decided = yield* decideOrchestrationCommand({ command, readModel: model });
+          for (const event of Array.isArray(decided) ? decided : [decided]) {
+            sequence += 1;
+            model = yield* projectEvent(model, { ...event, sequence } as never);
+          }
+          return { sequence };
+        }),
+      withWorktreeLock: (effect) => effect,
+      streamDomainEvents: Stream.empty,
+      acquireDomainEventSubscription: Effect.never,
+    };
+    const lifecycle = await Effect.runPromise(
+      makeValidationLifecycle.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(OrchestrationEngineService, engine),
+            Layer.succeed(ValidationCoordinatorTargetResolver, {
+              resolve: () => Effect.succeed(target),
+            }),
+            Layer.succeed(ValidationGateExecutor, {
+              executeRepositoryGate: () => Effect.die("unexpected repository gate"),
+              executeBrowserGate: () => Effect.die("unexpected browser gate"),
+            }),
+          ),
+        ),
+      ),
+    );
+
+    await Effect.runPromise(
+      lifecycle.request({
+        threadId,
+        scenarios: [],
+        scope: "changed-behavior",
+        requester: { id: "user-1", kind: "user" },
+      }),
+    );
+    await Effect.runPromise(lifecycle.reconcileAll());
+    await Effect.runPromise(lifecycle.reconcileAll());
+
+    expect(commands.map((command) => command.type)).toEqual([
+      "thread.validation.request",
+      "thread.validation.coordinator-plan",
+      "thread.validation.lifecycle",
+      "thread.validation.lease.claim",
+      "thread.validation.lifecycle",
+      "thread.validation.lifecycle",
+      "thread.validation.lease.release",
+    ]);
+    expect(model.threads[0]?.validationRun?.status).toBe("ready");
+    expect(model.threads[0]?.validationRun?.lease).toBeNull();
+  });
+
   it("keys repeatable lifecycle commands per cycle for engine dedup", () => {
     const first = lifecycleCommandId("run-1", "preparing", "2026-09-18T00:00:00.000Z");
     expect(lifecycleCommandId("run-1", "preparing", "2026-09-18T00:00:00.000Z")).toBe(first);
