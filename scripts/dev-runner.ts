@@ -65,21 +65,37 @@ export const DEFAULT_DEV_T3_HOME = Effect.map(Effect.service(Path.Path), (path) 
 const MODE_ARGS = {
   dev: [
     "run",
-    "dev",
+    "--parallel",
     "--filter",
     "@t3tools/contracts",
     "--filter",
     "@t3tools/web",
     "--filter",
     "t3",
+    "dev",
   ],
-  "dev:server": ["run", "dev", "--filter", "t3"],
-  "dev:web": ["run", "dev", "--filter", "@t3tools/web"],
-  "dev:desktop": ["run", "dev", "--filter", "@t3tools/desktop", "--filter", "@t3tools/web"],
+  "dev:server": ["run", "--filter", "t3", "dev"],
+  "dev:web": ["run", "--filter", "@t3tools/web", "dev"],
+  "dev:desktop": [
+    "run",
+    "--parallel",
+    "--filter",
+    "@t3tools/desktop",
+    "--filter",
+    "@t3tools/web",
+    "dev",
+  ],
 } as const satisfies Record<string, ReadonlyArray<string>>;
 
 type DevMode = keyof typeof MODE_ARGS;
 type PortAvailabilityCheck<R = never> = (port: number) => Effect.Effect<boolean, never, R>;
+
+export function buildDevRunnerArgs(
+  mode: DevMode,
+  runnerArgs: ReadonlyArray<string>,
+): Array<string> {
+  return [...MODE_ARGS[mode], ...runnerArgs];
+}
 
 const DEV_RUNNER_MODES = Object.keys(MODE_ARGS) as Array<DevMode>;
 
@@ -605,7 +621,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       }
     }
 
-    const child = yield* ChildProcess.make("vp", [...MODE_ARGS[input.mode], ...input.runnerArgs], {
+    const child = yield* ChildProcess.make("vp", buildDevRunnerArgs(input.mode, input.runnerArgs), {
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",
@@ -688,7 +704,9 @@ const devRunnerCli = Command.make("dev-runner", {
     Flag.withDefault(false),
   ),
   runnerArgs: Argument.string("runner-arg").pipe(
-    Argument.withDescription("Additional Vite Plus task runner args (pass after `--`)."),
+    Argument.withDescription(
+      "Additional arguments forwarded to selected dev tasks (pass after `--`).",
+    ),
     Argument.variadic(),
   ),
 }).pipe(
