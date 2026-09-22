@@ -389,6 +389,29 @@ export const makeAcceptanceCaseMutation = (
           },
         );
       }
+      const existingCandidate = record.candidates.find(
+        (entry) => entry.candidateId === candidate.candidateId,
+      );
+      if (existingCandidate !== undefined) {
+        if (
+          existingCandidate.reviewEpoch === candidate.reviewEpoch &&
+          existingCandidate.headSha === candidate.headSha &&
+          existingCandidate.contractRevision === candidate.contractRevision &&
+          existingCandidate.reviewWorkflow.identity === candidate.reviewWorkflow.identity &&
+          existingCandidate.reviewWorkflow.version === candidate.reviewWorkflow.version &&
+          JSON.stringify(existingCandidate.reviewCandidate) ===
+            JSON.stringify(candidate.reviewCandidate)
+        ) {
+          return record;
+        }
+        return yield* acceptanceError(
+          "Candidate identity is already bound to different immutable provenance.",
+          {
+            caseId: command.caseId,
+            reason: "contradictory-contract",
+          },
+        );
+      }
       const transition = advanceAcceptanceCandidate(record.case, candidate);
       if (!transition.ok) {
         return yield* acceptanceError("Candidate review epoch must increase.", {
@@ -400,9 +423,7 @@ export const makeAcceptanceCaseMutation = (
         {
           ...record,
           case: transition.acceptanceCase,
-          candidates: record.candidates.some((entry) => entry.candidateId === candidate.candidateId)
-            ? record.candidates
-            : [...record.candidates, candidate],
+          candidates: [...record.candidates, candidate],
           evidence: [...record.evidence, ...command.submission.initialEvidence],
         },
         { expectedRevision: record.revision },

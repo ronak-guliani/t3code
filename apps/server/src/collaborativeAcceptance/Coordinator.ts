@@ -1,6 +1,7 @@
 import {
   CollaborativeAcceptanceCandidateId,
   CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptanceEvidenceId,
   CollaborativeAcceptanceCaseLookupError,
   CollaborativeAcceptanceError,
   CollaborativeAcceptanceExecutionId,
@@ -64,6 +65,10 @@ import {
   OrchestrationCommandPreviouslyRejectedError,
   OrchestrationCommandWorktreeCleanupPendingError,
 } from "../orchestration/Errors.ts";
+import {
+  threadHasInFlightTurn,
+  threadHasPendingInteraction,
+} from "../orchestration/commandInvariants.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { QueuedTurnReactor } from "../orchestration/Services/QueuedTurnReactor.ts";
 import { PullRequestMonitorService } from "../pullRequestMonitor/PullRequestMonitorService.ts";
@@ -152,6 +157,59 @@ const messageFor = (requestId: CollaborationRequestId) =>
 const commandFor = (name: string, identity: string) =>
   CommandId.make(`acceptance:${name}:${identity}`);
 
+const createdPullRequestAssignment = (input: {
+  readonly parentThreadId: ThreadId;
+  readonly pullRequest: PullRequestRef;
+}) =>
+  `created-pr:${hash([
+    input.parentThreadId,
+    input.pullRequest.projectId,
+    input.pullRequest.repository,
+    String(input.pullRequest.number),
+  ])}`;
+
+const createdPullRequestCaseId = (assignmentId: string) =>
+  CollaborativeAcceptanceCaseId.make(`acceptance:${assignmentId}`);
+
+const createdPullRequestCandidateId = (input: {
+  readonly caseId: CollaborativeAcceptanceCaseId;
+  readonly headSha: string;
+}) =>
+  CollaborativeAcceptanceCandidateId.make(
+    `created-pr-candidate:${hash([input.caseId, input.headSha])}`,
+  );
+
+const createdPullRequestEvidenceId = (input: {
+  readonly caseId: CollaborativeAcceptanceCaseId;
+  readonly candidateId: CollaborativeAcceptanceCandidateId;
+  readonly headSha: string;
+}) =>
+  CollaborativeAcceptanceEvidenceId.make(
+    `created-pr-evidence:${hash([input.caseId, input.candidateId, input.headSha])}`,
+  );
+
+const createdPullRequestAuthority = (input: {
+  readonly caseId: CollaborativeAcceptanceCaseId;
+  readonly assignmentId: string;
+  readonly parentThreadId: ThreadId;
+  readonly candidateId: CollaborativeAcceptanceCandidateId;
+}) => {
+  const identity = hash([
+    input.caseId,
+    input.assignmentId,
+    input.parentThreadId,
+    input.candidateId,
+  ]);
+  return {
+    executionId: `server:created-pr-review:${identity}`,
+    assignmentId: input.assignmentId,
+    threadId: input.parentThreadId,
+    generation: 1,
+    dispatchId: `server:created-pr-review-dispatch:${identity}`,
+    turnId: TurnId.make(`server:created-pr-review-turn:${identity}`),
+  } satisfies CollaborationExecutionAuthority;
+};
+
 const payloadFor = (
   provenance: CollaborativeAcceptanceProvenance,
 ): CollaborationPayloadReference => {
@@ -230,6 +288,12 @@ export interface CollaborativeAcceptanceCoordinatorShape {
     input: CollaborativeAcceptanceCandidateSubmission &
       AcceptanceAuthorityInput & { readonly senderThreadId: ThreadId },
   ) => Effect.Effect<CollaborativeAcceptanceStatus, CollaborativeAcceptanceError>;
+  readonly reconcileAutomaticCandidate: (input: {
+    readonly parentThreadId: ThreadId;
+    readonly pullRequest: PullRequestRef;
+    readonly headSha: string;
+    readonly sourceRevision: string;
+  }) => Effect.Effect<CollaborativeAcceptanceStatus, CollaborativeAcceptanceError>;
   readonly requestReview: (
     input: AcceptanceAuthorityInput & {
       readonly senderThreadId: ThreadId;
@@ -818,6 +882,243 @@ const makeCoordinator = Effect.gen(function* () {
       });
       return { record: reviewed, pauseReason: reviewed.projection.pauseReason ?? null };
     });
+
+  const reconcileAutomaticCandidate: CollaborativeAcceptanceCoordinatorShape["reconcileAutomaticCandidate"] =
+    (input) =>
+      Effect.gen(function* () {
+        const assignmentId = createdPullRequestAssignment(input);
+        const deterministicCaseId = createdPullRequestCaseId(assignmentId);
+        const records = yield* repository.listAll().pipe(
+          Effect.mapError(() =>
+            acceptanceError("Could not load collaborative acceptance cases.", {
+              reason: "ambiguous-outcome",
+            }),
+          ),
+        );
+        const selection = selectCurrentAcceptanceCase({
+          records,
+          threadId: input.parentThreadId,
+          pullRequest: input.pullRequest,
+        });
+        if (selection._tag === "ambiguous") {
+          return yield* acceptanceError(
+            "Multiple active acceptance cases are associated with this pull request.",
+            { reason: "contradictory-contract" },
+          );
+        }
+        const existing =
+          selection._tag === "selected"
+            ? selection.record
+            : records.find((record) => record.case.caseId === deterministicCaseId);
+        const settings = yield* serverSettings.getSettings.pipe(
+          Effect.mapError(() =>
+            acceptanceError("Could not load collaborative acceptance settings.", {
+              reason: "contradictory-contract",
+            }),
+          ),
+        );
+        const policy = existing?.case.policy ?? settings.collaborativeAcceptance;
+        if (policy === null || policy.automation === "off" || policy.reviewTrigger === "manual") {
+          return {
+            record: existing ?? null,
+            pauseReason: existing?.projection.pauseReason ?? null,
+          };
+        }
+
+        const thread = yield* projections.getThreadDetailById(input.parentThreadId).pipe(
+          Effect.mapError(() =>
+            acceptanceError("Could not resolve the pull-request creating thread.", {
+              reason: "participant-unavailable",
+            }),
+          ),
+          Effect.flatMap((value) =>
+            Option.isSome(value)
+              ? Effect.succeed(value.value)
+              : Effect.fail(
+                  acceptanceError("The pull-request creating thread is unavailable.", {
+                    reason: "participant-unavailable",
+                  }),
+                ),
+          ),
+        );
+        if (threadHasInFlightTurn(thread) || threadHasPendingInteraction(thread)) {
+          return {
+            record: existing ?? null,
+            pauseReason: existing?.projection.pauseReason ?? null,
+          };
+        }
+
+        const caseId = existing?.case.caseId ?? deterministicCaseId;
+        const caseAssignmentId = existing?.case.assignmentId ?? assignmentId;
+        const candidate = existing?.candidates.find((entry) => entry.headSha === input.headSha);
+        if (
+          candidate !== undefined &&
+          existing !== undefined &&
+          existing.case.currentCandidate.candidateId !== candidate.candidateId
+        ) {
+          return {
+            record: existing,
+            pauseReason: existing.projection.pauseReason ?? null,
+          };
+        }
+        const nextCandidate =
+          candidate === undefined
+            ? (() => {
+                const reviewEpoch =
+                  (existing?.candidates.reduce(
+                    (maximum, entry) => Math.max(maximum, entry.reviewEpoch),
+                    0,
+                  ) ?? 0) + 1;
+                const candidateId = createdPullRequestCandidateId({
+                  caseId,
+                  headSha: input.headSha,
+                });
+                const reviewCandidate: PullRequestMonitorReviewCandidate = {
+                  caseId,
+                  candidateId,
+                  reviewEpoch,
+                  headSha: input.headSha,
+                  contractRevision: existing?.case.contractRevision ?? "created-pr-review:v1",
+                  reviewWorkflow: policy.reviewWorkflow,
+                  coverage: {
+                    required: [],
+                    covered: [],
+                    applicability: "unknown",
+                  },
+                  previousFindingVerification: {
+                    required: false,
+                    complete: true,
+                    verifiedRevisionIds: [],
+                    unresolvedRevisionIds: [],
+                  },
+                };
+                return {
+                  candidate: {
+                    candidateId,
+                    reviewEpoch,
+                    headSha: input.headSha,
+                    contractRevision: reviewCandidate.contractRevision,
+                    reviewWorkflow: policy.reviewWorkflow,
+                    sourceRevision: input.sourceRevision,
+                    reviewCandidate,
+                    createdAt: now(),
+                  },
+                  reviewCandidate,
+                };
+              })()
+            : {
+                candidate,
+                reviewCandidate: yield* decodeReviewCandidate(candidate, caseId),
+              };
+        const authority = createdPullRequestAuthority({
+          caseId,
+          assignmentId: caseAssignmentId,
+          parentThreadId: input.parentThreadId,
+          candidateId: nextCandidate.candidate.candidateId,
+        });
+        const record = candidate
+          ? (existing as CollaborativeAcceptanceRecord)
+          : yield* caseMutation.execute({
+              _tag: "submit-candidate",
+              caseId,
+              submission: {
+                caseId,
+                assignmentId: caseAssignmentId,
+                candidate: nextCandidate.candidate,
+                pullRequest: input.pullRequest,
+                criteria: existing?.case.criteria ?? [],
+                policy,
+                initialEvidence: [
+                  {
+                    evidenceId: createdPullRequestEvidenceId({
+                      caseId,
+                      candidateId: nextCandidate.candidate.candidateId,
+                      headSha: input.headSha,
+                    }),
+                    caseId,
+                    candidateId: nextCandidate.candidate.candidateId,
+                    headSha: input.headSha,
+                    kind: "provider-review",
+                    criterionId: null,
+                    sourceId: `created-pr-head:${hash([caseId, input.headSha])}`,
+                    summary: `Authoritative pull-request head ${input.headSha} observed by the server.`,
+                    complete: true,
+                    current: true,
+                    observedAt: nextCandidate.candidate.createdAt,
+                  },
+                ],
+                reviewCandidate: nextCandidate.reviewCandidate,
+              },
+              recipientThreadId: input.parentThreadId,
+              senderAuthority: authority,
+            });
+
+        const currentCandidate = record.case.currentCandidate;
+        const reviewCandidate = yield* decodeReviewCandidate(currentCandidate, caseId);
+        const previousCandidate = record.candidates.at(-2);
+        const previous =
+          previousCandidate === undefined
+            ? undefined
+            : yield* decodeReviewCandidate(previousCandidate, caseId);
+        const eligibility = reviewCandidateEligibility({
+          candidate: reviewCandidate,
+          ...(previous === undefined ? {} : { previous }),
+        });
+        const previouslyReviewedEligibleCandidate = record.candidates
+          .slice(0, -1)
+          .some((entry) =>
+            record.exchanges.some(
+              (exchange) =>
+                exchange.candidateId === entry.candidateId && exchange.status !== "cancelled",
+            ),
+          );
+        if (
+          !eligibility.eligible ||
+          !shouldAutomaticallyReviewCandidate({
+            policy: record.case.policy,
+            previouslyReviewedEligibleCandidate,
+          })
+        ) {
+          return { record, pauseReason: record.projection.pauseReason ?? null };
+        }
+
+        const latestThread = yield* projections.getThreadDetailById(input.parentThreadId).pipe(
+          Effect.mapError(() =>
+            acceptanceError("Could not re-check the pull-request creating thread.", {
+              reason: "participant-unavailable",
+            }),
+          ),
+          Effect.flatMap((value) =>
+            Option.isSome(value)
+              ? Effect.succeed(value.value)
+              : Effect.fail(
+                  acceptanceError("The pull-request creating thread is unavailable.", {
+                    reason: "participant-unavailable",
+                  }),
+                ),
+          ),
+        );
+        if (threadHasInFlightTurn(latestThread) || threadHasPendingInteraction(latestThread)) {
+          return { record, pauseReason: record.projection.pauseReason ?? null };
+        }
+
+        const reviewed = yield* admitReview({
+          record,
+          candidate: currentCandidate,
+          reviewCandidate,
+          mode: eligibility.mode ?? "full",
+          authority: {
+            assignmentId: record.case.assignmentId,
+            senderAuthority: authority,
+            recipientThreadId: input.parentThreadId,
+            recipientAuthority: authority,
+          },
+          pullRequest: input.pullRequest,
+          senderThreadId: input.parentThreadId,
+          force: false,
+        });
+        return { record: reviewed, pauseReason: reviewed.projection.pauseReason ?? null };
+      });
 
   const requestReview: CollaborativeAcceptanceCoordinatorShape["requestReview"] = (input) =>
     Effect.gen(function* () {
@@ -1897,6 +2198,7 @@ const makeCoordinator = Effect.gen(function* () {
 
   return {
     submitCandidate,
+    reconcileAutomaticCandidate,
     requestReview,
     requestCollaboration,
     respondToRequest,

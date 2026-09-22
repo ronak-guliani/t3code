@@ -173,6 +173,33 @@ describe("AcceptanceCaseMutation", () => {
     });
   });
 
+  it("treats a repeated immutable candidate submission as idempotent", async () => {
+    const fixture = makeRepository();
+    const mutation = makeAcceptanceCaseMutation(fixture.repository, () => timestamp);
+    const first = await Effect.runPromise(
+      mutation.execute({
+        _tag: "submit-candidate",
+        caseId,
+        submission,
+        recipientThreadId: parentThreadId,
+        senderAuthority: authority,
+      }),
+    );
+
+    const second = await Effect.runPromise(
+      mutation.execute({
+        _tag: "submit-candidate",
+        caseId,
+        submission,
+        recipientThreadId: parentThreadId,
+        senderAuthority: authority,
+      }),
+    );
+
+    expect(second).toEqual(first);
+    expect(fixture.saveCount()).toBe(1);
+  });
+
   it("owns assessment authorization, persistence, and projection updates", async () => {
     const fixture = makeRepository();
     const mutation = makeAcceptanceCaseMutation(fixture.repository, () => timestamp);
