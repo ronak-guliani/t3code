@@ -1,5 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
+  CollaborativeAcceptanceCandidateId,
+  CollaborativeAcceptanceCaseId,
   ProjectId,
   ThreadId,
   type OrchestrationThread,
@@ -9,6 +11,7 @@ import * as Effect from "effect/Effect";
 
 import {
   createdPullRequestLinks,
+  dispatchAutomaticReviewWorkflow,
   makeReferenceCountedKeyedLock,
   reconcileCreatedPullRequestReview,
 } from "./CreatedPullRequestReviewReactor.ts";
@@ -169,6 +172,78 @@ describe("created pull-request review reconciliation", () => {
     await Effect.runPromise(Effect.all([reconcile(), reconcile()], { concurrency: 2 }));
 
     assert.deepStrictEqual([...submitted], ["head-4"]);
+  });
+
+  it("cancels legacy self-review requests before launching the child review workflow", async () => {
+    const request = {
+      kind: "review",
+      status: "waiting",
+      senderThreadId: threadId,
+      recipientThreadId: threadId,
+      caseId: "case-42",
+      candidateRefs: ["candidate-42"],
+    };
+    const current = thread([link("created")], {
+      collaborationRequests: [request],
+    } as unknown as Partial<OrchestrationThread>);
+    const effects: string[] = [];
+
+    await Effect.runPromise(
+      dispatchAutomaticReviewWorkflow({
+        request: {
+          caseId: CollaborativeAcceptanceCaseId.make("case-42"),
+          candidateId: CollaborativeAcceptanceCandidateId.make("candidate-42"),
+          headSha: "head-42",
+          workflowId: "review-changes",
+          idempotencyKey: "acceptance-review:case-42:candidate-42:review-changes:1",
+        },
+        pullRequestNumber: 42,
+        readCurrentThread: () => Effect.succeed(current),
+        cancelLegacySelfReview: () =>
+          Effect.sync(() => {
+            effects.push("cancel-legacy-request");
+          }),
+        runWorkflow: (input) =>
+          Effect.sync(() => {
+            effects.push(
+              `run:${input.thread.id}:${input.pullRequestNumber}:${input.headSha}:${input.idempotencyKey}`,
+            );
+          }),
+      }),
+    );
+
+    assert.deepStrictEqual(effects, [
+      "cancel-legacy-request",
+      `run:${threadId}:42:head-42:acceptance-review:case-42:candidate-42:review-changes:1`,
+    ]);
+  });
+
+  it("does not launch the review workflow when the creator becomes active", async () => {
+    let launched = false;
+    const active = thread([link("created")], {
+      latestTurn: { state: "running" },
+    } as Partial<OrchestrationThread>);
+
+    await Effect.runPromise(
+      dispatchAutomaticReviewWorkflow({
+        request: {
+          caseId: CollaborativeAcceptanceCaseId.make("case-42"),
+          candidateId: CollaborativeAcceptanceCandidateId.make("candidate-42"),
+          headSha: "head-42",
+          workflowId: "review-changes",
+          idempotencyKey: "review-42",
+        },
+        pullRequestNumber: 42,
+        readCurrentThread: () => Effect.succeed(active),
+        cancelLegacySelfReview: () => Effect.void,
+        runWorkflow: () =>
+          Effect.sync(() => {
+            launched = true;
+          }),
+      }),
+    );
+
+    assert.isFalse(launched);
   });
 
   it("filters only durable creation sources", () => {
