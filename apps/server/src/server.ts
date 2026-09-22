@@ -44,10 +44,7 @@ import { TurnLifecycleRuntimeLayerLive } from "./orchestration/Layers/TurnLifecy
 import { ThreadTitleReactorLive } from "./orchestration/Layers/ThreadTitleReactor.ts";
 import { QueuedTurnReactorLive } from "./orchestration/Layers/QueuedTurnReactor.ts";
 import { WorkflowCoordinatorReactorLive } from "./orchestration/Layers/WorkflowCoordinatorReactor.ts";
-import {
-  ValidationCoordinatorReactorLive,
-  ValidationCoordinatorTargetResolverLive,
-} from "./orchestration/Layers/ValidationCoordinatorReactor.ts";
+import { ValidationCoordinatorReactorLive } from "./orchestration/Layers/ValidationCoordinatorReactor.ts";
 import { RepositoryValidationRunnerLive } from "./validation/RepositoryValidationRunner.ts";
 import {
   ValidationArtifactStoreService,
@@ -55,6 +52,10 @@ import {
 } from "./validation/RepositoryValidationRunner.ts";
 import { ValidationEnvironmentServiceLive } from "./validation/ValidationEnvironmentService.ts";
 import { ValidationGateExecutorLive } from "./validation/ValidationGateExecutor.ts";
+import {
+  ValidationCoordinatorTargetResolverLive,
+  ValidationLifecycleLive,
+} from "./validation/ValidationLifecycle.ts";
 import { BootstrapCredentialServiceLive } from "./auth/Layers/BootstrapCredentialService.ts";
 import { ReviewSnapshotVerifierLive } from "./orchestration/Layers/ReviewSnapshotVerifier.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
@@ -209,11 +210,14 @@ const ValidationGateExecutorWiredLive = ValidationGateExecutorLive.pipe(
   Layer.provide(BootstrapCredentialServiceLive),
 );
 
-const ValidationCoordinatorWiredLive = ValidationCoordinatorReactorLive.pipe(
+const ValidationLifecycleWiredLive = ValidationLifecycleLive.pipe(
   Layer.provideMerge(ValidationCoordinatorTargetResolverLive),
   Layer.provide(ValidationGateExecutorWiredLive),
 );
 
+const ValidationCoordinatorWiredLive = ValidationCoordinatorReactorLive.pipe(
+  Layer.provide(ValidationLifecycleWiredLive),
+);
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(TurnLifecycleRuntimeLayerLive),

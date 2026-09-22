@@ -2530,13 +2530,13 @@ describe("buildThreadFeed", () => {
     ].flatMap((command) =>
       (
         [
-          { lifecycleStatus: "inProgress", summary: "Running pnpm", shimmer: true },
-          { lifecycleStatus: "completed", summary: "Ran pnpm", shimmer: false },
-          { lifecycleStatus: "failed", summary: "Failed pnpm", shimmer: false },
-          { lifecycleStatus: "declined", summary: "Declined pnpm", shimmer: false },
-          { lifecycleStatus: "stopped", summary: "Stopped pnpm", shimmer: false },
+          { lifecycleStatus: "inProgress", verb: "Running", shimmer: true },
+          { lifecycleStatus: "completed", verb: "Ran", shimmer: false },
+          { lifecycleStatus: "failed", verb: "Failed", shimmer: false },
+          { lifecycleStatus: "declined", verb: "Declined", shimmer: false },
+          { lifecycleStatus: "stopped", verb: "Stopped", shimmer: false },
         ] as const
-      ).map((state) => ({ command, ...state })),
+      ).map((state) => ({ command, summary: `${state.verb} ${command}`, ...state })),
     ),
   )(
     "keeps the command summary in sync with $lifecycleStatus: $command",
@@ -2642,7 +2642,7 @@ describe("buildThreadFeed", () => {
         {
           live: false,
           shimmer: false,
-          summary: lifecycleStatus === "inProgress" ? "Ran printf" : summary,
+          summary: lifecycleStatus === "inProgress" ? "Ran printf done" : summary,
         },
       ]);
 

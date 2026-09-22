@@ -368,6 +368,74 @@ describe("MessagesTimeline", () => {
     },
   );
 
+  it("shows specific command and read labels while truncating commands to chat width", async () => {
+    const createdAt = new Date().toISOString();
+    const command =
+      "git status --short && git branch --show-current && git remote -v && git --no-pager log --oneline -5";
+    const screen = await render(
+      <div style={{ width: 320 }}>
+        <MessagesTimeline
+          {...buildProps()}
+          activeTurnInProgress
+          isWorking
+          activeTurnStartedAt={createdAt}
+          timelineEntries={[
+            {
+              id: "long-command",
+              kind: "work",
+              createdAt,
+              entry: {
+                id: "long-command",
+                createdAt,
+                tone: "tool",
+                label: "Ran command",
+                command,
+                itemType: "command_execution",
+                toolLifecycleStatus: "completed",
+                isComplete: true,
+              },
+            },
+            {
+              id: "read-agents",
+              kind: "work",
+              createdAt,
+              entry: {
+                id: "read-agents",
+                createdAt,
+                tone: "tool",
+                label: "Read file",
+                toolData: {
+                  toolName: "view",
+                  rawInput: { path: "./.agents/skills/vercel-react-best-practices/AGENTS.md" },
+                },
+                toolLifecycleStatus: "completed",
+                isComplete: true,
+              },
+            },
+          ]}
+        />
+      </div>,
+    );
+    try {
+      const commandButton = page.getByRole("button", {
+        name: `Expand details: Ran ${command}`,
+        exact: true,
+      });
+      await expect.element(commandButton).toBeVisible();
+      const commandLabel = commandButton.element().querySelector(".chat-work-label")!;
+      expect(commandLabel.textContent).toBe(`Ran ${command}`);
+      expect(commandLabel.getAttribute("title")).toBe(`Ran ${command}`);
+      expect(getComputedStyle(commandLabel).textOverflow).toBe("ellipsis");
+      expect(getComputedStyle(commandLabel).whiteSpace).toBe("nowrap");
+      expect(commandButton.element().getBoundingClientRect().width).toBeLessThanOrEqual(320);
+      await expect
+        .element(page.getByRole("button", { name: "Expand details: Read AGENTS.md", exact: true }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("opens a short history directly without a duplicate summary disclosure", async () => {
     const createdAt = new Date().toISOString();
     const screen = await render(
@@ -884,7 +952,7 @@ describe("MessagesTimeline", () => {
         ]}
       />,
     );
-    await expect.element(page.getByText("Failed pnpm", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("Failed pnpm test", { exact: true })).toBeVisible();
     await expect.element(page.getByRole("button", { name: "Expand Tool Calls (2)" })).toBeVisible();
     expect(document.querySelector(".work-activity-shimmer")).toBeNull();
     await screen.unmount();

@@ -208,7 +208,7 @@ describe("live activity strips", () => {
     },
   );
 
-  it("uses concise cross-platform filenames and command names without dropping detail", () => {
+  it("uses concise cross-platform filenames and complete one-line commands", () => {
     const entry = { ...read("a.ts"), detail: "C:\\work\\src\\a.ts" };
     expect(compactWorkEntryLabel(entry)).toBe("Read a.ts");
     expect(entry.detail).toBe("C:\\work\\src\\a.ts");
@@ -219,7 +219,29 @@ describe("live activity strips", () => {
         command: "pnpm test --run",
         toolLifecycleStatus: "inProgress",
       }),
-    ).toBe("Running pnpm");
+    ).toBe("Running pnpm test --run");
+    expect(
+      compactWorkEntryLabel({
+        label: "Ran command",
+        tone: "tool",
+        command: "git status --short &&\n git branch --show-current",
+        toolLifecycleStatus: "completed",
+      }),
+    ).toBe("Ran git status --short && git branch --show-current");
+  });
+
+  it("uses the basename from read-tool input metadata", () => {
+    expect(
+      compactWorkEntryLabel({
+        label: "Read file",
+        tone: "tool",
+        toolData: {
+          toolName: "view",
+          rawInput: { path: "./.agents/skills/vercel-react-best-practices/AGENTS.md" },
+        },
+        toolLifecycleStatus: "completed",
+      }),
+    ).toBe("Read AGENTS.md");
   });
 
   it("prefers the complete input path over a shortened provider preview", () => {

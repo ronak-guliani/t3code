@@ -330,7 +330,10 @@ export function deriveMessagesTimelineRows(input: {
   >();
   let nullTurnResponseIndex = 0;
   let lastDurationBoundary: string | null = null;
-  const pendingHandoffRows: Extract<BaseMessagesTimelineRow, { kind: "workspace-handoff" }>[] = [];
+  const handoffRowsAwaitingContinuation: Extract<
+    BaseMessagesTimelineRow,
+    { kind: "workspace-handoff" }
+  >[] = [];
 
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
     const timelineEntry = input.timelineEntries[index];
@@ -397,44 +400,43 @@ export function deriveMessagesTimelineRows(input: {
     }
     const durationStart = lastDurationBoundary ?? message.createdAt;
 
-    // Workspace handoffs render as a single transition marker. The marker
-    // message is emitted mid-turn, when the provider calls the handoff tool, so
-    // it is deferred to the next turn boundary rather than splitting the turn's
-    // work in half. The continuation that resumes the task in the new worktree
-    // is T3 boilerplate: it stays a turn boundary but never becomes a bubble,
-    // and it hands its revert anchor to the marker so the post-handoff turn
-    // remains revertable.
+    // Workspace handoffs render as a single transition marker. The marker is
+    // emitted when the provider moves worktrees, so it must stay in that exact
+    // position: work logged after the move belongs below the transition rather
+    // than being rendered above it while we wait for the hidden continuation.
+    // The continuation remains a turn boundary but never becomes a bubble, and
+    // it hands its revert anchor to the marker so the post-handoff turn stays
+    // revertable.
     if (message.origin?.kind === "workspace-handoff") {
       if (message.origin.role === "marker") {
-        pendingHandoffRows.push({
+        const handoffRow: Extract<BaseMessagesTimelineRow, { kind: "workspace-handoff" }> = {
           kind: "workspace-handoff",
           id: timelineEntry.id,
           createdAt: timelineEntry.createdAt,
           origin: message.origin,
-        });
+        };
+        nextRows.push(handoffRow);
+        handoffRowsAwaitingContinuation.push(handoffRow);
+        lastDurationBoundary = handoffRow.createdAt;
       } else {
         const revertTurnCount = input.revertTurnCountByUserMessageId.get(message.id);
-        const lastPendingRow = pendingHandoffRows.at(-1);
-        if (lastPendingRow) {
+        const lastHandoffRow = handoffRowsAwaitingContinuation.pop();
+        if (lastHandoffRow) {
           if (revertTurnCount !== undefined) {
-            lastPendingRow.revertMessageId = message.id;
-            lastPendingRow.revertTurnCount = revertTurnCount;
+            lastHandoffRow.revertMessageId = message.id;
+            lastHandoffRow.revertTurnCount = revertTurnCount;
           }
-          // The continuation already moved the boundary as a user message, but
-          // it is never rendered. Anchor elapsed time to the marker instead so
-          // the post-handoff turn does not report a duration measured from a
-          // row the user cannot see.
-          lastDurationBoundary = lastPendingRow.createdAt;
+          // The hidden continuation is still a user-role turn boundary. Keep
+          // elapsed time anchored to the visible transition rather than to the
+          // boilerplate row the user never sees.
+          lastDurationBoundary = lastHandoffRow.createdAt;
         }
-        nextRows.push(...pendingHandoffRows);
-        pendingHandoffRows.length = 0;
       }
       continue;
     }
 
-    if (message.role === "user" && pendingHandoffRows.length > 0) {
-      nextRows.push(...pendingHandoffRows);
-      pendingHandoffRows.length = 0;
+    if (message.role === "user" && handoffRowsAwaitingContinuation.length > 0) {
+      handoffRowsAwaitingContinuation.length = 0;
     }
 
     const messageRow: Extract<BaseMessagesTimelineRow, { kind: "message" }> = {
@@ -468,8 +470,6 @@ export function deriveMessagesTimelineRows(input: {
       }
     }
   }
-
-  nextRows.push(...pendingHandoffRows);
 
   if (input.isWorking) {
     nextRows.push({
@@ -524,8 +524,18 @@ function collapseReasoningRows(
     // The handoff is a turn boundary, so the following response's elapsed time
     // is measured from the move rather than from the pre-handoff user message.
     if (row.kind === "workspace-handoff") {
-      collapsedRows.push(...reasoningRows);
-      reasoningRows = [];
+      if (reasoningRows.length > 0) {
+        const userRow = userIndex >= 0 ? collapsedRows[userIndex] : undefined;
+        const startedAt = userRow?.createdAt ?? reasoningRows[0]?.createdAt;
+        collapsedRows.push({
+          kind: "reasoning",
+          id: `reasoning:${row.id}:before`,
+          createdAt: reasoningRows[0]?.createdAt ?? row.createdAt,
+          workedFor: startedAt ? formatElapsed(startedAt, row.createdAt) : null,
+          rows: reasoningRows,
+        });
+        reasoningRows = [];
+      }
       collapsedRows.push(row);
       userIndex = collapsedRows.length - 1;
       continue;

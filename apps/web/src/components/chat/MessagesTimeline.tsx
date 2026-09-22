@@ -1164,6 +1164,9 @@ const WorkGroupPresentational = memo(function WorkGroupPresentational({
   const groupLabel = onlyToolEntries ? "Tool Calls" : "Work log";
   const toggleLabel = isExpanded ? "Collapse" : "Expand";
   const attention = activity.state === "failed" || activity.state === "approval";
+  const activityIsCommand = activity.lead
+    ? toolGroupAction(activity.lead) === "command"
+    : groupedEntries.length === 1 && toolGroupAction(groupedEntries[0]!) === "command";
 
   return (
     <Collapsible
@@ -1200,7 +1203,11 @@ const WorkGroupPresentational = memo(function WorkGroupPresentational({
           )}
         </span>
         <span
-          className={cn("chat-work-label", activity.shimmer && "work-activity-shimmer")}
+          className={cn(
+            "chat-work-label",
+            activityIsCommand && "chat-work-label-truncate",
+            activity.shimmer && "work-activity-shimmer",
+          )}
           title={activity.label}
         >
           {activity.label}
@@ -1297,7 +1304,15 @@ function RepeatedWorkRow({
         aria-label={`${expanded ? "Collapse" : "Expand"} ${entries.length} calls: ${label}`}
       >
         {createElement(workEntryIcon(first), { className: "size-3", "aria-hidden": true })}
-        <span className="chat-work-label">{label}</span>
+        <span
+          className={cn(
+            "chat-work-label",
+            toolGroupAction(first) === "command" && "chat-work-label-truncate",
+          )}
+          title={label}
+        >
+          {label}
+        </span>
         <span className="shrink-0">×{entries.length}</span>
         <ChevronRightIcon
           className={cn("size-3 shrink-0 chat-work-chevron", expanded && "rotate-90")}
@@ -1974,6 +1989,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       Boolean(fullCommand || workEntry.detail || hasChangedFiles) ||
       hasWorkLogToolData(workEntry.toolData);
     const label = compactWorkEntryLabel(workEntry);
+    const truncateLabel = toolGroupAction(workEntry) === "command";
     const failed = workEntryNeedsAttention(workEntry);
     return (
       <Collapsible open={isCommandExpanded} onOpenChange={setIsCommandExpanded}>
@@ -1990,7 +2006,10 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           ) : (
             entryIcon
           )}
-          <span className="chat-work-label" title={label}>
+          <span
+            className={cn("chat-work-label", truncateLabel && "chat-work-label-truncate")}
+            title={label}
+          >
             {label}
           </span>
           {hasDetail ? (
