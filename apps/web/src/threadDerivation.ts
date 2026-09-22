@@ -1,5 +1,5 @@
 import type { MessageId, OrchestrationQueuedTurn, ThreadId, TurnId } from "@t3tools/contracts";
-import { validationRunEquals } from "@t3tools/contracts";
+import { validationRunEquals } from "@t3tools/client-runtime/validation-lifecycle";
 import type { EnvironmentState } from "./store";
 import type {
   ChatMessage,

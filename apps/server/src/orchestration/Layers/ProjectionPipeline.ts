@@ -1,11 +1,13 @@
 // @ts-nocheck
 import {
   ApprovalRequestId,
-  acceptValidationResult,
   type ChatAttachment,
   type OrchestrationEvent,
-  transitionValidationRunStatus,
 } from "@t3tools/contracts";
+import {
+  applyValidationEvent,
+  isValidationLifecycleEvent,
+} from "@t3tools/client-runtime/validation-lifecycle";
 import { Effect, Layer, Option, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
@@ -237,6 +239,29 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const applyThreadsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyThreadsProjection",
     )(function* (event) {
+      if (isValidationLifecycleEvent(event)) {
+        const existingRow = yield* projectionThreadRepository.getById({
+          threadId: event.payload.threadId,
+        });
+        if (Option.isNone(existingRow)) {
+          return;
+        }
+        const validation = applyValidationEvent(
+          {
+            request: existingRow.value.validationRequest ?? null,
+            run: existingRow.value.validationRun ?? null,
+          },
+          event,
+        );
+        yield* projectionThreadRepository.upsert({
+          ...existingRow.value,
+          validationRequest: validation.request,
+          validationRun: validation.run,
+          updatedAt: event.occurredAt,
+        });
+        return;
+      }
+
       switch (event.type) {
         case "thread.created":
           const { initialPullRequest, source } = resolveInitialThreadPullRequest({
@@ -733,14 +758,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
         case "thread.message-sent":
         case "thread.review-result-set":
-        case "thread.validation-requested":
-        case "thread.validation-request-failed":
-        case "thread.validation-run-planned":
-        case "thread.validation-lifecycle-updated":
-        case "thread.validation-lease-claimed":
-        case "thread.validation-lease-released":
-        case "thread.validation-result-recorded":
-        case "thread.validation-gate-updated":
         case "thread.proposed-plan-upserted":
         case "thread.activity-appended":
         case "thread.approval-response-requested":
@@ -756,75 +773,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
-          let validationRun = existingRow.value.validationRun;
-          let validationRequest = existingRow.value.validationRequest ?? null;
-          if (event.type === "thread.validation-requested") {
-            validationRequest = event.payload.request;
-          } else if (event.type === "thread.validation-request-failed") {
-            if (validationRequest?.requestId === event.payload.failure.requestId) {
-              validationRequest = null;
-            }
-          } else if (event.type === "thread.validation-run-planned") {
-            validationRun = event.payload.run;
-            validationRequest = null;
-          } else if (
-            event.type === "thread.validation-lifecycle-updated" &&
-            validationRun?.id === event.payload.update.runId
-          ) {
-            try {
-              validationRun = transitionValidationRunStatus(
-                validationRun,
-                event.payload.update.status,
-                event.payload.update.updatedAt,
-              );
-            } catch {
-              // Ignore stale or invalid replay events without breaking the batch.
-            }
-          } else if (
-            event.type === "thread.validation-lease-claimed" &&
-            validationRun?.id === event.payload.runId
-          ) {
-            validationRun = {
-              ...validationRun,
-              executorId: event.payload.lease.executorId,
-              lease: event.payload.lease,
-              updatedAt: event.occurredAt,
-            };
-          } else if (
-            event.type === "thread.validation-lease-released" &&
-            validationRun?.id === event.payload.runId &&
-            validationRun.lease?.id === event.payload.leaseId
-          ) {
-            validationRun = {
-              ...validationRun,
-              lease: null,
-              updatedAt: event.occurredAt,
-            };
-          } else if (
-            event.type === "thread.validation-result-recorded" &&
-            validationRun?.id === event.payload.result.runId
-          ) {
-            try {
-              validationRun = acceptValidationResult(validationRun, event.payload.result);
-            } catch {
-              // Ignore stale or invalid replay events without breaking the batch.
-            }
-          } else if (
-            event.type === "thread.validation-gate-updated" &&
-            validationRun?.id === event.payload.runId
-          ) {
-            validationRun = {
-              ...validationRun,
-              gates: validationRun.gates.map((gate) =>
-                gate.id === event.payload.gate.id ? event.payload.gate : gate,
-              ),
-              updatedAt: event.occurredAt,
-            };
-          }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            validationRequest,
-            validationRun,
             ...(event.type === "thread.review-result-set"
               ? {
                   reviewResult: event.payload.result,

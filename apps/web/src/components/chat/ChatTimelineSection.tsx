@@ -1,18 +1,20 @@
+import type {
+  EnvironmentId,
+  MessageId,
+  OrchestrationThreadActivity,
+  ScopedThreadRef,
+  ThreadId,
+  TurnDiffScope,
+  TurnId,
+  TimestampFormat,
+  ValidationRun,
+} from "@t3tools/contracts";
 import {
   reduceValidationReadiness,
   validationGateStatusLabel,
   validationRunEffectiveStatus,
   validationRunStatusLabel,
-  type EnvironmentId,
-  type MessageId,
-  type OrchestrationThreadActivity,
-  type ScopedThreadRef,
-  type ThreadId,
-  type TurnDiffScope,
-  type TurnId,
-  type TimestampFormat,
-  type ValidationRun,
-} from "@t3tools/contracts";
+} from "@t3tools/client-runtime/validation-lifecycle";
 import type { MessagePreviewLineLimits } from "@t3tools/contracts/settings";
 import { type LegendListRef } from "@legendapp/list/react";
 import {

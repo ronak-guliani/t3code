@@ -5,8 +5,8 @@ import type { ThreadId, ValidationGate, ValidationTarget } from "@t3tools/contra
 import {
   collectChangedPathsFromCheckpoints,
   planCoordinatorRunWithPolicy,
-  selectNextRunnableGate,
 } from "./ValidationPlanner.ts";
+import { selectNextRunnableGate } from "@t3tools/client-runtime/validation-lifecycle";
 
 const target: ValidationTarget = {
   workspaceRoot: "/workspace",

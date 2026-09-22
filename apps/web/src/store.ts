@@ -29,10 +29,10 @@ import {
 import { ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
 import {
-  acceptValidationResult,
-  transitionValidationRunStatus,
+  applyValidationEvent,
+  isValidationLifecycleEvent,
   validationRunEquals,
-} from "@t3tools/contracts";
+} from "@t3tools/client-runtime/validation-lifecycle";
 import { Schema } from "effect";
 import { resolveModelSlugForProvider } from "@t3tools/shared/model";
 import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
@@ -1868,6 +1868,24 @@ function applyEnvironmentOrchestrationEvent(
   event: OrchestrationEvent,
   environmentId: EnvironmentId,
 ): EnvironmentState {
+  if (isValidationLifecycleEvent(event)) {
+    return updateThreadState(state, event.payload.threadId, (thread) => {
+      const validation = applyValidationEvent(
+        {
+          request: thread.validationRequest ?? null,
+          run: thread.validationRun ?? null,
+        },
+        event,
+      );
+      return {
+        ...thread,
+        validationRequest: validation.request,
+        validationRun: validation.run,
+        updatedAt: event.occurredAt,
+      };
+    });
+  }
+
   switch (event.type) {
     case "workflow.run-requested":
     case "workflow.artifact-created":
@@ -2246,112 +2264,6 @@ function applyEnvironmentOrchestrationEvent(
         reviewResult: event.payload.result,
         updatedAt: event.occurredAt,
       }));
-
-    case "thread.validation-run-planned":
-      return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
-        validationRequest: null,
-        validationRun: event.payload.run,
-        updatedAt: event.occurredAt,
-      }));
-
-    case "thread.validation-requested":
-      return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
-        validationRequest: event.payload.request,
-        updatedAt: event.occurredAt,
-      }));
-
-    case "thread.validation-request-failed":
-      return updateThreadState(state, event.payload.threadId, (thread) => {
-        if (thread.validationRequest?.requestId !== event.payload.failure.requestId) {
-          return thread;
-        }
-        return {
-          ...thread,
-          validationRequest: null,
-          updatedAt: event.occurredAt,
-        };
-      });
-
-    case "thread.validation-lifecycle-updated":
-      return updateThreadState(state, event.payload.threadId, (thread) => {
-        if (!thread.validationRun || thread.validationRun.id !== event.payload.update.runId) {
-          return thread;
-        }
-        return {
-          ...thread,
-          validationRun: transitionValidationRunStatus(
-            thread.validationRun,
-            event.payload.update.status,
-            event.payload.update.updatedAt,
-          ),
-          updatedAt: event.occurredAt,
-        };
-      });
-
-    case "thread.validation-lease-claimed":
-      return updateThreadState(state, event.payload.threadId, (thread) => {
-        if (!thread.validationRun || thread.validationRun.id !== event.payload.runId) {
-          return thread;
-        }
-        return {
-          ...thread,
-          validationRun: {
-            ...thread.validationRun,
-            executorId: event.payload.lease.executorId,
-            lease: event.payload.lease,
-            updatedAt: event.occurredAt,
-          },
-          updatedAt: event.occurredAt,
-        };
-      });
-
-    case "thread.validation-lease-released":
-      return updateThreadState(state, event.payload.threadId, (thread) => {
-        if (!thread.validationRun || thread.validationRun.id !== event.payload.runId) {
-          return thread;
-        }
-        return {
-          ...thread,
-          validationRun: {
-            ...thread.validationRun,
-            lease: null,
-            updatedAt: event.occurredAt,
-          },
-          updatedAt: event.occurredAt,
-        };
-      });
-
-    case "thread.validation-result-recorded":
-      return updateThreadState(state, event.payload.threadId, (thread) => {
-        if (!thread.validationRun || thread.validationRun.id !== event.payload.result.runId) {
-          return thread;
-        }
-        return {
-          ...thread,
-          validationRun: acceptValidationResult(thread.validationRun, event.payload.result),
-          updatedAt: event.occurredAt,
-        };
-      });
-
-    case "thread.validation-gate-updated":
-      return updateThreadState(state, event.payload.threadId, (thread) => {
-        if (!thread.validationRun || thread.validationRun.id !== event.payload.runId) {
-          return thread;
-        }
-        return {
-          ...thread,
-          validationRun: {
-            ...thread.validationRun,
-            gates: thread.validationRun.gates.map((gate) =>
-              gate.id === event.payload.gate.id ? event.payload.gate : gate,
-            ),
-            updatedAt: event.occurredAt,
-          },
-          updatedAt: event.occurredAt,
-        };
-      });
 
     case "thread.session-set":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
