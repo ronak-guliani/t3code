@@ -5,8 +5,11 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import {
   PullRequestOperationError,
+  PullRequestDetail as PullRequestDetailSchema,
   type PullRequestProviderKind,
   PullRequestUnavailableError,
   type OrchestrationProjectShell,
@@ -43,6 +46,7 @@ import {
   type PullRequestProviderApi,
   type PullRequestProviderError,
 } from "./PullRequestProvider.ts";
+import * as PullRequestReadCache from "./PullRequestReadCache.ts";
 import { PullRequestProviderRegistry } from "./PullRequestProviderRegistry.ts";
 
 /**
@@ -358,6 +362,7 @@ function pullRequestHostOf(
 export const make = Effect.gen(function* () {
   const registry = yield* PullRequestProviderRegistry;
   const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const readCache = yield* PullRequestReadCache.PullRequestReadCache;
 
   const listWorkspaceProjects = (
     filter: Pick<PullRequestListInput, "projectId" | "host">,
@@ -1431,6 +1436,21 @@ export const make = Effect.gen(function* () {
   const REF_EPOCH_CAPACITY = 2_048;
   const refScope = (ref: PullRequestRef) => `${ref.projectId} ${ref.repository} ${ref.number}`;
   const refEpoch = (ref: PullRequestRef) => refEpochs.get(refScope(ref)) ?? 0;
+  const statsCacheKey = (ref: PullRequestRef) =>
+    JSON.stringify([listingsEpoch, refEpoch(ref), ref.projectId, ref.repository, ref.number]);
+  const recentStats = new Map<
+    string,
+    { readonly at: number; readonly value: PullRequestDiffStat }
+  >();
+  const recordStats = (ref: PullRequestRef, value: PullRequestDiffStat, at: number) => {
+    const key = statsCacheKey(ref);
+    recentStats.delete(key);
+    recentStats.set(key, { at, value });
+    if (recentStats.size > REF_EPOCH_CAPACITY) {
+      const oldest = recentStats.keys().next().value;
+      if (oldest !== undefined) recentStats.delete(oldest);
+    }
+  };
   const bumpRefEpoch = (ref: PullRequestRef) => {
     const scope = refScope(ref);
     if (!refEpochs.has(scope) && refEpochs.size >= REF_EPOCH_CAPACITY) {
@@ -1495,10 +1515,70 @@ export const make = Effect.gen(function* () {
     return staleList(key, Cache.get(listCache, key));
   };
 
+  const persistedRead = Effect.fn("PullRequestService.persistedRead")(function* <A>(
+    input: PullRequestRef,
+    operation: string,
+    codec: Schema.Codec<A, string>,
+    read: Effect.Effect<A, PullRequestError>,
+  ) {
+    const project = yield* requireProject(input);
+    const key = [
+      operation,
+      project.api.kind,
+      project.host.toLowerCase(),
+      project.repository.toLowerCase(),
+      project.project.id,
+      project.project.workspaceRoot,
+      String(input.number),
+    ]
+      .map(encodeURIComponent)
+      .join(":");
+    const lookup = yield* Effect.cached(read);
+    const encodedRead = lookup.pipe(
+      Effect.flatMap((value) =>
+        Schema.encodeEffect(codec)(value).pipe(
+          Effect.mapError(
+            (cause) =>
+              new PullRequestOperationError({
+                operation: "cache",
+                detail: "Could not encode PR cache data.",
+                cause,
+              }),
+          ),
+        ),
+      ),
+    );
+    const payload = yield* readCache.get(key, encodedRead);
+    const decoded = yield* Schema.decodeUnknownEffect(codec)(payload).pipe(Effect.option);
+    return Option.isSome(decoded) ? decoded.value : yield* lookup;
+  });
+
+  const detailCodec = Schema.fromJsonString(PullRequestDetailSchema);
   const detailCache = yield* Cache.makeWith(
     (key: string) => {
       const [, projectId, repository, number] = JSON.parse(key) as [number, string, string, number];
-      return detailUncached({ projectId, repository, number } as PullRequestRef);
+      const reference = { projectId, repository, number } as PullRequestRef;
+      return persistedRead(reference, "detail", detailCodec, detailUncached(reference)).pipe(
+        Effect.tap(
+          Effect.fn("PullRequestService.recordDetailStats")(function* (value: PullRequestDetail) {
+            recordStats(
+              {
+                projectId: value.projectId,
+                repository: value.repository,
+                number: value.number,
+              },
+              {
+                projectId: value.projectId,
+                repository: value.repository,
+                number: value.number,
+                additions: value.additions,
+                deletions: value.deletions,
+              },
+              yield* Clock.currentTimeMillis,
+            );
+          }),
+        ),
+      );
     },
     {
       capacity: DETAIL_CACHE_CAPACITY,
@@ -1578,7 +1658,7 @@ export const make = Effect.gen(function* () {
 
   const listStatsCache = yield* Cache.makeWith(
     (key: string) => {
-      const [, refs] = JSON.parse(key) as [number, ReadonlyArray<[string, string, number]>];
+      const [, refs] = JSON.parse(key) as [number, ReadonlyArray<[string, string, number, number]>];
       return listStatsUncached({
         refs: refs.map(([projectId, repository, number]) => ({ projectId, repository, number })),
       } as unknown as PullRequestListStatsInput);
@@ -1588,38 +1668,69 @@ export const make = Effect.gen(function* () {
       timeToLive: (exit) => (Exit.isSuccess(exit) ? LIST_STATS_CACHE_TTL : Duration.zero),
     },
   );
-  // The stats read leans on the host's search API — the scarcest limit of them all — so it
-  // shares between clients like every other read. Refs are sorted so one page's worth of rows
-  // is one key however the client assembled them, and the listings epoch rides along so the
-  // refresh that forgets the listing forgets its decorations with it.
-  const staleListStats = staleWhileRevalidate<PullRequestListStatsResult>(
-    LIST_STALE_WINDOW,
-    LIST_STATS_CACHE_CAPACITY,
-  );
-  const listStats: PullRequestService["Service"]["listStats"] = (input) => {
-    if (input.refs.length === 0) return Effect.succeed({ stats: [] });
-    const key = JSON.stringify([
+  const statsBatchKey = (refs: Iterable<PullRequestRef>) =>
+    JSON.stringify([
       listingsEpoch,
-      input.refs
-        .map((ref) => [ref.projectId, ref.repository, ref.number] as const)
+      [...refs]
+        .map((ref) => [ref.projectId, ref.repository, ref.number, refEpoch(ref)] as const)
         .toSorted((left, right) =>
           `${left[0]} ${left[1]} ${left[2]}`.localeCompare(`${right[0]} ${right[1]} ${right[2]}`),
         ),
     ]);
-    return staleListStats(key, Cache.get(listStatsCache, key));
-  };
-
-  const invalidate: PullRequestService["Service"]["invalidate"] = (input) =>
-    Effect.sync(() => {
-      if (input.reference === undefined) {
-        listingsEpoch = ++epochCounter;
-        // A whole-workspace refresh is the reader asking to be re-answered from the hosts,
-        // and that includes who the hosts say they are.
-        viewersByHost.clear();
-        return;
+  // Exact batches share in-flight reads; overlapping pages reuse each row already fetched by a
+  // detail read. Explicit refreshes and mutations strand both forms through their epochs.
+  const listStats: PullRequestService["Service"]["listStats"] = Effect.fn(
+    "PullRequestService.listStats",
+  )(function* (input: PullRequestListStatsInput) {
+    if (input.refs.length === 0) return { stats: [] };
+    const now = yield* Clock.currentTimeMillis;
+    const held: PullRequestDiffStat[] = [];
+    const missing = new Map<string, PullRequestRef>();
+    for (const ref of input.refs) {
+      const key = statsCacheKey(ref);
+      const cached = recentStats.get(key);
+      if (cached !== undefined && now - cached.at < Duration.toMillis(LIST_STATS_CACHE_TTL)) {
+        held.push(cached.value);
+      } else {
+        missing.set(key, ref);
       }
-      bumpRefEpoch(input.reference);
+    }
+    if (missing.size === 0) return { stats: held };
+    const { result, at } = yield* Cache.get(listStatsCache, statsBatchKey(missing.values())).pipe(
+      Effect.flatMap((value) =>
+        Clock.currentTimeMillis.pipe(Effect.map((at) => ({ result: value, at }))),
+      ),
+    );
+    for (const stat of result.stats) {
+      const ref = missing.get(
+        statsCacheKey({
+          projectId: stat.projectId,
+          repository: stat.repository,
+          number: stat.number,
+        }),
+      );
+      if (ref !== undefined) recordStats(ref, stat, at);
+    }
+    return { stats: [...held, ...result.stats] };
+  });
+
+  const invalidate: PullRequestService["Service"]["invalidate"] = (input) => {
+    if (input.reference !== undefined) {
+      return readCache.invalidate.pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            bumpRefEpoch(input.reference!);
+          }),
+        ),
+      );
+    }
+    return Effect.sync(() => {
+      listingsEpoch = ++epochCounter;
+      // A whole-workspace refresh is the reader asking to be re-answered from the hosts,
+      // and that includes who the hosts say they are.
+      viewersByHost.clear();
     });
+  };
 
   const monitorSnapshot: PullRequestService["Service"]["monitorSnapshot"] = (input) =>
     Effect.gen(function* () {
@@ -1649,7 +1760,9 @@ export const make = Effect.gen(function* () {
       scope: "reference" | "listings" = "reference",
     ): ((input: I) => Effect.Effect<void, PullRequestError>) =>
     (input) =>
-      method(input).pipe(
+      readCache.invalidate.pipe(
+        Effect.andThen(method(input)),
+        Effect.ensuring(readCache.invalidate),
         Effect.tap(() =>
           Effect.sync(() => {
             bumpRefEpoch(input);

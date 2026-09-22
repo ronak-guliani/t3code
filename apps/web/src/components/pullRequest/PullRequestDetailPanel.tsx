@@ -4,6 +4,7 @@ import type {
   PullRequestAction,
   PullRequestActivity,
   PullRequestDetail,
+  PullRequestListEntry,
   PullRequestMergeMethod,
   PullRequestRef,
   PullRequestReviewVerdict,
@@ -473,17 +474,31 @@ function ReviewComposer({
 export function PullRequestDetailPanel({
   environmentId,
   reference,
+  listEntry = null,
   onClose,
 }: {
   readonly environmentId: EnvironmentId;
   readonly reference: PullRequestRef;
+  readonly listEntry?: PullRequestListEntry | null;
   readonly onClose: () => void;
 }) {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<DetailTab>("summary");
+  const matchingListEntry =
+    listEntry?.projectId === reference.projectId &&
+    listEntry.repository.toLowerCase() === reference.repository.toLowerCase() &&
+    listEntry.number === reference.number
+      ? listEntry
+      : null;
   const detailQuery = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
   const [timelineOrder, setTimelineOrder] = useState<"newest" | "oldest">("newest");
-  const monitorQuery = useQuery(pullRequestMonitorStatusQueryOptions({ environmentId, reference }));
+  const monitorQuery = useQuery(
+    pullRequestMonitorStatusQueryOptions({
+      environmentId,
+      reference,
+      enabled: detailQuery.data !== undefined,
+    }),
+  );
   const monitorContextQuery = useQuery(
     pullRequestMonitorContextQueryOptions({
       environmentId,
@@ -761,13 +776,47 @@ export function PullRequestDetailPanel({
   if (detailQuery.isPending) {
     return (
       <div className="flex h-full flex-col gap-4 p-4" aria-busy="true">
-        <div className="flex items-start gap-3">
-          <div className="size-5 animate-pulse rounded-full bg-muted" />
-          <div className="min-w-0 flex-1 space-y-2">
-            <div className="h-4 w-4/5 animate-pulse rounded bg-muted" />
-            <div className="h-3 w-2/5 animate-pulse rounded bg-muted" />
+        {matchingListEntry ? (
+          <>
+            <div className="flex items-start gap-3">
+              <PullRequestStateGlyph
+                isDraft={matchingListEntry.isDraft}
+                mergeability={matchingListEntry.mergeability}
+                state={matchingListEntry.state}
+                className="mt-0.5 size-5"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+                  <span className="truncate">{matchingListEntry.repository}</span>
+                  <span aria-hidden>/</span>
+                  <span>#{matchingListEntry.number}</span>
+                </div>
+                <h1 className="mt-1 truncate text-base font-semibold">{matchingListEntry.title}</h1>
+                <div className="mt-2 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                  <PullRequestActorLabel actor={matchingListEntry.author} tooltip={false} />
+                  <span>updated {formatRelativeTimeLabel(matchingListEntry.updatedAt)}</span>
+                </div>
+              </div>
+            </div>
+            <div className="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground">
+              <span className="min-w-0 truncate">{matchingListEntry.baseBranch}</span>
+              <ArrowLeftIcon className="size-3 shrink-0 opacity-60" />
+              <span className="min-w-0 flex-1 truncate">{matchingListEntry.headBranch}</span>
+              <PullRequestDiffStat
+                additions={matchingListEntry.additions}
+                deletions={matchingListEntry.deletions}
+              />
+            </div>
+          </>
+        ) : (
+          <div className="flex items-start gap-3">
+            <div className="size-5 animate-pulse rounded-full bg-muted" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="h-4 w-4/5 animate-pulse rounded bg-muted" />
+              <div className="h-3 w-2/5 animate-pulse rounded bg-muted" />
+            </div>
           </div>
-        </div>
+        )}
         <div className="h-8 animate-pulse rounded bg-muted/70" />
         <div className="h-24 animate-pulse rounded-lg bg-muted/50" />
       </div>

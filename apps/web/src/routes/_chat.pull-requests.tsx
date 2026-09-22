@@ -8,7 +8,7 @@ import {
   type PullRequestListState,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { queryOptions, useQueries, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, queryOptions, useQueries, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownUpIcon,
@@ -23,7 +23,7 @@ import {
   RefreshCwIcon,
   SearchIcon,
 } from "lucide-react";
-import { type ReactNode, useDeferredValue, useEffect, useMemo, useRef } from "react";
+import { type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import { PullRequestDetailPanel } from "../components/pullRequest/PullRequestDetailPanel";
 import { PullRequestFiltersMenu } from "../components/pullRequest/PullRequestFiltersMenu";
@@ -216,6 +216,7 @@ function PullRequestsRoute() {
             ...(deferredQuery.trim() ? { query: deferredQuery.trim() } : {}),
           }),
         staleTime: 30_000,
+        placeholderData: keepPreviousData,
         refetchOnWindowFocus: true,
         refetchOnReconnect: true,
       }),
@@ -244,11 +245,35 @@ function PullRequestsRoute() {
       }),
     [entries, environmentTargets],
   );
+  const statsScopeKey = JSON.stringify([
+    effectiveState,
+    search.involvement,
+    search.projectId ?? null,
+    deferredQuery.trim(),
+  ]);
+  const [deferredStatsScopeKey, setDeferredStatsScopeKey] = useState<string | null>(null);
+  const statsRequireAllRows = sort === "largest" || sort === "smallest";
+  useEffect(() => {
+    if (entries.length === 0 || statsRequireAllRows) {
+      setDeferredStatsScopeKey(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (!cancelled) setDeferredStatsScopeKey(statsScopeKey);
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [entries.length, statsRequireAllRows, statsScopeKey]);
+  const statsEnabled = statsRequireAllRows || deferredStatsScopeKey === statsScopeKey;
   const statsQueries = useQueries({
     queries: statsTargets.map(({ environmentId, refs }) =>
       pullRequestListStatsQueryOptions({
         environmentId,
         request: { refs },
+        enabled: statsEnabled,
       }),
     ),
   });
@@ -268,6 +293,16 @@ function PullRequestsRoute() {
       return stat && entry.additions === 0 && entry.deletions === 0 ? { ...entry, ...stat } : entry;
     });
   }, [entries, statsQueries, statsTargets]);
+  const entriesByReference = useMemo(
+    () =>
+      new Map(
+        entriesWithStats.map((entry) => [
+          `${entry.environmentId}:${entry.projectId}:${entry.repository.toLowerCase()}#${entry.number}`,
+          entry,
+        ]),
+      ),
+    [entriesWithStats],
+  );
   const normalizedQuery = deferredQuery.trim().toLowerCase();
   /**
    * The list only narrows by title/repository client-side for display; a row
@@ -794,6 +829,11 @@ function PullRequestsRoute() {
                 <PullRequestDetailPanel
                   environmentId={surface.environmentId}
                   reference={surface.reference}
+                  listEntry={
+                    entriesByReference.get(
+                      `${surface.environmentId}:${surface.reference.projectId}:${surface.reference.repository.toLowerCase()}#${surface.reference.number}`,
+                    ) ?? null
+                  }
                   onClose={() => {
                     closeSurface(PULL_REQUESTS_PANEL_REF, surface.id);
                     const nextSurface = pullRequestsPanel.surfaces.findLast(

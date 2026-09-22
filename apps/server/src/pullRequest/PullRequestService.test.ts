@@ -1,3 +1,6 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore";
+import * as Persistence from "effect/unstable/persistence/Persistence";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -9,7 +12,12 @@ import type {
 } from "@t3tools/contracts";
 
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { type ProviderChangeRequest, type PullRequestProviderApi } from "./PullRequestProvider.ts";
+import {
+  type ProviderChangeRequest,
+  type ProviderChangeRequestDetail,
+  type PullRequestProviderApi,
+} from "./PullRequestProvider.ts";
+import * as PullRequestReadCache from "./PullRequestReadCache.ts";
 import { PullRequestProviderRegistry, fromProviders } from "./PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./PullRequestService.ts";
 
@@ -59,6 +67,24 @@ const teamRequestedChange: ProviderChangeRequest = {
   reviewRequestLogins: [],
   hasTeamReviewRequest: true,
   labels: [],
+};
+
+const detailedChange: ProviderChangeRequestDetail = {
+  ...teamRequestedChange,
+  body: "Description",
+  changedFiles: 3,
+  mergedAt: null,
+  closedAt: null,
+  reviewers: [],
+  checks: [],
+  mergeCapabilities: { merge: true, squash: true, rebase: true },
+  viewerPermissions: {
+    actions: ["merge", "ready", "draft", "close", "reopen"],
+    comment: true,
+    resolve: true,
+    verdicts: ["comment", "approve", "request-changes"],
+    requestReviewers: true,
+  },
 };
 
 function provider(): PullRequestProviderApi {
@@ -121,6 +147,11 @@ function makeService(
               updatedAt: "2026-08-10T00:00:00Z",
             }),
         }),
+        Layer.effect(PullRequestReadCache.PullRequestReadCache, PullRequestReadCache.make).pipe(
+          Layer.provide(Persistence.layerKvs),
+          Layer.provide(KeyValueStore.layerMemory),
+          Layer.provide(NodeServices.layer),
+        ),
       ),
     ),
   );
@@ -183,6 +214,32 @@ it.effect("scopes viewer discovery to the project's GitHub host", () =>
 
     assert.deepStrictEqual(viewerInputs, [
       { cwd: "/workspace/enterprise", host: "github.example.test" },
+    ]);
+  }),
+);
+
+it.effect("reuses detail counts for later list stats reads", () =>
+  Effect.gen(function* () {
+    let statsCalls = 0;
+    const reference = { projectId: project.id, repository: "acme/web", number: 42 };
+    const service = yield* makeService({
+      provider: providerWith({
+        getChangeRequest: () => Effect.succeed(detailedChange),
+        listChangeRequestStats: () => {
+          statsCalls += 1;
+          return Effect.succeed([
+            { repository: "acme/web", number: 42, additions: 1, deletions: 0 },
+          ]);
+        },
+      }),
+    });
+
+    yield* service.detail(reference);
+    const stats = yield* service.listStats({ refs: [reference] });
+
+    assert.strictEqual(statsCalls, 0);
+    assert.deepStrictEqual(stats.stats, [
+      { projectId: project.id, repository: "acme/web", number: 42, additions: 1, deletions: 0 },
     ]);
   }),
 );
