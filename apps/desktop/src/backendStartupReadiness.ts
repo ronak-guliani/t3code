@@ -49,7 +49,9 @@ export async function waitForBackendStartupReady(
         if (settled && isBackendReadinessAborted(error)) {
           return;
         }
-        settleReject(error);
+        if (!listeningPromise) {
+          settleReject(error);
+        }
       },
     );
   });
