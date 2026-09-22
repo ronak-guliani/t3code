@@ -65,6 +65,8 @@ const COPILOT_DRIVER = ProviderDriverKind.make("copilot");
 const EXPECTED_COPILOT_BUILT_IN_MODEL_SLUGS = [
   "auto",
   "gpt-6-astra",
+  "gpt-6-luna",
+  "gpt-6-sol",
   "gpt-5.5",
   "gpt-5.4",
   "gpt-5.4-mini",
@@ -87,6 +89,7 @@ const EXPECTED_COPILOT_BUILT_IN_MODEL_SLUGS = [
   "claude-fable-5",
   "claude-fable-5.1",
   "claude-opus-5",
+  "claude-opus-5.5",
   "claude-opus-4.8",
   "claude-opus-4.7",
   "claude-opus-4.6",
