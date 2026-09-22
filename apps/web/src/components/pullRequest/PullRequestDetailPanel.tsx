@@ -30,7 +30,6 @@ import {
 import { lazy, Suspense, useMemo, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import ChatMarkdown from "../ChatMarkdown";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
@@ -68,6 +67,8 @@ import {
 } from "~/lib/openPullRequestLink";
 import { presentCollaborativeAcceptanceStatus } from "./collaborativeAcceptancePresentation";
 import type { ThreadShell } from "~/types";
+import { PullRequestBody } from "./PullRequestBody";
+import { PullRequestMediaDialog, type PullRequestMediaPreview } from "./PullRequestMediaDialog";
 
 import {
   EMPTY_PENDING_REVIEW_COMMENTS,
@@ -88,7 +89,6 @@ import {
   pullRequestStatePresentation,
   resolvePullRequestMergeSelection,
   summarizePullRequestChecks,
-  toRenderablePullRequestMarkdown,
 } from "./pullRequestPresentation";
 
 type DetailTab = "summary" | "timeline" | "code";
@@ -570,6 +570,7 @@ export function PullRequestDetailPanel({
   });
   const [comment, setComment] = useState("");
   const [actionPending, setActionPending] = useState<PullRequestAction | null>(null);
+  const [mediaPreview, setMediaPreview] = useState<PullRequestMediaPreview | null>(null);
   const [mergeMethodOverride, setMergeMethodOverride] = useState<PullRequestMergeMethod | null>(
     null,
   );
@@ -914,6 +915,9 @@ export function PullRequestDetailPanel({
       className="flex h-full min-h-0 flex-col bg-background"
       onClickCapture={(event) => {
         if (event.button !== 0 || !(event.target instanceof Element)) return;
+        if (event.target instanceof HTMLImageElement || event.target instanceof HTMLVideoElement) {
+          return;
+        }
         const link = event.target.closest("a[href]");
         const url = link?.getAttribute("href");
         if (!url || !isWebUrl(url)) return;
@@ -1280,9 +1284,10 @@ export function PullRequestDetailPanel({
               </PullRequestMetaRow>
             </div>
             <PullRequestSection title="Description">
-              <ChatMarkdown
+              <PullRequestBody
+                body={detail.body || "_No description provided._"}
                 cwd={detail.workspaceRoot}
-                text={toRenderablePullRequestMarkdown(detail.body || "_No description provided._")}
+                onPreview={setMediaPreview}
               />
             </PullRequestSection>
             <PullRequestSection title={`Checks (${detail.checks.length})`} defaultOpen={false}>
@@ -1446,9 +1451,10 @@ export function PullRequestDetailPanel({
                           ) : null}
                         </div>
                         <div className="px-3 py-3 text-sm">
-                          <ChatMarkdown
+                          <PullRequestBody
+                            body={entry.item.body}
                             cwd={detail.workspaceRoot}
-                            text={toRenderablePullRequestMarkdown(entry.item.body)}
+                            onPreview={setMediaPreview}
                           />
                         </div>
                       </div>
@@ -1525,6 +1531,13 @@ export function PullRequestDetailPanel({
           </div>
         ) : null}
       </div>
+      {mediaPreview ? (
+        <PullRequestMediaDialog
+          key={`${mediaPreview.type}:${mediaPreview.src}`}
+          preview={mediaPreview}
+          onClose={() => setMediaPreview(null)}
+        />
+      ) : null}
     </section>
   );
 }

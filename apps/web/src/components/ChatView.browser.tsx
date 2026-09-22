@@ -4537,7 +4537,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("opens a non-active row's GitHub PR in that thread's panel and navigates to it", async () => {
+  it("opens the latest PR from a non-active row on double click", async () => {
     const secondaryThreadId = ThreadId.make("thread-secondary-project");
     const prUrl = "https://github.com/acme/app/pull/205";
     const supportingPrUrl = "https://github.com/acme/app/pull/206";
@@ -4635,18 +4635,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       expect(prTrigger.textContent?.trim()).toBe("#206 + 1");
 
-      prTrigger.focus();
-      await userEvent.keyboard("{Enter}");
-
-      await expect
-        .element(page.getByRole("dialog", { name: "Linked pull requests" }))
-        .toBeVisible();
-
-      const primaryPrAnchor = await waitForElement(
-        () => document.querySelector<HTMLAnchorElement>(`a[href="${supportingPrUrl}"]`),
-        "Unable to find primary linked pull request.",
-      );
-      primaryPrAnchor.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      prTrigger.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
 
       // The panel renders only for the active chat, so the click opens the
       // row's thread instead of updating invisible panel state.
@@ -4669,6 +4658,113 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
         { timeout: 8_000, interval: 32 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a row's only linked GitHub PR without showing a chooser", async () => {
+    const secondaryThreadId = ThreadId.make("thread-secondary-project");
+    const prUrl = "https://github.com/acme/app/pull/205";
+
+    const snapshot = createSnapshotWithSecondaryProject({
+      includeArchivedSecondaryThread: false,
+    });
+    const withGithubPr: OrchestrationReadModel = {
+      ...snapshot,
+      projects: snapshot.projects.map((project) =>
+        project.id === PROJECT_ID
+          ? {
+              ...project,
+              repositoryIdentity: {
+                canonicalKey: "github.com/acme/app",
+                locator: {
+                  source: "git-remote",
+                  remoteName: "origin",
+                  remoteUrl: "https://github.com/acme/app.git",
+                },
+                provider: "github",
+                displayName: "acme/app",
+              },
+            }
+          : project,
+      ),
+      threads: snapshot.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? {
+              ...thread,
+              pullRequest: {
+                number: 205,
+                title: "feat(web): open a row's only linked PR",
+                url: prUrl,
+                baseBranch: "main",
+                headBranch: "feat/sidebar-single-pr-link",
+                state: "open",
+              },
+              pullRequests: [
+                {
+                  pullRequest: {
+                    number: 205,
+                    title: "feat(web): open a row's only linked PR",
+                    url: prUrl,
+                    baseBranch: "main",
+                    headBranch: "feat/sidebar-single-pr-link",
+                    state: "open",
+                  },
+                  source: "created",
+                  linkedAt: "2026-03-04T12:00:00.000Z",
+                },
+              ],
+            }
+          : thread,
+      ),
+    };
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: withGithubPr,
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/${secondaryThreadId}`,
+    });
+
+    try {
+      const currentDescriptor = readPrimaryEnvironmentDescriptor();
+      writePrimaryEnvironmentDescriptor(
+        currentDescriptor
+          ? {
+              ...currentDescriptor,
+              capabilities: { ...currentDescriptor.capabilities, pullRequests: true },
+            }
+          : null,
+      );
+
+      const prTrigger = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(
+            `[data-testid="thread-pr-link-${THREAD_ID}"] button`,
+          ),
+        "Unable to find sidebar title PR mark.",
+      );
+      expect(prTrigger.textContent?.trim()).toBe("#205");
+
+      prTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.pathname).toBe(serverThreadPath(THREAD_ID));
+          const panel = selectThreadRightPanelState(
+            useRightPanelStore.getState().byThreadKey,
+            THREAD_REF,
+          );
+          expect(panel.isOpen).toBe(true);
+          expect(panel.activeSurfaceId).toBe(
+            `pull-request:${LOCAL_ENVIRONMENT_ID}:${PROJECT_ID}:acme/app:205`,
+          );
+        },
+        { timeout: 8_000, interval: 32 },
+      );
+      await expect
+        .element(page.getByRole("dialog", { name: "Linked pull requests" }))
+        .not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }
