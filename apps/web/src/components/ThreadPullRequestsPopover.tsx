@@ -45,6 +45,37 @@ export function formatThreadPullRequestSummary(
   return `#${primaryPullRequest.number}${additionalCount > 0 ? ` + ${additionalCount}` : ""}`;
 }
 
+function PrTriggerButton({
+  accessibilityLabel,
+  children,
+  className,
+  onClick,
+  onDoubleClick,
+  onPointerDown,
+}: {
+  readonly accessibilityLabel: string;
+  readonly children?: React.ReactNode;
+  readonly className: string;
+  readonly onClick: React.MouseEventHandler<HTMLButtonElement>;
+  readonly onDoubleClick?: React.MouseEventHandler<HTMLButtonElement>;
+  readonly onPointerDown: React.PointerEventHandler<HTMLButtonElement>;
+}) {
+  return (
+    <button
+      type="button"
+      data-thread-selection-safe
+      aria-label={accessibilityLabel}
+      title={accessibilityLabel}
+      className={className}
+      onPointerDown={onPointerDown}
+      onClick={onClick}
+      onDoubleClick={onDoubleClick}
+    >
+      {children}
+    </button>
+  );
+}
+
 export function ThreadPullRequestsPopover({
   links,
   fallbackPullRequest,
@@ -64,27 +95,44 @@ export function ThreadPullRequestsPopover({
   const primaryStatus = prStatusIndicator(primaryPullRequest);
   const accessibilityLabel =
     pullRequests.length === 1
-      ? `${primaryStatus?.tooltip ?? summary}. Show linked pull request details`
-      : `${pullRequests.length} linked pull requests, starting with #${primaryPullRequest.number}. Show details`;
+      ? `${primaryStatus?.tooltip ?? summary}. Open linked pull request details`
+      : `${pullRequests.length} linked pull requests, starting with #${primaryPullRequest.number}. Open linked pull request details`;
+  const triggerClassName = cn(
+    "shrink-0 cursor-pointer whitespace-nowrap font-mono tabular-nums outline-hidden transition-colors hover:underline focus-visible:ring-1 focus-visible:ring-ring",
+    primaryStatus?.colorClass ?? "text-sky-600 dark:text-sky-300/90",
+  );
+  const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+
+  if (pullRequests.length === 1) {
+    return (
+      <PrTriggerButton
+        accessibilityLabel={accessibilityLabel}
+        className={triggerClassName}
+        onPointerDown={handlePointerDown}
+        onClick={(event) => {
+          openPullRequestLink(event, primaryPullRequest.url, threadRef);
+        }}
+      >
+        {summary}
+      </PrTriggerButton>
+    );
+  }
 
   return (
     <Popover>
       <PopoverTrigger
         render={
-          <button
-            type="button"
-            data-thread-selection-safe
-            aria-label={accessibilityLabel}
-            title={accessibilityLabel}
-            className={cn(
-              "shrink-0 cursor-pointer whitespace-nowrap font-mono tabular-nums outline-hidden transition-colors hover:underline focus-visible:ring-1 focus-visible:ring-ring",
-              primaryStatus?.colorClass ?? "text-sky-600 dark:text-sky-300/90",
-            )}
-            onPointerDown={(event) => {
-              event.stopPropagation();
-            }}
+          <PrTriggerButton
+            accessibilityLabel={accessibilityLabel}
+            className={triggerClassName}
+            onPointerDown={handlePointerDown}
             onClick={(event) => {
               event.stopPropagation();
+            }}
+            onDoubleClick={(event) => {
+              openPullRequestLink(event, primaryPullRequest.url, threadRef);
             }}
           />
         }
