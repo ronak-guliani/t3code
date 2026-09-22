@@ -330,6 +330,16 @@ function splitFencedCodeBlocks(body: string): string[] {
 
 function transformPullRequestMarkdown(body: string): string {
   let text = body;
+  text = text.replace(/<img\b([^>]*)>/gi, (_match, attributes: string) => {
+    const source = /\bsrc\s*=\s*(["'])(.*?)\1/i.exec(attributes)?.[2];
+    if (!source || !/^https?:\/\//i.test(source)) {
+      return "";
+    }
+    const alt = /\balt\s*=\s*(["'])(.*?)\1/i.exec(attributes)?.[2] ?? "image";
+    const label = alt.replaceAll("\\", "\\\\").replaceAll("[", "\\[").replaceAll("]", "\\]");
+    const href = source.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
+    return `![${label}](${href})`;
+  });
   text = text.replace(/<details\b[^>]*>([\s\S]*?)<\/details>/gi, (_match, inner: string) => {
     const summary = inner.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/i)?.[1] ?? "";
     const rest = inner.replace(/<summary\b[^>]*>[\s\S]*?<\/summary>/i, "");

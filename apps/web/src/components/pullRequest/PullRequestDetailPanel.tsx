@@ -19,13 +19,15 @@ import {
   FileDiffIcon,
   GitCommitHorizontalIcon,
   GitMergeIcon,
+  MinusIcon,
   MessageSquareIcon,
+  PlusIcon,
   TagIcon,
   UsersIcon,
   RefreshCwIcon,
   XIcon,
 } from "lucide-react";
-import { lazy, Suspense, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import ChatMarkdown from "../ChatMarkdown";
 import { Badge } from "../ui/badge";
@@ -61,6 +63,7 @@ import { selectThreadShellsAcrossEnvironments, useStore } from "~/store";
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import { findPullRequestBrowserThread } from "~/lib/openPullRequestLink";
 import { presentCollaborativeAcceptanceStatus } from "./collaborativeAcceptancePresentation";
+import { splitPullRequestBody } from "./pullRequestMedia";
 
 import {
   EMPTY_PENDING_REVIEW_COMMENTS,
@@ -160,6 +163,188 @@ function PullRequestMetaRow({
         {label}
       </span>
       <span className="min-w-0 text-foreground">{children}</span>
+    </div>
+  );
+}
+
+type PullRequestMediaPreview = {
+  readonly type: "image" | "video";
+  readonly src: string;
+  readonly name: string;
+};
+
+function PullRequestMediaDialog({
+  preview,
+  onClose,
+}: {
+  readonly preview: PullRequestMediaPreview;
+  readonly onClose: () => void;
+}) {
+  const [zoom, setZoom] = useState(1);
+
+  useEffect(() => {
+    setZoom(1);
+  }, [preview.src]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  const zoomIn = () => setZoom((current) => Math.min(8, current * 1.5));
+  const zoomOut = () => setZoom((current) => Math.max(1, current / 1.5));
+
+  return (
+    <div
+      aria-label={`Expanded ${preview.type} preview`}
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 py-6 [-webkit-app-region:no-drag]"
+      role="dialog"
+    >
+      <button
+        aria-label={`Close ${preview.type} preview`}
+        className="absolute inset-0 cursor-default"
+        type="button"
+        onClick={onClose}
+      />
+      <div className="relative z-10 flex max-h-full max-w-[92vw] flex-col items-center">
+        <Button
+          aria-label={`Close ${preview.type} preview`}
+          className="absolute right-0 -top-10 text-white hover:bg-white/10 hover:text-white"
+          size="icon-xs"
+          type="button"
+          variant="ghost"
+          onClick={onClose}
+        >
+          <XIcon />
+        </Button>
+        {preview.type === "image" ? (
+          <>
+            <div
+              aria-label={`${preview.name}, zoomable image`}
+              className="max-h-[86vh] max-w-[92vw] overflow-auto rounded-lg bg-background shadow-2xl"
+              role="region"
+              onWheel={(event) => {
+                event.preventDefault();
+                setZoom((current) =>
+                  Math.min(8, Math.max(1, current * Math.exp(-event.deltaY * 0.002))),
+                );
+              }}
+            >
+              <img
+                alt={preview.name}
+                className="block select-none"
+                draggable={false}
+                src={preview.src}
+                style={
+                  zoom === 1
+                    ? { maxHeight: "86vh", maxWidth: "92vw" }
+                    : { width: `${zoom * 100}%`, maxWidth: "none" }
+                }
+                onClick={() => setZoom((current) => (current === 1 ? 2 : 1))}
+              />
+            </div>
+            <div className="mt-2 flex items-center gap-1 text-white">
+              <Button
+                aria-label="Zoom out"
+                disabled={zoom === 1}
+                size="icon-xs"
+                type="button"
+                variant="ghost"
+                onClick={zoomOut}
+              >
+                <MinusIcon />
+              </Button>
+              <span className="min-w-12 text-center text-xs tabular-nums">
+                {Math.round(zoom * 100)}%
+              </span>
+              <Button
+                aria-label="Zoom in"
+                disabled={zoom === 8}
+                size="icon-xs"
+                type="button"
+                variant="ghost"
+                onClick={zoomIn}
+              >
+                <PlusIcon />
+              </Button>
+            </div>
+          </>
+        ) : (
+          <video
+            autoPlay
+            className="max-h-[86vh] max-w-[92vw] rounded-lg border border-border/70 bg-black shadow-2xl"
+            controls
+            src={preview.src}
+          />
+        )}
+        <p className="mt-2 max-w-[92vw] truncate text-center text-xs text-white/80">
+          {preview.name}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function PullRequestBody({
+  body,
+  cwd,
+  onPreview,
+}: {
+  readonly body: string;
+  readonly cwd: string;
+  readonly onPreview: (preview: PullRequestMediaPreview) => void;
+}) {
+  const segments = useMemo(() => splitPullRequestBody(body), [body]);
+
+  return (
+    <div className="space-y-3" data-image-gallery>
+      {segments.map((segment) =>
+        segment.kind === "markdown" ? (
+          <div
+            key={segment.id}
+            onClickCapture={(event) => {
+              if (event.button !== 0 || !(event.target instanceof HTMLImageElement)) return;
+              event.preventDefault();
+              event.stopPropagation();
+              onPreview({
+                type: "image",
+                src: event.target.currentSrc || event.target.src,
+                name: event.target.alt || "Pull request image",
+              });
+            }}
+          >
+            <ChatMarkdown cwd={cwd} text={toRenderablePullRequestMarkdown(segment.text)} />
+          </div>
+        ) : (
+          <button
+            aria-label="Expand pull request video"
+            className="block w-full cursor-zoom-in overflow-hidden rounded-lg border border-border/60 bg-black text-left"
+            key={segment.id}
+            type="button"
+            onClick={() =>
+              onPreview({
+                type: "video",
+                src: segment.url,
+                name: "Pull request video",
+              })
+            }
+          >
+            <video
+              aria-hidden
+              className="block max-h-80 w-full object-contain"
+              muted
+              preload="metadata"
+              src={segment.url}
+            />
+          </button>
+        ),
+      )}
     </div>
   );
 }
@@ -501,6 +686,7 @@ export function PullRequestDetailPanel({
   });
   const [comment, setComment] = useState("");
   const [actionPending, setActionPending] = useState<PullRequestAction | null>(null);
+  const [mediaPreview, setMediaPreview] = useState<PullRequestMediaPreview | null>(null);
   const [mergeMethodOverride, setMergeMethodOverride] = useState<PullRequestMergeMethod | null>(
     null,
   );
@@ -828,6 +1014,9 @@ export function PullRequestDetailPanel({
       className="flex h-full min-h-0 flex-col bg-background"
       onClickCapture={(event) => {
         if (event.button !== 0 || !(event.target instanceof Element)) return;
+        if (event.target instanceof HTMLImageElement || event.target instanceof HTMLVideoElement) {
+          return;
+        }
         const link = event.target.closest("a[href]");
         const url = link?.getAttribute("href");
         if (!url || !isWebUrl(url)) return;
@@ -1189,9 +1378,10 @@ export function PullRequestDetailPanel({
               </PullRequestMetaRow>
             </div>
             <PullRequestSection title="Description">
-              <ChatMarkdown
+              <PullRequestBody
+                body={detail.body || "_No description provided._"}
                 cwd={detail.workspaceRoot}
-                text={toRenderablePullRequestMarkdown(detail.body || "_No description provided._")}
+                onPreview={setMediaPreview}
               />
             </PullRequestSection>
             <PullRequestSection title={`Checks (${detail.checks.length})`} defaultOpen={false}>
@@ -1355,9 +1545,10 @@ export function PullRequestDetailPanel({
                           ) : null}
                         </div>
                         <div className="px-3 py-3 text-sm">
-                          <ChatMarkdown
+                          <PullRequestBody
+                            body={entry.item.body}
                             cwd={detail.workspaceRoot}
-                            text={toRenderablePullRequestMarkdown(entry.item.body)}
+                            onPreview={setMediaPreview}
                           />
                         </div>
                       </div>
@@ -1434,6 +1625,9 @@ export function PullRequestDetailPanel({
           </div>
         ) : null}
       </div>
+      {mediaPreview ? (
+        <PullRequestMediaDialog preview={mediaPreview} onClose={() => setMediaPreview(null)} />
+      ) : null}
     </section>
   );
 }

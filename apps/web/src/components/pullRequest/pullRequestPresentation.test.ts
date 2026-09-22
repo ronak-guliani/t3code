@@ -24,6 +24,14 @@ describe("toRenderablePullRequestMarkdown", () => {
     ).toBe("[Read \\[this\\]](https://example.com/a_\\(b\\))");
   });
 
+  it("converts GitHub image tags into renderable Markdown images", () => {
+    expect(
+      toRenderablePullRequestMarkdown(
+        '<img src="https://github.com/user-attachments/assets/image-id" alt="Before [after]">',
+      ),
+    ).toBe("![Before \\[after\\]](https://github.com/user-attachments/assets/image-id)");
+  });
+
   it("decodes supported HTML entities after removing tags", () => {
     expect(toRenderablePullRequestMarkdown("<p>Tom &amp; &quot;Jerry&quot;</p>")).toBe(
       'Tom & "Jerry"',
