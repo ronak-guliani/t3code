@@ -16,6 +16,7 @@ import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSn
 import {
   type ProviderChangeRequest,
   type ProviderChangeRequestDetail,
+  PullRequestProviderError,
   type PullRequestProviderApi,
 } from "./PullRequestProvider.ts";
 import * as PullRequestReadCache from "./PullRequestReadCache.ts";
@@ -421,6 +422,71 @@ it.effect("keeps listings cached for mutations that only change one pull request
     yield* service.activity(reference);
     assert.strictEqual(listCalls, 2);
     assert.strictEqual(activityCalls, 7);
+  }),
+);
+
+it.effect("holds a rate-limit failure briefly instead of calling gh on every read", () =>
+  Effect.gen(function* () {
+    let detailCalls = 0;
+    const reference = { projectId: project.id, repository: "acme/web", number: 42 };
+    const service = yield* makeService({
+      provider: providerWith({
+        getChangeRequest: () => {
+          detailCalls += 1;
+          return Effect.fail(
+            new PullRequestProviderError({
+              provider: "github",
+              operation: "getChangeRequest",
+              reason: "failed",
+              detail:
+                "GitHub API rate limit exceeded. Pull-request reads are paused briefly and resume on their own.",
+            }),
+          );
+        },
+      }),
+    });
+
+    const first = yield* service.detail(reference).pipe(Effect.flip);
+    assert.strictEqual(first._tag, "PullRequestOperationError");
+    assert.strictEqual(detailCalls, 1);
+
+    // The second read shares the held failure: no new `gh` call.
+    const second = yield* service.detail(reference).pipe(Effect.flip);
+    assert.strictEqual(second._tag, "PullRequestOperationError");
+    assert.strictEqual(detailCalls, 1);
+
+    // Past the cooldown the next read tries the host again.
+    yield* TestClock.adjust("61 seconds");
+    yield* Effect.yieldNow;
+    const third = yield* service.detail(reference).pipe(Effect.flip);
+    assert.strictEqual(third._tag, "PullRequestOperationError");
+    assert.strictEqual(detailCalls, 2);
+  }).pipe(Effect.provide(TestClock.layer())),
+);
+
+it.effect("does not hold ordinary failures", () =>
+  Effect.gen(function* () {
+    let detailCalls = 0;
+    const reference = { projectId: project.id, repository: "acme/web", number: 42 };
+    const service = yield* makeService({
+      provider: providerWith({
+        getChangeRequest: () => {
+          detailCalls += 1;
+          return Effect.fail(
+            new PullRequestProviderError({
+              provider: "github",
+              operation: "getChangeRequest",
+              reason: "failed",
+              detail: "GitHub CLI returned an unreadable getChangeRequest response.",
+            }),
+          );
+        },
+      }),
+    });
+
+    yield* service.detail(reference).pipe(Effect.flip);
+    yield* service.detail(reference).pipe(Effect.flip);
+    assert.strictEqual(detailCalls, 2);
   }),
 );
 

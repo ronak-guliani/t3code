@@ -1,4 +1,5 @@
 import * as Cache from "effect/Cache";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -8,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import {
+  isGitHubRateLimitMessage,
   PullRequestOperationError,
   PullRequestDetail as PullRequestDetailSchema,
   type PullRequestProviderKind,
@@ -92,6 +94,40 @@ const DIFF_CACHE_TTL = Duration.seconds(60);
 const COMMIT_DIFF_CACHE_TTL = Duration.minutes(10);
 /** Sized like the client's own stale time; a row's counts move only when somebody pushes. */
 const LIST_STATS_CACHE_TTL = Duration.seconds(60);
+/**
+ * How long a rate-limit failure is held as the answer. Every `gh` call fails
+ * identically until GitHub resets the quota, so re-running the subprocess on
+ * each read only burns processes. A minute keeps the page responsive to the
+ * reset without hammering the host — and matches the activity poll, so one
+ * background refresh per key per minute is the most a quiet page spends.
+ */
+const RATE_LIMIT_COOLDOWN = Duration.seconds(60);
+/**
+ * The `cause` chain of a failed read carries the provider detail, so a
+ * rate-limit refusal is recognizable at the cache boundary without threading
+ * a flag through every lookup.
+ */
+const rateLimitCooldownFor = <A>(
+  exit: Exit.Exit<A, PullRequestError>,
+): Duration.Duration | null => {
+  if (Exit.isSuccess(exit)) return null;
+  const failure = Cause.findErrorOption(exit.cause);
+  if (Option.isNone(failure)) return null;
+  const error = failure.value as { readonly detail?: unknown; readonly message?: unknown };
+  const detail = typeof error.detail === "string" ? error.detail : "";
+  const message = typeof error.message === "string" ? error.message : "";
+  return isGitHubRateLimitMessage(`${detail} ${message}`) ? RATE_LIMIT_COOLDOWN : null;
+};
+/**
+ * A cache TTL that holds rate-limit failures briefly instead of dropping
+ * them: successes keep their window, rate-limit failures share one answer
+ * for the cooldown without spawning another `gh` call, and every other
+ * failure still misses so genuine errors surface fresh on the next read.
+ */
+const rateLimitAwareTtl =
+  <A>(successTtl: Duration.Duration) =>
+  (exit: Exit.Exit<A, PullRequestError>): Duration.Duration =>
+    rateLimitCooldownFor(exit) ?? (Exit.isSuccess(exit) ? successTtl : Duration.zero);
 /**
  * How long a cache's last success may still be served while a fresh read runs behind it.
  * Bounded by how the page actually revalidates: clients re-read on mount and once a minute
@@ -1501,7 +1537,7 @@ export const make = Effect.gen(function* () {
     },
     {
       capacity: LIST_CACHE_CAPACITY,
-      timeToLive: (exit) => (Exit.isSuccess(exit) ? LIST_CACHE_TTL : Duration.zero),
+      timeToLive: rateLimitAwareTtl(LIST_CACHE_TTL),
     },
   );
   const staleList = staleWhileRevalidate<PullRequestListResult>(
@@ -1591,7 +1627,7 @@ export const make = Effect.gen(function* () {
     },
     {
       capacity: DETAIL_CACHE_CAPACITY,
-      timeToLive: (exit) => (Exit.isSuccess(exit) ? DETAIL_CACHE_TTL : Duration.zero),
+      timeToLive: rateLimitAwareTtl(DETAIL_CACHE_TTL),
     },
   );
   const staleDetail = staleWhileRevalidate<PullRequestDetail>(
@@ -1610,7 +1646,7 @@ export const make = Effect.gen(function* () {
     },
     {
       capacity: DETAIL_CACHE_CAPACITY,
-      timeToLive: (exit) => (Exit.isSuccess(exit) ? DETAIL_CACHE_TTL : Duration.zero),
+      timeToLive: rateLimitAwareTtl(DETAIL_CACHE_TTL),
     },
   );
   const staleActivity = staleWhileRevalidate<PullRequestActivity>(
@@ -1643,6 +1679,8 @@ export const make = Effect.gen(function* () {
     {
       capacity: DIFF_CACHE_CAPACITY,
       timeToLive: (exit, key) => {
+        const cooldown = rateLimitCooldownFor(exit);
+        if (cooldown !== null) return cooldown;
         if (!Exit.isSuccess(exit)) return Duration.zero;
         const commit = (JSON.parse(key) as ReadonlyArray<unknown>)[5];
         return commit === null ? DIFF_CACHE_TTL : COMMIT_DIFF_CACHE_TTL;
@@ -1689,7 +1727,7 @@ export const make = Effect.gen(function* () {
     },
     {
       capacity: LIST_STATS_CACHE_CAPACITY,
-      timeToLive: (exit) => (Exit.isSuccess(exit) ? LIST_STATS_CACHE_TTL : Duration.zero),
+      timeToLive: rateLimitAwareTtl(LIST_STATS_CACHE_TTL),
     },
   );
   const staleListStats = staleWhileRevalidate<PullRequestListStatsResult>(
