@@ -4,9 +4,17 @@ import { createRouter, RouterHistory } from "@tanstack/react-router";
 
 import { AppAtomRegistryProvider } from "./rpc/atomRegistry";
 import { routeTree } from "./routeTree.gen";
+import { retryUnlessRateLimited } from "./lib/rateLimitQuery";
 
 export function getRouter(history: RouterHistory) {
-  const queryClient = new QueryClient();
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      // A rate-limit refusal cannot succeed on immediate retry — the quota
+      // resets server-side — so fail fast instead of re-issuing it 3x per
+      // mount. Everything else keeps TanStack's default three attempts.
+      queries: { retry: retryUnlessRateLimited },
+    },
+  });
 
   return createRouter({
     routeTree,

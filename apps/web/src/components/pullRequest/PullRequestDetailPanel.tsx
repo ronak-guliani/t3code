@@ -57,6 +57,7 @@ import {
   pullRequestSubmitReviewMutationOptions,
 } from "~/lib/pullRequestReactQuery";
 import { cn } from "~/lib/utils";
+import { isRateLimitQueryError } from "~/lib/rateLimitQuery";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { useOpenLink } from "~/browser/useOpenLink";
 import { isWebUrl } from "~/browser/browserLinkTarget";
@@ -581,7 +582,11 @@ export function PullRequestDetailPanel({
       reference,
       enabled: tab !== "summary",
     }),
-    refetchInterval: tab === "timeline" ? 30_000 : false,
+    // While GitHub's quota is exhausted every poll fails identically; back
+    // off to the server's failure cooldown instead of re-walking the review
+    // threads every 30s. Recovery is still automatic on the next poll.
+    refetchInterval: (query) =>
+      tab === "timeline" ? (isRateLimitQueryError(query.state.error) ? 60_000 : 30_000) : false,
   });
   const [comment, setComment] = useState("");
   const [actionPending, setActionPending] = useState<PullRequestAction | null>(null);

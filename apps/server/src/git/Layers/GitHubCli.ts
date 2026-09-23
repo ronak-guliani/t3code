@@ -1,5 +1,5 @@
 import { Effect, Layer, Result, Schema, SchemaIssue } from "effect";
-import { TrimmedNonEmptyString } from "@t3tools/contracts";
+import { rewriteGitHubRateLimitDetail, TrimmedNonEmptyString } from "@t3tools/contracts";
 
 import { runProcess } from "../../processRunner.ts";
 import { GitHubCliError } from "@t3tools/contracts";
@@ -55,7 +55,10 @@ function normalizeGitHubCliError(operation: "execute" | "stdout", error: unknown
 
     return new GitHubCliError({
       operation,
-      detail: `GitHub CLI command failed: ${error.message}`,
+      // An exhausted quota fails every call identically until the reset, so say that once in
+      // stable words the PR caches and the client can match on — instead of echoing the raw
+      // `gh` argv and stderr on every failure.
+      detail: rewriteGitHubRateLimitDetail(`GitHub CLI command failed: ${error.message}`),
       cause: error,
     });
   }
