@@ -1762,7 +1762,10 @@ describe("delegate_work MCP tool", () => {
     cliCommand,
     runtimeMode: "full-access" as const,
     providerInstanceId: ProviderInstanceId.make("copilot"),
-    defaultModel: "gpt-5.6-sol",
+    delegatedDefaultModelSelection: {
+      instanceId: ProviderInstanceId.make("copilot"),
+      model: "gpt-6-luna",
+    },
   });
 
   it("publishes one compact interface for singular and batch delegation", () => {
@@ -1828,7 +1831,7 @@ describe("delegate_work MCP tool", () => {
         "--provider",
         "copilot",
         "--model",
-        "gpt-5.6-sol",
+        "gpt-6-luna",
         "--runtime-mode",
         "full-access",
         "--title",
@@ -1838,6 +1841,75 @@ describe("delegate_work MCP tool", () => {
     } finally {
       if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
       else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the factory gpt-6-luna default with no configured default", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-delegate-factory-"));
+    const cliPath = path.join(root, "t3-test");
+    const argsPath = path.join(root, "cli-args.txt");
+    const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+
+    try {
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+      process.env.T3_MCP_TEST_ARGS = argsPath;
+
+      await __testing.delegateWorkTool(
+        {
+          cwd: root,
+          toolsets: new Set(["delegate_work"]),
+          threadId: "parent-1",
+          cliCommand: cliPath,
+          runtimeMode: "full-access" as const,
+          providerInstanceId: ProviderInstanceId.make("copilot"),
+        },
+        {
+          children: [{ title: "Investigate nesting", prompt: "Find the root cause." }],
+        },
+      );
+
+      const args = (await readFile(argsPath, "utf8")).trim().split("\n");
+      expect(args).toContain("copilot");
+      expect(args).toContain("gpt-6-luna");
+    } finally {
+      if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
+      else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects reasoning without an explicit model even with a settings default", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-delegate-reasoning-"));
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const result = JSON.parse(
+        await __testing.delegateWorkTool(options(root, cliPath), {
+          children: [
+            {
+              title: "Investigate nesting",
+              prompt: "Find the root cause.",
+              reasoning: "high",
+            },
+          ],
+        }),
+      );
+
+      expect(result.results).toEqual([
+        expect.objectContaining({
+          index: 0,
+          outcome: expect.objectContaining({
+            errorCode: "VALIDATION_FAILED",
+            message: expect.stringContaining("reasoning requires an explicit model"),
+          }),
+        }),
+      ]);
+    } finally {
       await rm(root, { recursive: true, force: true });
     }
   });

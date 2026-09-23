@@ -17,7 +17,8 @@ Use the user's requested model and reasoning rather than copying the example mod
 ```
 
 Each child requires only `title` and `prompt`. The project defaults to the authenticated parent's
-workspace, and the model defaults to the authenticated parent's Copilot model. Put shared overrides in
+workspace, and the model defaults to the settings delegated-thread model (factory Copilot
+gpt-6-luna). Put shared overrides in
 `defaults`. Reasoning is optional, requires an explicit model, and must be supported by that model.
 `defaults.dryRun: true` validates every request and workspace preflight without mutation.
 

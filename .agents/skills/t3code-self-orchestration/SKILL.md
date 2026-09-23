@@ -26,8 +26,9 @@ lacks the tool from the initially loaded tool list or resource count. Never repo
 unless an actual exact-name search call completed with no definition.
 
 Each child requires only a title and self-contained prompt. Put shared project, model, reasoning,
-prompt template, follow-up policy, and dry-run settings in `defaults`; omit project and model to
-use the authenticated parent workspace and Copilot model. Use only
+prompt template, follow-up policy, and dry-run settings in `defaults`; omit project to
+use the authenticated parent workspace and omit model to use the settings delegated-thread
+default (factory Copilot gpt-6-luna). Use only
 model-supported reasoning options. The loaded tool schema is authoritative. Load
 [creation-examples.md](references/creation-examples.md) when composing structured prompts or a
 batch. Include only needed permissions; never combine investigation-only work with implementation,
@@ -47,7 +48,8 @@ independent ownership.
 ## Delegation workflow
 
 1. Decide whether delegation is worthwhile; keep simple lookups and tightly coupled edits local.
-2. Use the authenticated parent workspace and Copilot model by default; override them only when the
+2. Use the authenticated parent workspace by default and the settings delegated-thread model
+   (factory Copilot gpt-6-luna) by default; override them only when the
    request requires a specific target.
 3. Put the goal and task-specific constraints in each child's `prompt`; put reusable context,
    permissions, validation, delivery, and reporting blocks in `defaults.promptTemplate`.

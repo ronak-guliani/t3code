@@ -6,7 +6,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { Effect, Schema } from "effect";
-import type { ProviderInstanceId, RuntimeMode } from "@t3tools/contracts";
+import type { ModelSelection, ProviderInstanceId, RuntimeMode } from "@t3tools/contracts";
 import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 import { killProcessTree } from "@t3tools/shared/processTree";
 import { ChildDecision, ChildWaitCondition, ThreadId } from "@t3tools/contracts";
@@ -50,6 +50,12 @@ export interface McpServeOptions {
   readonly runtimeMode?: RuntimeMode;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly defaultModel?: string;
+  /**
+   * Settings-backed delegated-thread default. Explicit per-delegation
+   * `defaults.model` / `child.model` values always win over this; the parent
+   * session model is never inherited. Factory default is Copilot `gpt-6-luna`.
+   */
+  readonly delegatedDefaultModelSelection?: ModelSelection;
 }
 
 export interface McpHttpServer {
@@ -1249,10 +1255,14 @@ async function createNestedThreadToolImpl(
       `${policy.toolName} reasoning requires an explicit model`,
     );
   }
-  // The implicit parent default must not satisfy the explicit-model check above.
+  // The implicit settings default must not satisfy the explicit-model check above.
   // Resolve it here so reasoning without an explicit model fails before `--reasoning`
   // can be forwarded to whatever implicit model would apply.
-  const effectiveModel = model || options.defaultModel?.trim() || undefined;
+  const effectiveModel =
+    model ||
+    options.delegatedDefaultModelSelection?.model?.trim() ||
+    options.defaultModel?.trim() ||
+    "gpt-6-luna";
 
   const childPrompt =
     args.promptTemplate === undefined
@@ -1278,7 +1288,8 @@ async function createNestedThreadToolImpl(
   const authenticatedOptions = {
     ...options,
     threadId: options.threadId,
-    providerInstanceId: options.providerInstanceId,
+    providerInstanceId:
+      options.delegatedDefaultModelSelection?.instanceId ?? options.providerInstanceId,
     runtimeMode: options.runtimeMode,
   };
   const validationOutcome = await invokeNestedThreadCli(
@@ -1629,7 +1640,7 @@ function delegateWorkChild(
     project: child.project ?? defaults.project ?? options.cwd,
     title: child.title,
     prompt: child.prompt,
-    // Keep only the explicit model here. The implicit parent default is resolved
+    // Keep only the explicit model here. The implicit settings default is resolved
     // in createNestedThreadToolImpl after the explicit-model validation, so
     // `reasoning` without an explicit model fails instead of silently targeting
     // the implicit default.
@@ -2051,7 +2062,7 @@ const DELEGATE_WORK_DEFAULT_PROPERTIES = {
   model: {
     ...NESTED_THREAD_INPUT_PROPERTIES.model,
     description:
-      "Model slug for every child unless overridden. Defaults to the authenticated parent's Copilot model.",
+      "Model slug for every child unless overridden. Defaults to the settings delegated-thread model (factory Copilot gpt-6-luna).",
   },
   reasoning: NESTED_THREAD_INPUT_PROPERTIES.reasoning,
   dryRun: NESTED_THREAD_INPUT_PROPERTIES.dryRun,
@@ -2264,7 +2275,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "delegate_work",
     description:
-      "Canonical delegation tool for one or many helper threads. Supply children with only title and prompt; shared project, model, reasoning, prompt template, follow-up policy, and dry-run settings belong in defaults and may be overridden per child. Project and model default to the authenticated parent's workspace and Copilot model. T3 validates the complete batch, preserves input order, rejects workspace collisions before mutation, creates each child under the current thread, and returns indexed outcomes including partial failures.",
+      "Canonical delegation tool for one or many helper threads. Supply children with only title and prompt; shared project, model, reasoning, prompt template, follow-up policy, and dry-run settings belong in defaults and may be overridden per child. Project defaults to the authenticated parent workspace; model defaults to the settings delegated-thread model (factory Copilot gpt-6-luna). T3 validates the complete batch, preserves input order, rejects workspace collisions before mutation, creates each child under the current thread, and returns indexed outcomes including partial failures.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2298,7 +2309,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "create_isolated_workspace",
     description:
-      "Move the current calling thread to a new isolated checkout instead of running git worktree add directly. Creates a Git worktree, durably binds this T3 thread to it, and queues an automatic continuation. Never use this tool to prepare a workspace for a future delegated thread; pass workspace to create_nested_thread instead. After calling, do not edit the new worktree during the current turn; finish so T3 can restart in the bound workspace and continue automatically.",
+      "Move the current calling thread to a new isolated checkout instead of running git worktree add directly. Creates a Git worktree, durably binds this T3 thread to it, and queues an automatic continuation. Never use this tool to prepare a workspace for a future delegated thread; pass workspace to delegate_work instead. After calling, do not edit the new worktree during the current turn; finish so T3 can restart in the bound workspace and continue automatically.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2324,7 +2335,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "create_nested_thread",
     description:
-      "Create and start a helper thread nested under the current T3 thread. Every result includes status, threadId, threadUrl, retryable, workspaceCreated, cleanupPerformed, errorCode, and message. When the child needs an isolated checkout, pass workspace here so T3 validates ownership and collisions, revalidates for races, then creates and binds the child before its first turn without moving the parent. Set dryRun to validate without mutation. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
+      "Compatibility only — use delegate_work for every new delegation. Create and start a helper thread nested under the current T3 thread. Every result includes status, threadId, threadUrl, retryable, workspaceCreated, cleanupPerformed, errorCode, and message. When the child needs an isolated checkout, pass workspace here so T3 validates ownership and collisions, revalidates for races, then creates and binds the child before its first turn without moving the parent. Set dryRun to validate without mutation. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
     inputSchema: {
       type: "object",
       properties: NESTED_THREAD_INPUT_PROPERTIES,
@@ -2334,7 +2345,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "create_nested_threads",
     description:
-      "Create and start multiple sibling helper threads under the authenticated current T3 thread. Returns one indexed NestedThreadCreationOutcome per child in input order, including partial failures. Runs at most four creations concurrently. Every item sharing a workspace branch or canonical path with another batch item is rejected before mutation; other items continue. Never retry a non-retryable or ambiguous item.",
+      "Compatibility only — use delegate_work for every new delegation. Create and start multiple sibling helper threads under the authenticated current T3 thread. Returns one indexed NestedThreadCreationOutcome per child in input order, including partial failures. Runs at most four creations concurrently. Every item sharing a workspace branch or canonical path with another batch item is rejected before mutation; other items continue. Never retry a non-retryable or ambiguous item.",
     inputSchema: {
       type: "object",
       properties: {

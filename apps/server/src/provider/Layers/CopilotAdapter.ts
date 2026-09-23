@@ -10,6 +10,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ApprovalRequestId,
   EventId,
+  type ModelSelection,
   type ProviderApprovalDecision,
   type ProviderRuntimeEvent,
   type ProviderSession,
@@ -174,6 +175,17 @@ const COPILOT_FORK_UNSUPPORTED_DETAIL =
   "This Copilot ACP agent does not support native chat forking. The visible T3 chat fork was created, but Copilot context cannot be continued safely from it.";
 const WORKSPACE_HANDOFF_REQUIRED_MESSAGE =
   "T3 blocked a raw Git worktree add/move. Use the create_isolated_workspace or switch_workspace tool so the thread's workspace, checkpoints, and diffs stay aligned. git worktree remove is allowed for cleanup.";
+
+/**
+ * Factory delegated-thread default: Copilot `gpt-6-luna`. Used when settings
+ * have not been loaded or carry no delegated selection. Explicit per-delegation
+ * `defaults.model` / `child.model` values always win over this; the parent
+ * session model is never inherited.
+ */
+const FACTORY_DELEGATED_THREAD_DEFAULT: ModelSelection = {
+  instanceId: ProviderInstanceId.make("copilot"),
+  model: "gpt-6-luna",
+};
 
 function stringifyCause(value: unknown): string {
   if (value instanceof Error) {
@@ -858,7 +870,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
       readonly cwd: string;
       readonly runtimeMode: ProviderSession["runtimeMode"];
       readonly copilotSettings: CopilotRuntimeCopilotSettings;
-      readonly defaultModel?: string;
+      readonly delegatedDefaultModelSelection?: ModelSelection;
       readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
       readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
       readonly getCurrentTurnId: () => TurnId | undefined;
@@ -893,7 +905,8 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           copilotSettings: input.copilotSettings.binaryPath
             ? { binaryPath: input.copilotSettings.binaryPath }
             : undefined,
-          defaultModel: input.defaultModel,
+          delegatedDefaultModelSelection:
+            input.delegatedDefaultModelSelection ?? FACTORY_DELEGATED_THREAD_DEFAULT,
           childProcessSpawner,
           threadId: input.threadId,
           providerInstanceId: input.providerInstanceId,
@@ -1387,13 +1400,17 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
         }
 
         yield* closeRuntimeInternal(ctx);
+        const delegatedDefaultModelSelection = yield* serverSettingsService.getSettings.pipe(
+          Effect.map((settings) => settings.delegatedThreadModelSelection),
+          Effect.orElseSucceed(() => FACTORY_DELEGATED_THREAD_DEFAULT),
+        );
         const runtime = yield* openRuntime({
           threadId: ctx.threadId,
           providerInstanceId: ctx.providerInstanceId,
           cwd,
           runtimeMode: ctx.session.runtimeMode,
           copilotSettings: ctx.copilotSettings,
-          defaultModel: ctx.session.model ?? "auto",
+          delegatedDefaultModelSelection,
           pendingApprovals: ctx.pendingApprovals,
           pendingUserInputs: ctx.pendingUserInputs,
           ...(resumeSessionId ? { resumeSessionId } : {}),
@@ -1552,7 +1569,10 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           }
 
           const copilotSettings = yield* serverSettingsService.getSettings.pipe(
-            Effect.map((settings) => settings.providers.copilot),
+            Effect.map((settings) => ({
+              copilot: settings.providers.copilot,
+              delegatedDefaultModelSelection: settings.delegatedThreadModelSelection,
+            })),
             Effect.mapError(
               (error) =>
                 new ProviderAdapterProcessError({
@@ -1587,8 +1607,9 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             providerInstanceId,
             cwd,
             runtimeMode: input.runtimeMode,
-            copilotSettings: { binaryPath: copilotSettings.binaryPath },
-            defaultModel: effectiveModel ?? "auto",
+            copilotSettings: { binaryPath: copilotSettings.copilot.binaryPath },
+            delegatedDefaultModelSelection:
+              copilotSettings.delegatedDefaultModelSelection ?? FACTORY_DELEGATED_THREAD_DEFAULT,
             pendingApprovals,
             pendingUserInputs,
             ...(resumeSessionId ? { resumeSessionId } : {}),
@@ -1630,7 +1651,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             ctx = {
               threadId: input.threadId,
               providerInstanceId,
-              copilotSettings: { binaryPath: copilotSettings.binaryPath },
+              copilotSettings: { binaryPath: copilotSettings.copilot.binaryPath },
               session,
               scope: runtime.scope,
               acp: runtime.acp,

@@ -48,6 +48,12 @@ function shouldReplaceTextGenerationModelSelection(
   return Boolean(patch && (patch.instanceId !== undefined || patch.model !== undefined));
 }
 
+function shouldReplaceDelegatedThreadModelSelection(
+  patch: ServerSettingsPatch["delegatedThreadModelSelection"] | undefined,
+): boolean {
+  return Boolean(patch && (patch.instanceId !== undefined || patch.model !== undefined));
+}
+
 function mergeModelSelectionOptionsById(input: {
   current: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }> | undefined;
   patch: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }> | undefined;
@@ -85,15 +91,16 @@ function applyProviderInstanceMutations(
 }
 
 /**
- * Applies a server settings patch while treating textGenerationModelSelection as
- * replace-on-provider/model updates. This prevents stale nested options from
- * surviving a reset patch that intentionally omits options.
+ * Applies a server settings patch while treating textGenerationModelSelection and
+ * delegatedThreadModelSelection as replace-on-provider/model updates. This prevents
+ * stale nested options from surviving a reset patch that intentionally omits options.
  */
 export function applyServerSettingsPatch(
   current: ServerSettings,
   patch: ServerSettingsPatch,
 ): ServerSettings {
   const selectionPatch = patch.textGenerationModelSelection;
+  const delegatedPatch = patch.delegatedThreadModelSelection;
   const { providerInstanceMutations, ...mergeablePatch } = patch;
   const next = deepMerge(current, mergeablePatch);
   const nextWithReplacements =
@@ -103,23 +110,45 @@ export function applyServerSettingsPatch(
           providerInstances: patch.providerInstances,
         }
       : next;
-  if (!selectionPatch) {
-    return applyProviderInstanceMutations(nextWithReplacements, providerInstanceMutations);
+  const withTextGeneration = !selectionPatch
+    ? nextWithReplacements
+    : (() => {
+        const instanceId =
+          selectionPatch.instanceId ?? current.textGenerationModelSelection.instanceId;
+        const model = selectionPatch.model ?? current.textGenerationModelSelection.model;
+        const options = shouldReplaceTextGenerationModelSelection(selectionPatch)
+          ? selectionPatch.options
+          : mergeModelSelectionOptionsById({
+              current: current.textGenerationModelSelection.options,
+              patch: selectionPatch.options,
+            });
+        return {
+          ...nextWithReplacements,
+          textGenerationModelSelection: createModelSelection(instanceId, model, options),
+        };
+      })();
+  if (!delegatedPatch) {
+    return applyProviderInstanceMutations(withTextGeneration, providerInstanceMutations);
   }
 
-  const instanceId = selectionPatch.instanceId ?? current.textGenerationModelSelection.instanceId;
-  const model = selectionPatch.model ?? current.textGenerationModelSelection.model;
-  const options = shouldReplaceTextGenerationModelSelection(selectionPatch)
-    ? selectionPatch.options
+  const delegatedInstanceId =
+    delegatedPatch.instanceId ?? current.delegatedThreadModelSelection.instanceId;
+  const delegatedModel = delegatedPatch.model ?? current.delegatedThreadModelSelection.model;
+  const delegatedOptions = shouldReplaceDelegatedThreadModelSelection(delegatedPatch)
+    ? delegatedPatch.options
     : mergeModelSelectionOptionsById({
-        current: current.textGenerationModelSelection.options,
-        patch: selectionPatch.options,
+        current: current.delegatedThreadModelSelection.options,
+        patch: delegatedPatch.options,
       });
 
   return applyProviderInstanceMutations(
     {
-      ...nextWithReplacements,
-      textGenerationModelSelection: createModelSelection(instanceId, model, options),
+      ...withTextGeneration,
+      delegatedThreadModelSelection: createModelSelection(
+        delegatedInstanceId,
+        delegatedModel,
+        delegatedOptions,
+      ),
     },
     providerInstanceMutations,
   );

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 
 import {
   ThreadId,
+  type ModelSelection,
   type ProviderInstanceId,
   type CopilotSettings,
   type ProviderInteractionMode,
@@ -57,7 +58,7 @@ ${buildBrowserToolInstructions(browserToolsAvailable)}
 - \`t3-tools\` uses this T3 process's bearer token for its local loopback HTTP MCP server.
 - MCP tools may be deferred instead of appearing in the initially loaded tool list. When a requested \`t3-tools\` tool is deferred, you MUST use the tool-search API to load that exact function definition, then call it. For delegation, always search for and call the canonical \`delegate_work\` tool; it handles one or many children with shared defaults. For a new workspace for the current thread, search for \`create_isolated_workspace\`. Do not use an MCP resources/list result as an availability check: zero non-invokable resources does not mean the server exposes zero tools. Never report a deferred tool missing unless an actual tool-search call for the exact function completed with no definition.
 - NEVER run \`git worktree add\` or \`git worktree move\` through a terminal or shell tool.
-- When delegating work, call \`delegate_work\` before any workspace operation. Supply one child for singular delegation or multiple children for a batch. Put shared project, model, reasoning, prompt-template, follow-up, and dry-run values in \`defaults\`; omit project and model to use the authenticated workspace and parent Copilot model. If a child needs an isolated checkout, pass its \`workspace\` input so T3 binds the child without moving this thread. \`create_nested_thread\` and \`create_nested_threads\` remain compatibility tools only.
+- When delegating work, call \`delegate_work\` before any workspace operation. Supply one child for singular delegation or multiple children for a batch. Put shared project, model, reasoning, prompt-template, follow-up, and dry-run values in \`defaults\`; omit project to use the authenticated workspace and omit model to use the settings delegated-thread default (factory Copilot gpt-6-luna). If a child needs an isolated checkout, pass its \`workspace\` input so T3 binds the child without moving this thread. \`create_nested_thread\` and \`create_nested_threads\` remain compatibility tools only.
 - New delegated assignments automatically report results/failures and queue parent follow-up without interrupting it. Use \`followUp: "notify-only"\` at spawn to disable automatic wakes. As a child, use \`report_to_parent\` for early decisions or important findings; progress reports do not wake the parent. Reuse a report's \`reportId\` on retry — T3 binds the report to the assignment's active execution and applies it at most once, so retrying a lost acknowledgement is safe and never wakes the parent twice. Do not duplicate automatic result reports with \`send_to_thread\`, or send acknowledgment-only replies.
 - Use \`set_child_wait\` with exact assignment IDs to wait for any/all selected results or only decisions/blockers; null restores automatic follow-up. Handle partial spawn failures before setting a wait. Use \`assign_to_thread\` with a stable requestId for new work in a finished child. Respond to a decision with \`send_to_thread\` carrying assignmentId, respondToReportId, and a stable requestId so the answer and resolution commit together. Reports from reused children must include their original assignmentId; decision reports include a question and canContinue. Resolve or explicitly supersede the current decision rather than replacing it silently. Stop remains authoritative.
 - Workspace handoff tools affect only the calling thread. Never call them to prepare a workspace for a future delegated thread.
@@ -115,7 +116,7 @@ type CopilotAcpRuntimeBaseInput = Omit<
   readonly runtimeMode: RuntimeMode;
   readonly baseDir?: string;
   readonly customInstructionsDir?: string;
-  readonly defaultModel?: string;
+  readonly delegatedDefaultModelSelection?: ModelSelection;
   /** When present, a matching warmed process is adopted instead of spawning. */
   readonly prewarmPool?: CopilotPrewarmPoolShape;
 };
@@ -393,7 +394,9 @@ export const makeCopilotAcpRuntime = (
               process.env,
               { execPath: process.execPath, entryPath: process.argv[1] },
             ),
-            ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
+            ...(input.delegatedDefaultModelSelection
+              ? { delegatedDefaultModelSelection: input.delegatedDefaultModelSelection }
+              : {}),
           }),
         catch: (cause) =>
           new EffectAcpErrors.AcpSpawnError({
