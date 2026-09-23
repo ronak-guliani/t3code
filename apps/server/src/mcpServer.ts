@@ -1249,6 +1249,10 @@ async function createNestedThreadToolImpl(
       `${policy.toolName} reasoning requires an explicit model`,
     );
   }
+  // The implicit parent default must not satisfy the explicit-model check above.
+  // Resolve it here so reasoning without an explicit model fails before `--reasoning`
+  // can be forwarded to whatever implicit model would apply.
+  const effectiveModel = model || options.defaultModel?.trim() || undefined;
 
   const childPrompt =
     args.promptTemplate === undefined
@@ -1283,7 +1287,7 @@ async function createNestedThreadToolImpl(
       project,
       title,
       prompt: childPrompt,
-      model,
+      model: effectiveModel,
       reasoning,
       workspace,
       dryRun: true,
@@ -1303,7 +1307,7 @@ async function createNestedThreadToolImpl(
         project,
         title,
         prompt: childPrompt,
-        model,
+        model: effectiveModel,
         reasoning,
         workspace,
         dryRun: false,
@@ -1370,7 +1374,7 @@ async function createNestedThreadToolImpl(
       project,
       title,
       prompt: childPrompt,
-      model,
+      model: effectiveModel,
       reasoning,
       workspace,
       dryRun: false,
@@ -1625,7 +1629,11 @@ function delegateWorkChild(
     project: child.project ?? defaults.project ?? options.cwd,
     title: child.title,
     prompt: child.prompt,
-    model: child.model ?? defaults.model ?? options.defaultModel,
+    // Keep only the explicit model here. The implicit parent default is resolved
+    // in createNestedThreadToolImpl after the explicit-model validation, so
+    // `reasoning` without an explicit model fails instead of silently targeting
+    // the implicit default.
+    model: child.model ?? defaults.model,
     reasoning: child.reasoning ?? defaults.reasoning,
     promptTemplate: child.promptTemplate ?? defaults.promptTemplate,
     followUp: child.followUp ?? defaults.followUp,
