@@ -38,14 +38,70 @@ vi.mock("~/environmentApi", () => ({
     projects: { listEntries: listEntriesMock, readFile: readFileMock, writeFile: writeFileMock },
     assets: { createUrl: createAssetUrlMock },
   })),
+  readEnvironmentApi: vi.fn(() => ({
+    projects: { listEntries: listEntriesMock, readFile: readFileMock, writeFile: writeFileMock },
+    assets: { createUrl: createAssetUrlMock },
+  })),
 }));
 
 vi.mock("~/environments/runtime", () => ({
   getEnvironmentHttpBaseUrl: vi.fn(() => "http://localhost:3773"),
+  getSavedEnvironmentRecord: vi.fn(() => null),
+  getSavedEnvironmentRuntimeState: vi.fn(() => null),
+  hasSavedEnvironmentRegistryHydrated: vi.fn(() => true),
+  listSavedEnvironmentRecords: vi.fn(() => []),
+  readSavedEnvironmentBearerToken: vi.fn(() => null),
+  resetSavedEnvironmentRegistryStoreForTests: vi.fn(),
+  resetSavedEnvironmentRuntimeStoreForTests: vi.fn(),
+  resolveEnvironmentHttpUrl: vi.fn((_environmentId: unknown, path: string) => path),
+  useSavedEnvironmentRegistryStore: (
+    selector: (state: { byId: Record<string, never> }) => unknown,
+  ) => selector({ byId: {} }),
+  useSavedEnvironmentRuntimeStore: (selector: (state: object) => unknown) => selector({}),
+  waitForSavedEnvironmentRegistryHydration: vi.fn(async () => undefined),
+  addSavedEnvironment: vi.fn(),
+  disconnectSavedEnvironment: vi.fn(),
+  ensureEnvironmentConnectionBootstrapped: vi.fn(),
+  getPrimaryEnvironmentConnection: vi.fn(() => null),
+  readEnvironmentConnection: vi.fn(() => null),
+  reconnectSavedEnvironment: vi.fn(),
+  setSavedEnvironmentEnabled: vi.fn(),
+  removeSavedEnvironment: vi.fn(),
+  requireEnvironmentConnection: vi.fn(() => {
+    throw new Error("environment unavailable");
+  }),
+  resetEnvironmentServiceForTests: vi.fn(),
+  startEnvironmentConnectionService: vi.fn(),
+  subscribeEnvironmentConnections: vi.fn(() => () => undefined),
+}));
+
+vi.mock("~/environments/runtime/catalog", () => ({
+  useSavedEnvironmentRegistryStore: (
+    selector: (state: { byId: Record<string, never> }) => unknown,
+  ) => selector({ byId: {} }),
+}));
+
+vi.mock("~/environments/primary", () => ({
+  usePrimaryEnvironmentId: () => null,
 }));
 
 vi.mock("~/previewStateStore", () => ({
   isPreviewSupportedInRuntime: vi.fn(() => true),
+  applyPreviewServerSnapshot: vi.fn(),
+  applyPreviewServerEvent: vi.fn(),
+  updatePreviewServerSnapshot: vi.fn(),
+  reconcilePreviewServerSessions: vi.fn(),
+  applyPreviewDesktopState: vi.fn(),
+  beginPreviewSessionClose: vi.fn(),
+  cancelPreviewSessionClose: vi.fn(),
+  setActivePreviewTab: vi.fn(),
+  rememberPreviewUrl: vi.fn(),
+  removePreviewThread: vi.fn(),
+  resetPreviewStateForTests: vi.fn(),
+  useThreadPreviewState: () => null,
+  useActivePreviewSessions: () => ({}),
+  readThreadPreviewState: vi.fn(() => null),
+  subscribeThreadPreviewState: vi.fn(() => () => undefined),
 }));
 
 vi.mock("~/state/use-atom-command", () => ({
@@ -251,6 +307,45 @@ describe("FilePreviewPanel", () => {
         .element(page.getByText("This binary file cannot be previewed or edited as text."))
         .toBeInTheDocument();
       expect(page.getByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("toggles markdown files between rendered preview and source", async () => {
+    readFileMock.mockResolvedValueOnce({
+      relativePath: "notes.md",
+      contents: "# Notes\n\nHello **world**.",
+    });
+    const screen = await render(
+      <FilePreviewPanel
+        cwd="/repo/markdown"
+        relativePath="notes.md"
+        threadRef={threadRef}
+        onOpenFile={vi.fn()}
+      />,
+    );
+    try {
+      await expect
+        .element(page.getByRole("button", { name: "Preview", exact: true }))
+        .toBeInTheDocument();
+      await vi.waitFor(
+        () => {
+          expect(page.getByRole("heading", { name: "Notes" })).toBeInTheDocument();
+        },
+        { timeout: 10000 },
+      );
+
+      await page.getByRole("button", { name: "Source", exact: true }).click();
+      await expect.element(page.getByText("Hello **world**.")).toBeInTheDocument();
+
+      await page.getByRole("button", { name: "Preview", exact: true }).click();
+      await vi.waitFor(
+        () => {
+          expect(page.getByRole("heading", { name: "Notes" })).toBeInTheDocument();
+        },
+        { timeout: 10000 },
+      );
     } finally {
       await screen.unmount();
     }

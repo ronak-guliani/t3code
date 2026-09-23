@@ -5,7 +5,7 @@ import type {
   FileTreeRowDecorationRenderer,
 } from "@pierre/trees";
 import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react";
-import { ChevronsDownUp, ChevronsUpDown, RefreshCw, Search, X } from "lucide-react";
+import { ChevronsDownUp, ChevronsUpDown, FolderSearch, RefreshCw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { buildFileParentSuffixByPath } from "~/filePathDisambiguation";
@@ -115,6 +115,7 @@ export default function FileBrowserPanel({
     fileTreeSearchMode: "expand-matches",
     flattenEmptyDirectories: true,
     initialExpansion: 1,
+    stickyFolders: true,
     icons: T3_PIERRE_ICONS,
     onSelectionChange: (selectedPaths) => {
       // Programmatic reveals below echo back through here; ignore them.
@@ -364,52 +365,54 @@ export default function FileBrowserPanel({
         </button>
       </div>
       {showSearchRow ? (
-        <div className="flex shrink-0 items-center gap-1.5 border-b border-border/60 px-2.5 py-1.5">
-          <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-          <input
-            ref={searchInputRef}
-            type="text"
-            value={searchValue}
-            onChange={(event) => search.setValue(event.target.value || null)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.stopPropagation();
-                closeSearch();
-              }
-              if (event.key === "Enter") {
-                event.stopPropagation();
-                if (event.shiftKey) {
-                  search.focusPreviousMatch();
-                } else {
-                  search.focusNextMatch();
+        <div className="shrink-0 border-b border-border/60 px-2.5 py-1.5">
+          <div className="flex items-center gap-1.5 rounded-lg border border-border/50 bg-muted/40 px-2 py-1 transition-colors focus-within:border-ring/60 focus-within:bg-muted/60">
+            <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchValue}
+              onChange={(event) => search.setValue(event.target.value || null)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.stopPropagation();
+                  closeSearch();
                 }
-              }
-            }}
-            placeholder="Filter files…"
-            aria-label="Filter workspace files"
-            title="Enter jumps to the next match, Shift+Enter to the previous, Esc clears"
-            data-file-browser-search
-            className="min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70"
-          />
-          {searchValue.length > 0 ? (
-            <span
-              className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
-              title="Enter jumps to the next match, Shift+Enter to the previous"
+                if (event.key === "Enter") {
+                  event.stopPropagation();
+                  if (event.shiftKey) {
+                    search.focusPreviousMatch();
+                  } else {
+                    search.focusNextMatch();
+                  }
+                }
+              }}
+              placeholder="Filter files…"
+              aria-label="Filter workspace files"
+              title="Enter jumps to the next match, Shift+Enter to the previous, Esc clears"
+              data-file-browser-search
+              className="min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70"
+            />
+            {searchValue.length > 0 && (
+              <span
+                className="shrink-0 rounded-full bg-muted px-1.5 py-px text-[11px] tabular-nums text-muted-foreground"
+                title="Enter jumps to the next match, Shift+Enter to the previous"
+              >
+                {matchCount === 0
+                  ? "No matches"
+                  : `${matchCount.toLocaleString()} match${matchCount === 1 ? "" : "es"} · Enter ↵`}
+              </span>
+            )}
+            <button
+              type="button"
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-label="Clear file filter"
+              title="Clear file filter"
+              onClick={closeSearch}
             >
-              {matchCount === 0
-                ? "No matches"
-                : `${matchCount.toLocaleString()} match${matchCount === 1 ? "" : "es"} · Enter ↵`}
-            </span>
-          ) : null}
-          <button
-            type="button"
-            className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label="Clear file filter"
-            title="Clear file filter"
-            onClick={closeSearch}
-          >
-            <X className="size-3.5" />
-          </button>
+              <X className="size-3.5" />
+            </button>
+          </div>
         </div>
       ) : null}
       {entriesQuery.data?.truncated && !isIndexing ? (
@@ -443,6 +446,9 @@ export default function FileBrowserPanel({
         </div>
       ) : entries.length === 0 || hasNoMatches ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-1 p-4 text-center">
+          <span className="mb-1 flex size-9 items-center justify-center rounded-full bg-muted text-muted-foreground">
+            <FolderSearch className="size-4" aria-hidden />
+          </span>
           <p className="text-xs font-medium text-foreground">No files found</p>
           <p className="text-[11px] leading-relaxed text-muted-foreground">
             {searchValue.length > 0 ? "Try a different filter." : "This workspace looks empty."}
