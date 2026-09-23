@@ -80,6 +80,20 @@ describe("extractTerminalLinks", () => {
       },
     ]);
   });
+
+  it("extracts comma-separated line lists as one token", () => {
+    const line = "see src/settings.ts:542,733 for details";
+    const path = "src/settings.ts:542,733";
+    const start = line.indexOf(path);
+    expect(extractTerminalLinks(line)).toEqual([
+      {
+        kind: "path",
+        text: path,
+        start,
+        end: start + path.length,
+      },
+    ]);
+  });
 });
 
 describe("collectWrappedTerminalLinkLine", () => {

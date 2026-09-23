@@ -1209,7 +1209,19 @@ const markdownComponentsWithoutRuntimeState = {
   },
 } satisfies Components;
 
-function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdownProps) {
+const EMPTY_WORKSPACE_ENTRIES: ReadonlyArray<WorkspaceFileEntryLike> = [];
+
+interface ChatMarkdownViewProps extends ChatMarkdownProps {
+  readonly workspaceEntries: ReadonlyArray<WorkspaceFileEntryLike>;
+}
+
+function ChatMarkdownView({
+  text,
+  cwd,
+  isStreaming = false,
+  threadRef,
+  workspaceEntries,
+}: ChatMarkdownViewProps) {
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   const normalizedText = useMemo(
@@ -1262,21 +1274,6 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
       })),
     ],
     [environmentIds, primaryEnvironmentId, savedEnvironmentById],
-  );
-  // Workspace file index for bare-basename mentions like `CopilotProvider.ts:103`.
-  // The query is cached per cwd, so per-message cost is a filtered scan only when
-  // a bare basename is actually encountered. Dummy args when thread/cwd is missing;
-  // the result is ignored in that case and falls back to cwd-only resolution.
-  const workspaceEntriesQuery = useProjectEntriesQuery(
-    threadRef?.environmentId ?? ("environment-missing" as EnvironmentId),
-    cwd ?? "",
-  );
-  const workspaceEntries = useMemo(
-    () =>
-      threadRef && cwd
-        ? (workspaceEntriesQuery.data?.entries ?? [])
-        : ([] as ReadonlyArray<WorkspaceFileEntryLike>),
-    [threadRef, cwd, workspaceEntriesQuery.data],
   );
   const resolveChatInlineCode = useCallback(
     (codeText: string) => resolveChatInlineCodeMeta(codeText, cwd, workspaceEntries),
@@ -1517,6 +1514,38 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
       </ReactMarkdown>
     </div>
   );
+}
+
+function ChatMarkdownWithWorkspaceEntries({
+  threadRef,
+  cwd,
+  ...rest
+}: ChatMarkdownProps & { readonly threadRef: ScopedThreadRef; readonly cwd: string }) {
+  // The query is cached per cwd, so per-message cost is a filtered scan only when
+  // a bare basename is actually encountered.
+  const workspaceEntriesQuery = useProjectEntriesQuery(threadRef.environmentId, cwd);
+  const workspaceEntries = useMemo(
+    () => workspaceEntriesQuery.data?.entries ?? EMPTY_WORKSPACE_ENTRIES,
+    [workspaceEntriesQuery.data],
+  );
+  return (
+    <ChatMarkdownView
+      {...rest}
+      threadRef={threadRef}
+      cwd={cwd}
+      workspaceEntries={workspaceEntries}
+    />
+  );
+}
+
+function ChatMarkdown(props: ChatMarkdownProps) {
+  const { threadRef, cwd } = props;
+  // Skip the workspace file index when there is no thread/cwd to resolve
+  // against; bare basenames fall back to cwd-only resolution in the view.
+  if (threadRef && cwd) {
+    return <ChatMarkdownWithWorkspaceEntries {...props} threadRef={threadRef} cwd={cwd} />;
+  }
+  return <ChatMarkdownView {...props} workspaceEntries={EMPTY_WORKSPACE_ENTRIES} />;
 }
 
 export default memo(ChatMarkdown);
