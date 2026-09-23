@@ -181,4 +181,29 @@ describe("resolveInlineCodeFileLinkMeta", () => {
   it("requires a cwd for relative paths", () => {
     expect(resolveInlineCodeFileLinkMeta(".plans/worktree-management-v1.md")).toBeNull();
   });
+
+  it("links bare basenames with line positions to cwd", () => {
+    expect(resolveInlineCodeFileLinkMeta("CopilotProvider.ts:103", cwd)).toMatchObject({
+      targetPath: "/Users/julius/project/CopilotProvider.ts:103",
+      basename: "CopilotProvider.ts",
+      line: 103,
+    });
+    expect(resolveInlineCodeFileLinkMeta("serverSettings.ts:165", cwd)).toMatchObject({
+      basename: "serverSettings.ts",
+      line: 165,
+    });
+  });
+
+  it("links comma-separated line lists to the first line", () => {
+    expect(resolveInlineCodeFileLinkMeta("settings.ts:542,733", cwd)).toMatchObject({
+      basename: "settings.ts",
+      line: 542,
+    });
+    expect(resolveInlineCodeFileLinkMeta("cli.ts:3033,3047", cwd)).toMatchObject({
+      line: 3033,
+    });
+    expect(resolveMarkdownFileLinkTarget("settings.ts:542,733", cwd)).toBe(
+      "/Users/julius/project/settings.ts:542",
+    );
+  });
 });

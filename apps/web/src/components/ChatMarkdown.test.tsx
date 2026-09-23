@@ -273,4 +273,28 @@ describe("ChatMarkdown", () => {
     expect(markup).not.toContain("foo.ts · src/a");
     expect(markup).not.toContain("foo.ts · src/b");
   });
+
+  it("renders bare basenames with lines as file links", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text="See `CopilotProvider.ts:103` and `serverSettings.ts:165`."
+        cwd="/Users/julius/project"
+      />,
+    );
+
+    expect(markup).toContain("chat-markdown-file-link");
+    expect(markup).toContain("CopilotProvider.ts");
+    expect(markup).toContain("L103");
+    expect(markup).toContain("L165");
+  });
+
+  it("renders comma-separated line lists as file links to the first line", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown text="See `settings.ts:542,733`." cwd="/Users/julius/project" />,
+    );
+
+    expect(markup).toContain("chat-markdown-file-link");
+    expect(markup).toContain("settings.ts");
+    expect(markup).toContain("L542,733");
+  });
 });

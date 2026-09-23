@@ -3,19 +3,19 @@ import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 const SLASH_PREFIXED_WINDOWS_DRIVE_PATTERN = /^\/[A-Za-z]:[\\/]/;
 const RELATIVE_PATH_PREFIX_PATTERN = /^(~\/|\.{1,2}\/)/;
 const RELATIVE_FILE_PATH_PATTERN =
-  /^(?:[A-Za-z0-9._-]+(?: +[A-Za-z0-9._-]+)*\/)+[A-Za-z0-9._-]+(?: +[A-Za-z0-9._-]+)*(?::\d+){0,2}$/;
+  /^(?:[A-Za-z0-9._-]+(?: +[A-Za-z0-9._-]+)*\/)+[A-Za-z0-9._-]+(?: +[A-Za-z0-9._-]+)*(?::\d+(?:[,:]\d+)*)?$/;
 const RELATIVE_FILE_NAME_PATTERN =
-  /^[A-Za-z0-9._-]+(?: +[A-Za-z0-9._-]+)*\.[A-Za-z0-9_-]+(?::\d+){0,2}$/;
+  /^[A-Za-z0-9._-]+(?: +[A-Za-z0-9._-]+)*\.[A-Za-z0-9_-]+(?::\d+(?:[,:]\d+)*)?$/;
 const EXTERNAL_SCHEME_PATTERN = /^([A-Za-z][A-Za-z0-9+.-]*):(.*)$/;
-const POSITION_SUFFIX_PATTERN = /:\d+(?::\d+)?$/;
-const POSITION_SUFFIX_CAPTURE_PATTERN = /:(\d+)(?::(\d+))?$/;
+const POSITION_SUFFIX_PATTERN = /:\d+(?:[,:]\d+)*$/;
+const POSITION_SUFFIX_CAPTURE_PATTERN = /:(\d+)((?::\d+)?(?:,\d+)*)$/;
 const POSITION_HASH_PATTERN = /^#L(\d+)(?:C(\d+))?$/i;
-const POSITION_ONLY_PATTERN = /^\d+(?::\d+)?$/;
+const POSITION_ONLY_PATTERN = /^\d+(?:[,:]\d+)*$/;
 const INLINE_CODE_DISQUALIFIER_PATTERN = /[\s`]/;
 const PATH_SEPARATOR_PATTERN = /[\\/]/;
 const FILE_EXTENSION_PATTERN = /\.[A-Za-z0-9_-]+$/;
 const NUMERIC_DOTTED_PATTERN = /^\d+(?:\.\d+)+$/;
-const BARE_EXTENSIONLESS_POSITION_PATTERN = /^[A-Za-z0-9_-]+(?::\d+){1,2}$/;
+const BARE_EXTENSIONLESS_POSITION_PATTERN = /^[A-Za-z0-9_-]+(?::\d+(?:[,:]\d+)*){1,2}$/;
 // Standard OS and dev-container roots; deliberately excludes app-route-ish
 // prefixes like /app/ or /chat/ so SPA routes never read as files.
 const POSIX_FILE_ROOT_PREFIXES = [
@@ -257,7 +257,20 @@ export function splitFilePathPosition(path: string, hash = ""): FilePathPosition
   if (!match?.[1]) return { path };
 
   const line = Number.parseInt(match[1], 10);
-  const column = match[2] === undefined ? undefined : Number.parseInt(match[2], 10);
+  // Suffix group 2 is `:col` and/or `,extra` (multi-line `file:542,733`
+  // navigates to the first line). Hash group 2 is bare digits (`#L42C7`).
+  const rest = match[2] ?? "";
+  const columnDigits = suffixMatch
+    ? rest.startsWith(":")
+      ? rest.slice(1).split(",")[0]
+      : undefined
+    : rest === ""
+      ? undefined
+      : rest;
+  const column =
+    columnDigits === undefined || columnDigits === ""
+      ? undefined
+      : Number.parseInt(columnDigits, 10);
   return {
     path: suffixMatch ? path.slice(0, -suffixMatch[0].length) : path,
     ...(line > 0 ? { line } : {}),

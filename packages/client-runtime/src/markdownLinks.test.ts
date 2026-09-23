@@ -17,6 +17,8 @@ describe("inlineCodeFilePathCandidate", () => {
     ["\\\\server\\share\\image.png", "\\\\server\\share\\image.png"],
     ["conf.d/nginx.conf", "conf.d/nginx.conf"],
     ["script.pl:10", "script.pl:10"],
+    ["CopilotProvider.ts:103", "CopilotProvider.ts:103"],
+    ["settings.ts:542,733", "settings.ts:542,733"],
     ["node.meta", null],
     ["Recorded evidence here: /tmp/image.png", null],
     ["origin/main", null],
@@ -72,6 +74,8 @@ describe("splitFilePathPosition", () => {
     ["src/main.ts:3", "#L18C2", { path: "src/main.ts", line: 3 }],
     ["src/main.ts:0", "", { path: "src/main.ts" }],
     ["src/main.ts", "#section", { path: "src/main.ts" }],
+    ["settings.ts:542,733", "", { path: "settings.ts", line: 542 }],
+    ["cli.ts:3033,3047", "", { path: "cli.ts", line: 3033 }],
   ])("splits %s%s", (path, hash, expected) => {
     expect(splitFilePathPosition(path, hash)).toEqual(expected);
   });
