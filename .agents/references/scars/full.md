@@ -375,6 +375,8 @@
 - Background webviews at `z-index: -1` still show through native-vibrancy sidebars. Set unpresented host opacity to zero while keeping guest visibility and capture dimensions intact; restore opacity when presented.
 - Chat file-link heuristics live in three copies (web `markdown-links.ts`, shared `markdownLinks.ts`, mobile copy): keep position patterns, the external-scheme `POSITION_ONLY` guard, and hostname allowlists in sync, or bare `file.ts:103` and comma `file:542,733` link on one client and stay plain code on another. Hash (`#L42C7`) and suffix (`:42:7`) capture groups have different shapes — parse the column from each accordingly.
 - Once `ChatMarkdown` reads the workspace entries index, its browser suite must mock `projectFilesQueryState`; the `environmentApi` mock alone fails the import.
+- `@pierre/trees` captures `useFileTree` options once at construction, so live data (selection guards, row decorations) must flow through refs; `collapse-non-matches` is type-only with no runtime branch — use `expand-matches` for hierarchy-preserving filter. The tree opens its own `Search…` overlay whenever the model search value is set, so a panel-owned filter input must hide `[data-file-tree-search-container]` via tree CSS. Row decorations render as bare spans — style them through the `div[data-item-section='decoration']` lane wrapper.
+- Stopping a `pnpm dev` wrapper does not stop its backend/watch children, and a surviving backend keeps the isolated state-dir lock so the next server fails to claim it with `ECONNREFUSED` proxies. Kill the backend processes (same worktree cwd), never another worktree's.
 
 ## Checkpoint and snapshot atomicity
 
