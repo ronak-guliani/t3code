@@ -502,27 +502,33 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       return deriveCompletionDividerBeforeEntryId(timelineEntries, latestTurn);
     }, [isSendBusy, latestTurn, latestTurnSettled, sessionActivelyWorking, timelineEntries]);
 
-    const timelineRows = useMemo(
-      () =>
-        deriveMessagesTimelineRows({
-          timelineEntries,
-          completionDividerBeforeEntryId,
-          isWorking: timelineActiveWork,
-          activeTurnId: latestTurn?.turnId ?? null,
-          activeTurnStartedAt: activeWorkStartedAt,
-          turnDiffSummaryByAssistantMessageId,
-          revertTurnCountByUserMessageId,
-        }),
-      [
-        activeWorkStartedAt,
-        completionDividerBeforeEntryId,
-        latestTurn?.turnId,
-        revertTurnCountByUserMessageId,
-        timelineActiveWork,
+    // During optimistic send the server still reports the previous turn as
+    // latestTurn. Passing its id as activeTurnId would uncollapse its
+    // "Worked for..." receipt (and mark its assistant message live) until the
+    // server acks the new turn. Null it out while the previous turn is
+    // settled, mirroring completionSummary/divider above.
+    const effectiveActiveTurnId =
+      isSendBusy && latestTurnSettled ? null : (latestTurn?.turnId ?? null);
+
+    const timelineRows = useMemo(() => {
+      return deriveMessagesTimelineRows({
         timelineEntries,
+        completionDividerBeforeEntryId,
+        isWorking: timelineActiveWork,
+        activeTurnId: effectiveActiveTurnId,
+        activeTurnStartedAt: activeWorkStartedAt,
         turnDiffSummaryByAssistantMessageId,
-      ],
-    );
+        revertTurnCountByUserMessageId,
+      });
+    }, [
+      activeWorkStartedAt,
+      completionDividerBeforeEntryId,
+      effectiveActiveTurnId,
+      revertTurnCountByUserMessageId,
+      timelineActiveWork,
+      timelineEntries,
+      turnDiffSummaryByAssistantMessageId,
+    ]);
 
     const findController = useChatFind({
       timelineRows,
@@ -675,7 +681,7 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
           rows={timelineRows}
           isWorking={isWorking}
           activeTurnInProgress={timelineActiveWork}
-          activeTurnId={latestTurn?.turnId ?? null}
+          activeTurnId={effectiveActiveTurnId}
           activeTurnStartedAt={activeWorkStartedAt}
           listRef={listRef}
           timelineEntries={timelineEntries}
