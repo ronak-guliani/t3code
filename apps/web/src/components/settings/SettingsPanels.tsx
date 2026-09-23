@@ -127,6 +127,7 @@ import {
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
+  resolveDelegatedThreadModelSelectionState,
 } from "../../modelSelection";
 import {
   deriveProviderInstanceEntries,
@@ -1086,6 +1087,10 @@ export function useSettingsRestore(onRestored?: () => void) {
     settings.textGenerationModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
+  const isDelegatedThreadModelDirty = !Equal.equals(
+    settings.delegatedThreadModelSelection ?? null,
+    DEFAULT_UNIFIED_SETTINGS.delegatedThreadModelSelection ?? null,
+  );
   // A provider surface is "dirty" if either the legacy per-kind
   // `settings.providers[kind]` struct differs from defaults (for users
   // on pre-migration data) or the new `settings.providerInstances` map
@@ -1206,11 +1211,13 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Header & sidebar buttons"]
         : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
+      ...(isDelegatedThreadModelDirty ? ["Delegated thread model"] : []),
       ...(areProviderSettingsDirty ? ["Providers"] : []),
     ],
     [
       areProviderSettingsDirty,
       isGitWritingModelDirty,
+      isDelegatedThreadModelDirty,
       settings.autoOpenPlanSidebar,
       settings.browserAutoShowFloatingPreview,
       settings.browserRecordingFrameRate,
@@ -1533,6 +1540,17 @@ export function GeneralSettingsPanel() {
   const isGitWritingModelDirty = !Equal.equals(
     settings.textGenerationModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
+  );
+
+  const delegatedThreadModelSelection = resolveDelegatedThreadModelSelectionState(
+    settings,
+    serverProviders,
+  );
+  const delegatedInstanceId = delegatedThreadModelSelection.instanceId;
+  const delegatedModel = delegatedThreadModelSelection.model;
+  const isDelegatedThreadModelDirty = !Equal.equals(
+    settings.delegatedThreadModelSelection ?? null,
+    DEFAULT_UNIFIED_SETTINGS.delegatedThreadModelSelection ?? null,
   );
 
   const openInPreferredEditor = useCallback(
@@ -3701,6 +3719,48 @@ export function GeneralSettingsPanel() {
                           textGenModel,
                           nextOptions,
                         ),
+                      },
+                      serverProviders,
+                    ),
+                  });
+                }}
+              />
+            </div>
+          }
+        />
+
+        <SettingsRow
+          title="Delegated thread model"
+          description="Default model for helper threads created via delegate_work when no explicit model is given. Explicit per-delegation models always win."
+          resetAction={
+            isDelegatedThreadModelDirty ? (
+              <SettingResetButton
+                label="delegated thread model"
+                onClick={() =>
+                  updateSettings({
+                    delegatedThreadModelSelection:
+                      DEFAULT_UNIFIED_SETTINGS.delegatedThreadModelSelection,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <ProviderModelPicker
+                activeInstanceId={delegatedInstanceId}
+                model={delegatedModel}
+                lockedProvider={null}
+                instanceEntries={gitModelInstanceEntries}
+                modelOptionsByInstance={gitModelOptionsByInstance}
+                triggerVariant="outline"
+                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                onInstanceModelChange={(instanceId, model) => {
+                  updateSettings({
+                    delegatedThreadModelSelection: resolveDelegatedThreadModelSelectionState(
+                      {
+                        ...settings,
+                        delegatedThreadModelSelection: createModelSelection(instanceId, model),
                       },
                       serverProviders,
                     ),

@@ -29,6 +29,10 @@ export const MAX_CUSTOM_MODEL_LENGTH = 256;
 const DEFAULT_TEXT_GENERATION_INSTANCE_ID = defaultInstanceIdForDriver(
   DEFAULT_PROVIDER_DRIVER_KIND,
 );
+export const DEFAULT_DELEGATED_THREAD_INSTANCE_ID = defaultInstanceIdForDriver(
+  DEFAULT_PROVIDER_DRIVER_KIND,
+);
+export const DEFAULT_DELEGATED_THREAD_MODEL = "gpt-6-luna";
 
 /**
  * Resolve the custom-model list for a given instance, preferring the
@@ -323,4 +327,40 @@ export function resolveAppModelSelectionState(
   });
 
   return createModelSelection(defaultInstanceIdForDriver(provider), model, modelOptionsForDispatch);
+}
+
+/**
+ * Resolve the settings delegated-thread default (`delegate_work` children
+ * without an explicit model) against live provider availability. Falls back
+ * to the first enabled/available instance — and finally to factory
+ * Copilot `gpt-6-luna` — when the saved instance is disabled or missing.
+ * Unlike the text-generation resolver, no per-model options are preserved:
+ * the delegation MCP layer only reads instance + model slug.
+ */
+export function resolveDelegatedThreadModelSelectionState(
+  settings: UnifiedSettings,
+  providers: ReadonlyArray<ServerProvider>,
+): ModelSelection {
+  const selection = settings.delegatedThreadModelSelection ?? {
+    instanceId: DEFAULT_DELEGATED_THREAD_INSTANCE_ID,
+    model: DEFAULT_DELEGATED_THREAD_MODEL,
+  };
+  const entries = deriveProviderInstanceEntries(providers);
+  const selectedEntry = entries.find(
+    (entry) => entry.instanceId === selection.instanceId && entry.enabled && entry.isAvailable,
+  );
+  const entry =
+    selectedEntry ?? entries.find((candidate) => candidate.enabled && candidate.isAvailable);
+  if (entry) {
+    // When the instance changed due to fallback (e.g. selected instance was disabled),
+    // don't carry over the old instance's model — use the fallback instance's default.
+    const selectedModel = selectedEntry ? selection.model : null;
+    const model =
+      resolveAppModelSelectionForInstance(entry.instanceId, settings, providers, selectedModel) ??
+      entry.models[0]?.slug ??
+      DEFAULT_DELEGATED_THREAD_MODEL;
+    return createModelSelection(entry.instanceId, model);
+  }
+
+  return createModelSelection(DEFAULT_DELEGATED_THREAD_INSTANCE_ID, DEFAULT_DELEGATED_THREAD_MODEL);
 }
