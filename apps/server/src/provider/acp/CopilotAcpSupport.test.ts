@@ -121,11 +121,12 @@ describe("buildCopilotAcpSpawnInput", () => {
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`create_isolated_workspace`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`switch_workspace`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
-        "call `create_nested_thread` or `create_nested_threads` before any workspace operation",
+        "call `delegate_work` before any workspace operation",
       );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
-        "search `t3-tools` for `create_isolated_workspace`",
+        "Never report a deferred tool missing unless an actual tool-search call",
       );
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("search for `create_isolated_workspace`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
         "zero non-invokable resources does not mean the server exposes zero tools",
       );
@@ -171,6 +172,7 @@ describe("buildCopilotAcpSpawnInput", () => {
       ).toEqual({
         cwd: "/tmp/project",
         toolsets: new Set([
+          "delegate_work",
           "create_isolated_workspace",
           "switch_workspace",
           "create_nested_thread",
@@ -238,6 +240,7 @@ describe("buildCopilotAcpSpawnInput", () => {
           "web_search",
           "web_extract",
           "memory",
+          "delegate_work",
           "create_isolated_workspace",
           "switch_workspace",
           "associate_pull_request",
@@ -273,6 +276,7 @@ describe("buildCopilotAcpSpawnInput", () => {
         toolsets: new Set([
           "read_file",
           "search_files",
+          "delegate_work",
           "create_isolated_workspace",
           "switch_workspace",
           "create_nested_thread",

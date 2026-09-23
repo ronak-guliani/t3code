@@ -1756,6 +1756,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
           "report_to_parent",
           "read_file",
           "search_files",
+          "delegate_work",
           "create_isolated_workspace",
           "switch_workspace",
           "create_nested_thread",

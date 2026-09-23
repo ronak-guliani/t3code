@@ -277,6 +277,17 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     });
   });
 
+  it("defaults delegated threads to Copilot gpt-6-luna", () => {
+    expect(DEFAULT_SERVER_SETTINGS.delegatedThreadModelSelection).toMatchObject({
+      instanceId: "copilot",
+      model: "gpt-6-luna",
+    });
+    expect(decodeServerSettings({}).delegatedThreadModelSelection).toMatchObject({
+      instanceId: "copilot",
+      model: "gpt-6-luna",
+    });
+  });
+
   it("decodes a fully empty config (legacy on-disk shape) without complaint", () => {
     const decoded = decodeServerSettings({});
     expect(decoded.providerInstances).toEqual({});

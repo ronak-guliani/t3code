@@ -9,25 +9,30 @@ Delegate work from the current T3 thread through T3's authenticated MCP control 
 
 ## Core rule
 
-Create one helper with `create_nested_thread`, or multiple sibling helpers with
-`create_nested_threads`. These calls create each child, record the current thread as its parent,
-select Copilot, send the first prompt, and optionally create the child's isolated worktree. Do not
-assemble those steps with terminal commands or workspace tools.
+Create one or many helpers with `delegate_work`. It creates each child, records the current thread
+as its parent, selects Copilot, sends the first prompt, and optionally creates the child's isolated
+worktree. Do not assemble those steps with terminal commands or workspace tools.
+
+`create_nested_thread` and `create_nested_threads` are compatibility tools only. Prefer
+`delegate_work` for every new delegation.
 
 ## Quick start
 
-If the MCP tool is deferred, you MUST use the tool-search API to load the `create_nested_thread`
-function definition from the `t3-tools` tool resource, then call the loaded function. Do not use
-MCP resources/list as an availability check: zero non-invokable resources does not mean the server
-exposes zero tools. Do not infer that the authenticated `t3-tools` server lacks the tool from the
-initially loaded tool list or resource count. Search for `create_nested_threads` when delegating
-multiple independent sibling tasks.
+If the MCP tool is deferred, you MUST use the tool-search API to load the `delegate_work` function
+definition from the `t3-tools` tool resource, then call it. The same interface handles one child
+and batches. Do not use MCP resources/list as an availability check: zero non-invokable resources
+does not mean the server exposes zero tools. Do not infer that the authenticated `t3-tools` server
+lacks the tool from the initially loaded tool list or resource count. Never report a missing tool
+unless an actual exact-name search call completed with no definition.
 
-Supply the project, title, self-contained prompt, and requested model. Use only model-supported
-reasoning options. The loaded tool schema is authoritative; use `dryRun` when preflight is useful.
-Load [creation-examples.md](references/creation-examples.md) when composing structured prompt
-templates or a batch. Include only needed permissions; never combine investigation-only work
-with implementation, commit, or publication permissions.
+Each child requires only a title and self-contained prompt. Put shared project, model, reasoning,
+prompt template, follow-up policy, and dry-run settings in `defaults`; omit project to
+use the authenticated parent workspace and omit model to use the settings delegated-thread
+default (factory Copilot gpt-6-luna). Use only
+model-supported reasoning options. The loaded tool schema is authoritative. Load
+[creation-examples.md](references/creation-examples.md) when composing structured prompts or a
+batch. Include only needed permissions; never combine investigation-only work with implementation,
+commit, or publication permissions.
 
 Every call returns `status`, `threadId`, `retryable`, `workspaceCreated`, `cleanupPerformed`,
 `errorCode`, and `message`. A `created` outcome always has a `threadId`. For an `ambiguous`
@@ -35,18 +40,21 @@ outcome with a non-null `threadId`, inspect that exact child before retrying; wh
 inspect the parent's children and any requested workspace state instead. Retry a failed call only
 when `retryable` is true and follow any remediation in `message`.
 
-For a batch, inspect each indexed outcome; partial success is not a reason to retry the whole
-batch. Retry only individual retryable failures. Shared workspace branches or canonical paths
-are rejected before mutation; case-only path differences do not establish independent ownership.
+Inspect each indexed outcome, including a single-child result. Partial success is not a reason to
+retry the whole batch. Retry only individual retryable failures. Shared workspace branches or
+canonical paths are rejected before mutation; case-only path differences do not establish
+independent ownership.
 
 ## Delegation workflow
 
 1. Decide whether delegation is worthwhile; keep simple lookups and tightly coupled edits local.
-2. Resolve the project and choose an available Copilot model. Pass the model explicitly.
-3. Put the goal and task-specific constraints in `prompt`; select reusable context, permissions,
-   validation, delivery, and reporting blocks with `promptTemplate`.
-4. If isolation is needed, include `workspace` in the same `create_nested_thread` call.
-5. Call the selected creation tool once, check each outcome, and capture every non-null `threadId`.
+2. Use the authenticated parent workspace by default and the settings delegated-thread model
+   (factory Copilot gpt-6-luna) by default; override them only when the
+   request requires a specific target.
+3. Put the goal and task-specific constraints in each child's `prompt`; put reusable context,
+   permissions, validation, delivery, and reporting blocks in `defaults.promptTemplate`.
+4. If isolation is needed, include `workspace` on that child in the same `delegate_work` call.
+5. Call `delegate_work` once, check each outcome, and capture every non-null `threadId`.
 6. Monitor by `threadId` only when needed, then consolidate the result in the parent.
 
 ## Workspace ownership
@@ -54,7 +62,7 @@ are rejected before mutation; case-only path differences do not establish indepe
 - Parent stays in its current workspace.
 - Child without isolation: omit `workspace`.
 - Child with isolation: pass `workspace: { mode: "isolated", branch, path, baseRef? }` in its
-  single or batch specification; `path` must be absolute.
+  child specification; `path` must be absolute.
 - `create_isolated_workspace` and `switch_workspace` always move the thread that calls them. Use
   them only when the current thread itself must move, never to prepare a future child.
 - Never run raw `git worktree add` or `git worktree move` for T3-managed delegation.

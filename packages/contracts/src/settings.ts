@@ -549,6 +549,20 @@ export const ServerSettings = Schema.Struct({
       }),
     ),
   ),
+  /**
+   * Default model for delegated helper threads created via `delegate_work`.
+   * Factory default is Copilot `gpt-6-luna`; explicit per-delegation
+   * `defaults.model` / `child.model` values always win over this setting,
+   * and the parent session model is never inherited.
+   */
+  delegatedThreadModelSelection: ModelSelection.pipe(
+    Schema.withDecodingDefault(
+      Effect.succeed({
+        instanceId: defaultInstanceIdForDriver(DEFAULT_PROVIDER_DRIVER_KIND),
+        model: "gpt-6-luna",
+      }),
+    ),
+  ),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
   // of truth until `providerInstances` (below) lands per-driver migration
@@ -731,6 +745,7 @@ export const ServerSettingsPatch = Schema.Struct({
   collaborativeAcceptance: Schema.optionalKey(Schema.NullOr(CollaborativeAcceptancePolicy)),
   agentWorkflows: Schema.optionalKey(AgentWorkflowSettingsPatch),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  delegatedThreadModelSelection: Schema.optionalKey(ModelSelectionPatch),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(Schema.String),
