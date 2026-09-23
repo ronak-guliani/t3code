@@ -373,6 +373,8 @@
 - Browser fixtures that reduce full thread snapshots to shell rows must preserve every row-rendering primitive, including linked `pullRequests`; otherwise integration tests silently exercise legacy fallback data instead of the production shell path.
 - Electron native preview recording serializes only the display-media grant, not the recording lifetime; keep hidden guests composited and unthrottled until their activity lease ends, and pin each attached debugger wrapper until its control scope closes.
 - Background webviews at `z-index: -1` still show through native-vibrancy sidebars. Set unpresented host opacity to zero while keeping guest visibility and capture dimensions intact; restore opacity when presented.
+- Chat file-link heuristics live in three copies (web `markdown-links.ts`, shared `markdownLinks.ts`, mobile copy): keep position patterns, the external-scheme `POSITION_ONLY` guard, and hostname allowlists in sync, or bare `file.ts:103` and comma `file:542,733` link on one client and stay plain code on another. Hash (`#L42C7`) and suffix (`:42:7`) capture groups have different shapes — parse the column from each accordingly.
+- Once `ChatMarkdown` reads the workspace entries index, its browser suite must mock `projectFilesQueryState`; the `environmentApi` mock alone fails the import.
 
 ## Checkpoint and snapshot atomicity
 
