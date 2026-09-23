@@ -3,10 +3,19 @@ import { SshDeviceHostConfigs } from "./device.ts";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { ProjectId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
-import { DEFAULT_GIT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
+import {
+  DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  DEFAULT_PROVIDER_DRIVER_KIND,
+  ProviderOptionSelections,
+} from "./model.ts";
 import { ModelSelection, ProjectScript } from "./orchestration.ts";
 import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
-import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
+import {
+  defaultInstanceIdForDriver,
+  ProviderInstanceConfig,
+  ProviderInstanceId,
+} from "./providerInstance.ts";
 import { AgentWorkflowDestinationMode, ReviewChangesScope } from "./agentWorkflows.ts";
 import { CollaborativeAcceptancePolicy } from "./collaborativeAcceptance.ts";
 import { AgentWorkflowSettings, CustomAgentWorkflowAutomationSettings } from "./workflowRuntime.ts";
@@ -533,8 +542,10 @@ export const ServerSettings = Schema.Struct({
   textGenerationModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(
       Effect.succeed({
-        instanceId: ProviderInstanceId.make("codex"),
-        model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
+        instanceId: defaultInstanceIdForDriver(DEFAULT_PROVIDER_DRIVER_KIND),
+        model:
+          DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_DRIVER_KIND] ??
+          DEFAULT_GIT_TEXT_GENERATION_MODEL,
       }),
     ),
   ),

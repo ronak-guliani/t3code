@@ -13,6 +13,8 @@ import type {
   TurnId,
 } from "@t3tools/contracts";
 import {
+  DEFAULT_PROVIDER_DRIVER_KIND,
+  defaultInstanceIdForDriver,
   ProviderDriverKind,
   ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -629,7 +631,7 @@ export const ChatComposer = memo(
         providerInstanceEntries,
         providerStatuses,
         explicitSelectedInstanceId,
-      ) ?? ProviderDriverKind.make("codex");
+      ) ?? DEFAULT_PROVIDER_DRIVER_KIND;
     const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
     const lockedContinuationGroupKey = useMemo((): string | null => {
       if (!lockedProvider || !activeThread) return null;
@@ -699,7 +701,7 @@ export const ChatComposer = memo(
         providerInstanceEntries[0]?.instanceId ??
         activeThreadModelSelection?.instanceId ??
         activeProjectDefaultModelSelection?.instanceId ??
-        ProviderInstanceId.make("codex")
+        defaultInstanceIdForDriver(DEFAULT_PROVIDER_DRIVER_KIND)
       );
     }, [
       activeProjectDefaultModelSelection?.instanceId,

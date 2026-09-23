@@ -55,6 +55,26 @@ function settingsWithProviderInstances(): UnifiedSettings {
 }
 
 describe("instance-scoped model selection", () => {
+  it("defaults a fresh model selection to Copilot", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex",
+        models: ["gpt-5.4"],
+      }),
+      provider({
+        provider: ProviderDriverKind.make("copilot"),
+        instanceId: "copilot",
+        models: ["gpt-5.4-mini"],
+      }),
+    ];
+
+    expect(resolveAppModelSelectionState(DEFAULT_UNIFIED_SETTINGS, providers)).toMatchObject({
+      instanceId: "copilot",
+      model: "gpt-5.4-mini",
+    });
+  });
+
   it("keeps custom models on the provider instance that declared them", () => {
     const providers = [
       provider({

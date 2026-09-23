@@ -131,6 +131,8 @@ const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const COPILOT_DRIVER_KIND = ProviderDriverKind.make("copilot");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 
+export const DEFAULT_PROVIDER_DRIVER_KIND = COPILOT_DRIVER_KIND;
+
 export const DEFAULT_MODEL = "gpt-5.4";
 export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini";
 
