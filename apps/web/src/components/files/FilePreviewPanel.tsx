@@ -441,29 +441,42 @@ export function FilePreviewPanel({
             </div>
           </ScrollArea>
           {showMarkdownToggle ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Toggle
-                    className="shrink-0"
-                    pressed={renderMarkdown}
-                    onPressedChange={setRenderMarkdown}
-                    aria-label={renderMarkdown ? "Show markdown source" : "Show rendered markdown"}
-                    variant="default"
-                    size="sm"
-                  >
-                    {renderMarkdown ? (
-                      <Code2 className="size-3.5" />
-                    ) : (
-                      <BookOpen className="size-3.5" />
-                    )}
-                  </Toggle>
-                }
-              />
-              <TooltipPopup>
-                {renderMarkdown ? "Show markdown source" : "Show rendered markdown"}
-              </TooltipPopup>
-            </Tooltip>
+            <div
+              role="group"
+              aria-label="Markdown view"
+              className="flex shrink-0 items-center gap-px rounded-lg border border-border/60 bg-muted/40 p-0.5"
+            >
+              <button
+                type="button"
+                aria-pressed={renderMarkdown}
+                title="Show rendered markdown"
+                onClick={() => setRenderMarkdown(true)}
+                className={cn(
+                  "flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
+                  renderMarkdown
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <BookOpen className="size-3.5" aria-hidden />
+                Preview
+              </button>
+              <button
+                type="button"
+                aria-pressed={!renderMarkdown}
+                title="Show markdown source"
+                onClick={() => setRenderMarkdown(false)}
+                className={cn(
+                  "flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
+                  renderMarkdown
+                    ? "text-muted-foreground hover:text-foreground"
+                    : "bg-background text-foreground shadow-sm",
+                )}
+              >
+                <Code2 className="size-3.5" aria-hidden />
+                Source
+              </button>
+            </div>
           ) : null}
           <Tooltip>
             <TooltipTrigger

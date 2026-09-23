@@ -56,6 +56,7 @@ import {
 import { githubPullRequestNavigation, openPullRequestLink } from "../lib/openPullRequestLink";
 import { usePrimaryEnvironmentId } from "~/environments/primary";
 import { useProjectEntriesQuery } from "./files/projectFilesQueryState";
+import { buildFileParentSuffixByPath } from "../filePathDisambiguation";
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { useOpenLink } from "~/browser/useOpenLink";
 import { readEnvironmentApi } from "~/environmentApi";
@@ -483,7 +484,7 @@ function remarkTagInlineCode(resolve: (codeText: string) => MarkdownFileLinkMeta
     };
 
     visit(tree, false);
-    const suffixByPath = buildFileLinkParentSuffixByPath(
+    const suffixByPath = buildFileParentSuffixByPath(
       inlineCodeCandidates.map(({ meta }) => meta.filePath),
     );
     for (const { node, meta, original } of inlineCodeCandidates) {
@@ -863,66 +864,6 @@ const MarkdownPullRequestLink = memo(function MarkdownPullRequestLink({
     </a>
   );
 });
-
-function pathParentSegments(path: string): string[] {
-  const normalized = path.replaceAll("\\", "/");
-  const segments = normalized.split("/").filter((segment) => segment.length > 0);
-  return segments.slice(0, -1);
-}
-
-function buildFileLinkParentSuffixByPath(filePaths: ReadonlyArray<string>): Map<string, string> {
-  const groups = new Map<string, Set<string>>();
-  for (const filePath of filePaths) {
-    const pathSegments = filePath
-      .replaceAll("\\", "/")
-      .split("/")
-      .filter((segment) => segment.length > 0);
-    const basename = pathSegments[pathSegments.length - 1];
-    if (!basename) continue;
-    const group = groups.get(basename) ?? new Set<string>();
-    group.add(filePath);
-    groups.set(basename, group);
-  }
-
-  const suffixByPath = new Map<string, string>();
-  for (const group of groups.values()) {
-    const uniquePaths = [...group];
-    if (uniquePaths.length < 2) continue;
-
-    const parentSegmentsByPath = new Map(
-      uniquePaths.map((filePath) => [filePath, pathParentSegments(filePath)]),
-    );
-    const minUniqueDepthByPath = new Map<string, number>();
-
-    for (const filePath of uniquePaths) {
-      const segments = parentSegmentsByPath.get(filePath) ?? [];
-      let resolvedDepth = segments.length;
-      for (let depth = 1; depth <= segments.length; depth += 1) {
-        const candidate = segments.slice(-depth).join("/");
-        const collision = uniquePaths.some((otherPath) => {
-          if (otherPath === filePath) return false;
-          const otherSegments = parentSegmentsByPath.get(otherPath) ?? [];
-          return otherSegments.slice(-depth).join("/") === candidate;
-        });
-        if (!collision) {
-          resolvedDepth = depth;
-          break;
-        }
-      }
-      minUniqueDepthByPath.set(filePath, resolvedDepth);
-    }
-
-    for (const filePath of uniquePaths) {
-      const segments = parentSegmentsByPath.get(filePath) ?? [];
-      if (segments.length === 0) continue;
-      const minUniqueDepth = minUniqueDepthByPath.get(filePath) ?? 1;
-      const suffixDepth = Math.min(segments.length, Math.max(minUniqueDepth, 2));
-      suffixByPath.set(filePath, segments.slice(-suffixDepth).join("/"));
-    }
-  }
-
-  return suffixByPath;
-}
 
 export function githubRepositoryForProject(
   project:
@@ -1352,7 +1293,7 @@ function ChatMarkdownView({
     return metaByHref;
   }, [cwd, text]);
   const fileLinkParentSuffixByPath = useMemo(() => {
-    return buildFileLinkParentSuffixByPath(
+    return buildFileParentSuffixByPath(
       [...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath),
     );
   }, [markdownFileLinkMetaByHref]);

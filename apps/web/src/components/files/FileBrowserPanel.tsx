@@ -1,9 +1,14 @@
 import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
-import type { ContextMenuItem, ContextMenuOpenContext } from "@pierre/trees";
+import type {
+  ContextMenuItem,
+  ContextMenuOpenContext,
+  FileTreeRowDecorationRenderer,
+} from "@pierre/trees";
 import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react";
-import { ChevronsDownUp, ChevronsUpDown, RefreshCw, Search, X } from "lucide-react";
+import { ChevronsDownUp, ChevronsUpDown, FolderSearch, RefreshCw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { buildFileParentSuffixByPath } from "~/filePathDisambiguation";
 import { useTheme } from "~/hooks/useTheme";
 import { cn } from "~/lib/utils";
 import { T3_PIERRE_ICONS } from "~/pierre-icons";
@@ -29,6 +34,14 @@ const TREE_UNSAFE_CSS = `
     --trees-border-color-override: color-mix(in srgb, currentColor 14%, transparent);
     --trees-font-family-override: var(--font-sans);
     --trees-font-size-override: 12.5px;
+  }
+  /* The panel owns the filter input below; the tree's built-in search overlay
+     opens on the same model value and would render a second, competing box. */
+  div[data-file-tree-search-container] { display: none !important; }
+  div[data-item-section='decoration'] span {
+    opacity: 0.55;
+    font-size: 11px;
+    white-space: nowrap;
   }
   button[data-type='item'] { border-radius: 6px; }
   button[data-type='item']:focus-visible {
@@ -85,12 +98,24 @@ export default function FileBrowserPanel({
   const [allExpanded, setAllExpanded] = useState(false);
   const [searchOpen, setSearchOpen] = useState(true);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // Tree options are captured at model construction; live data flows through refs.
+  const parentSuffixByPathRef = useRef<ReadonlyMap<string, string>>(new Map());
+  const renderRowDecoration = useCallback<FileTreeRowDecorationRenderer>(({ item }) => {
+    if (item.kind !== "file") return null;
+    const suffix = parentSuffixByPathRef.current.get(item.path);
+    if (!suffix) return null;
+    return { text: `· ${suffix}`, title: item.path };
+  }, []);
 
   const { model } = useFileTree({
     density: "compact",
-    fileTreeSearchMode: "hide-non-matches",
+    // Keep the full hierarchy visible while filtering: match branches expand
+    // and focus lands on the first match instead of collapsing to a flat list.
+    // (`collapse-non-matches` is type-only with no runtime branch; avoid it.)
+    fileTreeSearchMode: "expand-matches",
     flattenEmptyDirectories: true,
     initialExpansion: 1,
+    stickyFolders: true,
     icons: T3_PIERRE_ICONS,
     onSelectionChange: (selectedPaths) => {
       // Programmatic reveals below echo back through here; ignore them.
@@ -101,6 +126,7 @@ export default function FileBrowserPanel({
       }
     },
     paths: [],
+    renderRowDecoration,
     search: true,
     unsafeCSS: TREE_UNSAFE_CSS,
   });
@@ -109,8 +135,17 @@ export default function FileBrowserPanel({
   const searchValue = search.value;
   const matchCount = search.matchingPaths.length;
 
+  const parentSuffixByPath = useMemo(
+    () =>
+      buildFileParentSuffixByPath(
+        entries.filter((entry) => entry.kind === "file").map((entry) => entry.path),
+      ),
+    [entries],
+  );
+
   useEffect(() => {
     entryKindsRef.current = entryKinds;
+    parentSuffixByPathRef.current = parentSuffixByPath;
     const next = new Set(treePaths);
     const previous = previousPathsRef.current;
     previousPathsRef.current = next;
@@ -330,44 +365,54 @@ export default function FileBrowserPanel({
         </button>
       </div>
       {showSearchRow ? (
-        <div className="flex shrink-0 items-center gap-1.5 border-b border-border/60 px-2.5 py-1.5">
-          <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-          <input
-            ref={searchInputRef}
-            type="text"
-            value={searchValue}
-            onChange={(event) => search.setValue(event.target.value || null)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.stopPropagation();
-                closeSearch();
-              }
-              if (event.key === "Enter") {
-                event.stopPropagation();
-                search.focusNextMatch();
-              }
-            }}
-            placeholder="Filter files…"
-            aria-label="Filter workspace files"
-            data-file-browser-search
-            className="min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70"
-          />
-          {searchValue.length > 0 ? (
-            <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-              {matchCount === 0
-                ? "No matches"
-                : `${matchCount.toLocaleString()} match${matchCount === 1 ? "" : "es"}`}
-            </span>
-          ) : null}
-          <button
-            type="button"
-            className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label="Clear file filter"
-            title="Clear file filter"
-            onClick={closeSearch}
-          >
-            <X className="size-3.5" />
-          </button>
+        <div className="shrink-0 border-b border-border/60 px-2.5 py-1.5">
+          <div className="flex items-center gap-1.5 rounded-lg border border-border/50 bg-muted/40 px-2 py-1 transition-colors focus-within:border-ring/60 focus-within:bg-muted/60">
+            <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchValue}
+              onChange={(event) => search.setValue(event.target.value || null)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.stopPropagation();
+                  closeSearch();
+                }
+                if (event.key === "Enter") {
+                  event.stopPropagation();
+                  if (event.shiftKey) {
+                    search.focusPreviousMatch();
+                  } else {
+                    search.focusNextMatch();
+                  }
+                }
+              }}
+              placeholder="Filter files…"
+              aria-label="Filter workspace files"
+              title="Enter jumps to the next match, Shift+Enter to the previous, Esc clears"
+              data-file-browser-search
+              className="min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70"
+            />
+            {searchValue.length > 0 && (
+              <span
+                className="shrink-0 rounded-full bg-muted px-1.5 py-px text-[11px] tabular-nums text-muted-foreground"
+                title="Enter jumps to the next match, Shift+Enter to the previous"
+              >
+                {matchCount === 0
+                  ? "No matches"
+                  : `${matchCount.toLocaleString()} match${matchCount === 1 ? "" : "es"} · Enter ↵`}
+              </span>
+            )}
+            <button
+              type="button"
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-label="Clear file filter"
+              title="Clear file filter"
+              onClick={closeSearch}
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
         </div>
       ) : null}
       {entriesQuery.data?.truncated && !isIndexing ? (
@@ -401,6 +446,9 @@ export default function FileBrowserPanel({
         </div>
       ) : entries.length === 0 || hasNoMatches ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-1 p-4 text-center">
+          <span className="mb-1 flex size-9 items-center justify-center rounded-full bg-muted text-muted-foreground">
+            <FolderSearch className="size-4" aria-hidden />
+          </span>
           <p className="text-xs font-medium text-foreground">No files found</p>
           <p className="text-[11px] leading-relaxed text-muted-foreground">
             {searchValue.length > 0 ? "Try a different filter." : "This workspace looks empty."}
