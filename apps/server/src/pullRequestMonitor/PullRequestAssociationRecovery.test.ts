@@ -22,6 +22,7 @@ import {
   makePullRequestAssociationRecovery,
   reportedPullRequestUrl,
 } from "./PullRequestAssociationRecovery.ts";
+import { createdPullRequestLinks } from "./CreatedPullRequestReviewReactor.ts";
 
 const now = "2026-09-08T00:00:00.000Z";
 const decodeEvent = Schema.decodeUnknownSync(OrchestrationEvent);
@@ -224,6 +225,88 @@ describe("pull request association recovery", () => {
     expect(h.thread()?.pullRequest).toEqual(status.pr);
     await Effect.runPromise(h.recovery.sweep);
     expect(h.lookups()).toBe(1);
+  });
+
+  it("marks a verified assistant-created PR eligible for automatic review", async () => {
+    const h = await harness();
+    h.updateThread({ messages: [message(`Created: [acme/app#42](${url}) — ready for review.`)] });
+    await Effect.runPromise(h.recovery.sweep);
+
+    expect(h.commands[0]).toMatchObject({
+      type: "thread.meta.update",
+      pullRequestSource: "agent",
+    });
+    const recoveredThread = h.thread();
+    if (!recoveredThread) throw new Error("Expected the PR creator thread.");
+    expect(createdPullRequestLinks(recoveredThread)).toMatchObject([
+      { source: "agent", pullRequest: { url } },
+    ]);
+  });
+
+  it("upgrades a verified creation report recovered before this fix", async () => {
+    const h = await harness();
+    const pullRequest = status.pr;
+    if (!pullRequest) throw new Error("Expected a PR in the test fixture.");
+    h.updateThread({
+      messages: [message(`Created: [acme/app#42](${url}) — ready for review.`)],
+      pullRequest,
+      pullRequests: [{ pullRequest, source: "recovered", linkedAt: now }],
+    });
+    await Effect.runPromise(h.recovery.sweep);
+
+    expect(h.commands).toHaveLength(1);
+    expect(h.commands[0]).toMatchObject({
+      type: "thread.meta.update",
+      pullRequestSource: "agent",
+      expectedWorkspaceCwd: "/isolated/worktree",
+    });
+    const recoveredThread = h.thread();
+    if (!recoveredThread) throw new Error("Expected the PR creator thread.");
+    expect(createdPullRequestLinks(recoveredThread)).toHaveLength(1);
+    await Effect.runPromise(h.recovery.sweep);
+    expect(h.lookups()).toBe(1);
+  });
+
+  it("recovers an older creation report after the chat has continued", async () => {
+    const h = await harness();
+    const pullRequest = status.pr;
+    if (!pullRequest) throw new Error("Expected a PR in the test fixture.");
+    h.updateThread({
+      messages: [message(`Created: [acme/app#42](${url})`), message("Follow-up complete.")],
+      pullRequest,
+      pullRequests: [{ pullRequest, source: "recovered", linkedAt: now }],
+    });
+
+    await Effect.runPromise(h.recovery.sweep);
+
+    expect(h.commands[0]).toMatchObject({
+      type: "thread.meta.update",
+      pullRequestSource: "agent",
+    });
+  });
+
+  it("does not promote generic recovered or explicitly manual associations", async () => {
+    const h = await harness();
+    const pullRequest = status.pr;
+    if (!pullRequest) throw new Error("Expected a PR in the test fixture.");
+    h.updateThread({
+      messages: [message(`PR: [acme/app#42](${url})`)],
+      pullRequest,
+      pullRequests: [{ pullRequest, source: "recovered", linkedAt: now }],
+    });
+    await Effect.runPromise(h.recovery.sweep);
+    expect(h.lookups()).toBe(0);
+    const recoveredThread = h.thread();
+    if (!recoveredThread) throw new Error("Expected the PR creator thread.");
+    expect(createdPullRequestLinks(recoveredThread)).toEqual([]);
+
+    h.updateThread({
+      messages: [message(`Created: [acme/app#42](${url})`)],
+      pullRequests: [{ pullRequest, source: "manual", linkedAt: now }],
+    });
+    await Effect.runPromise(h.recovery.sweep);
+    expect(h.lookups()).toBe(0);
+    expect(h.commands).toEqual([]);
   });
 
   it("retries a not-yet-visible PR using fresh status", async () => {
