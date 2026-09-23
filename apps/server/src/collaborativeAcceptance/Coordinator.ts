@@ -293,7 +293,18 @@ export interface CollaborativeAcceptanceCoordinatorShape {
     readonly pullRequest: PullRequestRef;
     readonly headSha: string;
     readonly sourceRevision: string;
-  }) => Effect.Effect<CollaborativeAcceptanceStatus, CollaborativeAcceptanceError>;
+  }) => Effect.Effect<
+    CollaborativeAcceptanceStatus & {
+      readonly workflowRequest: {
+        readonly caseId: CollaborativeAcceptanceCaseId;
+        readonly candidateId: CollaborativeAcceptanceCandidateId;
+        readonly headSha: string;
+        readonly workflowId: string;
+        readonly idempotencyKey: string;
+      } | null;
+    },
+    CollaborativeAcceptanceError
+  >;
   readonly requestReview: (
     input: AcceptanceAuthorityInput & {
       readonly senderThreadId: ThreadId;
@@ -886,6 +897,20 @@ const makeCoordinator = Effect.gen(function* () {
   const reconcileAutomaticCandidate: CollaborativeAcceptanceCoordinatorShape["reconcileAutomaticCandidate"] =
     (input) =>
       Effect.gen(function* () {
+        const result = (
+          record: CollaborativeAcceptanceRecord | null,
+          workflowRequest: {
+            readonly caseId: CollaborativeAcceptanceCaseId;
+            readonly candidateId: CollaborativeAcceptanceCandidateId;
+            readonly headSha: string;
+            readonly workflowId: string;
+            readonly idempotencyKey: string;
+          } | null = null,
+        ) => ({
+          record,
+          pauseReason: record?.projection.pauseReason ?? null,
+          workflowRequest,
+        });
         const assignmentId = createdPullRequestAssignment(input);
         const deterministicCaseId = createdPullRequestCaseId(assignmentId);
         const deterministic = yield* repository.getByCaseId({ caseId: deterministicCaseId }).pipe(
@@ -944,10 +969,7 @@ const makeCoordinator = Effect.gen(function* () {
         );
         const policy = existing?.case.policy ?? settings.collaborativeAcceptance;
         if (policy === null || policy.automation === "off" || policy.reviewTrigger === "manual") {
-          return {
-            record: existing ?? null,
-            pauseReason: existing?.projection.pauseReason ?? null,
-          };
+          return result(existing ?? null);
         }
 
         const thread = yield* projections.getThreadDetailById(input.parentThreadId).pipe(
@@ -967,10 +989,7 @@ const makeCoordinator = Effect.gen(function* () {
           ),
         );
         if (threadHasInFlightTurn(thread) || threadHasPendingInteraction(thread)) {
-          return {
-            record: existing ?? null,
-            pauseReason: existing?.projection.pauseReason ?? null,
-          };
+          return result(existing ?? null);
         }
 
         const caseId = existing?.case.caseId ?? deterministicCaseId;
@@ -981,10 +1000,7 @@ const makeCoordinator = Effect.gen(function* () {
           existing !== undefined &&
           existing.case.currentCandidate.candidateId !== candidate.candidateId
         ) {
-          return {
-            record: existing,
-            pauseReason: existing.projection.pauseReason ?? null,
-          };
+          return result(existing);
         }
         const nextCandidate =
           candidate === undefined
@@ -1104,7 +1120,7 @@ const makeCoordinator = Effect.gen(function* () {
             previouslyReviewedEligibleCandidate,
           })
         ) {
-          return { record, pauseReason: record.projection.pauseReason ?? null };
+          return result(record);
         }
 
         const latestThread = yield* projections.getThreadDetailById(input.parentThreadId).pipe(
@@ -1124,25 +1140,16 @@ const makeCoordinator = Effect.gen(function* () {
           ),
         );
         if (threadHasInFlightTurn(latestThread) || threadHasPendingInteraction(latestThread)) {
-          return { record, pauseReason: record.projection.pauseReason ?? null };
+          return result(record);
         }
 
-        const reviewed = yield* admitReview({
-          record,
-          candidate: currentCandidate,
-          reviewCandidate,
-          mode: eligibility.mode ?? "full",
-          authority: {
-            assignmentId: record.case.assignmentId,
-            senderAuthority: authority,
-            recipientThreadId: input.parentThreadId,
-            recipientAuthority: authority,
-          },
-          pullRequest: input.pullRequest,
-          senderThreadId: input.parentThreadId,
-          force: false,
+        return result(record, {
+          caseId,
+          candidateId: currentCandidate.candidateId,
+          headSha: currentCandidate.headSha,
+          workflowId: currentCandidate.reviewWorkflow.identity,
+          idempotencyKey: `acceptance-review:${caseId}:${currentCandidate.candidateId}:${currentCandidate.reviewWorkflow.identity}:${currentCandidate.reviewWorkflow.version}`,
         });
-        return { record: reviewed, pauseReason: reviewed.projection.pauseReason ?? null };
       });
 
   const requestReview: CollaborativeAcceptanceCoordinatorShape["requestReview"] = (input) =>

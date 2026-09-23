@@ -1135,3 +1135,67 @@ label:has(> select#reasoning-effort) select {
     animation: none;
   }
 }
+
+.thread-slide {
+  position: relative;
+  flex: none;
+  width: 0.85em;
+  height: 0.85em;
+  contain: paint;
+  transform: translateZ(0);
+}
+
+.thread-slide-dot {
+  position: absolute;
+  top: 6%;
+  left: 6%;
+  width: 34%;
+  height: 34%;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: thread-slide-walk 2.4s ease-in-out infinite;
+}
+
+.thread-slide-dot:nth-child(1) {
+  animation-delay: -2.4s;
+  --thread-slide-rest: translate(158.8%, 0);
+}
+
+.thread-slide-dot:nth-child(2) {
+  animation-delay: -1.6s;
+  --thread-slide-rest: translate(0, 0);
+}
+
+.thread-slide-dot:nth-child(3) {
+  animation-delay: -0.8s;
+  --thread-slide-rest: translate(0, 158.8%);
+}
+
+@keyframes thread-slide-walk {
+  0% {
+    transform: translate(158.8%, 0);
+  }
+  8.33%,
+  25% {
+    transform: translate(158.8%, 158.8%);
+  }
+  33.33%,
+  50% {
+    transform: translate(0, 158.8%);
+  }
+  58.33%,
+  75% {
+    transform: translate(0, 0);
+  }
+  83.33%,
+  100% {
+    transform: translate(158.8%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-slide-dot {
+    transform: var(--thread-slide-rest);
+    animation: none;
+  }
+}

@@ -29,6 +29,7 @@ import type {
 import { PullRequestDiffResult as PullRequestDiffResultSchema } from "@t3tools/contracts";
 import {
   infiniteQueryOptions,
+  keepPreviousData,
   mutationOptions,
   queryOptions,
   type QueryClient,
@@ -220,6 +221,7 @@ export function pullRequestListStatsQueryOptions(input: {
     queryFn: () => requirePullRequestApi(input.environmentId).listStats(input.request),
     enabled:
       input.environmentId !== null && input.request.refs.length > 0 && (input.enabled ?? true),
+    placeholderData: keepPreviousData,
     staleTime: PULL_REQUEST_STALE_TIME_MS,
   });
 }
@@ -535,6 +537,7 @@ export function pullRequestInvalidateMutationOptions(input: {
 export function pullRequestMonitorStatusQueryOptions(input: {
   readonly environmentId: EnvironmentId;
   readonly reference: PullRequestRef;
+  readonly enabled?: boolean;
 }) {
   const statusInput: PullRequestMonitorStatusInput = { reference: input.reference };
   return queryOptions({
@@ -542,6 +545,7 @@ export function pullRequestMonitorStatusQueryOptions(input: {
     staleTime: PULL_REQUEST_STALE_TIME_MS,
     // Server owns monitor truth; keep the strip fresh while the panel is open.
     refetchInterval: 15_000,
+    enabled: input.enabled ?? true,
     queryFn: async () => {
       const api = await ensureEnvironmentApi(input.environmentId);
       return api.pullRequestMonitors.status(statusInput);

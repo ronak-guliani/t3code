@@ -19,7 +19,7 @@ import {
 } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
-import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
+import { getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { useSettings } from "./useSettings";
 import { refreshArchivedThreadsForEnvironment } from "../archivedThreadsState";
 import { useUiStateStore } from "../uiStateStore";
@@ -270,23 +270,7 @@ export function useThreadActions() {
             threadProject?.cwd ?? null,
           )
         : null;
-      const displayWorktreePath = orphanedWorktreePath
-        ? formatWorktreePathForDisplay(orphanedWorktreePath)
-        : null;
-      const canDeleteWorktree = orphanedWorktreePath !== null && threadProject !== undefined;
-      const localApi = readLocalApi();
-      const shouldDeleteWorktree =
-        canDeleteWorktree &&
-        localApi &&
-        (await localApi.dialogs.confirm(
-          [
-            "This thread is the only one linked to this worktree:",
-            displayWorktreePath ?? orphanedWorktreePath,
-            "",
-            "Delete the worktree too?",
-            "Worktrees with uncommitted changes will be retained.",
-          ].join("\n"),
-        ));
+      const shouldDeleteWorktree = orphanedWorktreePath !== null && threadProject !== undefined;
 
       const deletedThreadIds = deletedIds ?? new Set<ThreadId>();
       const currentRouteThreadRef = getCurrentRouteThreadRef();

@@ -135,6 +135,7 @@
 
 ## PR reviews and checkpoint provenance
 
+- Automatic PR review must launch the canonical `review-changes` workflow in a child worker thread. A self-addressed blocking collaboration request deadlocks its own queued turn and leaves the creator thread permanently waiting.
 - Collaborative acceptance must reserve one deterministic exchange before creating its queued review request, bind every prompt and outcome to the immutable assignment/dispatch/turn/case/candidate/head tuple, and wake only through `QueuedTurnReactor`; child completion alone is never review evidence.
 - Collaborative acceptance recovery must subscribe once before its startup snapshot, reconcile response/queue terminal events live, and treat PR-monitor notifications as wakeups that re-read authoritative evidence. Persist a terminal dispatch outcome for unrecoverable legacy work so one malformed exchange cannot strand startup or create a retry storm.
 - Collaborative acceptance case writes must cross `AcceptanceCaseMutation`: it owns authority checks for domain commands, projection recomputation, timestamps, and revision-fenced persistence. Keep provider dispatch and monitor reads outside that seam, then persist their durable outcomes through it.

@@ -37,6 +37,7 @@ import {
 } from "./SidebarV2ThreadTooltip";
 import {
   ThreadBrowserOpenStatus,
+  ThreadSlideSpinner,
   ThreadStatusLabel,
   WorkingDuration,
   resolveTerminalThreadRef,
@@ -548,6 +549,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
             </span>
             <span className="flex min-w-0 items-center gap-[var(--app-sidebar-row-inline-gap)]">
               {expandToggle}
+              {pill?.pulse ? <ThreadSlideSpinner /> : null}
               <span className="min-w-0 flex-1 truncate text-[length:var(--app-sidebar-title-font-size)] font-medium text-foreground">
                 {thread.title}
               </span>
