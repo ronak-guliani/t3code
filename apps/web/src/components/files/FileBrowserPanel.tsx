@@ -1,9 +1,14 @@
 import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
-import type { ContextMenuItem, ContextMenuOpenContext } from "@pierre/trees";
+import type {
+  ContextMenuItem,
+  ContextMenuOpenContext,
+  FileTreeRowDecorationRenderer,
+} from "@pierre/trees";
 import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react";
 import { ChevronsDownUp, ChevronsUpDown, RefreshCw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { buildFileParentSuffixByPath } from "~/filePathDisambiguation";
 import { useTheme } from "~/hooks/useTheme";
 import { cn } from "~/lib/utils";
 import { T3_PIERRE_ICONS } from "~/pierre-icons";
@@ -29,6 +34,14 @@ const TREE_UNSAFE_CSS = `
     --trees-border-color-override: color-mix(in srgb, currentColor 14%, transparent);
     --trees-font-family-override: var(--font-sans);
     --trees-font-size-override: 12.5px;
+  }
+  /* The panel owns the filter input below; the tree's built-in search overlay
+     opens on the same model value and would render a second, competing box. */
+  div[data-file-tree-search-container] { display: none !important; }
+  div[data-item-section='decoration'] span {
+    opacity: 0.55;
+    font-size: 11px;
+    white-space: nowrap;
   }
   button[data-type='item'] { border-radius: 6px; }
   button[data-type='item']:focus-visible {
@@ -85,10 +98,21 @@ export default function FileBrowserPanel({
   const [allExpanded, setAllExpanded] = useState(false);
   const [searchOpen, setSearchOpen] = useState(true);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // Tree options are captured at model construction; live data flows through refs.
+  const parentSuffixByPathRef = useRef<ReadonlyMap<string, string>>(new Map());
+  const renderRowDecoration = useCallback<FileTreeRowDecorationRenderer>(({ item }) => {
+    if (item.kind !== "file") return null;
+    const suffix = parentSuffixByPathRef.current.get(item.path);
+    if (!suffix) return null;
+    return { text: `· ${suffix}`, title: item.path };
+  }, []);
 
   const { model } = useFileTree({
     density: "compact",
-    fileTreeSearchMode: "hide-non-matches",
+    // Keep the full hierarchy visible while filtering: match branches expand
+    // and focus lands on the first match instead of collapsing to a flat list.
+    // (`collapse-non-matches` is type-only with no runtime branch; avoid it.)
+    fileTreeSearchMode: "expand-matches",
     flattenEmptyDirectories: true,
     initialExpansion: 1,
     icons: T3_PIERRE_ICONS,
@@ -101,6 +125,7 @@ export default function FileBrowserPanel({
       }
     },
     paths: [],
+    renderRowDecoration,
     search: true,
     unsafeCSS: TREE_UNSAFE_CSS,
   });
@@ -109,8 +134,17 @@ export default function FileBrowserPanel({
   const searchValue = search.value;
   const matchCount = search.matchingPaths.length;
 
+  const parentSuffixByPath = useMemo(
+    () =>
+      buildFileParentSuffixByPath(
+        entries.filter((entry) => entry.kind === "file").map((entry) => entry.path),
+      ),
+    [entries],
+  );
+
   useEffect(() => {
     entryKindsRef.current = entryKinds;
+    parentSuffixByPathRef.current = parentSuffixByPath;
     const next = new Set(treePaths);
     const previous = previousPathsRef.current;
     previousPathsRef.current = next;
@@ -344,19 +378,27 @@ export default function FileBrowserPanel({
               }
               if (event.key === "Enter") {
                 event.stopPropagation();
-                search.focusNextMatch();
+                if (event.shiftKey) {
+                  search.focusPreviousMatch();
+                } else {
+                  search.focusNextMatch();
+                }
               }
             }}
             placeholder="Filter files…"
             aria-label="Filter workspace files"
+            title="Enter jumps to the next match, Shift+Enter to the previous, Esc clears"
             data-file-browser-search
             className="min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70"
           />
           {searchValue.length > 0 ? (
-            <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+            <span
+              className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
+              title="Enter jumps to the next match, Shift+Enter to the previous"
+            >
               {matchCount === 0
                 ? "No matches"
-                : `${matchCount.toLocaleString()} match${matchCount === 1 ? "" : "es"}`}
+                : `${matchCount.toLocaleString()} match${matchCount === 1 ? "" : "es"} · Enter ↵`}
             </span>
           ) : null}
           <button
