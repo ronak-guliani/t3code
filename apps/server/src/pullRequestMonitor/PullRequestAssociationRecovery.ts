@@ -26,6 +26,37 @@ export function reportedPullRequestUrl(
   return urls.size === 1 ? (urls.values().next().value ?? null) : null;
 }
 
+function reportsCreatedPullRequest(
+  thread: Pick<OrchestrationThread, "messages">,
+  url: string,
+): boolean {
+  return thread.messages.some(
+    (message) =>
+      message.role === "assistant" &&
+      !message.streaming &&
+      message.text
+        .split(/\r?\n/)
+        .some(
+          (line) =>
+            /^\s*(?:[-*]\s*)?(?:\*\*)?Created(?:\*\*)?(?::|\s)/i.test(line) && line.includes(url),
+        ),
+  );
+}
+
+function recoverablePullRequestUrl(thread: OrchestrationThread): string | null {
+  return (
+    reportedPullRequestUrl(thread) ??
+    thread.pullRequests?.find(
+      (link) =>
+        link.source === "recovered" &&
+        thread.pullRequest &&
+        sameThreadPullRequest(link.pullRequest, thread.pullRequest) &&
+        reportsCreatedPullRequest(thread, link.pullRequest.url),
+    )?.pullRequest.url ??
+    null
+  );
+}
+
 export const makePullRequestAssociationRecovery = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const git = yield* GitManager;
@@ -34,16 +65,11 @@ export const makePullRequestAssociationRecovery = Effect.gen(function* () {
     const snapshot = yield* engine.getReadModel();
     const thread = snapshot.threads.find((entry) => entry.id === threadId);
     if (!thread || thread.deletedAt || thread.archivedAt) return;
-    if (thread.pullRequest) {
-      const existingLink = thread.pullRequests?.find((link) =>
-        sameThreadPullRequest(link.pullRequest, thread.pullRequest!),
-      );
-      if (existingLink) {
-        return;
-      }
-    }
-    const reference = reportedPullRequestUrl(thread);
+    const reference = recoverablePullRequestUrl(thread);
     if (!reference) return;
+    const createdByAgent = reportsCreatedPullRequest(thread, reference);
+    const existingLink = thread.pullRequests?.find((link) => link.pullRequest.url === reference);
+    if (existingLink && (existingLink.source !== "recovered" || !createdByAgent)) return;
     const cwd = resolveThreadWorkspaceCwd({ thread, projects: snapshot.projects });
     if (!cwd) return;
 
@@ -65,13 +91,6 @@ export const makePullRequestAssociationRecovery = Effect.gen(function* () {
     if (thread.pullRequest && !sameThreadPullRequest(thread.pullRequest, pullRequest)) {
       return;
     }
-    if (
-      thread.pullRequests?.some(
-        (link) => link.source === "recovered" && link.pullRequest.url === pullRequest.url,
-      )
-    ) {
-      return;
-    }
     // Serialized dispatch checks the snapshot version: explicit associations,
     // workspace handoffs, and archival that race the lookup always win.
     yield* engine.dispatch({
@@ -81,7 +100,7 @@ export const makePullRequestAssociationRecovery = Effect.gen(function* () {
       expectedUpdatedAt: thread.updatedAt,
       expectedWorkspaceCwd: cwd,
       pullRequest,
-      pullRequestSource: "recovered",
+      pullRequestSource: createdByAgent ? "agent" : "recovered",
     });
   });
 
@@ -89,7 +108,7 @@ export const makePullRequestAssociationRecovery = Effect.gen(function* () {
     const snapshot = yield* engine.getReadModel();
     const candidates = snapshot.threads.filter(
       (thread) =>
-        !thread.deletedAt && !thread.archivedAt && reportedPullRequestUrl(thread) !== null,
+        !thread.deletedAt && !thread.archivedAt && recoverablePullRequestUrl(thread) !== null,
     );
     yield* Effect.forEach(candidates, (thread) => recoverSafely(thread.id), {
       concurrency: 4,
