@@ -5,10 +5,10 @@ const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 const WINDOWS_UNC_PATH_PATTERN = /^\\\\/;
 const EXTERNAL_SCHEME_PATTERN = /^([A-Za-z][A-Za-z0-9+.-]*):(.*)$/;
 const RELATIVE_PATH_PREFIX_PATTERN = /^(~\/|\.{1,2}\/)/;
-const RELATIVE_FILE_PATH_PATTERN = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+(?::\d+){0,2}$/;
-const RELATIVE_FILE_NAME_PATTERN = /^[A-Za-z0-9._-]+\.[A-Za-z0-9_-]+(?::\d+){0,2}$/;
-const POSITION_SUFFIX_PATTERN = /:\d+(?::\d+)?$/;
-const POSITION_ONLY_PATTERN = /^\d+(?::\d+)?$/;
+const RELATIVE_FILE_PATH_PATTERN = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+(?::\d+(?:[,:]\d+)*)?$/;
+const RELATIVE_FILE_NAME_PATTERN = /^[A-Za-z0-9._-]+\.[A-Za-z0-9_-]+(?::\d+(?:[,:]\d+)*)?$/;
+const POSITION_SUFFIX_PATTERN = /:\d+(?:[,:]\d+)*$/;
+const POSITION_ONLY_PATTERN = /^\d+(?:[,:]\d+)*$/;
 // Standard OS and dev-container roots; deliberately excludes app-route-ish
 // prefixes like /app/ or /chat/ so SPA routes never read as files.
 const POSIX_FILE_ROOT_PREFIXES = [
@@ -204,7 +204,7 @@ const PATH_SEPARATOR_PATTERN = /[\\/]/;
 const FILE_EXTENSION_PATTERN = /\.[A-Za-z0-9_-]+$/;
 const NUMERIC_DOTTED_PATTERN = /^\d+(?:\.\d+)+$/;
 const SEMVER_LIKE_PATTERN = /^v?\d+(?:\.\d+)+(?:[-+][A-Za-z0-9.-]+)?$/;
-const BARE_EXTENSIONLESS_POSITION_PATTERN = /^[A-Za-z0-9_-]+(?::\d+){1,2}$/;
+const BARE_EXTENSIONLESS_POSITION_PATTERN = /^[A-Za-z0-9_-]+(?::\d+(?:[,:]\d+)*){1,2}$/;
 const EXTENSIONLESS_FILE_NAMES = new Set([
   "Makefile",
   "makefile",
@@ -235,6 +235,35 @@ const EXTENSIONLESS_FILE_NAMES = new Set([
   "CODEOWNERS",
 ]);
 const SINGLE_LABEL_HOSTNAMES = new Set(["localhost"]);
+// Keep in sync with packages/client-runtime/src/markdownLinks.ts: generic TLDs
+// are always hostnames, country TLDs only without an explicit `:line` suffix.
+const GENERIC_HOSTNAME_TLDS = new Set([
+  "com",
+  "net",
+  "org",
+  "io",
+  "dev",
+  "app",
+  "ai",
+  "co",
+  "edu",
+  "gov",
+  "mil",
+  "info",
+  "biz",
+  "xyz",
+  "me",
+  "tv",
+  "cc",
+  "gg",
+  "chat",
+  "cloud",
+  "site",
+  "online",
+  "tech",
+  "store",
+  "link",
+]);
 const COUNTRY_HOSTNAME_TLDS = new Set([
   "uk",
   "de",
@@ -276,8 +305,23 @@ function looksLikeHostname(segment: string, hasPosition: boolean): boolean {
   if (NUMERIC_DOTTED_PATTERN.test(segment)) return true;
   const labels = lowered.split(".");
   const lastLabel = labels[labels.length - 1];
-  if (labels.length < 2 || !lastLabel || !/^[a-z]{2,}$/.test(lastLabel)) return false;
-  return !(hasPosition && COUNTRY_HOSTNAME_TLDS.has(lastLabel));
+  if (labels.length < 2 || !lastLabel) return false;
+  if (GENERIC_HOSTNAME_TLDS.has(lastLabel)) return true;
+  return !hasPosition && COUNTRY_HOSTNAME_TLDS.has(lastLabel);
+}
+
+// Dotted directory prefixes like `example.software/` or `api.internal/` are
+// hostnames even when the TLD is not in the allowlist above. Bare basenames
+// like `CopilotProvider.ts:103` must still link, so this strict check only
+// applies when a `/` directory prefix is present.
+function looksLikeHostnamePathPrefix(segment: string): boolean {
+  if (segment.startsWith(".")) return false;
+  const lowered = segment.toLowerCase();
+  if (SINGLE_LABEL_HOSTNAMES.has(lowered)) return true;
+  if (NUMERIC_DOTTED_PATTERN.test(segment)) return true;
+  const labels = lowered.split(".");
+  const lastLabel = labels[labels.length - 1];
+  return labels.length >= 2 && !!lastLabel && /^[a-z]{2,}$/.test(lastLabel);
 }
 
 function hasInlineCodeFileShape(candidate: string, hasPosition: boolean): boolean {
@@ -309,8 +353,12 @@ export function resolveInlineCodeFileLinkMeta(
     WINDOWS_UNC_PATH_PATTERN.test(candidate);
   if (!hasExplicitPathShape) {
     const withoutPosition = candidate.replace(POSITION_SUFFIX_PATTERN, "");
-    const firstSegment = withoutPosition.split("/")[0] ?? withoutPosition;
-    if (looksLikeHostname(firstSegment, hasPosition)) return null;
+    if (withoutPosition.includes("/")) {
+      const firstSegment = withoutPosition.split("/")[0] ?? withoutPosition;
+      if (looksLikeHostnamePathPrefix(firstSegment)) return null;
+    } else {
+      if (looksLikeHostname(withoutPosition, hasPosition)) return null;
+    }
   }
   if (!hasInlineCodeFileShape(candidate, hasPosition)) return null;
 

@@ -38,7 +38,7 @@ export interface WrappedTerminalLinkLine {
 
 const URL_PATTERN = /https?:\/\/[^\s"'`<>]+/g;
 const FILE_PATH_PATTERN =
-  /(?:~\/|\.{1,2}\/|\/|[A-Za-z]:[\\/]|\\\\)[^\s"'`<>]+|[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+(?::\d+){0,2}/g;
+  /(?:~\/|\.{1,2}\/|\/|[A-Za-z]:[\\/]|\\\\)[^\s"'`<>]+|[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+(?::\d+(?:[,:]\d+)*)?/g;
 const TRAILING_PUNCTUATION_PATTERN = /[.,;!?]+$/;
 
 function trimClosingDelimiters(value: string): string {
@@ -142,28 +142,30 @@ export function splitPathAndPosition(value: string): {
   line: string | undefined;
   column: string | undefined;
 } {
-  let path = value;
-  let column: string | undefined;
-  let line: string | undefined;
-
-  const columnMatch = path.match(/:(\d+)$/);
-  if (!columnMatch?.[1]) {
-    return { path, line: undefined, column: undefined };
+  // Supports `:line`, `:line:col`, and chat-style multi-line `:line1,line2`.
+  // For comma lists the first line wins for navigation; the rest is display-only.
+  const positionMatch = value.match(/:(\d+)((?::\d+)?(?:,\d+)*)$/);
+  if (!positionMatch) {
+    return { path: value, line: undefined, column: undefined };
   }
 
-  column = columnMatch[1];
-  path = path.slice(0, -columnMatch[0].length);
-
-  const lineMatch = path.match(/:(\d+)$/);
-  if (lineMatch?.[1]) {
-    line = lineMatch[1];
-    path = path.slice(0, -lineMatch[0].length);
-  } else {
-    line = column;
-    column = undefined;
+  const first = positionMatch[1];
+  const rest = positionMatch[2] ?? "";
+  if (!first) {
+    return { path: value, line: undefined, column: undefined };
   }
 
-  return { path, line, column };
+  const path = value.slice(0, -positionMatch[0].length);
+  if (rest.startsWith(":")) {
+    const columnDigits = rest.slice(1).split(",")[0];
+    return {
+      path,
+      line: first,
+      column: columnDigits ?? undefined,
+    };
+  }
+
+  return { path, line: first, column: undefined };
 }
 
 export function extractTerminalLinks(line: string): TerminalLinkMatch[] {

@@ -55,6 +55,7 @@ import {
 } from "../lib/chatLinkClassification";
 import { githubPullRequestNavigation, openPullRequestLink } from "../lib/openPullRequestLink";
 import { usePrimaryEnvironmentId } from "~/environments/primary";
+import { useProjectEntriesQuery } from "./files/projectFilesQueryState";
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { useOpenLink } from "~/browser/useOpenLink";
 import { readEnvironmentApi } from "~/environmentApi";
@@ -393,17 +394,88 @@ function normalizeReferenceIdentifier(identifier: string): string {
   return identifier.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-function remarkTagInlineCode(cwd?: string) {
+const CHAT_FILE_POSITION_SUFFIX_PATTERN = /:(\d+(?:[,:]\d+)*)$/;
+
+function extractChatFilePositionSuffix(codeText: string): string | null {
+  const match = codeText.trim().match(CHAT_FILE_POSITION_SUFFIX_PATTERN);
+  return match?.[1] ?? null;
+}
+
+function buildChatInlineCodeLabel(
+  meta: MarkdownFileLinkMeta,
+  parentSuffix: string | undefined,
+  originalText: string,
+): string {
+  const raw = extractChatFilePositionSuffix(originalText);
+  if (raw && raw.includes(",")) {
+    const labelParts = [meta.basename];
+    if (parentSuffix) {
+      labelParts.push(parentSuffix);
+    }
+    labelParts.push(`L${raw}`);
+    return labelParts.join(" · ");
+  }
+  return buildFileLinkLabel(meta, parentSuffix);
+}
+
+interface WorkspaceFileEntryLike {
+  readonly path: string;
+  readonly kind: string;
+}
+
+function findWorkspaceRelativeForBasename(
+  basename: string,
+  entries: ReadonlyArray<WorkspaceFileEntryLike>,
+): string | null {
+  const matches = entries.filter(
+    (entry) =>
+      entry.kind === "file" && (entry.path === basename || entry.path.endsWith(`/${basename}`)),
+  );
+  if (matches.length === 0) return null;
+  const sorted = [...matches].sort((a, b) => {
+    const aDepth = a.path.split("/").length;
+    const bDepth = b.path.split("/").length;
+    if (aDepth !== bDepth) return aDepth - bDepth;
+    if (a.path.length !== b.path.length) return a.path.length - b.path.length;
+    return a.path.localeCompare(b.path);
+  });
+  return sorted[0]?.path ?? null;
+}
+
+function resolveChatInlineCodeMeta(
+  codeText: string,
+  cwd: string | undefined,
+  entries: ReadonlyArray<WorkspaceFileEntryLike>,
+): MarkdownFileLinkMeta | null {
+  const base = resolveInlineCodeFileLinkMeta(codeText, cwd);
+  if (!base || !cwd || entries.length === 0) return base;
+  const trimmed = codeText.trim();
+  const suffix = extractChatFilePositionSuffix(trimmed);
+  const pathPart = suffix ? trimmed.slice(0, -(suffix.length + 1)) : trimmed;
+  if (pathPart.includes("/") || pathPart.includes("\\")) return base;
+  const basename = pathPart.split(/[\\/]/).at(-1) ?? pathPart;
+  if (!basename) return base;
+  const relative = findWorkspaceRelativeForBasename(basename, entries);
+  if (!relative) return base;
+  // Re-resolve with the workspace-relative path so the file panel opens the
+  // real nested file instead of `cwd/basename`.
+  const candidate = suffix ? `${relative}:${suffix}` : relative;
+  return resolveMarkdownFileLinkMeta(candidate, cwd) ?? base;
+}
+
+function remarkTagInlineCode(resolve: (codeText: string) => MarkdownFileLinkMeta | null) {
   return () => (tree: MarkdownAstNode) => {
     const inlineCodeCandidates: Array<{
       node: MarkdownAstNode;
       meta: MarkdownFileLinkMeta;
+      original: string;
     }> = [];
     const visit = (node: MarkdownAstNode, insideLink: boolean) => {
       if (node.type === "inlineCode" && !insideLink) {
-        const meta = resolveInlineCodeFileLinkMeta(node.value ?? "", cwd);
+        const original = node.value ?? "";
+        const meta = resolve(original);
         if (meta) {
-          inlineCodeCandidates.push({ node, meta });
+          inlineCodeCandidates.push({ node, meta, original });
         }
       }
       const childInsideLink = insideLink || node.type === "link" || node.type === "linkReference";
@@ -414,13 +486,17 @@ function remarkTagInlineCode(cwd?: string) {
     const suffixByPath = buildFileLinkParentSuffixByPath(
       inlineCodeCandidates.map(({ meta }) => meta.filePath),
     );
-    for (const { node, meta } of inlineCodeCandidates) {
+    for (const { node, meta, original } of inlineCodeCandidates) {
       node.data = {
         ...node.data,
         hProperties: {
           ...node.data?.hProperties,
           dataInlineCode: "",
-          dataInlineCodeLabel: buildFileLinkLabel(meta, suffixByPath.get(meta.filePath)),
+          dataInlineCodeLabel: buildChatInlineCodeLabel(
+            meta,
+            suffixByPath.get(meta.filePath),
+            original,
+          ),
         },
       };
     }
@@ -1133,7 +1209,19 @@ const markdownComponentsWithoutRuntimeState = {
   },
 } satisfies Components;
 
-function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdownProps) {
+const EMPTY_WORKSPACE_ENTRIES: ReadonlyArray<WorkspaceFileEntryLike> = [];
+
+interface ChatMarkdownViewProps extends ChatMarkdownProps {
+  readonly workspaceEntries: ReadonlyArray<WorkspaceFileEntryLike>;
+}
+
+function ChatMarkdownView({
+  text,
+  cwd,
+  isStreaming = false,
+  threadRef,
+  workspaceEntries,
+}: ChatMarkdownViewProps) {
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   const normalizedText = useMemo(
@@ -1186,6 +1274,10 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
       })),
     ],
     [environmentIds, primaryEnvironmentId, savedEnvironmentById],
+  );
+  const resolveChatInlineCode = useCallback(
+    (codeText: string) => resolveChatInlineCodeMeta(codeText, cwd, workspaceEntries),
+    [cwd, workspaceEntries],
   );
   // Stabilize the map identity when streaming text grows without adding new
   // references: a fresh Map per chunk would otherwise rebuild remarkPlugins
@@ -1356,7 +1448,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
 
       if (node?.properties?.dataInlineCode != null) {
         const codeText = nodeToPlainText(children);
-        const fileLinkMeta = resolveInlineCodeFileLinkMeta(codeText, cwd);
+        const fileLinkMeta = resolveChatInlineCode(codeText);
         const label = node.properties.dataInlineCodeLabel;
         if (fileLinkMeta && typeof label === "string") {
           return (
@@ -1380,7 +1472,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
         </code>
       );
     },
-    [cwd, resolvedTheme, threadRef],
+    [resolveChatInlineCode, cwd, resolvedTheme, threadRef],
   );
   const markdownComponents = useMemo<Components>(
     () => ({
@@ -1406,9 +1498,9 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
         trustedOrigins,
         githubReferences,
       }),
-      remarkTagInlineCode(cwd),
+      remarkTagInlineCode(resolveChatInlineCode),
     ],
-    [cwd, githubReferences, threadRef?.environmentId, trustedOrigins],
+    [resolveChatInlineCode, githubReferences, threadRef?.environmentId, trustedOrigins],
   );
 
   return (
@@ -1422,6 +1514,38 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
       </ReactMarkdown>
     </div>
   );
+}
+
+function ChatMarkdownWithWorkspaceEntries({
+  threadRef,
+  cwd,
+  ...rest
+}: ChatMarkdownProps & { readonly threadRef: ScopedThreadRef; readonly cwd: string }) {
+  // The query is cached per cwd, so per-message cost is a filtered scan only when
+  // a bare basename is actually encountered.
+  const workspaceEntriesQuery = useProjectEntriesQuery(threadRef.environmentId, cwd);
+  const workspaceEntries = useMemo(
+    () => workspaceEntriesQuery.data?.entries ?? EMPTY_WORKSPACE_ENTRIES,
+    [workspaceEntriesQuery.data],
+  );
+  return (
+    <ChatMarkdownView
+      {...rest}
+      threadRef={threadRef}
+      cwd={cwd}
+      workspaceEntries={workspaceEntries}
+    />
+  );
+}
+
+function ChatMarkdown(props: ChatMarkdownProps) {
+  const { threadRef, cwd } = props;
+  // Skip the workspace file index when there is no thread/cwd to resolve
+  // against; bare basenames fall back to cwd-only resolution in the view.
+  if (threadRef && cwd) {
+    return <ChatMarkdownWithWorkspaceEntries {...props} threadRef={threadRef} cwd={cwd} />;
+  }
+  return <ChatMarkdownView {...props} workspaceEntries={EMPTY_WORKSPACE_ENTRIES} />;
 }
 
 export default memo(ChatMarkdown);
