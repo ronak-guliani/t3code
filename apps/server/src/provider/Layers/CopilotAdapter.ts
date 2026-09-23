@@ -58,6 +58,7 @@ import { mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
 import {
   collectSessionConfigOptionValues,
   type AcpParsedSessionEvent,
+  type AcpToolCallState,
 } from "../acp/AcpRuntimeModel.ts";
 import {
   type AcpSessionRuntimeShape,
@@ -143,6 +144,7 @@ interface CopilotSessionContext {
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
   readonly copilotSettings: CopilotRuntimeCopilotSettings;
+  readonly defaultModel: string;
   session: ProviderSession;
   scope: Scope.Closeable;
   acp: AcpSessionRuntimeShape;
@@ -155,6 +157,13 @@ interface CopilotSessionContext {
   cancelRequestedTurnId: TurnId | undefined;
   readonly fatalErrorByTurnId: Map<TurnId, string>;
   readonly policyErrorByTurnId: Map<TurnId, string>;
+  readonly delegationFlowByTurnId: Map<
+    TurnId,
+    {
+      selfOrchestrationSkillLoaded: boolean;
+      delegationToolCalled: boolean;
+    }
+  >;
   readonly backgroundAgents: Map<
     string,
     {
@@ -174,6 +183,36 @@ const COPILOT_FORK_UNSUPPORTED_DETAIL =
   "This Copilot ACP agent does not support native chat forking. The visible T3 chat fork was created, but Copilot context cannot be continued safely from it.";
 const WORKSPACE_HANDOFF_REQUIRED_MESSAGE =
   "T3 blocked a raw Git worktree add/move. Use the create_isolated_workspace or switch_workspace tool so the thread's workspace, checkpoints, and diffs stay aligned. git worktree remove is allowed for cleanup.";
+const DELEGATION_TOOL_MISSING_MESSAGE =
+  "The self-orchestration skill was loaded, but this turn ended without calling delegate_work. No helper threads were created. Search t3-tools for the exact delegate_work function and call the loaded tool before reporting that delegation is unavailable.";
+
+function toolCallRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function trackDelegationToolCall(
+  state: {
+    selfOrchestrationSkillLoaded: boolean;
+    delegationToolCalled: boolean;
+  },
+  toolCall: AcpToolCallState,
+): void {
+  const toolName =
+    typeof toolCall.data.copilotToolName === "string" ? toolCall.data.copilotToolName : "";
+  const rawInput = toolCallRecord(toolCall.data.rawInput);
+  const requestedSkill = rawInput?.skill;
+  if (requestedSkill === "t3code-self-orchestration" && /(?:^|[.:-])skill$/u.test(toolName)) {
+    state.selfOrchestrationSkillLoaded = true;
+  }
+  if (
+    /(?:^|[.:-])delegate_work$/u.test(toolName) ||
+    /(?:^|[.:-])create_nested_threads?$/u.test(toolName)
+  ) {
+    state.delegationToolCalled = true;
+  }
+}
 
 function stringifyCause(value: unknown): string {
   if (value instanceof Error) {
@@ -865,6 +904,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
       readonly onSessionEvent?: (
         event: AcpParsedSessionEvent,
       ) => Effect.Effect<AcpParsedSessionEvent>;
+      readonly onToolCallUpdated?: (turnId: TurnId, toolCall: AcpToolCallState) => void;
       readonly onFatalCopilotError?: (turnId: TurnId, message: string) => void;
       readonly onPolicyError?: (turnId: TurnId, message: string) => void;
       readonly resumeSessionId?: string;
@@ -892,6 +932,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           copilotSettings: input.copilotSettings.binaryPath
             ? { binaryPath: input.copilotSettings.binaryPath }
             : undefined,
+          defaultModel: input.defaultModel,
           childProcessSpawner,
           threadId: input.threadId,
           providerInstanceId: input.providerInstanceId,
@@ -1280,6 +1321,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
                     if (!activeTurnId) {
                       break;
                     }
+                    input.onToolCallUpdated?.(activeTurnId, event.toolCall);
                     yield* logNative(input.threadId, "session/update", event.rawPayload);
                     {
                       const planUpdate = extractCopilotPlanUpdate(event.toolCall);
@@ -1391,12 +1433,21 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           cwd,
           runtimeMode: ctx.session.runtimeMode,
           copilotSettings: ctx.copilotSettings,
+          defaultModel: ctx.session.model ?? "auto",
           pendingApprovals: ctx.pendingApprovals,
           pendingUserInputs: ctx.pendingUserInputs,
           ...(resumeSessionId ? { resumeSessionId } : {}),
           getCurrentTurnId: () => ctx.activeTurnId,
           hasSettledPrompt: () => ctx.turns.length > 0,
           onSessionEvent: (event) => processBackgroundAgentEvent(ctx, event),
+          onToolCallUpdated: (turnId, toolCall) => {
+            const state = ctx.delegationFlowByTurnId.get(turnId) ?? {
+              selfOrchestrationSkillLoaded: false,
+              delegationToolCalled: false,
+            };
+            trackDelegationToolCall(state, toolCall);
+            ctx.delegationFlowByTurnId.set(turnId, state);
+          },
           onFatalCopilotError: (turnId, message) => {
             ctx.fatalErrorByTurnId.set(turnId, message);
             if (ctx.cancelRequestedTurnId !== turnId) {
@@ -1585,6 +1636,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             cwd,
             runtimeMode: input.runtimeMode,
             copilotSettings: { binaryPath: copilotSettings.binaryPath },
+            defaultModel: effectiveModel ?? "auto",
             pendingApprovals,
             pendingUserInputs,
             ...(resumeSessionId ? { resumeSessionId } : {}),
@@ -1593,6 +1645,15 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             hasSettledPrompt: () => (ctx?.turns.length ?? 0) > 0,
             onSessionEvent: (event) =>
               ctx ? processBackgroundAgentEvent(ctx, event) : Effect.succeed(event),
+            onToolCallUpdated: (turnId, toolCall) => {
+              if (!ctx) return;
+              const state = ctx.delegationFlowByTurnId.get(turnId) ?? {
+                selfOrchestrationSkillLoaded: false,
+                delegationToolCalled: false,
+              };
+              trackDelegationToolCall(state, toolCall);
+              ctx.delegationFlowByTurnId.set(turnId, state);
+            },
             onFatalCopilotError: (turnId, message) => {
               if (!ctx) return;
               ctx.fatalErrorByTurnId.set(turnId, message);
@@ -1639,6 +1700,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
               cancelRequestedTurnId: undefined,
               fatalErrorByTurnId: new Map<TurnId, string>(),
               policyErrorByTurnId: new Map<TurnId, string>(),
+              delegationFlowByTurnId: new Map(),
               backgroundAgents: new Map(),
               backgroundActivitySignal: undefined,
               stopped: false,
@@ -1921,8 +1983,10 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           promptOutcome._tag === "completed" ? promptOutcome.result.stopReason : "cancelled";
         const fatalErrorMessage = ctx.fatalErrorByTurnId.get(turnId);
         const policyErrorMessage = ctx.policyErrorByTurnId.get(turnId);
+        const delegationFlow = ctx.delegationFlowByTurnId.get(turnId);
         ctx.fatalErrorByTurnId.delete(turnId);
         ctx.policyErrorByTurnId.delete(turnId);
+        ctx.delegationFlowByTurnId.delete(turnId);
         ctx.turns.push({
           id: turnId,
           items: [
@@ -1951,6 +2015,26 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           // thread (the user still needs to start a fresh thread to recover
           // — communicated via the friendly error message).
           yield* restartRuntimeInternal(ctx).pipe(Effect.ignore);
+        }
+
+        if (
+          !fatalErrorMessage &&
+          !policyErrorMessage &&
+          stopReason !== "cancelled" &&
+          delegationFlow?.selfOrchestrationSkillLoaded === true &&
+          delegationFlow.delegationToolCalled === false
+        ) {
+          yield* offerRuntimeEvent({
+            type: "runtime.warning",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId: input.threadId,
+            turnId,
+            payload: {
+              message: DELEGATION_TOOL_MISSING_MESSAGE,
+              detail: { code: "copilot-delegation-tool-not-called" },
+            },
+          });
         }
 
         yield* offerRuntimeEvent({

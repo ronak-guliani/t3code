@@ -121,6 +121,7 @@ describe("MCP Streamable HTTP server", () => {
     const server = await startMcpHttpServer({
       cwd: process.cwd(),
       toolsets: new Set([
+        "delegate_work",
         "create_isolated_workspace",
         "switch_workspace",
         "create_nested_thread",
@@ -155,6 +156,7 @@ describe("MCP Streamable HTTP server", () => {
         id: 1,
         result: {
           tools: [
+            { name: "delegate_work" },
             { name: "create_isolated_workspace" },
             { name: "switch_workspace" },
             { name: "create_nested_thread" },
@@ -1748,6 +1750,137 @@ Report the outcome, material findings or changes, validation results, commit SHA
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("delegate_work MCP tool", () => {
+  const options = (cwd: string, cliCommand: string) => ({
+    cwd,
+    toolsets: new Set(["delegate_work"]),
+    threadId: "parent-1",
+    cliCommand,
+    runtimeMode: "full-access" as const,
+    providerInstanceId: ProviderInstanceId.make("copilot"),
+    defaultModel: "gpt-5.6-sol",
+  });
+
+  it("publishes one compact interface for singular and batch delegation", () => {
+    expect(__testing.availableTools(new Set(["delegate_work"]))).toEqual([
+      expect.objectContaining({
+        name: "delegate_work",
+        inputSchema: expect.objectContaining({
+          properties: expect.objectContaining({
+            defaults: expect.objectContaining({
+              properties: expect.objectContaining({
+                project: expect.any(Object),
+                model: expect.any(Object),
+                promptTemplate: expect.any(Object),
+              }),
+            }),
+            children: expect.objectContaining({
+              minItems: 1,
+              maxItems: 16,
+              items: expect.objectContaining({
+                required: ["title", "prompt"],
+              }),
+            }),
+          }),
+          required: ["children"],
+        }),
+      }),
+    ]);
+  });
+
+  it("derives project and model defaults without repeating them per child", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-delegate-work-"));
+    const cliPath = path.join(root, "t3-test");
+    const argsPath = path.join(root, "cli-args.txt");
+    const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+
+    try {
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+      process.env.T3_MCP_TEST_ARGS = argsPath;
+
+      const result = JSON.parse(
+        await __testing.delegateWorkTool(options(root, cliPath), {
+          children: [{ title: "Investigate nesting", prompt: "Find the root cause." }],
+        }),
+      );
+
+      expect(result.results).toEqual([{ index: 0, outcome: createdOutcome }]);
+      expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
+        "--log-level",
+        "error",
+        "chat",
+        "new",
+        "--project",
+        root,
+        "--parent",
+        "parent-1",
+        "--follow-up",
+        "automatic",
+        "--cross-thread-source",
+        "parent-1",
+        "--cross-thread-capability",
+        expect.any(String),
+        "--provider",
+        "copilot",
+        "--model",
+        "gpt-5.6-sol",
+        "--runtime-mode",
+        "full-access",
+        "--title",
+        "Investigate nesting",
+        "Find the root cause.",
+      ]);
+    } finally {
+      if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
+      else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("applies shared defaults while allowing child overrides", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-delegate-defaults-"));
+    const cliPath = path.join(root, "t3-test");
+    const argsPath = path.join(root, "cli-args.txt");
+    const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+
+    try {
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+      process.env.T3_MCP_TEST_ARGS = argsPath;
+
+      await __testing.delegateWorkTool(options(root, cliPath), {
+        defaults: {
+          project: "project-1",
+          model: "gpt-5.6-sol",
+          reasoning: "high",
+          followUp: "notify-only",
+        },
+        children: [
+          {
+            title: "Implement nesting",
+            prompt: "Implement the change.",
+            model: "gpt-5.6-terra",
+            reasoning: "medium",
+          },
+        ],
+      });
+
+      const args = (await readFile(argsPath, "utf8")).trim().split("\n");
+      expect(args).toContain("project-1");
+      expect(args).toContain("notify-only");
+      expect(args).toContain("gpt-5.6-terra");
+      expect(args).toContain("medium");
+      expect(args).not.toContain("gpt-5.6-sol");
+      expect(args).not.toContain("high");
+    } finally {
+      if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
+      else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

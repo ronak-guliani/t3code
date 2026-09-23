@@ -7,16 +7,19 @@ Use the user's requested model and reasoning rather than copying the example mod
 
 ```json
 {
-  "project": "project id, title, or workspace root",
-  "title": "Short child-thread title",
-  "prompt": "Self-contained task and expected result",
-  "model": "gpt-5.6-sol",
-  "reasoning": "low"
+  "children": [
+    {
+      "title": "Short child-thread title",
+      "prompt": "Self-contained task and expected result"
+    }
+  ]
 }
 ```
 
-`project`, `title`, `prompt`, and `model` are required. Reasoning is optional and must be supported
-by the selected model. `dryRun: true` validates the request and workspace preflight without mutation.
+Each child requires only `title` and `prompt`. The project defaults to the authenticated parent's
+workspace, and the model defaults to the authenticated parent's Copilot model. Put shared overrides in
+`defaults`. Reasoning is optional, requires an explicit model, and must be supported by that model.
+`defaults.dryRun: true` validates every request and workspace preflight without mutation.
 
 ## Structured prompt blocks
 
@@ -24,30 +27,37 @@ The following fields supplement the creation request; they are not a complete re
 
 ```json
 {
-  "prompt": "Implement reusable cache invalidation.",
-  "promptTemplate": {
-    "blocks": [
-      "repository",
-      "implementation",
-      "validation",
-      "commit",
-      "push-and-create-pr",
-      "reporting"
-    ],
-    "repository": {
-      "context": "Work in acme/widgets on the current feature branch.",
-      "instructionFiles": ["AGENTS.md", "scars.md"]
-    },
-    "validation": {
-      "commands": ["pnpm fmt:check", "pnpm lint", "pnpm typecheck", "pnpm test"],
-      "scenarios": ["A saved change survives reload and reconnect."],
-      "evidence": ["screenshot", "recording"],
-      "owner": "parent"
-    },
-    "commit": {
-      "requirements": ["Include the repository's required co-author trailer."]
+  "defaults": {
+    "promptTemplate": {
+      "blocks": [
+        "repository",
+        "implementation",
+        "validation",
+        "commit",
+        "push-and-create-pr",
+        "reporting"
+      ],
+      "repository": {
+        "context": "Work in acme/widgets on the current feature branch.",
+        "instructionFiles": ["AGENTS.md", "scars.md"]
+      },
+      "validation": {
+        "commands": ["pnpm fmt:check", "pnpm lint", "pnpm typecheck", "pnpm test"],
+        "scenarios": ["A saved change survives reload and reconnect."],
+        "evidence": ["screenshot", "recording"],
+        "owner": "parent"
+      },
+      "commit": {
+        "requirements": ["Include the repository's required co-author trailer."]
+      }
     }
-  }
+  },
+  "children": [
+    {
+      "title": "Implement cache invalidation",
+      "prompt": "Implement reusable cache invalidation."
+    }
+  ]
 }
 ```
 
@@ -67,12 +77,14 @@ revision, not promote an assistant's completed turn to verified work.
 
 ```json
 {
+  "defaults": {
+    "project": "/repo",
+    "model": "gpt-5.6-sol"
+  },
   "children": [
     {
-      "project": "/repo",
       "title": "Implement API",
       "prompt": "Implement and test the API slice.",
-      "model": "gpt-5.6-sol",
       "workspace": {
         "mode": "isolated",
         "branch": "feature/api",
@@ -80,18 +92,17 @@ revision, not promote an assistant's completed turn to verified work.
       }
     },
     {
-      "project": "/repo",
       "title": "Review docs",
-      "prompt": "Review the relevant documentation without editing.",
-      "model": "gpt-5.6-sol"
+      "prompt": "Review the relevant documentation without editing."
     }
   ],
   "concurrency": 2
 }
 ```
 
-The batch supports 1-16 children and concurrency 1-4 (default 4). Results preserve input order
-with an indexed outcome for each child. Shared workspace branches or canonical paths reject all
-colliding items with `VALIDATION_FAILED`; unrelated items continue. Collision keys are
-Unicode-normalized and case-folded. Never retry successful or ambiguous items as part of a
-batch retry; follow the root skill's outcome and recovery rules.
+`delegate_work` supports 1-16 children and concurrency 1-4 (default 4). A child may override any
+shared default. Results preserve input order with an indexed outcome for each child. Shared
+workspace branches or canonical paths reject all colliding items with `VALIDATION_FAILED`;
+unrelated items continue. Collision keys are Unicode-normalized and case-folded. Never retry
+successful or ambiguous items as part of a batch retry; follow the root skill's outcome and
+recovery rules.
