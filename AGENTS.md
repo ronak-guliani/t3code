@@ -6,6 +6,7 @@
 - Use `pnpm test` for the Vite Plus test suite.
 - Current toolchain: `pnpm@11.10.0`, `node@^24.13.1`.
 - When creating a worktree for a chat, create a new pull request after the work is complete. Create without separately confirming the title or body.
+- Standing publication rule: whenever you make changes in a worktree, always commit them and create a pull request once the work is complete. Do not ask for confirmation — neither for creating the PR nor for its title or body. This standing instruction counts as publication authorization under skill-delivery.md; only an explicit per-request restriction (e.g. "leave uncommitted", "do not push") overrides it.
 
 ## Links in Responses
 
