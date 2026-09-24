@@ -92,9 +92,10 @@ describe("FileBrowserPanel", () => {
           const paths = treeRowPaths();
           // The match itself is visible…
           expect(paths.some((path) => path.includes("creation-examples"))).toBe(true);
-          // …alongside its ancestor chain for context…
-          expect(paths.some((path) => path.startsWith(".agents/skills"))).toBe(true);
-          // …while unrelated branches leave the view entirely.
+          // …alongside its exact ancestor folder (not merely a shared prefix)…
+          expect(paths).toContain(".agents/skills/");
+          // …while unrelated branches, including same-level siblings, leave.
+          expect(paths.some((path) => path.includes("ask-matt"))).toBe(false);
           expect(paths.some((path) => path.startsWith("src"))).toBe(false);
         },
         { timeout: 10000 },

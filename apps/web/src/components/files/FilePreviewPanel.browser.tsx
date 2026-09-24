@@ -221,6 +221,19 @@ describe("FilePreviewPanel", () => {
       </div>,
     );
     try {
+      // Rows carry 1-based data-line attributes inside shadow DOM; pierce to
+      // reach them alongside the editor caret.
+      const pierce = (root: ParentNode, selector: string): Element | null => {
+        const direct = root.querySelector(selector);
+        if (direct) return direct;
+        for (const host of root.querySelectorAll("*")) {
+          if (host.shadowRoot) {
+            const found = pierce(host.shadowRoot, selector);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
       // The editor resolves the line through its own geometry and centers
       // it; assert on the shared scroll container, not library internals.
       await vi.waitFor(
@@ -228,6 +241,24 @@ describe("FilePreviewPanel", () => {
           const viewport = document.querySelector(".file-preview-virtualizer");
           expect(viewport).not.toBeNull();
           expect((viewport as HTMLElement).scrollTop).toBeGreaterThan(0);
+        },
+        { timeout: 15000 },
+      );
+      // Chat links are 1-based while editor lines are 0-based: the caret for
+      // link line 450 must sit on row 450, detectably nearer to it than to
+      // row 451, or every reveal lands one line too far.
+      await vi.waitFor(
+        () => {
+          const caret = pierce(document, "[data-caret]");
+          const row450 = pierce(document, '[data-line="450"]');
+          const row451 = pierce(document, '[data-line="451"]');
+          expect(caret).not.toBeNull();
+          expect(row450).not.toBeNull();
+          expect(row451).not.toBeNull();
+          const caretTop = caret!.getBoundingClientRect().top;
+          const near450 = Math.abs(caretTop - row450!.getBoundingClientRect().top);
+          const near451 = Math.abs(caretTop - row451!.getBoundingClientRect().top);
+          expect(near450).toBeLessThan(near451);
         },
         { timeout: 15000 },
       );

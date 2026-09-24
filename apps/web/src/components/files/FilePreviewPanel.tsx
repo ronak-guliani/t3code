@@ -101,12 +101,14 @@ function EditableFileSurface({
 
   // Jump to a chat-linked line through the editor's own selection scroll,
   // which resolves line geometry internally (rendered rows expose no
-  // line-number selectors and code itself lives in shadow DOM). The editor
-  // throws until its text document initializes on attach, so retry until it
-  // accepts the selection; afterwards it defers the scroll itself until the
-  // content renders.
+  // line-number selectors and code itself lives in shadow DOM). Editor lines
+  // are zero-based while chat links are one-based, hence the conversion.
+  // The editor throws until its text document initializes on attach, so
+  // retry until it accepts the selection; afterwards it defers the scroll
+  // itself until the content renders.
   useEffect(() => {
     if (revealLine == null) return;
+    const line = Math.max(0, revealLine - 1);
     let cancelled = false;
     let retryTimer = 0;
     const attempt = () => {
@@ -114,8 +116,8 @@ function EditableFileSurface({
       try {
         editor.setSelections([
           {
-            start: { line: revealLine, character: 0 },
-            end: { line: revealLine, character: 0 },
+            start: { line, character: 0 },
+            end: { line, character: 0 },
             direction: "none",
           },
         ]);
