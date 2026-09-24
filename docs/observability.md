@@ -73,6 +73,29 @@ Key server and provider lifecycle transitions are emitted as structured log entr
 - `provider.connect`: emitted when a provider session starts, with `provider`, `threadId`, `providerInstanceId`, and `runtimeMode`
 - `provider.disconnect`: emitted when a provider session stops, with `provider`, `threadId`, `providerInstanceId`, and `reason`
 
+### Startup timing
+
+`startup phase started` and `startup phase finished` log records identify each phase
+by `phase`; finished records include `elapsedMs` and the Effect exit `outcome`.
+They also appear in `server.startup.<phase>` spans. Timings cover
+`runtime.services` (including eager dependency construction), `projections.replay`,
+`projections.snapshot`, and the subsequent runtime startup phases. Nested phases
+overlap, so their elapsed times must not be added together. A phase that forks work
+measures launching that work, not its eventual completion.
+
+Use these records to distinguish service construction from HTTP and command
+readiness. `server.start` is emitted after runtime dependencies are constructed;
+it is not the beginning of the backend process. Desktop logs separately record
+backend readiness and completion of navigation, neither of which establishes
+that the selected thread is interactive.
+
+Full snapshot activity hydration seeks the latest retained window per known
+thread using the chronology index, rather than ranking and sorting every thread's
+history together. Archived and soft-deleted threads retain their windows.
+Migration 103 repairs chronology indexes skipped by older divergent migration
+ledgers; the first upgrade may spend time building those indexes, while subsequent
+launches reuse them.
+
 ## Run The Server In Instrumented Mode
 
 There are two useful modes:

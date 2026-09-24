@@ -47,6 +47,7 @@ import {
   issueHeadlessServeAccessInfo,
 } from "./startupAccess.ts";
 import { HttpServer } from "effect/unstable/http";
+import { runStartupPhase } from "./startupTiming.ts";
 
 export class ServerRuntimeStartupError extends Data.TaggedError("ServerRuntimeStartupError")<{
   readonly message: string;
@@ -339,12 +340,6 @@ export const reconcileDesiredConnectLink = Effect.gen(function* () {
     ),
   );
 });
-
-const runStartupPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(
-    Effect.annotateSpans({ "startup.phase": phase }),
-    Effect.withSpan(`server.startup.${phase}`),
-  );
 
 export const makeServerRuntimeStartup = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;

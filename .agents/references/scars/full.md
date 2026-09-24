@@ -318,6 +318,7 @@
 
 ## Projection performance and service composition
 
+- Latest-N-per-thread startup reads must use indexed bounded seeks, not global window ranking over discarded history. Check index presence on upgraded/divergent ledgers as well as fresh databases; a later migration ID can coexist with a skipped index migration.
 - Shell-summary projection refreshes scan full thread history; only run them for events that can change summary fields, and execute independent repository reads concurrently.
 - Shell stream mapping must skip `thread.activity-appended` events whose kind cannot change shell fields, using the same predicate as the reconciler filter plus `task.completed` always (it can settle a run) and `task.started` only when the payload carries taskType background-agent; otherwise every streaming activity costs a shell re-read (5 SELECTs plus a WS upsert) on the single SQLite connection.
 - Shell-summary refreshes must use targeted aggregate/lifecycle queries (MAX/COUNT/kind-filtered scans), not full-history list + in-JS derive: `NodeSqliteClient` is a single connection behind `Semaphore(1)`, so `Effect` fan-out cannot overlap SELECTs and fewer decoded rows is the only de-serialization lever.

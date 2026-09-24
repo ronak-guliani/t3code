@@ -817,49 +817,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
-  const listThreadActivityRows = SqlSchema.findAll({
-    Request: Schema.Void,
-    Result: ProjectionThreadActivityDbRowSchema,
-    execute: () =>
-      sql`
-        WITH ranked_activities AS (
-          SELECT
-            activity_id,
-            ROW_NUMBER() OVER (
-              PARTITION BY thread_id
-              ORDER BY created_at DESC, activity_id DESC
-            ) AS activity_rank
-          FROM projection_thread_activities
-          -- Scope to known threads before windowing: rows whose thread record
-          -- is absent (purged or never projected) are never attached to the
-          -- snapshot, so ranking them only burns sort + join work on every
-          -- snapshot. Soft-deleted threads keep their row and stay in scope.
-          WHERE thread_id IN (
-            SELECT thread_id
-            FROM projection_threads
-          )
-        )
-        SELECT
-          activities.activity_id AS "activityId",
-          activities.thread_id AS "threadId",
-          activities.turn_id AS "turnId",
-          activities.tone,
-          activities.kind,
-          activities.summary,
-          activities.payload_json AS "payload",
-          activities.sequence,
-          activities.created_at AS "createdAt"
-        FROM ranked_activities
-        INNER JOIN projection_thread_activities AS activities
-          ON activities.activity_id = ranked_activities.activity_id
-        WHERE ranked_activities.activity_rank <= ${MAX_THREAD_ACTIVITIES}
-        ORDER BY
-          activities.thread_id ASC,
-          activities.created_at ASC,
-          activities.activity_id ASC
-      `,
-  });
-
   const listBackgroundAgentActivityRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProjectionThreadActivityDbRowSchema,
@@ -1747,97 +1704,107 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const getSnapshot: ProjectionSnapshotQueryShape["getSnapshot"] = () =>
     sql
       .withTransaction(
-        Effect.all([
-          listProjectRows(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getSnapshot:listProjects:query",
-                "ProjectionSnapshotQuery.getSnapshot:listProjects:decodeRows",
-              ),
-            ),
-          ),
-          listThreadRows(undefined).pipe(
+        Effect.gen(function* () {
+          const threadRows = yield* listThreadRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getSnapshot:listThreads:query",
                 "ProjectionSnapshotQuery.getSnapshot:listThreads:decodeRows",
               ),
             ),
-          ),
-          listThreadMessageRows(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getSnapshot:listThreadMessages:query",
-                "ProjectionSnapshotQuery.getSnapshot:listThreadMessages:decodeRows",
+          );
+          return yield* Effect.all([
+            listProjectRows(undefined).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getSnapshot:listProjects:query",
+                  "ProjectionSnapshotQuery.getSnapshot:listProjects:decodeRows",
+                ),
               ),
             ),
-          ),
-          listThreadProposedPlanRows(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getSnapshot:listThreadProposedPlans:query",
-                "ProjectionSnapshotQuery.getSnapshot:listThreadProposedPlans:decodeRows",
+            Effect.succeed(threadRows),
+            listThreadMessageRows(undefined).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getSnapshot:listThreadMessages:query",
+                  "ProjectionSnapshotQuery.getSnapshot:listThreadMessages:decodeRows",
+                ),
               ),
             ),
-          ),
-          listQueuedTurnRows(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getSnapshot:listQueuedTurns:query",
-                "ProjectionSnapshotQuery.getSnapshot:listQueuedTurns:decodeRows",
+            listThreadProposedPlanRows(undefined).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getSnapshot:listThreadProposedPlans:query",
+                  "ProjectionSnapshotQuery.getSnapshot:listThreadProposedPlans:decodeRows",
+                ),
               ),
             ),
-          ),
-          listThreadActivityRows(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getSnapshot:listThreadActivities:query",
-                "ProjectionSnapshotQuery.getSnapshot:listThreadActivities:decodeRows",
+            listQueuedTurnRows(undefined).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getSnapshot:listQueuedTurns:query",
+                  "ProjectionSnapshotQuery.getSnapshot:listQueuedTurns:decodeRows",
+                ),
               ),
             ),
-          ),
-          listThreadSessionRows(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getSnapshot:listThreadSessions:query",
-                "ProjectionSnapshotQuery.getSnapshot:listThreadSessions:decodeRows",
+            // Seek each thread's retained window instead of ranking its entire history.
+            // Keep archived and soft-deleted threads, just like the other snapshot rows.
+            Effect.forEach(threadRows, ({ threadId }) =>
+              listThreadActivityRowsByThread({ threadId, limit: MAX_THREAD_ACTIVITIES }).pipe(
+                Effect.map((rows) => rows.toReversed()),
+              ),
+            ).pipe(
+              Effect.map((windows) => windows.flat()),
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getSnapshot:listThreadActivities:query",
+                  "ProjectionSnapshotQuery.getSnapshot:listThreadActivities:decodeRows",
+                ),
               ),
             ),
-          ),
-          listCheckpointRows(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getSnapshot:listCheckpoints:query",
-                "ProjectionSnapshotQuery.getSnapshot:listCheckpoints:decodeRows",
+            listThreadSessionRows(undefined).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getSnapshot:listThreadSessions:query",
+                  "ProjectionSnapshotQuery.getSnapshot:listThreadSessions:decodeRows",
+                ),
               ),
             ),
-          ),
-          listLatestTurnRows(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getSnapshot:listLatestTurns:query",
-                "ProjectionSnapshotQuery.getSnapshot:listLatestTurns:decodeRows",
+            listCheckpointRows(undefined).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getSnapshot:listCheckpoints:query",
+                  "ProjectionSnapshotQuery.getSnapshot:listCheckpoints:decodeRows",
+                ),
               ),
             ),
-          ),
-          readTurnSnapshotBounds(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getSnapshot:readTurnSnapshotBounds:query",
-                "ProjectionSnapshotQuery.getSnapshot:readTurnSnapshotBounds:decodeRow",
+            listLatestTurnRows(undefined).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getSnapshot:listLatestTurns:query",
+                  "ProjectionSnapshotQuery.getSnapshot:listLatestTurns:decodeRows",
+                ),
               ),
             ),
-          ),
-          listProjectionStateRows(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getSnapshot:listProjectionState:query",
-                "ProjectionSnapshotQuery.getSnapshot:listProjectionState:decodeRows",
+            readTurnSnapshotBounds(undefined).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getSnapshot:readTurnSnapshotBounds:query",
+                  "ProjectionSnapshotQuery.getSnapshot:readTurnSnapshotBounds:decodeRow",
+                ),
               ),
             ),
-          ),
-          projectionWorkflowRepository.listAll(),
-        ]),
+            listProjectionStateRows(undefined).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getSnapshot:listProjectionState:query",
+                  "ProjectionSnapshotQuery.getSnapshot:listProjectionState:decodeRows",
+                ),
+              ),
+            ),
+            projectionWorkflowRepository.listAll(),
+          ]);
+        }),
       )
       .pipe(
         Effect.flatMap(

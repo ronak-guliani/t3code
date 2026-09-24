@@ -1140,6 +1140,71 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
   );
 
   it.effect(
+    "retains independent chronological windows for active, archived and deleted threads",
+    () =>
+      Effect.gen(function* () {
+        const query = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-09-24T00:00:00.000Z";
+        yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES ('window-project', 'Windows', '/tmp/window-project', '[]', ${now}, ${now})
+      `;
+        for (const state of ["active", "archived", "deleted"] as const) {
+          const threadId = `window-${state}`;
+          yield* sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+            created_at, updated_at, archived_at, deleted_at
+          ) VALUES (
+            ${threadId}, 'window-project', ${state}, '{"instanceId":"codex","model":"gpt-5.4"}',
+            'full-access', 'default', ${now}, ${now},
+            ${state === "archived" ? now : null}, ${state === "deleted" ? now : null}
+          )
+        `;
+          yield* sql`
+          WITH RECURSIVE entries(value) AS (
+            VALUES (1) UNION ALL SELECT value + 1 FROM entries WHERE value < 502
+          )
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, tone, kind, summary, payload_json, sequence, created_at
+          )
+          SELECT
+            ${threadId} || printf('-%04d', value), ${threadId}, 'info', 'runtime.note', 'Activity',
+            CASE WHEN value <= 2 THEN 'invalid old payload' ELSE '{}' END,
+            CASE WHEN value % 2 = 0 THEN NULL ELSE 503 - value END,
+            ${now}
+          FROM entries
+        `;
+        }
+        yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, tone, kind, summary, payload_json, created_at
+        ) VALUES ('window-orphan', 'missing-thread', 'info', 'runtime.note', 'Orphan',
+          'invalid orphan payload', ${now})
+      `;
+
+        const snapshot = yield* query.getSnapshot();
+        for (const state of ["active", "archived", "deleted"] as const) {
+          const thread = snapshot.threads.find((entry) => entry.id === `window-${state}`);
+          assert.isDefined(thread);
+          assert.deepStrictEqual(
+            thread.activities.map((activity) => activity.id),
+            Array.from({ length: 500 }, (_, index) =>
+              asEventId(`window-${state}-${String(index + 3).padStart(4, "0")}`),
+            ),
+          );
+          assert.equal(thread.archivedAt, state === "archived" ? now : null);
+          assert.equal(thread.deletedAt, state === "deleted" ? now : null);
+        }
+        yield* sql`DELETE FROM projection_thread_activities WHERE thread_id LIKE 'window-%' OR activity_id = 'window-orphan'`;
+        yield* sql`DELETE FROM projection_threads WHERE project_id = 'window-project'`;
+        yield* sql`DELETE FROM projection_projects WHERE project_id = 'window-project'`;
+      }),
+  );
+
+  it.effect(
     "falls back to provider runtime resume cursors when thread session projections are stale",
     () =>
       Effect.gen(function* () {
