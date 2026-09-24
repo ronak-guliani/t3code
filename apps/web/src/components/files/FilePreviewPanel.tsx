@@ -61,6 +61,7 @@ interface EditableFileSurfaceProps {
   contents: string;
   resolvedTheme: "light" | "dark";
   onPendingChange: (relativePath: string, pending: boolean) => void;
+  revealLine?: number | null;
 }
 
 function EditableFileSurface({
@@ -70,6 +71,7 @@ function EditableFileSurface({
   contents,
   resolvedTheme,
   onPendingChange,
+  revealLine = null,
 }: EditableFileSurfaceProps) {
   const saveSession = useMemo(
     () => getProjectFileSaveSession(environmentId, cwd, relativePath),
@@ -96,6 +98,43 @@ function EditableFileSurface({
     },
     [editor],
   );
+
+  // Jump to a chat-linked line through the editor's own selection scroll,
+  // which resolves line geometry internally (rendered rows expose no
+  // line-number selectors and code itself lives in shadow DOM). The editor
+  // throws until its text document initializes on attach, so retry until it
+  // accepts the selection; afterwards it defers the scroll itself until the
+  // content renders.
+  useEffect(() => {
+    if (revealLine == null) return;
+    let cancelled = false;
+    let retryTimer = 0;
+    const attempt = () => {
+      if (cancelled) return;
+      try {
+        editor.setSelections([
+          {
+            start: { line: revealLine, character: 0 },
+            end: { line: revealLine, character: 0 },
+            direction: "none",
+          },
+        ]);
+      } catch (error) {
+        if (error instanceof Error && /not initialized/i.test(error.message)) {
+          retryTimer = window.setTimeout(attempt, 100);
+          return;
+        }
+        throw error;
+      }
+    };
+    const timeout = window.setTimeout(() => window.clearTimeout(retryTimer), 10_000);
+    attempt();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retryTimer);
+      window.clearTimeout(timeout);
+    };
+  }, [editor, revealLine]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -295,7 +334,6 @@ export function FilePreviewPanel({
   const [treeReveal, setTreeReveal] = useState<{ path: string; nonce: number } | null>(null);
   const revealNonceRef = useRef(0);
   const breadcrumbRef = useRef<HTMLDivElement>(null);
-  const previewBodyRef = useRef<HTMLDivElement>(null);
   const breadcrumbs = useMemo(
     () => (relativePath ? collapseBreadcrumbs(fileBreadcrumbs(projectName, relativePath)) : []),
     [projectName, relativePath],
@@ -307,40 +345,6 @@ export function FilePreviewPanel({
     );
     currentCrumb?.scrollIntoView({ block: "nearest", inline: "end" });
   }, [relativePath]);
-
-  // Best-effort jump to a chat-linked line. Row markup may not expose line
-  // numbers, so this silently no-ops when nothing matches (bounded retries).
-  useEffect(() => {
-    if (
-      revealLine == null ||
-      !relativePath ||
-      !file.data ||
-      file.data.binary ||
-      file.data.truncated
-    ) {
-      return;
-    }
-    let cancelled = false;
-    let attempts = 0;
-    const attempt = () => {
-      if (cancelled) return;
-      const root = previewBodyRef.current;
-      const row = root?.querySelector(
-        `[data-line="${revealLine}"],[data-line-number="${revealLine}"]`,
-      );
-      if (row) {
-        (row as HTMLElement).scrollIntoView({ block: "center" });
-        return;
-      }
-      attempts += 1;
-      if (attempts < 10) requestAnimationFrame(attempt);
-    };
-    const frame = requestAnimationFrame(attempt);
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(frame);
-    };
-  }, [file.data, relativePath, revealLine]);
 
   const setExplorerOpenPersisted = (open: boolean) => {
     setExplorerOpen(open);
@@ -517,7 +521,6 @@ export function FilePreviewPanel({
       ) : null}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div
-          ref={previewBodyRef}
           className={cn(
             "min-w-0 flex-1 flex-col overflow-hidden",
             relativePath ? "flex" : "hidden",
@@ -599,6 +602,7 @@ export function FilePreviewPanel({
                 contents={file.data.contents}
                 resolvedTheme={resolvedTheme}
                 onPendingChange={onPendingChange}
+                revealLine={revealLine}
               />
             )
           ) : null}
