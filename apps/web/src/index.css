@@ -616,6 +616,12 @@ label:has(> select#reasoning-effort) select {
   color: var(--muted-foreground);
 }
 
+.file-preview-virtualizer {
+  /* Pierre code surfaces size themselves from this variable (13px default);
+     follow Settings → Fonts → Code size instead. */
+  --diffs-font-size: var(--app-code-font-size);
+}
+
 .chat-markdown :not(pre) > code {
   border: 1px solid transparent;
   border-radius: 0.375rem;
