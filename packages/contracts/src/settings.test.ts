@@ -273,7 +273,7 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults text generation to Copilot", () => {
     expect(DEFAULT_SERVER_SETTINGS.textGenerationModelSelection).toMatchObject({
       instanceId: "copilot",
-      model: "gpt-5.4-mini",
+      model: "gpt-6-luna",
     });
   });
 
