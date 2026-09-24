@@ -70,4 +70,25 @@ describe("pullRequestInlineReviewSelection", () => {
       side: "right",
     });
   });
+
+  it("rejects selections whose range ends in another file", () => {
+    const startContainer = selectDiffLine(14, "context");
+    const endContainer = selectDiffLine(15, "context");
+    const startNode = startContainer
+      .querySelector("diffs-file")
+      ?.shadowRoot?.querySelector("[data-line]")?.firstChild;
+    const endNode = endContainer
+      .querySelector("diffs-file")
+      ?.shadowRoot?.querySelector("[data-line]")?.firstChild;
+    if (!startNode || !endNode) throw new Error("Diff line fixture was not created.");
+
+    const crossFileSelection = {
+      isCollapsed: false,
+      rangeCount: 1,
+      getRangeAt: () => ({ startContainer: startNode, endContainer: endNode }),
+      toString: () => "selection across two files",
+    };
+
+    expect(pullRequestInlineReviewSelection(crossFileSelection, startContainer)).toBeNull();
+  });
 });

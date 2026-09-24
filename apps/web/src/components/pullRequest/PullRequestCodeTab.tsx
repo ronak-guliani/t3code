@@ -11,7 +11,7 @@ import { parsePatchFiles } from "@pierre/diffs";
 import { FileDiff, type FileDiffMetadata, Virtualizer } from "@pierre/diffs/react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { CheckIcon, CircleIcon, FileDiffIcon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import ChatMarkdown from "../ChatMarkdown";
 import { Button } from "../ui/button";
@@ -196,7 +196,6 @@ export function PullRequestCodeTab({
   const pullRequestsCodeFontSize = useSettings((state) => state.pullRequestsCodeFontSize);
   const diffWordWrap = useSettings((state) => state.diffWordWrap);
   const parsedPatchCache = useRef(new Map<string, RenderablePullRequestPatch>());
-  const diffListRef = useRef<HTMLDivElement>(null);
   const diffTextStyle = useMemo<CSSProperties>(
     () =>
       ({
@@ -263,32 +262,35 @@ export function PullRequestCodeTab({
   );
   const canComment = detail.capabilities.review.inlineComment && detail.viewerPermissions.comment;
 
+  const dismissInlineComment = useCallback(() => {
+    setInlineComment(null);
+    setInlineCommentBody("");
+  }, []);
+
   useEffect(() => {
     if (!inlineComment) return;
 
-    const dismiss = () => setInlineComment(null);
     const dismissOutside = (event: PointerEvent) => {
       if (event.target instanceof Element) {
         if (event.target.closest("[data-pull-request-inline-comment]")) return;
       }
-      if (event.target instanceof Node && diffListRef.current?.contains(event.target)) return;
-      dismiss();
+      dismissInlineComment();
     };
     const dismissOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") dismiss();
+      if (event.key === "Escape") dismissInlineComment();
     };
 
     document.addEventListener("pointerdown", dismissOutside);
     document.addEventListener("keydown", dismissOnEscape);
-    window.addEventListener("scroll", dismiss, true);
-    window.addEventListener("resize", dismiss);
+    window.addEventListener("scroll", dismissInlineComment, true);
+    window.addEventListener("resize", dismissInlineComment);
     return () => {
       document.removeEventListener("pointerdown", dismissOutside);
       document.removeEventListener("keydown", dismissOnEscape);
-      window.removeEventListener("scroll", dismiss, true);
-      window.removeEventListener("resize", dismiss);
+      window.removeEventListener("scroll", dismissInlineComment, true);
+      window.removeEventListener("resize", dismissInlineComment);
     };
-  }, [inlineComment]);
+  }, [dismissInlineComment, inlineComment]);
 
   if (diffQuery.isPending) {
     return <p className="p-4 text-sm text-muted-foreground">Loading diff…</p>;
@@ -322,7 +324,7 @@ export function PullRequestCodeTab({
         ) : null}
       </div>
       <div className="min-h-full">
-        <div ref={diffListRef}>
+        <div>
           {files.length > 0 ? (
             <Virtualizer
               className="max-h-[calc(100dvh-23rem)] overflow-auto"
@@ -341,7 +343,7 @@ export function PullRequestCodeTab({
                         event.currentTarget,
                       );
                       if (!canComment || !anchor || !selection || selection.rangeCount === 0) {
-                        setInlineComment(null);
+                        dismissInlineComment();
                         return;
                       }
                       const rect = selection.getRangeAt(0).getBoundingClientRect();
@@ -355,6 +357,7 @@ export function PullRequestCodeTab({
                         8,
                         Math.min(rect.left, window.innerWidth - popupWidth - 8),
                       );
+                      setInlineCommentBody("");
                       setInlineComment({
                         ...anchor,
                         path: filePath,
@@ -447,14 +450,7 @@ export function PullRequestCodeTab({
               onChange={(event) => setInlineCommentBody(event.currentTarget.value)}
             />
             <div className="mt-2 flex justify-end gap-1">
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() => {
-                  setInlineComment(null);
-                  setInlineCommentBody("");
-                }}
-              >
+              <Button size="xs" variant="ghost" onClick={dismissInlineComment}>
                 Cancel
               </Button>
               <Button
@@ -471,8 +467,7 @@ export function PullRequestCodeTab({
                     side: inlineComment.side,
                     body: inlineCommentBody.trim(),
                   });
-                  setInlineComment(null);
-                  setInlineCommentBody("");
+                  dismissInlineComment();
                   window.getSelection()?.removeAllRanges();
                 }}
               >

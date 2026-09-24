@@ -5,8 +5,15 @@ export interface PullRequestInlineReviewSelection {
   readonly side: PullRequestDiffSide;
 }
 
+interface PullRequestSelection {
+  readonly isCollapsed: boolean;
+  readonly rangeCount: number;
+  getRangeAt(index: number): Pick<Range, "startContainer" | "endContainer">;
+  toString(): string;
+}
+
 export function pullRequestInlineReviewSelection(
-  selection: Selection | null,
+  selection: PullRequestSelection | null,
   fileContainer: HTMLElement,
 ): PullRequestInlineReviewSelection | null {
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
@@ -22,6 +29,7 @@ export function pullRequestInlineReviewSelection(
 
   const root = lineElement.getRootNode();
   if (!(root instanceof ShadowRoot) || !fileContainer.contains(root.host)) return null;
+  if (range.endContainer.getRootNode() !== root) return null;
 
   const line = Number(lineElement.dataset.line);
   if (!Number.isSafeInteger(line) || line < 1) return null;
