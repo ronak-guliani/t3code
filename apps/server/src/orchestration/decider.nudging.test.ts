@@ -1489,6 +1489,87 @@ describe("child nudging", () => {
     expect(delivered.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBe(held.dispatchedAt);
   });
 
+  it("wakes again once routine results settle after an immediate failure wake", async () => {
+    const ids = ["child-a", "child-b", "child-c"];
+    const failedChild = thread(ids[0]!, true);
+    failedChild.activities = [{ ...failedChild.activities[0]!, payload: { state: "failed" } }];
+    let state = (
+      await apply(model(failedChild, ...ids.slice(1).map((id) => thread(id, true))), {
+        type: "thread.meta.update",
+        commandId: CommandId.make("wait-after-failure"),
+        threadId: parentId,
+        childWait: {
+          mode: "all",
+          assignments: ids.map((id) => ({
+            childThreadId: ThreadId.make(id),
+            assignmentId: MessageId.make(`assignment-${id}`),
+          })),
+        },
+      })
+    ).readModel;
+    state = (await apply(state, finish(ids[0]!))).readModel;
+    const failureDispatch = {
+      type: "thread.queued-turn.dispatch" as const,
+      commandId: CommandId.make("failure-wake"),
+      threadId: parentId,
+      queuedTurnId: state.threads[0]!.queuedTurns![0]!.id,
+      dispatchedAt: finished,
+    };
+    const failureWake = await apply(state, failureDispatch);
+    expect(
+      failureWake.events.filter((event) => event.type === "thread.turn-start-requested"),
+    ).toHaveLength(1);
+    state = failureWake.readModel;
+
+    state = withParent(state, {
+      latestTurn: {
+        turnId: TurnId.make("parent-response"),
+        state: "completed",
+        requestedAt: finished,
+        startedAt: finished,
+        completedAt: "2026-09-09T00:01:01.000Z",
+        assistantMessageId: MessageId.make("parent-response"),
+      },
+    });
+    state = (
+      await apply(state, {
+        ...finish(ids[1]!),
+        completedAt: "2026-09-09T00:01:02.000Z",
+        createdAt: "2026-09-09T00:01:02.000Z",
+      })
+    ).readModel;
+    state = (
+      await apply(state, {
+        ...finish(ids[2]!),
+        completedAt: "2026-09-09T00:01:03.000Z",
+        createdAt: "2026-09-09T00:01:03.000Z",
+      })
+    ).readModel;
+    expect(state.threads[0]!.queuedTurns).toHaveLength(1);
+    const terminalDispatch = {
+      type: "thread.queued-turn.dispatch" as const,
+      commandId: CommandId.make("terminal-wake"),
+      threadId: parentId,
+      queuedTurnId: state.threads[0]!.queuedTurns![0]!.id,
+      dispatchedAt: "2026-09-09T00:01:05.000Z",
+    };
+    const terminalWake = await apply(state, terminalDispatch);
+    expect(
+      terminalWake.events.filter((event) => event.type === "thread.turn-start-requested"),
+    ).toHaveLength(1);
+    expect(terminalWake.readModel.threads[0]!.nudging?.wait).toMatchObject({
+      assignments: [
+        { outcome: "failed" },
+        { outcome: "result-available" },
+        { outcome: "result-available" },
+      ],
+      satisfiedAt: terminalDispatch.dispatchedAt,
+    });
+    expect(
+      terminalWake.events.filter((event) => event.type === "thread.queued-turn-created"),
+    ).toHaveLength(0);
+  });
+
   it("wakes with a stale-assignment diagnostic instead of stranding the parent", async () => {
     const child = thread("child", true);
     child.nudging = {
