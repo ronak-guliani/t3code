@@ -9,6 +9,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationReadModel,
   ProviderInstanceId,
+  TurnId,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
 
@@ -284,7 +285,7 @@ describe("commandInvariants", () => {
         },
       ],
       latestTurn: {
-        turnId: null,
+        turnId: TurnId.make("turn-stopped"),
         state: "interrupted" as const,
         requestedAt: now,
         startedAt: now,
