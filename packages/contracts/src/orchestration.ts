@@ -368,6 +368,7 @@ export const ChildWaitCondition = Schema.Struct({
     }),
   ).check(Schema.isMaxLength(32)),
   satisfiedAt: Schema.optional(IsoDateTime),
+  deadlineAt: Schema.optional(IsoDateTime),
 });
 export type ChildWaitCondition = typeof ChildWaitCondition.Type;
 
@@ -1146,6 +1147,14 @@ const ThreadMetaUpdateCommand = Schema.Struct({
       "title and regenerateTitle cannot be specified together",
   ),
 );
+
+const ThreadChildWaitDeadlineExpireCommand = Schema.Struct({
+  type: Schema.Literal("thread.child-wait.deadline-expire"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  expectedDeadlineAt: IsoDateTime,
+  expiredAt: IsoDateTime,
+});
 
 export const CollaborationDelivery = Schema.Struct({
   queuedTurnId: QueuedTurnId,
@@ -1963,6 +1972,7 @@ export const InternalOrchestrationCommand = Schema.Union([
   ThreadTitleRegenerationCompleteCommand,
   ThreadQueuedTurnDispatchCommand,
   ThreadQueuedTurnFailCommand,
+  ThreadChildWaitDeadlineExpireCommand,
   WorkflowRunRequestCommand,
   WorkflowNodeWorkerStartCommand,
   WorkflowWorkerResultRecordCommand,

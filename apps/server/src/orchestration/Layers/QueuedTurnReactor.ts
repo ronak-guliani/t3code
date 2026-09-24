@@ -25,7 +25,7 @@ import {
 } from "../commandInvariants.ts";
 import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import { isAutomaticChildNudgeBlocked } from "../childNudging.ts";
-import { evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
+import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
 
 const MONITOR_REVALIDATION_RETRY_INTERVAL = Duration.seconds(20);
 const MAX_MONITOR_REVALIDATION_ATTEMPTS = 3;
@@ -98,8 +98,30 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     try {
       const readModel = yield* orchestrationEngine.getReadModel();
       const thread = readModel.threads.find((entry) => entry.id === threadId);
+      if (!thread) return;
+      const wait = thread.nudging?.wait;
+      if (
+        wait?.deadlineAt &&
+        thread.archivedAt === null &&
+        thread.deletedAt === null &&
+        !wait.satisfiedAt &&
+        !childWaitIsSatisfied(wait) &&
+        wait.assignments.some((assignment) => assignment.outcome === undefined)
+      ) {
+        if (Date.parse(wait.deadlineAt) <= Date.now()) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.child-wait.deadline-expire",
+            commandId: serverCommandId("child-wait.deadline-expire"),
+            threadId,
+            expectedDeadlineAt: wait.deadlineAt,
+            expiredAt: new Date().toISOString(),
+          });
+          return;
+        }
+        yield* scheduleChildWake(threadId, wait.deadlineAt, "wait-deadline");
+      }
       const queuedTurns = thread?.queuedTurns ?? [];
-      if (!thread || queuedTurns.length === 0 || !isThreadReadyForQueuedDispatch(thread)) {
+      if (queuedTurns.length === 0 || !isThreadReadyForQueuedDispatch(thread)) {
         return;
       }
 
@@ -118,17 +140,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         if (turn.failedAt !== null) continue;
         const followUp = evaluateChildFollowUp(thread, turn, threadsById, nowIso);
         if (followUp.dueAt) {
-          const key = `${threadId}:${followUp.dueAt}`;
-          if (!scheduledChildWakes.has(key)) {
-            scheduledChildWakes.add(key);
-            yield* Effect.sleep(
-              Duration.millis(Math.max(0, Date.parse(followUp.dueAt) - Date.now())),
-            ).pipe(
-              Effect.andThen(Effect.suspend(() => drainThreadSafely(threadId))),
-              Effect.ensuring(Effect.sync(() => scheduledChildWakes.delete(key))),
-              Effect.forkIn(wakeScope),
-            );
-          }
+          yield* scheduleChildWake(threadId, followUp.dueAt, "collection");
         }
         if (!followUp.reason) eligibleTurns.push(turn);
       }
@@ -406,10 +418,35 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
       ),
     );
 
+  const scheduleChildWake = (
+    threadId: ThreadId,
+    dueAt: string,
+    kind: "collection" | "wait-deadline",
+  ): Effect.Effect<void> => {
+    const key = `${kind}:${threadId}:${dueAt}`;
+    if (scheduledChildWakes.has(key)) return Effect.void;
+    scheduledChildWakes.add(key);
+    return Effect.sleep(Duration.millis(Math.max(0, Date.parse(dueAt) - Date.now()))).pipe(
+      Effect.andThen(Effect.suspend(() => drainThreadSafely(threadId))),
+      Effect.ensuring(Effect.sync(() => scheduledChildWakes.delete(key))),
+      Effect.forkIn(wakeScope),
+      Effect.asVoid,
+    );
+  };
+
   const drainQueuedThreads = Effect.gen(function* () {
     const readModel = yield* orchestrationEngine.getReadModel();
     yield* Effect.forEach(
-      readModel.threads.filter((thread) => (thread.queuedTurns ?? []).length > 0),
+      readModel.threads.filter((thread) => {
+        const wait = thread.nudging?.wait;
+        return (
+          (thread.queuedTurns ?? []).length > 0 ||
+          (wait?.deadlineAt !== undefined &&
+            !wait.satisfiedAt &&
+            !childWaitIsSatisfied(wait) &&
+            wait.assignments.some((assignment) => assignment.outcome === undefined))
+        );
+      }),
       (thread) => drainThreadSafely(thread.id).pipe(Effect.forkScoped),
       { concurrency: 1 },
     );
@@ -443,6 +480,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     yield* Effect.forkScoped(
       Stream.runForEach(serverSettings.streamChanges, () => drainQueuedThreads),
     );
+    // Keep this sweep: PR-monitor revalidation retries also depend on it.
     yield* Effect.forkScoped(
       Effect.sleep(MONITOR_REVALIDATION_RETRY_INTERVAL).pipe(
         Effect.andThen(drainQueuedThreads),
