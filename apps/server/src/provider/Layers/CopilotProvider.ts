@@ -50,9 +50,11 @@ const withDefaultCopilotIdentity = (snapshot: Omit<ServerProvider, "instanceId" 
 });
 
 const COPILOT_REASONING_LEVELS = [
+  { value: "none", label: "None" },
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium", isDefault: true },
   { value: "high", label: "High" },
+  { value: "max", label: "Max" },
 ] as const;
 
 const COPILOT_REASONING_LEVELS_WITH_XHIGH = [
