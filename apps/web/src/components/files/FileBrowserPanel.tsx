@@ -109,10 +109,10 @@ export default function FileBrowserPanel({
 
   const { model } = useFileTree({
     density: "compact",
-    // Keep the full hierarchy visible while filtering: match branches expand
-    // and focus lands on the first match instead of collapsing to a flat list.
+    // Filter the view down to matches plus their ancestor chain: the list
+    // must read as the search result, not the whole workspace with a count.
     // (`collapse-non-matches` is type-only with no runtime branch; avoid it.)
-    fileTreeSearchMode: "expand-matches",
+    fileTreeSearchMode: "hide-non-matches",
     flattenEmptyDirectories: true,
     initialExpansion: 1,
     stickyFolders: true,
