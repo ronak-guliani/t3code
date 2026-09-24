@@ -429,7 +429,9 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
             event.type === "thread.meta-updated" ||
             event.type === "thread.archived" ||
             event.type === "thread.deleted" ||
-            event.type === "thread.decoupled"
+            event.type === "thread.decoupled" ||
+            event.type === "thread.queued-turn-created" ||
+            event.type === "thread.queued-turn-updated"
           ) {
             const state = yield* orchestrationEngine.getReadModel();
             const parentId = state.threads.find((thread) => thread.id === threadId)?.parentThreadId;

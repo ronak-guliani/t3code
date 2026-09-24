@@ -1443,6 +1443,100 @@ describe("child nudging", () => {
     });
   });
 
+  it("wakes once when a three-child all wait reaches terminal state", async () => {
+    const ids = ["child-a", "child-b", "child-c"];
+    let state = model(...ids.map((id) => thread(id, true)));
+    state = (
+      await apply(state, {
+        type: "thread.meta.update",
+        commandId: CommandId.make("wait-three"),
+        threadId: parentId,
+        childWait: {
+          mode: "all",
+          assignments: ids.map((id) => ({
+            childThreadId: ThreadId.make(id),
+            assignmentId: MessageId.make(`assignment-${id}`),
+          })),
+        },
+      })
+    ).readModel;
+    state = (await apply(state, finish(ids[0]!))).readModel;
+    state = (await apply(state, finish(ids[1]!))).readModel;
+    // One coalesced batch holds both results while the third is pending.
+    expect(state.threads[0]!.queuedTurns).toHaveLength(1);
+    const held = {
+      type: "thread.queued-turn.dispatch" as const,
+      commandId: CommandId.make("held-dispatch"),
+      threadId: parentId,
+      queuedTurnId: state.threads[0]!.queuedTurns![0]!.id,
+      dispatchedAt: "2026-09-09T00:01:02.000Z",
+    };
+    await expect(apply(state, held)).rejects.toThrow("Waiting for 1 child");
+    state = (await apply(state, finish(ids[2]!))).readModel;
+    expect(state.threads[0]!.queuedTurns).toHaveLength(1);
+    expect(state.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
+      kind: "child-nudge",
+      updates: ids.map((id) => ({
+        childThreadId: id,
+        assignmentId: `assignment-${id}`,
+        kind: "result-available",
+      })),
+    });
+    const delivered = await apply(state, { ...held, commandId: CommandId.make("final-dispatch") });
+    expect(
+      delivered.events.filter((event) => event.type === "thread.turn-start-requested"),
+    ).toHaveLength(1);
+    expect(delivered.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBe(held.dispatchedAt);
+  });
+
+  it("wakes with a stale-assignment diagnostic instead of stranding the parent", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        assignmentId: MessageId.make("assignment-child-new"),
+      },
+    };
+    let state = withParent(model(child), {
+      nudging: {
+        wait: {
+          mode: "all",
+          assignments: [
+            {
+              childThreadId: ThreadId.make("child"),
+              assignmentId: MessageId.make("assignment-child-old"),
+            },
+          ],
+        },
+      },
+    });
+    state = (await apply(state, finish("child"))).readModel;
+    const queue = state.threads[0]!.queuedTurns!;
+    expect(queue).toHaveLength(1);
+    const updates = queue[0]!.origin?.kind === "child-nudge" ? queue[0]!.origin.updates : [];
+    expect(updates.map((update) => update.kind).sort()).toEqual(["blocked", "result-available"]);
+    const diagnostic = updates.find((update) => update.kind === "blocked")!;
+    expect(diagnostic.id).toContain("assignment-stale:child:assignment-child-old");
+    expect(diagnostic.assignmentId).toBe("assignment-child-old");
+    expect(diagnostic.wakeReason).toBe("assignment-blocked");
+    // Fail-fast wake: the stale entry is marked blocked, the wait is not
+    // falsely recorded as satisfied.
+    expect(state.threads[0]!.nudging?.wait?.assignments).toMatchObject([
+      { assignmentId: "assignment-child-old", outcome: "blocked" },
+    ]);
+    expect(state.threads[0]!.nudging?.wait?.satisfiedAt).toBeUndefined();
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("stale-dispatch"),
+      threadId: parentId,
+      queuedTurnId: queue[0]!.id,
+      dispatchedAt: finished,
+    });
+    expect(
+      delivered.events.filter((event) => event.type === "thread.turn-start-requested"),
+    ).toHaveLength(1);
+  });
+
   it("keeps exact legacy keys for pre-fence reports", async () => {
     const { readModel, events } = await apply(
       model(thread("child", true)),
