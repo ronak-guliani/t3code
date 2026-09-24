@@ -200,6 +200,75 @@ describe("FilePreviewPanel", () => {
     }
   });
 
+  it("scrolls to the chat-linked line on open", async () => {
+    readFileMock.mockResolvedValueOnce({
+      relativePath: "long-reveal.ts",
+      contents: Array.from({ length: 500 }, (_, index) => `const line${index} = ${index};`).join(
+        "\n",
+      ),
+    });
+    const screen = await render(
+      <div style={{ height: 400, width: 700, overflow: "hidden" }}>
+        <div className="h-full min-h-0">
+          <FilePreviewPanel
+            cwd="/repo/long-file"
+            relativePath="long-reveal.ts"
+            revealLine={450}
+            threadRef={threadRef}
+            onOpenFile={vi.fn()}
+          />
+        </div>
+      </div>,
+    );
+    try {
+      // The editor resolves the line through its own geometry and centers
+      // it; assert on the shared scroll container, not library internals.
+      await vi.waitFor(
+        () => {
+          const viewport = document.querySelector(".file-preview-virtualizer");
+          expect(viewport).not.toBeNull();
+          expect((viewport as HTMLElement).scrollTop).toBeGreaterThan(0);
+        },
+        { timeout: 15000 },
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("sizes preview code from the Fonts code-size setting", async () => {
+    const screen = await render(
+      <FilePreviewPanel
+        cwd="/repo/font-check"
+        relativePath="src/index.ts"
+        threadRef={threadRef}
+        onOpenFile={vi.fn()}
+      />,
+    );
+    try {
+      await expect.element(page.getByText("export const covered = true;")).toBeInTheDocument();
+      // Pierre renders code inside shadow DOM, so pierce shadow roots to
+      // reach the element the --diffs-font-size variable resolves on.
+      const collect = (root: ParentNode, selector: string, out: Element[]): void => {
+        for (const el of root.querySelectorAll(selector)) out.push(el);
+        for (const host of root.querySelectorAll("*")) {
+          if (host.shadowRoot) collect(host.shadowRoot, selector, out);
+        }
+      };
+      const pres: Element[] = [];
+      const host = document.querySelector(".file-preview-virtualizer");
+      expect(host).not.toBeNull();
+      collect(host!, "pre", pres);
+      expect(pres.length).toBeGreaterThan(0);
+      // Settings default codeFontSize is 12px; the Pierre default is 13px.
+      for (const pre of pres) {
+        expect(getComputedStyle(pre).fontSize).toBe("12px");
+      }
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("renders the workspace tree", async () => {
     const screen = await render(
       <FilePreviewPanel
