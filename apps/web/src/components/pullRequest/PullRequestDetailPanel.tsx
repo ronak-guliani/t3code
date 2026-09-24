@@ -1269,23 +1269,25 @@ export function PullRequestDetailPanel({
             </div>
           ) : null}
         </div>
-        {monitorQuery.data ? (
-          <div className="border-t border-border/70 px-4 py-3">
-            <PullRequestCollaborationStatusCard
-              acceptance={acceptanceStatus}
-              controls={acceptanceControls}
-              creatorThread={sourceThread}
-              creatorThreadLabel={creatorThread ? "Created in" : "Linked from"}
-              environmentId={environmentId}
-              reviewThread={reviewThread}
-              status={monitorQuery.data}
-              onNavigateThread={onClose}
-            />
-          </div>
-        ) : monitorQuery.isError ? (
-          <div className="border-t border-border/70 px-4 py-3 text-xs text-muted-foreground">
-            Collaboration status unavailable: {errorMessage(monitorQuery.error)}
-          </div>
+        {activeTab === "summary" ? (
+          monitorQuery.data ? (
+            <div className="border-t border-border/70 px-4 py-3">
+              <PullRequestCollaborationStatusCard
+                acceptance={acceptanceStatus}
+                controls={acceptanceControls}
+                creatorThread={sourceThread}
+                creatorThreadLabel={creatorThread ? "Created in" : "Linked from"}
+                environmentId={environmentId}
+                reviewThread={reviewThread}
+                status={monitorQuery.data}
+                onNavigateThread={onClose}
+              />
+            </div>
+          ) : monitorQuery.isError ? (
+            <div className="border-t border-border/70 px-4 py-3 text-xs text-muted-foreground">
+              Collaboration status unavailable: {errorMessage(monitorQuery.error)}
+            </div>
+          ) : null
         ) : null}
       </header>
       <div
