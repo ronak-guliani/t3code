@@ -5,6 +5,7 @@ import { Effect, Layer, PubSub, Stream } from "effect";
 import { resolveThreadWorkspaceCwd } from "../checkpointing/Utils.ts";
 import { GitManager } from "../git/Services/GitManager.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { isReviewWorkflowThread } from "./reviewWorkflowThread.ts";
 
 // A branch match alone is not association intent. Require an unambiguous PR URL
 // reported by the assistant, then independently verify it against the checkout.
@@ -64,7 +65,7 @@ export const makePullRequestAssociationRecovery = Effect.gen(function* () {
   const recover = Effect.fn("recoverPullRequestAssociation")(function* (threadId: ThreadId) {
     const snapshot = yield* engine.getReadModel();
     const thread = snapshot.threads.find((entry) => entry.id === threadId);
-    if (!thread || thread.deletedAt || thread.archivedAt) return;
+    if (!thread || thread.deletedAt || thread.archivedAt || isReviewWorkflowThread(thread)) return;
     const reference = recoverablePullRequestUrl(thread);
     if (!reference) return;
     const createdByAgent = reportsCreatedPullRequest(thread, reference);
@@ -108,7 +109,10 @@ export const makePullRequestAssociationRecovery = Effect.gen(function* () {
     const snapshot = yield* engine.getReadModel();
     const candidates = snapshot.threads.filter(
       (thread) =>
-        !thread.deletedAt && !thread.archivedAt && recoverablePullRequestUrl(thread) !== null,
+        !thread.deletedAt &&
+        !thread.archivedAt &&
+        !isReviewWorkflowThread(thread) &&
+        recoverablePullRequestUrl(thread) !== null,
     );
     yield* Effect.forEach(candidates, (thread) => recoverSafely(thread.id), {
       concurrency: 4,

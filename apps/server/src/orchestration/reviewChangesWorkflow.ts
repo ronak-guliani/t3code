@@ -197,9 +197,7 @@ export const runReviewChangesWorkflow = (
         interactionMode,
         branch: reviewContext.branch,
         worktreePath: cwd === project.workspaceRoot ? null : cwd,
-        ...(reviewContext.scope === "pull-request"
-          ? { pullRequest: reviewContext.pullRequest }
-          : {}),
+        pullRequest: null,
         reviewSnapshot: reviewContext.snapshot,
         createdAt,
       });
@@ -243,9 +241,7 @@ export const runReviewChangesWorkflow = (
         interactionMode,
         branch: reviewContext.branch,
         worktreePath: cwd === project.workspaceRoot ? null : cwd,
-        ...(reviewContext.scope === "pull-request"
-          ? { pullRequest: reviewContext.pullRequest }
-          : {}),
+        pullRequest: null,
         reviewSnapshot: reviewContext.snapshot,
       },
       inputArtifact: {

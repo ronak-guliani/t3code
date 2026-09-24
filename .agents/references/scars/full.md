@@ -51,6 +51,7 @@
 - Keep visited work-log bodies local to their virtual timeline row, lazy before first expansion, and hidden after collapse. Preserve mounted details through closing/reversal so output parsing and DOM reconstruction do not interrupt the animation.
 - Command labels must come from input metadata, never a tool's output/detail fallback. Repeated completed work may be folded for display, but preserve every call and keep distinct commands, paths, turns, active calls, and failures separate.
 - Packaged desktop startup builds cloud runtime services eagerly; `CloudRuntimeLayerLive` must provide its own auth control plane, server environment, orchestration, repository identity, and persistence dependencies, and startup logs should include a clear cloud-runtime-ready marker.
+- Eager reactor layers must not await a full historical remote PR sweep before HTTP starts: subscribe to domain events first, then run reconciliation in a scoped background fiber so slow or failed provider lookups cannot hold the loading window.
 - Worktree dependency copies can dereference macOS Electron framework symlinks; desktop packaging must validate an installed `Electron.app` before reusing it as `electronDist` and fall back to electron-builder's archive when invalid.
 - macOS native sidebar vibrancy can leave stale/ghosted row pixels when translucent sidebar rows animate opacity/transform/color over the visual-effect backing; keep vibrancy stable across focus changes and isolate native-vibrancy thread rows with paint containment, compositor promotion, and disabled row transitions.
 - External-store selectors must return a referentially stable snapshot when their input state is unchanged; fresh arrays or wrapper objects can trigger React error #185 (maximum update depth exceeded).
@@ -259,6 +260,7 @@
 
 ## Streaming reconnects and workflow dispatch
 
+- A terminal turn may share its user message's millisecond timestamp after manual stop; queued-turn readiness must require a strictly later user message, or an idle thread remains in flight and its waiting turn never drains.
 - Account-change handling must cancel and join route discovery before clearing promotion state in both normal and nested health-probe loops; discovery finalizers must not repopulate the previous account's overrides after cleanup.
 
 - Live `thread.message-sent` events that create or change `latestTurn` must reconcile the sidebar activity summary; a slow shell stream otherwise leaves the active row stale.

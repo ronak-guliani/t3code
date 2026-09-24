@@ -30,6 +30,7 @@ import { GitCore } from "../git/Services/GitCore.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { repositoryFromPullRequestUrl } from "./canonicalKey.ts";
 import { PullRequestMonitorService } from "./PullRequestMonitorService.ts";
+import { isReviewWorkflowThread } from "./reviewWorkflowThread.ts";
 
 const RECONCILIATION_INTERVAL = "30 seconds";
 
@@ -106,7 +107,12 @@ export const reconcileCreatedPullRequestReview = (
   reconciliation: CreatedPullRequestReviewReconciliation,
 ): Effect.Effect<void, unknown> =>
   Effect.gen(function* () {
-    if (thread.deletedAt !== null || thread.archivedAt !== null || !creatorIsInactive(thread)) {
+    if (
+      thread.deletedAt !== null ||
+      thread.archivedAt !== null ||
+      isReviewWorkflowThread(thread) ||
+      !creatorIsInactive(thread)
+    ) {
       return;
     }
 
@@ -120,6 +126,7 @@ export const reconcileCreatedPullRequestReview = (
           latestThread === null ||
           latestThread.deletedAt !== null ||
           latestThread.archivedAt !== null ||
+          isReviewWorkflowThread(latestThread) ||
           !creatorIsInactive(latestThread) ||
           !createdPullRequestLinks(latestThread).some(
             (candidate) =>
@@ -320,6 +327,7 @@ const makeReactor = Effect.gen(function* () {
         (thread) =>
           thread.deletedAt === null &&
           thread.archivedAt === null &&
+          !isReviewWorkflowThread(thread) &&
           createdPullRequestLinks(thread).length > 0 &&
           creatorIsInactive(thread),
       ),
@@ -329,8 +337,6 @@ const makeReactor = Effect.gen(function* () {
   });
 
   const subscription = yield* engine.acquireDomainEventSubscription;
-  yield* reconcileAll;
-
   yield* Effect.forkScoped(
     Stream.forever(Stream.fromEffect(PubSub.take(subscription))).pipe(
       Stream.runForEach((event) => {

@@ -46,6 +46,17 @@ describe("ProjectionPolicy", () => {
     expect(initialPullRequest?.number).toBe(9);
   });
 
+  it("does not recover a PR when a review thread explicitly has no association", () => {
+    expect(
+      resolveInitialThreadPullRequest({
+        pullRequest: null,
+        reviewSnapshot: {
+          scope: { kind: "pull-request", number: 9, url: "https://github.com/acme/repo/pull/9" },
+        } as never,
+      }),
+    ).toEqual({ initialPullRequest: undefined, source: undefined });
+  });
+
   it("seeds a missing legacy association ahead of newer pullRequests", () => {
     const legacy = {
       number: 1,

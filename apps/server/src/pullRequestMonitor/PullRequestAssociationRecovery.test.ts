@@ -309,6 +309,19 @@ describe("pull request association recovery", () => {
     expect(h.commands).toEqual([]);
   });
 
+  it("does not attach a PR reported by a review workflow thread", async () => {
+    const h = await harness();
+    h.updateThread({
+      reviewSnapshot: { scope: { kind: "pull-request" } } as never,
+    });
+
+    await Effect.runPromise(h.recovery.recover(threadId));
+    await Effect.runPromise(h.recovery.sweep);
+
+    expect(h.commands).toEqual([]);
+    expect(h.lookups()).toBe(0);
+  });
+
   it("retries a not-yet-visible PR using fresh status", async () => {
     const h = await harness();
     h.setStatus({ ...status, pr: null });

@@ -748,6 +748,44 @@ describe("QueuedTurnReactor", () => {
     expect(commands[0]?.commandId).toEqual(expect.stringMatching(/^server:queued-turn\.dispatch:/));
   });
 
+  it("dispatches after stopping a turn whose message shares its completion timestamp", async () => {
+    const model = queuedReadModel();
+    const thread = model.threads[0]!;
+    const commands = await runReactor(
+      {
+        ...model,
+        threads: [
+          {
+            ...thread,
+            messages: [
+              {
+                id: MessageId.make("message-stopped"),
+                role: "user",
+                text: "stop",
+                attachments: [],
+                turnId: null,
+                streaming: false,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+            latestTurn: {
+              turnId: TurnId.make("turn-stopped"),
+              state: "interrupted",
+              requestedAt: now,
+              startedAt: now,
+              completedAt: now,
+              assistantMessageId: null,
+            },
+          },
+        ],
+      },
+      monitorSnapshot("head-current"),
+    );
+
+    expect(commands.map((command) => command.type)).toEqual(["thread.queued-turn.dispatch"]);
+  });
+
   it("deletes a stale PR monitor turn instead of dispatching it", async () => {
     const commands = await runReactor(
       queuedReadModel({

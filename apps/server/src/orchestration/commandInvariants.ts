@@ -153,7 +153,7 @@ export function threadHasInFlightTurn(thread: OrchestrationThread): boolean {
   if (thread.latestTurn === null || thread.latestTurn.completedAt === null) {
     return true;
   }
-  return latestUserMessage.createdAt >= thread.latestTurn.completedAt;
+  return latestUserMessage.createdAt > thread.latestTurn.completedAt;
 }
 
 export function threadHasQueuedTurnStart(

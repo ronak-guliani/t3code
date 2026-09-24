@@ -108,6 +108,64 @@ describe("created pull-request review reconciliation", () => {
     assert.strictEqual(submitted, 0);
   });
 
+  it("does not review PRs inherited by historical review workflow threads", async () => {
+    let refreshed = 0;
+    const reviewWorker = thread([link("created")], {
+      id: ThreadId.make("workflow:run-42:node:review-changes:worker"),
+      reviewSnapshot: { scope: { kind: "pull-request" } } as never,
+      reviewResult: {} as never,
+    });
+
+    await Effect.runPromise(
+      reconcileCreatedPullRequestReview(reviewWorker, {
+        refresh: () => {
+          refreshed++;
+          return Effect.succeed(observation("head-1"));
+        },
+        readCurrentThread: () => Effect.succeed(reviewWorker),
+        submit: () => Effect.die("Review workers must not launch another review"),
+      }),
+    );
+
+    assert.strictEqual(refreshed, 0);
+  });
+
+  it("does not submit when a creator becomes a review thread during refresh", async () => {
+    let submitted = 0;
+    const creator = thread([link("created")]);
+    const reviewWorker = thread([link("created")], {
+      reviewSnapshot: { scope: { kind: "pull-request" } } as never,
+    });
+
+    await Effect.runPromise(
+      reconcileCreatedPullRequestReview(creator, {
+        refresh: () => Effect.succeed(observation("head-1")),
+        readCurrentThread: () => Effect.succeed(reviewWorker),
+        submit: () => Effect.sync(() => submitted++),
+      }),
+    );
+
+    assert.strictEqual(submitted, 0);
+  });
+
+  it("continues to review creator threads after they receive a review result", async () => {
+    let submitted = 0;
+    const creator = thread([link("created")], {
+      reviewSnapshot: { scope: { kind: "pull-request" } } as never,
+      reviewResult: {} as never,
+    });
+
+    await Effect.runPromise(
+      reconcileCreatedPullRequestReview(creator, {
+        refresh: () => Effect.succeed(observation("head-2")),
+        readCurrentThread: () => Effect.succeed(creator),
+        submit: () => Effect.sync(() => submitted++),
+      }),
+    );
+
+    assert.strictEqual(submitted, 1);
+  });
+
   it("ignores manual and recovered associations", async () => {
     let submitted = 0;
     const current = thread([link("manual"), link("recovered")]);
