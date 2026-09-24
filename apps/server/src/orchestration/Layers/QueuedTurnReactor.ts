@@ -459,6 +459,41 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
       ),
     );
 
+  const reconcileUnavailableChildAssignments = (childThreadId: ThreadId) =>
+    Effect.gen(function* () {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const assignments = readModel.threads.flatMap((parent) =>
+        (parent.nudging?.wait?.assignments ?? [])
+          .filter(
+            (assignment) =>
+              assignment.childThreadId === childThreadId && assignment.outcome === undefined,
+          )
+          .map((assignment) => ({
+            parentThreadId: parent.id,
+            assignmentId: assignment.assignmentId,
+          })),
+      );
+      yield* Effect.forEach(
+        assignments,
+        (assignment) =>
+          orchestrationEngine.dispatch({
+            type: "thread.child.assignment.unavailable",
+            commandId: serverCommandId("child.assignment.unavailable"),
+            threadId: assignment.parentThreadId,
+            childThreadId,
+            assignmentId: assignment.assignmentId,
+          }),
+        { concurrency: 1, discard: true },
+      );
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("queued turn reactor failed to reconcile unavailable child assignments", {
+          childThreadId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+
   const reconcileOpenDelegations = Effect.gen(function* () {
     const readModel = yield* orchestrationEngine.getReadModel();
     yield* Effect.forEach(
@@ -496,12 +531,32 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
               ) {
                 if (parentId) yield* drainThreadSafely(parentId);
               }
+              if (
+                event.type === "thread.meta-updated" ||
+                event.type === "thread.archived" ||
+                event.type === "thread.deleted" ||
+                event.type === "thread.decoupled"
+              ) {
+                yield* reconcileUnavailableChildAssignments(threadId);
+              }
             }
           });
         }),
       ),
     );
     yield* drainQueuedThreads;
+    const startupReadModel = yield* orchestrationEngine.getReadModel();
+    const waitedChildIds = new Set(
+      startupReadModel.threads.flatMap((parent) =>
+        (parent.nudging?.wait?.assignments ?? [])
+          .filter((assignment) => assignment.outcome === undefined)
+          .map((assignment) => assignment.childThreadId),
+      ),
+    );
+    yield* Effect.forEach(waitedChildIds, reconcileUnavailableChildAssignments, {
+      concurrency: 1,
+      discard: true,
+    });
     yield* reconcileOpenDelegations;
     yield* Effect.forkScoped(
       Stream.runForEach(serverSettings.streamChanges, () => drainQueuedThreads),

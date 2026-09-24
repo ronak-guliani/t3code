@@ -167,6 +167,61 @@ function report(
 }
 
 describe("child nudging", () => {
+  it("blocks and reports a waited assignment after its child becomes unavailable exactly once", async () => {
+    const childId = ThreadId.make("a");
+    const assignmentId = MessageId.make("assignment-a");
+    const initial = model(thread("a", true));
+    const detached = {
+      ...initial,
+      threads: initial.threads.map((entry) =>
+        entry.id === parentId
+          ? {
+              ...entry,
+              nudging: {
+                wait: {
+                  mode: "all" as const,
+                  assignments: [{ childThreadId: childId, assignmentId }],
+                },
+              },
+            }
+          : entry.id === childId
+            ? { ...entry, parentThreadId: null }
+            : entry,
+      ),
+    };
+    const command: OrchestrationCommand = {
+      type: "thread.child.assignment.unavailable",
+      commandId: CommandId.make("unavailable-a"),
+      threadId: parentId,
+      childThreadId: childId,
+      assignmentId,
+    };
+
+    const unavailable = await apply(detached, command);
+    expect(unavailable.readModel.threads[0]!.nudging?.wait?.assignments).toEqual([
+      { childThreadId: childId, assignmentId, outcome: "blocked" },
+    ]);
+    expect(unavailable.readModel.threads[0]!.queuedTurns?.[0]?.origin).toMatchObject({
+      kind: "child-nudge",
+      updates: [
+        {
+          id: "assignment-stale:a:assignment-a",
+          childThreadId: childId,
+          assignmentId,
+          kind: "blocked",
+          wakeReason: "assignment-blocked",
+        },
+      ],
+    });
+
+    const duplicate = await apply(unavailable.readModel, {
+      ...command,
+      commandId: CommandId.make("unavailable-a-duplicate"),
+    });
+    expect(duplicate.events).toEqual([]);
+    expect(duplicate.readModel.threads[0]!.queuedTurns).toHaveLength(1);
+  });
+
   it("collects routine results for a fixed two seconds without extending the deadline", async () => {
     let state = model(thread("a", true), thread("b", true));
     state = (await apply(state, finish("a"))).readModel;

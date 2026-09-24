@@ -1930,6 +1930,14 @@ const ThreadDelegationSettleCommand = Schema.Struct({
   threadId: ThreadId,
 });
 
+const ThreadChildAssignmentUnavailableCommand = Schema.Struct({
+  type: Schema.Literal("thread.child.assignment.unavailable"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  childThreadId: ThreadId,
+  assignmentId: MessageId,
+});
+
 const ThreadActivityAppendCommand = Schema.Struct({
   type: Schema.Literal("thread.activity.append"),
   commandId: CommandId,
@@ -1965,6 +1973,7 @@ export const InternalOrchestrationCommand = Schema.Union([
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadDelegationSettleCommand,
+  ThreadChildAssignmentUnavailableCommand,
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
   ThreadTitleRegenerationCompleteCommand,
