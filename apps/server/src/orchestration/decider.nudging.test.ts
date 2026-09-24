@@ -110,14 +110,18 @@ function withParent(
   };
 }
 
-function finish(id: string): Extract<OrchestrationCommand, { type: "thread.turn.diff.complete" }> {
+function finish(
+  id: string,
+  turnId = TurnId.make(`turn-${id}`),
+  completedAt = finished,
+): Extract<OrchestrationCommand, { type: "thread.turn.diff.complete" }> {
   return {
     type: "thread.turn.diff.complete",
     commandId: CommandId.make(`finish-${id}`),
     threadId: ThreadId.make(id),
-    turnId: TurnId.make(`turn-${id}`),
-    completedAt: finished,
-    createdAt: finished,
+    turnId,
+    completedAt,
+    createdAt: completedAt,
     checkpointRef: CheckpointRef.make(`checkpoint-${id}`),
     status: "ready",
     files: [],
@@ -493,6 +497,215 @@ describe("child nudging", () => {
     await expect(
       apply(state, { ...report("a", "progress"), assignmentId: MessageId.make("assignment-b") }),
     ).resolves.toBeDefined();
+  });
+
+  it("retargets an unsettled wait when a child gets new work and satisfies it on completion", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        completedAt: finished,
+        outcome: undefined,
+      },
+    };
+    const previousAssignmentId = MessageId.make("assignment-child");
+    const nextAssignmentId = MessageId.make("assignment-next");
+    let state = withParent(model(child), {
+      nudging: {
+        wait: {
+          mode: "all",
+          assignments: [{ childThreadId: child.id, assignmentId: previousAssignmentId }],
+        },
+      },
+    });
+    const assignedAt = "2026-09-09T00:02:00.000Z";
+    state = (
+      await apply(state, {
+        type: "thread.queued-turn.create",
+        commandId: CommandId.make("reassign-waiting-child"),
+        threadId: child.id,
+        queuedTurnId: QueuedTurnId.make("assignment-next-queue"),
+        assignment: { followUp: "automatic" },
+        message: {
+          messageId: nextAssignmentId,
+          role: "user",
+          text: "Continue the work",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: assignedAt,
+      })
+    ).readModel;
+
+    expect(state.threads[0]!.nudging?.wait?.assignments).toEqual([
+      { childThreadId: child.id, assignmentId: nextAssignmentId },
+    ]);
+
+    const nextTurnId = TurnId.make("turn-assignment-next");
+    const assignedChild = state.threads.find((entry) => entry.id === child.id)!;
+    state = {
+      ...state,
+      threads: state.threads.map((entry) =>
+        entry.id !== child.id
+          ? entry
+          : {
+              ...entry,
+              queuedTurns: [],
+              latestTurn: {
+                ...entry.latestTurn!,
+                turnId: nextTurnId,
+                state: "running",
+                requestedAt: assignedAt,
+                startedAt: assignedAt,
+                completedAt: null,
+              },
+              messages: [
+                ...entry.messages,
+                {
+                  id: MessageId.make("result-assignment-next"),
+                  role: "assistant",
+                  text: "Updated result",
+                  turnId: nextTurnId,
+                  streaming: false,
+                  createdAt: assignedAt,
+                  updatedAt: "2026-09-09T00:03:00.000Z",
+                },
+              ],
+              activities: [
+                ...entry.activities,
+                {
+                  id: EventId.make("completion-assignment-next"),
+                  kind: "insights.turn.completed",
+                  tone: "info",
+                  summary: "Turn completed",
+                  payload: { state: "completed" },
+                  turnId: nextTurnId,
+                  createdAt: "2026-09-09T00:03:00.000Z",
+                },
+              ],
+              nudging: {
+                ...entry.nudging,
+                delegation: {
+                  ...entry.nudging!.delegation!,
+                  dispatchTurnId: nextTurnId,
+                },
+              },
+            },
+      ),
+    };
+    expect(assignedChild.nudging?.delegation?.assignmentId).toBe(nextAssignmentId);
+    state = (await apply(state, finish("child", nextTurnId, "2026-09-09T00:03:00.000Z"))).readModel;
+    expect(state.threads[0]!.nudging?.wait?.assignments).toEqual([
+      {
+        childThreadId: child.id,
+        assignmentId: nextAssignmentId,
+        outcome: "result-available",
+      },
+    ]);
+
+    const queued = state.threads[0]!.queuedTurns![0]!;
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("dispatch-reassigned-result"),
+      threadId: parentId,
+      queuedTurnId: queued.id,
+      dispatchedAt: "2026-09-09T00:03:03.000Z",
+    });
+    expect(
+      delivered.events.filter((event) => event.type === "thread.turn-start-requested"),
+    ).toHaveLength(1);
+    expect(delivered.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBe(
+      "2026-09-09T00:03:03.000Z",
+    );
+  });
+
+  it("keeps an already-settled wait entry tied to its completed assignment after reassignment", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        completedAt: finished,
+        outcome: "failed",
+      },
+    };
+    const previousAssignmentId = MessageId.make("assignment-child");
+    const nextAssignmentId = MessageId.make("assignment-next");
+    const state = withParent(model(child), {
+      nudging: {
+        wait: {
+          mode: "all",
+          assignments: [
+            {
+              childThreadId: child.id,
+              assignmentId: previousAssignmentId,
+              outcome: "failed",
+            },
+          ],
+        },
+      },
+    });
+
+    const reassigned = await apply(state, {
+      type: "thread.queued-turn.create",
+      commandId: CommandId.make("reassign-settled-child"),
+      threadId: child.id,
+      queuedTurnId: QueuedTurnId.make("assignment-next-queue"),
+      assignment: { followUp: "automatic" },
+      message: {
+        messageId: nextAssignmentId,
+        role: "user",
+        text: "Continue the work",
+        attachments: [],
+      },
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      createdAt: "2026-09-09T00:02:00.000Z",
+    });
+
+    expect(reassigned.readModel.threads[0]!.nudging?.wait?.assignments).toEqual([
+      {
+        childThreadId: child.id,
+        assignmentId: previousAssignmentId,
+        outcome: "failed",
+      },
+    ]);
+  });
+
+  it("delivers an already-queued result after the child is reassigned", async () => {
+    let state = (await apply(model(thread("child", true)), finish("child"))).readModel;
+    const oldResult = state.threads[0]!.queuedTurns![0]!;
+    state = (
+      await apply(state, {
+        type: "thread.queued-turn.create",
+        commandId: CommandId.make("reassign-after-result"),
+        threadId: ThreadId.make("child"),
+        queuedTurnId: QueuedTurnId.make("assignment-next-queue"),
+        assignment: { followUp: "automatic" },
+        message: {
+          messageId: MessageId.make("assignment-next"),
+          role: "user",
+          text: "Continue the work",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: "2026-09-09T00:02:00.000Z",
+      })
+    ).readModel;
+
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("deliver-old-result"),
+      threadId: parentId,
+      queuedTurnId: oldResult.id,
+      dispatchedAt: "2026-09-09T00:01:03.000Z",
+    });
+
+    expect(
+      delivered.events.filter((event) => event.type === "thread.turn-start-requested"),
+    ).toHaveLength(1);
+    expect(delivered.readModel.threads[0]!.messages[0]!.text).toContain("Result evidence");
   });
 
   it("rejects empty, foreign, and forged-complete wait conditions", async () => {
@@ -1489,7 +1702,7 @@ describe("child nudging", () => {
     expect(delivered.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBe(held.dispatchedAt);
   });
 
-  it("wakes with a stale-assignment diagnostic instead of stranding the parent", async () => {
+  it("reports a legacy stale wait as unavailable instead of fabricating a settled result", async () => {
     const child = thread("child", true);
     child.nudging = {
       delegation: {
@@ -1514,27 +1727,20 @@ describe("child nudging", () => {
     const queue = state.threads[0]!.queuedTurns!;
     expect(queue).toHaveLength(1);
     const updates = queue[0]!.origin?.kind === "child-nudge" ? queue[0]!.origin.updates : [];
-    expect(updates.map((update) => update.kind).sort()).toEqual(["blocked", "result-available"]);
-    const diagnostic = updates.find((update) => update.kind === "blocked")!;
-    expect(diagnostic.id).toContain("assignment-stale:child:assignment-child-old");
-    expect(diagnostic.assignmentId).toBe("assignment-child-old");
-    expect(diagnostic.wakeReason).toBe("assignment-blocked");
-    // Fail-fast wake: the stale entry is marked blocked, the wait is not
-    // falsely recorded as satisfied.
+    expect(updates.map((update) => update.kind)).toEqual(["result-available"]);
     expect(state.threads[0]!.nudging?.wait?.assignments).toMatchObject([
-      { assignmentId: "assignment-child-old", outcome: "blocked" },
+      { assignmentId: "assignment-child-old" },
     ]);
     expect(state.threads[0]!.nudging?.wait?.satisfiedAt).toBeUndefined();
-    const delivered = await apply(state, {
-      type: "thread.queued-turn.dispatch",
-      commandId: CommandId.make("stale-dispatch"),
-      threadId: parentId,
-      queuedTurnId: queue[0]!.id,
-      dispatchedAt: finished,
-    });
-    expect(
-      delivered.events.filter((event) => event.type === "thread.turn-start-requested"),
-    ).toHaveLength(1);
+    await expect(
+      apply(state, {
+        type: "thread.queued-turn.dispatch",
+        commandId: CommandId.make("legacy-stale-dispatch"),
+        threadId: parentId,
+        queuedTurnId: queue[0]!.id,
+        dispatchedAt: finished,
+      }),
+    ).rejects.toThrow("required assignment is unavailable");
   });
 
   it("keeps exact legacy keys for pre-fence reports", async () => {

@@ -101,11 +101,20 @@ on retry; creation of the assignment and queue entry is atomic. Only one assignm
 unresolved decision may be active per child. An answer continues the same assignment, not a new one.
 
 Capture the `assignmentId` returned by creation or assignment, or inspect `t3 chat show <id>`.
+`delegate_work` accepts `wait: "all" | "any" | "none"` and installs the wait atomically with child
+creation, before any child can report. By default it waits for all when more than one automatic
+child is created, and uses no batch wait for one automatic child or notify-only children;
+notify-only children are never included. Partial creation failures are removed from the wait
+before `delegate_work` returns, so only created assignments remain. Do not call `set_child_wait`
+just to establish the wait after delegation.
+
 Use `set_child_wait` with `{mode: "any" | "all", assignments: [{childThreadId, assignmentId}]}`
-to wait for selected results. Membership is fixed: handle partial batch failures before setting it.
-Use `{mode: "decisions-only", assignments: []}` to suppress routine wakes, or `null` to restore
-automatic follow-up. A satisfied wait is consumed once; a failure escalates without pretending
-the wait succeeded. Missing required assignments need an explicit wait revision.
+to revise the selected results later. Use `{mode: "decisions-only", assignments: []}` to suppress
+routine wakes, or `null` to restore automatic follow-up. Reassigning a child retargets an
+unsettled wait entry to its new assignment; a settled entry remains tied to the assignment that
+produced its outcome. Already-queued terminal results remain deliverable after reassignment. A
+satisfied wait is consumed once; a failure escalates without pretending the wait succeeded. Legacy
+waits whose assignments are unavailable must be revised.
 
 For an early decision or important finding, a child can call `report_to_parent` with
 `kind: "decision-needed"` or `"important-update"`, a concise `summary`, and a stable `reportId`.

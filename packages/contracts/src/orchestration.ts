@@ -1029,6 +1029,7 @@ const ProjectDeleteCommand = Schema.Struct({
 
 const ThreadCreateCommand = Schema.Struct({
   delegation: Schema.optional(ThreadDelegation),
+  parentWait: Schema.optional(Schema.NullOr(ChildWaitCondition)),
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
   threadId: ThreadId,

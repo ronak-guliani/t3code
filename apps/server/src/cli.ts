@@ -2298,6 +2298,18 @@ const chatNewCommand = Command.make("new", {
   ),
   title: Flag.string("title").pipe(Flag.withDefault("New chat")),
   followUp: Flag.choice("follow-up", ["automatic", "notify-only"]).pipe(Flag.optional),
+  threadId: Flag.string("thread-id").pipe(
+    Flag.optional,
+    Flag.withDescription("Preallocated child id for an atomic delegation batch."),
+  ),
+  assignmentId: Flag.string("assignment-id").pipe(
+    Flag.optional,
+    Flag.withDescription("Preallocated assignment id for an atomic delegation batch."),
+  ),
+  parentWait: Flag.string("parent-wait").pipe(
+    Flag.optional,
+    Flag.withDescription("Parent wait condition to record atomically with this child creation."),
+  ),
   runtimeMode: runtimeModeFlag,
   interactionMode: interactionModeFlag,
   branch: Flag.string("branch").pipe(Flag.optional),
@@ -2330,6 +2342,27 @@ const chatNewCommand = Command.make("new", {
         if (Option.isSome(flags.followUp) && parent === null) {
           return yield* Effect.fail(new Error("--follow-up requires --parent"));
         }
+        const requestedThreadId = Option.getOrUndefined(flags.threadId);
+        const requestedAssignmentId = Option.getOrUndefined(flags.assignmentId);
+        if ((requestedThreadId === undefined) !== (requestedAssignmentId === undefined)) {
+          return yield* Effect.fail(
+            new Error("--thread-id and --assignment-id must be provided together"),
+          );
+        }
+        const parentWait = Option.isSome(flags.parentWait)
+          ? yield* decodeChildWaitJson(flags.parentWait.value)
+          : undefined;
+        if (
+          parentWait !== undefined &&
+          (parent === null ||
+            !Option.isSome(flags.followUp) ||
+            flags.followUp.value !== "automatic" ||
+            requestedThreadId === undefined)
+        ) {
+          return yield* Effect.fail(
+            new Error("--parent-wait requires an identified automatic child with a parent"),
+          );
+        }
         const modelSelection = yield* resolveModelSelectionWithDefault(
           flags,
           resolveDefaultModelSelectionForProject(project),
@@ -2348,8 +2381,8 @@ const chatNewCommand = Command.make("new", {
           return;
         }
 
-        const threadId = ThreadId.make(crypto.randomUUID());
-        const firstMessageId = MessageId.make(crypto.randomUUID());
+        const threadId = ThreadId.make(requestedThreadId ?? crypto.randomUUID());
+        const firstMessageId = MessageId.make(requestedAssignmentId ?? crypto.randomUUID());
         const createdAt = new Date().toISOString();
         const outcome = yield* runNestedThreadCreationPhases(
           threadId,
@@ -2371,6 +2404,7 @@ const chatNewCommand = Command.make("new", {
                     },
                   }
                 : {}),
+              ...(parentWait !== undefined ? { parentWait } : {}),
               title: flags.title,
               modelSelection,
               runtimeMode: flags.runtimeMode,
