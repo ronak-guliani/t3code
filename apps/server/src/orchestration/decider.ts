@@ -41,7 +41,11 @@ import {
   isAutomaticChildNudgeBlocked,
   queueChildNudge,
 } from "./childNudging.ts";
-import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
+import {
+  childWaitIsSatisfied,
+  evaluateChildFollowUp,
+  staleChildWaitAssignments,
+} from "@t3tools/shared/childFollowUp";
 import {
   sameThreadPullRequest,
   sameThreadPullRequestAssociation,
@@ -398,6 +402,132 @@ function appendChildLifecycleNotification(
       ...(report ? { report } : {}),
     },
   };
+  const shouldQueueNudge =
+    report &&
+    report.kind !== "progress" &&
+    input.childThread.nudging?.delegation?.followUp === "automatic";
+  const normalNudge = shouldQueueNudge ? queueChildNudge(parentThread, report, notification) : null;
+  // Stale wait: the parent waits on an older assignment of this child while
+  // the child just terminally completed under a newer assignment (reassigned
+  // or continued). The normal wait update cannot match, so without a
+  // diagnostic the held nudge blocks forever on "Waiting for N children".
+  // Queue a blocked-kind diagnostic against the stale assignment id so the
+  // parent wakes fail-fast to revise the wait instead of stranding.
+  const terminalKind =
+    report &&
+    (report.kind === "result-available" || report.kind === "failed" || report.kind === "blocked");
+  const staleEntry =
+    terminalKind && shouldQueueNudge && parentThread.nudging?.wait
+      ? staleChildWaitAssignments(
+          parentThread.nudging.wait,
+          new Map([[input.childThread.id, input.childThread]]),
+          parentThreadId,
+        ).find((entry) => entry.childThreadId === input.childThread.id)
+      : undefined;
+  if (!staleEntry) {
+    return [
+      ...input.sourceEvents,
+      notification,
+      ...(terminalFailure
+        ? [
+            nudgingMetaEvent(input.childThread, notification, {
+              ...input.childThread.nudging,
+              delegation: { ...delegation, completedAt: input.createdAt, outcome: report.kind },
+            }),
+          ]
+        : []),
+      ...(report?.kind === "decision-needed" && delegation
+        ? [
+            nudgingMetaEvent(input.childThread, notification, {
+              ...input.childThread.nudging,
+              delegation: { ...delegation, decision: report },
+            }),
+          ]
+        : []),
+      ...(report &&
+      (report.kind === "result-available" ||
+        report.kind === "failed" ||
+        report.kind === "blocked") &&
+      parentThread.nudging?.wait &&
+      !parentThread.nudging.wait.satisfiedAt
+        ? [
+            nudgingMetaEvent(parentThread, notification, {
+              ...parentThread.nudging,
+              wait: {
+                ...parentThread.nudging.wait,
+                assignments: parentThread.nudging.wait.assignments.map((assignment) =>
+                  assignment.childThreadId === report.childThreadId &&
+                  assignment.assignmentId === report.assignmentId
+                    ? { ...assignment, outcome: report.kind }
+                    : assignment,
+                ),
+              },
+            }),
+          ]
+        : []),
+      ...(normalNudge ? [normalNudge] : []),
+    ];
+  }
+  const diagnosticReport = {
+    id: `assignment-stale:${input.childThread.id}:${staleEntry.assignmentId}`,
+    assignmentId: staleEntry.assignmentId,
+    childThreadId: input.childThread.id,
+    childTitle: input.childThread.title,
+    kind: "blocked" as const,
+    summary: `A waited assignment for this child is stale (wait expects assignment ${staleEntry.assignmentId}, active assignment is ${report.assignmentId}). The child already finished; revise the wait condition to the current assignment or clear it. Inspect the child result before continuing.`,
+    wakeReason: "assignment-blocked" as const,
+  };
+  const diagnosticNotification = {
+    ...eventBase,
+    eventId: crypto.randomUUID() as typeof notification.eventId,
+    causationEventId: notification.eventId,
+    type: "thread.child-lifecycle-notified" as const,
+    payload: {
+      parentThreadId,
+      childThreadId: input.childThread.id,
+      childTitle: input.childThread.title,
+      lifecycle: input.lifecycle,
+      dedupeKey: childLifecycleDedupeKey(
+        input.childThread.id,
+        input.lifecycle,
+        diagnosticReport.id,
+      ),
+      createdAt: input.createdAt,
+      report: diagnosticReport,
+    },
+  };
+  const parentWaitAfterNormal = parentThread.nudging?.wait
+    ? {
+        ...parentThread.nudging.wait,
+        assignments: parentThread.nudging.wait.assignments.map((assignment) =>
+          assignment.childThreadId === report.childThreadId &&
+          assignment.assignmentId === report.assignmentId
+            ? { ...assignment, outcome: report.kind }
+            : assignment,
+        ),
+      }
+    : undefined;
+  const parentAfterNormal: OrchestrationThread =
+    normalNudge && normalNudge.type === "thread.queued-turn-created"
+      ? {
+          ...parentThread,
+          queuedTurns: [...(parentThread.queuedTurns ?? []), normalNudge.payload.queuedTurn],
+        }
+      : normalNudge && normalNudge.type === "thread.queued-turn-updated"
+        ? {
+            ...parentThread,
+            queuedTurns: (parentThread.queuedTurns ?? []).map((turn) =>
+              turn.id === normalNudge.payload.queuedTurnId
+                ? {
+                    ...turn,
+                    message: { ...turn.message, text: normalNudge.payload.text },
+                    origin: normalNudge.payload.origin,
+                    updatedAt: normalNudge.payload.updatedAt,
+                  }
+                : turn,
+            ),
+          }
+        : parentThread;
   return [
     ...input.sourceEvents,
     notification,
@@ -436,11 +566,25 @@ function appendChildLifecycleNotification(
           }),
         ]
       : []),
-    ...(report &&
-    report.kind !== "progress" &&
-    input.childThread.nudging?.delegation?.followUp === "automatic"
-      ? [queueChildNudge(parentThread, report, notification)]
-      : []),
+    ...(normalNudge ? [normalNudge] : []),
+    diagnosticNotification,
+    nudgingMetaEvent(parentThread, diagnosticNotification, {
+      ...parentThread.nudging,
+      ...(parentWaitAfterNormal
+        ? {
+            wait: {
+              ...parentWaitAfterNormal,
+              assignments: parentWaitAfterNormal.assignments.map((assignment) =>
+                assignment.childThreadId === diagnosticReport.childThreadId &&
+                assignment.assignmentId === diagnosticReport.assignmentId
+                  ? { ...assignment, outcome: diagnosticReport.kind }
+                  : assignment,
+              ),
+            },
+          }
+        : {}),
+    }),
+    queueChildNudge(parentAfterNormal, diagnosticReport, diagnosticNotification),
   ];
 }
 
