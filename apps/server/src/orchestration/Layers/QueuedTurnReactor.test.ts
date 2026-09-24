@@ -18,7 +18,7 @@ import {
   type PullRequestMonitorSnapshot,
   type ServerSettings,
 } from "@t3tools/contracts";
-import { Effect, Layer, Stream } from "effect";
+import { Effect, Layer, PubSub, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
@@ -122,6 +122,146 @@ function queuedReadModel(
   };
 }
 
+function delegatedReadModel(
+  options: {
+    readonly blockedItems?: boolean;
+    readonly activeTurn?: boolean;
+    readonly pendingApproval?: boolean;
+  } = {},
+): OrchestrationReadModel {
+  const state = queuedReadModel();
+  const parent = state.threads[0]!;
+  const childId = ThreadId.make("child-settlement");
+  const turnId = TurnId.make("turn-child-settlement");
+  const completionActivity = {
+    id: EventId.make("child-completion"),
+    kind: "insights.turn.completed" as const,
+    tone: "info" as const,
+    summary: "Turn completed",
+    payload: { state: "completed" },
+    turnId,
+    createdAt: now,
+  };
+  const child = {
+    ...parent,
+    id: childId,
+    parentThreadId: parent.id,
+    title: "Delegated child",
+    latestTurn: {
+      turnId,
+      state: options.activeTurn ? ("running" as const) : ("completed" as const),
+      requestedAt: now,
+      startedAt: now,
+      completedAt: options.activeTurn ? null : now,
+      assistantMessageId: null,
+    },
+    queuedTurns: options.blockedItems
+      ? [
+          {
+            ...parent.queuedTurns![0]!,
+            id: QueuedTurnId.make("failed-child-queued-turn"),
+            threadId: childId,
+            failedAt: now,
+            failureMessage: "The queued turn failed",
+          },
+        ]
+      : [],
+    activities: [
+      ...(options.activeTurn ? [] : [completionActivity]),
+      ...(options.pendingApproval
+        ? [
+            {
+              id: EventId.make("child-pending-approval"),
+              kind: "approval.requested" as const,
+              tone: "approval" as const,
+              summary: "Approval required",
+              payload: { requestId: "approval-child-settlement" },
+              turnId,
+              createdAt: now,
+            },
+          ]
+        : []),
+    ],
+    checkpoints: [],
+    session: options.activeTurn
+      ? {
+          threadId: childId,
+          status: "running" as const,
+          providerName: "copilot",
+          runtimeMode: "approval-required" as const,
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: now,
+        }
+      : null,
+    nudging: {
+      delegation: {
+        assignmentId: MessageId.make("assignment-child-settlement"),
+        dispatchId: "dispatch-child-settlement",
+        dispatchSequence: 1,
+        dispatchTurnId: turnId,
+        followUp: "automatic" as const,
+        completedAt: null,
+        assignedAt: now,
+      },
+    },
+  };
+  return { ...state, threads: [parent, child] };
+}
+
+function childEvent(
+  child: OrchestrationReadModel["threads"][number],
+  eventId: string,
+  type: "thread.queued-turn-deleted" | "thread.activity-appended",
+  activityKind: "approval.resolved" | "insights.turn.completed" = "approval.resolved",
+): OrchestrationEvent {
+  const eventBase = {
+    sequence: 2,
+    eventId: EventId.make(eventId),
+    aggregateKind: "thread" as const,
+    aggregateId: child.id,
+    occurredAt: now,
+    commandId: CommandId.make(eventId),
+    causationEventId: null,
+    correlationId: CommandId.make(eventId),
+    metadata: {},
+  };
+  if (type === "thread.queued-turn-deleted") {
+    return {
+      ...eventBase,
+      type,
+      payload: {
+        threadId: child.id,
+        queuedTurnId: QueuedTurnId.make("failed-child-queued-turn"),
+        deletedAt: now,
+      },
+    };
+  }
+  return {
+    ...eventBase,
+    type,
+    payload: {
+      threadId: child.id,
+      activity: {
+        id: EventId.make(`${eventId}-activity`),
+        kind: activityKind,
+        tone: "info",
+        summary: activityKind === "approval.resolved" ? "Approval resolved" : "Turn completed",
+        payload:
+          activityKind === "approval.resolved"
+            ? { requestId: "approval-child-settlement" }
+            : { state: "completed" },
+        turnId: child.latestTurn?.turnId ?? null,
+        createdAt: now,
+      },
+    },
+  };
+}
+
+function settlementCommands(commands: ReadonlyArray<OrchestrationCommand>) {
+  return commands.filter((command) => (command.type as string) === "thread.delegation.settle");
+}
+
 function pullRequestLayer(
   snapshot: PullRequestMonitorSnapshot,
   snapshotError?: PullRequestOperationError,
@@ -160,6 +300,7 @@ async function runReactor(
     readonly resume?: {
       readonly readModel: OrchestrationReadModel;
       readonly event: OrchestrationEvent;
+      readonly additionalEvents?: ReadonlyArray<OrchestrationEvent>;
     };
     readonly providerInstances?: ServerSettings["providerInstances"];
     readonly optIn?: boolean;
@@ -168,6 +309,7 @@ async function runReactor(
 ): Promise<ReadonlyArray<OrchestrationCommand>> {
   let readModel = readModelInput;
   const commands: OrchestrationCommand[] = [];
+  const domainEvents = await Effect.runPromise(PubSub.unbounded<OrchestrationEvent>());
   let dispatchesStarted = 0;
   const engineLayer = Layer.succeed(OrchestrationEngineService, {
     getReadModel: () => Effect.succeed(readModel),
@@ -175,7 +317,26 @@ async function runReactor(
     dispatch: (command) =>
       Effect.sync(() => {
         commands.push(command);
-        if (
+        if ((command.type as string) === "thread.delegation.settle" && "threadId" in command) {
+          readModel = {
+            ...readModel,
+            threads: readModel.threads.map((thread) =>
+              thread.id !== command.threadId || !thread.nudging?.delegation
+                ? thread
+                : {
+                    ...thread,
+                    nudging: {
+                      ...thread.nudging,
+                      delegation: {
+                        ...thread.nudging.delegation,
+                        completedAt: now,
+                        outcome: "result-available",
+                      },
+                    },
+                  },
+            ),
+          };
+        } else if (
           command.type === "thread.queued-turn.dispatch" ||
           command.type === "thread.queued-turn.delete"
         ) {
@@ -222,19 +383,8 @@ async function runReactor(
         const delay = dispatchesStarted++ === 0 ? (options?.firstDispatchDelayMs ?? 0) : 0;
         return delay > 0 ? Effect.sleep(delay).pipe(Effect.andThen(effect)) : effect;
       }),
-    streamDomainEvents: options?.resume
-      ? Stream.fromEffect(
-          Effect.sync(() => {
-            const resume = options.resume;
-            if (!resume) throw new Error("Expected a resume event.");
-            expect(commands).toHaveLength(0);
-            readModel = resume.readModel;
-            return resume.event;
-          }),
-        )
-      : Stream.never,
-    // Unused by these tests; Effect.never satisfies the scoped subscription type.
-    acquireDomainEventSubscription: Effect.never,
+    streamDomainEvents: Stream.empty,
+    acquireDomainEventSubscription: PubSub.subscribe(domainEvents),
   });
   const feedbackLayer = Layer.succeed(
     PullRequestMonitorFeedbackService,
@@ -278,6 +428,15 @@ async function runReactor(
       Effect.gen(function* () {
         const reactor = yield* QueuedTurnReactor;
         yield* reactor.start();
+        if (options?.resume) {
+          expect(commands).toHaveLength(0);
+          readModel = options.resume.readModel;
+          yield* Effect.forEach(
+            [options.resume.event, ...(options.resume.additionalEvents ?? [])],
+            (event) => PubSub.publish(domainEvents, event),
+            { discard: true },
+          );
+        }
         if (options?.enableAfterStart) {
           const settings = yield* ServerSettingsService;
           yield* settings.updateSettings({
@@ -292,6 +451,72 @@ async function runReactor(
 }
 
 describe("QueuedTurnReactor", () => {
+  it("settles after queued work and pending approval clear, despite duplicate state triggers", async () => {
+    const blocked = delegatedReadModel({ blockedItems: true, pendingApproval: true });
+    const child = blocked.threads[1]!;
+    const cleared = {
+      ...blocked,
+      threads: blocked.threads.map((thread) =>
+        thread.id === child.id
+          ? {
+              ...thread,
+              queuedTurns: [],
+              activities: [
+                ...thread.activities,
+                {
+                  id: EventId.make("child-approval-resolved"),
+                  kind: "approval.resolved" as const,
+                  tone: "info" as const,
+                  summary: "Approval resolved",
+                  payload: { requestId: "approval-child-settlement" },
+                  turnId: child.latestTurn!.turnId,
+                  createdAt: now,
+                },
+              ],
+            }
+          : thread,
+      ),
+    };
+    const commands = await runReactor(blocked, monitorSnapshot("head"), {
+      resume: {
+        readModel: cleared,
+        event: childEvent(child, "queued-work-cleared", "thread.queued-turn-deleted"),
+        additionalEvents: [
+          childEvent(child, "approval-cleared", "thread.activity-appended"),
+          childEvent(child, "duplicate-settlement-trigger", "thread.activity-appended"),
+        ],
+      },
+    });
+
+    expect(settlementCommands(commands)).toHaveLength(1);
+  });
+
+  it("settles provider completion when checkpoint capture is unavailable", async () => {
+    const active = delegatedReadModel({ activeTurn: true });
+    const idle = delegatedReadModel();
+    const child = active.threads[1]!;
+    const commands = await runReactor(active, monitorSnapshot("head"), {
+      resume: {
+        readModel: idle,
+        event: childEvent(
+          child,
+          "provider-turn-completed",
+          "thread.activity-appended",
+          "insights.turn.completed",
+        ),
+      },
+    });
+
+    expect(settlementCommands(commands)).toHaveLength(1);
+    expect(commands.some((command) => command.type === "thread.turn.diff.complete")).toBe(false);
+  });
+
+  it("reconciles an idle open delegation on startup", async () => {
+    const commands = await runReactor(delegatedReadModel(), monitorSnapshot("head"));
+
+    expect(settlementCommands(commands)).toHaveLength(1);
+  });
+
   it("retains a deadline wake that arrives while an explicit turn owns the drain", async () => {
     const collectUntil = new Date(Date.now() + 150).toISOString();
     const state = queuedReadModel({
