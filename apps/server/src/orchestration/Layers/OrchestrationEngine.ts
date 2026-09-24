@@ -32,6 +32,7 @@ import {
   orchestrationCommandDuration,
 } from "../../observability/Metrics.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { runStartupPhase } from "../../startupTiming.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
@@ -717,8 +718,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     Effect.gen(function* () {
       const initializationExit = yield* Effect.exit(
         Effect.gen(function* () {
-          yield* projectionPipeline.bootstrap;
-          readModel = yield* projectionSnapshotQuery.getSnapshot();
+          yield* runStartupPhase("projections.replay", projectionPipeline.bootstrap);
+          readModel = yield* runStartupPhase(
+            "projections.snapshot",
+            projectionSnapshotQuery.getSnapshot(),
+          );
           yield* Effect.forkScoped(worker);
           yield* Effect.logDebug("orchestration engine started").pipe(
             Effect.annotateLogs({ sequence: readModel.snapshotSequence }),

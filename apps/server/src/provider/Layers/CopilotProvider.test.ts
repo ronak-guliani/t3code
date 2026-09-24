@@ -136,9 +136,11 @@ function reasoningCapabilities(includeXHigh: boolean) {
         type: "select" as const,
         currentValue: "medium",
         options: [
+          { id: "none", label: "None" },
           { id: "low", label: "Low" },
           { id: "medium", label: "Medium", isDefault: true },
           { id: "high", label: "High" },
+          { id: "max", label: "Max" },
           ...(includeXHigh ? [{ id: "xhigh", label: "Extra High" }] : []),
         ],
       },

@@ -128,15 +128,19 @@ function reasoningEffortOptionsForModel(): ReadonlyArray<{
   }
   return /^gpt-5(?:[.-]|$)/u.test(currentModelId)
     ? [
+        { value: "none", name: "None" },
         { value: "low", name: "Low" },
         { value: "medium", name: "Medium" },
         { value: "high", name: "High" },
+        { value: "max", name: "Max" },
         { value: "xhigh", name: "Extra High" },
       ]
     : [
+        { value: "none", name: "None" },
         { value: "low", name: "Low" },
         { value: "medium", name: "Medium" },
         { value: "high", name: "High" },
+        { value: "max", name: "Max" },
       ];
 }
 

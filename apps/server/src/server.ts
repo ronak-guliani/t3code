@@ -4,6 +4,7 @@ import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 import { ServerConfig } from "./config.ts";
 import { installAgentCliEnvironment } from "./cli/agentEnvironment.ts";
 import { ServerStartupClaimLive } from "./serverStartupClaim.ts";
+import { timeStartupLayer } from "./startupTiming.ts";
 import {
   assetRouteLayer,
   attachmentsRouteLayer,
@@ -584,7 +585,7 @@ export const makeServerLayer = Layer.unwrap(
 
     return serverApplicationLayer.pipe(
       Layer.provide(ServerAdvertisedEndpoints.layer),
-      Layer.provideMerge(RuntimeServicesLive),
+      Layer.provideMerge(timeStartupLayer("runtime.services", RuntimeServicesLive)),
       Layer.provideMerge(DeviceLayerLive),
       Layer.provideMerge(HttpServerLive),
       Layer.provide(ObservabilityLive),
