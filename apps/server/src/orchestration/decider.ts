@@ -59,6 +59,7 @@ import {
   transitionDelegationExecution,
   type RecordedReportOutcome,
 } from "./dispatchAuthority.ts";
+import { settleDelegation } from "./delegationSettlement.ts";
 import {
   acceptValidationResult,
   claimValidationLease,
@@ -604,6 +605,57 @@ function nudgingMetaEvent(
     type: "thread.meta-updated",
     payload: { threadId: thread.id, nudging, updatedAt: sourceEvent.occurredAt },
   };
+}
+
+function appendDelegationSettlement(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly child: OrchestrationThread;
+  readonly settlement: NonNullable<ReturnType<typeof settleDelegation>>;
+  readonly commandId: CommandId;
+  readonly sourceEvents?: ReadonlyArray<PlannedOrchestrationEvent>;
+  readonly sourceEvent?: PlannedOrchestrationEvent;
+}): DecideOrchestrationCommandResult {
+  const delegation = input.child.nudging?.delegation;
+  if (!delegation) return input.sourceEvents ?? [];
+
+  const nudging = {
+    ...input.child.nudging,
+    delegation: {
+      ...delegation,
+      completedAt: input.settlement.completedAt,
+      outcome: input.settlement.outcome,
+    },
+  };
+  const completionEvent = input.sourceEvent
+    ? nudgingMetaEvent(input.child, input.sourceEvent, nudging)
+    : {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: input.child.id,
+          occurredAt: input.settlement.completedAt,
+          commandId: input.commandId,
+        }),
+        type: "thread.meta-updated" as const,
+        payload: {
+          threadId: input.child.id,
+          nudging,
+          updatedAt: input.settlement.completedAt,
+        },
+      };
+  const sourceEvent = input.sourceEvent ?? completionEvent;
+  const settledChild = { ...input.child, nudging };
+
+  return appendChildLifecycleNotification({
+    readModel: input.readModel,
+    childThread: settledChild,
+    sourceEvents: [...(input.sourceEvents ?? []), completionEvent],
+    sourceEvent,
+    lifecycle: "reported",
+    sourceKey: input.settlement.report.id,
+    createdAt: input.settlement.completedAt,
+    report: input.settlement.report,
+    originTurnId: input.settlement.turnId,
+  });
 }
 
 const hasCanonicalActiveWorktreeOwner = Effect.fn("hasCanonicalActiveWorktreeOwner")(function* (
@@ -4165,78 +4217,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           completedAt: command.completedAt,
         },
       };
-      const delegation = thread.nudging?.delegation;
-      const authorizedTurn = (delegation?.dispatchTurnId as string | null | undefined) ?? null;
-      if (
-        command.status === "speculative" ||
-        !delegation ||
-        delegation.completedAt !== null ||
-        (delegation.dispatchId !== undefined && authorizedTurn === null) ||
-        (authorizedTurn !== null && command.turnId !== authorizedTurn) ||
-        (delegation.assignedAt !== undefined &&
-          (!thread.latestTurn || thread.latestTurn.requestedAt < delegation.assignedAt)) ||
-        delegation.decision != null ||
-        thread.latestTurn?.turnId !== command.turnId ||
-        (thread.queuedTurns?.length ?? 0) > 0 ||
-        threadHasPendingInteraction(thread) ||
-        (thread.session?.activeTurnId != null && thread.session.activeTurnId !== command.turnId) ||
-        readModel.threads.some(
-          (child) =>
-            child.parentThreadId === thread.id &&
-            child.deletedAt === null &&
-            child.archivedAt === null &&
-            child.nudging?.delegation?.followUp === "automatic" &&
-            child.nudging?.delegation?.completedAt === null,
-        )
-      ) {
+      const settlement =
+        command.status === "speculative" ? null : settleDelegation(readModel, thread);
+      if (!settlement || settlement.turnId !== command.turnId) {
         return turnDiffCompletedEvent;
       }
-      const completion = thread.activities.findLast(
-        (activity) =>
-          activity.kind === "insights.turn.completed" && activity.turnId === command.turnId,
-      );
-      const state = completion?.payload?.state;
-      const resultMessage = thread.messages.findLast(
-        (message) =>
-          message.role === "assistant" && message.turnId === command.turnId && !message.streaming,
-      );
-      const kind =
-        state === "failed" ? "failed" : state === "completed" ? "result-available" : "blocked";
-      const summary =
-        kind === "result-available"
-          ? `Child returned a result; task success and background completion are not verified.${resultMessage ? `\n${resultMessage.text.slice(0, 3000)}` : " No final result message was recorded."}`
-          : kind === "failed"
-            ? "The delegated execution failed. Inspect the child for details."
-            : "Delegated completion is unconfirmed or interrupted. Inspect the child before continuing.";
-      const report = {
-        id: delegation.dispatchId
-          ? `assignment:${thread.id}:${delegation.dispatchId}:${delegation.assignmentId}`
-          : `assignment:${thread.id}:${delegation.assignmentId}`,
-        assignmentId: delegation.assignmentId,
-        ...(delegation.dispatchId ? { dispatchId: delegation.dispatchId } : {}),
-        childThreadId: thread.id,
-        childTitle: thread.title,
-        kind,
-        wakeReason: childWakeReason({ kind }),
-        summary,
-        ...(resultMessage ? { sourceMessageId: resultMessage.id } : {}),
-      };
-      return appendChildLifecycleNotification({
+      return appendDelegationSettlement({
         readModel,
-        childThread: thread,
-        sourceEvents: [
-          turnDiffCompletedEvent,
-          nudgingMetaEvent(thread, turnDiffCompletedEvent, {
-            ...thread.nudging,
-            delegation: { ...delegation, completedAt: command.completedAt, outcome: kind },
-          }),
-        ],
+        child: thread,
+        settlement,
+        commandId: command.commandId,
+        sourceEvents: [turnDiffCompletedEvent],
         sourceEvent: turnDiffCompletedEvent,
-        lifecycle: "reported",
-        sourceKey: report.id,
-        createdAt: command.createdAt,
-        report,
-        originTurnId: command.turnId,
+      });
+    }
+
+    case "thread.delegation.settle": {
+      const child = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const settlement = settleDelegation(readModel, child);
+      if (!settlement) return [];
+      return appendDelegationSettlement({
+        readModel,
+        child,
+        settlement,
+        commandId: command.commandId,
       });
     }
 

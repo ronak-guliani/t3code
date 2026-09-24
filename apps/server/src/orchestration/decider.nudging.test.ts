@@ -748,12 +748,70 @@ describe("child nudging", () => {
       activity: completion,
       createdAt: finished,
     });
-    const result = await apply(completed.readModel, finish("child"));
+    const authoritativeReadModel = {
+      ...completed.readModel,
+      threads: completed.readModel.threads.map((thread) =>
+        thread.id === child.id
+          ? {
+              ...thread,
+              latestTurn: {
+                ...thread.latestTurn!,
+                state: "completed" as const,
+                completedAt: finished,
+              },
+            }
+          : thread,
+      ),
+    };
+    const result = await apply(authoritativeReadModel, finish("child"));
     expect(result.readModel.threads[1]!.nudging?.delegation?.completedAt).toBe(finished);
     expect(result.readModel.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
       kind: "child-nudge",
       updates: [{ kind: "result-available" }],
     });
+  });
+
+  it("settles only the bound turn and deduplicates its assignment report", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-settlement",
+        dispatchTurnId: child.latestTurn!.turnId,
+      },
+    };
+    const settle: OrchestrationCommand = {
+      type: "thread.delegation.settle",
+      commandId: CommandId.make("settle-child"),
+      threadId: child.id,
+    };
+    const first = await apply(model(child), settle);
+    expect(first.readModel.threads[1]!.nudging?.delegation?.completedAt).toBe(finished);
+    expect(first.readModel.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
+      updates: [{ id: "assignment:child:dispatch-settlement:assignment-child" }],
+    });
+
+    const duplicate = await apply(first.readModel, {
+      ...settle,
+      commandId: CommandId.make("settle-child-again"),
+    });
+    expect(duplicate.events).toEqual([]);
+    expect(duplicate.readModel.threads[0]!.queuedTurns).toHaveLength(1);
+
+    const superseded = thread("child", true);
+    superseded.nudging = {
+      delegation: {
+        ...superseded.nudging!.delegation!,
+        dispatchId: "dispatch-settlement",
+        dispatchTurnId: TurnId.make("superseded-turn"),
+      },
+    };
+    const stale = await apply(model(superseded), {
+      ...settle,
+      commandId: CommandId.make("settle-superseded"),
+    });
+    expect(stale.readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+    expect(stale.events).toEqual([]);
   });
 
   it("notifies when provider startup fails and does not produce a second terminal report", async () => {
