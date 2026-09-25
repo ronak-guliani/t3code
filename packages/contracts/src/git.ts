@@ -5,6 +5,7 @@ import {
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
+  IsoDateTime,
 } from "./baseSchemas.ts";
 import { ReviewChangesScope } from "./agentWorkflows.ts";
 import { ReviewSnapshot } from "./reviewSchemas.ts";
@@ -519,6 +520,7 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
 export class GitHubCliError extends Schema.TaggedErrorClass<GitHubCliError>()("GitHubCliError", {
   operation: Schema.String,
   detail: Schema.String,
+  retryAfterAt: Schema.optional(IsoDateTime),
   cause: Schema.optional(Schema.Unknown),
 }) {
   override get message(): string {
