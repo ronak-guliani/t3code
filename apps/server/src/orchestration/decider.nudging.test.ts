@@ -827,6 +827,26 @@ describe("child nudging", () => {
     }
   });
 
+  it("rejects an unparseable deadline before persisting a child wait", async () => {
+    await expect(
+      apply(model(thread("child", true)), {
+        type: "thread.meta.update",
+        commandId: CommandId.make("invalid-wait-deadline"),
+        threadId: parentId,
+        childWait: {
+          mode: "all",
+          deadlineAt: "not-a-date",
+          assignments: [
+            {
+              childThreadId: ThreadId.make("child"),
+              assignmentId: MessageId.make("assignment-child"),
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow("A child wait deadline must be a valid ISO date-time");
+  });
+
   it("bounds a batch at 32 reports and rejects edits to generated prompts", async () => {
     let state = model(thread("child", true));
     for (let index = 0; index < 33; index++) {
@@ -1855,6 +1875,289 @@ describe("child nudging", () => {
       delivered.events.filter((event) => event.type === "thread.turn-start-requested"),
     ).toHaveLength(1);
     expect(delivered.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBe(held.dispatchedAt);
+  });
+
+  it("expires an all wait once with a blocked report for each unsettled assignment", async () => {
+    const settledChild = thread("settled", true);
+    const stalledChild = thread("stalled", true);
+    const stalledChildTwo = thread("stalled-two", true);
+    settledChild.nudging = {
+      ...settledChild.nudging!,
+      delegation: { ...settledChild.nudging!.delegation!, assignedAt: started },
+    };
+    stalledChild.nudging = {
+      ...stalledChild.nudging!,
+      delegation: { ...stalledChild.nudging!.delegation!, assignedAt: started },
+    };
+    stalledChildTwo.nudging = {
+      ...stalledChildTwo.nudging!,
+      delegation: { ...stalledChildTwo.nudging!.delegation!, assignedAt: started },
+    };
+    const deadlineAt = "2026-09-09T00:00:30.000Z";
+    const state = withParent(model(settledChild, stalledChild, stalledChildTwo), {
+      nudging: {
+        wait: {
+          mode: "all",
+          deadlineAt,
+          assignments: [
+            {
+              childThreadId: ThreadId.make("settled"),
+              assignmentId: MessageId.make("assignment-settled"),
+              outcome: "result-available",
+            },
+            {
+              childThreadId: ThreadId.make("stalled"),
+              assignmentId: MessageId.make("assignment-stalled"),
+            },
+            {
+              childThreadId: ThreadId.make("stalled-two"),
+              assignmentId: MessageId.make("assignment-stalled-two"),
+            },
+          ],
+        } as NonNullable<OrchestrationThread["nudging"]>["wait"],
+      },
+    });
+    const command = {
+      type: "thread.child-wait.deadline-expire",
+      commandId: CommandId.make("expire-wait"),
+      threadId: parentId,
+      expectedDeadlineAt: deadlineAt,
+      expiredAt: "2026-09-09T00:01:00.000Z",
+    } as unknown as OrchestrationCommand;
+    const expired = await apply(state, command);
+    const reports = expired.events.filter(
+      (event) =>
+        event.type === "thread.child-lifecycle-notified" &&
+        event.payload.report?.id.startsWith("wait-deadline:"),
+    );
+    expect(reports).toHaveLength(2);
+    expect(reports[0]).toMatchObject({
+      type: "thread.child-lifecycle-notified",
+      payload: {
+        childThreadId: "stalled",
+        childTitle: "stalled",
+        lifecycle: "blocked",
+        report: {
+          childThreadId: "stalled",
+          assignmentId: "assignment-stalled",
+          kind: "blocked",
+          summary: expect.stringContaining("60 seconds since assignment start"),
+        },
+      },
+    });
+    expect(reports[1]).toMatchObject({
+      type: "thread.child-lifecycle-notified",
+      payload: {
+        childThreadId: "stalled-two",
+        report: {
+          assignmentId: "assignment-stalled-two",
+          kind: "blocked",
+        },
+      },
+    });
+    expect(expired.readModel.threads[0]!.nudging?.wait?.assignments).toEqual([
+      {
+        childThreadId: "settled",
+        assignmentId: "assignment-settled",
+        outcome: "result-available",
+      },
+      {
+        childThreadId: "stalled",
+        assignmentId: "assignment-stalled",
+        outcome: "blocked",
+      },
+      {
+        childThreadId: "stalled-two",
+        assignmentId: "assignment-stalled-two",
+        outcome: "blocked",
+      },
+    ]);
+    expect(expired.readModel.threads[0]!.queuedTurns).toHaveLength(1);
+    expect(expired.readModel.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
+      kind: "child-nudge",
+      updates: [
+        { childThreadId: "stalled", assignmentId: "assignment-stalled", kind: "blocked" },
+        { childThreadId: "stalled-two", assignmentId: "assignment-stalled-two", kind: "blocked" },
+      ],
+    });
+
+    const retried = await apply(expired.readModel, command);
+    expect(retried.events).toHaveLength(0);
+    expect(retried.readModel.threads[0]!.queuedTurns).toHaveLength(1);
+  });
+
+  it("ignores an expiry command from a replaced wait with the same deadline", async () => {
+    const deadlineAt = "2026-09-09T00:00:30.000Z";
+    const child = thread("child", true);
+    const assignment = {
+      childThreadId: ThreadId.make("child"),
+      assignmentId: MessageId.make("assignment-child"),
+    };
+    const previousGenerationId = CommandId.make("previous-wait");
+    let state = model(child);
+
+    state = (
+      await apply(state, {
+        type: "thread.meta.update",
+        commandId: previousGenerationId,
+        threadId: parentId,
+        childWait: { mode: "all", deadlineAt, assignments: [assignment] },
+      })
+    ).readModel;
+    state = (
+      await apply(state, {
+        type: "thread.meta.update",
+        commandId: CommandId.make("replacement-wait"),
+        threadId: parentId,
+        childWait: { mode: "all", deadlineAt, assignments: [assignment] },
+      })
+    ).readModel;
+
+    const staleExpiry = {
+      type: "thread.child-wait.deadline-expire",
+      commandId: CommandId.make("stale-wait-expiry"),
+      threadId: parentId,
+      expectedDeadlineAt: deadlineAt,
+      expectedGenerationId: previousGenerationId,
+      expiredAt: "2026-09-09T00:01:00.000Z",
+    } as unknown as OrchestrationCommand;
+    const expired = await apply(state, staleExpiry);
+
+    expect(expired.events).toHaveLength(0);
+    expect(expired.readModel.threads[0]!.nudging?.wait?.assignments[0]?.outcome).toBeUndefined();
+  });
+
+  it("renders outstanding wait progress when a child nudge is dispatched", async () => {
+    const ids = ["child-a", "child-b", "child-c", "child-d"];
+    const children = ids.map((id) => thread(id, true));
+    children[3]!.title = "Search API";
+    const assignments = ids.map((id, index) => ({
+      childThreadId: ThreadId.make(id),
+      assignmentId: MessageId.make(`assignment-${id}`),
+      ...(index < 3 ? { outcome: "result-available" as const } : {}),
+    }));
+    const stalledUpdate = {
+      id: "stalled-report",
+      childThreadId: ThreadId.make("child-d"),
+      childTitle: "Search API",
+      assignmentId: MessageId.make("assignment-child-d"),
+      kind: "blocked" as const,
+      wakeReason: "assignment-blocked" as const,
+    };
+    const parent = {
+      ...thread("parent"),
+      nudging: { wait: { mode: "all" as const, assignments } },
+      queuedTurns: [
+        {
+          id: QueuedTurnId.make("wait-progress-nudge"),
+          threadId: parentId,
+          message: {
+            messageId: MessageId.make("wait-progress-message"),
+            role: "user" as const,
+            text: "Child assignment updates",
+            attachments: [],
+          },
+          origin: {
+            kind: "child-nudge" as const,
+            updates: Array.from({ length: 32 }, (_, index) => ({
+              ...stalledUpdate,
+              id: `stalled-report-${index}`,
+              summary: "界".repeat(1_200),
+            })),
+          },
+          runtimeMode: "approval-required" as const,
+          interactionMode: "default" as const,
+          createdAt: finished,
+          updatedAt: finished,
+          failedAt: null,
+          failureMessage: null,
+        },
+      ],
+    };
+    const state = { ...createEmptyReadModel(started), threads: [parent, ...children] };
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("dispatch-wait-progress"),
+      threadId: parentId,
+      queuedTurnId: QueuedTurnId.make("wait-progress-nudge"),
+      dispatchedAt: finished,
+    });
+    const message = delivered.events.find(
+      (event) => event.type === "thread.message-sent" && event.payload.role === "user",
+    );
+    expect(message?.type).toBe("thread.message-sent");
+    if (message?.type !== "thread.message-sent") throw new Error("Expected a user message");
+    expect(message.payload.text).toContain(
+      "Wait (all): 3/4 settled; still waiting on Search API (child-d)",
+    );
+    expect(Buffer.byteLength(message.payload.text, "utf8")).toBeLessThanOrEqual(24 * 1024);
+  });
+
+  it("renders assignment progress for a decisions-only wait", async () => {
+    const child = thread("child", true);
+    child.title = "Search API";
+    const parent = {
+      ...thread("parent"),
+      nudging: {
+        wait: {
+          mode: "decisions-only" as const,
+          assignments: [
+            {
+              childThreadId: ThreadId.make("child"),
+              assignmentId: MessageId.make("assignment-child"),
+            },
+          ],
+        },
+      },
+      queuedTurns: [
+        {
+          id: QueuedTurnId.make("decision-only-progress"),
+          threadId: parentId,
+          message: {
+            messageId: MessageId.make("decision-only-progress-message"),
+            role: "user" as const,
+            text: "Child assignment updates",
+            attachments: [],
+          },
+          origin: {
+            kind: "child-nudge" as const,
+            updates: [
+              {
+                id: "blocked-child-report",
+                childThreadId: ThreadId.make("child"),
+                childTitle: "Search API",
+                assignmentId: MessageId.make("assignment-child"),
+                kind: "blocked" as const,
+                wakeReason: "assignment-blocked" as const,
+                summary: "The assignment is blocked.",
+              },
+            ],
+          },
+          runtimeMode: "approval-required" as const,
+          interactionMode: "default" as const,
+          createdAt: finished,
+          updatedAt: finished,
+          failedAt: null,
+          failureMessage: null,
+        },
+      ],
+    };
+    const state = { ...createEmptyReadModel(started), threads: [parent, child] };
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("dispatch-decision-only-progress"),
+      threadId: parentId,
+      queuedTurnId: QueuedTurnId.make("decision-only-progress"),
+      dispatchedAt: finished,
+    });
+    const message = delivered.events.find(
+      (event) => event.type === "thread.message-sent" && event.payload.role === "user",
+    );
+    expect(message?.type).toBe("thread.message-sent");
+    if (message?.type !== "thread.message-sent") throw new Error("Expected a user message");
+    expect(message.payload.text).toContain(
+      "Wait (decisions-only): 0/1 settled; still waiting on Search API (child)",
+    );
   });
 
   it("wakes again once routine results settle after an immediate failure wake", async () => {

@@ -764,6 +764,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             const parent = updated.threads.find((thread) => thread.id === parentThreadId);
             assert.deepEqual(parent?.nudging?.wait, {
               mode: "any",
+              generationId: CommandId.make("set-wait-prune-parent-wait"),
               assignments: [
                 { childThreadId: remainingChildThreadId, assignmentId: remainingAssignmentId },
               ],

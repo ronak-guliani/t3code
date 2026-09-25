@@ -1,5 +1,6 @@
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  ChildWaitCondition,
   CommandId,
   EventId,
   MessageId,
@@ -751,6 +752,145 @@ describe("QueuedTurnReactor", () => {
     if (command.type === "thread.queued-turn.dispatch") {
       expect(Date.parse(command.dispatchedAt)).toBeGreaterThanOrEqual(Date.parse(collectUntil));
     }
+  });
+
+  it("reconstructs an expired child-wait deadline at startup and expires it once", async () => {
+    const deadlineAt = new Date(Date.now() - 50).toISOString();
+    const state = queuedReadModel();
+    const parent = state.threads[0]!;
+    const wait = {
+      mode: "all",
+      deadlineAt,
+      generationId: CommandId.make("deadline-wait-generation"),
+      assignments: [
+        {
+          childThreadId: ThreadId.make("child"),
+          assignmentId: MessageId.make("assignment"),
+        },
+      ],
+    } as ChildWaitCondition;
+    const persisted = {
+      ...state,
+      threads: [
+        { ...parent, queuedTurns: [], nudging: { wait } },
+        {
+          ...parent,
+          id: ThreadId.make("child"),
+          parentThreadId: threadId,
+          title: "Child",
+          queuedTurns: [],
+          nudging: {
+            delegation: {
+              assignmentId: MessageId.make("assignment"),
+              followUp: "automatic" as const,
+              completedAt: null,
+            },
+          },
+        },
+      ],
+    };
+    const commands = await runReactor(persisted, monitorSnapshot("head"), {
+      waitAfterStartMs: 80,
+    });
+
+    expect(commands).toMatchObject([
+      {
+        type: "thread.child-wait.deadline-expire",
+        threadId,
+        expectedDeadlineAt: deadlineAt,
+        expectedGenerationId: CommandId.make("deadline-wait-generation"),
+      },
+    ]);
+  });
+
+  it("does not issue a stalled wake when every child settles before the deadline", async () => {
+    const deadlineAt = new Date(Date.now() + 120).toISOString();
+    const state = queuedReadModel();
+    const parent = state.threads[0]!;
+    const waiting = {
+      mode: "all",
+      deadlineAt,
+      assignments: [
+        {
+          childThreadId: ThreadId.make("child"),
+          assignmentId: MessageId.make("assignment"),
+        },
+      ],
+    } as ChildWaitCondition;
+    const settled = {
+      ...waiting,
+      assignments: waiting.assignments.map((assignment) => ({
+        ...assignment,
+        outcome: "result-available" as const,
+      })),
+    };
+    const waitingModel = {
+      ...state,
+      threads: [
+        { ...parent, queuedTurns: [], nudging: { wait: waiting } },
+        {
+          ...parent,
+          id: ThreadId.make("child"),
+          parentThreadId: threadId,
+          title: "Child",
+          queuedTurns: [],
+          nudging: {
+            delegation: {
+              assignmentId: MessageId.make("assignment"),
+              followUp: "automatic" as const,
+              completedAt: null,
+            },
+          },
+        },
+      ],
+    };
+    const settledModel = {
+      ...state,
+      threads: [
+        { ...parent, queuedTurns: [], nudging: { wait: settled } },
+        {
+          ...parent,
+          id: ThreadId.make("child"),
+          parentThreadId: threadId,
+          title: "Child",
+          queuedTurns: [],
+          nudging: {
+            delegation: {
+              assignmentId: MessageId.make("assignment"),
+              followUp: "automatic" as const,
+              completedAt: null,
+            },
+          },
+        },
+      ],
+    };
+    const commands = await runReactor(waitingModel, monitorSnapshot("head"), {
+      waitAfterStartMs: 250,
+      resume: {
+        readModel: settledModel,
+        event: {
+          eventId: EventId.make("child-wait-settled"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: CommandId.make("settle-child-wait"),
+          causationEventId: null,
+          correlationId: CommandId.make("settle-child-wait"),
+          metadata: {},
+          sequence: 2,
+          type: "thread.meta-updated",
+          payload: {
+            threadId,
+            nudging: { wait: settled },
+            updatedAt: now,
+          },
+        },
+      },
+    });
+
+    expect(commands.map((command) => command.type)).not.toContain(
+      "thread.child-wait.deadline-expire",
+    );
   });
 
   it("waits (without failing) while a child decision is pending", async () => {

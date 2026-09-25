@@ -2238,7 +2238,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "set_child_wait",
     description:
-      "Set when this parent should continue: any selected result, all selected results, or decisions/blockers only. Pass null to restore automatic follow-up. Use exact assignment IDs from spawn/assignment results or chat show. Membership is fixed; partial spawn failures must be handled explicitly. Never interrupts an active turn or overrides Stop.",
+      "Set when this parent should continue: any selected result, all selected results, or decisions/blockers only. Optionally set deadlineAt as an ISO timestamp; any assignments still unsettled at that deadline are reported as blocked without stopping the children. Pass null to restore automatic follow-up. Use exact assignment IDs from spawn/assignment results or chat show. Membership is fixed; partial spawn failures must be handled explicitly. Never interrupts an active turn or overrides Stop.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2249,6 +2249,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
               type: "object",
               properties: {
                 mode: { type: "string", enum: ["any", "all", "decisions-only"] },
+                deadlineAt: { type: "string", format: "date-time" },
                 assignments: {
                   type: "array",
                   maxItems: 32,

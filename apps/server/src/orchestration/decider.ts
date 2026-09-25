@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { createHash } from "node:crypto";
+import { ChildWaitDeadlineAt } from "@t3tools/contracts";
 import type {
   ChildNudgeUpdate,
   ChildThreadLifecycle,
@@ -11,7 +13,7 @@ import type {
   ThreadNudging,
   TurnId,
 } from "@t3tools/contracts";
-import { Effect, Option } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import { resolveThreadWorkspaceCwd } from "../checkpointing/Utils.ts";
@@ -40,6 +42,7 @@ import {
   childWakeReason,
   isAutomaticChildNudgeBlocked,
   queueChildNudge,
+  queueChildNudgeBatch,
 } from "./childNudging.ts";
 import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
 import {
@@ -68,6 +71,7 @@ import {
 } from "@t3tools/client-runtime/validation-lifecycle";
 
 const FORK_TITLE_PREFIX = "Forked: ";
+const isChildWaitDeadlineAt = Schema.is(ChildWaitDeadlineAt);
 /**
  * Blocked-on-you work must never stay hidden inside a settled row, so these
  * activity kinds reset the settlement lifecycle. Hoisted because
@@ -462,6 +466,29 @@ function nudgingMetaEvent(
     type: "thread.meta-updated",
     payload: { threadId: thread.id, nudging, updatedAt: sourceEvent.occurredAt },
   };
+}
+
+function childWaitProgressStatus(wait, threads) {
+  if (!wait) return undefined;
+  const total = wait.assignments.length;
+  const settled = wait.assignments.filter((assignment) => assignment.outcome !== undefined).length;
+  const outstanding = wait.assignments.find((assignment) => assignment.outcome === undefined);
+  if (wait.mode === "decisions-only") {
+    if (total === 0) return "Wait (decisions-only): decisions and blockers only.";
+    if (!outstanding) {
+      return `Wait (decisions-only): ${settled}/${total} settled; assignment results do not satisfy this wait; only decisions or blockers wake it.`;
+    }
+    const child = threads.find((candidate) => candidate.id === outstanding.childThreadId);
+    return `Wait (decisions-only): ${settled}/${total} settled; still waiting on ${child?.title ?? "Child"} (${outstanding.childThreadId}) for a decision or blocker.`;
+  }
+  if (wait.satisfiedAt || childWaitIsSatisfied(wait)) {
+    return `Wait (${wait.mode}): ${settled}/${total} settled; condition met.`;
+  }
+  if (!outstanding) {
+    return `Wait (${wait.mode}): ${settled}/${total} settled; at least one assignment needs attention.`;
+  }
+  const child = threads.find((candidate) => candidate.id === outstanding.childThreadId);
+  return `Wait (${wait.mode}): ${settled}/${total} settled; still waiting on ${child?.title ?? "Child"} (${outstanding.childThreadId})`;
 }
 
 function appendDelegationSettlement(input: {
@@ -2298,6 +2325,124 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
 
+    case "thread.child-wait.deadline-expire": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const wait = thread.nudging?.wait;
+      if (
+        !wait ||
+        wait.deadlineAt !== command.expectedDeadlineAt ||
+        wait.generationId !== command.expectedGenerationId ||
+        wait.satisfiedAt ||
+        childWaitIsSatisfied(wait)
+      ) {
+        return [];
+      }
+      if (Date.parse(command.expiredAt) < Date.parse(wait.deadlineAt)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A child wait cannot expire before its deadline.",
+        });
+      }
+      if (thread.archivedAt !== null || thread.deletedAt !== null) return [];
+
+      const unsettled = wait.assignments.filter((assignment) => assignment.outcome === undefined);
+      if (unsettled.length === 0) return [];
+      const expiredWait = {
+        ...wait,
+        assignments: wait.assignments.map((assignment) =>
+          assignment.outcome === undefined
+            ? { ...assignment, outcome: "blocked" as const }
+            : assignment,
+        ),
+      };
+      const metaEvent: PlannedOrchestrationEvent = {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: thread.id,
+          occurredAt: command.expiredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: thread.id,
+          nudging: { ...thread.nudging, wait: expiredWait },
+          updatedAt: command.expiredAt,
+        },
+      };
+      const notifications: Array<
+        Extract<PlannedOrchestrationEvent, { type: "thread.child-lifecycle-notified" }>
+      > = [];
+      const reports: ChildNudgeUpdate[] = [];
+      for (const assignment of unsettled) {
+        const child = readModel.threads.find((entry) => entry.id === assignment.childThreadId);
+        const childTitle = child?.title ?? String(assignment.childThreadId);
+        const assignmentStartedAt =
+          child?.nudging?.delegation?.assignmentId === assignment.assignmentId
+            ? child.nudging.delegation.assignedAt
+            : undefined;
+        const startedAt = assignmentStartedAt ?? wait.deadlineAt;
+        const elapsedSeconds = Math.max(
+          0,
+          Math.floor((Date.parse(command.expiredAt) - Date.parse(startedAt)) / 1_000),
+        );
+        const reportId = `wait-deadline:${createHash("sha256")
+          .update(
+            JSON.stringify([
+              wait.generationId ?? null,
+              wait.deadlineAt,
+              assignment.childThreadId,
+              assignment.assignmentId,
+            ]),
+          )
+          .digest("hex")}`;
+        const report: ChildNudgeUpdate = {
+          id: reportId,
+          assignmentId: assignment.assignmentId,
+          childThreadId: assignment.childThreadId,
+          childTitle,
+          kind: "blocked",
+          wakeReason: "assignment-blocked",
+          summary: `Wait deadline expired: ${childTitle} (${assignment.childThreadId}), assignment ${assignment.assignmentId} remained unsettled for ${elapsedSeconds} seconds ${assignmentStartedAt ? "since assignment start" : "since the deadline (assignment start unavailable)"}.`,
+        };
+        const notification: PlannedOrchestrationEvent = {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.id,
+            occurredAt: command.expiredAt,
+            commandId: command.commandId,
+          }),
+          causationEventId: metaEvent.eventId,
+          type: "thread.child-lifecycle-notified",
+          payload: {
+            parentThreadId: thread.id,
+            childThreadId: assignment.childThreadId,
+            childTitle,
+            lifecycle: "blocked",
+            dedupeKey: childLifecycleDedupeKey(assignment.childThreadId, "blocked", reportId),
+            createdAt: command.expiredAt,
+            report,
+          },
+        };
+        reports.push(report);
+        notifications.push(notification);
+      }
+
+      const parentAfterExpiration = {
+        ...thread,
+        nudging: { ...thread.nudging, wait: expiredWait },
+      };
+      const queueEvent = queueChildNudgeBatch(
+        parentAfterExpiration,
+        reports,
+        notifications[notifications.length - 1]!,
+      );
+      return [metaEvent, ...notifications, queueEvent];
+    }
+
     case "thread.child.wait.prune": {
       const parent = yield* requireThread({
         readModel,
@@ -2357,15 +2502,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const occurredAt = nowIso();
       let childWait = command.childWait;
       if (childWait) {
+        if (childWait.deadlineAt !== undefined && !isChildWaitDeadlineAt(childWait.deadlineAt)) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A child wait deadline must be a valid ISO date-time.",
+          });
+        }
         if (
           childWait.satisfiedAt !== undefined ||
           (childWait.mode !== "decisions-only" && childWait.assignments.length === 0) ||
+          (childWait.deadlineAt !== undefined && childWait.mode === "decisions-only") ||
           new Set(childWait.assignments.map((entry) => entry.childThreadId)).size !==
             childWait.assignments.length
         ) {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
-            detail: "A wait requires distinct child assignments and cannot set its own completion.",
+            detail:
+              "A wait requires distinct child assignments, cannot set its own completion, and deadlines require an assignment-based wait.",
           });
         }
         const assignments = [];
@@ -2392,7 +2545,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               : {}),
           });
         }
-        childWait = { mode: childWait.mode, assignments };
+        childWait = {
+          generationId: command.commandId,
+          mode: childWait.mode,
+          assignments,
+          ...(childWait.deadlineAt !== undefined ? { deadlineAt: childWait.deadlineAt } : {}),
+        };
       }
       const metaUpdatedEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
@@ -3524,7 +3682,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
         message: {
           messageId: queuedTurn.message.messageId,
-          text: followUp ? childNudgePrompt(followUp.updates) : queuedTurn.message.text,
+          text: followUp
+            ? childNudgePrompt(
+                followUp.updates,
+                childWaitProgressStatus(nudging?.wait, readModel.threads),
+              )
+            : queuedTurn.message.text,
           attachments: queuedTurn.message.attachments,
         },
         ...(queuedTurn.origin !== undefined
