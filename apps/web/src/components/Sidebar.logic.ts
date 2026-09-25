@@ -15,6 +15,10 @@ import { DEFAULT_NEW_THREAD_WORKSPACE } from "../lib/newThreadDefaults";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 import {
+  hierarchyThreadKey,
+  includeThreadAncestors,
+} from "@t3tools/client-runtime/state/thread-hierarchy";
+import {
   isThreadActivelyWorking,
   hasUnseenThreadCompletion,
   resolveThreadSemanticStatus,
@@ -78,39 +82,28 @@ export function matchesSidebarThreadFilter(
     );
   }
 
-  const pullRequests = [
-    ...(thread.pullRequests?.map((link) => link.pullRequest) ?? []),
-    ...(thread.pullRequest ? [thread.pullRequest] : []),
-  ];
-  if (pullRequests.length === 0) return false;
-  if (filter === "with_pr") return true;
-  return pullRequests.some((pullRequest) => pullRequest.state === "open");
+  if (filter === "with_pr") {
+    return (thread.pullRequests?.length ?? 0) > 0 || thread.pullRequest != null;
+  }
+  return (
+    thread.pullRequests?.some((link) => link.pullRequest.state === "open") === true ||
+    thread.pullRequest?.state === "open"
+  );
 }
 
 export function filterSidebarThreads<T extends SidebarThreadSummary>(
   threads: readonly T[],
   filter: SidebarThreadFilter,
-): T[] {
-  if (filter === "all") return [...threads];
+): readonly T[] {
+  if (filter === "all") return threads;
 
-  const byKey = new Map(
-    threads.map((thread) => [`${thread.environmentId}:${thread.id}`, thread] as const),
-  );
-  const includedKeys = new Set<string>();
+  const matchingKeys = new Set<string>();
   for (const thread of threads) {
-    if (!matchesSidebarThreadFilter(thread, filter)) continue;
-    let candidate: T | undefined = thread;
-    while (candidate) {
-      const key = `${candidate.environmentId}:${candidate.id}`;
-      if (includedKeys.has(key)) break;
-      includedKeys.add(key);
-      candidate =
-        candidate.parentThreadId === null
-          ? undefined
-          : byKey.get(`${candidate.environmentId}:${candidate.parentThreadId}`);
+    if (matchesSidebarThreadFilter(thread, filter)) {
+      matchingKeys.add(hierarchyThreadKey(thread));
     }
   }
-  return threads.filter((thread) => includedKeys.has(`${thread.environmentId}:${thread.id}`));
+  return includeThreadAncestors(threads, matchingKeys);
 }
 
 export function resolveSidebarDraftPreview(input: {

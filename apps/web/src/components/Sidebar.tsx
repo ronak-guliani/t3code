@@ -1718,56 +1718,52 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     return counts;
   }, [memberProjectByScopedKey, project.memberProjects, projectThreads]);
 
-  const {
-    projectStatus,
-    visibleProjectThreads,
-    visibleProjectThreadRows,
-    threadStatusByKey,
-    orderedProjectThreadKeys,
-  } = useMemo(() => {
-    const lastVisitedAtByThreadKey = new Map(
-      projectThreads.map((thread, index) => [
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-        threadLastVisitedAts[index] ?? null,
-      ]),
-    );
-    const resolveProjectThreadStatus = (thread: SidebarThreadSummary) => {
-      const lastVisitedAt = lastVisitedAtByThreadKey.get(
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+  const visibleProjectThreads = useMemo(
+    () => selectVisibleSidebarThreads(filterSidebarThreads(projectThreads, threadFilter)),
+    [projectThreads, threadFilter],
+  );
+  const { projectStatus, visibleProjectThreadRows, threadStatusByKey, orderedProjectThreadKeys } =
+    useMemo(() => {
+      const lastVisitedAtByThreadKey = new Map(
+        projectThreads.map((thread, index) => [
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+          threadLastVisitedAts[index] ?? null,
+        ]),
       );
-      return resolveThreadStatusPill({
-        thread,
-        lastVisitedAt,
+      const resolveProjectThreadStatus = (thread: SidebarThreadSummary) => {
+        const lastVisitedAt = lastVisitedAtByThreadKey.get(
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        );
+        return resolveThreadStatusPill({
+          thread,
+          lastVisitedAt,
+        });
+      };
+      const threadRows = buildSidebarThreadRows({
+        threads: visibleProjectThreads,
+        pinnedThreadKeys,
+        activeThreadKey: activeRouteThreadKey ?? undefined,
+        expandedOverrideByThreadKey: threadExpandedOverrides,
+        sortOrder: threadSortOrder,
+        resolveThreadStatus: resolveProjectThreadStatus,
       });
-    };
-    const visibleProjectThreads = selectVisibleSidebarThreads(
-      filterSidebarThreads(projectThreads, threadFilter),
-    );
-    const threadRows = buildSidebarThreadRows({
-      threads: visibleProjectThreads,
+      return {
+        orderedProjectThreadKeys: threadRows.orderedThreadKeys,
+        projectStatus: threadRows.projectStatus,
+        visibleProjectThreads,
+        visibleProjectThreadRows: threadRows.rowViews,
+        threadStatusByKey: threadRows.statusByThreadKey,
+      };
+    }, [
+      activeRouteThreadKey,
+      threadExpandedOverrides,
       pinnedThreadKeys,
-      activeThreadKey: activeRouteThreadKey ?? undefined,
-      expandedOverrideByThreadKey: threadExpandedOverrides,
-      sortOrder: threadSortOrder,
-      resolveThreadStatus: resolveProjectThreadStatus,
-    });
-    return {
-      orderedProjectThreadKeys: threadRows.orderedThreadKeys,
-      projectStatus: threadRows.projectStatus,
+      projectThreads,
+      threadExpandedOverrides,
+      threadLastVisitedAts,
+      threadSortOrder,
       visibleProjectThreads,
-      visibleProjectThreadRows: threadRows.rowViews,
-      threadStatusByKey: threadRows.statusByThreadKey,
-    };
-  }, [
-    activeRouteThreadKey,
-    threadExpandedOverrides,
-    pinnedThreadKeys,
-    projectThreads,
-    threadExpandedOverrides,
-    threadLastVisitedAts,
-    threadSortOrder,
-    threadFilter,
-  ]);
+    ]);
 
   const pinnedCollapsedThread = useMemo(() => {
     const activeThreadKey = activeRouteThreadKey ?? undefined;
@@ -3753,11 +3749,13 @@ export default function Sidebar() {
     return physicalToLogicalKey.get(physicalKey) ?? physicalKey;
   }, [routeThreadKey, sidebarThreadByKey, physicalToLogicalKey, projectPhysicalKeyByScopedRef]);
 
-  // Group threads by logical project key so all threads from grouped projects
-  // are displayed together.
-  const threadsByProjectKey = useMemo(() => {
+  const filteredSidebarThreads = useMemo(
+    () => filterSidebarThreads(sidebarThreads, sidebarThreadFilter),
+    [sidebarThreadFilter, sidebarThreads],
+  );
+  const filteredThreadsByProjectKey = useMemo(() => {
     const next = new Map<string, SidebarThreadSummary[]>();
-    for (const thread of sidebarThreads) {
+    for (const thread of filteredSidebarThreads) {
       const physicalKey =
         projectPhysicalKeyByScopedRef.get(
           scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
@@ -3771,7 +3769,7 @@ export default function Sidebar() {
       }
     }
     return next;
-  }, [sidebarThreads, physicalToLogicalKey, projectPhysicalKeyByScopedRef]);
+  }, [filteredSidebarThreads, physicalToLogicalKey, projectPhysicalKeyByScopedRef]);
   const getCurrentSidebarShortcutContext = useCallback(
     () => ({
       terminalFocus: isTerminalFocused(),
@@ -3898,8 +3896,8 @@ export default function Sidebar() {
   }, []);
 
   const visibleThreads = useMemo(
-    () => selectVisibleSidebarThreads(sidebarThreads),
-    [sidebarThreads],
+    () => selectVisibleSidebarThreads(filteredSidebarThreads),
+    [filteredSidebarThreads],
   );
   const sortedProjects = useMemo(() => {
     const sortableProjects = sidebarProjects.map((project) => ({
@@ -3967,10 +3965,7 @@ export default function Sidebar() {
       });
       const activeThreadKey = routeThreadKey ?? undefined;
       const projectThreads = selectVisibleSidebarThreads(
-        filterSidebarThreads(
-          threadsByProjectKey.get(project.projectKey) ?? [],
-          sidebarThreadFilter,
-        ),
+        filteredThreadsByProjectKey.get(project.projectKey) ?? [],
       );
       const pinnedCollapsedThreadKey =
         !projectExpanded && activeThreadKey
@@ -4010,9 +4005,8 @@ export default function Sidebar() {
     sidebarThreadLastVisitedAts,
     sidebarThreads,
     sidebarThreadSortOrder,
-    sidebarThreadFilter,
     visibleProjects,
-    threadsByProjectKey,
+    filteredThreadsByProjectKey,
   ]);
   const threadJumpCommandByKey = useMemo(() => {
     const mapping = new Map<string, NonNullable<ReturnType<typeof threadJumpCommandForIndex>>>();

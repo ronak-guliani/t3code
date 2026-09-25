@@ -24,6 +24,7 @@ import {
   resolveSidebarThreadRowStatus,
   resolveSidebarThreadClickKind,
   matchesSidebarThreadFilter,
+  filterSidebarThreads,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
   shouldClearThreadSelectionOnMouseDown,
@@ -44,6 +45,7 @@ import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   type Project,
+  type SidebarThreadSummary,
   type Thread,
 } from "../types";
 
@@ -59,6 +61,8 @@ describe("matchesSidebarThreadFilter", () => {
     backgroundAgentRuns: [],
     pullRequest: null,
     pullRequests: [],
+    latestUserMessageAt: null,
+    hasActionableProposedPlan: false,
   } as const;
 
   it("matches all threads by default", () => {
@@ -168,6 +172,41 @@ describe("matchesSidebarThreadFilter", () => {
         "open_pr",
       ),
     ).toBe(false);
+  });
+
+  it("returns the original array for the all filter and retains matching ancestors", () => {
+    const parent = {
+      ...makeThread({
+        id: ThreadId.make("parent"),
+        parentThreadId: null,
+      }),
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasPendingQueuedTurn: false,
+      backgroundAgentRuns: [],
+      pullRequest: null,
+      pullRequests: [],
+      latestUserMessageAt: null,
+      hasActionableProposedPlan: false,
+    } as SidebarThreadSummary;
+    const child = {
+      ...makeThread({
+        id: ThreadId.make("child"),
+        parentThreadId: parent.id,
+      }),
+      hasPendingApprovals: false,
+      hasPendingUserInput: true,
+      hasPendingQueuedTurn: false,
+      backgroundAgentRuns: [],
+      pullRequest: null,
+      pullRequests: [],
+      latestUserMessageAt: null,
+      hasActionableProposedPlan: false,
+    } as SidebarThreadSummary;
+    const threads = [parent, child] as const;
+
+    expect(filterSidebarThreads(threads, "all")).toBe(threads);
+    expect(filterSidebarThreads(threads, "active")).toEqual([parent, child]);
   });
 });
 
