@@ -11,7 +11,7 @@ import {
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
-import { Cause, Effect, Layer, Option, Result, Schedule, Schema, Stream } from "effect";
+import { Cause, Effect, Layer, Option, Schedule, Schema, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { deriveTurnScopedCheckpointFiles } from "../../checkpointing/TurnScopedFiles.ts";
@@ -931,75 +931,11 @@ const make = Effect.gen(function* () {
     let providerRolledBack = false;
     let revertCommitted = false;
     let guardRestored = false;
-    const revertResult = yield* Effect.result(
-      Effect.gen(function* () {
-        const restored = yield* checkpointStore.restoreCheckpoint({
-          cwd: sessionRuntime.value.cwd,
-          checkpointRef: targetCheckpointRef,
-          fallbackToHead: event.payload.turnCount === 0 && !initialBaselineExists,
-          ...(thread.workspaceBinding !== undefined
-            ? { workspaceBinding: thread.workspaceBinding }
-            : {}),
-        });
-        if (!restored) {
-          return yield* new CheckpointInvariantError({
-            operation: "CheckpointReactor.handleRevertRequested",
-            detail: `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
-          });
-        }
-
-        if (rolledBackTurns > 0) {
-          yield* providerService.rollbackConversation({
-            threadId: sessionRuntime.value.threadId,
-            numTurns: rolledBackTurns,
-          });
-          providerRolledBack = true;
-        }
-
-        const revertCommand = {
-          type: "thread.revert.complete" as const,
-          commandId: serverCommandId("checkpoint-revert-complete"),
-          threadId: event.payload.threadId,
-          turnCount: event.payload.turnCount,
-          createdAt: now,
-        };
-        yield* Effect.suspend(() => orchestrationEngine.dispatch(revertCommand)).pipe(
-          Effect.retry({
-            schedule: Schedule.spaced("100 millis"),
-            while: (error) => error._tag === "PersistenceSqlError",
-          }),
-        );
-        revertCommitted = true;
-
-        yield* workspaceEntries.invalidate(sessionRuntime.value.cwd).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("checkpoint revert could not invalidate workspace entries", {
-              threadId: event.payload.threadId,
-              turnCount: event.payload.turnCount,
-              cause: Cause.pretty(cause),
-            }),
-          ),
-        );
-        yield* checkpointStore
-          .deleteCheckpointRefs({
-            cwd: sessionRuntime.value.cwd,
-            checkpointRefs: [...staleCompletionRefs, ...staleBaselineRefs],
-          })
-          .pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("checkpoint revert left stale refs for later cleanup", {
-                threadId: event.payload.threadId,
-                turnCount: event.payload.turnCount,
-                detail: error.message,
-              }),
-            ),
-          );
-      }),
-    );
-    if (Result.isFailure(revertResult) && !providerRolledBack && !revertCommitted) {
+    yield* Effect.gen(function* () {
       const restored = yield* checkpointStore.restoreCheckpoint({
         cwd: sessionRuntime.value.cwd,
-        checkpointRef: revertGuardRef,
+        checkpointRef: targetCheckpointRef,
+        fallbackToHead: event.payload.turnCount === 0 && !initialBaselineExists,
         ...(thread.workspaceBinding !== undefined
           ? { workspaceBinding: thread.workspaceBinding }
           : {}),
@@ -1007,20 +943,109 @@ const make = Effect.gen(function* () {
       if (!restored) {
         return yield* new CheckpointInvariantError({
           operation: "CheckpointReactor.handleRevertRequested",
-          detail: "Failed to restore the pre-revert workspace guard.",
+          detail: `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
         });
       }
-      guardRestored = true;
-    }
-    if (revertCommitted || guardRestored) {
-      yield* checkpointStore.deleteCheckpointRefs({
-        cwd: sessionRuntime.value.cwd,
-        checkpointRefs: [revertGuardRef],
-      });
-    }
-    if (Result.isFailure(revertResult)) {
-      return yield* revertResult.failure;
-    }
+
+      if (rolledBackTurns > 0) {
+        yield* providerService.rollbackConversation({
+          threadId: sessionRuntime.value.threadId,
+          numTurns: rolledBackTurns,
+        });
+        providerRolledBack = true;
+      }
+
+      const revertCommand = {
+        type: "thread.revert.complete" as const,
+        commandId: serverCommandId("checkpoint-revert-complete"),
+        threadId: event.payload.threadId,
+        turnCount: event.payload.turnCount,
+        createdAt: now,
+      };
+      yield* Effect.suspend(() => orchestrationEngine.dispatch(revertCommand)).pipe(
+        Effect.retry({
+          schedule: Schedule.spaced("100 millis"),
+          while: (error) => error._tag === "PersistenceSqlError",
+        }),
+      );
+      revertCommitted = true;
+
+      yield* workspaceEntries.invalidate(sessionRuntime.value.cwd).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("checkpoint revert could not invalidate workspace entries", {
+            threadId: event.payload.threadId,
+            turnCount: event.payload.turnCount,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+      yield* checkpointStore
+        .deleteCheckpointRefs({
+          cwd: sessionRuntime.value.cwd,
+          checkpointRefs: [...staleCompletionRefs, ...staleBaselineRefs],
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("checkpoint revert left stale refs for later cleanup", {
+              threadId: event.payload.threadId,
+              turnCount: event.payload.turnCount,
+              detail: error.message,
+            }),
+          ),
+        );
+    }).pipe(
+      Effect.onError(() =>
+        providerRolledBack || revertCommitted
+          ? Effect.void
+          : checkpointStore
+              .restoreCheckpoint({
+                cwd: sessionRuntime.value.cwd,
+                checkpointRef: revertGuardRef,
+                ...(thread.workspaceBinding !== undefined
+                  ? { workspaceBinding: thread.workspaceBinding }
+                  : {}),
+              })
+              .pipe(
+                Effect.flatMap((restored) =>
+                  restored
+                    ? Effect.sync(() => {
+                        guardRestored = true;
+                      })
+                    : Effect.logError("Failed to restore the pre-revert workspace guard.", {
+                        threadId: event.payload.threadId,
+                        turnCount: event.payload.turnCount,
+                      }),
+                ),
+                Effect.catchCause((cause) =>
+                  Effect.logError("Checkpoint revert guard restoration failed.", {
+                    threadId: event.payload.threadId,
+                    turnCount: event.payload.turnCount,
+                    cause: Cause.pretty(cause),
+                  }),
+                ),
+              ),
+      ),
+      Effect.ensuring(
+        Effect.suspend(() =>
+          revertCommitted || guardRestored
+            ? checkpointStore
+                .deleteCheckpointRefs({
+                  cwd: sessionRuntime.value.cwd,
+                  checkpointRefs: [revertGuardRef],
+                })
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("checkpoint revert left its guard ref for later cleanup", {
+                      threadId: event.payload.threadId,
+                      turnCount: event.payload.turnCount,
+                      cause: Cause.pretty(cause),
+                    }),
+                  ),
+                )
+            : Effect.void,
+        ),
+      ),
+    );
   });
 
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (event: OrchestrationEvent) {

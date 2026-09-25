@@ -101,21 +101,24 @@ function createProviderServiceHarness(
   sessionCwd = cwd,
   providerName: ProviderSession["provider"] = ProviderDriverKind.make("codex"),
   failRollback = false,
+  defectRollback = false,
 ) {
   const now = new Date().toISOString();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
   let runtimeSubscriptions = 0;
   const rollbackConversation = vi.fn(
     (_input: { readonly threadId: ThreadId; readonly numTurns: number }) =>
-      failRollback
-        ? Effect.fail(
-            new ProviderAdapterRequestError({
-              provider: String(providerName),
-              method: "rollbackConversation",
-              detail: "Injected rollback failure.",
-            }),
-          )
-        : Effect.void,
+      defectRollback
+        ? Effect.die(new Error("Injected rollback defect."))
+        : failRollback
+          ? Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: String(providerName),
+                method: "rollbackConversation",
+                detail: "Injected rollback failure.",
+              }),
+            )
+          : Effect.void,
   );
 
   const unsupported = <A>() =>
@@ -328,11 +331,13 @@ describe("CheckpointReactor", () => {
     readonly providerSessionCwd?: string;
     readonly providerName?: ProviderDriverKind;
     readonly failProviderRollback?: boolean;
+    readonly defectProviderRollback?: boolean;
     readonly gitStatusRefreshCalls?: Array<string>;
     readonly failCheckpointCapture?: boolean;
     readonly beforeCheckpointCapture?: (ref: CheckpointRef) => Effect.Effect<void>;
     readonly failDiffWithGenerationMismatch?: boolean;
     readonly failWorkspaceInvalidate?: boolean;
+    readonly failRevertGuardRestore?: boolean;
     readonly awaitRuntimeEventProcessed?: (eventId: EventId) => Effect.Effect<void>;
     readonly useRuntimeIngestion?: boolean;
     readonly deferCheckpointStart?: boolean;
@@ -347,6 +352,7 @@ describe("CheckpointReactor", () => {
       options?.providerSessionCwd ?? cwd,
       options?.providerName ?? ProviderDriverKind.make("codex"),
       options?.failProviderRollback ?? false,
+      options?.defectProviderRollback ?? false,
     );
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -381,7 +387,8 @@ describe("CheckpointReactor", () => {
     const checkpointStoreLayer =
       options?.failCheckpointCapture ||
       options?.beforeCheckpointCapture ||
-      options?.failDiffWithGenerationMismatch
+      options?.failDiffWithGenerationMismatch ||
+      options?.failRevertGuardRestore
         ? Layer.effect(
             CheckpointStore,
             Effect.gen(function* () {
@@ -414,6 +421,19 @@ describe("CheckpointReactor", () => {
                         }),
                       )
                     : checkpointStore.diffCheckpointFiles(input),
+                restoreCheckpoint: (
+                  input: Parameters<typeof checkpointStore.restoreCheckpoint>[0],
+                ) =>
+                  options?.failRevertGuardRestore &&
+                  input.checkpointRef ===
+                    checkpointRevertGuardRefForThread(ThreadId.make("thread-1"))
+                    ? Effect.fail(
+                        new CheckpointInvariantError({
+                          operation: "CheckpointStore.restoreCheckpoint",
+                          detail: "Injected guard restore failure.",
+                        }),
+                      )
+                    : checkpointStore.restoreCheckpoint(input),
               };
             }).pipe(Effect.provide(CheckpointStoreLive)),
           )
@@ -2152,6 +2172,100 @@ describe("CheckpointReactor", () => {
     expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2)),
     ).toBe(true);
+  });
+
+  it("restores the original workspace and deletes the guard after a rollback defect", async () => {
+    const harness = await createHarness({ defectProviderRollback: true });
+    const createdAt = new Date().toISOString();
+
+    for (const turnCount of [1, 2]) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-defect-revert-diff-${turnCount}`),
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId(`turn-defect-revert-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), turnCount),
+          status: "ready",
+          files: [],
+          agentTouchedPaths: [],
+          turnFiles: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        }),
+      );
+    }
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "uncommitted before defect\n", "utf8");
+    runGit(harness.cwd, ["add", "README.md"]);
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "unstaged before defect\n", "utf8");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-defect-revert"),
+        threadId: ThreadId.make("thread-1"),
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+    await harness.drain();
+
+    expect(runGit(harness.cwd, ["show", ":README.md"])).toBe("uncommitted before defect\n");
+    expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe(
+      "unstaged before defect\n",
+    );
+    expect(
+      gitRefExists(harness.cwd, checkpointRevertGuardRefForThread(ThreadId.make("thread-1"))),
+    ).toBe(false);
+  });
+
+  it("records the original rollback error when guard restoration also fails", async () => {
+    const harness = await createHarness({
+      failProviderRollback: true,
+      failRevertGuardRestore: true,
+    });
+    const createdAt = new Date().toISOString();
+
+    for (const turnCount of [1, 2]) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-original-error-diff-${turnCount}`),
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId(`turn-original-error-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), turnCount),
+          status: "ready",
+          files: [],
+          agentTouchedPaths: [],
+          turnFiles: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        }),
+      );
+    }
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-original-error-revert"),
+        threadId: ThreadId.make("thread-1"),
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+    );
+    const failure = thread.activities.findLast(
+      (activity) => activity.kind === "checkpoint.revert.failed",
+    );
+
+    expect(failure?.payload).toMatchObject({
+      detail: expect.stringContaining("Injected rollback failure."),
+    });
   });
 
   it("refuses to restore a checkpoint when ownership changes mid-revert", async () => {
