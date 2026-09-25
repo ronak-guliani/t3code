@@ -319,6 +319,79 @@ describe("child nudging", () => {
     },
   );
 
+  it.each(["all", "any"] as const)(
+    "releases an old %s result without consuming the replacement wait",
+    async (mode) => {
+      const oldChild = thread("old-child", true);
+      const newChild = thread("new-child", true);
+      let state = (
+        await apply(model(oldChild, newChild), {
+          type: "thread.meta.update",
+          commandId: CommandId.make(`old-${mode}-wait`),
+          threadId: parentId,
+          childWait: {
+            mode,
+            assignments: [
+              {
+                childThreadId: oldChild.id,
+                assignmentId: oldChild.nudging!.delegation!.assignmentId,
+              },
+            ],
+          },
+        })
+      ).readModel;
+      state = (await apply(state, finish("old-child"))).readModel;
+      const oldNudgeId = state.threads[0]!.queuedTurns![0]!.id;
+      state = withParent(state, {
+        nudging: {
+          wait: {
+            mode,
+            assignments: [
+              {
+                childThreadId: newChild.id,
+                assignmentId: newChild.nudging!.delegation!.assignmentId,
+              },
+            ],
+          },
+        },
+      });
+
+      const oldDelivery = await apply(state, {
+        type: "thread.queued-turn.dispatch",
+        commandId: CommandId.make(`dispatch-old-${mode}-result`),
+        threadId: parentId,
+        queuedTurnId: oldNudgeId,
+        dispatchedAt: "2026-09-09T00:01:02.000Z",
+      });
+      expect(oldDelivery.readModel.threads[0]!.nudging?.wait).toMatchObject({
+        mode,
+        assignments: [
+          {
+            childThreadId: newChild.id,
+            assignmentId: newChild.nudging!.delegation!.assignmentId,
+          },
+        ],
+      });
+      expect(oldDelivery.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBeUndefined();
+
+      const newCompletion = await apply(oldDelivery.readModel, finish("new-child"));
+      expect(
+        newCompletion.events.filter((event) => event.type === "thread.queued-turn-created"),
+      ).toHaveLength(1);
+      expect(newCompletion.readModel.threads[0]!.nudging?.wait).toMatchObject({
+        mode,
+        assignments: [
+          {
+            childThreadId: newChild.id,
+            assignmentId: newChild.nudging!.delegation!.assignmentId,
+            outcome: "result-available",
+          },
+        ],
+      });
+      expect(newCompletion.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBeUndefined();
+    },
+  );
+
   it("escalates failures during an all wait without counting them as successful results", async () => {
     const failedChild = thread("a", true);
     failedChild.activities = [{ ...failedChild.activities[0]!, payload: { state: "failed" } }];
@@ -2527,7 +2600,7 @@ describe("child nudging", () => {
     ).toHaveLength(0);
   });
 
-  it("reports a legacy stale wait as unavailable instead of fabricating a settled result", async () => {
+  it("delivers a legacy report outside the current wait without consuming that wait", async () => {
     const child = thread("child", true);
     child.nudging = {
       delegation: {
@@ -2557,15 +2630,15 @@ describe("child nudging", () => {
       { assignmentId: "assignment-child-old" },
     ]);
     expect(state.threads[0]!.nudging?.wait?.satisfiedAt).toBeUndefined();
-    await expect(
-      apply(state, {
-        type: "thread.queued-turn.dispatch",
-        commandId: CommandId.make("legacy-stale-dispatch"),
-        threadId: parentId,
-        queuedTurnId: queue[0]!.id,
-        dispatchedAt: finished,
-      }),
-    ).rejects.toThrow("required assignment is unavailable");
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("legacy-stale-dispatch"),
+      threadId: parentId,
+      queuedTurnId: queue[0]!.id,
+      dispatchedAt: "2026-09-09T00:01:02.000Z",
+    });
+    expect(delivered.readModel.threads[0]!.messages).toHaveLength(1);
+    expect(delivered.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBeUndefined();
   });
 
   it("keeps exact legacy keys for pre-fence reports", async () => {

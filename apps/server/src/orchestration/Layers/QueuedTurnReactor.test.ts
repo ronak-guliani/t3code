@@ -981,6 +981,48 @@ describe("QueuedTurnReactor", () => {
     );
   });
 
+  it("bounds an open-decision stall summary at the command boundary", async () => {
+    const stalled = delegatedReadModel();
+    const child = stalled.threads[1]!;
+    const commands = await runReactor(
+      {
+        ...stalled,
+        threads: stalled.threads.map((thread) =>
+          thread.id !== child.id || !thread.nudging?.delegation
+            ? thread
+            : {
+                ...thread,
+                nudging: {
+                  ...thread.nudging,
+                  delegation: {
+                    ...thread.nudging.delegation,
+                    decision: {
+                      id: "decision-child-settlement",
+                      childThreadId: thread.id,
+                      childTitle: thread.title,
+                      assignmentId: thread.nudging.delegation.assignmentId,
+                      kind: "decision-needed",
+                      summary: "x".repeat(4_000),
+                    },
+                  },
+                },
+              },
+        ),
+      },
+      monitorSnapshot("head"),
+      { delegationIdleStallThresholdMs: 1_000 },
+    );
+    const stall = delegationStallCommands(commands)[0];
+
+    expect(stall).toMatchObject({
+      type: "thread.delegation.stall",
+      summary: expect.stringContaining("open decision"),
+    });
+    expect(
+      "summary" in stall! ? stall.summary.length : Number.POSITIVE_INFINITY,
+    ).toBeLessThanOrEqual(1_000);
+  });
+
   it.each([
     {
       name: "pending approval",

@@ -166,10 +166,11 @@ export function delegationStallEpisode(
     return {
       id: stallId(child, [interaction.kind, interaction.requestId, interaction.createdAt]),
       stalledSince: latestTimestamp(idleSince, interaction.createdAt)!,
-      summary:
+      summary: boundedStallSummary(
         interaction.kind === "approval"
           ? `Delegation is idle with pending approval ${interaction.requestId}.`
           : `Delegation is idle with pending input ${interaction.requestId}.`,
+      ),
     };
   }
 
@@ -177,7 +178,9 @@ export function delegationStallEpisode(
     return {
       id: stallId(child, ["decision", delegation.decision.id]),
       stalledSince: idleSince,
-      summary: `Delegation is idle with open decision ${delegation.decision.id}: ${delegation.decision.decision?.question ?? delegation.decision.summary}`,
+      summary: boundedStallSummary(
+        `Delegation is idle with open decision ${delegation.decision.id}: ${delegation.decision.decision?.question ?? delegation.decision.summary}`,
+      ),
     };
   }
 

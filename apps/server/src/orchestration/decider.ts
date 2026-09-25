@@ -46,7 +46,11 @@ import {
   queueChildNudge,
   queueChildNudgeBatch,
 } from "./childNudging.ts";
-import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
+import {
+  childWaitIsSatisfied,
+  childWaitIsSatisfiedByUpdates,
+  evaluateChildFollowUp,
+} from "@t3tools/shared/childFollowUp";
 import {
   sameThreadPullRequest,
   sameThreadPullRequestAssociation,
@@ -1516,7 +1520,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           currentWait !== undefined &&
           currentWait !== null &&
           currentWait.mode === parentWait.mode &&
-          currentWait.satisfiedAt === undefined;
+          currentWait.satisfiedAt === undefined &&
+          !childWaitIsSatisfied(currentWait);
         if (shouldMerge) {
           const mergedAssignments = [...currentWait.assignments];
           for (const assignment of assignments) {
@@ -3808,7 +3813,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
       const waitSatisfied =
-        isNudge && nudging?.wait && !nudging.wait.satisfiedAt && childWaitIsSatisfied(nudging.wait);
+        isNudge &&
+        followUp &&
+        nudging?.wait &&
+        !nudging.wait.satisfiedAt &&
+        childWaitIsSatisfiedByUpdates(nudging.wait, followUp.updates);
       let nextNudging: ThreadNudging | null = null;
       if (execution && nudging) {
         nextNudging = { ...nudging, delegation: execution.delegation };

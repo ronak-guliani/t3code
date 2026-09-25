@@ -253,70 +253,66 @@ describe("decider thread.create hierarchy", () => {
     });
   });
 
-  it("keeps settled entries when a condition-met wait has not been consumed yet", async () => {
-    const childThreadId = ThreadId.make("child-thread");
-    const assignmentId = MessageId.make("child-assignment");
-    const completedChildThreadId = ThreadId.make("completed-child");
-    const completedAssignmentId = MessageId.make("completed-assignment");
-    const readModel = createReadModel();
-    const parent = readModel.threads[0]!;
+  it.each(["all", "any"] as const)(
+    "replaces a condition-met but unconsumed %s wait",
+    async (mode) => {
+      const childThreadId = ThreadId.make("child-thread");
+      const assignmentId = MessageId.make("child-assignment");
+      const completedChildThreadId = ThreadId.make("completed-child");
+      const completedAssignmentId = MessageId.make("completed-assignment");
+      const readModel = createReadModel();
+      const parent = readModel.threads[0]!;
 
-    const result = await Effect.runPromise(
-      decideOrchestrationCommand({
-        command: createCommand({
-          threadId: childThreadId,
-          delegation: {
-            assignmentId,
-            followUp: "automatic",
-            completedAt: null,
-          },
-          parentWait: {
-            mode: "any",
-            assignments: [{ childThreadId, assignmentId }],
-          },
-        }),
-        readModel: {
-          ...readModel,
-          threads: [
-            {
-              ...parent,
-              nudging: {
-                wait: {
-                  mode: "any",
-                  assignments: [
-                    {
-                      childThreadId: completedChildThreadId,
-                      assignmentId: completedAssignmentId,
-                      outcome: "result-available",
-                    },
-                  ],
+      const result = await Effect.runPromise(
+        decideOrchestrationCommand({
+          command: createCommand({
+            threadId: childThreadId,
+            delegation: {
+              assignmentId,
+              followUp: "automatic",
+              completedAt: null,
+            },
+            parentWait: {
+              mode,
+              assignments: [{ childThreadId, assignmentId }],
+            },
+          }),
+          readModel: {
+            ...readModel,
+            threads: [
+              {
+                ...parent,
+                nudging: {
+                  wait: {
+                    mode,
+                    assignments: [
+                      {
+                        childThreadId: completedChildThreadId,
+                        assignmentId: completedAssignmentId,
+                        outcome: "result-available",
+                      },
+                    ],
+                  },
                 },
               },
-            },
-          ],
-        },
-      }),
-    );
-    const events = Array.isArray(result) ? result : [result];
-
-    expect(events.find((event) => event.type === "thread.meta-updated")).toMatchObject({
-      payload: {
-        nudging: {
-          wait: {
-            mode: "any",
-            assignments: [
-              {
-                childThreadId: completedChildThreadId,
-                assignmentId: completedAssignmentId,
-                outcome: "result-available",
-              },
-              { childThreadId, assignmentId },
             ],
           },
+        }),
+      );
+      const events = Array.isArray(result) ? result : [result];
+
+      expect(events.find((event) => event.type === "thread.meta-updated")).toMatchObject({
+        payload: {
+          nudging: {
+            wait: {
+              mode,
+              assignments: [{ childThreadId, assignmentId }],
+            },
+          },
         },
-      },
-    });
-  });
+      });
+    },
+  );
 
   it("rejects a same-mode wait merge above the assignment cap", async () => {
     const readModel = createReadModel();
