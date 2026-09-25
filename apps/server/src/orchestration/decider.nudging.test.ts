@@ -1437,6 +1437,76 @@ describe("child nudging", () => {
     });
   });
 
+  it("keeps a steered delegation open through the interrupted idle projection gap", async () => {
+    const child = thread("child", true);
+    const runningTurnId = child.latestTurn!.turnId;
+    child.latestTurn = {
+      ...child.latestTurn!,
+      state: "running",
+      completedAt: null,
+    };
+    child.session = {
+      threadId: child.id,
+      status: "running",
+      providerName: "copilot",
+      providerInstanceId: ProviderInstanceId.make("copilot"),
+      runtimeMode: "approval-required",
+      activeTurnId: runningTurnId,
+      lastError: null,
+      updatedAt: started,
+    };
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-steer",
+        dispatchSequence: 1,
+        dispatchTurnId: runningTurnId,
+      },
+    };
+    let state = model(child);
+
+    state = (
+      await apply(state, {
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("interrupt-for-steer"),
+        threadId: child.id,
+        turnId: runningTurnId,
+        createdAt: finished,
+      })
+    ).readModel;
+    state = (
+      await apply(state, {
+        type: "thread.session.set",
+        commandId: CommandId.make("idle-before-steer"),
+        threadId: child.id,
+        session: {
+          threadId: child.id,
+          status: "ready",
+          providerName: "copilot",
+          providerInstanceId: ProviderInstanceId.make("copilot"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: finished,
+        },
+        createdAt: finished,
+      })
+    ).readModel;
+
+    expect(state.threads[1]!.latestTurn).toMatchObject({
+      turnId: runningTurnId,
+      state: "interrupted",
+    });
+    expect(state.threads[1]!.nudging?.paused).toBe(true);
+    const settlement = await apply(state, {
+      type: "thread.delegation.settle",
+      commandId: CommandId.make("settle-steer-gap"),
+      threadId: child.id,
+    });
+    expect(settlement.events).toEqual([]);
+    expect(settlement.readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+  });
+
   it("mints a fresh dispatch when the bound turn is superseded, preserving replays", async () => {
     const child = thread("child", true);
     let state = (
@@ -2034,7 +2104,7 @@ describe("child nudging", () => {
     const assignments = ids.map((id, index) => ({
       childThreadId: ThreadId.make(id),
       assignmentId: MessageId.make(`assignment-${id}`),
-      ...(index < 3 ? { outcome: "result-available" as const } : {}),
+      ...(index === 0 ? { outcome: "result-available" as const } : {}),
     }));
     const stalledUpdate = {
       id: "stalled-report",
@@ -2088,7 +2158,7 @@ describe("child nudging", () => {
     expect(message?.type).toBe("thread.message-sent");
     if (message?.type !== "thread.message-sent") throw new Error("Expected a user message");
     expect(message.payload.text).toContain(
-      "Wait (all): 3/4 settled; still waiting on Search API (child-d)",
+      "Wait (all): 1/4 settled; still waiting on child-b (child-b), child-c (child-c), Search API (child-d)",
     );
     expect(Buffer.byteLength(message.payload.text, "utf8")).toBeLessThanOrEqual(24 * 1024);
   });

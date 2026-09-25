@@ -267,6 +267,10 @@ function unavailableAssignmentCommands(commands: ReadonlyArray<OrchestrationComm
   return commands.filter((command) => command.type === "thread.child.assignment.unavailable");
 }
 
+function delegationStallCommands(commands: ReadonlyArray<OrchestrationCommand>) {
+  return commands.filter((command) => (command.type as string) === "thread.delegation.stall");
+}
+
 function pullRequestLayer(
   snapshot: PullRequestMonitorSnapshot,
   snapshotError?: PullRequestOperationError,
@@ -310,6 +314,7 @@ async function runReactor(
     readonly providerInstances?: ServerSettings["providerInstances"];
     readonly optIn?: boolean;
     readonly enableAfterStart?: boolean;
+    readonly delegationIdleStallThresholdMs?: number;
   },
 ): Promise<ReadonlyArray<OrchestrationCommand>> {
   let readModel = readModelInput;
@@ -447,6 +452,8 @@ async function runReactor(
             enabled: true,
           },
         },
+        delegationIdleStallThresholdMs:
+          options?.delegationIdleStallThresholdMs ?? 10 * 365 * 24 * 60 * 60 * 1_000,
       }),
     ),
   );
@@ -511,6 +518,33 @@ describe("QueuedTurnReactor", () => {
       childThreadId: child.id,
       assignmentId,
     });
+  });
+
+  it("does not mark a not-yet-created child unavailable during startup reconciliation", async () => {
+    const state = queuedReadModel();
+    const parent = state.threads[0]!;
+    const missingChildId = ThreadId.make("child-create-in-flight");
+    const assignmentId = MessageId.make("assignment-create-in-flight");
+    const commands = await runReactor(
+      {
+        ...state,
+        threads: [
+          {
+            ...parent,
+            queuedTurns: [],
+            nudging: {
+              wait: {
+                mode: "all",
+                assignments: [{ childThreadId: missingChildId, assignmentId }],
+              },
+            },
+          },
+        ],
+      },
+      monitorSnapshot("head"),
+    );
+
+    expect(unavailableAssignmentCommands(commands)).toEqual([]);
   });
 
   it("invalidates a parent wait when its child is detached from the hierarchy", async () => {
@@ -633,6 +667,179 @@ describe("QueuedTurnReactor", () => {
     expect(settlementCommands(commands)).toHaveLength(1);
   });
 
+  it("reports an idle failed queued turn as one durable stall episode without settling", async () => {
+    const stalled = delegatedReadModel({ blockedItems: true });
+    const first = await runReactor(stalled, monitorSnapshot("head"), {
+      delegationIdleStallThresholdMs: 1_000,
+    });
+    const second = await runReactor(stalled, monitorSnapshot("head"), {
+      delegationIdleStallThresholdMs: 1_000,
+    });
+
+    expect(delegationStallCommands(first)).toHaveLength(1);
+    expect(delegationStallCommands(first)[0]).toMatchObject({
+      threadId: ThreadId.make("child-settlement"),
+      summary: expect.stringContaining("failed queued turn"),
+    });
+    expect(delegationStallCommands(second)[0]?.commandId).toBe(
+      delegationStallCommands(first)[0]?.commandId,
+    );
+    expect(settlementCommands(first)).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: "pending approval",
+      update: (_state: OrchestrationReadModel): OrchestrationReadModel =>
+        delegatedReadModel({ pendingApproval: true }),
+      summary: "pending approval",
+    },
+    {
+      name: "pending input",
+      update: (state: OrchestrationReadModel): OrchestrationReadModel => ({
+        ...state,
+        threads: state.threads.map((thread) =>
+          thread.id !== ThreadId.make("child-settlement")
+            ? thread
+            : {
+                ...thread,
+                activities: [
+                  {
+                    id: EventId.make("child-pending-input"),
+                    kind: "user-input.requested",
+                    tone: "approval",
+                    summary: "Input required",
+                    payload: { requestId: "input-child-settlement" },
+                    turnId: thread.latestTurn?.turnId ?? null,
+                    createdAt: now,
+                  },
+                ],
+              },
+        ),
+      }),
+      summary: "pending input",
+    },
+    {
+      name: "open decision",
+      update: (state: OrchestrationReadModel): OrchestrationReadModel => ({
+        ...state,
+        threads: state.threads.map((thread) =>
+          thread.id !== ThreadId.make("child-settlement") || !thread.nudging?.delegation
+            ? thread
+            : {
+                ...thread,
+                nudging: {
+                  ...thread.nudging,
+                  delegation: {
+                    ...thread.nudging.delegation,
+                    decision: {
+                      id: "decision-child-settlement",
+                      childThreadId: thread.id,
+                      childTitle: thread.title,
+                      assignmentId: thread.nudging.delegation.assignmentId,
+                      kind: "decision-needed",
+                      summary: "Choose a path",
+                      decision: { question: "Which path?" },
+                    },
+                  },
+                },
+              },
+        ),
+      }),
+      summary: "open decision",
+    },
+    {
+      name: "unfinished grandchildren",
+      update: (state: OrchestrationReadModel): OrchestrationReadModel => {
+        const child = state.threads[1]!;
+        return {
+          ...state,
+          threads: [
+            ...state.threads,
+            {
+              ...child,
+              id: ThreadId.make("grandchild-settlement"),
+              parentThreadId: child.id,
+              title: "Grandchild",
+              latestTurn: {
+                ...child.latestTurn!,
+                state: "running",
+                completedAt: null,
+              },
+              session: {
+                threadId: ThreadId.make("grandchild-settlement"),
+                status: "running",
+                providerName: "copilot",
+                runtimeMode: "approval-required",
+                activeTurnId: child.latestTurn!.turnId,
+                lastError: null,
+                updatedAt: now,
+              },
+              nudging: {
+                delegation: {
+                  assignmentId: MessageId.make("assignment-grandchild-settlement"),
+                  followUp: "automatic",
+                  completedAt: null,
+                  assignedAt: now,
+                },
+              },
+            },
+          ],
+        };
+      },
+      summary: "unfinished grandchildren",
+    },
+  ])("reports an idle $name stall", async ({ update, summary }) => {
+    const commands = await runReactor(update(delegatedReadModel()), monitorSnapshot("head"), {
+      delegationIdleStallThresholdMs: 1_000,
+    });
+
+    expect(delegationStallCommands(commands)).toHaveLength(1);
+    expect(delegationStallCommands(commands)[0]).toMatchObject({
+      threadId: ThreadId.make("child-settlement"),
+      summary: expect.stringContaining(summary),
+    });
+    expect(settlementCommands(commands)).toEqual([]);
+  });
+
+  it("does not settle the interrupted gap while a child is paused for a mid-turn steer", async () => {
+    const state = delegatedReadModel();
+    const child = state.threads[1]!;
+    const commands = await runReactor(
+      {
+        ...state,
+        threads: state.threads.map((thread) =>
+          thread.id === child.id
+            ? {
+                ...thread,
+                latestTurn: {
+                  ...thread.latestTurn!,
+                  state: "interrupted" as const,
+                  completedAt: now,
+                },
+                session: {
+                  threadId: child.id,
+                  status: "ready" as const,
+                  providerName: "copilot",
+                  runtimeMode: "approval-required" as const,
+                  activeTurnId: null,
+                  lastError: null,
+                  updatedAt: now,
+                },
+                nudging: {
+                  ...thread.nudging,
+                  paused: true,
+                },
+              }
+            : thread,
+        ),
+      },
+      monitorSnapshot("head"),
+    );
+
+    expect(settlementCommands(commands)).toEqual([]);
+  });
+
   it("retains a deadline wake that arrives while an explicit turn owns the drain", async () => {
     const collectUntil = new Date(Date.now() + 150).toISOString();
     const state = queuedReadModel({
@@ -745,7 +952,7 @@ describe("QueuedTurnReactor", () => {
         ],
       },
     });
-    const commands = await runReactor(state, monitorSnapshot("head"), { waitAfterStartMs: 300 });
+    const commands = await runReactor(state, monitorSnapshot("head"), { waitAfterStartMs: 500 });
     expect(commands).toHaveLength(1);
     const command = commands[0]!;
     expect(command.type).toBe("thread.queued-turn.dispatch");

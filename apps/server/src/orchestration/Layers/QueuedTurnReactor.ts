@@ -26,7 +26,7 @@ import {
 import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import { isAutomaticChildNudgeBlocked } from "../childNudging.ts";
 import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
-import { settleDelegation } from "../delegationSettlement.ts";
+import { delegationStallEpisode, settleDelegation } from "../delegationSettlement.ts";
 
 const MONITOR_REVALIDATION_RETRY_INTERVAL = Duration.seconds(20);
 const MAX_MONITOR_REVALIDATION_ATTEMPTS = 3;
@@ -483,11 +483,32 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
       const child = readModel.threads.find((thread) => thread.id === threadId);
-      if (!child || !settleDelegation(readModel, child)) return;
+      if (!child) return;
+      if (settleDelegation(readModel, child)) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.delegation.settle",
+          commandId: serverCommandId("delegation.settle"),
+          threadId,
+        });
+        return;
+      }
+      const stall = delegationStallEpisode(readModel, child);
+      if (!stall) return;
+      const settings = yield* serverSettings.getSettings;
+      const dueAt = new Date(
+        Date.parse(stall.stalledSince) + settings.delegationIdleStallThresholdMs,
+      ).toISOString();
+      if (Date.parse(dueAt) > Date.now()) {
+        yield* scheduleDelegationStallWake(threadId, dueAt, stall.id);
+        return;
+      }
       yield* orchestrationEngine.dispatch({
-        type: "thread.delegation.settle",
-        commandId: serverCommandId("delegation.settle"),
+        type: "thread.delegation.stall",
+        commandId: CommandId.make(`server:${stall.id}`),
         threadId,
+        stallId: stall.id,
+        summary: stall.summary,
+        createdAt: new Date().toISOString(),
       });
     }).pipe(
       Effect.catchCause((cause) =>
@@ -497,6 +518,22 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         }),
       ),
     );
+
+  const scheduleDelegationStallWake = (
+    threadId: ThreadId,
+    dueAt: string,
+    stallId: string,
+  ): Effect.Effect<void> => {
+    const key = `delegation-stall:${threadId}:${stallId}:${dueAt}`;
+    if (scheduledChildWakes.has(key)) return Effect.void;
+    scheduledChildWakes.add(key);
+    return Effect.sleep(Duration.millis(Math.max(0, Date.parse(dueAt) - Date.now()))).pipe(
+      Effect.andThen(Effect.suspend(() => settleThreadIfReady(threadId))),
+      Effect.ensuring(Effect.sync(() => scheduledChildWakes.delete(key))),
+      Effect.forkIn(wakeScope),
+      Effect.asVoid,
+    );
+  };
 
   const reconcileUnavailableChildAssignments = (childThreadId: ThreadId) =>
     Effect.gen(function* () {
@@ -514,11 +551,11 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
             }
             const child = readModel.threads.find((entry) => entry.id === childThreadId);
             return (
-              !child ||
-              child.archivedAt !== null ||
-              child.deletedAt !== null ||
-              child.parentThreadId !== parent.id ||
-              child.nudging?.delegation?.assignmentId !== assignment.assignmentId
+              child !== undefined &&
+              (child.archivedAt !== null ||
+                child.deletedAt !== null ||
+                child.parentThreadId !== parent.id ||
+                child.nudging?.delegation?.assignmentId !== assignment.assignmentId)
             );
           })
           .map((assignment) => ({
@@ -550,7 +587,11 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
   const reconcileOpenDelegations = Effect.gen(function* () {
     const readModel = yield* orchestrationEngine.getReadModel();
     yield* Effect.forEach(
-      readModel.threads.filter((thread) => settleDelegation(readModel, thread) !== null),
+      readModel.threads.filter(
+        (thread) =>
+          thread.nudging?.delegation?.followUp === "automatic" &&
+          thread.nudging.delegation.completedAt === null,
+      ),
       (thread) => settleThreadIfReady(thread.id),
       { concurrency: 1, discard: true },
     );
@@ -612,7 +653,12 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     });
     yield* reconcileOpenDelegations;
     yield* Effect.forkScoped(
-      Stream.runForEach(serverSettings.streamChanges, () => drainQueuedThreads),
+      Stream.runForEach(serverSettings.streamChanges, () =>
+        Effect.all([drainQueuedThreads, reconcileOpenDelegations], {
+          concurrency: "unbounded",
+          discard: true,
+        }),
+      ),
     );
     // Keep this sweep: PR-monitor revalidation retries also depend on it.
     yield* Effect.forkScoped(
