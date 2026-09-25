@@ -322,25 +322,17 @@ it.effect("keeps the edited version of a comment seen on overlapping pages", () 
   }),
 );
 
-it.effect("treats a failed base comparison as unknown, never as up to date", () =>
+it.effect("does not spend a REST request on informational base distance", () =>
   Effect.gen(function* () {
     const requested: Array<string> = [];
     const snapshot = yield* snapshotWith({
       requested,
       pages: new Map<number, CommentPage>([[1, { comments: [], last: 1 }]]),
-      compare: () => Effect.succeed({ stdout: "not json" }),
     });
 
     assert.isNull(snapshot.behindBaseBy);
     assert.isFalse(snapshot.completeness.baseComparisonKnown);
-
-    const observed = yield* snapshotWith({
-      requested: [],
-      pages: new Map<number, CommentPage>([[1, { comments: [], last: 1 }]]),
-    });
-    assert.strictEqual(observed.behindBaseBy, 0);
-    assert.isTrue(observed.completeness.baseComparisonKnown);
-    assert.strictEqual(observed.sourceRevision, snapshot.sourceRevision);
+    assert.isFalse(requested.some((target) => target.includes("/compare/")));
   }),
 );
 

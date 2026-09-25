@@ -4,6 +4,7 @@ import {
   HOST_COOLDOWN_BASE_MS,
   HOST_COOLDOWN_MAX_MS,
   POLL_ACTIVE_MS,
+  POLL_BATCH_LIMIT,
   POLL_BASE_MS,
   POLL_ERROR_BASE_MS,
   POLL_READY_MS,
@@ -12,6 +13,7 @@ import {
 } from "./pollSchedule.ts";
 
 it("uses sustainable polling intervals for open pull requests", () => {
+  assert.strictEqual(POLL_BATCH_LIMIT, 1);
   assert.strictEqual(
     pollDelayMs(
       {
@@ -33,6 +35,47 @@ it("uses sustainable polling intervals for open pull requests", () => {
         },
         failureCount: 0,
         hadActionableEvents: false,
+      },
+      0.5,
+    ),
+    POLL_ACTIVE_MS,
+  );
+  assert.strictEqual(
+    pollDelayMs(
+      {
+        readiness: {
+          ready: false,
+          label: "blocked",
+          blockers: [{ kind: "mergeability", detail: "unknown" }],
+        },
+        failureCount: 0,
+        hadActionableEvents: false,
+      },
+      0.5,
+    ),
+    POLL_ACTIVE_MS,
+  );
+  assert.strictEqual(
+    pollDelayMs(
+      {
+        readiness: {
+          ready: false,
+          label: "blocked",
+          blockers: [{ kind: "required-check-coverage-unknown" }],
+        },
+        failureCount: 0,
+        hadActionableEvents: false,
+      },
+      0.5,
+    ),
+    POLL_BASE_MS,
+  );
+  assert.strictEqual(
+    pollDelayMs(
+      {
+        readiness: null,
+        failureCount: 0,
+        hadActionableEvents: true,
       },
       0.5,
     ),

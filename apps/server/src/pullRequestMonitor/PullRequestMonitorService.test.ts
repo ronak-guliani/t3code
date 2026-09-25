@@ -588,6 +588,45 @@ layer("PullRequestMonitorService", (it) => {
     }),
   );
 
+  it.effect("does not automatically re-enable a terminal monitor", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const owner = ThreadId.make("terminal-monitor-owner");
+      seedThread(owner, "/tmp/terminal-monitor", {
+        number: 1045,
+        url: "https://github.com/acme/app/pull/1045",
+      });
+      const originalSnapshot = currentSnapshot;
+      currentSnapshot = sampleSnapshot({
+        number: 1045,
+        state: "closed",
+      });
+
+      const terminal = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1045,
+        ownerThreadId: owner,
+      });
+      assert.strictEqual(terminal.monitor.status, "terminal");
+      assert.isFalse(terminal.monitor.enabled);
+
+      const before = monitorSnapshotCalls;
+      const ensured = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1045,
+        ownerThreadId: owner,
+        requireAssociatedOwner: true,
+      });
+
+      assert.strictEqual(ensured.monitor.status, "terminal");
+      assert.isFalse(ensured.monitor.enabled);
+      assert.strictEqual(monitorSnapshotCalls, before);
+      currentSnapshot = originalSnapshot;
+    }),
+  );
+
   it.effect("preserves an existing owner when started with an inherited fallback", () =>
     Effect.gen(function* () {
       const service = yield* PullRequestMonitorService;

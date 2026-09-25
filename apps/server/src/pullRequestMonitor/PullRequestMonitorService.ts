@@ -356,6 +356,27 @@ export const layer = Layer.effect(
 
     const start = (input: PullRequestMonitorStartInput) =>
       Effect.gen(function* () {
+        if (input.ownerThreadId !== undefined && input.requireAssociatedOwner === true) {
+          const candidates = associatedOwnerCandidates((yield* engine.getReadModel()).threads, {
+            projectId: input.projectId,
+            repository: input.repository,
+            number: input.number,
+          });
+          if (!candidates.some((candidate) => candidate.threadId === input.ownerThreadId)) {
+            return yield* monitorError(
+              "The selected owner chat is not actively associated with this pull request.",
+            );
+          }
+
+          const automaticExisting = yield* store.getByProjectRef(input);
+          if (
+            automaticExisting !== null &&
+            (!automaticExisting.enabled || automaticExisting.status === "terminal")
+          ) {
+            return { monitor: automaticExisting };
+          }
+        }
+
         // Fresh detail resolves host/provider identity; never trust client-only identity.
         const detail = yield* pullRequests
           .detail(input)
@@ -382,18 +403,6 @@ export const layer = Layer.effect(
 
         const existing = yield* store.getByCanonicalKey(canonical);
         const now = yield* isoNow();
-        if (input.ownerThreadId !== undefined && input.requireAssociatedOwner === true) {
-          const candidates = associatedOwnerCandidates((yield* engine.getReadModel()).threads, {
-            projectId: input.projectId,
-            repository: detail.repository,
-            number: detail.number,
-          });
-          if (!candidates.some((candidate) => candidate.threadId === input.ownerThreadId)) {
-            return yield* monitorError(
-              "The selected owner chat is not actively associated with this pull request.",
-            );
-          }
-        }
 
         if (existing) {
           if (existing.projectId !== input.projectId) {

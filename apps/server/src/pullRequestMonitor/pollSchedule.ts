@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Random from "effect/Random";
 
 /**
- * Adaptive polling cadence. The monitor snapshot costs at least four REST reads plus one
+ * Adaptive polling cadence. The monitor snapshot costs at least three REST reads plus one
  * GraphQL query, so sub-minute polling does not scale with the number of open pull requests.
  */
 export const POLL_BASE_MS = 5 * 60_000;
@@ -14,8 +14,8 @@ export const POLL_ERROR_MAX_MS = 30 * 60_000;
 export const HOST_COOLDOWN_BASE_MS = 2 * 60_000;
 export const HOST_COOLDOWN_MAX_MS = 60 * 60_000;
 export const LEASE_TTL_MS = 90_000;
-/** Two snapshots per 15-second sweep caps steady-state background work at eight per minute. */
-export const POLL_BATCH_LIMIT = 2;
+/** One snapshot per 15-second sweep caps steady-state background work at four per minute. */
+export const POLL_BATCH_LIMIT = 1;
 /** A snapshot already performs several remote reads; keep monitor snapshots serialized. */
 export const POLL_CONCURRENCY = 1;
 export const MAX_RETAINED_SNAPSHOTS = 20;
@@ -33,6 +33,16 @@ export interface PollDelayInput {
   readonly hadActionableEvents: boolean;
 }
 
+export function hasFastPollBlocker(readiness: PullRequestMonitorReadiness | null): boolean {
+  return (
+    readiness?.blockers.some(
+      (blocker) =>
+        blocker.kind === "check-pending" ||
+        (blocker.kind === "mergeability" && blocker.detail === "unknown"),
+    ) ?? false
+  );
+}
+
 /** Pure cadence so a poll commit can compute its next schedule inside a transaction. */
 export function pollDelayMs(input: PollDelayInput, unitSample: number): number {
   if (input.failureCount > 0) {
@@ -45,7 +55,7 @@ export function pollDelayMs(input: PollDelayInput, unitSample: number): number {
   if (input.readiness?.ready) {
     return jitterMs(POLL_READY_MS, unitSample);
   }
-  if (input.hadActionableEvents || (input.readiness?.blockers.length ?? 0) > 0) {
+  if (input.hadActionableEvents || hasFastPollBlocker(input.readiness)) {
     return jitterMs(POLL_ACTIVE_MS, unitSample);
   }
   return jitterMs(POLL_BASE_MS, unitSample);
