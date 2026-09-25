@@ -41,11 +41,7 @@ import {
   isAutomaticChildNudgeBlocked,
   queueChildNudge,
 } from "./childNudging.ts";
-import {
-  childWaitIsSatisfied,
-  evaluateChildFollowUp,
-  staleChildWaitAssignments,
-} from "@t3tools/shared/childFollowUp";
+import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
 import {
   sameThreadPullRequest,
   sameThreadPullRequestAssociation,
@@ -408,127 +404,6 @@ function appendChildLifecycleNotification(
     report.kind !== "progress" &&
     input.childThread.nudging?.delegation?.followUp === "automatic";
   const normalNudge = shouldQueueNudge ? queueChildNudge(parentThread, report, notification) : null;
-  // Stale wait: the parent waits on an older assignment of this child while
-  // the child just terminally completed under a newer assignment (reassigned
-  // or continued). The normal wait update cannot match, so without a
-  // diagnostic the held nudge blocks forever on "Waiting for N children".
-  // Queue a blocked-kind diagnostic against the stale assignment id so the
-  // parent wakes fail-fast to revise the wait instead of stranding.
-  const terminalKind =
-    report &&
-    (report.kind === "result-available" || report.kind === "failed" || report.kind === "blocked");
-  const staleEntry =
-    terminalKind && shouldQueueNudge && parentThread.nudging?.wait
-      ? staleChildWaitAssignments(
-          parentThread.nudging.wait,
-          new Map([[input.childThread.id, input.childThread]]),
-          parentThreadId,
-        ).find((entry) => entry.childThreadId === input.childThread.id)
-      : undefined;
-  if (!staleEntry) {
-    return [
-      ...input.sourceEvents,
-      notification,
-      ...(terminalFailure
-        ? [
-            nudgingMetaEvent(input.childThread, notification, {
-              ...input.childThread.nudging,
-              delegation: { ...delegation, completedAt: input.createdAt, outcome: report.kind },
-            }),
-          ]
-        : []),
-      ...(report?.kind === "decision-needed" && delegation
-        ? [
-            nudgingMetaEvent(input.childThread, notification, {
-              ...input.childThread.nudging,
-              delegation: { ...delegation, decision: report },
-            }),
-          ]
-        : []),
-      ...(report &&
-      (report.kind === "result-available" ||
-        report.kind === "failed" ||
-        report.kind === "blocked") &&
-      parentThread.nudging?.wait &&
-      !parentThread.nudging.wait.satisfiedAt
-        ? [
-            nudgingMetaEvent(parentThread, notification, {
-              ...parentThread.nudging,
-              wait: {
-                ...parentThread.nudging.wait,
-                assignments: parentThread.nudging.wait.assignments.map((assignment) =>
-                  assignment.childThreadId === report.childThreadId &&
-                  assignment.assignmentId === report.assignmentId
-                    ? { ...assignment, outcome: report.kind }
-                    : assignment,
-                ),
-              },
-            }),
-          ]
-        : []),
-      ...(normalNudge ? [normalNudge] : []),
-    ];
-  }
-  const diagnosticReport = {
-    id: `assignment-stale:${input.childThread.id}:${staleEntry.assignmentId}`,
-    assignmentId: staleEntry.assignmentId,
-    childThreadId: input.childThread.id,
-    childTitle: input.childThread.title,
-    kind: "blocked" as const,
-    summary: `A waited assignment for this child is stale (wait expects assignment ${staleEntry.assignmentId}, active assignment is ${report.assignmentId}). The child already finished; revise the wait condition to the current assignment or clear it. Inspect the child result before continuing.`,
-    wakeReason: "assignment-blocked" as const,
-  };
-  const diagnosticNotification = {
-    ...eventBase,
-    eventId: crypto.randomUUID() as typeof notification.eventId,
-    causationEventId: notification.eventId,
-    type: "thread.child-lifecycle-notified" as const,
-    payload: {
-      parentThreadId,
-      childThreadId: input.childThread.id,
-      childTitle: input.childThread.title,
-      lifecycle: input.lifecycle,
-      dedupeKey: childLifecycleDedupeKey(
-        input.childThread.id,
-        input.lifecycle,
-        diagnosticReport.id,
-      ),
-      createdAt: input.createdAt,
-      report: diagnosticReport,
-    },
-  };
-  const parentWaitAfterNormal = parentThread.nudging?.wait
-    ? {
-        ...parentThread.nudging.wait,
-        assignments: parentThread.nudging.wait.assignments.map((assignment) =>
-          assignment.childThreadId === report.childThreadId &&
-          assignment.assignmentId === report.assignmentId
-            ? { ...assignment, outcome: report.kind }
-            : assignment,
-        ),
-      }
-    : undefined;
-  const parentAfterNormal: OrchestrationThread =
-    normalNudge && normalNudge.type === "thread.queued-turn-created"
-      ? {
-          ...parentThread,
-          queuedTurns: [...(parentThread.queuedTurns ?? []), normalNudge.payload.queuedTurn],
-        }
-      : normalNudge && normalNudge.type === "thread.queued-turn-updated"
-        ? {
-            ...parentThread,
-            queuedTurns: (parentThread.queuedTurns ?? []).map((turn) =>
-              turn.id === normalNudge.payload.queuedTurnId
-                ? {
-                    ...turn,
-                    message: { ...turn.message, text: normalNudge.payload.text },
-                    origin: normalNudge.payload.origin,
-                    updatedAt: normalNudge.payload.updatedAt,
-                  }
-                : turn,
-            ),
-          }
-        : parentThread;
   return [
     ...input.sourceEvents,
     notification,
@@ -568,24 +443,6 @@ function appendChildLifecycleNotification(
         ]
       : []),
     ...(normalNudge ? [normalNudge] : []),
-    diagnosticNotification,
-    nudgingMetaEvent(parentThread, diagnosticNotification, {
-      ...parentThread.nudging,
-      ...(parentWaitAfterNormal
-        ? {
-            wait: {
-              ...parentWaitAfterNormal,
-              assignments: parentWaitAfterNormal.assignments.map((assignment) =>
-                assignment.childThreadId === diagnosticReport.childThreadId &&
-                assignment.assignmentId === diagnosticReport.assignmentId
-                  ? { ...assignment, outcome: diagnosticReport.kind }
-                  : assignment,
-              ),
-            },
-          }
-        : {}),
-    }),
-    queueChildNudge(parentAfterNormal, diagnosticReport, diagnosticNotification),
   ];
 }
 
@@ -1447,7 +1304,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           });
         }
       }
-      return {
+      const createdEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1478,6 +1335,108 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      if (command.parentWait === undefined) return createdEvent;
+      const parentThread = readModel.threads.find(
+        (thread) => thread.id === command.parentThreadId && thread.deletedAt === null,
+      );
+      if (!parentThread || !delegation || delegation.followUp !== "automatic") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A creation-time wait requires an automatic child assignment and its parent.",
+        });
+      }
+
+      let parentWait = command.parentWait;
+      if (parentWait) {
+        const assignmentIds = new Set<string>();
+        if (
+          (parentWait.mode !== "any" && parentWait.mode !== "all") ||
+          parentWait.assignments.length === 0 ||
+          parentWait.assignments.length > 32 ||
+          parentWait.satisfiedAt !== undefined
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A creation-time wait requires selected assignments and cannot set completion.",
+          });
+        }
+        let includesCreatedAssignment = false;
+        const assignments = [];
+        for (const requested of parentWait.assignments) {
+          if (assignmentIds.has(requested.childThreadId)) {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "A creation-time wait cannot contain duplicate child assignments.",
+            });
+          }
+          assignmentIds.add(requested.childThreadId);
+          if (requested.outcome !== undefined) {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "A creation-time wait cannot supply assignment outcomes.",
+            });
+          }
+          if (requested.childThreadId === command.threadId) {
+            if (requested.assignmentId !== delegation.assignmentId) {
+              return yield* new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "A creation-time wait must reference the created child's assignment.",
+              });
+            }
+            includesCreatedAssignment = true;
+            assignments.push({
+              childThreadId: command.threadId,
+              assignmentId: requested.assignmentId,
+            });
+            continue;
+          }
+          const existingChild = readModel.threads.find(
+            (thread) => thread.id === requested.childThreadId,
+          );
+          if (
+            existingChild &&
+            (existingChild.parentThreadId !== parentThread.id ||
+              existingChild.deletedAt !== null ||
+              existingChild.archivedAt !== null ||
+              existingChild.nudging?.delegation?.assignmentId !== requested.assignmentId)
+          ) {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail:
+                "A creation-time wait must reference this parent's current child assignments.",
+            });
+          }
+          const previousAssignment = parentThread.nudging?.wait?.assignments.find(
+            (entry) =>
+              entry.childThreadId === requested.childThreadId &&
+              entry.assignmentId === requested.assignmentId,
+          );
+          const outcome =
+            previousAssignment?.outcome ??
+            (existingChild?.nudging?.delegation?.assignmentId === requested.assignmentId
+              ? existingChild.nudging.delegation.outcome
+              : undefined);
+          assignments.push({
+            childThreadId: requested.childThreadId,
+            assignmentId: requested.assignmentId,
+            ...(outcome !== undefined ? { outcome } : {}),
+          });
+        }
+        if (!includesCreatedAssignment) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A creation-time wait must include the created child's assignment.",
+          });
+        }
+        parentWait = { mode: parentWait.mode, assignments };
+      }
+      return [
+        createdEvent,
+        nudgingMetaEvent(parentThread, createdEvent, {
+          ...parentThread.nudging,
+          wait: parentWait,
+        }),
+      ];
     }
 
     case "thread.fork": {
@@ -2338,6 +2297,47 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           clearedAt: command.createdAt,
         },
       };
+
+    case "thread.child.wait.prune": {
+      const parent = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const wait = parent.nudging?.wait;
+      if (!wait) return [];
+      const assignments = wait.assignments.filter(
+        (entry) =>
+          !command.assignments.some(
+            (remove) =>
+              remove.childThreadId === entry.childThreadId &&
+              remove.assignmentId === entry.assignmentId,
+          ),
+      );
+      if (assignments.length === wait.assignments.length) return [];
+      const nextWait =
+        assignments.length === 0 && wait.mode !== "decisions-only"
+          ? null
+          : { ...wait, assignments };
+      const updatedAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: parent.id,
+          occurredAt: updatedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: parent.id,
+          nudging: {
+            ...parent.nudging,
+            wait: nextWait,
+          },
+          updatedAt,
+        },
+      };
+    }
 
     case "thread.meta.update": {
       const thread = yield* requireThread({
@@ -3209,7 +3209,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               "Finish the current assignment and resolve its decision before assigning new work.",
           });
         }
-        return [
+        const parentThread = readModel.threads.find(
+          (entry) => entry.id === thread.parentThreadId && entry.deletedAt === null,
+        );
+        const parentWait = parentThread?.nudging?.wait;
+        const shouldRetargetWait =
+          parentWait !== undefined &&
+          parentWait !== null &&
+          parentWait.satisfiedAt === undefined &&
+          !childWaitIsSatisfied(parentWait) &&
+          parentWait.assignments.some(
+            (entry) =>
+              entry.childThreadId === thread.id &&
+              entry.assignmentId === delegation?.assignmentId &&
+              entry.outcome === undefined,
+          );
+        const assignmentEvents: PlannedOrchestrationEvent[] = [
           queuedEvent,
           nudgingMetaEvent(thread, queuedEvent, {
             ...thread.nudging,
@@ -3223,6 +3238,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             },
           }),
         ];
+        if (shouldRetargetWait && parentThread && parentWait) {
+          assignmentEvents.push(
+            nudgingMetaEvent(parentThread, queuedEvent, {
+              ...parentThread.nudging,
+              wait: {
+                ...parentWait,
+                assignments: parentWait.assignments.map((entry) =>
+                  entry.childThreadId === thread.id &&
+                  entry.assignmentId === delegation?.assignmentId &&
+                  entry.outcome === undefined
+                    ? { ...entry, assignmentId: command.message.messageId }
+                    : entry,
+                ),
+              },
+            }),
+          );
+        }
+        return assignmentEvents;
       }
       if (
         !delegation?.decision ||
