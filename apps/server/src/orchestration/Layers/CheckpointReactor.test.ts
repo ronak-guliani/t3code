@@ -70,6 +70,7 @@ import {
 } from "../../checkpointing/Utils.ts";
 import { ServerConfig } from "../../config.ts";
 import { WorkspaceEntriesLive } from "../../workspace/Layers/WorkspaceEntries.ts";
+import { WorkspaceEntries } from "../../workspace/Services/WorkspaceEntries.ts";
 import { WorkspacePathsLive } from "../../workspace/Layers/WorkspacePaths.ts";
 import { CheckoutCoordinator } from "../../git/CheckoutCoordinator.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
@@ -331,6 +332,7 @@ describe("CheckpointReactor", () => {
     readonly failCheckpointCapture?: boolean;
     readonly beforeCheckpointCapture?: (ref: CheckpointRef) => Effect.Effect<void>;
     readonly failDiffWithGenerationMismatch?: boolean;
+    readonly failWorkspaceInvalidate?: boolean;
     readonly awaitRuntimeEventProcessed?: (eventId: EventId) => Effect.Effect<void>;
     readonly useRuntimeIngestion?: boolean;
     readonly deferCheckpointStart?: boolean;
@@ -449,6 +451,18 @@ describe("CheckpointReactor", () => {
           drain: Effect.void,
           awaitTurnCompletionProcessed: options?.awaitRuntimeEventProcessed ?? (() => Effect.void),
         });
+    const workspaceEntriesLayer = options?.failWorkspaceInvalidate
+      ? Layer.effect(
+          WorkspaceEntries,
+          Effect.gen(function* () {
+            const workspaceEntries = yield* WorkspaceEntries;
+            return {
+              ...workspaceEntries,
+              invalidate: () => Effect.die(new Error("Injected workspace invalidate failure.")),
+            };
+          }),
+        ).pipe(Layer.provide(WorkspaceEntriesLive.pipe(Layer.provide(WorkspacePathsLive))))
+      : WorkspaceEntriesLive.pipe(Layer.provide(WorkspacePathsLive));
     const layer = CheckpointReactorLive.pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(RuntimeReceiptBusLive),
@@ -456,7 +470,7 @@ describe("CheckpointReactor", () => {
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(gitStatusBroadcasterLayer),
       Layer.provideMerge(checkpointStoreLayer),
-      Layer.provideMerge(WorkspaceEntriesLive.pipe(Layer.provide(WorkspacePathsLive))),
+      Layer.provideMerge(workspaceEntriesLayer),
       Layer.provideMerge(WorkspacePathsLive),
       Layer.provideMerge(GitCoreLive),
       Layer.provideMerge(SqlitePersistenceMemory),
@@ -2044,6 +2058,50 @@ describe("CheckpointReactor", () => {
     expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe("v2\n");
     expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2)),
+    ).toBe(false);
+  });
+
+  it("keeps a committed revert successful when workspace invalidation fails", async () => {
+    const harness = await createHarness({ failWorkspaceInvalidate: true });
+    const createdAt = new Date().toISOString();
+
+    for (const turnCount of [1, 2]) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-invalidate-revert-diff-${turnCount}`),
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId(`turn-invalidate-revert-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), turnCount),
+          status: "ready",
+          files: [],
+          agentTouchedPaths: [],
+          turnFiles: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        }),
+      );
+    }
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-invalidate-revert"),
+        threadId: ThreadId.make("thread-1"),
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+
+    const thread = await waitForThread(harness.engine, (entry) => entry.checkpoints.length === 1);
+    await harness.drain();
+
+    expect(thread.activities.some((activity) => activity.kind === "checkpoint.revert.failed")).toBe(
+      false,
+    );
+    expect(
+      gitRefExists(harness.cwd, checkpointRevertGuardRefForThread(ThreadId.make("thread-1"))),
     ).toBe(false);
   });
 

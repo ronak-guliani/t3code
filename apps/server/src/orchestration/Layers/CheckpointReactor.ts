@@ -971,7 +971,15 @@ const make = Effect.gen(function* () {
         );
         revertCommitted = true;
 
-        yield* workspaceEntries.invalidate(sessionRuntime.value.cwd);
+        yield* workspaceEntries.invalidate(sessionRuntime.value.cwd).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("checkpoint revert could not invalidate workspace entries", {
+              threadId: event.payload.threadId,
+              turnCount: event.payload.turnCount,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
         yield* checkpointStore
           .deleteCheckpointRefs({
             cwd: sessionRuntime.value.cwd,
