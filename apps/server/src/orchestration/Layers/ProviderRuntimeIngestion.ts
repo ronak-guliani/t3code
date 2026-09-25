@@ -1912,6 +1912,24 @@ const make = Effect.gen(function* () {
           }
         }
 
+        if (event.type === "turn.completed" && !isDuplicateCompletionAfterInterruption) {
+          yield* Effect.forEach(
+            runtimeEventToActivities(
+              event.turnId === undefined && lifecycleTurnId !== undefined
+                ? { ...event, turnId: lifecycleTurnId }
+                : event,
+            ),
+            (activity) =>
+              orchestrationEngine.dispatch({
+                type: "thread.activity.append",
+                commandId: providerCommandId(event, "thread-activity-append"),
+                threadId: thread.id,
+                activity,
+                createdAt: activity.createdAt,
+              }),
+          ).pipe(Effect.asVoid);
+        }
+
         yield* dispatchThreadLifecycleUpdate();
         if (event.type === "turn.completed" && lifecycleTurnId !== undefined) {
           yield* persistReviewResult({
@@ -2245,15 +2263,17 @@ const make = Effect.gen(function* () {
 
       const activities = isDuplicateCompletionAfterInterruption
         ? []
-        : event.type === "item.updated" && !shouldProjectToolUpdate(event)
+        : event.type === "turn.completed"
           ? []
-          : runtimeEventToActivities(
-              event.type === "turn.aborted" &&
-                event.turnId === undefined &&
-                lifecycleTurnId !== undefined
-                ? { ...event, turnId: lifecycleTurnId }
-                : event,
-            );
+          : event.type === "item.updated" && !shouldProjectToolUpdate(event)
+            ? []
+            : runtimeEventToActivities(
+                event.type === "turn.aborted" &&
+                  event.turnId === undefined &&
+                  lifecycleTurnId !== undefined
+                  ? { ...event, turnId: lifecycleTurnId }
+                  : event,
+              );
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",
