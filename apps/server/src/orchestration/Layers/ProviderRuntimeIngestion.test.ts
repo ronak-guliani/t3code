@@ -1577,6 +1577,13 @@ describe("ProviderRuntimeIngestion", () => {
       (entry) => entry.session?.status === "ready" && entry.session?.activeTurnId === null,
     );
     expect(thread.session?.lastError).toBeNull();
+    expect(
+      thread.activities.find(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "insights.turn.completed" &&
+          activity.id === "evt-turn-completed-missing-id",
+      )?.turnId,
+    ).toBe("turn-missing-completion-id");
   });
 
   it("applies provider session.state.changed transitions directly", async () => {
