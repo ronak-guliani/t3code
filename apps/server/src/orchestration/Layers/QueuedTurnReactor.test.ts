@@ -262,6 +262,10 @@ function settlementCommands(commands: ReadonlyArray<OrchestrationCommand>) {
   return commands.filter((command) => (command.type as string) === "thread.delegation.settle");
 }
 
+function unavailableAssignmentCommands(commands: ReadonlyArray<OrchestrationCommand>) {
+  return commands.filter((command) => command.type === "thread.child.assignment.unavailable");
+}
+
 function pullRequestLayer(
   snapshot: PullRequestMonitorSnapshot,
   snapshotError?: PullRequestOperationError,
@@ -331,6 +335,29 @@ async function runReactor(
                         ...thread.nudging.delegation,
                         completedAt: now,
                         outcome: "result-available",
+                      },
+                    },
+                  },
+            ),
+          };
+        } else if (command.type === "thread.child.assignment.unavailable") {
+          readModel = {
+            ...readModel,
+            threads: readModel.threads.map((thread) =>
+              thread.id !== command.threadId || !thread.nudging?.wait
+                ? thread
+                : {
+                    ...thread,
+                    nudging: {
+                      ...thread.nudging,
+                      wait: {
+                        ...thread.nudging.wait,
+                        assignments: thread.nudging.wait.assignments.map((assignment) =>
+                          assignment.childThreadId === command.childThreadId &&
+                          assignment.assignmentId === command.assignmentId
+                            ? { ...assignment, outcome: "blocked" as const }
+                            : assignment,
+                        ),
                       },
                     },
                   },
@@ -451,6 +478,94 @@ async function runReactor(
 }
 
 describe("QueuedTurnReactor", () => {
+  it("reconciles unavailable child assignments on startup", async () => {
+    const base = delegatedReadModel();
+    const parent = base.threads[0]!;
+    const child = base.threads[1]!;
+    const assignmentId = child.nudging!.delegation!.assignmentId;
+    const detached = {
+      ...base,
+      threads: base.threads.map((thread) =>
+        thread.id === parent.id
+          ? {
+              ...thread,
+              nudging: {
+                wait: {
+                  mode: "all" as const,
+                  assignments: [{ childThreadId: child.id, assignmentId }],
+                },
+              },
+            }
+          : thread.id === child.id
+            ? { ...thread, parentThreadId: null }
+            : thread,
+      ),
+    };
+
+    const commands = await runReactor(detached, monitorSnapshot("head"));
+
+    expect(unavailableAssignmentCommands(commands)).toHaveLength(1);
+    expect(unavailableAssignmentCommands(commands)[0]).toMatchObject({
+      threadId: parent.id,
+      childThreadId: child.id,
+      assignmentId,
+    });
+  });
+
+  it("invalidates a parent wait when its child is detached from the hierarchy", async () => {
+    const base = delegatedReadModel({ activeTurn: true });
+    const parent = base.threads[0]!;
+    const child = base.threads[1]!;
+    const assignmentId = child.nudging!.delegation!.assignmentId;
+    const finished = delegatedReadModel();
+    const detached = {
+      ...finished,
+      threads: finished.threads.map((thread) =>
+        thread.id === parent.id
+          ? {
+              ...thread,
+              queuedTurns: [],
+              nudging: {
+                wait: {
+                  mode: "all" as const,
+                  assignments: [{ childThreadId: child.id, assignmentId }],
+                },
+              },
+            }
+          : thread.id === child.id
+            ? { ...thread, parentThreadId: null }
+            : thread,
+      ),
+    };
+    const event: OrchestrationEvent = {
+      sequence: 2,
+      eventId: EventId.make("child-detached"),
+      aggregateKind: "thread",
+      aggregateId: child.id,
+      occurredAt: now,
+      commandId: CommandId.make("child-detached"),
+      causationEventId: null,
+      correlationId: CommandId.make("child-detached"),
+      metadata: {},
+      type: "thread.decoupled",
+      payload: { threadId: child.id, updatedAt: now },
+    };
+    const commands = await runReactor(base, monitorSnapshot("head"), {
+      resume: {
+        readModel: detached,
+        event,
+        additionalEvents: [{ ...event, eventId: EventId.make("child-detached-duplicate") }],
+      },
+    });
+
+    expect(unavailableAssignmentCommands(commands)).toHaveLength(1);
+    expect(unavailableAssignmentCommands(commands)[0]).toMatchObject({
+      threadId: parent.id,
+      childThreadId: child.id,
+      assignmentId,
+    });
+  });
+
   it("settles after queued work and pending approval clear, despite duplicate state triggers", async () => {
     const blocked = delegatedReadModel({ blockedItems: true, pendingApproval: true });
     const child = blocked.threads[1]!;
