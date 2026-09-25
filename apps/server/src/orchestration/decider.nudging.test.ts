@@ -135,7 +135,15 @@ async function apply(
   readModel: OrchestrationReadModel,
   command: OrchestrationCommand,
   recordedReportOutcome?: "accepted" | "stale",
-) {
+  settleCompletedDelegation = true,
+): Promise<{
+  readonly readModel: OrchestrationReadModel;
+  readonly events: ReadonlyArray<OrchestrationEvent>;
+}> {
+  const completesCurrentTurn =
+    command.type === "thread.turn.diff.complete" &&
+    readModel.threads.find((thread) => thread.id === command.threadId)?.latestTurn?.turnId ===
+      command.turnId;
   const result = await Effect.runPromise(
     decideOrchestrationCommand({
       readModel,
@@ -151,6 +159,24 @@ async function apply(
   );
   for (const event of events) {
     readModel = await Effect.runPromise(projectEvent(readModel, event));
+  }
+  if (
+    settleCompletedDelegation &&
+    command.type === "thread.turn.diff.complete" &&
+    command.status !== "speculative" &&
+    completesCurrentTurn
+  ) {
+    const settled = await apply(
+      readModel,
+      {
+        type: "thread.delegation.settle",
+        commandId: CommandId.make(`settle-${command.commandId}`),
+        threadId: command.threadId,
+      },
+      undefined,
+      false,
+    );
+    return { readModel: settled.readModel, events: [...events, ...settled.events] };
   }
   return { readModel, events };
 }
@@ -1093,12 +1119,30 @@ describe("child nudging", () => {
           : thread,
       ),
     };
-    const result = await apply(authoritativeReadModel, finish("child"));
-    expect(result.readModel.threads[1]!.nudging?.delegation?.completedAt).toBe(finished);
-    expect(result.readModel.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
+    const result = await apply(authoritativeReadModel, finish("child"), undefined, false);
+    expect(result.events.map((event) => event.type)).toEqual(["thread.turn-diff-completed"]);
+    expect(result.readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+    expect(result.readModel.threads[0]!.queuedTurns).toHaveLength(0);
+
+    const settled = await apply(result.readModel, {
+      type: "thread.delegation.settle",
+      commandId: CommandId.make("settle-after-checkpoint"),
+      threadId: child.id,
+    });
+    expect(settled.readModel.threads[1]!.nudging?.delegation?.completedAt).toBe(finished);
+    expect(settled.readModel.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
       kind: "child-nudge",
       updates: [{ kind: "result-available" }],
     });
+    expect(
+      (
+        await apply(settled.readModel, {
+          type: "thread.delegation.settle",
+          commandId: CommandId.make("settle-after-checkpoint-again"),
+          threadId: child.id,
+        })
+      ).events,
+    ).toEqual([]);
   });
 
   it("settles only the bound turn and deduplicates its assignment report", async () => {

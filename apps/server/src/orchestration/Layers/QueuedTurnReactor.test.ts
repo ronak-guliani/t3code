@@ -214,7 +214,10 @@ function childEvent(
   child: OrchestrationReadModel["threads"][number],
   eventId: string,
   type: "thread.queued-turn-deleted" | "thread.activity-appended",
-  activityKind: "approval.resolved" | "insights.turn.completed" = "approval.resolved",
+  activityKind:
+    | "approval.resolved"
+    | "insights.turn.completed"
+    | "tool.completed" = "approval.resolved",
 ): OrchestrationEvent {
   const eventBase = {
     sequence: 2,
@@ -247,11 +250,18 @@ function childEvent(
         id: EventId.make(`${eventId}-activity`),
         kind: activityKind,
         tone: "info",
-        summary: activityKind === "approval.resolved" ? "Approval resolved" : "Turn completed",
+        summary:
+          activityKind === "approval.resolved"
+            ? "Approval resolved"
+            : activityKind === "insights.turn.completed"
+              ? "Turn completed"
+              : "Tool completed",
         payload:
           activityKind === "approval.resolved"
             ? { requestId: "approval-child-settlement" }
-            : { state: "completed" },
+            : activityKind === "insights.turn.completed"
+              ? { state: "completed" }
+              : { toolCallId: "tool-call-1" },
         turnId: child.latestTurn?.turnId ?? null,
         createdAt: now,
       },
@@ -274,6 +284,7 @@ function delegationStallCommands(commands: ReadonlyArray<OrchestrationCommand>) 
 function pullRequestLayer(
   snapshot: PullRequestMonitorSnapshot,
   snapshotError?: PullRequestOperationError,
+  snapshotDelayMs = 0,
 ) {
   return Layer.succeed(
     PullRequestService,
@@ -291,8 +302,13 @@ function pullRequestLayer(
       reviewerCandidates: () => Effect.die("unused"),
       requestReviewers: () => Effect.die("unused"),
       invalidate: () => Effect.void,
-      monitorSnapshot: () =>
-        snapshotError === undefined ? Effect.succeed(snapshot) : Effect.fail(snapshotError),
+      monitorSnapshot: () => {
+        const result =
+          snapshotError === undefined ? Effect.succeed(snapshot) : Effect.fail(snapshotError);
+        return snapshotDelayMs > 0
+          ? Effect.sleep(snapshotDelayMs).pipe(Effect.andThen(result))
+          : result;
+      },
     }),
   );
 }
@@ -303,6 +319,7 @@ async function runReactor(
   options?: {
     readonly waitAfterStartMs?: number;
     readonly firstDispatchDelayMs?: number;
+    readonly snapshotDelayMs?: number;
     readonly snapshotError?: PullRequestOperationError;
     readonly onRetryQueuedDelivery?: (deliveryId: string) => void;
     readonly retryQueuedDeliveryError?: PullRequestMonitorError;
@@ -439,7 +456,7 @@ async function runReactor(
   );
   const layer = QueuedTurnReactorLive.pipe(
     Layer.provide(engineLayer),
-    Layer.provide(pullRequestLayer(snapshot, options?.snapshotError)),
+    Layer.provide(pullRequestLayer(snapshot, options?.snapshotError, options?.snapshotDelayMs)),
     Layer.provide(feedbackLayer),
     Layer.provideMerge(
       ServerSettingsService.layerTest({
@@ -659,6 +676,132 @@ describe("QueuedTurnReactor", () => {
 
     expect(settlementCommands(commands)).toHaveLength(1);
     expect(commands.some((command) => command.type === "thread.turn.diff.complete")).toBe(false);
+  });
+
+  it("does not settle from unrelated streamed activity", async () => {
+    const active = delegatedReadModel({ activeTurn: true });
+    const idle = delegatedReadModel();
+    const child = active.threads[1]!;
+    const commands = await runReactor(active, monitorSnapshot("head"), {
+      resume: {
+        readModel: idle,
+        event: childEvent(child, "tool-completed", "thread.activity-appended", "tool.completed"),
+      },
+    });
+
+    expect(settlementCommands(commands)).toHaveLength(0);
+  });
+
+  it("does not index settlement state for an unrelated session event", async () => {
+    const initial = queuedReadModel();
+    const ordinaryThread = { ...initial.threads[0]!, queuedTurns: [] };
+    let threadIterations = 0;
+    const threads = new Proxy([ordinaryThread], {
+      get(target, property, receiver) {
+        if (property === Symbol.iterator) {
+          threadIterations += 1;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const resumed = { ...initial, threads };
+    const event: OrchestrationEvent = {
+      sequence: 2,
+      eventId: EventId.make("ordinary-session-set"),
+      aggregateKind: "thread",
+      aggregateId: ordinaryThread.id,
+      occurredAt: now,
+      commandId: CommandId.make("ordinary-session-set"),
+      causationEventId: null,
+      correlationId: CommandId.make("ordinary-session-set"),
+      metadata: {},
+      type: "thread.session-set",
+      payload: {
+        threadId: ordinaryThread.id,
+        session: {
+          threadId: ordinaryThread.id,
+          status: "idle",
+          providerName: "copilot",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+      },
+    };
+
+    const commands = await runReactor(initial, monitorSnapshot("head"), {
+      resume: { readModel: resumed, event },
+    });
+
+    expect(threadIterations).toBe(0);
+    expect(settlementCommands(commands)).toHaveLength(0);
+  });
+
+  it("settles another thread while PR monitor revalidation is slow", async () => {
+    const active = delegatedReadModel({ activeTurn: true });
+    const parent = active.threads[0]!;
+    const child = active.threads[1]!;
+    const monitorOrigin: NonNullable<OrchestrationQueuedTurn["origin"]> = {
+      kind: "pull-request-monitor",
+      repository: "acme/app",
+      number: 42,
+      headSha: "head-current",
+    };
+    const initial = {
+      ...active,
+      threads: active.threads.map((thread) =>
+        thread.id === parent.id ? { ...thread, queuedTurns: [] } : thread,
+      ),
+    };
+    const idle = delegatedReadModel();
+    const resumed = {
+      ...idle,
+      threads: idle.threads.map((thread) =>
+        thread.id === parent.id
+          ? {
+              ...thread,
+              queuedTurns: [
+                {
+                  ...thread.queuedTurns![0]!,
+                  origin: monitorOrigin,
+                },
+              ],
+            }
+          : thread,
+      ),
+    };
+    const monitorWake: OrchestrationEvent = {
+      sequence: 2,
+      eventId: EventId.make("monitor-wake"),
+      aggregateKind: "thread",
+      aggregateId: parent.id,
+      occurredAt: now,
+      commandId: CommandId.make("monitor-wake"),
+      causationEventId: null,
+      correlationId: CommandId.make("monitor-wake"),
+      metadata: {},
+      type: "thread.meta-updated",
+      payload: { threadId: parent.id, updatedAt: now },
+    };
+    const commands = await runReactor(initial, monitorSnapshot("head-current"), {
+      snapshotDelayMs: 200,
+      waitAfterStartMs: 40,
+      resume: {
+        readModel: resumed,
+        event: monitorWake,
+        additionalEvents: [
+          childEvent(
+            child,
+            "provider-turn-completed-behind-monitor",
+            "thread.activity-appended",
+            "insights.turn.completed",
+          ),
+        ],
+      },
+    });
+
+    expect(settlementCommands(commands)).toHaveLength(1);
   });
 
   it("reconciles an idle open delegation on startup", async () => {
