@@ -1793,16 +1793,7 @@ async function delegateWorkTool(
   if (waitableIndices.size === 0 || initialParentWait === null) return serializedBatch;
 
   const batch = decodeNestedThreadBatchCreationOutcome(JSON.parse(serializedBatch) as unknown);
-  const waitMayHaveBeenInstalled = batch.results.some(
-    ({ index, outcome }) =>
-      waitableIndices.has(index) &&
-      (outcome.status === "created" ||
-        (outcome.status === "ambiguous" && outcome.threadId !== null) ||
-        (outcome.status === "failed" && outcome.cleanupPerformed)),
-  );
-  if (!waitMayHaveBeenInstalled) return serializedBatch;
-
-  const assignments = batch.results.flatMap(({ index, outcome }) => {
+  const assignmentsToRemove = batch.results.flatMap(({ index, outcome }) => {
     const identity = childIdentities[index];
     if (!identity || !waitableIndices.has(index)) return [];
     if (
@@ -1814,27 +1805,27 @@ async function delegateWorkTool(
           `delegate_work child ${String(index)} returned a different thread id than requested.`,
         );
       }
-      return [
-        {
-          childThreadId: ThreadId.make(identity.threadId),
-          assignmentId: MessageId.make(identity.assignmentId),
-        },
-      ];
+      return [];
     }
-    return [];
+    return [
+      {
+        childThreadId: ThreadId.make(identity.threadId),
+        assignmentId: MessageId.make(identity.assignmentId),
+      },
+    ];
   });
-  const condition =
-    assignments.length > 0 && waitMode !== "none" ? { mode: waitMode, assignments } : null;
-  await runCommand(options.cwd, options.cliCommand, [
-    ...(options.cliArgsPrefix ?? []),
-    "--log-level",
-    "error",
-    "chat",
-    "wait",
-    parentThreadId,
-    JSON.stringify(condition),
-    ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
-  ]);
+  if (assignmentsToRemove.length > 0) {
+    await runCommand(options.cwd, options.cliCommand, [
+      ...(options.cliArgsPrefix ?? []),
+      "--log-level",
+      "error",
+      "chat",
+      "wait-prune",
+      parentThreadId,
+      JSON.stringify(assignmentsToRemove),
+      ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
+    ]);
+  }
   return serializedBatch;
 }
 

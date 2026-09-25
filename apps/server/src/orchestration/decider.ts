@@ -2298,6 +2298,47 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
 
+    case "thread.child.wait.prune": {
+      const parent = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const wait = parent.nudging?.wait;
+      if (!wait) return [];
+      const assignments = wait.assignments.filter(
+        (entry) =>
+          !command.assignments.some(
+            (remove) =>
+              remove.childThreadId === entry.childThreadId &&
+              remove.assignmentId === entry.assignmentId,
+          ),
+      );
+      if (assignments.length === wait.assignments.length) return [];
+      const nextWait =
+        assignments.length === 0 && wait.mode !== "decisions-only"
+          ? null
+          : { ...wait, assignments };
+      const updatedAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: parent.id,
+          occurredAt: updatedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: parent.id,
+          nudging: {
+            ...parent.nudging,
+            wait: nextWait,
+          },
+          updatedAt,
+        },
+      };
+    }
+
     case "thread.meta.update": {
       const thread = yield* requireThread({
         readModel,
@@ -3174,6 +3215,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         const parentWait = parentThread?.nudging?.wait;
         const shouldRetargetWait =
           parentWait !== undefined &&
+          parentWait !== null &&
           parentWait.satisfiedAt === undefined &&
           !childWaitIsSatisfied(parentWait) &&
           parentWait.assignments.some(

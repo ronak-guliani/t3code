@@ -8,6 +8,7 @@ import {
   ApprovalRequestId,
   AuthSessionId,
   ChildDecision,
+  ChildWaitAssignmentIdentity,
   ChildWaitCondition,
   CommandId,
   EditorId,
@@ -1062,6 +1063,9 @@ const authCommand = Command.make("auth").pipe(
 const decodeModelSelection = Schema.decodeUnknownEffect(ModelSelection);
 const decodeChildWaitJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.NullOr(ChildWaitCondition)),
+);
+const decodeChildWaitAssignmentsJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(ChildWaitAssignmentIdentity)),
 );
 const decodeChildDecisionJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ChildDecision));
 const decodeProjectScripts = Schema.decodeUnknownEffect(Schema.Array(ProjectScript));
@@ -2755,6 +2759,28 @@ const chatCommand = Command.make("chat").pipe(
               commandId: CommandId.make(crypto.randomUUID()),
               threadId: thread.id,
               childWait,
+            }).pipe(Effect.flatMap(printJson));
+          }),
+        ),
+      ),
+    ),
+    Command.make("wait-prune", {
+      ...liveTargetFlags,
+      chat: Argument.string("chat"),
+      assignments: Argument.string("assignments"),
+    }).pipe(
+      Command.withDescription(
+        "Remove only specified child assignments from the current wait condition.",
+      ),
+      Command.withHandler((flags) =>
+        withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
+          Effect.gen(function* () {
+            const assignments = yield* decodeChildWaitAssignmentsJson(flags.assignments);
+            yield* dispatch({
+              type: "thread.child.wait.prune",
+              commandId: CommandId.make(crypto.randomUUID()),
+              threadId: thread.id,
+              assignments,
             }).pipe(Effect.flatMap(printJson));
           }),
         ),

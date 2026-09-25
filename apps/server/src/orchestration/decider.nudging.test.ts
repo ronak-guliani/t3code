@@ -518,6 +518,12 @@ describe("child nudging", () => {
 
   it("reuses a finished child with a new assignment and rejects old or uncorrelated reports", async () => {
     let state = (await apply(model(thread("a", true)), finish("a"))).readModel;
+    state = {
+      ...state,
+      threads: state.threads.map((entry) =>
+        entry.id === parentId ? { ...entry, nudging: { ...entry.nudging, wait: null } } : entry,
+      ),
+    };
     const assign: OrchestrationCommand = {
       type: "thread.queued-turn.create",
       commandId: CommandId.make("assign"),
@@ -552,6 +558,42 @@ describe("child nudging", () => {
     await expect(
       apply(state, { ...report("a", "progress"), assignmentId: MessageId.make("assignment-b") }),
     ).resolves.toBeDefined();
+  });
+
+  it("removes failed batch entries without overwriting a revised parent wait", async () => {
+    const failedChild = thread("failed-child", true);
+    const remainingChild = thread("remaining-child", true);
+    const failedAssignment = {
+      childThreadId: failedChild.id,
+      assignmentId: failedChild.nudging!.delegation!.assignmentId,
+    };
+    const remainingAssignment = {
+      childThreadId: remainingChild.id,
+      assignmentId: remainingChild.nudging!.delegation!.assignmentId,
+    };
+    const state = withParent(model(failedChild, remainingChild), {
+      nudging: {
+        wait: { mode: "any", assignments: [failedAssignment, remainingAssignment] },
+      },
+    });
+
+    const prune = {
+      type: "thread.child.wait.prune",
+      commandId: CommandId.make("prune-failed-batch-assignment"),
+      threadId: parentId,
+      assignments: [failedAssignment],
+    } as OrchestrationCommand;
+    const result = await apply(state, prune);
+
+    expect(result.readModel.threads[0]!.nudging?.wait).toEqual({
+      mode: "any",
+      assignments: [remainingAssignment],
+    });
+    const duplicate = await apply(result.readModel, {
+      ...prune,
+      commandId: CommandId.make("prune-failed-batch-assignment-again"),
+    });
+    expect(duplicate.events).toEqual([]);
   });
 
   it("retargets an unsettled wait when a child gets new work and satisfies it on completion", async () => {

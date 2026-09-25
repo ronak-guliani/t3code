@@ -1799,7 +1799,7 @@ describe("delegate_work MCP tool", () => {
     ]);
   });
 
-  it("installs wait-all before creation can report and removes failed or notify-only children", async () => {
+  it("installs wait-all before creation can report and prunes failed assignments", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-delegate-wait-"));
     const callsPath = path.join(root, "cli-calls.jsonl");
     const originalCallsPath = process.env.T3_MCP_TEST_CALLS;
@@ -1824,18 +1824,18 @@ describe("delegate_work MCP tool", () => {
           errorCode: null,
           message: "Nested-thread inputs are valid; no thread or workspace was created."
         }));
-      } else if (command === "wait") {
+      } else if (command === "wait-prune") {
         console.log(JSON.stringify({ updated: true }));
       } else if (value("--title") === "Fail") {
         console.log(JSON.stringify({
           status: "failed",
-          threadId: null,
+          threadId: value("--thread-id"),
           threadUrl: null,
-          retryable: true,
+          retryable: false,
           workspaceCreated: false,
           cleanupPerformed: false,
-          errorCode: "THREAD_CREATE_REJECTED",
-          message: "Creation rejected."
+          errorCode: "THREAD_CLEANUP_REJECTED",
+          message: "The failed child was retained."
         }));
       } else {
         console.log(JSON.stringify({
@@ -1887,25 +1887,11 @@ describe("delegate_work MCP tool", () => {
       const parentWaitIndex = firstCreate.indexOf("--parent-wait");
       expect(parentWaitIndex).toBeGreaterThan(-1);
       const firstWait = JSON.parse(firstCreate[parentWaitIndex + 1]!);
-      const successful = result.results.flatMap(
-        (
-          entry: { outcome: { status: string; threadId: string; assignmentId: string } },
-          index: number,
-        ) =>
-          index < 2 && entry.outcome.status === "created"
-            ? [
-                {
-                  childThreadId: entry.outcome.threadId,
-                  assignmentId: entry.outcome.assignmentId,
-                },
-              ]
-            : [],
-      );
-      const waitUpdate = calls.find((args) => {
+      const waitPrune = calls.find((args) => {
         const chatIndex = args.indexOf("chat");
-        return chatIndex >= 0 && args[chatIndex + 1] === "wait";
+        return chatIndex >= 0 && args[chatIndex + 1] === "wait-prune";
       })!;
-      const finalWait = JSON.parse(waitUpdate[waitUpdate.indexOf("wait") + 2]!);
+      const removedAssignments = JSON.parse(waitPrune[waitPrune.indexOf("wait-prune") + 2]!);
 
       expect(
         result.results.map((entry: { outcome: { status: string } }) => entry.outcome.status),
@@ -1919,7 +1905,37 @@ describe("delegate_work MCP tool", () => {
         ]),
       });
       expect(firstWait.assignments).toHaveLength(2);
-      expect(finalWait).toEqual({ mode: "all", assignments: successful });
+      expect(removedAssignments).toEqual([
+        {
+          childThreadId: result.results[1]!.outcome.threadId,
+          assignmentId: firstWait.assignments.find(
+            (assignment: { childThreadId: string }) =>
+              assignment.childThreadId === result.results[1]!.outcome.threadId,
+          )!.assignmentId,
+        },
+      ]);
+
+      await writeFile(callsPath, "");
+      await __testing.delegateWorkTool(
+        {
+          ...options(root, process.execPath),
+          cliArgsPrefix: ["-e", cliScript, "--"],
+        },
+        {
+          wait: "all",
+          children: [{ title: "Fail", prompt: "The retained child failed to start." }],
+        },
+      );
+      const failedOnlyCalls = (await readFile(callsPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+      expect(
+        failedOnlyCalls.some((args) => {
+          const chatIndex = args.indexOf("chat");
+          return chatIndex >= 0 && args[chatIndex + 1] === "wait-prune";
+        }),
+      ).toBe(true);
     } finally {
       if (originalCallsPath === undefined) delete process.env.T3_MCP_TEST_CALLS;
       else process.env.T3_MCP_TEST_CALLS = originalCallsPath;
