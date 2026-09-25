@@ -1,11 +1,14 @@
 const CONNECT_AUTHORIZE_PATH = "/connect";
-const CONNECT_CALLBACK_PATH = "/connect/callback";
 const CONNECT_LOOPBACK_CALLBACK_PATH = "/callback";
 const CONNECT_LOOPBACK_PORT_PARAM = "port";
-const CONNECT_AUTH_CODE_SEPARATOR = ".";
 
 export const DEFAULT_HOSTED_APP_URL = "https://app.t3.codes";
-export const CONNECT_OAUTH_SCOPES = ["openid", "profile", "email"] as const;
+/**
+ * Requested at authorize time by the hosted page and by the CLI's device
+ * authorization request; keep both sides on this single definition.
+ * `offline_access` asks Clerk for the refresh token the CLI relies on.
+ */
+export const CONNECT_OAUTH_SCOPES = ["openid", "profile", "email", "offline_access"] as const;
 
 export function normalizeHostedAppUrl(value: string): string | null {
   try {
@@ -30,22 +33,33 @@ export function normalizeHostedAppUrl(value: string): string | null {
 export interface ConnectAuthorizeRequest {
   readonly state: string;
   readonly challenge: string;
-  readonly loopbackPort?: number;
+  /**
+   * The hosted /connect page asks Clerk to redirect the authorization code
+   * straight to `http://127.0.0.1:<port>/callback` on the waiting CLI.
+   */
+  readonly loopbackPort: number;
 }
 
+/**
+ * The CLI routes through the hosted /connect page rather than hitting
+ * Clerk's /oauth/authorize directly: a signed-out browser sent straight to
+ * /oauth/authorize goes through Clerk's sign-in redirect, which does not
+ * reliably preserve the authorize query parameters (state, response_type,
+ * code_challenge). The hosted page waits for a Clerk session first, then
+ * forwards the request with the parameters intact. Headless hosts use the
+ * OAuth device authorization grant instead and never involve this page.
+ */
 export function buildConnectAuthorizeRequestUrl(input: {
   readonly hostedAppUrl: string;
   readonly state: string;
   readonly challenge: string;
-  readonly loopbackPort?: number;
+  readonly loopbackPort: number;
 }): string {
   const url = new URL(CONNECT_AUTHORIZE_PATH, input.hostedAppUrl);
   url.hash = new URLSearchParams([
     ["state", input.state],
     ["challenge", input.challenge],
-    ...(input.loopbackPort === undefined
-      ? []
-      : [[CONNECT_LOOPBACK_PORT_PARAM, String(input.loopbackPort)] as [string, string]]),
+    [CONNECT_LOOPBACK_PORT_PARAM, String(input.loopbackPort)],
   ]).toString();
   return url.toString();
 }
@@ -54,13 +68,10 @@ export function readConnectAuthorizeRequest(url: URL): ConnectAuthorizeRequest |
   const params = new URLSearchParams(url.hash.startsWith("#") ? url.hash.slice(1) : url.hash);
   const state = params.get("state")?.trim() ?? "";
   const challenge = params.get("challenge")?.trim() ?? "";
-  if (!state || !challenge) return null;
+  const loopbackPort = parseLoopbackPort(params.get(CONNECT_LOOPBACK_PORT_PARAM)?.trim() ?? "");
+  if (!state || !challenge || loopbackPort === null) return null;
 
-  const port = params.get(CONNECT_LOOPBACK_PORT_PARAM);
-  if (port === null) return { state, challenge };
-
-  const loopbackPort = parseLoopbackPort(port.trim());
-  return loopbackPort === null ? null : { state, challenge, loopbackPort };
+  return { state, challenge, loopbackPort };
 }
 
 function parseLoopbackPort(value: string): number | null {
@@ -71,10 +82,6 @@ function parseLoopbackPort(value: string): number | null {
 
 export function connectLoopbackRedirectUri(port: number): string {
   return `http://127.0.0.1:${port}${CONNECT_LOOPBACK_CALLBACK_PATH}`;
-}
-
-export function connectCallbackUrl(hostedAppUrl: string): string {
-  return new URL(CONNECT_CALLBACK_PATH, hostedAppUrl).toString();
 }
 
 export function buildConnectClerkAuthorizeUrl(input: {
@@ -94,28 +101,4 @@ export function buildConnectClerkAuthorizeUrl(input: {
   url.searchParams.set("code_challenge", input.challenge);
   url.searchParams.set("code_challenge_method", "S256");
   return url.toString();
-}
-
-export function encodeConnectAuthCode(input: {
-  readonly code: string;
-  readonly state: string;
-}): string {
-  return `${input.code}${CONNECT_AUTH_CODE_SEPARATOR}${input.state}`;
-}
-
-export function checkConnectAuthCode(
-  value: string,
-  expectedState: string,
-): { readonly code: string; readonly state: string } | string {
-  const trimmed = value.trim();
-  const separator = trimmed.lastIndexOf(CONNECT_AUTH_CODE_SEPARATOR);
-  if (separator <= 0 || separator === trimmed.length - 1) {
-    return "That does not look like a T3 Connect code. Copy the full code.";
-  }
-  const code = trimmed.slice(0, separator);
-  const state = trimmed.slice(separator + 1);
-  if (state !== expectedState) {
-    return "That code belongs to a different connect request. Open the URL above and try again.";
-  }
-  return { code, state };
 }
