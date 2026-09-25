@@ -189,6 +189,54 @@ it.effect("pages issue comments and marks our own comments as viewer-authored", 
   }),
 );
 
+it.effect("serializes snapshot reads to avoid secondary-limit bursts", () =>
+  Effect.gen(function* () {
+    let active = 0;
+    let maxActive = 0;
+
+    const responseFor = (args: ReadonlyArray<string>) => {
+      const target = args.at(-1) ?? "";
+      if (args.includes("graphql")) return processResult(graphqlResponse);
+      if (target.includes("/comments?")) {
+        return processResult(includedResponse({ comments: [] }));
+      }
+      if (target.includes("check-runs")) {
+        return processResult(JSON.stringify({ total_count: 0, check_runs: [] }));
+      }
+      if (target.includes("/status?")) {
+        return processResult(JSON.stringify({ statuses: [], sha: "head-sha" }));
+      }
+      return processResult(JSON.stringify({ behind_by: 0 }));
+    };
+
+    yield* fetchGitHubPullRequestMonitorSnapshot({
+      cwd: "/workspace/app",
+      host: "github.com",
+      repository: "acme/app",
+      number: 12,
+    }).pipe(
+      Effect.provide(
+        Layer.mock(GitHubCli)({
+          execute: ({ args }) =>
+            Effect.acquireUseRelease(
+              Effect.sync(() => {
+                active += 1;
+                maxActive = Math.max(maxActive, active);
+              }),
+              () => Effect.yieldNow.pipe(Effect.as(responseFor(args))),
+              () =>
+                Effect.sync(() => {
+                  active -= 1;
+                }),
+            ),
+        }),
+      ),
+    );
+
+    assert.strictEqual(maxActive, 1);
+  }),
+);
+
 it.effect("reports incomplete issue comments when the page budget is exhausted", () =>
   Effect.gen(function* () {
     const requested: Array<string> = [];

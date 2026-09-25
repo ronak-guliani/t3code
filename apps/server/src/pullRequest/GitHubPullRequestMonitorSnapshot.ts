@@ -708,7 +708,8 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
     return { statuses: all, sha, complete };
   });
 
-  // Independent host reads — run concurrently so poll latency is max, not sum.
+  // Keep the independent host reads serialized. Poll latency is higher, but each monitor runs
+  // in the background and avoiding four-request bursts protects GitHub's secondary rate limit.
   const [issueCommentsDecoded, checkRunsDecoded, statusesDecoded, compareDecoded] =
     yield* Effect.all(
       [
@@ -752,7 +753,7 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
             Effect.orElseSucceed(() => ({ behindBy: null as number | null })),
           ),
       ],
-      { concurrency: "unbounded" },
+      { concurrency: 1 },
     );
 
   const normalizedReviews: PullRequestMonitorReview[] = reviews.map((review) => ({

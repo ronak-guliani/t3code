@@ -39,7 +39,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Random from "effect/Random";
 import * as Result from "effect/Result";
-import * as Schedule from "effect/Schedule";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { GitManager } from "../git/Services/GitManager.ts";
@@ -64,11 +64,12 @@ import {
   waitForThreadWorktree,
 } from "./threadDelivery.ts";
 import {
-  HOST_COOLDOWN_MS,
   LEASE_TTL_MS,
   nextPollDelayMs,
+  POLL_BATCH_LIMIT,
   pollDelayMs,
   POLL_CONCURRENCY,
+  rateLimitCooldownMs,
 } from "./pollSchedule.ts";
 import {
   PullRequestMonitorStore,
@@ -189,6 +190,7 @@ export const layer = Layer.effect(
     const engine = yield* OrchestrationEngineService;
     const git = yield* GitManager;
     const crypto = yield* Crypto.Crypto;
+    const pollSweepLock = Semaphore.makeUnsafe(1);
     const ownerId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
     const changes = yield* PubSub.sliding<void>(1);
     const notify = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
@@ -605,7 +607,7 @@ export const layer = Layer.effect(
             const failedAt = yield* isoNow();
             yield* store.setHostCooldown({
               hostKey,
-              cooldownUntil: addMs(failedAt, HOST_COOLDOWN_MS),
+              cooldownUntil: addMs(failedAt, rateLimitCooldownMs(monitor.pollFailureCount + 1)),
               reason: message.slice(0, 300),
               nowIso: failedAt,
             });
@@ -771,27 +773,21 @@ export const layer = Layer.effect(
       }
     }).pipe(Effect.ignore);
 
-    const pollOnce = Effect.gen(function* () {
-      yield* reconcileStaleFallbackLaunches;
-      const now = yield* isoNow();
-      const due = yield* store.listDue(now, 32);
-      yield* Effect.forEach(due, (monitor) => pollMonitor(monitor), {
-        concurrency: POLL_CONCURRENCY,
-      });
-    }).pipe(Effect.ignore);
+    const pollOnce = pollSweepLock.withPermits(1)(
+      Effect.gen(function* () {
+        yield* reconcileStaleFallbackLaunches;
+        const now = yield* isoNow();
+        const due = yield* store.listDue(now, POLL_BATCH_LIMIT);
+        yield* Effect.forEach(due, (monitor) => pollMonitor(monitor), {
+          concurrency: POLL_CONCURRENCY,
+        });
+      }).pipe(Effect.ignore),
+    );
 
     // Background adaptive poller. Observe-only: no turn steering.
     yield* pollOnce.pipe(
       Effect.andThen(Effect.sleep(Duration.seconds(15))),
       Effect.forever,
-      Effect.forkScoped,
-      Effect.interruptible,
-    );
-
-    // Safety wake if clocks/leases stall.
-    yield* Stream.fromSchedule(Schedule.spaced(Duration.seconds(30))).pipe(
-      Stream.mapEffect(() => pollOnce),
-      Stream.runDrain,
       Effect.forkScoped,
       Effect.interruptible,
     );
