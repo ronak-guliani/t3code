@@ -375,13 +375,18 @@ export const ChildWaitDeadlineAt = Schema.String.check(
   }),
 );
 
+export const ChildWaitAssignmentIdentity = Schema.Struct({
+  childThreadId: ThreadId,
+  assignmentId: MessageId,
+});
+export type ChildWaitAssignmentIdentity = typeof ChildWaitAssignmentIdentity.Type;
+
 export const ChildWaitCondition = Schema.Struct({
   mode: Schema.Literals(["any", "all", "decisions-only"]),
   generationId: Schema.optional(CommandId),
   assignments: Schema.Array(
     Schema.Struct({
-      childThreadId: ThreadId,
-      assignmentId: MessageId,
+      ...ChildWaitAssignmentIdentity.fields,
       outcome: Schema.optional(Schema.Literals(["result-available", "failed", "blocked"])),
     }),
   ).check(Schema.isMaxLength(32)),
@@ -1048,6 +1053,7 @@ const ProjectDeleteCommand = Schema.Struct({
 
 const ThreadCreateCommand = Schema.Struct({
   delegation: Schema.optional(ThreadDelegation),
+  parentWait: Schema.optional(Schema.NullOr(ChildWaitCondition)),
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1173,6 +1179,16 @@ const ThreadChildWaitDeadlineExpireCommand = Schema.Struct({
   expectedDeadlineAt: ChildWaitDeadlineAt,
   expectedGenerationId: Schema.optional(CommandId),
   expiredAt: ChildWaitDeadlineAt,
+});
+
+const ThreadChildWaitPruneCommand = Schema.Struct({
+  type: Schema.Literal("thread.child.wait.prune"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  assignments: Schema.Array(ChildWaitAssignmentIdentity).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(32),
+  ),
 });
 
 export const CollaborationDelivery = Schema.Struct({
@@ -1806,6 +1822,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadPinReorderCommand,
   ThreadDecoupleCommand,
   ThreadMetaUpdateCommand,
+  ThreadChildWaitPruneCommand,
   ThreadPullRequestLinkCommand,
   ThreadPullRequestUnlinkCommand,
   ThreadPullRequestRekeyCommand,
@@ -1854,6 +1871,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadPinReorderCommand,
   ThreadDecoupleCommand,
   ThreadMetaUpdateCommand,
+  ThreadChildWaitPruneCommand,
   ThreadPullRequestLinkCommand,
   ThreadPullRequestUnlinkCommand,
   ThreadPullRequestRekeyCommand,
