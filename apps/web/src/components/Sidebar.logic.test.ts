@@ -97,8 +97,12 @@ describe("matchesSidebarThreadFilter", () => {
         {
           ...baseThread,
           session: {
+            provider: ProviderDriverKind.make("codex"),
+            status: "ready",
             orchestrationStatus: "running",
             activeTurnId: TurnId.make("turn-1"),
+            createdAt: "2026-09-24T20:00:00.000Z",
+            updatedAt: "2026-09-24T20:00:00.000Z",
           },
         },
         "active",
