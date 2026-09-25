@@ -365,6 +365,96 @@ describe("orchestration projector", () => {
       ),
     );
 
+    const afterCollaborationUpdate = await Effect.runPromise(
+      projectEvent(
+        afterPendingAssociation,
+        makeEvent({
+          sequence: 7,
+          type: "thread.collaboration-request-updated",
+          aggregateKind: "thread",
+          aggregateId: "thread-pr",
+          occurredAt: later,
+          commandId: "cmd-collaboration-update",
+          payload: {
+            threadId: "thread-pr",
+            action: "created",
+            request: {
+              requestId: "collaboration-request",
+              kind: "clarification",
+              exchangeId: "exchange",
+              senderThreadId: "thread-pr",
+              recipientThreadId: "thread-pr",
+              blocking: true,
+              senderAuthority: {
+                executionId: "sender",
+                generation: 0,
+                dispatchId: null,
+                turnId: null,
+              },
+              recipientAuthority: {
+                executionId: "recipient",
+                generation: 0,
+                dispatchId: null,
+                turnId: null,
+              },
+              producingExecution: {
+                executionId: "producer",
+                generation: 0,
+                dispatchId: null,
+                turnId: null,
+              },
+              payloadRef: { ref: "payload://request", sha256: "request-hash" },
+              candidateRefs: [],
+              findingRefs: [],
+              supersedesRequestId: null,
+              deliveryQueuedTurnId: null,
+              responseDeliveryQueuedTurnId: null,
+              responseRef: null,
+              response: null,
+              consumedExecution: null,
+              status: "waiting",
+              terminalOutcome: null,
+              createdAt: later,
+              updatedAt: later,
+            },
+            updatedAt: later,
+          },
+        }),
+      ),
+    );
+    const afterPullRequestLink = await Effect.runPromise(
+      projectEvent(
+        afterPendingAssociation,
+        makeEvent({
+          sequence: 7,
+          type: "thread.pull-request-linked",
+          aggregateKind: "thread",
+          aggregateId: "thread-pr",
+          occurredAt: later,
+          commandId: "cmd-link-pull-request",
+          payload: {
+            threadId: "thread-pr",
+            link: {
+              pullRequest: supportingPullRequest,
+              source: "manual",
+              linkedAt: later,
+            },
+            updatedAt: later,
+          },
+        }),
+      ),
+    );
+    expect({
+      afterCollaborationUpdate: afterCollaborationUpdate.threads.find(
+        (thread) => thread.id === "thread-pr",
+      )?.pendingPullRequestAssociation,
+      afterPullRequestLink: afterPullRequestLink.threads.find((thread) => thread.id === "thread-pr")
+        ?.pendingPullRequestAssociation,
+    }).toEqual({
+      afterCollaborationUpdate: pendingIntent,
+      afterPullRequestLink: null,
+    });
+
     const afterWorkspaceUnlink = await Effect.runPromise(
       projectEvent(
         afterPendingAssociation,

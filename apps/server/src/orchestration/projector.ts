@@ -620,7 +620,6 @@ export function projectEvent(
                 left.createdAt.localeCompare(right.createdAt),
               );
             })(),
-            pendingPullRequestAssociation: null,
             updatedAt: payload.updatedAt,
           }),
         })),
@@ -663,6 +662,7 @@ export function projectEvent(
                 ? [...existing, payload.link]
                 : existing.map((link, linkIndex) => (linkIndex === index ? payload.link : link));
             })(),
+            pendingPullRequestAssociation: null,
             updatedAt: payload.updatedAt,
           }),
         })),
