@@ -15,6 +15,7 @@ import { DEFAULT_NEW_THREAD_WORKSPACE } from "../lib/newThreadDefaults";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 import {
+  isThreadActivelyWorking,
   hasUnseenThreadCompletion,
   resolveThreadSemanticStatus,
 } from "@t3tools/client-runtime/state/thread-status";
@@ -50,6 +51,7 @@ export function matchesSidebarThreadFilter(
   thread: Pick<
     SidebarThreadSummary,
     | "session"
+    | "latestTurn"
     | "hasPendingApprovals"
     | "hasPendingUserInput"
     | "hasPendingQueuedTurn"
@@ -64,13 +66,15 @@ export function matchesSidebarThreadFilter(
 
   if (filter === "active") {
     return (
-      thread.session?.status === "connecting" ||
-      thread.session?.status === "running" ||
       thread.hasPendingApprovals ||
       thread.hasPendingUserInput ||
-      thread.hasPendingQueuedTurn ||
-      thread.backgroundAgentRuns?.some((run) => run.status === "running") === true ||
-      thread.virtualAgentRun?.status === "running"
+      isThreadActivelyWorking({
+        latestTurn: thread.latestTurn,
+        session: thread.session,
+        hasPendingQueuedTurn: thread.hasPendingQueuedTurn,
+        virtualAgentRun: thread.virtualAgentRun,
+      }) ||
+      thread.backgroundAgentRuns?.some((run) => run.status === "running") === true
     );
   }
 
@@ -80,9 +84,7 @@ export function matchesSidebarThreadFilter(
   ];
   if (pullRequests.length === 0) return false;
   if (filter === "with_pr") return true;
-  return pullRequests.some(
-    (pullRequest) => pullRequest.state === "open" || pullRequest.state === null,
-  );
+  return pullRequests.some((pullRequest) => pullRequest.state === "open");
 }
 
 export function filterSidebarThreads<T extends SidebarThreadSummary>(

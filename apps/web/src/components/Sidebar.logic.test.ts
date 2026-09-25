@@ -52,6 +52,7 @@ const localEnvironmentId = EnvironmentId.make("environment-local");
 describe("matchesSidebarThreadFilter", () => {
   const baseThread = {
     session: null,
+    latestTurn: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasPendingQueuedTurn: false,
@@ -69,6 +70,40 @@ describe("matchesSidebarThreadFilter", () => {
       true,
     );
     expect(matchesSidebarThreadFilter({ ...baseThread }, "active")).toBe(false);
+  });
+
+  it("matches threads whose latest turn is still running", () => {
+    expect(
+      matchesSidebarThreadFilter(
+        {
+          ...baseThread,
+          latestTurn: {
+            turnId: TurnId.make("turn-1"),
+            state: "running",
+            requestedAt: "2026-09-24T20:00:00.000Z",
+            startedAt: "2026-09-24T20:00:00.000Z",
+            completedAt: null,
+            assistantMessageId: null,
+          },
+        },
+        "active",
+      ),
+    ).toBe(true);
+  });
+
+  it("matches threads with an active orchestration turn before latest turn data arrives", () => {
+    expect(
+      matchesSidebarThreadFilter(
+        {
+          ...baseThread,
+          session: {
+            orchestrationStatus: "running",
+            activeTurnId: TurnId.make("turn-1"),
+          },
+        },
+        "active",
+      ),
+    ).toBe(true);
   });
 
   it("matches threads with any linked pull request", () => {
@@ -113,6 +148,22 @@ describe("matchesSidebarThreadFilter", () => {
         "open_pr",
       ),
     ).toBe(true);
+    expect(
+      matchesSidebarThreadFilter(
+        {
+          ...baseThread,
+          pullRequest: {
+            number: 2,
+            title: "Historical PR",
+            url: "https://example.test/pr/2",
+            baseBranch: "main",
+            headBranch: "old-feature",
+            state: null,
+          },
+        },
+        "open_pr",
+      ),
+    ).toBe(false);
   });
 });
 

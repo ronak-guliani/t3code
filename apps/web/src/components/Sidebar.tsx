@@ -2971,7 +2971,12 @@ function ProjectSortMenu({
           <MenuRadioGroup
             value={threadFilter}
             onValueChange={(value) => {
-              if (value in SIDEBAR_THREAD_FILTER_LABELS) {
+              if (
+                value === "all" ||
+                value === "active" ||
+                value === "with_pr" ||
+                value === "open_pr"
+              ) {
                 onThreadFilterChange(value as SidebarThreadFilter);
               }
             }}
