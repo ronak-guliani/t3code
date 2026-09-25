@@ -761,6 +761,7 @@ describe("QueuedTurnReactor", () => {
     const wait = {
       mode: "all",
       deadlineAt,
+      generationId: CommandId.make("deadline-wait-generation"),
       assignments: [
         {
           childThreadId: ThreadId.make("child"),
@@ -797,6 +798,7 @@ describe("QueuedTurnReactor", () => {
         type: "thread.child-wait.deadline-expire",
         threadId,
         expectedDeadlineAt: deadlineAt,
+        expectedGenerationId: CommandId.make("deadline-wait-generation"),
       },
     ]);
   });

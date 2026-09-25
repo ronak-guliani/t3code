@@ -139,11 +139,12 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
             commandId: serverCommandId("child-wait.deadline-expire"),
             threadId,
             expectedDeadlineAt: wait.deadlineAt,
+            ...(wait.generationId !== undefined ? { expectedGenerationId: wait.generationId } : {}),
             expiredAt: new Date().toISOString(),
           });
           return;
         }
-        yield* scheduleChildWake(threadId, wait.deadlineAt, "wait-deadline");
+        yield* scheduleChildWake(threadId, wait.deadlineAt, "wait-deadline", wait.generationId);
       }
       const queuedTurns = thread?.queuedTurns ?? [];
       if (queuedTurns.length === 0 || !isThreadReadyForQueuedDispatch(thread)) {
@@ -447,8 +448,9 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     threadId: ThreadId,
     dueAt: string,
     kind: "collection" | "wait-deadline",
+    generationId?: CommandId,
   ): Effect.Effect<void> => {
-    const key = `${kind}:${threadId}:${dueAt}`;
+    const key = `${kind}:${threadId}:${dueAt}:${generationId ?? ""}`;
     if (scheduledChildWakes.has(key)) return Effect.void;
     scheduledChildWakes.add(key);
     return Effect.sleep(Duration.millis(Math.max(0, Date.parse(dueAt) - Date.now()))).pipe(

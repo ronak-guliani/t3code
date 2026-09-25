@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { createHash } from "node:crypto";
+import { ChildWaitDeadlineAt } from "@t3tools/contracts";
 import type {
   ChildNudgeUpdate,
   ChildThreadLifecycle,
@@ -12,7 +13,7 @@ import type {
   ThreadNudging,
   TurnId,
 } from "@t3tools/contracts";
-import { Effect, Option } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import { resolveThreadWorkspaceCwd } from "../checkpointing/Utils.ts";
@@ -74,6 +75,7 @@ import {
 } from "@t3tools/client-runtime/validation-lifecycle";
 
 const FORK_TITLE_PREFIX = "Forked: ";
+const isChildWaitDeadlineAt = Schema.is(ChildWaitDeadlineAt);
 /**
  * Blocked-on-you work must never stay hidden inside a settled row, so these
  * activity kinds reset the settlement lifecycle. Hoisted because
@@ -611,15 +613,20 @@ function nudgingMetaEvent(
 
 function childWaitProgressStatus(wait, threads) {
   if (!wait) return undefined;
-  if (wait.mode === "decisions-only") {
-    return "Wait (decisions-only): decisions and blockers only.";
-  }
   const total = wait.assignments.length;
   const settled = wait.assignments.filter((assignment) => assignment.outcome !== undefined).length;
+  const outstanding = wait.assignments.find((assignment) => assignment.outcome === undefined);
+  if (wait.mode === "decisions-only") {
+    if (total === 0) return "Wait (decisions-only): decisions and blockers only.";
+    if (!outstanding) {
+      return `Wait (decisions-only): ${settled}/${total} settled; assignment results do not satisfy this wait; only decisions or blockers wake it.`;
+    }
+    const child = threads.find((candidate) => candidate.id === outstanding.childThreadId);
+    return `Wait (decisions-only): ${settled}/${total} settled; still waiting on ${child?.title ?? "Child"} (${outstanding.childThreadId}) for a decision or blocker.`;
+  }
   if (wait.satisfiedAt || childWaitIsSatisfied(wait)) {
     return `Wait (${wait.mode}): ${settled}/${total} settled; condition met.`;
   }
-  const outstanding = wait.assignments.find((assignment) => assignment.outcome === undefined);
   if (!outstanding) {
     return `Wait (${wait.mode}): ${settled}/${total} settled; at least one assignment needs attention.`;
   }
@@ -2369,6 +2376,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         !wait ||
         wait.deadlineAt !== command.expectedDeadlineAt ||
+        wait.generationId !== command.expectedGenerationId ||
         wait.satisfiedAt ||
         childWaitIsSatisfied(wait)
       ) {
@@ -2423,7 +2431,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           Math.floor((Date.parse(command.expiredAt) - Date.parse(startedAt)) / 1_000),
         );
         const reportId = `wait-deadline:${createHash("sha256")
-          .update(`${wait.deadlineAt}:${assignment.childThreadId}:${assignment.assignmentId}`)
+          .update(
+            JSON.stringify([
+              wait.generationId ?? null,
+              wait.deadlineAt,
+              assignment.childThreadId,
+              assignment.assignmentId,
+            ]),
+          )
           .digest("hex")}`;
         const report: ChildNudgeUpdate = {
           id: reportId,
@@ -2487,6 +2502,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const occurredAt = nowIso();
       let childWait = command.childWait;
       if (childWait) {
+        if (childWait.deadlineAt !== undefined && !isChildWaitDeadlineAt(childWait.deadlineAt)) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A child wait deadline must be a valid ISO date-time.",
+          });
+        }
         if (
           childWait.satisfiedAt !== undefined ||
           (childWait.mode !== "decisions-only" && childWait.assignments.length === 0) ||
@@ -2525,9 +2546,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           });
         }
         childWait = {
+          generationId: command.commandId,
           mode: childWait.mode,
           assignments,
-          ...(childWait.deadlineAt ? { deadlineAt: childWait.deadlineAt } : {}),
+          ...(childWait.deadlineAt !== undefined ? { deadlineAt: childWait.deadlineAt } : {}),
         };
       }
       const metaUpdatedEvent: PlannedOrchestrationEvent = {

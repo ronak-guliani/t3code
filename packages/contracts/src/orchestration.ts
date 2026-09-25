@@ -358,8 +358,26 @@ export const ChildNudgeOrigin = Schema.Struct({
   collectUntil: Schema.optional(IsoDateTime),
 });
 
+const CHILD_WAIT_DEADLINE_PATTERN =
+  /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+
+export const ChildWaitDeadlineAt = Schema.String.check(
+  Schema.makeFilter((value) => {
+    const datePart = value.slice(0, 10);
+    const date = new Date(`${datePart}T00:00:00.000Z`);
+    return (
+      (CHILD_WAIT_DEADLINE_PATTERN.test(value) &&
+        Number.isFinite(Date.parse(value)) &&
+        Number.isFinite(date.getTime()) &&
+        date.toISOString().slice(0, 10) === datePart) ||
+      "Expected a valid ISO 8601 date-time."
+    );
+  }),
+);
+
 export const ChildWaitCondition = Schema.Struct({
   mode: Schema.Literals(["any", "all", "decisions-only"]),
+  generationId: Schema.optional(CommandId),
   assignments: Schema.Array(
     Schema.Struct({
       childThreadId: ThreadId,
@@ -368,7 +386,7 @@ export const ChildWaitCondition = Schema.Struct({
     }),
   ).check(Schema.isMaxLength(32)),
   satisfiedAt: Schema.optional(IsoDateTime),
-  deadlineAt: Schema.optional(IsoDateTime),
+  deadlineAt: Schema.optional(ChildWaitDeadlineAt),
 });
 export type ChildWaitCondition = typeof ChildWaitCondition.Type;
 
@@ -1152,8 +1170,9 @@ const ThreadChildWaitDeadlineExpireCommand = Schema.Struct({
   type: Schema.Literal("thread.child-wait.deadline-expire"),
   commandId: CommandId,
   threadId: ThreadId,
-  expectedDeadlineAt: IsoDateTime,
-  expiredAt: IsoDateTime,
+  expectedDeadlineAt: ChildWaitDeadlineAt,
+  expectedGenerationId: Schema.optional(CommandId),
+  expiredAt: ChildWaitDeadlineAt,
 });
 
 export const CollaborationDelivery = Schema.Struct({
