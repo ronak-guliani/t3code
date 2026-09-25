@@ -131,7 +131,7 @@ describe("buildCopilotAcpSpawnInput", () => {
         "zero non-invokable resources does not mean the server exposes zero tools",
       );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
-        "Never call them to prepare a workspace for a future delegated thread",
+        "delegate child checkouts through each child's `workspace` field, never a handoff tool",
       );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`associate_pull_request`");
       expect(buildCopilotSessionContractFingerprint({})).toMatch(/^[a-f0-9]{64}$/);

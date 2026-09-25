@@ -1924,6 +1924,20 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadDelegationSettleCommand = Schema.Struct({
+  type: Schema.Literal("thread.delegation.settle"),
+  commandId: CommandId,
+  threadId: ThreadId,
+});
+
+const ThreadChildAssignmentUnavailableCommand = Schema.Struct({
+  type: Schema.Literal("thread.child.assignment.unavailable"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  childThreadId: ThreadId,
+  assignmentId: MessageId,
+});
+
 const ThreadActivityAppendCommand = Schema.Struct({
   type: Schema.Literal("thread.activity.append"),
   commandId: CommandId,
@@ -1958,6 +1972,8 @@ export const InternalOrchestrationCommand = Schema.Union([
   ThreadReviewResultSetCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
+  ThreadDelegationSettleCommand,
+  ThreadChildAssignmentUnavailableCommand,
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
   ThreadTitleRegenerationCompleteCommand,

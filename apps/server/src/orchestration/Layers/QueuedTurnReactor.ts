@@ -5,7 +5,7 @@ import {
   ThreadId,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
-import { Cause, Duration, Effect, Layer, Option, Result, Schema, Stream } from "effect";
+import { Cause, Duration, Effect, Layer, Option, PubSub, Result, Schema, Stream } from "effect";
 
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
@@ -25,6 +25,7 @@ import {
 } from "../commandInvariants.ts";
 import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import { isAutomaticChildNudgeBlocked } from "../childNudging.ts";
+import { settleDelegation } from "../delegationSettlement.ts";
 import { evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
 
 const MONITOR_REVALIDATION_RETRY_INTERVAL = Duration.seconds(20);
@@ -62,6 +63,30 @@ function canChangeQueuedTurnReadiness(event: OrchestrationEvent): boolean {
       return false;
     default:
       return event.aggregateKind === "thread";
+  }
+}
+
+function canChangeDelegationSettlement(event: OrchestrationEvent): boolean {
+  switch (event.type) {
+    case "thread.activity-appended":
+    case "thread.archived":
+    case "thread.child-lifecycle-notified":
+    case "thread.decoupled":
+    case "thread.deleted":
+    case "thread.message-sent":
+    case "thread.meta-updated":
+    case "thread.queued-turn-created":
+    case "thread.queued-turn-deleted":
+    case "thread.queued-turn-dispatched":
+    case "thread.queued-turn-failed":
+    case "thread.queued-turn-updated":
+    case "thread.session-set":
+    case "thread.turn-diff-completed":
+    case "thread.turn-start-requested":
+    case "thread.unarchived":
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -415,31 +440,124 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     );
   });
 
-  const start: QueuedTurnReactorShape["start"] = Effect.fn("start")(function* () {
-    yield* drainQueuedThreads;
-
-    yield* Effect.forkScoped(
-      Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
-        if (!canChangeQueuedTurnReadiness(event)) return Effect.void;
-        const threadId = threadIdForEvent(event);
-        if (threadId === null) return Effect.void;
-        return Effect.gen(function* () {
-          yield* drainThreadSafely(threadId);
-          if (
-            event.type === "thread.meta-updated" ||
-            event.type === "thread.archived" ||
-            event.type === "thread.deleted" ||
-            event.type === "thread.decoupled" ||
-            event.type === "thread.queued-turn-created" ||
-            event.type === "thread.queued-turn-updated"
-          ) {
-            const state = yield* orchestrationEngine.getReadModel();
-            const parentId = state.threads.find((thread) => thread.id === threadId)?.parentThreadId;
-            if (parentId) yield* drainThreadSafely(parentId);
-          }
-        });
-      }),
+  const settleThreadIfReady = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const child = readModel.threads.find((thread) => thread.id === threadId);
+      if (!child || !settleDelegation(readModel, child)) return;
+      yield* orchestrationEngine.dispatch({
+        type: "thread.delegation.settle",
+        commandId: serverCommandId("delegation.settle"),
+        threadId,
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("queued turn reactor failed to settle child delegation", {
+          threadId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
     );
+
+  const reconcileUnavailableChildAssignments = (childThreadId: ThreadId) =>
+    Effect.gen(function* () {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const assignments = readModel.threads.flatMap((parent) =>
+        (parent.nudging?.wait?.assignments ?? [])
+          .filter(
+            (assignment) =>
+              assignment.childThreadId === childThreadId && assignment.outcome === undefined,
+          )
+          .map((assignment) => ({
+            parentThreadId: parent.id,
+            assignmentId: assignment.assignmentId,
+          })),
+      );
+      yield* Effect.forEach(
+        assignments,
+        (assignment) =>
+          orchestrationEngine.dispatch({
+            type: "thread.child.assignment.unavailable",
+            commandId: serverCommandId("child.assignment.unavailable"),
+            threadId: assignment.parentThreadId,
+            childThreadId,
+            assignmentId: assignment.assignmentId,
+          }),
+        { concurrency: 1, discard: true },
+      );
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("queued turn reactor failed to reconcile unavailable child assignments", {
+          childThreadId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+
+  const reconcileOpenDelegations = Effect.gen(function* () {
+    const readModel = yield* orchestrationEngine.getReadModel();
+    yield* Effect.forEach(
+      readModel.threads.filter((thread) => settleDelegation(readModel, thread) !== null),
+      (thread) => settleThreadIfReady(thread.id),
+      { concurrency: 1, discard: true },
+    );
+  });
+
+  const start: QueuedTurnReactorShape["start"] = Effect.fn("start")(function* () {
+    const subscription = yield* orchestrationEngine.acquireDomainEventSubscription;
+    yield* Effect.forkScoped(
+      Stream.forever(Stream.fromEffect(PubSub.take(subscription))).pipe(
+        Stream.runForEach((event) => {
+          const threadId = threadIdForEvent(event);
+          if (threadId === null) return Effect.void;
+          return Effect.gen(function* () {
+            if (canChangeQueuedTurnReadiness(event)) {
+              yield* drainThreadSafely(threadId);
+            }
+            if (canChangeDelegationSettlement(event)) {
+              yield* settleThreadIfReady(threadId);
+              const state = yield* orchestrationEngine.getReadModel();
+              const parentId = state.threads.find(
+                (thread) => thread.id === threadId,
+              )?.parentThreadId;
+              if (parentId) yield* settleThreadIfReady(parentId);
+              if (
+                event.type === "thread.meta-updated" ||
+                event.type === "thread.archived" ||
+                event.type === "thread.deleted" ||
+                event.type === "thread.decoupled" ||
+                event.type === "thread.queued-turn-created" ||
+                event.type === "thread.queued-turn-updated"
+              ) {
+                if (parentId) yield* drainThreadSafely(parentId);
+              }
+              if (
+                event.type === "thread.meta-updated" ||
+                event.type === "thread.archived" ||
+                event.type === "thread.deleted" ||
+                event.type === "thread.decoupled"
+              ) {
+                yield* reconcileUnavailableChildAssignments(threadId);
+              }
+            }
+          });
+        }),
+      ),
+    );
+    yield* drainQueuedThreads;
+    const startupReadModel = yield* orchestrationEngine.getReadModel();
+    const waitedChildIds = new Set(
+      startupReadModel.threads.flatMap((parent) =>
+        (parent.nudging?.wait?.assignments ?? [])
+          .filter((assignment) => assignment.outcome === undefined)
+          .map((assignment) => assignment.childThreadId),
+      ),
+    );
+    yield* Effect.forEach(waitedChildIds, reconcileUnavailableChildAssignments, {
+      concurrency: 1,
+      discard: true,
+    });
+    yield* reconcileOpenDelegations;
     yield* Effect.forkScoped(
       Stream.runForEach(serverSettings.streamChanges, () => drainQueuedThreads),
     );
