@@ -73,6 +73,7 @@ import {
 import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import {
   type SidebarProjectSortOrder,
+  type SidebarThreadFilter,
   type SidebarThreadSortOrder,
 } from "@t3tools/contracts/settings";
 import { usePrimaryEnvironmentId } from "../environments/primary";
@@ -183,6 +184,8 @@ import {
   resolveThreadRowClassName,
   resolveSidebarThreadClickKind,
   resolveThreadStatusPill,
+  filterSidebarThreads,
+  SIDEBAR_THREAD_FILTER_LABELS,
   orderItemsByPreferredIds,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
@@ -1490,6 +1493,7 @@ interface SidebarProjectItemProps {
   suppressProjectClickAfterDragRef: React.RefObject<boolean>;
   suppressProjectClickForContextMenuRef: React.RefObject<boolean>;
   isManualProjectSorting: boolean;
+  threadFilter: SidebarThreadFilter;
   dragHandleProps: SortableProjectHandleProps | null;
   /**
    * Set when the sidebar is filtered to this single project: the header would
@@ -1519,6 +1523,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     suppressProjectClickAfterDragRef,
     suppressProjectClickForContextMenuRef,
     isManualProjectSorting,
+    threadFilter,
     dragHandleProps,
   } = props;
   const threadSortOrder = useSettings<SidebarThreadSortOrder>(
@@ -1735,7 +1740,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         lastVisitedAt,
       });
     };
-    const visibleProjectThreads = selectVisibleSidebarThreads(projectThreads);
+    const visibleProjectThreads = selectVisibleSidebarThreads(
+      filterSidebarThreads(projectThreads, threadFilter),
+    );
     const threadRows = buildSidebarThreadRows({
       threads: visibleProjectThreads,
       pinnedThreadKeys,
@@ -1759,6 +1766,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     threadExpandedOverrides,
     threadLastVisitedAts,
     threadSortOrder,
+    threadFilter,
   ]);
 
   const pinnedCollapsedThread = useMemo(() => {
@@ -2881,16 +2889,20 @@ const ProjectFilterMenu = memo(function ProjectFilterMenu({
 function ProjectSortMenu({
   projectSortOrder,
   threadSortOrder,
+  threadFilter,
   projectGroupingMode,
   onProjectSortOrderChange,
   onThreadSortOrderChange,
+  onThreadFilterChange,
   onProjectGroupingModeChange,
 }: {
   projectSortOrder: SidebarProjectSortOrder;
   threadSortOrder: SidebarThreadSortOrder;
+  threadFilter: SidebarThreadFilter;
   projectGroupingMode: SidebarProjectGroupingMode;
   onProjectSortOrderChange: (sortOrder: SidebarProjectSortOrder) => void;
   onThreadSortOrderChange: (sortOrder: SidebarThreadSortOrder) => void;
+  onThreadFilterChange: (filter: SidebarThreadFilter) => void;
   onProjectGroupingModeChange: (mode: SidebarProjectGroupingMode) => void;
 }) {
   return (
@@ -2941,6 +2953,31 @@ function ProjectSortMenu({
           >
             {(
               Object.entries(SIDEBAR_THREAD_SORT_LABELS) as Array<[SidebarThreadSortOrder, string]>
+            ).map(([value, label]) => (
+              <MenuRadioItem
+                key={value}
+                value={value}
+                className="min-h-7 py-1 text-[length:var(--app-sidebar-font-size)]"
+              >
+                {label}
+              </MenuRadioItem>
+            ))}
+          </MenuRadioGroup>
+        </MenuGroup>
+        <MenuGroup>
+          <div className="px-2 pt-2 pb-1 font-medium text-[length:var(--app-sidebar-font-size)] text-muted-foreground">
+            Show threads
+          </div>
+          <MenuRadioGroup
+            value={threadFilter}
+            onValueChange={(value) => {
+              if (value in SIDEBAR_THREAD_FILTER_LABELS) {
+                onThreadFilterChange(value as SidebarThreadFilter);
+              }
+            }}
+          >
+            {(
+              Object.entries(SIDEBAR_THREAD_FILTER_LABELS) as Array<[SidebarThreadFilter, string]>
             ).map(([value, label]) => (
               <MenuRadioItem
                 key={value}
@@ -3146,6 +3183,7 @@ interface SidebarProjectsContentProps {
   handleDesktopUpdateButtonClick: () => void;
   projectSortOrder: SidebarProjectSortOrder;
   threadSortOrder: SidebarThreadSortOrder;
+  threadFilter: SidebarThreadFilter;
   projectGroupingMode: SidebarProjectGroupingMode;
   updateSettings: ReturnType<typeof useUpdateSettings>["updateSettings"];
   openAddProject: () => void;
@@ -3267,6 +3305,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     handleDesktopUpdateButtonClick,
     projectSortOrder,
     threadSortOrder,
+    threadFilter,
     projectGroupingMode,
     updateSettings,
     openAddProject,
@@ -3365,6 +3404,12 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     },
     [updateSettings],
   );
+  const handleThreadFilterChange = useCallback(
+    (filter: SidebarThreadFilter) => {
+      updateSettings({ sidebarThreadFilter: filter });
+    },
+    [updateSettings],
+  );
   const handleProjectGroupingModeChange = useCallback(
     (groupingMode: SidebarProjectGroupingMode) => {
       updateSettings({ sidebarProjectGroupingMode: groupingMode });
@@ -3423,9 +3468,11 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
             <ProjectSortMenu
               projectSortOrder={projectSortOrder}
               threadSortOrder={threadSortOrder}
+              threadFilter={threadFilter}
               projectGroupingMode={projectGroupingMode}
               onProjectSortOrderChange={handleProjectSortOrderChange}
               onThreadSortOrderChange={handleThreadSortOrderChange}
+              onThreadFilterChange={handleThreadFilterChange}
               onProjectGroupingModeChange={handleProjectGroupingModeChange}
             />
             <Tooltip>
@@ -3508,6 +3555,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                           suppressProjectClickForContextMenuRef
                         }
                         isManualProjectSorting={isManualProjectSorting}
+                        threadFilter={threadFilter}
                         hideProjectHeader={hideProjectHeader}
                         dragHandleProps={dragHandleProps}
                       />
@@ -3543,6 +3591,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 suppressProjectClickAfterDragRef={suppressProjectClickAfterDragRef}
                 suppressProjectClickForContextMenuRef={suppressProjectClickForContextMenuRef}
                 isManualProjectSorting={isManualProjectSorting}
+                threadFilter={threadFilter}
                 hideProjectHeader={hideProjectHeader}
                 dragHandleProps={null}
               />
@@ -3585,6 +3634,7 @@ export default function Sidebar() {
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const isOnSettings = pathname.startsWith("/settings");
   const sidebarThreadSortOrder = useSettings((s) => s.sidebarThreadSortOrder);
+  const sidebarThreadFilter = useSettings((s) => s.sidebarThreadFilter);
   const sidebarProjectSortOrder = useSettings((s) => s.sidebarProjectSortOrder);
   const sidebarProjectGroupingMode = useSettings((s) => s.sidebarProjectGroupingMode);
   const projectGroupingSettings = useSettings((settings) => ({
@@ -3912,7 +3962,10 @@ export default function Sidebar() {
       });
       const activeThreadKey = routeThreadKey ?? undefined;
       const projectThreads = selectVisibleSidebarThreads(
-        threadsByProjectKey.get(project.projectKey) ?? [],
+        filterSidebarThreads(
+          threadsByProjectKey.get(project.projectKey) ?? [],
+          sidebarThreadFilter,
+        ),
       );
       const pinnedCollapsedThreadKey =
         !projectExpanded && activeThreadKey
@@ -3952,6 +4005,7 @@ export default function Sidebar() {
     sidebarThreadLastVisitedAts,
     sidebarThreads,
     sidebarThreadSortOrder,
+    sidebarThreadFilter,
     visibleProjects,
     threadsByProjectKey,
   ]);
@@ -4223,6 +4277,7 @@ export default function Sidebar() {
             handleDesktopUpdateButtonClick={handleDesktopUpdateButtonClick}
             projectSortOrder={sidebarProjectSortOrder}
             threadSortOrder={sidebarThreadSortOrder}
+            threadFilter={sidebarThreadFilter}
             projectGroupingMode={sidebarProjectGroupingMode}
             updateSettings={updateSettings}
             openAddProject={openAddProjectCommandPalette}

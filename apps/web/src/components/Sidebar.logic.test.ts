@@ -23,6 +23,7 @@ import {
   resolveProjectExpanded,
   resolveSidebarThreadRowStatus,
   resolveSidebarThreadClickKind,
+  matchesSidebarThreadFilter,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
   shouldClearThreadSelectionOnMouseDown,
@@ -47,6 +48,73 @@ import {
 } from "../types";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("matchesSidebarThreadFilter", () => {
+  const baseThread = {
+    session: null,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    hasPendingQueuedTurn: false,
+    backgroundAgentRuns: [],
+    pullRequest: null,
+    pullRequests: [],
+  } as const;
+
+  it("matches all threads by default", () => {
+    expect(matchesSidebarThreadFilter({ ...baseThread }, "all")).toBe(true);
+  });
+
+  it("matches active threads with pending work", () => {
+    expect(matchesSidebarThreadFilter({ ...baseThread, hasPendingUserInput: true }, "active")).toBe(
+      true,
+    );
+    expect(matchesSidebarThreadFilter({ ...baseThread }, "active")).toBe(false);
+  });
+
+  it("matches threads with any linked pull request", () => {
+    expect(
+      matchesSidebarThreadFilter(
+        {
+          ...baseThread,
+          pullRequest: {
+            number: 1,
+            title: "PR",
+            url: "https://example.test/pr/1",
+            baseBranch: "main",
+            headBranch: "feature",
+            state: "merged",
+          },
+        },
+        "with_pr",
+      ),
+    ).toBe(true);
+  });
+
+  it("matches only open pull requests for the open PR filter", () => {
+    expect(
+      matchesSidebarThreadFilter(
+        {
+          ...baseThread,
+          pullRequests: [
+            {
+              pullRequest: {
+                number: 1,
+                title: "PR",
+                url: "https://example.test/pr/1",
+                baseBranch: "main",
+                headBranch: "feature",
+                state: "open",
+              },
+              source: "manual",
+              linkedAt: "2026-09-25T00:00:00.000Z",
+            },
+          ],
+        },
+        "open_pr",
+      ),
+    ).toBe(true);
+  });
+});
 
 describe("shouldRenderSidebarDraft", () => {
   it("keeps a sent draft visible until the server thread is published", () => {

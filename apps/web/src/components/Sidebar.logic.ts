@@ -1,5 +1,9 @@
 import * as React from "react";
-import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import type {
+  SidebarProjectSortOrder,
+  SidebarThreadFilter,
+  SidebarThreadSortOrder,
+} from "@t3tools/contracts/settings";
 import {
   getThreadSortTimestamp,
   sortThreads,
@@ -19,6 +23,12 @@ export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
 export const SIDEBAR_THREAD_HOVER_PREWARM_DELAY_MS = 120;
 export type SidebarNewThreadEnvMode = "local" | "worktree";
+export const SIDEBAR_THREAD_FILTER_LABELS: Record<SidebarThreadFilter, string> = {
+  all: "All threads",
+  active: "Active threads",
+  with_pr: "Threads with PRs",
+  open_pr: "Threads with open PRs",
+};
 type SidebarProject = {
   id: string;
   name: string;
@@ -34,6 +44,71 @@ export function shouldRenderSidebarDraft(input: {
   serverThreadPublished: boolean;
 }): boolean {
   return !input.serverThreadPublished && (input.hasUserContent || input.isPromoting);
+}
+
+export function matchesSidebarThreadFilter(
+  thread: Pick<
+    SidebarThreadSummary,
+    | "session"
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "hasPendingQueuedTurn"
+    | "backgroundAgentRuns"
+    | "virtualAgentRun"
+    | "pullRequest"
+    | "pullRequests"
+  >,
+  filter: SidebarThreadFilter,
+): boolean {
+  if (filter === "all") return true;
+
+  if (filter === "active") {
+    return (
+      thread.session?.status === "connecting" ||
+      thread.session?.status === "running" ||
+      thread.hasPendingApprovals ||
+      thread.hasPendingUserInput ||
+      thread.hasPendingQueuedTurn ||
+      thread.backgroundAgentRuns?.some((run) => run.status === "running") === true ||
+      thread.virtualAgentRun?.status === "running"
+    );
+  }
+
+  const pullRequests = [
+    ...(thread.pullRequests?.map((link) => link.pullRequest) ?? []),
+    ...(thread.pullRequest ? [thread.pullRequest] : []),
+  ];
+  if (pullRequests.length === 0) return false;
+  if (filter === "with_pr") return true;
+  return pullRequests.some(
+    (pullRequest) => pullRequest.state === "open" || pullRequest.state === null,
+  );
+}
+
+export function filterSidebarThreads<T extends SidebarThreadSummary>(
+  threads: readonly T[],
+  filter: SidebarThreadFilter,
+): T[] {
+  if (filter === "all") return [...threads];
+
+  const byKey = new Map(
+    threads.map((thread) => [`${thread.environmentId}:${thread.id}`, thread] as const),
+  );
+  const includedKeys = new Set<string>();
+  for (const thread of threads) {
+    if (!matchesSidebarThreadFilter(thread, filter)) continue;
+    let candidate: T | undefined = thread;
+    while (candidate) {
+      const key = `${candidate.environmentId}:${candidate.id}`;
+      if (includedKeys.has(key)) break;
+      includedKeys.add(key);
+      candidate =
+        candidate.parentThreadId === null
+          ? undefined
+          : byKey.get(`${candidate.environmentId}:${candidate.parentThreadId}`);
+    }
+  }
+  return threads.filter((thread) => includedKeys.has(`${thread.environmentId}:${thread.id}`));
 }
 
 export function resolveSidebarDraftPreview(input: {
