@@ -1913,14 +1913,20 @@ const make = Effect.gen(function* () {
         }
 
         if (event.type === "turn.completed" && !isDuplicateCompletionAfterInterruption) {
-          yield* Effect.forEach(runtimeEventToActivities(event), (activity) =>
-            orchestrationEngine.dispatch({
-              type: "thread.activity.append",
-              commandId: providerCommandId(event, "thread-activity-append"),
-              threadId: thread.id,
-              activity,
-              createdAt: activity.createdAt,
-            }),
+          yield* Effect.forEach(
+            runtimeEventToActivities(
+              event.turnId === undefined && lifecycleTurnId !== undefined
+                ? { ...event, turnId: lifecycleTurnId }
+                : event,
+            ),
+            (activity) =>
+              orchestrationEngine.dispatch({
+                type: "thread.activity.append",
+                commandId: providerCommandId(event, "thread-activity-append"),
+                threadId: thread.id,
+                activity,
+                createdAt: activity.createdAt,
+              }),
           ).pipe(Effect.asVoid);
         }
 

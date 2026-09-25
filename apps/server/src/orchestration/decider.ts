@@ -4248,6 +4248,77 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
     }
 
+    case "thread.child.assignment.unavailable": {
+      const parent = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (parent.archivedAt !== null || parent.deletedAt !== null) return [];
+      const wait = parent.nudging?.wait;
+      const assignment = wait?.assignments.find(
+        (entry) =>
+          entry.childThreadId === command.childThreadId &&
+          entry.assignmentId === command.assignmentId,
+      );
+      if (!wait || wait.satisfiedAt || !assignment || assignment.outcome) return [];
+
+      const child = readModel.threads.find((entry) => entry.id === command.childThreadId);
+      const unavailable =
+        !child ||
+        child.archivedAt !== null ||
+        child.deletedAt !== null ||
+        child.parentThreadId !== parent.id ||
+        child.nudging?.delegation?.assignmentId !== command.assignmentId;
+      if (!unavailable) return [];
+
+      const report: ChildNudgeUpdate = {
+        id: `assignment-stale:${command.childThreadId}:${command.assignmentId}`,
+        childThreadId: command.childThreadId,
+        childTitle: child?.title ?? `Unavailable child ${command.childThreadId}`,
+        assignmentId: command.assignmentId,
+        kind: "blocked",
+        summary:
+          "A child assignment in this wait is no longer available because the child was detached, archived, deleted, or reassigned. Revise the wait condition before continuing.",
+        wakeReason: "assignment-blocked",
+      };
+      const createdAt = nowIso();
+      const notification: PlannedOrchestrationEvent = {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: parent.id,
+          occurredAt: createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.child-lifecycle-notified",
+        payload: {
+          parentThreadId: parent.id,
+          childThreadId: command.childThreadId,
+          childTitle: report.childTitle,
+          lifecycle: "blocked",
+          dedupeKey: childLifecycleDedupeKey(command.childThreadId, "blocked", report.id),
+          createdAt,
+          report,
+        },
+      };
+      return [
+        notification,
+        nudgingMetaEvent(parent, notification, {
+          ...parent.nudging,
+          wait: {
+            ...wait,
+            assignments: wait.assignments.map((entry) =>
+              entry.childThreadId === command.childThreadId &&
+              entry.assignmentId === command.assignmentId
+                ? { ...entry, outcome: "blocked" }
+                : entry,
+            ),
+          },
+        }),
+        queueChildNudge(parent, report, notification),
+      ];
+    }
+
     case "thread.child.report": {
       const child = yield* requireThreadNotArchived({
         readModel,
