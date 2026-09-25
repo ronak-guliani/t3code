@@ -405,9 +405,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         // receipt so retrying the same command cannot apply it to a later state.
         if (
           eventBases.length === 0 &&
-          admittedCommand.type === "thread.meta.update" &&
-          (admittedCommand.expectedUpdatedAt !== undefined ||
-            admittedCommand.expectedWorkspaceCwd !== undefined)
+          (admittedCommand.type === "thread.delegation.settle" ||
+            (admittedCommand.type === "thread.meta.update" &&
+              (admittedCommand.expectedUpdatedAt !== undefined ||
+                admittedCommand.expectedWorkspaceCwd !== undefined)))
         ) {
           yield* commandReceiptRepository.upsert({
             commandId: command.commandId,
