@@ -658,6 +658,52 @@ describe("QueuedTurnReactor", () => {
     expect(settlementCommands(commands)).toHaveLength(0);
   });
 
+  it("does not index settlement state for an unrelated session event", async () => {
+    const initial = queuedReadModel();
+    const ordinaryThread = { ...initial.threads[0]!, queuedTurns: [] };
+    let threadIterations = 0;
+    const threads = new Proxy([ordinaryThread], {
+      get(target, property, receiver) {
+        if (property === Symbol.iterator) {
+          threadIterations += 1;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const resumed = { ...initial, threads };
+    const event: OrchestrationEvent = {
+      sequence: 2,
+      eventId: EventId.make("ordinary-session-set"),
+      aggregateKind: "thread",
+      aggregateId: ordinaryThread.id,
+      occurredAt: now,
+      commandId: CommandId.make("ordinary-session-set"),
+      causationEventId: null,
+      correlationId: CommandId.make("ordinary-session-set"),
+      metadata: {},
+      type: "thread.session-set",
+      payload: {
+        threadId: ordinaryThread.id,
+        session: {
+          threadId: ordinaryThread.id,
+          status: "idle",
+          providerName: "copilot",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+      },
+    };
+
+    const commands = await runReactor(initial, monitorSnapshot("head"), {
+      resume: { readModel: resumed, event },
+    });
+
+    expect(threadIterations).toBe(0);
+    expect(settlementCommands(commands)).toHaveLength(0);
+  });
+
   it("settles another thread while PR monitor revalidation is slow", async () => {
     const active = delegatedReadModel({ activeTurn: true });
     const parent = active.threads[0]!;

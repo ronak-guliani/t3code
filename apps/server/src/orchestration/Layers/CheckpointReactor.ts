@@ -11,7 +11,7 @@ import {
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
-import { Cause, Effect, Layer, Option, Schedule, Schema, Stream } from "effect";
+import { Cause, Effect, Layer, Option, Result, Schedule, Schema, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { deriveTurnScopedCheckpointFiles } from "../../checkpointing/TurnScopedFiles.ts";
@@ -274,6 +274,12 @@ const make = Effect.gen(function* () {
     readonly status: "ready" | "missing" | "error";
     readonly assistantMessageId: MessageId | undefined;
     readonly createdAt: string;
+    readonly workspaceBinding?: {
+      readonly canonicalPath: string;
+      readonly worktreePath: string;
+      readonly branch: string | null;
+      readonly generation: number;
+    };
   }) {
     yield* assertThreadWorkspaceOwned(input.thread);
     const fromTurnCount = Math.max(0, input.turnCount - 1);
@@ -305,9 +311,7 @@ const make = Effect.gen(function* () {
     yield* checkpointStore.captureCheckpoint({
       cwd: input.cwd,
       checkpointRef: targetCheckpointRef,
-      ...(input.thread.workspaceBinding !== undefined
-        ? { workspaceBinding: input.thread.workspaceBinding }
-        : {}),
+      ...(input.workspaceBinding !== undefined ? { workspaceBinding: input.workspaceBinding } : {}),
     });
 
     // Invalidate the workspace entry cache so the @-mention file picker
@@ -334,8 +338,8 @@ const make = Effect.gen(function* () {
         fromCheckpointRef,
         toCheckpointRef: targetCheckpointRef,
         fallbackFromToHead: false,
-        ...(input.thread.workspaceBinding !== undefined
-          ? { workspaceBinding: input.thread.workspaceBinding }
+        ...(input.workspaceBinding !== undefined
+          ? { workspaceBinding: input.workspaceBinding }
           : {}),
       })
       .pipe(
@@ -374,8 +378,8 @@ const make = Effect.gen(function* () {
               fromCheckpointRef: snapshotBaselineRef,
               toCheckpointRef: targetCheckpointRef,
               fallbackFromToHead: false,
-              ...(input.thread.workspaceBinding !== undefined
-                ? { workspaceBinding: input.thread.workspaceBinding }
+              ...(input.workspaceBinding !== undefined
+                ? { workspaceBinding: input.workspaceBinding }
                 : {}),
             })
             .pipe(
@@ -927,11 +931,67 @@ const make = Effect.gen(function* () {
     let providerRolledBack = false;
     let revertCommitted = false;
     let guardRestored = false;
-    yield* Effect.gen(function* () {
+    const revertResult = yield* Effect.result(
+      Effect.gen(function* () {
+        const restored = yield* checkpointStore.restoreCheckpoint({
+          cwd: sessionRuntime.value.cwd,
+          checkpointRef: targetCheckpointRef,
+          fallbackToHead: event.payload.turnCount === 0 && !initialBaselineExists,
+          ...(thread.workspaceBinding !== undefined
+            ? { workspaceBinding: thread.workspaceBinding }
+            : {}),
+        });
+        if (!restored) {
+          return yield* new CheckpointInvariantError({
+            operation: "CheckpointReactor.handleRevertRequested",
+            detail: `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
+          });
+        }
+
+        if (rolledBackTurns > 0) {
+          yield* providerService.rollbackConversation({
+            threadId: sessionRuntime.value.threadId,
+            numTurns: rolledBackTurns,
+          });
+          providerRolledBack = true;
+        }
+
+        const revertCommand = {
+          type: "thread.revert.complete" as const,
+          commandId: serverCommandId("checkpoint-revert-complete"),
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          createdAt: now,
+        };
+        yield* Effect.suspend(() => orchestrationEngine.dispatch(revertCommand)).pipe(
+          Effect.retry({
+            schedule: Schedule.spaced("100 millis"),
+            while: (error) => error._tag === "PersistenceSqlError",
+          }),
+        );
+        revertCommitted = true;
+
+        yield* workspaceEntries.invalidate(sessionRuntime.value.cwd);
+        yield* checkpointStore
+          .deleteCheckpointRefs({
+            cwd: sessionRuntime.value.cwd,
+            checkpointRefs: [...staleCompletionRefs, ...staleBaselineRefs],
+          })
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("checkpoint revert left stale refs for later cleanup", {
+                threadId: event.payload.threadId,
+                turnCount: event.payload.turnCount,
+                detail: error.message,
+              }),
+            ),
+          );
+      }),
+    );
+    if (Result.isFailure(revertResult) && !providerRolledBack && !revertCommitted) {
       const restored = yield* checkpointStore.restoreCheckpoint({
         cwd: sessionRuntime.value.cwd,
-        checkpointRef: targetCheckpointRef,
-        fallbackToHead: event.payload.turnCount === 0 && !initialBaselineExists,
+        checkpointRef: revertGuardRef,
         ...(thread.workspaceBinding !== undefined
           ? { workspaceBinding: thread.workspaceBinding }
           : {}),
@@ -939,101 +999,20 @@ const make = Effect.gen(function* () {
       if (!restored) {
         return yield* new CheckpointInvariantError({
           operation: "CheckpointReactor.handleRevertRequested",
-          detail: `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
+          detail: "Failed to restore the pre-revert workspace guard.",
         });
       }
-
-      if (rolledBackTurns > 0) {
-        yield* providerService.rollbackConversation({
-          threadId: sessionRuntime.value.threadId,
-          numTurns: rolledBackTurns,
-        });
-        providerRolledBack = true;
-      }
-
-      const revertCommand = {
-        type: "thread.revert.complete" as const,
-        commandId: serverCommandId("checkpoint-revert-complete"),
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        createdAt: now,
-      };
-      yield* Effect.suspend(() => orchestrationEngine.dispatch(revertCommand)).pipe(
-        Effect.retry({
-          schedule: Schedule.spaced("100 millis"),
-          while: (error) => error._tag === "PersistenceSqlError",
-        }),
-      );
-      revertCommitted = true;
-
-      yield* workspaceEntries.invalidate(sessionRuntime.value.cwd);
-      yield* checkpointStore
-        .deleteCheckpointRefs({
-          cwd: sessionRuntime.value.cwd,
-          checkpointRefs: [...staleCompletionRefs, ...staleBaselineRefs],
-        })
-        .pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("checkpoint revert left stale refs for later cleanup", {
-              threadId: event.payload.threadId,
-              turnCount: event.payload.turnCount,
-              detail: error.message,
-            }),
-          ),
-        );
-    }).pipe(
-      Effect.onError(() =>
-        providerRolledBack || revertCommitted
-          ? Effect.void
-          : checkpointStore
-              .restoreCheckpoint({
-                cwd: sessionRuntime.value.cwd,
-                checkpointRef: revertGuardRef,
-                ...(thread.workspaceBinding !== undefined
-                  ? { workspaceBinding: thread.workspaceBinding }
-                  : {}),
-              })
-              .pipe(
-                Effect.flatMap((restored) =>
-                  restored
-                    ? Effect.sync(() => {
-                        guardRestored = true;
-                      })
-                    : Effect.logError("Failed to restore the pre-revert workspace guard.", {
-                        threadId: event.payload.threadId,
-                        turnCount: event.payload.turnCount,
-                      }),
-                ),
-                Effect.catch((error) =>
-                  Effect.logError("Checkpoint revert guard restoration failed.", {
-                    threadId: event.payload.threadId,
-                    turnCount: event.payload.turnCount,
-                    detail: error.message,
-                  }),
-                ),
-              ),
-      ),
-      Effect.ensuring(
-        Effect.suspend(() =>
-          revertCommitted || guardRestored
-            ? checkpointStore
-                .deleteCheckpointRefs({
-                  cwd: sessionRuntime.value.cwd,
-                  checkpointRefs: [revertGuardRef],
-                })
-                .pipe(
-                  Effect.catch((error) =>
-                    Effect.logWarning("checkpoint revert left its guard ref for later cleanup", {
-                      threadId: event.payload.threadId,
-                      turnCount: event.payload.turnCount,
-                      detail: error.message,
-                    }),
-                  ),
-                )
-            : Effect.void,
-        ),
-      ),
-    );
+      guardRestored = true;
+    }
+    if (revertCommitted || guardRestored) {
+      yield* checkpointStore.deleteCheckpointRefs({
+        cwd: sessionRuntime.value.cwd,
+        checkpointRefs: [revertGuardRef],
+      });
+    }
+    if (Result.isFailure(revertResult)) {
+      return yield* revertResult.failure;
+    }
   });
 
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (event: OrchestrationEvent) {
@@ -1045,15 +1024,7 @@ const make = Effect.gen(function* () {
             turnCount: event.payload.turnCount,
             detail: error.message,
             createdAt: new Date().toISOString(),
-          }).pipe(
-            Effect.tapCause((cause) =>
-              Effect.logWarning(
-                "CheckpointReactor revert-failure activity dispatch failed",
-                Cause.pretty(cause),
-              ),
-            ),
-            Effect.catch(() => Effect.void),
-          ),
+          }),
         ),
       );
       return;
