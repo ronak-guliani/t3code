@@ -1,9 +1,12 @@
 import {
   CommandId,
+  MessageId,
   PullRequestMonitorFeedbackDeliveryId,
   QueuedTurnId,
   ThreadId,
   type OrchestrationEvent,
+  type OrchestrationReadModel,
+  type OrchestrationThread,
 } from "@t3tools/contracts";
 import { Cause, Duration, Effect, Layer, Option, PubSub, Result, Schema, Stream } from "effect";
 
@@ -67,8 +70,19 @@ function canChangeQueuedTurnReadiness(event: OrchestrationEvent): boolean {
 }
 
 function canChangeDelegationSettlement(event: OrchestrationEvent): boolean {
+  if (event.type === "thread.activity-appended") {
+    switch (event.payload.activity.kind) {
+      case "approval.requested":
+      case "approval.resolved":
+      case "insights.turn.completed":
+      case "user-input.requested":
+      case "user-input.resolved":
+        return true;
+      default:
+        return false;
+    }
+  }
   switch (event.type) {
-    case "thread.activity-appended":
     case "thread.archived":
     case "thread.child-lifecycle-notified":
     case "thread.decoupled":
@@ -81,7 +95,6 @@ function canChangeDelegationSettlement(event: OrchestrationEvent): boolean {
     case "thread.queued-turn-failed":
     case "thread.queued-turn-updated":
     case "thread.session-set":
-    case "thread.turn-diff-completed":
     case "thread.turn-start-requested":
     case "thread.unarchived":
       return true;
@@ -90,13 +103,51 @@ function canChangeDelegationSettlement(event: OrchestrationEvent): boolean {
   }
 }
 
+interface ThreadReadModelIndex {
+  readonly readModel: OrchestrationReadModel;
+  readonly threadsById: ReadonlyMap<ThreadId, OrchestrationThread>;
+  readonly waitingParentsByChildId: ReadonlyMap<
+    ThreadId,
+    ReadonlyArray<{
+      readonly parentThreadId: ThreadId;
+      readonly assignmentId: MessageId;
+    }>
+  >;
+}
+
+function indexReadModel(readModel: OrchestrationReadModel): ThreadReadModelIndex {
+  const threadsById = new Map<ThreadId, OrchestrationThread>();
+  const waitingParentsByChildId = new Map<
+    ThreadId,
+    Array<{ readonly parentThreadId: ThreadId; readonly assignmentId: MessageId }>
+  >();
+  for (const thread of readModel.threads) {
+    threadsById.set(thread.id, thread);
+    if (thread.archivedAt !== null || thread.deletedAt !== null) continue;
+    for (const assignment of thread.nudging?.wait?.assignments ?? []) {
+      if (assignment.outcome !== undefined) continue;
+      const waitingParents = waitingParentsByChildId.get(assignment.childThreadId);
+      const waitingParent = {
+        parentThreadId: thread.id,
+        assignmentId: assignment.assignmentId,
+      };
+      if (waitingParents) {
+        waitingParents.push(waitingParent);
+      } else {
+        waitingParentsByChildId.set(assignment.childThreadId, [waitingParent]);
+      }
+    }
+  }
+  return { readModel, threadsById, waitingParentsByChildId };
+}
+
 const makeQueuedTurnReactor = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const pullRequests = yield* PullRequestService;
   const monitorFeedback = yield* PullRequestMonitorFeedbackService;
   const serverSettings = yield* ServerSettingsService;
   const wakeScope = yield* Effect.scope;
-  const drainingThreadIds = new Set<string>();
+  const drainingThreadIds = new Set<ThreadId>();
   const pendingThreadIds = new Set<ThreadId>();
   const scheduledChildWakes = new Set<string>();
 
@@ -444,6 +495,9 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
       ),
     );
 
+  const requestDrain = (threadId: ThreadId): Effect.Effect<void> =>
+    drainThreadSafely(threadId).pipe(Effect.forkIn(wakeScope), Effect.asVoid);
+
   const scheduleChildWake = (
     threadId: ThreadId,
     dueAt: string,
@@ -479,52 +533,38 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     );
   });
 
-  const settleThreadIfReady = (threadId: ThreadId) =>
+  const settleThreadIfReady = (index: ThreadReadModelIndex, threadId: ThreadId) =>
     Effect.gen(function* () {
-      const readModel = yield* orchestrationEngine.getReadModel();
-      const child = readModel.threads.find((thread) => thread.id === threadId);
-      if (!child || !settleDelegation(readModel, child)) return;
+      const child = index.threadsById.get(threadId);
+      if (!child || !settleDelegation(index.readModel, child)) return false;
       yield* orchestrationEngine.dispatch({
         type: "thread.delegation.settle",
         commandId: serverCommandId("delegation.settle"),
         threadId,
       });
+      return true;
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("queued turn reactor failed to settle child delegation", {
           threadId,
           cause: Cause.pretty(cause),
-        }),
+        }).pipe(Effect.as(false)),
       ),
     );
 
-  const reconcileUnavailableChildAssignments = (childThreadId: ThreadId) =>
+  const reconcileUnavailableChildAssignments = (
+    index: ThreadReadModelIndex,
+    childThreadId: ThreadId,
+  ) =>
     Effect.gen(function* () {
-      const readModel = yield* orchestrationEngine.getReadModel();
-      const assignments = readModel.threads.flatMap((parent) =>
-        (parent.nudging?.wait?.assignments ?? [])
-          .filter((assignment) => {
-            if (
-              assignment.childThreadId !== childThreadId ||
-              assignment.outcome !== undefined ||
-              parent.archivedAt !== null ||
-              parent.deletedAt !== null
-            ) {
-              return false;
-            }
-            const child = readModel.threads.find((entry) => entry.id === childThreadId);
-            return (
-              !child ||
-              child.archivedAt !== null ||
-              child.deletedAt !== null ||
-              child.parentThreadId !== parent.id ||
-              child.nudging?.delegation?.assignmentId !== assignment.assignmentId
-            );
-          })
-          .map((assignment) => ({
-            parentThreadId: parent.id,
-            assignmentId: assignment.assignmentId,
-          })),
+      const child = index.threadsById.get(childThreadId);
+      const assignments = (index.waitingParentsByChildId.get(childThreadId) ?? []).filter(
+        (assignment) =>
+          !child ||
+          child.archivedAt !== null ||
+          child.deletedAt !== null ||
+          child.parentThreadId !== assignment.parentThreadId ||
+          child.nudging?.delegation?.assignmentId !== assignment.assignmentId,
       );
       yield* Effect.forEach(
         assignments,
@@ -548,10 +588,12 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     );
 
   const reconcileOpenDelegations = Effect.gen(function* () {
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const index = indexReadModel(yield* orchestrationEngine.getReadModel());
     yield* Effect.forEach(
-      readModel.threads.filter((thread) => settleDelegation(readModel, thread) !== null),
-      (thread) => settleThreadIfReady(thread.id),
+      index.readModel.threads.filter(
+        (thread) => settleDelegation(index.readModel, thread) !== null,
+      ),
+      (thread) => settleThreadIfReady(index, thread.id),
       { concurrency: 1, discard: true },
     );
   });
@@ -565,15 +607,16 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
           if (threadId === null) return Effect.void;
           return Effect.gen(function* () {
             if (canChangeQueuedTurnReadiness(event)) {
-              yield* drainThreadSafely(threadId);
+              yield* requestDrain(threadId);
             }
             if (canChangeDelegationSettlement(event)) {
-              yield* settleThreadIfReady(threadId);
-              const state = yield* orchestrationEngine.getReadModel();
-              const parentId = state.threads.find(
-                (thread) => thread.id === threadId,
-              )?.parentThreadId;
-              if (parentId) yield* settleThreadIfReady(parentId);
+              let index = indexReadModel(yield* orchestrationEngine.getReadModel());
+              const settled = yield* settleThreadIfReady(index, threadId);
+              if (settled) {
+                index = indexReadModel(yield* orchestrationEngine.getReadModel());
+              }
+              const parentId = index.threadsById.get(threadId)?.parentThreadId;
+              if (parentId) yield* settleThreadIfReady(index, parentId);
               if (
                 event.type === "thread.meta-updated" ||
                 event.type === "thread.archived" ||
@@ -582,7 +625,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
                 event.type === "thread.queued-turn-created" ||
                 event.type === "thread.queued-turn-updated"
               ) {
-                if (parentId) yield* drainThreadSafely(parentId);
+                if (parentId) yield* requestDrain(parentId);
               }
               if (
                 event.type === "thread.meta-updated" ||
@@ -590,7 +633,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
                 event.type === "thread.deleted" ||
                 event.type === "thread.decoupled"
               ) {
-                yield* reconcileUnavailableChildAssignments(threadId);
+                yield* reconcileUnavailableChildAssignments(index, threadId);
               }
             }
           });
@@ -598,18 +641,15 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
       ),
     );
     yield* drainQueuedThreads;
-    const startupReadModel = yield* orchestrationEngine.getReadModel();
-    const waitedChildIds = new Set(
-      startupReadModel.threads.flatMap((parent) =>
-        (parent.nudging?.wait?.assignments ?? [])
-          .filter((assignment) => assignment.outcome === undefined)
-          .map((assignment) => assignment.childThreadId),
-      ),
+    const startupIndex = indexReadModel(yield* orchestrationEngine.getReadModel());
+    yield* Effect.forEach(
+      startupIndex.waitingParentsByChildId.keys(),
+      (childThreadId) => reconcileUnavailableChildAssignments(startupIndex, childThreadId),
+      {
+        concurrency: 1,
+        discard: true,
+      },
     );
-    yield* Effect.forEach(waitedChildIds, reconcileUnavailableChildAssignments, {
-      concurrency: 1,
-      discard: true,
-    });
     yield* reconcileOpenDelegations;
     yield* Effect.forkScoped(
       Stream.runForEach(serverSettings.streamChanges, () => drainQueuedThreads),

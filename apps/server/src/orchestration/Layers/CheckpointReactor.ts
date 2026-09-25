@@ -1,4 +1,3 @@
-// @ts-nocheck
 import {
   CheckpointRef,
   CommandId,
@@ -12,7 +11,7 @@ import {
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
-import { Cause, Effect, Layer, Option, Schedule, Stream } from "effect";
+import { Cause, Effect, Layer, Option, Schedule, Schema, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { deriveTurnScopedCheckpointFiles } from "../../checkpointing/TurnScopedFiles.ts";
@@ -91,6 +90,8 @@ function isNonAuthoritativeCheckpoint(status: string): boolean {
   return status === "missing" || status === "speculative";
 }
 
+const isCheckpointInvariantError = Schema.is(CheckpointInvariantError);
+
 function isWorkspaceGenerationMismatch(error: unknown): boolean {
   if (error === null || error === undefined || typeof error !== "object") {
     return false;
@@ -99,8 +100,7 @@ function isWorkspaceGenerationMismatch(error: unknown): boolean {
   const detail =
     (error as { readonly detail?: unknown }).detail ??
     (error as { readonly message?: unknown }).message;
-  const isInvariant =
-    tag === "CheckpointInvariantError" || error instanceof CheckpointInvariantError;
+  const isInvariant = tag === "CheckpointInvariantError" || isCheckpointInvariantError(error);
   return (
     isInvariant &&
     typeof detail === "string" &&
@@ -254,6 +254,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
     readonly thread: {
+      readonly id: ThreadId;
       readonly messages: ReadonlyArray<{
         readonly id: MessageId;
         readonly role: string;
@@ -304,7 +305,9 @@ const make = Effect.gen(function* () {
     yield* checkpointStore.captureCheckpoint({
       cwd: input.cwd,
       checkpointRef: targetCheckpointRef,
-      ...(input.workspaceBinding !== undefined ? { workspaceBinding: input.workspaceBinding } : {}),
+      ...(input.thread.workspaceBinding !== undefined
+        ? { workspaceBinding: input.thread.workspaceBinding }
+        : {}),
     });
 
     // Invalidate the workspace entry cache so the @-mention file picker
@@ -331,8 +334,8 @@ const make = Effect.gen(function* () {
         fromCheckpointRef,
         toCheckpointRef: targetCheckpointRef,
         fallbackFromToHead: false,
-        ...(input.workspaceBinding !== undefined
-          ? { workspaceBinding: input.workspaceBinding }
+        ...(input.thread.workspaceBinding !== undefined
+          ? { workspaceBinding: input.thread.workspaceBinding }
           : {}),
       })
       .pipe(
@@ -371,8 +374,8 @@ const make = Effect.gen(function* () {
               fromCheckpointRef: snapshotBaselineRef,
               toCheckpointRef: targetCheckpointRef,
               fallbackFromToHead: false,
-              ...(input.workspaceBinding !== undefined
-                ? { workspaceBinding: input.workspaceBinding }
+              ...(input.thread.workspaceBinding !== undefined
+                ? { workspaceBinding: input.thread.workspaceBinding }
                 : {}),
             })
             .pipe(
@@ -963,15 +966,7 @@ const make = Effect.gen(function* () {
       );
       revertCommitted = true;
 
-      yield* workspaceEntries.invalidate(sessionRuntime.value.cwd).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning("checkpoint revert could not invalidate workspace entries", {
-            threadId: event.payload.threadId,
-            turnCount: event.payload.turnCount,
-            detail: error.message,
-          }),
-        ),
-      );
+      yield* workspaceEntries.invalidate(sessionRuntime.value.cwd);
       yield* checkpointStore
         .deleteCheckpointRefs({
           cwd: sessionRuntime.value.cwd,
@@ -1004,22 +999,37 @@ const make = Effect.gen(function* () {
                     ? Effect.sync(() => {
                         guardRestored = true;
                       })
-                    : Effect.fail(
-                        new CheckpointInvariantError({
-                          operation: "CheckpointReactor.handleRevertRequested",
-                          detail: "Failed to restore the pre-revert workspace guard.",
-                        }),
-                      ),
+                    : Effect.logError("Failed to restore the pre-revert workspace guard.", {
+                        threadId: event.payload.threadId,
+                        turnCount: event.payload.turnCount,
+                      }),
+                ),
+                Effect.catch((error) =>
+                  Effect.logError("Checkpoint revert guard restoration failed.", {
+                    threadId: event.payload.threadId,
+                    turnCount: event.payload.turnCount,
+                    detail: error.message,
+                  }),
                 ),
               ),
       ),
       Effect.ensuring(
         Effect.suspend(() =>
           revertCommitted || guardRestored
-            ? checkpointStore.deleteCheckpointRefs({
-                cwd: sessionRuntime.value.cwd,
-                checkpointRefs: [revertGuardRef],
-              })
+            ? checkpointStore
+                .deleteCheckpointRefs({
+                  cwd: sessionRuntime.value.cwd,
+                  checkpointRefs: [revertGuardRef],
+                })
+                .pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("checkpoint revert left its guard ref for later cleanup", {
+                      threadId: event.payload.threadId,
+                      turnCount: event.payload.turnCount,
+                      detail: error.message,
+                    }),
+                  ),
+                )
             : Effect.void,
         ),
       ),
@@ -1035,7 +1045,15 @@ const make = Effect.gen(function* () {
             turnCount: event.payload.turnCount,
             detail: error.message,
             createdAt: new Date().toISOString(),
-          }),
+          }).pipe(
+            Effect.tapCause((cause) =>
+              Effect.logWarning(
+                "CheckpointReactor revert-failure activity dispatch failed",
+                Cause.pretty(cause),
+              ),
+            ),
+            Effect.catch(() => Effect.void),
+          ),
         ),
       );
       return;
