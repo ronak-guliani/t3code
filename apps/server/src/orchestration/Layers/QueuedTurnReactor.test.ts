@@ -667,6 +667,124 @@ describe("QueuedTurnReactor", () => {
     expect(settlementCommands(commands)).toHaveLength(1);
   });
 
+  it("settles an interrupted Stop once after the steer grace expires", async () => {
+    const state = delegatedReadModel();
+    const child = state.threads[1]!;
+    const interruptedAt = new Date(Date.now() - 1_900).toISOString();
+    const interruptedState: OrchestrationReadModel = {
+      ...state,
+      threads: state.threads.map((thread) =>
+        thread.id !== child.id
+          ? thread
+          : {
+              ...thread,
+              latestTurn: {
+                ...thread.latestTurn!,
+                state: "interrupted" as const,
+                completedAt: interruptedAt,
+              },
+              session: {
+                threadId: child.id,
+                status: "ready" as const,
+                providerName: "copilot",
+                runtimeMode: "approval-required" as const,
+                activeTurnId: null,
+                lastError: null,
+                updatedAt: interruptedAt,
+              },
+              nudging: { ...thread.nudging, paused: true },
+            },
+      ),
+    };
+    const commands = await runReactor(interruptedState, monitorSnapshot("head"), {
+      waitAfterStartMs: 250,
+    });
+
+    expect(settlementCommands(commands)).toHaveLength(1);
+  });
+
+  it("does not settle an interrupted steer after its continuation is persisted", async () => {
+    const state = delegatedReadModel();
+    const child = state.threads[1]!;
+    const interruptedAt = new Date(Date.now() - 1_900).toISOString();
+    const interruptedState: OrchestrationReadModel = {
+      ...state,
+      threads: state.threads.map((thread) =>
+        thread.id !== child.id
+          ? thread
+          : {
+              ...thread,
+              latestTurn: {
+                ...thread.latestTurn!,
+                state: "interrupted" as const,
+                completedAt: interruptedAt,
+              },
+              session: {
+                threadId: child.id,
+                status: "ready" as const,
+                providerName: "copilot",
+                runtimeMode: "approval-required" as const,
+                activeTurnId: null,
+                lastError: null,
+                updatedAt: interruptedAt,
+              },
+              nudging: { ...thread.nudging, paused: true },
+            },
+      ),
+    };
+    const continuationAt = new Date(Date.parse(interruptedAt) + 50).toISOString();
+    const continuationMessageId = MessageId.make("steer-continuation");
+    const continuationState: OrchestrationReadModel = {
+      ...interruptedState,
+      threads: interruptedState.threads.map((thread) =>
+        thread.id !== child.id
+          ? thread
+          : {
+              ...thread,
+              messages: [
+                ...thread.messages,
+                {
+                  id: continuationMessageId,
+                  role: "user" as const,
+                  text: "Continue with this correction",
+                  turnId: null,
+                  streaming: false,
+                  createdAt: continuationAt,
+                  updatedAt: continuationAt,
+                },
+              ],
+            },
+      ),
+    };
+    const commands = await runReactor(interruptedState, monitorSnapshot("head"), {
+      waitAfterStartMs: 250,
+      resume: {
+        readModel: continuationState,
+        event: {
+          sequence: 2,
+          eventId: EventId.make("steer-turn-start-requested"),
+          aggregateKind: "thread",
+          aggregateId: child.id,
+          occurredAt: continuationAt,
+          commandId: CommandId.make("steer-turn-start"),
+          causationEventId: null,
+          correlationId: CommandId.make("steer-turn-start"),
+          metadata: {},
+          type: "thread.turn-start-requested",
+          payload: {
+            threadId: child.id,
+            messageId: continuationMessageId,
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            createdAt: continuationAt,
+          },
+        },
+      },
+    });
+
+    expect(settlementCommands(commands)).toEqual([]);
+  });
+
   it("reports an idle failed queued turn as one durable stall episode without settling", async () => {
     const stalled = delegatedReadModel({ blockedItems: true });
     const first = await runReactor(stalled, monitorSnapshot("head"), {
@@ -685,6 +803,39 @@ describe("QueuedTurnReactor", () => {
       delegationStallCommands(first)[0]?.commandId,
     );
     expect(settlementCommands(first)).toEqual([]);
+  });
+
+  it("bounds a failed queued turn stall summary when the failure detail is huge", async () => {
+    const stalled = delegatedReadModel({ blockedItems: true });
+    const child = stalled.threads[1]!;
+    const hugeFailure = `provider failed\n${"x".repeat(10_000)}`;
+    const commands = await runReactor(
+      {
+        ...stalled,
+        threads: stalled.threads.map((thread) =>
+          thread.id !== child.id
+            ? thread
+            : {
+                ...thread,
+                queuedTurns: (thread.queuedTurns ?? []).map((turn) => ({
+                  ...turn,
+                  failureMessage: hugeFailure,
+                })),
+              },
+        ),
+      },
+      monitorSnapshot("head"),
+      { delegationIdleStallThresholdMs: 1_000 },
+    );
+    const stall = delegationStallCommands(commands)[0];
+
+    expect(stall).toMatchObject({
+      type: "thread.delegation.stall",
+      summary: expect.stringContaining("provider failed"),
+    });
+    expect("summary" in stall! ? stall.summary.length : Number.POSITIVE_INFINITY).toBeLessThan(
+      1_000,
+    );
   });
 
   it.each([
@@ -748,47 +899,6 @@ describe("QueuedTurnReactor", () => {
       }),
       summary: "open decision",
     },
-    {
-      name: "unfinished grandchildren",
-      update: (state: OrchestrationReadModel): OrchestrationReadModel => {
-        const child = state.threads[1]!;
-        return {
-          ...state,
-          threads: [
-            ...state.threads,
-            {
-              ...child,
-              id: ThreadId.make("grandchild-settlement"),
-              parentThreadId: child.id,
-              title: "Grandchild",
-              latestTurn: {
-                ...child.latestTurn!,
-                state: "running",
-                completedAt: null,
-              },
-              session: {
-                threadId: ThreadId.make("grandchild-settlement"),
-                status: "running",
-                providerName: "copilot",
-                runtimeMode: "approval-required",
-                activeTurnId: child.latestTurn!.turnId,
-                lastError: null,
-                updatedAt: now,
-              },
-              nudging: {
-                delegation: {
-                  assignmentId: MessageId.make("assignment-grandchild-settlement"),
-                  followUp: "automatic",
-                  completedAt: null,
-                  assignedAt: now,
-                },
-              },
-            },
-          ],
-        };
-      },
-      summary: "unfinished grandchildren",
-    },
   ])("reports an idle $name stall", async ({ update, summary }) => {
     const commands = await runReactor(update(delegatedReadModel()), monitorSnapshot("head"), {
       delegationIdleStallThresholdMs: 1_000,
@@ -802,42 +912,137 @@ describe("QueuedTurnReactor", () => {
     expect(settlementCommands(commands)).toEqual([]);
   });
 
-  it("does not settle the interrupted gap while a child is paused for a mid-turn steer", async () => {
+  it("does not report unfinished grandchildren while one is actively running", async () => {
     const state = delegatedReadModel();
     const child = state.threads[1]!;
+    const grandchildId = ThreadId.make("grandchild-settlement");
     const commands = await runReactor(
       {
         ...state,
-        threads: state.threads.map((thread) =>
-          thread.id === child.id
-            ? {
-                ...thread,
-                latestTurn: {
-                  ...thread.latestTurn!,
-                  state: "interrupted" as const,
-                  completedAt: now,
-                },
-                session: {
-                  threadId: child.id,
-                  status: "ready" as const,
-                  providerName: "copilot",
-                  runtimeMode: "approval-required" as const,
-                  activeTurnId: null,
-                  lastError: null,
-                  updatedAt: now,
-                },
-                nudging: {
-                  ...thread.nudging,
-                  paused: true,
-                },
-              }
-            : thread,
-        ),
+        threads: [
+          ...state.threads,
+          {
+            ...child,
+            id: grandchildId,
+            parentThreadId: child.id,
+            title: "Grandchild",
+            latestTurn: {
+              ...child.latestTurn!,
+              state: "running",
+              completedAt: null,
+            },
+            session: {
+              threadId: grandchildId,
+              status: "running",
+              providerName: "copilot",
+              runtimeMode: "approval-required",
+              activeTurnId: child.latestTurn!.turnId,
+              lastError: null,
+              updatedAt: now,
+            },
+            nudging: {
+              delegation: {
+                assignmentId: MessageId.make("assignment-grandchild-settlement"),
+                followUp: "automatic",
+                completedAt: null,
+                assignedAt: now,
+              },
+            },
+          },
+        ],
       },
       monitorSnapshot("head"),
+      { delegationIdleStallThresholdMs: 1_000 },
     );
 
-    expect(settlementCommands(commands)).toEqual([]);
+    expect(delegationStallCommands(commands)).toEqual([]);
+  });
+
+  it("delays an unfinished-grandchildren report until recent grandchild activity is stale", async () => {
+    const state = delegatedReadModel();
+    const child = state.threads[1]!;
+    const recentAt = new Date(Date.now()).toISOString();
+    const grandchildId = ThreadId.make("grandchild-settlement");
+    const commands = await runReactor(
+      {
+        ...state,
+        threads: [
+          ...state.threads,
+          {
+            ...child,
+            id: grandchildId,
+            parentThreadId: child.id,
+            title: "Grandchild",
+            updatedAt: recentAt,
+            latestTurn: null,
+            session: null,
+            activities: [
+              {
+                id: EventId.make("grandchild-recent-progress"),
+                kind: "delegation.reported",
+                tone: "info",
+                summary: "Still working",
+                payload: {},
+                turnId: null,
+                createdAt: recentAt,
+              },
+            ],
+            nudging: {
+              delegation: {
+                assignmentId: MessageId.make("assignment-grandchild-settlement"),
+                followUp: "automatic",
+                completedAt: null,
+                assignedAt: now,
+              },
+            },
+          },
+        ],
+      },
+      monitorSnapshot("head"),
+      { delegationIdleStallThresholdMs: 60_000, waitAfterStartMs: 30 },
+    );
+
+    expect(delegationStallCommands(commands)).toEqual([]);
+  });
+
+  it("reports unfinished grandchildren after every grandchild is idle and stale", async () => {
+    const state = delegatedReadModel();
+    const child = state.threads[1]!;
+    const grandchildId = ThreadId.make("grandchild-settlement");
+    const commands = await runReactor(
+      {
+        ...state,
+        threads: [
+          ...state.threads,
+          {
+            ...child,
+            id: grandchildId,
+            parentThreadId: child.id,
+            title: "Grandchild",
+            latestTurn: null,
+            session: null,
+            activities: [],
+            nudging: {
+              delegation: {
+                assignmentId: MessageId.make("assignment-grandchild-settlement"),
+                followUp: "automatic",
+                completedAt: null,
+                assignedAt: now,
+              },
+            },
+          },
+        ],
+      },
+      monitorSnapshot("head"),
+      { delegationIdleStallThresholdMs: 1_000 },
+    );
+
+    expect(delegationStallCommands(commands)).toEqual([
+      expect.objectContaining({
+        type: "thread.delegation.stall",
+        summary: expect.stringContaining("unfinished grandchildren"),
+      }),
+    ]);
   });
 
   it("retains a deadline wake that arrives while an explicit turn owns the drain", async () => {

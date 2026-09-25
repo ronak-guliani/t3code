@@ -26,7 +26,11 @@ import {
 import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import { isAutomaticChildNudgeBlocked } from "../childNudging.ts";
 import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
-import { delegationStallEpisode, settleDelegation } from "../delegationSettlement.ts";
+import {
+  delegationSettlementNotBefore,
+  delegationStallEpisode,
+  settleDelegation,
+} from "../delegationSettlement.ts";
 
 const MONITOR_REVALIDATION_RETRY_INTERVAL = Duration.seconds(20);
 const MAX_MONITOR_REVALIDATION_ATTEMPTS = 3;
@@ -485,6 +489,11 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
       const child = readModel.threads.find((thread) => thread.id === threadId);
       if (!child) return;
       if (settleDelegation(readModel, child)) {
+        const notBefore = delegationSettlementNotBefore(child);
+        if (notBefore !== null && Date.parse(notBefore) > Date.now()) {
+          yield* scheduleDelegationSettlementWake(threadId, notBefore);
+          return;
+        }
         yield* orchestrationEngine.dispatch({
           type: "thread.delegation.settle",
           commandId: serverCommandId("delegation.settle"),
@@ -518,6 +527,21 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         }),
       ),
     );
+
+  const scheduleDelegationSettlementWake = (
+    threadId: ThreadId,
+    dueAt: string,
+  ): Effect.Effect<void> => {
+    const key = `delegation-settlement:${threadId}:${dueAt}`;
+    if (scheduledChildWakes.has(key)) return Effect.void;
+    scheduledChildWakes.add(key);
+    return Effect.sleep(Duration.millis(Math.max(0, Date.parse(dueAt) - Date.now()))).pipe(
+      Effect.andThen(Effect.suspend(() => settleThreadIfReady(threadId))),
+      Effect.ensuring(Effect.sync(() => scheduledChildWakes.delete(key))),
+      Effect.forkIn(wakeScope),
+      Effect.asVoid,
+    );
+  };
 
   const scheduleDelegationStallWake = (
     threadId: ThreadId,

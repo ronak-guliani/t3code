@@ -1469,8 +1469,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           currentWait !== undefined &&
           currentWait !== null &&
           currentWait.mode === parentWait.mode &&
-          currentWait.satisfiedAt === undefined &&
-          !childWaitIsSatisfied(currentWait);
+          currentWait.satisfiedAt === undefined;
         if (shouldMerge) {
           const mergedAssignments = [...currentWait.assignments];
           for (const assignment of assignments) {

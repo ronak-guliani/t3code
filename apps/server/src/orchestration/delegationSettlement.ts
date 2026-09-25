@@ -7,7 +7,11 @@ import type {
 } from "@t3tools/contracts";
 
 import { childWakeReason } from "./childNudging.ts";
-import { threadHasPendingInteraction } from "./commandInvariants.ts";
+import { threadHasInFlightTurn, threadHasPendingInteraction } from "./commandInvariants.ts";
+
+// Steering projects an interrupted idle turn before its continuation can reach the server.
+const INTERRUPTED_SETTLEMENT_GRACE_MS = 2_000;
+const MAX_STALL_SUMMARY_LENGTH = 1_000;
 
 export interface DelegationSettlement {
   readonly completedAt: string;
@@ -87,6 +91,34 @@ function stallId(child: OrchestrationThread, condition: ReadonlyArray<unknown>):
     .digest("hex")}`;
 }
 
+function boundedStallSummary(summary: string): string {
+  return summary.length <= MAX_STALL_SUMMARY_LENGTH
+    ? summary
+    : `${summary.slice(0, MAX_STALL_SUMMARY_LENGTH - 3)}...`;
+}
+
+function queuedTurnFailureSummary(failureMessage: string | null): string {
+  if (failureMessage === null) {
+    return "no failure detail was recorded";
+  }
+  const firstLine = failureMessage.split(/\r?\n/, 1)[0]?.trim();
+  const detail = firstLine && firstLine.length > 0 ? firstLine : "failure details were recorded";
+  const boundedDetail = detail.length <= 300 ? detail : `${detail.slice(0, 297)}...`;
+  return `${boundedDetail} Inspect the child for full details`;
+}
+
+function latestThreadActivityAt(thread: OrchestrationThread): string | undefined {
+  return latestTimestamp(
+    thread.updatedAt,
+    thread.nudging?.delegation?.assignedAt,
+    thread.latestTurn?.requestedAt,
+    thread.latestTurn?.startedAt,
+    thread.latestTurn?.completedAt,
+    thread.session?.updatedAt,
+    ...thread.activities.map((activity) => activity.createdAt),
+  );
+}
+
 export function delegationStallEpisode(
   readModel: OrchestrationReadModel,
   child: OrchestrationThread,
@@ -123,7 +155,9 @@ export function delegationStallEpisode(
     return {
       id: stallId(child, ["failed-queued-turn", failedTurn.id, failedTurn.failedAt]),
       stalledSince: latestTimestamp(idleSince, failedTurn.failedAt)!,
-      summary: `Delegation is idle with failed queued turn ${failedTurn.id}: ${failedTurn.failureMessage ?? "no failure detail was recorded"}.`,
+      summary: boundedStallSummary(
+        `Delegation is idle with failed queued turn ${failedTurn.id}: ${queuedTurnFailureSummary(failedTurn.failureMessage)}.`,
+      ),
     };
   }
 
@@ -158,6 +192,16 @@ export function delegationStallEpisode(
     )
     .sort((left, right) => left.id.localeCompare(right.id));
   if (unfinishedGrandchildren.length > 0) {
+    if (
+      unfinishedGrandchildren.some(
+        (descendant) =>
+          descendant.session?.status === "running" ||
+          descendant.session?.activeTurnId != null ||
+          descendant.latestTurn?.state === "running",
+      )
+    ) {
+      return null;
+    }
     const identities = unfinishedGrandchildren.map((descendant) => [
       descendant.id,
       descendant.nudging!.delegation!.assignmentId,
@@ -166,18 +210,34 @@ export function delegationStallEpisode(
       id: stallId(child, ["grandchildren", identities]),
       stalledSince: latestTimestamp(
         idleSince,
-        ...unfinishedGrandchildren.map((descendant) => descendant.nudging!.delegation!.assignedAt),
+        ...unfinishedGrandchildren.map(latestThreadActivityAt),
       )!,
-      summary: `Delegation is idle with unfinished grandchildren: ${unfinishedGrandchildren
-        .slice(0, 8)
-        .map((descendant) => `${descendant.title} (${descendant.id})`)
-        .join(
-          ", ",
-        )}${unfinishedGrandchildren.length > 8 ? `, and ${unfinishedGrandchildren.length - 8} more` : ""}.`,
+      summary: boundedStallSummary(
+        `Delegation is idle with unfinished grandchildren: ${unfinishedGrandchildren
+          .slice(0, 8)
+          .map((descendant) => `${descendant.title} (${descendant.id})`)
+          .join(
+            ", ",
+          )}${unfinishedGrandchildren.length > 8 ? `, and ${unfinishedGrandchildren.length - 8} more` : ""}.`,
+      ),
     };
   }
 
   return null;
+}
+
+export function delegationSettlementNotBefore(child: OrchestrationThread): string | null {
+  if (child.latestTurn?.state !== "interrupted") {
+    return null;
+  }
+  const interruptedAt = child.latestTurn.completedAt ?? child.session?.updatedAt;
+  if (interruptedAt === null || interruptedAt === undefined) {
+    return null;
+  }
+  const timestamp = Date.parse(interruptedAt);
+  return Number.isFinite(timestamp)
+    ? new Date(timestamp + INTERRUPTED_SETTLEMENT_GRACE_MS).toISOString()
+    : null;
 }
 
 export function settleDelegation(
@@ -198,7 +258,7 @@ export function settleDelegation(
       latestTurn.state !== "interrupted") ||
     child.session?.status === "running" ||
     child.session?.activeTurnId != null ||
-    child.nudging?.paused === true ||
+    threadHasInFlightTurn(child) ||
     (child.queuedTurns?.length ?? 0) > 0 ||
     threadHasPendingInteraction(child) ||
     delegation.decision != null ||
