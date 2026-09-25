@@ -230,7 +230,7 @@ describe("pull request association recovery", () => {
   it("marks a verified assistant-created PR eligible for automatic review", async () => {
     const h = await harness();
     h.updateThread({
-      messages: [message(`Implemented and opened [PR #42](${url}).`)],
+      messages: [message(`Implemented and opened a new [PR #42](${url}).`)],
     });
     await Effect.runPromise(h.recovery.sweep);
 

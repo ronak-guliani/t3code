@@ -42,7 +42,7 @@ function reportsCreatedPullRequest(
           return true;
         }
         const prefix = line.slice(0, urlIndex);
-        return /\b(?:created|opened)\b(?:\s+(?:a|the|new))?\s*(?:\*\*)?\[?\s*(?:pull request|pr)\b/i.test(
+        return /\b(?:created|opened)\b(?:\s+(?:a|the))?(?:\s+new)?\s*(?:\*\*)?\[?\s*(?:pull request|pr)\b/i.test(
           prefix,
         );
       }),
