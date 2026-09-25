@@ -339,11 +339,37 @@ describe("orchestration projector", () => {
       },
     ]);
 
-    const afterWorkspaceUnlink = await Effect.runPromise(
+    const pendingIntent = {
+      requestId: "association-request",
+      reference: "https://github.com/acme/app/pull/42",
+      requestedAt: later,
+      nextAttemptAt: new Date(Date.parse(later) + 60_000).toISOString(),
+      status: "pending",
+    };
+    const afterPendingAssociation = await Effect.runPromise(
       projectEvent(
         afterWorkspaceRefresh,
         makeEvent({
           sequence: 6,
+          type: "thread.meta-updated",
+          aggregateKind: "thread",
+          aggregateId: "thread-pr",
+          occurredAt: later,
+          commandId: "cmd-pending-association",
+          payload: {
+            threadId: "thread-pr",
+            pendingPullRequestAssociation: pendingIntent,
+            updatedAt: later,
+          },
+        }),
+      ),
+    );
+
+    const afterWorkspaceUnlink = await Effect.runPromise(
+      projectEvent(
+        afterPendingAssociation,
+        makeEvent({
+          sequence: 7,
           type: "thread.pull-request-unlinked",
           aggregateKind: "thread",
           aggregateId: "thread-pr",
@@ -366,6 +392,7 @@ describe("orchestration projector", () => {
         linkedAt: now,
       },
     ]);
+    expect(unlinkedThread?.pendingPullRequestAssociation).toBeNull();
   });
 
   it("recovers a legacy-only pull request before projecting a newly created one", async () => {
