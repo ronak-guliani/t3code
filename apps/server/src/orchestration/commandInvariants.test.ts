@@ -9,6 +9,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationReadModel,
   ProviderInstanceId,
+  TurnId,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
 
@@ -265,6 +266,47 @@ describe("commandInvariants", () => {
         ],
       }),
     ).toBe(false);
+  });
+
+  it("treats a stopped turn as idle when its message and completion share a timestamp", () => {
+    const base = readModel.threads[0]!;
+    const stopped = {
+      ...base,
+      messages: [
+        {
+          id: MessageId.make("msg-stopped"),
+          role: "user" as const,
+          text: "stop this turn",
+          attachments: [],
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      latestTurn: {
+        turnId: TurnId.make("turn-stopped"),
+        state: "interrupted" as const,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: now,
+        assistantMessageId: null,
+      },
+    };
+    expect(threadHasInFlightTurn(stopped)).toBe(false);
+    expect(
+      threadHasInFlightTurn({
+        ...stopped,
+        messages: [
+          ...stopped.messages,
+          {
+            ...stopped.messages[0]!,
+            id: MessageId.make("msg-after-stop"),
+            createdAt: new Date(Date.parse(now) + 1).toISOString(),
+          },
+        ],
+      }),
+    ).toBe(true);
   });
 
   it("keeps a pending user turn in flight when a later system message is appended", () => {

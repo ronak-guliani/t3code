@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   decodePullRequestSearchJson,
+  decodeViewerPermissionsJson,
   pullRequestSearchGraphQlQuery,
+  VIEWER_PERMISSIONS_GRAPHQL_QUERY,
 } from "./gitHubPullRequestJson.ts";
 
 describe("GitHub pull request search JSON", () => {
@@ -44,5 +46,38 @@ describe("GitHub pull request search JSON", () => {
     expect(decoded.success.items[0]?.reviewRequestLogins).toEqual([]);
     expect(decoded.success.items[0]?.title).toBe("Review me");
     expect(pullRequestSearchGraphQlQuery(1)).toContain("... on Team { slug }");
+  });
+});
+
+describe("GitHub viewer permissions JSON", () => {
+  it("decodes merge settings and viewer standing from one combined read", () => {
+    const decoded = decodeViewerPermissionsJson(
+      JSON.stringify({
+        data: {
+          repository: {
+            mergeCommitAllowed: true,
+            squashMergeAllowed: false,
+            rebaseMergeAllowed: true,
+            viewerPermission: "WRITE",
+            pullRequest: { viewerCanUpdate: true, viewerDidAuthor: false },
+          },
+        },
+      }),
+    );
+
+    expect(Result.isSuccess(decoded)).toBe(true);
+    if (!Result.isSuccess(decoded)) return;
+    expect(decoded.success.mergeCapabilities).toEqual({
+      merge: true,
+      squash: false,
+      rebase: true,
+    });
+    expect(decoded.success.canWrite).toBe(true);
+    expect(decoded.success.canUpdate).toBe(true);
+    expect(decoded.success.didAuthor).toBe(false);
+    // The combined query carries the merge settings, so no `gh repo view` is needed.
+    expect(VIEWER_PERMISSIONS_GRAPHQL_QUERY).toContain("mergeCommitAllowed");
+    expect(VIEWER_PERMISSIONS_GRAPHQL_QUERY).toContain("squashMergeAllowed");
+    expect(VIEWER_PERMISSIONS_GRAPHQL_QUERY).toContain("rebaseMergeAllowed");
   });
 });

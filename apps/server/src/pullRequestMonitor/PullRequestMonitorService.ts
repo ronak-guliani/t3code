@@ -39,7 +39,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Random from "effect/Random";
 import * as Result from "effect/Result";
-import * as Schedule from "effect/Schedule";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { GitManager } from "../git/Services/GitManager.ts";
@@ -50,6 +50,7 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import { automaticPrFeedbackBlockReason } from "@t3tools/shared/automaticPrFeedback";
 import {
   formatPullRequestMonitorCanonicalKey,
+  normalizeRepositoryIdentity,
   repositoryFromPullRequestUrl,
 } from "./canonicalKey.ts";
 import { diffPullRequestMonitorSnapshot, emptyCursor } from "./monitorDiff.ts";
@@ -64,11 +65,12 @@ import {
   waitForThreadWorktree,
 } from "./threadDelivery.ts";
 import {
-  HOST_COOLDOWN_MS,
   LEASE_TTL_MS,
   nextPollDelayMs,
+  POLL_BATCH_LIMIT,
   pollDelayMs,
   POLL_CONCURRENCY,
+  rateLimitCooldownMs,
 } from "./pollSchedule.ts";
 import {
   PullRequestMonitorStore,
@@ -83,6 +85,7 @@ import { buildFallbackMaintenancePrompt, formatBlockersSummary } from "./wakePro
 const FALLBACK_COOLDOWN_MS = 30 * 60 * 1000;
 /** Exclusive claim while a fallback launch is materializing a worktree/thread. */
 const FALLBACK_LAUNCH_LEASE_MS = 3 * 60 * 1000;
+const decodePullRequestMonitorFindings = Schema.decodeUnknownEffect(PullRequestMonitorFindings);
 
 function isoNow() {
   return Effect.map(DateTime.now, (now) => DateTime.formatIso(DateTime.toUtc(now)));
@@ -122,15 +125,19 @@ export function associatedOwnerCandidates(
   }>,
   reference: PullRequestRef,
 ): ReadonlyArray<PullRequestMonitorOwnerCandidate> {
+  const referenceRepository = normalizeRepositoryIdentity(reference.repository);
   return threads
-    .filter(
-      (thread) =>
+    .filter((thread) => {
+      const repository = repositoryFromPullRequestUrl(thread.pullRequest?.url);
+      return (
         thread.projectId === reference.projectId &&
         thread.archivedAt === null &&
         thread.deletedAt === null &&
         thread.pullRequest?.number === reference.number &&
-        repositoryFromPullRequestUrl(thread.pullRequest.url) === reference.repository,
-    )
+        repository !== null &&
+        normalizeRepositoryIdentity(repository) === referenceRepository
+      );
+    })
     .map((thread) => ({ threadId: thread.id, title: thread.title }));
 }
 
@@ -152,6 +159,12 @@ export class PullRequestMonitorService extends Context.Service<
     readonly subscribeList: (
       input: PullRequestMonitorListInput,
     ) => Stream.Stream<PullRequestMonitorListResult, PullRequestMonitorError>;
+    /**
+     * Emits after a monitor observation or feedback mutation has committed.
+     * Consumers must re-read authoritative context; the notification is only a
+     * wake-up signal and carries no mutable evidence.
+     */
+    readonly subscribeChanges?: Stream.Stream<void>;
     readonly pollOnce: Effect.Effect<void>;
     readonly context: (
       input: PullRequestMonitorContextInput,
@@ -182,6 +195,7 @@ export const layer = Layer.effect(
     const engine = yield* OrchestrationEngineService;
     const git = yield* GitManager;
     const crypto = yield* Crypto.Crypto;
+    const pollSweepLock = Semaphore.makeUnsafe(1);
     const ownerId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
     const changes = yield* PubSub.sliding<void>(1);
     const notify = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
@@ -245,6 +259,46 @@ export const layer = Layer.effect(
         return automaticPrFeedbackBlockReason(settings, target, shell?.session);
       });
 
+    const automationReason = (input: {
+      readonly monitor: PullRequestMonitorRecord;
+      readonly openFeedback: ReadonlyArray<{
+        readonly status: string;
+        readonly disposition?: string | null | undefined;
+        readonly reviewerDisposition?: string | null | undefined;
+      }>;
+      readonly deliveries: ReadonlyArray<{ readonly status: string }>;
+    }) => {
+      const needsHuman = input.openFeedback.some(
+        (item) => item.disposition === "needs-human" || item.reviewerDisposition === "needs-human",
+      );
+      if (needsHuman) {
+        return {
+          kind: "needs-human" as const,
+          code: "feedback-needs-human",
+          detail: "A review finding requires explicit human adjudication.",
+        };
+      }
+      if (!input.monitor.enabled || input.monitor.status === "stopped") {
+        return {
+          kind: "monitoring-paused" as const,
+          code: input.monitor.status === "stopped" ? "stopped" : "disabled",
+          detail: input.monitor.lastError ?? "Pull request monitoring is paused.",
+        };
+      }
+      if (
+        input.deliveries.some(
+          (delivery) => delivery.status === "pending" || delivery.status === "failed",
+        )
+      ) {
+        return {
+          kind: "waiting-automatic" as const,
+          code: "delivery-pending",
+          detail: "Automatic review feedback is waiting for durable delivery.",
+        };
+      }
+      return undefined;
+    };
+
     const status = (input: PullRequestMonitorStatusInput) =>
       Effect.gen(function* () {
         const monitor = yield* resolveMonitor(input).pipe(
@@ -278,6 +332,11 @@ export const layer = Layer.effect(
         const openFeedback = yield* feedback.listOpenItems(monitor.id);
         const recentDeliveries = yield* feedback.listDeliveries(monitor.id);
         const recentReports = yield* feedback.listReports(monitor.id);
+        const derivedAutomationReason = automationReason({
+          monitor,
+          openFeedback,
+          deliveries: recentDeliveries,
+        });
         const blockReason =
           monitor.enabled && openFeedback.length > 0
             ? yield* serverSettings.getSettings.pipe(
@@ -290,6 +349,7 @@ export const layer = Layer.effect(
         return {
           monitor,
           ...(blockReason ? { automationBlockReason: blockReason } : {}),
+          ...(derivedAutomationReason ? { automationReason: derivedAutomationReason } : {}),
           ownerCandidates,
           latestSnapshot: latest?.snapshot ?? null,
           recentEvents: latest?.events ?? [],
@@ -301,6 +361,27 @@ export const layer = Layer.effect(
 
     const start = (input: PullRequestMonitorStartInput) =>
       Effect.gen(function* () {
+        if (input.ownerThreadId !== undefined && input.requireAssociatedOwner === true) {
+          const candidates = associatedOwnerCandidates((yield* engine.getReadModel()).threads, {
+            projectId: input.projectId,
+            repository: input.repository,
+            number: input.number,
+          });
+          if (!candidates.some((candidate) => candidate.threadId === input.ownerThreadId)) {
+            return yield* monitorError(
+              "The selected owner chat is not actively associated with this pull request.",
+            );
+          }
+
+          const automaticExisting = yield* store.getByProjectRef(input);
+          if (
+            automaticExisting !== null &&
+            (!automaticExisting.enabled || automaticExisting.status === "terminal")
+          ) {
+            return { monitor: automaticExisting };
+          }
+        }
+
         // Fresh detail resolves host/provider identity; never trust client-only identity.
         const detail = yield* pullRequests
           .detail(input)
@@ -327,18 +408,6 @@ export const layer = Layer.effect(
 
         const existing = yield* store.getByCanonicalKey(canonical);
         const now = yield* isoNow();
-        if (input.ownerThreadId !== undefined && input.requireAssociatedOwner === true) {
-          const candidates = associatedOwnerCandidates((yield* engine.getReadModel()).threads, {
-            projectId: input.projectId,
-            repository: detail.repository,
-            number: detail.number,
-          });
-          if (!candidates.some((candidate) => candidate.threadId === input.ownerThreadId)) {
-            return yield* monitorError(
-              "The selected owner chat is not actively associated with this pull request.",
-            );
-          }
-        }
 
         if (existing) {
           if (existing.projectId !== input.projectId) {
@@ -552,7 +621,7 @@ export const layer = Layer.effect(
             const failedAt = yield* isoNow();
             yield* store.setHostCooldown({
               hostKey,
-              cooldownUntil: addMs(failedAt, HOST_COOLDOWN_MS),
+              cooldownUntil: addMs(failedAt, rateLimitCooldownMs(monitor.pollFailureCount + 1)),
               reason: message.slice(0, 300),
               nowIso: failedAt,
             });
@@ -718,27 +787,21 @@ export const layer = Layer.effect(
       }
     }).pipe(Effect.ignore);
 
-    const pollOnce = Effect.gen(function* () {
-      yield* reconcileStaleFallbackLaunches;
-      const now = yield* isoNow();
-      const due = yield* store.listDue(now, 32);
-      yield* Effect.forEach(due, (monitor) => pollMonitor(monitor), {
-        concurrency: POLL_CONCURRENCY,
-      });
-    }).pipe(Effect.ignore);
+    const pollOnce = pollSweepLock.withPermits(1)(
+      Effect.gen(function* () {
+        yield* reconcileStaleFallbackLaunches;
+        const now = yield* isoNow();
+        const due = yield* store.listDue(now, POLL_BATCH_LIMIT);
+        yield* Effect.forEach(due, (monitor) => pollMonitor(monitor), {
+          concurrency: POLL_CONCURRENCY,
+        });
+      }).pipe(Effect.ignore),
+    );
 
     // Background adaptive poller. Observe-only: no turn steering.
     yield* pollOnce.pipe(
       Effect.andThen(Effect.sleep(Duration.seconds(15))),
       Effect.forever,
-      Effect.forkScoped,
-      Effect.interruptible,
-    );
-
-    // Safety wake if clocks/leases stall.
-    yield* Stream.fromSchedule(Schedule.spaced(Duration.seconds(30))).pipe(
-      Stream.mapEffect(() => pollOnce),
-      Stream.runDrain,
       Effect.forkScoped,
       Effect.interruptible,
     );
@@ -751,6 +814,7 @@ export const layer = Layer.effect(
           nextPollAt: now,
           updatedAt: now,
         });
+        yield* notify;
       });
 
     const context = (input: PullRequestMonitorContextInput) =>
@@ -802,7 +866,7 @@ export const layer = Layer.effect(
 
     const submitFindings = (input: PullRequestMonitorSubmitFindingsInput) =>
       Effect.gen(function* () {
-        yield* Schema.decodeUnknownEffect(PullRequestMonitorFindings)(input.findings ?? []).pipe(
+        yield* decodePullRequestMonitorFindings(input.findings ?? []).pipe(
           Effect.mapError((cause) =>
             monitorError("Invalid review findings submission.", { cause }),
           ),
@@ -821,26 +885,32 @@ export const layer = Layer.effect(
           monitorRecord = yield* resolveMonitor({ reference: input.reference });
         }
 
-        if (input.reviewedHeadSha !== undefined) {
-          // The monitor row can be empty or stale when its opportunistic start poll failed
-          // or lost a lease. Only a fresh provider snapshot can safely reject stale review
-          // findings; snapshot failures remain retryable to the durable handoff reactor.
-          const currentSnapshot = yield* pullRequests
-            .monitorSnapshot(input.reference)
-            .pipe(
-              Effect.mapError((cause) =>
-                monitorError("Could not verify the reviewed pull request revision.", { cause }),
-              ),
-            );
-          if (currentSnapshot.headSha !== input.reviewedHeadSha) {
-            return {
-              monitor: monitorRecord,
-              linkedReviewThreadId: input.reviewThreadId,
-              ownerThreadId: monitorRecord.ownerThreadId,
-              monitoringStarted: startMonitoring,
-              findings: [],
-            };
-          }
+        // The monitor row can be empty or stale when its opportunistic start poll failed or
+        // lost a lease. A fresh provider snapshot supplies the immutable head provenance for
+        // every parent-agent finding, not only for explicitly head-tagged submissions.
+        const currentSnapshot =
+          (input.findings !== undefined && input.findings.length > 0) ||
+          input.reviewedHeadSha !== undefined
+            ? yield* pullRequests
+                .monitorSnapshot(input.reference)
+                .pipe(
+                  Effect.mapError((cause) =>
+                    monitorError("Could not verify the reviewed pull request revision.", { cause }),
+                  ),
+                )
+            : null;
+        if (
+          input.reviewedHeadSha !== undefined &&
+          currentSnapshot !== null &&
+          currentSnapshot.headSha !== input.reviewedHeadSha
+        ) {
+          return {
+            monitor: monitorRecord,
+            linkedReviewThreadId: input.reviewThreadId,
+            ownerThreadId: monitorRecord.ownerThreadId,
+            monitoringStarted: startMonitoring,
+            findings: [],
+          };
         }
 
         yield* requireProjectThread({
@@ -865,9 +935,18 @@ export const layer = Layer.effect(
         // Each finding becomes its own durable item/revision so the owner can disposition
         // them individually; delivery follows the normal debounced wake path.
         const findings = yield* feedback.ingestFindings({
-          monitor: monitorRecord,
+          monitor:
+            currentSnapshot === null
+              ? monitorRecord
+              : {
+                  ...monitorRecord,
+                  headSha: currentSnapshot.headSha,
+                  sourceRevision: currentSnapshot.sourceRevision,
+                },
           reviewThreadId: input.reviewThreadId,
           findings: input.findings ?? [],
+          ...(currentSnapshot === null ? {} : { reviewedHeadSha: currentSnapshot.headSha }),
+          origin: input.origin ?? "reviewer",
         });
         // Always use ownership-scoped SQL so concurrent poll updates cannot clobber the link.
         yield* store.transferOwnershipAtomic({
@@ -1367,6 +1446,7 @@ export const layer = Layer.effect(
           Stream.fromEffect(list(input)),
           Stream.fromPubSub(changes).pipe(Stream.mapEffect(() => list(input))),
         ),
+      subscribeChanges: Stream.fromPubSub(changes),
       pollOnce,
       context,
       report,

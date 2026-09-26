@@ -146,9 +146,9 @@ describe("shouldRenderPreviewMiniPlayer", () => {
   it("hides the duplicate while the same preview is docked", () => {
     expect(
       shouldRenderPreviewMiniPlayer({
-        floatingTabId: "tab-1",
+        source: { kind: "browser", tabId: "tab-1" },
         panelOpen: true,
-        panelTabId: "tab-1",
+        panelSurface: { id: "browser:one", kind: "preview", resourceId: "tab-1" },
       }),
     ).toBe(false);
   });
@@ -156,9 +156,41 @@ describe("shouldRenderPreviewMiniPlayer", () => {
   it("restores the float when the panel moves to another surface", () => {
     expect(
       shouldRenderPreviewMiniPlayer({
-        floatingTabId: "tab-1",
+        source: { kind: "browser", tabId: "tab-1" },
         panelOpen: true,
-        panelTabId: null,
+        panelSurface: { id: "diff", kind: "diff" },
+      }),
+    ).toBe(true);
+  });
+
+  it("suppresses a device float only for the exact host-qualified device panel", () => {
+    const source = {
+      kind: "device" as const,
+      hostId: "ssh-host",
+      deviceId: "sim-1",
+      platform: "ios" as const,
+      name: "iPhone",
+    };
+    expect(
+      shouldRenderPreviewMiniPlayer({
+        source,
+        panelOpen: true,
+        panelSurface: {
+          id: "device:ssh-host:sim-1",
+          kind: "device",
+          target: { hostId: "ssh-host", deviceId: "sim-1", platform: "ios", name: "iPhone" },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      shouldRenderPreviewMiniPlayer({
+        source,
+        panelOpen: true,
+        panelSurface: {
+          id: "device:local:sim-1",
+          kind: "device",
+          target: { hostId: "local", deviceId: "sim-1", platform: "ios", name: "iPhone" },
+        },
       }),
     ).toBe(true);
   });

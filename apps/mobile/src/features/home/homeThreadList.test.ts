@@ -696,6 +696,35 @@ describe("buildHomeThreadGroups", () => {
     expect(groups[0]?.threads.map((candidate) => candidate.id)).toEqual(["thread-content"]);
   });
 
+  it("includes a thread matched by linked pull request", () => {
+    const environmentId = EnvironmentId.make("environment-1");
+    const project = makeProject({
+      environmentId,
+      id: ProjectId.make("project-1"),
+      title: "T3 Code",
+    });
+    const thread = makeThread({
+      environmentId,
+      id: ThreadId.make("thread-pr"),
+      projectId: project.id,
+      title: "Unrelated title",
+      pullRequest: {
+        number: 10839,
+        url: "https://github.com/pingdotgg/t3code/pull/10839",
+        title: "Find linked PR threads",
+        baseBranch: "main",
+        headBranch: "feat/search",
+        state: "open",
+      },
+    });
+
+    const groups = buildGroups([project], [thread], {
+      searchQuery: "pingdotgg/t3code#10839",
+    });
+
+    expect(groups[0]?.threads.map((candidate) => candidate.id)).toEqual(["thread-pr"]);
+  });
+
   it("targets quick new threads at the group member with the newest thread", () => {
     const laptopEnv = EnvironmentId.make("environment-laptop");
     const desktopEnv = EnvironmentId.make("environment-desktop");

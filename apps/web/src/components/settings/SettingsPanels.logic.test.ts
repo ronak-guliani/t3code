@@ -1,4 +1,5 @@
 import {
+  type CollaborativeAcceptancePolicy,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProjectId,
@@ -15,8 +16,48 @@ import {
   buildArchivedThreadGroupsFromSnapshots,
   buildProviderInstanceUpdatePatch,
   filterArchivedThreadGroups,
+  mergeCollaborativeAcceptancePolicy,
   runSequentiallySettled,
 } from "./SettingsPanels.logic";
+
+describe("mergeCollaborativeAcceptancePolicy", () => {
+  const policy: CollaborativeAcceptancePolicy = {
+    automation: "bounded",
+    reviewTrigger: "first-candidate",
+    reviewWorkflow: { identity: "review-changes", version: "1" },
+    commentPolicy: "blocking-only",
+    budgets: {
+      exchanges: 3,
+      modelSpendCents: 0,
+      retries: 1,
+      disputeRounds: 1,
+      executionDurationSeconds: 0,
+      waitingDeadlineSeconds: 0,
+    },
+  };
+
+  it("preserves earlier nested edits across consecutive patches", () => {
+    const withModelSpend = mergeCollaborativeAcceptancePolicy(policy, {
+      budgets: { modelSpendCents: 500 },
+    });
+    const withRetries = mergeCollaborativeAcceptancePolicy(withModelSpend, {
+      budgets: { retries: 2 },
+    });
+    const withWorkflowVersion = mergeCollaborativeAcceptancePolicy(withRetries, {
+      reviewWorkflow: { version: "2" },
+    });
+
+    expect(withWorkflowVersion).toEqual({
+      ...policy,
+      reviewWorkflow: { identity: "review-changes", version: "2" },
+      budgets: {
+        ...policy.budgets,
+        modelSpendCents: 500,
+        retries: 2,
+      },
+    });
+  });
+});
 
 describe("buildProviderInstanceUpdatePatch", () => {
   it("promotes an edited default provider into providerInstances and resets the legacy provider", () => {

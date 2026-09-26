@@ -21,7 +21,6 @@ import {
   AssetWorkspaceContextResolutionError,
   AuthSessionId,
   CommandId,
-  DEFAULT_REVIEW_CHANGES_SCOPE,
   type DiscoveredLocalServer,
   type DiscoveredLocalServerList,
   type GitActionProgressEvent,
@@ -29,9 +28,12 @@ import {
   GitHubCliError,
   PullRequestUnavailableError,
   PullRequestMonitorError,
+  CollaborativeAcceptanceCaseLookupError,
+  CollaborativeAcceptanceError,
   RpcClientId,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
+  type OrchestrationThread,
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
   type OrchestrationThreadStreamItem,
@@ -65,6 +67,7 @@ import {
   type WorkflowRunInput,
   type WorkflowRunResult,
   type WorkflowWorkerConfig,
+  type PullRequestRef,
   WorkflowRunId,
   WorkflowArtifactId,
   WorkflowNodeId,
@@ -77,12 +80,7 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import * as RelayClient from "@t3tools/shared/relayClient";
-import {
-  buildReviewChangesPrompt,
-  isReviewChangesWorkflowEnabled,
-  parseReviewChangesScope,
-  REVIEW_CHANGES_WORKFLOW_ID,
-} from "@t3tools/shared/workflows/reviewChanges";
+import { REVIEW_CHANGES_WORKFLOW_ID } from "@t3tools/shared/workflows/reviewChanges";
 import {
   buildFixReviewIssuesPrompt,
   FIX_REVIEW_ISSUES_WORKFLOW_ID,
@@ -126,6 +124,7 @@ import { crossVersionRpcSerializationLayer } from "./rpc/crossVersionRpcSerializ
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { WorkflowCoordinatorReactor } from "./orchestration/Services/WorkflowCoordinatorReactor.ts";
+import { runReviewChangesWorkflow } from "./orchestration/reviewChangesWorkflow.ts";
 import {
   filterArchivedShellSnapshot,
   filterActiveShellSnapshot,
@@ -186,6 +185,8 @@ import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { repositoryFromPullRequestUrl } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
 import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorService.ts";
+import { CollaborativeAcceptanceCoordinator } from "./collaborativeAcceptance/Coordinator.ts";
+import { acceptanceAuthorityForThread } from "./collaborativeAcceptance/authority.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -319,6 +320,76 @@ const makeWsRpcLayer = (
       const pullRequestMonitors = yield* Effect.serviceOption(
         PullRequestMonitors.PullRequestMonitorService,
       );
+      const acceptanceCoordinator = yield* Effect.serviceOption(CollaborativeAcceptanceCoordinator);
+      const withAcceptance = <A>(
+        operation: (
+          service: CollaborativeAcceptanceCoordinator["Service"],
+        ) => Effect.Effect<A, CollaborativeAcceptanceError>,
+      ): Effect.Effect<A, CollaborativeAcceptanceError> =>
+        Option.match(acceptanceCoordinator, {
+          onNone: () =>
+            Effect.fail(
+              new CollaborativeAcceptanceError({
+                message: "Collaborative acceptance is unavailable in this environment.",
+              }),
+            ),
+          onSome: operation,
+        });
+      const resolveAcceptanceThread = (threadId: ThreadId) =>
+        projectionSnapshotQuery.getThreadDetailById(threadId).pipe(
+          Effect.mapError(
+            () =>
+              new CollaborativeAcceptanceError({
+                message: "Could not resolve the acceptance thread.",
+              }),
+          ),
+          Effect.flatMap((thread) =>
+            Option.isSome(thread)
+              ? Effect.succeed(thread.value)
+              : Effect.fail(
+                  new CollaborativeAcceptanceError({
+                    message: "Acceptance thread is unavailable.",
+                    reason: "participant-unavailable",
+                  }),
+                ),
+          ),
+        );
+      const withAcceptanceLookup = <A>(
+        operation: (
+          service: CollaborativeAcceptanceCoordinator["Service"],
+        ) => Effect.Effect<A, CollaborativeAcceptanceCaseLookupError>,
+      ): Effect.Effect<A, CollaborativeAcceptanceCaseLookupError> =>
+        Option.match(acceptanceCoordinator, {
+          onNone: () =>
+            Effect.fail(
+              new CollaborativeAcceptanceCaseLookupError({
+                message: "Collaborative acceptance is unavailable in this environment.",
+                reason: "unavailable",
+              }),
+            ),
+          onSome: operation,
+        });
+      const hasDurablePullRequestAssociation = (
+        thread: OrchestrationThread,
+        pullRequest: PullRequestRef,
+      ): boolean =>
+        thread.projectId === pullRequest.projectId &&
+        [
+          ...(thread.pullRequest === undefined || thread.pullRequest === null
+            ? []
+            : [thread.pullRequest]),
+          ...(thread.linkedPullRequest === undefined || thread.linkedPullRequest === null
+            ? []
+            : [thread.linkedPullRequest]),
+          ...(thread.branchPullRequest === undefined || thread.branchPullRequest === null
+            ? []
+            : [thread.branchPullRequest]),
+          ...(thread.pullRequests ?? []).map((link) => link.pullRequest),
+        ].some(
+          (association) =>
+            association.number === pullRequest.number &&
+            repositoryFromPullRequestUrl(association.url) === pullRequest.repository,
+        );
       const withPullRequestMonitors = <A, E>(
         f: (
           service: PullRequestMonitors.PullRequestMonitorService["Service"],
@@ -526,12 +597,22 @@ const makeWsRpcLayer = (
 
       const runWorkflow = (input: WorkflowRunInput) =>
         Effect.gen(function* () {
+          if (input.workflowId === REVIEW_CHANGES_WORKFLOW_ID) {
+            return yield* runReviewChangesWorkflow(
+              {
+                git,
+                orchestrationEngine,
+                projectionSnapshotQuery,
+                serverSettings,
+                workflowCoordinator: yield* Effect.serviceOption(WorkflowCoordinatorReactor),
+              },
+              input,
+            );
+          }
           const runId = WorkflowRunId.make(input.idempotencyKey);
           const createdAt = new Date().toISOString();
           const settings = yield* serverSettings.getSettings;
-          const isBuiltInWorkflow =
-            input.workflowId === REVIEW_CHANGES_WORKFLOW_ID ||
-            input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID;
+          const isBuiltInWorkflow = input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID;
           const customWorkflow = isBuiltInWorkflow
             ? undefined
             : settings.agentWorkflows.customWorkflows.find(
@@ -544,168 +625,31 @@ const makeWsRpcLayer = (
           if (
             customWorkflow === undefined &&
             input.destinationMode !== undefined &&
-            input.destinationMode !== "child-chat" &&
-            !(
-              input.workflowId === REVIEW_CHANGES_WORKFLOW_ID &&
-              input.destinationMode === "same-chat"
-            )
+            input.destinationMode !== "child-chat"
           ) {
             return yield* new WorkflowRunError({
-              message:
-                "Built-in workflows currently support only child-chat and review same-chat destinations.",
+              message: "Built-in workflows currently support only child-chat destinations.",
             });
           }
 
-          const reviewSettings = settings.agentWorkflows.reviewChanges;
           const fixSettings = settings.agentWorkflows.fixReviewIssues;
           const override = settings.agentWorkflows.builtInOverrides[input.workflowId];
           if (customWorkflow !== undefined && !customWorkflow.enabled) {
             return workflowSkipped(input, "workflow-disabled", "Workflow is disabled.");
           }
           if (customWorkflow === undefined) {
-            const workflowSettings =
-              input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID ? fixSettings : reviewSettings;
-            const enabled =
-              input.workflowId === REVIEW_CHANGES_WORKFLOW_ID
-                ? isReviewChangesWorkflowEnabled(settings.agentWorkflows)
-                : (override?.enabled ?? workflowSettings.enabled);
+            const enabled = override?.enabled ?? fixSettings.enabled;
             if (!enabled) {
               return workflowSkipped(
                 input,
                 "workflow-disabled",
-                input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID
-                  ? "Fix Review Issues workflow is disabled."
-                  : "Review Code workflow is disabled.",
+                "Fix Review Issues workflow is disabled.",
               );
             }
           }
 
           const threadOption = yield* projectionSnapshotQuery.getThreadShellById(input.threadId);
           if (Option.isNone(threadOption)) {
-            if (
-              input.workflowId === REVIEW_CHANGES_WORKFLOW_ID &&
-              input.destinationMode === "same-chat" &&
-              input.projectId !== undefined &&
-              input.modelSelection !== undefined &&
-              input.runtimeMode !== undefined &&
-              input.interactionMode !== undefined
-            ) {
-              const projectOption = yield* projectionSnapshotQuery.getProjectShellById(
-                input.projectId,
-              );
-              if (Option.isNone(projectOption)) {
-                return workflowSkipped(input, "project-not-found", "Project not found.");
-              }
-              const project = projectOption.value;
-              const cwd = input.cwd ?? project.workspaceRoot;
-              const requestedScope =
-                parseReviewChangesScope(input.input?.scope) ??
-                parseReviewChangesScope(override?.defaultInput?.scope) ??
-                reviewSettings.defaultScope ??
-                DEFAULT_REVIEW_CHANGES_SCOPE;
-              const reviewContext = yield* git.claimReviewChangesContext({
-                cwd,
-                scope: requestedScope,
-                ...(requestedScope === "pull-request" &&
-                typeof input.input?.pullRequestNumber === "number" &&
-                Number.isSafeInteger(input.input.pullRequestNumber) &&
-                input.input.pullRequestNumber > 0
-                  ? { pullRequestNumber: input.input.pullRequestNumber }
-                  : {}),
-              });
-              if (!reviewContext.hasReviewableChanges) {
-                return workflowSkipped(
-                  input,
-                  "no-reviewable-changes",
-                  reviewContext.scope === "against-base"
-                    ? "No changes against base branch."
-                    : reviewContext.scope === "pull-request"
-                      ? "This pull request has no changes."
-                      : "No uncommitted changes.",
-                );
-              }
-              if (reviewContext.snapshot === undefined) {
-                return yield* new WorkflowRunError({
-                  message: "Unable to capture an immutable review snapshot.",
-                });
-              }
-              const title =
-                input.title ??
-                (reviewContext.scope === "against-base"
-                  ? `Review changes against ${reviewContext.baseBranch}`
-                  : reviewContext.scope === "pull-request"
-                    ? `Review PR #${reviewContext.pullRequest.number}: ${reviewContext.pullRequest.title}`
-                    : "Review uncommitted changes");
-              const prompt = buildReviewChangesPrompt({
-                context:
-                  reviewContext.scope === "against-base"
-                    ? {
-                        scope: "against-base",
-                        baseBranch: reviewContext.baseBranch,
-                        mergeBaseSha: reviewContext.mergeBaseSha,
-                      }
-                    : reviewContext.scope === "pull-request"
-                      ? {
-                          scope: "pull-request",
-                          number: reviewContext.pullRequest.number,
-                          title: reviewContext.pullRequest.title,
-                          baseBranch: reviewContext.pullRequest.baseBranch,
-                          headBranch: reviewContext.pullRequest.headBranch,
-                        }
-                      : { scope: "uncommitted" },
-                settings: {
-                  promptTemplate: override?.promptTemplate ?? reviewSettings.promptTemplate,
-                },
-              });
-              const createCommandId = CommandId.make(`workflow:${runId}:create-parent`);
-              const messageId = MessageId.make(`workflow:${runId}:input`);
-              yield* orchestrationEngine.dispatch({
-                type: "thread.create",
-                commandId: createCommandId,
-                threadId: input.threadId,
-                projectId: project.id,
-                parentThreadId: null,
-                title,
-                modelSelection:
-                  reviewSettings.modelSelection ??
-                  input.modelSelection ??
-                  project.defaultModelSelection ??
-                  input.modelSelection,
-                runtimeMode: input.runtimeMode,
-                interactionMode: input.interactionMode,
-                branch: reviewContext.branch,
-                worktreePath: cwd === project.workspaceRoot ? null : cwd,
-                ...(reviewContext.scope === "pull-request"
-                  ? { pullRequest: reviewContext.pullRequest }
-                  : {}),
-                reviewSnapshot: reviewContext.snapshot,
-                createdAt,
-              });
-              const commandId = CommandId.make(`workflow:${runId}:request`);
-              const dispatchResult = yield* orchestrationEngine.dispatch({
-                type: "thread.turn.start",
-                commandId,
-                threadId: input.threadId,
-                message: {
-                  messageId,
-                  role: "user",
-                  text: prompt,
-                  attachments: [],
-                },
-                runtimeMode: input.runtimeMode,
-                interactionMode: input.interactionMode,
-                createdAt,
-              });
-              return {
-                status: "started" as const,
-                runId,
-                threadId: input.threadId,
-                commandId,
-                messageId,
-                sequence: dispatchResult.sequence,
-                createdAt,
-              } satisfies WorkflowRunResult;
-            }
             return workflowSkipped(input, "thread-not-found", "Thread not found.");
           }
           const thread = threadOption.value;
@@ -843,94 +787,8 @@ const makeWsRpcLayer = (
             });
           }
 
-          const requestedScope =
-            parseReviewChangesScope(input.input?.scope) ??
-            parseReviewChangesScope(override?.defaultInput?.scope) ??
-            reviewSettings.defaultScope ??
-            DEFAULT_REVIEW_CHANGES_SCOPE;
-          const reviewContext = yield* git.claimReviewChangesContext({
-            cwd,
-            scope: requestedScope,
-            ...(requestedScope === "pull-request" &&
-            typeof input.input?.pullRequestNumber === "number" &&
-            Number.isSafeInteger(input.input.pullRequestNumber) &&
-            input.input.pullRequestNumber > 0
-              ? { pullRequestNumber: input.input.pullRequestNumber }
-              : {}),
-          });
-
-          if (!reviewContext.hasReviewableChanges) {
-            return workflowSkipped(
-              input,
-              "no-reviewable-changes",
-              reviewContext.scope === "against-base"
-                ? "No changes against base branch."
-                : reviewContext.scope === "pull-request"
-                  ? "This pull request has no changes."
-                  : "No uncommitted changes.",
-            );
-          }
-          if (reviewContext.snapshot === undefined) {
-            return yield* new WorkflowRunError({
-              message: "Unable to capture an immutable review snapshot.",
-            });
-          }
-
-          const title =
-            input.title ??
-            (reviewContext.scope === "against-base"
-              ? `Review changes against ${reviewContext.baseBranch}`
-              : reviewContext.scope === "pull-request"
-                ? `Review PR #${reviewContext.pullRequest.number}: ${reviewContext.pullRequest.title}`
-                : "Review uncommitted changes");
-          const prompt = buildReviewChangesPrompt({
-            context:
-              reviewContext.scope === "against-base"
-                ? {
-                    scope: "against-base",
-                    baseBranch: reviewContext.baseBranch,
-                    mergeBaseSha: reviewContext.mergeBaseSha,
-                  }
-                : reviewContext.scope === "pull-request"
-                  ? {
-                      scope: "pull-request",
-                      number: reviewContext.pullRequest.number,
-                      title: reviewContext.pullRequest.title,
-                      baseBranch: reviewContext.pullRequest.baseBranch,
-                      headBranch: reviewContext.pullRequest.headBranch,
-                    }
-                  : { scope: "uncommitted" },
-            settings: {
-              promptTemplate: override?.promptTemplate ?? reviewSettings.promptTemplate,
-            },
-          });
-          const nodeId = WorkflowNodeId.make("review-changes");
-          const modelSelection =
-            reviewSettings.modelSelection ??
-            input.modelSelection ??
-            project.defaultModelSelection ??
-            thread.modelSelection;
-          const runtimeMode = input.runtimeMode ?? thread.runtimeMode;
-          const interactionMode = input.interactionMode ?? thread.interactionMode;
-          return yield* dispatchSingleNodeWorkflow({
-            request: input,
-            runId,
-            workflowId: REVIEW_CHANGES_WORKFLOW_ID,
-            title,
-            prompt,
-            nodeId,
-            workerConfig: {
-              modelSelection,
-              runtimeMode,
-              interactionMode,
-              branch: reviewContext.branch,
-              worktreePath: cwd === project.workspaceRoot ? null : cwd,
-              ...(reviewContext.scope === "pull-request"
-                ? { pullRequest: reviewContext.pullRequest }
-                : {}),
-              reviewSnapshot: reviewContext.snapshot,
-            },
-            createdAt,
+          return yield* new WorkflowRunError({
+            message: `Unsupported built-in workflow '${input.workflowId}'.`,
           });
         }).pipe(
           Effect.mapError(
@@ -1214,6 +1072,12 @@ const makeWsRpcLayer = (
                   }),
               ),
             ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.readThread]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.readThread,
+            projectionSnapshotQuery.readThread(input),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.getThreadSnapshot]: (input) =>
@@ -2291,6 +2155,158 @@ const makeWsRpcLayer = (
             withPullRequestMonitors((service) => service.launchFallback(input)),
             { "rpc.aggregate": "pullRequestMonitors" },
           ),
+        [WS_METHODS.collaborativeAcceptanceSubmitCandidate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceSubmitCandidate,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const sender = yield* resolveAcceptanceThread(input.threadId);
+                const existing =
+                  input.submission.caseId === undefined
+                    ? null
+                    : (yield* service.status(input.submission.caseId)).record;
+                const recipientThreadId =
+                  existing?.case.parentThreadId ?? sender.parentThreadId ?? sender.id;
+                const recipient = yield* resolveAcceptanceThread(recipientThreadId);
+                const senderAuthority = acceptanceAuthorityForThread(sender);
+                const recipientAuthority = acceptanceAuthorityForThread(recipient);
+                if (senderAuthority === undefined || recipientAuthority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.submitCandidate({
+                  ...input.submission,
+                  senderThreadId: sender.id,
+                  recipientThreadId,
+                  senderAuthority,
+                  recipientAuthority,
+                });
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceRequestReview]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceRequestReview,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const record = (yield* service.status(input.caseId)).record;
+                if (record === null) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance case not found.",
+                    caseId: input.caseId,
+                  });
+                }
+                const sender = yield* resolveAcceptanceThread(input.threadId);
+                const recipient = yield* resolveAcceptanceThread(record.case.parentThreadId);
+                const senderAuthority = acceptanceAuthorityForThread(sender);
+                const recipientAuthority = acceptanceAuthorityForThread(recipient);
+                if (senderAuthority === undefined || recipientAuthority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.requestReview({
+                  caseId: input.caseId,
+                  senderThreadId: sender.id,
+                  recipientThreadId: recipient.id,
+                  assignmentId: record.case.assignmentId,
+                  senderAuthority,
+                  recipientAuthority,
+                });
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceStatus]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceStatus,
+            withAcceptance((service) => service.status(input.caseId)),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceResolveForPullRequest]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceResolveForPullRequest,
+            withAcceptanceLookup((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId).pipe(
+                  Effect.mapError(
+                    () =>
+                      new CollaborativeAcceptanceCaseLookupError({
+                        message: "The acceptance thread is unavailable.",
+                        reason: "unavailable",
+                      }),
+                  ),
+                );
+                if (!hasDurablePullRequestAssociation(thread, input.pullRequest)) {
+                  return yield* new CollaborativeAcceptanceCaseLookupError({
+                    message: "The pull request is not durably associated with this thread.",
+                    reason:
+                      thread.projectId === input.pullRequest.projectId
+                        ? "not-found"
+                        : "unauthorized",
+                  });
+                }
+                return yield* service.resolveForPullRequest(input);
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceSubmitAssessment]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceSubmitAssessment,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId);
+                const authority = acceptanceAuthorityForThread(thread);
+                if (authority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.submitAssessment({
+                  ...input.submission,
+                  authority,
+                });
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptancePause]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptancePause,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId);
+                const authority = acceptanceAuthorityForThread(thread);
+                if (authority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.pause(input.caseId, input.reason, authority);
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
+        [WS_METHODS.collaborativeAcceptanceResume]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.collaborativeAcceptanceResume,
+            withAcceptance((service) =>
+              Effect.gen(function* () {
+                const thread = yield* resolveAcceptanceThread(input.threadId);
+                const authority = acceptanceAuthorityForThread(thread);
+                if (authority === undefined) {
+                  return yield* new CollaborativeAcceptanceError({
+                    message: "Acceptance requires authenticated active execution authority.",
+                  });
+                }
+                return yield* service.resume(input.caseId, authority);
+              }),
+            ),
+            { "rpc.aggregate": "collaborativeAcceptance" },
+          ),
 
         [WS_METHODS.subscribeGitStatus]: (input) =>
           observeRpcStream(
@@ -2304,6 +2320,16 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.gitRefreshStatus,
             gitStatusBroadcaster.refreshStatus(input.cwd),
+            {
+              "rpc.aggregate": "git",
+            },
+          ),
+        [WS_METHODS.gitLocalStatus]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.gitLocalStatus,
+            gitManager
+              .invalidateLocalStatus(input.cwd)
+              .pipe(Effect.andThen(gitManager.localStatus(input))),
             {
               "rpc.aggregate": "git",
             },
@@ -3015,7 +3041,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               sessions.markConnected(session.sessionId),
               backgroundPolicy.registerConnection(session.sessionId, backgroundConnection),
             ],
-            { discard: true },
+            { discard: true, concurrency: "unbounded" },
           ),
           () =>
             Effect.logInfo("websocket connected", {
@@ -3037,7 +3063,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                 backgroundPolicy.removeConnection(session.sessionId, backgroundConnection),
                 sessions.markDisconnected(session.sessionId),
               ],
-              { discard: true },
+              { discard: true, concurrency: "unbounded" },
             ),
         );
       }).pipe(Effect.catchTag("AuthError", respondToAuthError)),

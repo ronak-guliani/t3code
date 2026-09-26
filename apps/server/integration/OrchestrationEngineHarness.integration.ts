@@ -37,6 +37,7 @@ import { ProviderSessionRuntimeRepositoryLive } from "../src/persistence/Layers/
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
 import { ProjectionCheckpointRepository } from "../src/persistence/Services/ProjectionCheckpoints.ts";
 import { ProjectionPendingApprovalRepository } from "../src/persistence/Services/ProjectionPendingApprovals.ts";
+import { WorkspaceOwnershipRepository } from "../src/persistence/Services/WorkspaceOwnership.ts";
 import { makeInstanceRegistryMock } from "../src/provider/testUtils/providerInstanceRegistryMock.ts";
 import { ProviderInstanceRegistry } from "../src/provider/Services/ProviderInstanceRegistry.ts";
 import { ProviderSessionDirectoryLive } from "../src/provider/Layers/ProviderSessionDirectory.ts";
@@ -65,6 +66,7 @@ import { ThreadDeletionReactor } from "../src/orchestration/Services/ThreadDelet
 import { ThreadTitleReactor } from "../src/orchestration/Services/ThreadTitleReactor.ts";
 import { QueuedTurnReactor } from "../src/orchestration/Services/QueuedTurnReactor.ts";
 import { WorkflowCoordinatorReactor } from "../src/orchestration/Services/WorkflowCoordinatorReactor.ts";
+import { ValidationCoordinatorReactor } from "../src/orchestration/Services/ValidationCoordinatorReactor.ts";
 import { OrchestrationReactor } from "../src/orchestration/Services/OrchestrationReactor.ts";
 import { ProjectionSnapshotQuery } from "../src/orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
@@ -108,6 +110,10 @@ export function gitRefExists(cwd: string, ref: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function gitHead(cwd: string): string {
+  return runGit(cwd, ["rev-parse", "HEAD"]).trim();
 }
 
 export function gitShowFileAtRef(cwd: string, ref: string, filePath: string): string {
@@ -183,6 +189,7 @@ export interface OrchestrationIntegrationHarness {
   readonly checkpointStore: CheckpointStore["Service"];
   readonly checkpointRepository: ProjectionCheckpointRepository["Service"];
   readonly pendingApprovalRepository: ProjectionPendingApprovalRepository["Service"];
+  readonly workspaceOwnership: WorkspaceOwnershipRepository["Service"];
   readonly waitForThread: (
     threadId: string,
     predicate: (thread: OrchestrationThread) => boolean,
@@ -377,6 +384,13 @@ export const makeOrchestrationIntegrationHarness = (
           drain: Effect.void,
         }),
       ),
+      Layer.provideMerge(
+        Layer.succeed(ValidationCoordinatorReactor, {
+          request: () => Effect.die("request should not be called in this test"),
+          reconcile: () => Effect.void,
+          start: () => Effect.void,
+        }),
+      ),
     );
     const layer = Layer.empty.pipe(
       Layer.provideMerge(runtimeServicesLayer),
@@ -411,6 +425,10 @@ export const makeOrchestrationIntegrationHarness = (
     const pendingApprovalRepository = yield* tryRuntimePromise(
       "load ProjectionPendingApprovalRepository service",
       () => runtime.runPromise(Effect.service(ProjectionPendingApprovalRepository)),
+    ).pipe(Effect.orDie);
+    const workspaceOwnership = yield* tryRuntimePromise(
+      "load WorkspaceOwnershipRepository service",
+      () => runtime.runPromise(Effect.service(WorkspaceOwnershipRepository)),
     ).pipe(Effect.orDie);
     const runtimeReceiptBus = yield* tryRuntimePromise("load RuntimeReceiptBus service", () =>
       runtime.runPromise(Effect.service(RuntimeReceiptBus)),
@@ -555,6 +573,7 @@ export const makeOrchestrationIntegrationHarness = (
       checkpointStore,
       checkpointRepository,
       pendingApprovalRepository,
+      workspaceOwnership,
       waitForThread,
       waitForDomainEvent,
       waitForPendingApproval,

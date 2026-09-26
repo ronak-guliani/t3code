@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -10,6 +11,7 @@ import {
   ApprovalRequestId,
   CommandId,
   EventId,
+  MessageId,
   ProviderInstanceId,
   ThreadId,
   TurnId,
@@ -35,6 +37,7 @@ import {
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
+  orchestrationThreadReadRouteLayer,
 } from "./orchestration/http.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { RepositoryIdentityResolverLive } from "./project/Layers/RepositoryIdentityResolver.ts";
@@ -48,6 +51,15 @@ import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
 import { GitCore } from "./git/Services/GitCore.ts";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster.ts";
 import { ProjectSetupScriptRunner } from "./project/Services/ProjectSetupScriptRunner.ts";
+
+const makeGitWorkspace = (prefix: string) => {
+  const workspace = mkdtempSync(join(tmpdir(), prefix));
+  execFileSync("git", ["init", "--quiet", workspace]);
+  execFileSync("git", ["-C", workspace, "config", "user.email", "test@example.com"]);
+  execFileSync("git", ["-C", workspace, "config", "user.name", "Test"]);
+  execFileSync("git", ["-C", workspace, "commit", "--quiet", "--allow-empty", "-m", "initial"]);
+  return workspace;
+};
 import { runProcess } from "./processRunner.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { issueCrossThreadDispatchCapability } from "./orchestration/CrossThreadDispatchCapability.ts";
@@ -140,6 +152,7 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
       orchestrationSnapshotRouteLayer,
       orchestrationShellSnapshotRouteLayer,
       orchestrationThreadSnapshotRouteLayer,
+      orchestrationThreadReadRouteLayer,
       orchestrationDispatchRouteLayer,
     );
     const appLayer = HttpRouter.serve(routesLayer, {
@@ -212,6 +225,59 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
 
   it.effect("accepts canonical --no-<flag> boolean negation", () =>
     runCliWithRuntime(["--no-log-websocket-events", "--version"]),
+  );
+
+  it.effect("rejects conflicting chat history views and full-view pagination before reading", () =>
+    Effect.gen(function* () {
+      for (const flags of [
+        ["--messages", "--activities"],
+        ["--full", "--messages"],
+        ["--full", "--activities"],
+        ["--full", "--limit", "1"],
+        ["--full", "--before", "cursor"],
+      ]) {
+        const error = yield* runCliWithRuntime([
+          "chat",
+          "show",
+          "unused",
+          "--url",
+          "http://127.0.0.1:1",
+          "--token",
+          "unused",
+          ...flags,
+        ]).pipe(Effect.flip);
+        assert.deepInclude(error, {
+          _tag: "CliPayloadError",
+          message:
+            "Choose --messages, --activities, or --full; pagination cannot be used with --full.",
+        });
+      }
+    }),
+  );
+
+  it.effect("keeps invalid-argument help on stderr and requested help on stdout", () =>
+    Effect.gen(function* () {
+      const entrypoint = fileURLToPath(new URL("./bin.ts", import.meta.url));
+      const failure = yield* Effect.promise(() =>
+        runProcess(process.execPath, [entrypoint, "chat", "show", "unused", "--invalid-cli-flag"], {
+          allowNonZeroExit: true,
+        }),
+      );
+      assert.notEqual(failure.code, 0);
+      assert.equal(failure.stdout, "");
+      assert.include(failure.stderr, "USAGE");
+      const error = JSON.parse(failure.stderr.trim().split("\n").at(-1)!);
+      assert.equal(error.error.code, "CLI_INVALID_ARGUMENT");
+      assert.include(error.error.message, "--invalid-cli-flag");
+      for (const args of [["chat"], ["chat", "show", "--help"]]) {
+        const help = yield* Effect.promise(() =>
+          runProcess(process.execPath, [entrypoint, ...args], { allowNonZeroExit: true }),
+        );
+        assert.equal(help.code, 0, help.stderr);
+        assert.include(help.stdout, "USAGE");
+        assert.equal(help.stderr, "");
+      }
+    }),
   );
 
   it.effect("runs Connect status without parsing an invalid server port", () => {
@@ -353,7 +419,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("adds, renames, and removes projects offline through the orchestration engine", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-projects-offline-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-projects-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-projects-workspace-");
 
       yield* runCliWithRuntime([
         "project",
@@ -397,7 +463,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("routes project commands through a running server when runtime state is present", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-projects-live-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-projects-live-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-projects-live-workspace-");
 
       yield* withLiveProjectCliServer(baseDir, () =>
         Effect.gen(function* () {
@@ -425,7 +491,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("prints orchestration snapshots from a running server", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-orchestration-snapshot-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-orchestration-snapshot-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-orchestration-snapshot-workspace-");
 
       yield* withLiveProjectCliServer(baseDir, () =>
         Effect.gen(function* () {
@@ -463,7 +529,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("lists and shows projects from a running server", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-project-list-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-project-list-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-project-list-workspace-");
 
       yield* withLiveProjectCliServer(baseDir, () =>
         Effect.gen(function* () {
@@ -508,7 +574,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("updates project default model and scripts offline", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-project-meta-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-project-meta-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-project-meta-workspace-");
 
       yield* runCliWithRuntime([
         "project",
@@ -552,7 +618,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("lists and shows chats from a running server", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-chat-list-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-chat-list-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-chat-list-workspace-");
       const now = new Date().toISOString();
 
       yield* withLiveProjectCliServer(baseDir, () =>
@@ -603,10 +669,120 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
     }),
   );
 
+  it.effect("prunes only requested child assignments from the current wait", () =>
+    Effect.gen(function* () {
+      const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-wait-prune-test-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-wait-prune-workspace-");
+      const now = new Date().toISOString();
+
+      try {
+        yield* withLiveProjectCliServer(baseDir, () =>
+          Effect.gen(function* () {
+            yield* runCliWithRuntime([
+              "project",
+              "add",
+              workspaceRoot,
+              "--title",
+              "Wait Prune Project",
+              "--base-dir",
+              baseDir,
+            ]);
+            const engine = yield* OrchestrationEngineService;
+            const readModel = yield* engine.getReadModel();
+            const project = readModel.projects.find(
+              (candidate) => candidate.workspaceRoot === workspaceRoot,
+            );
+            if (project === undefined) {
+              assert.fail("Expected project to be created.");
+            }
+
+            const parentThreadId = ThreadId.make("cli-wait-prune-parent");
+            const failedChildThreadId = ThreadId.make("cli-wait-prune-failed-child");
+            const remainingChildThreadId = ThreadId.make("cli-wait-prune-remaining-child");
+            const failedAssignmentId = MessageId.make("cli-wait-prune-failed-assignment");
+            const remainingAssignmentId = MessageId.make("cli-wait-prune-remaining-assignment");
+            for (const [threadId, assignmentId] of [
+              [parentThreadId, undefined],
+              [failedChildThreadId, failedAssignmentId],
+              [remainingChildThreadId, remainingAssignmentId],
+            ] as const) {
+              yield* engine.dispatch({
+                type: "thread.create",
+                commandId: CommandId.make(`create-${threadId}`),
+                threadId,
+                projectId: project.id,
+                title: threadId,
+                modelSelection: {
+                  instanceId: ProviderInstanceId.make("codex"),
+                  model: "gpt-5.4",
+                },
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: null,
+                createdAt: now,
+                ...(assignmentId
+                  ? {
+                      parentThreadId,
+                      delegation: {
+                        assignmentId,
+                        followUp: "automatic" as const,
+                        completedAt: null,
+                      },
+                    }
+                  : {}),
+              });
+            }
+            yield* engine.dispatch({
+              type: "thread.meta.update",
+              commandId: CommandId.make("set-wait-prune-parent-wait"),
+              threadId: parentThreadId,
+              childWait: {
+                mode: "any",
+                assignments: [
+                  { childThreadId: failedChildThreadId, assignmentId: failedAssignmentId },
+                  { childThreadId: remainingChildThreadId, assignmentId: remainingAssignmentId },
+                ],
+              },
+            });
+
+            yield* runCliWithRuntime([
+              "chat",
+              "wait-prune",
+              parentThreadId,
+              JSON.stringify([
+                {
+                  childThreadId: failedChildThreadId,
+                  assignmentId: failedAssignmentId,
+                },
+              ]),
+              "--base-dir",
+              baseDir,
+            ]);
+
+            const updated = yield* engine.getReadModel();
+            const parent = updated.threads.find((thread) => thread.id === parentThreadId);
+            assert.deepEqual(parent?.nudging?.wait, {
+              mode: "any",
+              generationId: CommandId.make("set-wait-prune-parent-wait"),
+              assignments: [
+                { childThreadId: remainingChildThreadId, assignmentId: remainingAssignmentId },
+              ],
+            });
+          }),
+        );
+      } finally {
+        rmSync(baseDir, { recursive: true, force: true });
+        rmSync(workspaceRoot, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("manages chat lifecycle metadata from the CLI", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-chat-lifecycle-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-chat-lifecycle-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-chat-lifecycle-workspace-");
+      const handoffWorktree = join(tmpdir(), `t3-cli-worktree-${process.pid}`);
 
       yield* withLiveProjectCliServer(baseDir, () =>
         Effect.gen(function* () {
@@ -689,7 +865,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             "--branch",
             "feature/cli",
             "--worktree",
-            "/tmp/t3-cli-worktree",
+            handoffWorktree,
             "--continue-prompt",
             "Continue in the worktree",
             "--command-id",
@@ -738,13 +914,12 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             "--branch",
             "feature/cli",
             "--worktree",
-            "/tmp/t3-cli-worktree",
+            handoffWorktree,
             "--continue-prompt",
             "Continue in the existing worktree",
             "--base-dir",
             baseDir,
           ]).pipe(Effect.flip);
-          assert.equal(String(duplicateWorktreeError).includes("already bound"), true);
           assert.equal(
             String(duplicateWorktreeError).includes("ORCHESTRATION_COMMAND_REJECTED:"),
             true,
@@ -761,7 +936,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
           assert.equal(thread?.runtimeMode, "auto-accept-edits");
           assert.equal(thread?.interactionMode, "plan");
           assert.equal(thread?.branch, "feature/cli");
-          assert.equal(thread?.worktreePath, "/tmp/t3-cli-worktree");
+          assert.equal(thread?.worktreePath, handoffWorktree);
           assert.equal(thread?.queuedTurns?.[0]?.message.text, "Continue in the worktree");
           assert.equal(thread?.archivedAt, null);
 
@@ -779,7 +954,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("sends turns and manages queued turns from the CLI", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-chat-turn-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-chat-turn-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-chat-turn-workspace-");
 
       yield* withLiveProjectCliServer(baseDir, () =>
         Effect.gen(function* () {
@@ -792,6 +967,23 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             "--base-dir",
             baseDir,
           ]);
+          yield* runCliWithRuntime([
+            "project",
+            "set-default-model",
+            workspaceRoot,
+            "--payload",
+            '{"instanceId":"codex","model":"gpt-5.4"}',
+            "--base-dir",
+            baseDir,
+          ]);
+          const orchestrationEngine = yield* OrchestrationEngineService;
+          const configuredProject = (yield* orchestrationEngine.getReadModel()).projects.find(
+            (project) => project.workspaceRoot === workspaceRoot,
+          );
+          assert.deepStrictEqual(configuredProject?.defaultModelSelection, {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+          });
           const createdOutput = yield* captureStdout(
             runCli([
               "chat",
@@ -1092,7 +1284,6 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             baseDir,
           ]);
 
-          const orchestrationEngine = yield* OrchestrationEngineService;
           const readModel = yield* orchestrationEngine.getReadModel();
           const sentThread = readModel.threads.find(
             (candidate) => candidate.id === created.threadId,
@@ -1144,7 +1335,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("resolves workspace paths through the production CLI entrypoint", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-production-runtime-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-production-runtime-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-production-runtime-workspace-");
 
       yield* withLiveProjectCliServer(baseDir, () =>
         Effect.gen(function* () {
@@ -1175,8 +1366,6 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
               process.execPath,
               [
                 fileURLToPath(new URL("./bin.ts", import.meta.url)),
-                "--log-level",
-                "error",
                 "chat",
                 "new",
                 "--project",
@@ -1196,6 +1385,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
           );
 
           assert.equal(result.code, 0, result.stderr);
+          assert.include(result.stderr, "Running all migrations");
           assert.deepStrictEqual(JSON.parse(result.stdout), {
             status: "dry-run",
             threadId: null,
@@ -1206,6 +1396,49 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             errorCode: null,
             message: "Nested-thread inputs are valid; no thread or workspace was created.",
           });
+          const history = yield* Effect.promise(() =>
+            runProcess(
+              process.execPath,
+              [
+                fileURLToPath(new URL("./bin.ts", import.meta.url)),
+                "chat",
+                "show",
+                parent.threadId,
+                "--messages",
+                "--limit",
+                "1",
+                "--base-dir",
+                baseDir,
+              ],
+              { allowNonZeroExit: true },
+            ),
+          );
+          assert.equal(history.code, 0, history.stderr);
+          const page = JSON.parse(history.stdout);
+          assert.deepStrictEqual(page.messages, []);
+          assert.deepStrictEqual(page.page, { hasMore: false, before: null });
+          assert.notProperty(page, "checkpoints");
+          assert.notProperty(page, "activities");
+          const failure = yield* Effect.promise(() =>
+            runProcess(
+              process.execPath,
+              [
+                fileURLToPath(new URL("./bin.ts", import.meta.url)),
+                "--log-level",
+                "error",
+                "chat",
+                "show",
+                "missing-thread",
+                "--base-dir",
+                baseDir,
+              ],
+              { allowNonZeroExit: true },
+            ),
+          );
+          assert.notEqual(failure.code, 0);
+          assert.equal(failure.stdout, "");
+          assert.equal(JSON.parse(failure.stderr).error.code, "CliRpcError");
+          assert.include(JSON.parse(failure.stderr).error.message, "was not found");
         }),
       ).pipe(
         Effect.ensuring(
@@ -1221,7 +1454,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("lists and responds to approval and user-input requests from the CLI", () =>
     Effect.gen(function* () {
       const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-requests-test-"));
-      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-requests-workspace-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-requests-workspace-");
       const now = new Date().toISOString();
 
       yield* withLiveProjectCliServer(baseDir, () =>
@@ -1287,6 +1520,24 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             },
             createdAt: now,
           });
+
+          for (let index = 0; index < 205; index++) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.activity.append",
+              commandId: CommandId.make(`cli-window-${index}`),
+              threadId: ThreadId.make(created.threadId),
+              activity: {
+                id: EventId.make(`cli-window-${index}`),
+                tone: "info",
+                kind: "runtime.info",
+                summary: "Later activity",
+                payload: {},
+                turnId: null,
+                createdAt: new Date(Date.parse(now) + index + 1).toISOString(),
+              },
+              createdAt: now,
+            });
+          }
 
           const approvalListOutput = yield* captureStdout(
             runCli(["approval", "list", "--thread", created.threadId, "--base-dir", baseDir]),

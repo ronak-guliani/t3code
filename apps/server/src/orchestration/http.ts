@@ -4,6 +4,8 @@ import {
   ClientOrchestrationCommand,
   OrchestrationDispatchCommandError,
   OrchestrationGetSnapshotError,
+  OrchestrationReadThreadInput,
+  OrchestrationReadThreadInputError,
   type OrchestrationReadModel,
   type OrchestrationShellSnapshot,
   type OrchestrationThreadDetailSnapshot,
@@ -36,11 +38,16 @@ const isDefinitiveCommandRejection = (error: OrchestrationDispatchCommandError):
     cause._tag === "OrchestrationCommandPreviouslyRejectedError"
   );
 };
-
 const respondToOrchestrationHttpError = (
-  error: OrchestrationDispatchCommandError | OrchestrationGetSnapshotError,
+  error:
+    | OrchestrationDispatchCommandError
+    | OrchestrationGetSnapshotError
+    | OrchestrationReadThreadInputError,
 ) =>
   Effect.gen(function* () {
+    if (error._tag === "OrchestrationReadThreadInputError") {
+      return HttpServerResponse.jsonUnsafe({ error: error.message }, { status: 400 });
+    }
     if (error._tag === "OrchestrationGetSnapshotError") {
       yield* Effect.logError("orchestration http route failed", {
         message: error.message,
@@ -153,6 +160,28 @@ export const orchestrationThreadSnapshotRouteLayer = HttpRouter.add(
   }).pipe(
     Effect.catchTags({
       AuthError: respondToAuthError,
+      OrchestrationGetSnapshotError: respondToOrchestrationHttpError,
+    }),
+  ),
+);
+
+export const orchestrationThreadReadRouteLayer = HttpRouter.add(
+  "POST",
+  "/api/orchestration/thread-read",
+  Effect.gen(function* () {
+    yield* authorizeClientSession(AuthOrchestrationReadScope);
+    const input = yield* HttpServerRequest.schemaBodyJson(OrchestrationReadThreadInput).pipe(
+      Effect.mapError(
+        () => new OrchestrationReadThreadInputError({ message: "Invalid thread read request." }),
+      ),
+    );
+    const query = yield* ProjectionSnapshotQuery;
+    const result = yield* query.readThread(input);
+    return HttpServerResponse.jsonUnsafe(result);
+  }).pipe(
+    Effect.catchTags({
+      AuthError: respondToAuthError,
+      OrchestrationReadThreadInputError: respondToOrchestrationHttpError,
       OrchestrationGetSnapshotError: respondToOrchestrationHttpError,
     }),
   ),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { shouldRecoverDeviceTarget } from "./DevicePanel";
+import { shouldRecoverDeviceTarget } from "./useRetainedDeviceSession";
 
 describe("DevicePanel recovery", () => {
   it("recovers retained targets only after the Device service restarts", () => {

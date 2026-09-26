@@ -1059,6 +1059,14 @@ describe("incremental orchestration updates", () => {
         updatedAt: "2026-05-01T20:40:15.000Z",
         archivedAt: null,
         deletedAt: null,
+        validationRequest: {
+          requestId: "request-pending",
+          threadId,
+          scenarios: [],
+          scope: "changed-behavior",
+          requester: { id: "user-1", kind: "user" },
+          requestedAt: "2026-05-01T20:40:10.000Z",
+        },
         messages: [],
         proposedPlans: [],
         activities: [],
@@ -1081,6 +1089,7 @@ describe("incremental orchestration updates", () => {
     );
 
     expect(threadsOf(next)[0]?.session?.resumeCursor).toEqual(resumeCursor);
+    expect(threadsOf(next)[0]?.validationRequest?.requestId).toBe("request-pending");
     expect(threadsOf(next)[0]?.hasMoreActivities).toBe(true);
     expect(threadsOf(next)[0]?.hasMoreCurrentTurnActivities).toBe(true);
     expect(
@@ -2602,6 +2611,70 @@ describe("insights lifecycle retention", () => {
         pullRequest,
         source: "created",
         linkedAt: "2026-02-27T00:00:02.000Z",
+      },
+    ]);
+  });
+
+  it("retains every pull request created in a thread in creation order", () => {
+    const firstPullRequest = {
+      number: 399,
+      title: "First pull request",
+      url: "https://github.com/acme/app/pull/399",
+      baseBranch: "main",
+      headBranch: "feature/first",
+      state: "open" as const,
+    };
+    const secondPullRequest = {
+      ...firstPullRequest,
+      number: 400,
+      title: "Second pull request",
+      url: "https://github.com/acme/app/pull/400",
+      headBranch: "feature/second",
+    };
+    const threadId = ThreadId.make("thread-multiple-prs");
+    const created = applyOrchestrationEvent(
+      makeState(makeThread()),
+      makeEvent("thread.created", {
+        threadId,
+        projectId: ProjectId.make("project-1"),
+        title: "Multiple PRs",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        runtimeMode: DEFAULT_RUNTIME_MODE,
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        branch: "feature/first",
+        worktreePath: null,
+        pullRequest: firstPullRequest,
+        createdAt: "2026-09-17T00:00:00.000Z",
+        updatedAt: "2026-09-17T00:00:00.000Z",
+      }),
+      localEnvironmentId,
+    );
+    const next = applyOrchestrationEvent(
+      created,
+      makeEvent("thread.meta-updated", {
+        threadId,
+        pullRequest: secondPullRequest,
+        pullRequestSource: "created",
+        updatedAt: "2026-09-17T00:01:00.000Z",
+      }),
+      localEnvironmentId,
+    );
+    const thread = selectThreadByRef(next, scopeThreadRef(localEnvironmentId, threadId));
+
+    expect(thread?.pullRequest).toEqual(secondPullRequest);
+    expect(thread?.pullRequests).toEqual([
+      {
+        pullRequest: firstPullRequest,
+        source: "created",
+        linkedAt: "2026-09-17T00:00:00.000Z",
+      },
+      {
+        pullRequest: secondPullRequest,
+        source: "created",
+        linkedAt: "2026-09-17T00:01:00.000Z",
       },
     ]);
   });

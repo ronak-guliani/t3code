@@ -66,6 +66,43 @@ background-service prompt when shown. Without `--connect`, the command only upda
 Re-run it after pulling future CLI fixes; merging or updating source alone does not update
 installed binaries.
 
+### Agent CLI reliability
+
+New provider processes inherit a private `t3` launcher for the running server's CLI build
+and `T3CODE_HOME`, rather than an unrelated installation on PATH. Restart an existing provider
+session after updating the server. This does not replace the user's installed `t3`. Packaged
+`--version` includes the build commit when available; `installation identity --json` also
+reports the executable and entrypoint. If snapshot decoding reports `CLI_SERVER_INCOMPATIBLE`,
+update both components or use the server-matched launcher.
+
+Management-command stdout is reserved for results; diagnostics and failures go to stderr.
+Invalid-argument help also goes to stderr; requested help stays on stdout without an error.
+Failures exit nonzero and include a JSON `error` with `code` and `message`. Stream commands
+remain long-lived; individual unary WebSocket RPC replies have a 30-second deadline. A timeout
+does not prove a mutation was rejected: inspect its outcome before retrying. Mutations are not
+automatically replayed.
+
+`chat show` now resolves an ID or unambiguous title without downloading the global shell.
+History views return the newest 50 entries in chronological order, without checkpoints:
+
+```sh
+t3 chat show THREAD_ID
+t3 chat show THREAD_ID --messages --limit 20
+t3 chat show THREAD_ID --activities --limit 20
+t3 chat show THREAD_ID --messages --before CURSOR_FROM_PAGE_BEFORE
+t3 chat show THREAD_ID --full
+```
+
+Pages expose `page.hasMore` and `page.before`; cursors are bound to the thread and history
+view. The maximum page size is 200. `--full` preserves the previous detail shape, including
+checkpoints, recent activities, and pending-request context. It is also the explicit legacy
+read for older servers without the targeted-read API. Archived threads remain readable.
+The three history view flags are mutually exclusive, and pagination is unavailable with `--full`.
+The targeted HTTP API returns 400 for invalid requests, ambiguous/missing threads, and invalid
+cursors; internal repository failures remain 500.
+Use `--full` instead of `--messages` in scripts that require the previous combined detail
+shape. Pending approval and question listings include requests outside the recent activity window.
+
 `t3 service install` installs the exact packaged CLI and its installed production dependencies as a per-user service and starts it immediately. The private snapshot includes native assets, does not depend on the original checkout's `node_modules`, and is checked before replacing a working service. Re-running install repairs the definition and replaces the runtime, so run it again from the newly installed packaged CLI after an upgrade.
 
 For T3 Connect, start with `t3 connect --role host`: sign in and accept the background-service prompt. You do

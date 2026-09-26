@@ -135,6 +135,7 @@ function createProviderServiceHarness() {
     forkSession: () => unsupported(),
     sendTurn: () => unsupported(),
     interruptTurn: () => unsupported(),
+    steerTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
@@ -268,6 +269,10 @@ describe("ProviderRuntimeIngestion", () => {
     const assistantDeltaDispatchLog: Array<string> = [];
     const workspaceRoot = makeTempDir("t3-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
+    const threadWorkspacePath = path.join(workspaceRoot, "thread-1");
+    fs.mkdirSync(threadWorkspacePath, { recursive: true });
+    fs.mkdirSync(path.join(threadWorkspacePath, ".git"));
+    const threadWorkspace = fs.realpathSync(threadWorkspacePath);
     const provider = createProviderServiceHarness();
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -396,7 +401,7 @@ describe("ProviderRuntimeIngestion", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: null,
+        worktreePath: threadWorkspace,
         ...(options?.reviewSnapshot !== undefined
           ? { reviewSnapshot: options.reviewSnapshot }
           : {}),
@@ -432,7 +437,7 @@ describe("ProviderRuntimeIngestion", () => {
     return {
       engine,
       coordinator,
-      workspaceRoot,
+      workspaceRoot: threadWorkspace,
       ingestion,
       emit: provider.emit,
       setProviderSession: provider.setSession,
@@ -1573,6 +1578,13 @@ describe("ProviderRuntimeIngestion", () => {
       (entry) => entry.session?.status === "ready" && entry.session?.activeTurnId === null,
     );
     expect(thread.session?.lastError).toBeNull();
+    expect(
+      thread.activities.find(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "insights.turn.completed" &&
+          activity.id === "evt-turn-completed-missing-id",
+      )?.turnId,
+    ).toBe("turn-missing-completion-id");
   });
 
   it("applies provider session.state.changed transitions directly", async () => {
@@ -2235,7 +2247,7 @@ describe("ProviderRuntimeIngestion", () => {
         interactionMode: "plan",
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: null,
+        worktreePath: path.join(harness.workspaceRoot, String(sourceThreadId)),
         createdAt,
       }),
     );
@@ -2270,7 +2282,7 @@ describe("ProviderRuntimeIngestion", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: null,
+        worktreePath: path.join(harness.workspaceRoot, String(targetThreadId)),
         createdAt,
       }),
     );
@@ -2422,7 +2434,7 @@ describe("ProviderRuntimeIngestion", () => {
         interactionMode: "plan",
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: null,
+        worktreePath: path.join(harness.workspaceRoot, String(sourceThreadId)),
         createdAt,
       }),
     );
@@ -2576,7 +2588,7 @@ describe("ProviderRuntimeIngestion", () => {
         interactionMode: "plan",
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: null,
+        worktreePath: path.join(harness.workspaceRoot, String(sourceThreadId)),
         createdAt,
       }),
     );
@@ -2611,7 +2623,7 @@ describe("ProviderRuntimeIngestion", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         branch: null,
-        worktreePath: null,
+        worktreePath: path.join(harness.workspaceRoot, String(targetThreadId)),
         createdAt,
       }),
     );

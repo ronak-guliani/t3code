@@ -174,8 +174,31 @@ const makeWorkflowCoordinatorReactor = Effect.gen(function* () {
       modelSelection: input.workerConfig.modelSelection,
       runtimeMode: input.workerConfig.runtimeMode,
       interactionMode: input.workerConfig.interactionMode,
-      branch: input.workerConfig.branch,
-      worktreePath: input.workerConfig.worktreePath,
+      // Workflow workers are independent writers. Preserve the configured
+      // source revision while letting orchestration allocate a fresh task
+      // branch/worktree for the child.
+      branch: null,
+      worktreePath: null,
+      ...(input.workerConfig.branch !== null
+        ? { sourceBranch: input.workerConfig.branch }
+        : input.workerConfig.pullRequest?.headBranch !== undefined
+          ? { sourceBranch: input.workerConfig.pullRequest.headBranch }
+          : parent.branch !== null
+            ? { sourceBranch: parent.branch }
+            : {}),
+      ...(input.workerConfig.worktreePath !== null
+        ? { sourceWorktreePath: input.workerConfig.worktreePath }
+        : input.workerConfig.workspaceBinding !== undefined
+          ? { sourceWorktreePath: input.workerConfig.workspaceBinding.worktreePath }
+          : input.workerConfig.branch === null &&
+              input.workerConfig.pullRequest?.headBranch === undefined &&
+              parent.workspaceBinding !== undefined
+            ? { sourceWorktreePath: parent.workspaceBinding.worktreePath }
+            : input.workerConfig.branch === null &&
+                input.workerConfig.pullRequest?.headBranch === undefined &&
+                parent.worktreePath !== null
+              ? { sourceWorktreePath: parent.worktreePath }
+              : {}),
       ...(input.workerConfig.pullRequest !== undefined
         ? { pullRequest: input.workerConfig.pullRequest }
         : {}),

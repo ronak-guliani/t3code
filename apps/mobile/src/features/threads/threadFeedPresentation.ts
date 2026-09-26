@@ -26,3 +26,40 @@ export function deriveAssistantMetadataInvalidationKey(
   }
   return [latestTurn.turnId, latestTurn.state, latestTurn.completedAt ?? ""].join(":");
 }
+
+/** Mirrors web's user-message collapse threshold: long pastes collapse. */
+export const USER_MESSAGE_COLLAPSE_CHAR_THRESHOLD = 900;
+/** Mirrors web's default normal-origin preview limit (10 lines). */
+export const USER_MESSAGE_COLLAPSED_LINE_LIMIT = 10;
+
+/**
+ * Whether a user-sent message gets the collapsed preview with a
+ * Show full message / Show less toggle. Mirrors web's
+ * shouldCollapseUserMessage minus terminal contexts, which mobile renders
+ * nowhere in the bubble. Rendered overflow (short text that wraps past the
+ * preview height) is measured separately with
+ * exceedsUserMessagePreviewHeight, mirroring web's measured check.
+ */
+export function shouldCollapseUserMessageText(
+  text: string,
+  collapsedLineLimit: number = USER_MESSAGE_COLLAPSED_LINE_LIMIT,
+): boolean {
+  const trimmedText = text.trim();
+  if (trimmedText.length >= USER_MESSAGE_COLLAPSE_CHAR_THRESHOLD) {
+    return true;
+  }
+  const lineCount = trimmedText.length === 0 ? 0 : trimmedText.split(/\r\n|\r|\n/).length;
+  return lineCount > collapsedLineLimit;
+}
+
+/**
+ * Rendered-overflow check for the collapsed preview. Mirrors web's
+ * exceedsMessagePreviewHeight: the +1pt slop keeps rounding from collapsing
+ * content that exactly fits the preview.
+ */
+export function exceedsUserMessagePreviewHeight(
+  contentHeight: number,
+  previewHeight: number,
+): boolean {
+  return contentHeight > previewHeight + 1;
+}

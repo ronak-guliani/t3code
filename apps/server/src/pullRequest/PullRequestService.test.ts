@@ -1,6 +1,10 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore";
+import * as Persistence from "effect/unstable/persistence/Persistence";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { TestClock } from "effect/testing";
 import type {
   OrchestrationProjectShell,
   ProjectId,
@@ -9,7 +13,13 @@ import type {
 } from "@t3tools/contracts";
 
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { type ProviderChangeRequest, type PullRequestProviderApi } from "./PullRequestProvider.ts";
+import {
+  type ProviderChangeRequest,
+  type ProviderChangeRequestDetail,
+  PullRequestProviderError,
+  type PullRequestProviderApi,
+} from "./PullRequestProvider.ts";
+import * as PullRequestReadCache from "./PullRequestReadCache.ts";
 import { PullRequestProviderRegistry, fromProviders } from "./PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./PullRequestService.ts";
 
@@ -59,6 +69,24 @@ const teamRequestedChange: ProviderChangeRequest = {
   reviewRequestLogins: [],
   hasTeamReviewRequest: true,
   labels: [],
+};
+
+const detailedChange: ProviderChangeRequestDetail = {
+  ...teamRequestedChange,
+  body: "Description",
+  changedFiles: 3,
+  mergedAt: null,
+  closedAt: null,
+  reviewers: [],
+  checks: [],
+  mergeCapabilities: { merge: true, squash: true, rebase: true },
+  viewerPermissions: {
+    actions: ["merge", "ready", "draft", "close", "reopen"],
+    comment: true,
+    resolve: true,
+    verdicts: ["comment", "approve", "request-changes"],
+    requestReviewers: true,
+  },
 };
 
 function provider(): PullRequestProviderApi {
@@ -121,6 +149,11 @@ function makeService(
               updatedAt: "2026-08-10T00:00:00Z",
             }),
         }),
+        Layer.effect(PullRequestReadCache.PullRequestReadCache, PullRequestReadCache.make).pipe(
+          Layer.provide(Persistence.layerKvs),
+          Layer.provide(KeyValueStore.layerMemory),
+          Layer.provide(NodeServices.layer),
+        ),
       ),
     ),
   );
@@ -158,6 +191,68 @@ it.effect("refuses a mutation that names a repository outside the selected proje
   }),
 );
 
+it.effect("returns large diff slices intact without retaining them in either cache", () =>
+  Effect.gen(function* () {
+    let reads = 0;
+    const patch = "\u{1f4bb}".repeat(140_000);
+    const service = yield* makeService({
+      provider: providerWith({
+        getDiff: () =>
+          Effect.sync(() => {
+            reads += 1;
+            return { patch, truncated: false, nextCursor: "2" };
+          }),
+      }),
+    });
+    const reference = { projectId: project.id, repository: "acme/web", number: 1 };
+
+    for (const input of [
+      reference,
+      { ...reference, cursor: "2" },
+      { ...reference, commit: "a".repeat(40) },
+    ]) {
+      const before = reads;
+      assert.deepStrictEqual(yield* service.diff(input), {
+        patch,
+        truncated: false,
+        nextCursor: "2",
+      });
+      assert.deepStrictEqual(yield* service.diff(input), {
+        patch,
+        truncated: false,
+        nextCursor: "2",
+      });
+      assert.strictEqual(reads, before + 2);
+    }
+  }),
+);
+
+it.effect("caches a small replacement after releasing a large diff", () =>
+  Effect.gen(function* () {
+    let reads = 0;
+    const largePatch = "x".repeat(300_000);
+    const service = yield* makeService({
+      provider: providerWith({
+        getDiff: () =>
+          Effect.sync(() => {
+            reads += 1;
+            return {
+              patch: reads === 1 ? largePatch : "@@ small replacement",
+              truncated: false,
+              nextCursor: null,
+            };
+          }),
+      }),
+    });
+    const reference = { projectId: project.id, repository: "acme/web", number: 1 };
+
+    assert.strictEqual((yield* service.diff(reference)).patch, largePatch);
+    assert.strictEqual((yield* service.diff(reference)).patch, "@@ small replacement");
+    assert.strictEqual((yield* service.diff(reference)).patch, "@@ small replacement");
+    assert.strictEqual(reads, 2);
+  }),
+);
+
 it.effect("scopes viewer discovery to the project's GitHub host", () =>
   Effect.gen(function* () {
     const viewerInputs: Array<{ readonly cwd: string; readonly host: string }> = [];
@@ -185,6 +280,58 @@ it.effect("scopes viewer discovery to the project's GitHub host", () =>
       { cwd: "/workspace/enterprise", host: "github.example.test" },
     ]);
   }),
+);
+
+it.effect("reuses detail counts for later list stats reads", () =>
+  Effect.gen(function* () {
+    let statsCalls = 0;
+    const reference = { projectId: project.id, repository: "acme/web", number: 42 };
+    const service = yield* makeService({
+      provider: providerWith({
+        getChangeRequest: () => Effect.succeed(detailedChange),
+        listChangeRequestStats: () => {
+          statsCalls += 1;
+          return Effect.succeed([
+            { repository: "acme/web", number: 42, additions: 1, deletions: 0 },
+          ]);
+        },
+      }),
+    });
+
+    yield* service.detail(reference);
+    const stats = yield* service.listStats({ refs: [reference] });
+
+    assert.strictEqual(statsCalls, 0);
+    assert.deepStrictEqual(stats.stats, [
+      { projectId: project.id, repository: "acme/web", number: 42, additions: 1, deletions: 0 },
+    ]);
+  }),
+);
+
+it.effect("serves stale list stats while refreshing an expired batch", () =>
+  Effect.gen(function* () {
+    let statsCalls = 0;
+    const reference = { projectId: project.id, repository: "acme/web", number: 42 };
+    const service = yield* makeService({
+      provider: providerWith({
+        listChangeRequestStats: () =>
+          Effect.sync(() => {
+            statsCalls += 1;
+            return [{ repository: "acme/web", number: 42, additions: 1, deletions: 0 }];
+          }),
+      }),
+    });
+
+    const first = yield* service.listStats({ refs: [reference] });
+    assert.strictEqual(statsCalls, 1);
+
+    yield* TestClock.adjust("61 seconds");
+    const second = yield* service.listStats({ refs: [reference] });
+    assert.deepStrictEqual(second, first);
+
+    yield* Effect.yieldNow;
+    assert.strictEqual(statsCalls, 2);
+  }).pipe(Effect.provide(TestClock.layer())),
 );
 
 it.effect("keeps listings cached for mutations that only change one pull request", () =>
@@ -275,6 +422,71 @@ it.effect("keeps listings cached for mutations that only change one pull request
     yield* service.activity(reference);
     assert.strictEqual(listCalls, 2);
     assert.strictEqual(activityCalls, 7);
+  }),
+);
+
+it.effect("holds a rate-limit failure briefly instead of calling gh on every read", () =>
+  Effect.gen(function* () {
+    let detailCalls = 0;
+    const reference = { projectId: project.id, repository: "acme/web", number: 42 };
+    const service = yield* makeService({
+      provider: providerWith({
+        getChangeRequest: () => {
+          detailCalls += 1;
+          return Effect.fail(
+            new PullRequestProviderError({
+              provider: "github",
+              operation: "getChangeRequest",
+              reason: "failed",
+              detail:
+                "GitHub API rate limit exceeded. Pull-request reads are paused briefly and resume on their own.",
+            }),
+          );
+        },
+      }),
+    });
+
+    const first = yield* service.detail(reference).pipe(Effect.flip);
+    assert.strictEqual(first._tag, "PullRequestOperationError");
+    assert.strictEqual(detailCalls, 1);
+
+    // The second read shares the held failure: no new `gh` call.
+    const second = yield* service.detail(reference).pipe(Effect.flip);
+    assert.strictEqual(second._tag, "PullRequestOperationError");
+    assert.strictEqual(detailCalls, 1);
+
+    // Past the cooldown the next read tries the host again.
+    yield* TestClock.adjust("61 seconds");
+    yield* Effect.yieldNow;
+    const third = yield* service.detail(reference).pipe(Effect.flip);
+    assert.strictEqual(third._tag, "PullRequestOperationError");
+    assert.strictEqual(detailCalls, 2);
+  }).pipe(Effect.provide(TestClock.layer())),
+);
+
+it.effect("does not hold ordinary failures", () =>
+  Effect.gen(function* () {
+    let detailCalls = 0;
+    const reference = { projectId: project.id, repository: "acme/web", number: 42 };
+    const service = yield* makeService({
+      provider: providerWith({
+        getChangeRequest: () => {
+          detailCalls += 1;
+          return Effect.fail(
+            new PullRequestProviderError({
+              provider: "github",
+              operation: "getChangeRequest",
+              reason: "failed",
+              detail: "GitHub CLI returned an unreadable getChangeRequest response.",
+            }),
+          );
+        },
+      }),
+    });
+
+    yield* service.detail(reference).pipe(Effect.flip);
+    yield* service.detail(reference).pipe(Effect.flip);
+    assert.strictEqual(detailCalls, 2);
   }),
 );
 

@@ -1,13 +1,20 @@
-import {
-  type EnvironmentId,
-  type MessageId,
-  type OrchestrationThreadActivity,
-  type ScopedThreadRef,
-  type ThreadId,
-  type TurnDiffScope,
-  type TurnId,
-  type TimestampFormat,
+import type {
+  EnvironmentId,
+  MessageId,
+  OrchestrationThreadActivity,
+  ScopedThreadRef,
+  ThreadId,
+  TurnDiffScope,
+  TurnId,
+  TimestampFormat,
+  ValidationRun,
 } from "@t3tools/contracts";
+import {
+  reduceValidationReadiness,
+  validationGateStatusLabel,
+  validationRunEffectiveStatus,
+  validationRunStatusLabel,
+} from "@t3tools/client-runtime/validation-lifecycle";
 import type { MessagePreviewLineLimits } from "@t3tools/contracts/settings";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
@@ -30,6 +37,7 @@ import {
   inferCheckpointTurnCountByTurnId,
 } from "../../session-logic";
 import { useStore } from "../../store";
+import { useMemoEqual } from "../../lib/useMemoEqual";
 import { createThreadMessagesSelectorByRef } from "../../storeSelectors";
 import {
   type ChatMessage,
@@ -37,10 +45,12 @@ import {
   type Thread,
   type TurnDiffSummary,
 } from "../../types";
+import type { ValidationTarget } from "@t3tools/contracts";
 import { revokeBlobPreviewUrl } from "../../pendingTurnStore";
 import {
   deriveMessagesTimelineRows,
   deriveRevertTurnCountByUserMessageId,
+  stabilizeResponseMetaByTurnId,
 } from "./MessagesTimeline.logic";
 import { MessagesTimeline, type AssistantResponseMeta } from "./MessagesTimeline";
 import { FindInChatBar } from "./FindInChatBar";
@@ -77,6 +87,8 @@ interface ChatTimelineSectionProps {
   copilotResumeCommand: string | null;
   isRevertingCheckpoint: boolean;
   reviewResultActive: boolean;
+  validationRun: ValidationRun | null | undefined;
+  currentValidationTarget: ValidationTarget | null;
   listRef: RefObject<LegendListRef | null>;
   messagesViewportRef: RefObject<HTMLDivElement | null>;
   gitCwd: string | undefined;
@@ -118,6 +130,8 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       copilotResumeCommand,
       isRevertingCheckpoint,
       reviewResultActive,
+      validationRun,
+      currentValidationTarget,
       listRef,
       messagesViewportRef,
       gitCwd,
@@ -336,9 +350,13 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
     }, [attachmentPreviewHandoffByMessageId, optimisticUserMessages, sourceMessages]);
 
-    const workLogEntries = useMemo(
+    // Ref-equality memo: the store rebuilds the activities array on
+    // unrelated updates (e.g. streaming text chunks) with identical item
+    // refs. Reusing the previous derivation skips ~10ms of re-derive per
+    // chunk on large threads; any real change recomputes like useMemo.
+    const workLogEntries = useMemoEqual(
       () => deriveWorkLogEntries(threadActivities, latestTurn?.turnId ?? undefined),
-      [latestTurn?.turnId, threadActivities],
+      [threadActivities, latestTurn?.turnId ?? undefined],
     );
 
     const timelineEntries = useMemo(
@@ -378,7 +396,18 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       return byMessageId;
     }, [timelineMessages, turnDiffSummaries]);
 
-    const responseMetaByTurnId = useMemo(() => {
+    // Stabilize entry identity: the loop below rebuilds fresh `{...existing}`
+    // objects on every `threadActivities` change, which would otherwise give
+    // settled turns a new identity per chunk and defeat the memoized assistant
+    // presentational in MessagesTimeline.
+    const responseMetaByTurnIdRef = useRef<ReadonlyMap<TurnId, AssistantResponseMeta> | undefined>(
+      undefined,
+    );
+    // Ref-equality fast path around the rebuild: when activities are
+    // ref-identical (e.g. streaming text chunks), reuse the previous map
+    // without rescanning; the stabilization above still preserves settled
+    // entry identity whenever a rebuild actually runs.
+    const responseMetaByTurnId = useMemoEqual(() => {
       const metadata = new Map<TurnId, AssistantResponseMeta>();
       for (const activity of threadActivities) {
         if (activity.turnId === null || typeof activity.payload !== "object" || !activity.payload) {
@@ -426,7 +455,9 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
           });
         }
       }
-      return metadata;
+      const stabilized = stabilizeResponseMetaByTurnId(metadata, responseMetaByTurnIdRef.current);
+      responseMetaByTurnIdRef.current = stabilized;
+      return stabilized;
     }, [threadActivities]);
 
     const revertTurnCountByUserMessageId = useMemo(
@@ -471,27 +502,33 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       return deriveCompletionDividerBeforeEntryId(timelineEntries, latestTurn);
     }, [isSendBusy, latestTurn, latestTurnSettled, sessionActivelyWorking, timelineEntries]);
 
-    const timelineRows = useMemo(
-      () =>
-        deriveMessagesTimelineRows({
-          timelineEntries,
-          completionDividerBeforeEntryId,
-          isWorking: timelineActiveWork,
-          activeTurnId: latestTurn?.turnId ?? null,
-          activeTurnStartedAt: activeWorkStartedAt,
-          turnDiffSummaryByAssistantMessageId,
-          revertTurnCountByUserMessageId,
-        }),
-      [
-        activeWorkStartedAt,
-        completionDividerBeforeEntryId,
-        latestTurn?.turnId,
-        revertTurnCountByUserMessageId,
-        timelineActiveWork,
+    // During optimistic send the server still reports the previous turn as
+    // latestTurn. Passing its id as activeTurnId would uncollapse its
+    // "Worked for..." receipt (and mark its assistant message live) until the
+    // server acks the new turn. Null it out while the previous turn is
+    // settled, mirroring completionSummary/divider above.
+    const effectiveActiveTurnId =
+      isSendBusy && latestTurnSettled ? null : (latestTurn?.turnId ?? null);
+
+    const timelineRows = useMemo(() => {
+      return deriveMessagesTimelineRows({
         timelineEntries,
+        completionDividerBeforeEntryId,
+        isWorking: timelineActiveWork,
+        activeTurnId: effectiveActiveTurnId,
+        activeTurnStartedAt: activeWorkStartedAt,
         turnDiffSummaryByAssistantMessageId,
-      ],
-    );
+        revertTurnCountByUserMessageId,
+      });
+    }, [
+      activeWorkStartedAt,
+      completionDividerBeforeEntryId,
+      effectiveActiveTurnId,
+      revertTurnCountByUserMessageId,
+      timelineActiveWork,
+      timelineEntries,
+      turnDiffSummaryByAssistantMessageId,
+    ]);
 
     const findController = useChatFind({
       timelineRows,
@@ -572,8 +609,58 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       [handoffAttachmentPreviews],
     );
 
+    const activeGate = validationRun?.gates.find((gate) => gate.status === "running") ?? null;
     return (
       <>
+        {validationRun ? (
+          <div className="mx-auto mb-2 w-full max-w-3xl px-4" data-testid="validation-matrix">
+            <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="font-medium">Validation</span>
+                <span className="text-muted-foreground">
+                  {validationRunStatusLabel(validationRunEffectiveStatus(validationRun))} ·{" "}
+                  {currentValidationTarget
+                    ? reduceValidationReadiness(validationRun, currentValidationTarget)
+                    : "Readiness unavailable"}
+                  {activeGate ? ` · Active: ${activeGate.label}` : ""}
+                </span>
+              </div>
+              <div className="mb-2 text-muted-foreground">
+                Tested revision <span className="font-mono">{validationRun.target.revision}</span>
+                {validationRun.target.branch ? ` on ${validationRun.target.branch}` : ""} ·{" "}
+                {validationRun.target.environmentIdentity}
+              </div>
+              <div className="grid gap-1.5">
+                {validationRun.gates.map((gate) => (
+                  <div
+                    key={gate.id}
+                    className="flex flex-col gap-1 rounded-md bg-background/60 px-2 py-1.5"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span>{gate.label}</span>
+                      <span className="text-right text-muted-foreground">
+                        {validationGateStatusLabel(gate.status)}
+                        {gate.blockerReason ? ` - ${gate.blockerReason}` : ""}
+                      </span>
+                    </div>
+                    {gate.exitCode !== null || gate.outputRef ? (
+                      <div className="text-muted-foreground">
+                        {gate.exitCode !== null ? `exit ${gate.exitCode} ` : ""}
+                        {gate.outputRef ? `· ${gate.outputRef}` : ""}
+                        {gate.attempts.length > 0 ? ` · attempts ${gate.attempts.length}` : ""}
+                      </div>
+                    ) : null}
+                    {gate.diagnostics.length > 0 ? (
+                      <div className="text-muted-foreground">
+                        {gate.diagnostics.slice(0, 3).join(" | ").slice(0, 300)}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
         {findController.open ? (
           <FindInChatBar
             inputId={findController.inputId}
@@ -594,7 +681,7 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
           rows={timelineRows}
           isWorking={isWorking}
           activeTurnInProgress={timelineActiveWork}
-          activeTurnId={latestTurn?.turnId ?? null}
+          activeTurnId={effectiveActiveTurnId}
           activeTurnStartedAt={activeWorkStartedAt}
           listRef={listRef}
           timelineEntries={timelineEntries}

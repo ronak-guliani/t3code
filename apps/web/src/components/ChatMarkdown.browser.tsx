@@ -54,6 +54,24 @@ vi.mock("../environmentApi", () => ({
   readEnvironmentApi: vi.fn(() => ({
     assets: { createUrl: createAssetUrlMock },
   })),
+  ensureEnvironmentApi: vi.fn(() => ({
+    assets: { createUrl: createAssetUrlMock },
+  })),
+}));
+
+vi.mock("./files/projectFilesQueryState", () => ({
+  useProjectEntriesQuery: vi.fn(() => ({
+    data: null,
+    error: null,
+    isPending: false,
+    refresh: vi.fn(),
+  })),
+  useProjectFileQuery: vi.fn(() => ({
+    data: null,
+    error: null,
+    isPending: false,
+    refresh: vi.fn(),
+  })),
 }));
 
 vi.mock("../environments/runtime", () => ({
@@ -735,6 +753,46 @@ describe("ChatMarkdown", () => {
       await page.getByRole("link", { name: "index.ts · L40" }).click();
       await vi.waitFor(() => {
         expect(openFileMock).toHaveBeenCalledWith(threadRef, "src/index.ts", 40);
+      });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens bare basename mentions in the integrated file browser", async () => {
+    const screen = await render(
+      <ChatMarkdown
+        text="See `CopilotProvider.ts:103` for details"
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      await page.getByRole("link", { name: "CopilotProvider.ts · L103" }).click();
+      await vi.waitFor(() => {
+        expect(openFileMock).toHaveBeenCalledWith(threadRef, "CopilotProvider.ts", 103);
+      });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens comma-separated line lists at the first line", async () => {
+    const screen = await render(
+      <ChatMarkdown
+        text="See `settings.ts:542,733` for details"
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      await page.getByRole("link", { name: "settings.ts · L542,733" }).click();
+      await vi.waitFor(() => {
+        expect(openFileMock).toHaveBeenCalledWith(threadRef, "settings.ts", 542);
       });
       expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {

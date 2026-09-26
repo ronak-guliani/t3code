@@ -37,6 +37,105 @@ const projectionSnapshotLayer = it.layer(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+  it.effect("reads bounded history by ID without hydrating unrelated threads or checkpoints", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-09-16T00:00:00.000Z";
+      yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES ('cli-read-project', 'CLI', '/tmp/cli-read', '[]', ${now}, ${now})
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          created_at, updated_at, archived_at
+        ) VALUES
+          ('cli-read-thread', 'cli-read-project', 'CLI history',
+            '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default', ${now}, ${now}, ${now}),
+          ('cli-read-unrelated', 'cli-read-project', 'CLI history',
+            'invalid-json-must-not-be-decoded', 'full-access', 'default', ${now}, ${now}, NULL)
+      `;
+      for (let index = 0; index < 6; index++) {
+        yield* sql`
+          INSERT INTO projection_thread_messages
+            (message_id, thread_id, role, text, attachments_json, is_streaming, created_at, updated_at)
+          VALUES (${`cli-read-message-${index}`}, 'cli-read-thread', 'user', ${`Message ${index}`},
+            '[]', 0, ${now}, ${now})
+        `;
+        yield* sql`
+          INSERT INTO projection_thread_activities
+            (activity_id, thread_id, tone, kind, summary, payload_json, sequence, created_at)
+          VALUES (${`cli-read-activity-${index}`}, 'cli-read-thread', 'info', 'runtime.info',
+            'Activity', '{}', ${index}, ${now})
+        `;
+      }
+      const summary = yield* query.readThread({ thread: "cli-read-thread", view: "summary" });
+      assert.equal(summary.thread.archivedAt, now);
+      assert.deepStrictEqual(Object.keys(summary).sort(), ["page", "thread"]);
+      assert.isBelow(JSON.stringify(summary).length, 4000);
+      for (const view of ["messages", "activities"] as const) {
+        const first = yield* query.readThread({ thread: "cli-read-thread", view, limit: 2 });
+        const second = yield* query.readThread({
+          thread: "cli-read-thread",
+          view,
+          limit: 2,
+          before: first.page.before!,
+        });
+        const third = yield* query.readThread({
+          thread: "cli-read-thread",
+          view,
+          limit: 2,
+          before: second.page.before!,
+        });
+        const ids = [first, second, third].flatMap(
+          (page) => page[view]?.map((row) => row.id) ?? [],
+        );
+        assert.equal(new Set(ids).size, 6);
+        assert.equal(first[view]?.length, 2);
+        assert.equal(first[view]?.[0]?.id.endsWith("-4"), true);
+        assert.equal(third.page.hasMore, false);
+        assert.equal(third.page.before, null);
+        assert.notProperty(first, "checkpoints");
+        assert.notProperty(first, view === "messages" ? "activities" : "messages");
+        const wrongView = yield* query
+          .readThread({
+            thread: "cli-read-thread",
+            view: view === "messages" ? "activities" : "messages",
+            before: first.page.before!,
+          })
+          .pipe(Effect.flip);
+        assert.equal(wrongView._tag, "OrchestrationReadThreadInputError");
+      }
+      const ambiguous = yield* query
+        .readThread({ thread: "CLI history", view: "summary" })
+        .pipe(Effect.flip);
+      assert.equal(ambiguous._tag, "OrchestrationReadThreadInputError");
+      const invalidCursor = yield* query
+        .readThread({
+          thread: "cli-read-thread",
+          view: "messages",
+          before: "not-a-cursor",
+        })
+        .pipe(Effect.flip);
+      assert.equal(invalidCursor._tag, "OrchestrationReadThreadInputError");
+      const corruptProjection = yield* query
+        .readThread({ thread: "cli-read-unrelated", view: "summary" })
+        .pipe(Effect.flip);
+      assert.equal(corruptProjection._tag, "OrchestrationGetSnapshotError");
+      yield* sql`UPDATE projection_threads SET deleted_at = ${now} WHERE thread_id = 'cli-read-thread'`;
+      const deleted = yield* query
+        .readThread({ thread: "cli-read-thread", view: "summary" })
+        .pipe(Effect.flip);
+      assert.equal(deleted._tag, "OrchestrationReadThreadInputError");
+      yield* sql`DELETE FROM projection_thread_messages WHERE thread_id = 'cli-read-thread'`;
+      yield* sql`DELETE FROM projection_thread_activities WHERE thread_id = 'cli-read-thread'`;
+      yield* sql`DELETE FROM projection_threads WHERE project_id = 'cli-read-project'`;
+      yield* sql`DELETE FROM projection_projects WHERE project_id = 'cli-read-project'`;
+    }),
+  );
+
   it.effect("loads active chat archive rows in one consistent query surface", () =>
     Effect.gen(function* () {
       const query = yield* ProjectionSnapshotQuery;
@@ -1038,6 +1137,71 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(thread.messages[0]?.text, "message 6");
       assert.equal(thread.messages.at(-1)?.text, "message 2005");
     }),
+  );
+
+  it.effect(
+    "retains independent chronological windows for active, archived and deleted threads",
+    () =>
+      Effect.gen(function* () {
+        const query = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-09-24T00:00:00.000Z";
+        yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES ('window-project', 'Windows', '/tmp/window-project', '[]', ${now}, ${now})
+      `;
+        for (const state of ["active", "archived", "deleted"] as const) {
+          const threadId = `window-${state}`;
+          yield* sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+            created_at, updated_at, archived_at, deleted_at
+          ) VALUES (
+            ${threadId}, 'window-project', ${state}, '{"instanceId":"codex","model":"gpt-5.4"}',
+            'full-access', 'default', ${now}, ${now},
+            ${state === "archived" ? now : null}, ${state === "deleted" ? now : null}
+          )
+        `;
+          yield* sql`
+          WITH RECURSIVE entries(value) AS (
+            VALUES (1) UNION ALL SELECT value + 1 FROM entries WHERE value < 502
+          )
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, tone, kind, summary, payload_json, sequence, created_at
+          )
+          SELECT
+            ${threadId} || printf('-%04d', value), ${threadId}, 'info', 'runtime.note', 'Activity',
+            CASE WHEN value <= 2 THEN 'invalid old payload' ELSE '{}' END,
+            CASE WHEN value % 2 = 0 THEN NULL ELSE 503 - value END,
+            ${now}
+          FROM entries
+        `;
+        }
+        yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, tone, kind, summary, payload_json, created_at
+        ) VALUES ('window-orphan', 'missing-thread', 'info', 'runtime.note', 'Orphan',
+          'invalid orphan payload', ${now})
+      `;
+
+        const snapshot = yield* query.getSnapshot();
+        for (const state of ["active", "archived", "deleted"] as const) {
+          const thread = snapshot.threads.find((entry) => entry.id === `window-${state}`);
+          assert.isDefined(thread);
+          assert.deepStrictEqual(
+            thread.activities.map((activity) => activity.id),
+            Array.from({ length: 500 }, (_, index) =>
+              asEventId(`window-${state}-${String(index + 3).padStart(4, "0")}`),
+            ),
+          );
+          assert.equal(thread.archivedAt, state === "archived" ? now : null);
+          assert.equal(thread.deletedAt, state === "deleted" ? now : null);
+        }
+        yield* sql`DELETE FROM projection_thread_activities WHERE thread_id LIKE 'window-%' OR activity_id = 'window-orphan'`;
+        yield* sql`DELETE FROM projection_threads WHERE project_id = 'window-project'`;
+        yield* sql`DELETE FROM projection_projects WHERE project_id = 'window-project'`;
+      }),
   );
 
   it.effect(

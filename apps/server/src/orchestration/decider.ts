@@ -1,17 +1,21 @@
-// @ts-nocheck
+import { createHash } from "node:crypto";
+import { ChildWaitDeadlineAt, EventId } from "@t3tools/contracts";
 import type {
+  ChildWaitCondition,
   ChildNudgeUpdate,
   ChildThreadLifecycle,
+  CommandId,
   MessageId,
   OrchestrationCommand,
   OrchestrationEvent,
+  OrchestrationQueuedTurn,
   OrchestrationReadModel,
   OrchestrationThread,
   ThreadId,
   ThreadNudging,
   TurnId,
 } from "@t3tools/contracts";
-import { Effect, Option } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import { resolveThreadWorkspaceCwd } from "../checkpointing/Utils.ts";
@@ -25,10 +29,12 @@ import {
   requireThreadNotArchived,
   requireQueuedTurn,
   requireThreadReadyForTurnStart,
+  requireThreadWithInFlightTurn,
   threadHasPendingInteraction,
   threadHasQueuedTurnStart,
   threadHasSettlementOverride,
   threadIsSnoozed,
+  CHILD_DECISION_BLOCKED_DETAIL,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
@@ -39,8 +45,13 @@ import {
   childWakeReason,
   isAutomaticChildNudgeBlocked,
   queueChildNudge,
+  queueChildNudgeBatch,
 } from "./childNudging.ts";
-import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
+import {
+  childWaitIsSatisfied,
+  childWaitIsSatisfiedByUpdates,
+  evaluateChildFollowUp,
+} from "@t3tools/shared/childFollowUp";
 import {
   sameThreadPullRequest,
   sameThreadPullRequestAssociation,
@@ -54,8 +65,20 @@ import {
   transitionDelegationExecution,
   type RecordedReportOutcome,
 } from "./dispatchAuthority.ts";
+import { delegationStallEpisode, settleDelegation } from "./delegationSettlement.ts";
+import {
+  acceptValidationResult,
+  claimValidationLease,
+  isValidationRunTerminal,
+  planValidationRun,
+  transitionValidationGate,
+  transitionValidationRunStatus,
+  validationTargetEquals,
+  validationRunEffectiveStatus,
+} from "@t3tools/client-runtime/validation-lifecycle";
 
 const FORK_TITLE_PREFIX = "Forked: ";
+const isChildWaitDeadlineAt = Schema.is(ChildWaitDeadlineAt);
 /**
  * Blocked-on-you work must never stay hidden inside a settled row, so these
  * activity kinds reset the settlement lifecycle. Hoisted because
@@ -67,6 +90,27 @@ const SETTLEMENT_WAKING_ACTIVITY_KINDS: ReadonlySet<string> = new Set([
   "provider.turn.start.failed",
 ]);
 const nowIso = () => new Date().toISOString();
+type PlannedOrchestrationEvent = {
+  [T in OrchestrationEvent["type"]]: Omit<Extract<OrchestrationEvent, { type: T }>, "sequence">;
+}[OrchestrationEvent["type"]];
+type ChildLifecycleNotificationEvent = Extract<
+  PlannedOrchestrationEvent,
+  { type: "thread.child-lifecycle-notified" }
+>;
+
+type DecideOrchestrationCommandResult =
+  | PlannedOrchestrationEvent
+  | ReadonlyArray<PlannedOrchestrationEvent>;
+
+type CollaborationRequest = NonNullable<OrchestrationThread["collaborationRequests"]>[number];
+
+function plannedCommandId(event: PlannedOrchestrationEvent): CommandId {
+  if (event.commandId === null) {
+    throw new Error(`Planned event '${event.type}' is missing its command id.`);
+  }
+  return event.commandId;
+}
+
 const defaultMetadata: Omit<OrchestrationEvent, "sequence" | "type" | "payload"> = {
   eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
   aggregateKind: "thread",
@@ -85,7 +129,9 @@ function withEventBase(
     readonly occurredAt: string;
     readonly metadata?: OrchestrationEvent["metadata"];
   },
-): Omit<OrchestrationEvent, "sequence" | "type" | "payload"> {
+): Omit<OrchestrationEvent, "sequence" | "type" | "payload" | "commandId"> & {
+  readonly commandId: CommandId;
+} {
   return {
     ...defaultMetadata,
     eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
@@ -98,11 +144,151 @@ function withEventBase(
   };
 }
 
-type PlannedOrchestrationEvent = Omit<OrchestrationEvent, "sequence">;
+function collaborationRequestLocation(readModel: OrchestrationReadModel, requestId: string) {
+  for (const thread of readModel.threads) {
+    const request = thread.collaborationRequests?.find((entry) => entry.requestId === requestId);
+    if (request) return { thread, request };
+  }
+  return null;
+}
 
-type DecideOrchestrationCommandResult =
-  | PlannedOrchestrationEvent
-  | ReadonlyArray<PlannedOrchestrationEvent>;
+function executionAuthorityMatches(
+  expected: {
+    readonly executionId: string;
+    readonly assignmentId?: string | undefined;
+    readonly threadId?: string | undefined;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+  actual: {
+    readonly executionId: string;
+    readonly assignmentId?: string | undefined;
+    readonly threadId?: string | undefined;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+) {
+  return (
+    expected.executionId === actual.executionId &&
+    (expected.assignmentId === undefined && actual.assignmentId === undefined
+      ? true
+      : expected.assignmentId === actual.assignmentId) &&
+    (expected.threadId === undefined && actual.threadId === undefined
+      ? true
+      : expected.threadId === actual.threadId) &&
+    expected.generation === actual.generation &&
+    expected.dispatchId === actual.dispatchId &&
+    expected.turnId === actual.turnId
+  );
+}
+
+function collaborationResponseAuthorityMatches(
+  admission: {
+    readonly executionId: string;
+    readonly assignmentId?: string | undefined;
+    readonly threadId?: string | undefined;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+  active: {
+    readonly executionId: string;
+    readonly assignmentId?: string | undefined;
+    readonly threadId?: string | undefined;
+    readonly generation: number;
+    readonly dispatchId: string | null;
+    readonly turnId: string | null;
+  },
+) {
+  const strict =
+    admission.assignmentId !== undefined ||
+    admission.dispatchId !== null ||
+    admission.turnId !== null;
+  return (
+    admission.executionId === active.executionId &&
+    (!strict ||
+      (admission.assignmentId !== undefined &&
+        admission.assignmentId === active.assignmentId &&
+        admission.threadId === active.threadId &&
+        admission.generation === active.generation &&
+        admission.dispatchId === active.dispatchId &&
+        admission.turnId === active.turnId))
+  );
+}
+
+function collaborationRequestEvent(
+  command: OrchestrationCommand,
+  threadId: ThreadId,
+  request: CollaborationRequest,
+  action:
+    | "created"
+    | "responded"
+    | "consumed"
+    | "superseded"
+    | "cancelled"
+    | "reopened"
+    | "override"
+    | "response-rejected",
+  updatedAt: string,
+): PlannedOrchestrationEvent {
+  return {
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: updatedAt,
+      commandId: command.commandId,
+    }),
+    type: "thread.collaboration-request-updated" as const,
+    payload: {
+      threadId,
+      action,
+      request,
+      updatedAt,
+    },
+  };
+}
+
+function collaborationQueueEvent(
+  command: OrchestrationCommand,
+  threadId: ThreadId,
+  delivery: Extract<
+    OrchestrationCommand,
+    { type: "thread.collaboration-request.create" | "thread.collaboration-request.respond" }
+  >["delivery"],
+  origin: NonNullable<OrchestrationQueuedTurn["origin"]>,
+  createdAt: string,
+): PlannedOrchestrationEvent {
+  return {
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: createdAt,
+      commandId: command.commandId,
+    }),
+    type: "thread.queued-turn-created" as const,
+    payload: {
+      threadId,
+      queuedTurn: {
+        id: delivery.queuedTurnId,
+        threadId,
+        message: delivery.message,
+        ...(delivery.modelSelection !== undefined
+          ? { modelSelection: delivery.modelSelection }
+          : {}),
+        ...(delivery.titleSeed !== undefined ? { titleSeed: delivery.titleSeed } : {}),
+        runtimeMode: delivery.runtimeMode,
+        interactionMode: delivery.interactionMode,
+        origin,
+        createdAt,
+        updatedAt: createdAt,
+        failedAt: null,
+        failureMessage: null,
+      },
+    },
+  };
+}
 
 function childLifecycleDedupeKey(
   childThreadId: ThreadId,
@@ -165,11 +351,14 @@ function appendChildLifecycleNotification(
     input.originTurnId !== null &&
     input.originTurnId !== undefined &&
     input.originTurnId !== authorizedTurn;
-  const terminalFailure =
+  const terminalFailureOutcome: "failed" | "blocked" | null =
     !superseded &&
     delegation?.completedAt === null &&
     (delegation.assignedAt === undefined || input.createdAt >= delegation.assignedAt) &&
-    (input.lifecycle === "failed" || input.lifecycle === "blocked");
+    (input.lifecycle === "failed" || input.lifecycle === "blocked")
+      ? input.lifecycle
+      : null;
+  const terminalFailure = terminalFailureOutcome !== null;
   // A fenced delegation requires execution proof before anything
   // state-changing: a turn-absent signal (e.g. an unscoped provider runtime
   // error) cannot prove it comes from the authorized execution, so terminal
@@ -192,59 +381,96 @@ function appendChildLifecycleNotification(
       ? `assignment:${input.childThread.id}:${delegation.dispatchId}:${delegation.assignmentId}`
       : `assignment:${input.childThread.id}:${delegation.assignmentId}`
     : null;
-  const report = superseded
+  const generatedTerminalReport: ChildNudgeUpdate | undefined =
+    terminalFailureOutcome && terminalReportId && delegation
+      ? {
+          id: terminalReportId,
+          assignmentId: delegation.assignmentId,
+          ...(delegation.dispatchId ? { dispatchId: delegation.dispatchId } : {}),
+          childThreadId: input.childThread.id,
+          childTitle: input.childThread.title,
+          kind: terminalFailureOutcome,
+          summary:
+            terminalFailureOutcome === "failed"
+              ? "The delegated execution failed. Inspect the child for details."
+              : "The delegated execution stopped. Inspect the child before continuing.",
+        }
+      : undefined;
+  const report: ChildNudgeUpdate | undefined = superseded
     ? undefined
-    : (input.report ??
-      (terminalFailure && terminalReportId
-        ? {
-            id: terminalReportId,
-            assignmentId: delegation.assignmentId,
-            ...(delegation.dispatchId ? { dispatchId: delegation.dispatchId } : {}),
-            childThreadId: input.childThread.id,
-            childTitle: input.childThread.title,
-            kind: input.lifecycle,
-            summary:
-              input.lifecycle === "failed"
-                ? "The delegated execution failed. Inspect the child for details."
-                : "The delegated execution stopped. Inspect the child before continuing.",
-          }
-        : undefined));
+    : (input.report ?? generatedTerminalReport);
 
   const eventBase = withEventBase({
     aggregateKind: "thread",
     aggregateId: parentThreadId,
     occurredAt: input.createdAt,
-    commandId: input.sourceEvent.commandId!,
+    commandId: plannedCommandId(input.sourceEvent),
   });
-  const notification = {
-    ...eventBase,
-    causationEventId: input.sourceEvent.eventId,
-    type: "thread.child-lifecycle-notified",
-    payload: {
-      parentThreadId,
-      childThreadId: input.childThread.id,
-      childTitle: input.childThread.title,
-      lifecycle: input.lifecycle,
-      dedupeKey,
-      ...(input.lifecycle !== "pr-created"
-        ? {}
-        : {
-            externalAction: {
-              url: input.externalActionUrl,
-            },
-          }),
-      createdAt: input.createdAt,
-      ...(report ? { report } : {}),
-    },
-  };
+  const notification: ChildLifecycleNotificationEvent =
+    input.lifecycle === "pr-created"
+      ? {
+          ...eventBase,
+          causationEventId: input.sourceEvent.eventId,
+          type: "thread.child-lifecycle-notified",
+          payload: {
+            parentThreadId,
+            childThreadId: input.childThread.id,
+            childTitle: input.childThread.title,
+            lifecycle: "pr-created",
+            dedupeKey,
+            externalAction: { url: input.externalActionUrl },
+            createdAt: input.createdAt,
+            ...(report ? { report } : {}),
+          },
+        }
+      : {
+          ...eventBase,
+          causationEventId: input.sourceEvent.eventId,
+          type: "thread.child-lifecycle-notified",
+          payload: {
+            parentThreadId,
+            childThreadId: input.childThread.id,
+            childTitle: input.childThread.title,
+            lifecycle: input.lifecycle,
+            dedupeKey,
+            createdAt: input.createdAt,
+            ...(report ? { report } : {}),
+          },
+        };
+  const shouldQueueNudge =
+    report &&
+    report.kind !== "progress" &&
+    input.childThread.nudging?.delegation?.followUp === "automatic";
+  const normalNudge = shouldQueueNudge ? queueChildNudge(parentThread, report, notification) : null;
+  const waitReport: ChildNudgeUpdate | null =
+    report &&
+    (report.kind === "result-available" || report.kind === "failed" || report.kind === "blocked")
+      ? report
+      : null;
+  const waitOutcome: "result-available" | "failed" | "blocked" | null =
+    waitReport === null
+      ? null
+      : waitReport.kind === "result-available" ||
+          waitReport.kind === "failed" ||
+          waitReport.kind === "blocked"
+        ? waitReport.kind
+        : null;
+  const terminalDelegation =
+    terminalFailureOutcome && delegation
+      ? {
+          ...delegation,
+          completedAt: input.createdAt,
+          outcome: terminalFailureOutcome,
+        }
+      : null;
   return [
     ...input.sourceEvents,
     notification,
-    ...(terminalFailure
+    ...(terminalDelegation
       ? [
           nudgingMetaEvent(input.childThread, notification, {
             ...input.childThread.nudging,
-            delegation: { ...delegation, completedAt: input.createdAt, outcome: report.kind },
+            delegation: terminalDelegation,
           }),
         ]
       : []),
@@ -256,8 +482,8 @@ function appendChildLifecycleNotification(
           }),
         ]
       : []),
-    ...(report &&
-    (report.kind === "result-available" || report.kind === "failed" || report.kind === "blocked") &&
+    ...(waitReport &&
+    waitOutcome &&
     parentThread.nudging?.wait &&
     !parentThread.nudging.wait.satisfiedAt
       ? [
@@ -266,20 +492,16 @@ function appendChildLifecycleNotification(
             wait: {
               ...parentThread.nudging.wait,
               assignments: parentThread.nudging.wait.assignments.map((assignment) =>
-                assignment.childThreadId === report.childThreadId &&
-                assignment.assignmentId === report.assignmentId
-                  ? { ...assignment, outcome: report.kind }
+                assignment.childThreadId === waitReport.childThreadId &&
+                assignment.assignmentId === waitReport.assignmentId
+                  ? { ...assignment, outcome: waitOutcome }
                   : assignment,
               ),
             },
           }),
         ]
       : []),
-    ...(report &&
-    report.kind !== "progress" &&
-    input.childThread.nudging?.delegation?.followUp === "automatic"
-      ? [queueChildNudge(parentThread, report, notification)]
-      : []),
+    ...(normalNudge ? [normalNudge] : []),
   ];
 }
 
@@ -293,12 +515,94 @@ function nudgingMetaEvent(
       aggregateKind: "thread",
       aggregateId: thread.id,
       occurredAt: sourceEvent.occurredAt,
-      commandId: sourceEvent.commandId,
+      commandId: plannedCommandId(sourceEvent),
     }),
     causationEventId: sourceEvent.eventId,
     type: "thread.meta-updated",
     payload: { threadId: thread.id, nudging, updatedAt: sourceEvent.occurredAt },
   };
+}
+
+function childWaitProgressStatus(
+  wait: ChildWaitCondition | null | undefined,
+  threads: ReadonlyArray<OrchestrationThread>,
+): string | undefined {
+  if (!wait) return undefined;
+  const total = wait.assignments.length;
+  const settled = wait.assignments.filter((assignment) => assignment.outcome !== undefined).length;
+  const outstanding = wait.assignments.filter((assignment) => assignment.outcome === undefined);
+  const outstandingStatus = () => {
+    const visible = outstanding.slice(0, 8).map((assignment) => {
+      const child = threads.find((candidate) => candidate.id === assignment.childThreadId);
+      return `${child?.title ?? "Child"} (${assignment.childThreadId})`;
+    });
+    return `${visible.join(", ")}${outstanding.length > visible.length ? `, and ${outstanding.length - visible.length} more` : ""}`;
+  };
+  if (wait.mode === "decisions-only") {
+    if (total === 0) return "Wait (decisions-only): decisions and blockers only.";
+    if (outstanding.length === 0) {
+      return `Wait (decisions-only): ${settled}/${total} settled; assignment results do not satisfy this wait; only decisions or blockers wake it.`;
+    }
+    return `Wait (decisions-only): ${settled}/${total} settled; still waiting on ${outstandingStatus()} for a decision or blocker.`;
+  }
+  if (wait.satisfiedAt || childWaitIsSatisfied(wait)) {
+    return `Wait (${wait.mode}): ${settled}/${total} settled; condition met.`;
+  }
+  if (outstanding.length === 0) {
+    return `Wait (${wait.mode}): ${settled}/${total} settled; at least one assignment needs attention.`;
+  }
+  return `Wait (${wait.mode}): ${settled}/${total} settled; still waiting on ${outstandingStatus()}`;
+}
+
+function appendDelegationSettlement(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly child: OrchestrationThread;
+  readonly settlement: NonNullable<ReturnType<typeof settleDelegation>>;
+  readonly commandId: CommandId;
+  readonly sourceEvents?: ReadonlyArray<PlannedOrchestrationEvent>;
+  readonly sourceEvent?: PlannedOrchestrationEvent;
+}): DecideOrchestrationCommandResult {
+  const delegation = input.child.nudging?.delegation;
+  if (!delegation) return input.sourceEvents ?? [];
+
+  const nudging = {
+    ...input.child.nudging,
+    delegation: {
+      ...delegation,
+      completedAt: input.settlement.completedAt,
+      outcome: input.settlement.outcome,
+    },
+  };
+  const completionEvent: PlannedOrchestrationEvent = input.sourceEvent
+    ? nudgingMetaEvent(input.child, input.sourceEvent, nudging)
+    : {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: input.child.id,
+          occurredAt: input.settlement.completedAt,
+          commandId: input.commandId,
+        }),
+        type: "thread.meta-updated" as const,
+        payload: {
+          threadId: input.child.id,
+          nudging,
+          updatedAt: input.settlement.completedAt,
+        },
+      };
+  const sourceEvent = input.sourceEvent ?? completionEvent;
+  const settledChild = { ...input.child, nudging };
+
+  return appendChildLifecycleNotification({
+    readModel: input.readModel,
+    childThread: settledChild,
+    sourceEvents: [...(input.sourceEvents ?? []), completionEvent],
+    sourceEvent,
+    lifecycle: "reported",
+    sourceKey: input.settlement.report.id,
+    createdAt: input.settlement.completedAt,
+    report: input.settlement.report,
+    originTurnId: input.settlement.turnId,
+  });
 }
 
 const hasCanonicalActiveWorktreeOwner = Effect.fn("hasCanonicalActiveWorktreeOwner")(function* (
@@ -378,10 +682,11 @@ function buildTurnStartEvents(input: {
   readonly runtimeMode: TurnStartRequestedPayload["runtimeMode"];
   readonly interactionMode: TurnStartRequestedPayload["interactionMode"];
   readonly sourceProposedPlan: TurnStartRequestedPayload["sourceProposedPlan"];
-  readonly source?: TurnStartRequestedPayload["source"];
   readonly delegationAssignmentId?: TurnStartRequestedPayload["delegationAssignmentId"];
   readonly delegationDispatchId?: TurnStartRequestedPayload["delegationDispatchId"];
   readonly delegationTransition?: TurnStartRequestedPayload["delegationTransition"];
+  readonly executionAuthority?: TurnStartRequestedPayload["executionAuthority"];
+  readonly workspaceBinding?: TurnStartRequestedPayload["workspaceBinding"];
   readonly at: string;
 }): {
   readonly userMessageEvent: PlannedOrchestrationEvent;
@@ -424,7 +729,6 @@ function buildTurnStartEvents(input: {
       ...(input.sourceProposedPlan !== undefined
         ? { sourceProposedPlan: input.sourceProposedPlan }
         : {}),
-      ...(input.source !== undefined ? { source: input.source } : {}),
       ...(input.delegationAssignmentId !== undefined
         ? { delegationAssignmentId: input.delegationAssignmentId }
         : {}),
@@ -434,6 +738,10 @@ function buildTurnStartEvents(input: {
       ...(input.delegationTransition !== undefined
         ? { delegationTransition: input.delegationTransition }
         : {}),
+      ...(input.executionAuthority !== undefined
+        ? { executionAuthority: input.executionAuthority }
+        : {}),
+      ...(input.workspaceBinding !== undefined ? { workspaceBinding: input.workspaceBinding } : {}),
       createdAt: input.at,
     },
   };
@@ -540,6 +848,285 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   readonly recordedReportOutcome?: RecordedReportOutcome;
 }): Effect.fn.Return<DecideOrchestrationCommandResult, OrchestrationCommandInvariantError> {
   switch (command.type) {
+    case "thread.validation.request": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.validationRequest?.requestId === command.commandId) {
+        return [];
+      }
+      if (thread.validationRequest !== null && thread.validationRequest !== undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A validation request is already pending for this thread.",
+        });
+      }
+      if (thread.validationRun !== null && thread.validationRun !== undefined) {
+        if (thread.validationRun.requestId === command.commandId) {
+          return [];
+        }
+        if (!isValidationRunTerminal(validationRunEffectiveStatus(thread.validationRun))) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A validation run already exists for this thread.",
+          });
+        }
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.requestedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-requested",
+        payload: {
+          threadId: command.threadId,
+          request: {
+            requestId: command.commandId,
+            threadId: command.threadId,
+            scenarios: command.scenarios,
+            scope: command.scope,
+            requester: command.requester,
+            requestedAt: command.requestedAt,
+          },
+        },
+      };
+    }
+
+    case "thread.validation.request-failed": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.validationRequest?.requestId !== command.failure.requestId) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.failure.failedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-request-failed",
+        payload: {
+          threadId: command.threadId,
+          failure: command.failure,
+        },
+      };
+    }
+
+    case "thread.validation.coordinator-plan": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        thread.validationRun !== null &&
+        thread.validationRun !== undefined &&
+        thread.validationRun.id !== command.run.id &&
+        !isValidationRunTerminal(validationRunEffectiveStatus(thread.validationRun))
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A validation run is already planned for this thread.",
+        });
+      }
+      if (thread.validationRun?.id === command.run.id) {
+        return [];
+      }
+      if (thread.validationRequest?.requestId !== command.run.requestId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation plan does not match the pending validation request.",
+        });
+      }
+      if (command.run.threadId !== command.threadId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation plan thread does not match the command thread.",
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-run-planned",
+        payload: {
+          threadId: command.threadId,
+          run: command.run,
+        },
+      };
+    }
+
+    case "thread.validation.lifecycle": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const run = thread.validationRun;
+      if (!run || run.id !== command.update.runId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation lifecycle update does not match the active run.",
+        });
+      }
+      const next = yield* Effect.try({
+        try: () =>
+          transitionValidationRunStatus(run, command.update.status, command.update.updatedAt),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail:
+              cause instanceof Error ? cause.message : "Invalid validation lifecycle transition.",
+          }),
+      });
+      if (
+        (run.status ?? "planned") === (next.status ?? "planned") &&
+        run.updatedAt === next.updatedAt
+      ) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.update.updatedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-lifecycle-updated",
+        payload: {
+          threadId: command.threadId,
+          update: command.update,
+        },
+      };
+    }
+
+    case "thread.validation.lease.claim": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const run = thread.validationRun;
+      if (!run || run.id !== command.runId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation lease claim does not match the active run.",
+        });
+      }
+      if (command.executorId !== command.lease.executorId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation lease executor does not match the claiming executor.",
+        });
+      }
+      const next = yield* Effect.try({
+        try: () => claimValidationLease(run, command.lease, command.target, command.claimedAt),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: cause instanceof Error ? cause.message : "Invalid validation lease claim.",
+          }),
+      });
+      if (next === run) return [];
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.claimedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-lease-claimed",
+        payload: {
+          threadId: command.threadId,
+          runId: command.runId,
+          lease: command.lease,
+        },
+      };
+    }
+
+    case "thread.validation.lease.release": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        !thread.validationRun ||
+        thread.validationRun.id !== command.runId ||
+        thread.validationRun.lease?.id !== command.leaseId
+      ) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.releasedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-lease-released",
+        payload: {
+          threadId: command.threadId,
+          runId: command.runId,
+          leaseId: command.leaseId,
+          releasedAt: command.releasedAt,
+        },
+      };
+    }
+
+    case "thread.validation.result.record": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const run = thread.validationRun;
+      if (!run || run.id !== command.result.runId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation result does not match the active run.",
+        });
+      }
+      if (!run.lease || run.lease.executorId !== command.result.executorId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation result is not authorized by the active lease.",
+        });
+      }
+      yield* Effect.try({
+        try: () => acceptValidationResult(run, command.result),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: cause instanceof Error ? cause.message : "Invalid validation result.",
+          }),
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.result.completedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-result-recorded",
+        payload: {
+          threadId: command.threadId,
+          result: command.result,
+        },
+      };
+    }
+
     case "chat-archive.import": {
       yield* requireProjectAbsent({
         readModel,
@@ -805,7 +1392,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           });
         }
       }
-      return {
+      const createdEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -825,6 +1412,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           ...(command.pullRequest !== undefined ? { pullRequest: command.pullRequest } : {}),
           ...(command.reviewSnapshot !== undefined
             ? { reviewSnapshot: command.reviewSnapshot }
@@ -833,6 +1423,137 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      if (command.parentWait === undefined) return createdEvent;
+      const parentThread = readModel.threads.find(
+        (thread) => thread.id === command.parentThreadId && thread.deletedAt === null,
+      );
+      if (!parentThread || !delegation || delegation.followUp !== "automatic") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A creation-time wait requires an automatic child assignment and its parent.",
+        });
+      }
+
+      let parentWait = command.parentWait;
+      if (parentWait) {
+        const assignmentIds = new Set<string>();
+        if (
+          (parentWait.mode !== "any" && parentWait.mode !== "all") ||
+          parentWait.assignments.length === 0 ||
+          parentWait.assignments.length > 32 ||
+          parentWait.satisfiedAt !== undefined
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A creation-time wait requires selected assignments and cannot set completion.",
+          });
+        }
+        let includesCreatedAssignment = false;
+        const assignments = [];
+        for (const requested of parentWait.assignments) {
+          if (assignmentIds.has(requested.childThreadId)) {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "A creation-time wait cannot contain duplicate child assignments.",
+            });
+          }
+          assignmentIds.add(requested.childThreadId);
+          if (requested.outcome !== undefined) {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "A creation-time wait cannot supply assignment outcomes.",
+            });
+          }
+          if (requested.childThreadId === command.threadId) {
+            if (requested.assignmentId !== delegation.assignmentId) {
+              return yield* new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "A creation-time wait must reference the created child's assignment.",
+              });
+            }
+            includesCreatedAssignment = true;
+            assignments.push({
+              childThreadId: command.threadId,
+              assignmentId: requested.assignmentId,
+            });
+            continue;
+          }
+          const existingChild = readModel.threads.find(
+            (thread) => thread.id === requested.childThreadId,
+          );
+          if (
+            existingChild &&
+            (existingChild.parentThreadId !== parentThread.id ||
+              existingChild.deletedAt !== null ||
+              existingChild.archivedAt !== null ||
+              existingChild.nudging?.delegation?.assignmentId !== requested.assignmentId)
+          ) {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail:
+                "A creation-time wait must reference this parent's current child assignments.",
+            });
+          }
+          const previousAssignment = parentThread.nudging?.wait?.assignments.find(
+            (entry) =>
+              entry.childThreadId === requested.childThreadId &&
+              entry.assignmentId === requested.assignmentId,
+          );
+          const outcome =
+            previousAssignment?.outcome ??
+            (existingChild?.nudging?.delegation?.assignmentId === requested.assignmentId
+              ? existingChild.nudging.delegation.outcome
+              : undefined);
+          assignments.push({
+            childThreadId: requested.childThreadId,
+            assignmentId: requested.assignmentId,
+            ...(outcome !== undefined ? { outcome } : {}),
+          });
+        }
+        if (!includesCreatedAssignment) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A creation-time wait must include the created child's assignment.",
+          });
+        }
+        const currentWait = parentThread.nudging?.wait;
+        const shouldMerge =
+          currentWait !== undefined &&
+          currentWait !== null &&
+          currentWait.mode === parentWait.mode &&
+          currentWait.satisfiedAt === undefined &&
+          !childWaitIsSatisfied(currentWait);
+        if (shouldMerge) {
+          const mergedAssignments = [...currentWait.assignments];
+          for (const assignment of assignments) {
+            const existingIndex = mergedAssignments.findIndex(
+              (entry) =>
+                entry.childThreadId === assignment.childThreadId &&
+                entry.assignmentId === assignment.assignmentId,
+            );
+            if (existingIndex < 0) mergedAssignments.push(assignment);
+          }
+          if (mergedAssignments.length > 32) {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "A parent wait cannot contain more than 32 assignments after merging.",
+            });
+          }
+          parentWait = { ...currentWait, assignments: mergedAssignments };
+        } else {
+          // Absent/satisfied waits are replaced. An unsatisfied wait with a
+          // different mode is also replaced so callers never combine
+          // incompatible any/all semantics implicitly.
+          parentWait = { mode: parentWait.mode, assignments };
+        }
+      }
+      return [
+        createdEvent,
+        nudgingMetaEvent(parentThread, createdEvent, {
+          ...parentThread.nudging,
+          wait: parentWait,
+        }),
+      ];
     }
 
     case "thread.fork": {
@@ -1168,6 +1889,689 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.collaboration-request.create": {
+      const sender = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const recipient = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.recipientThreadId,
+      });
+      const duplicate = collaborationRequestLocation(readModel, command.requestId);
+      if (duplicate) {
+        return [];
+      }
+      const transportContextMismatch =
+        command.transportContext !== undefined &&
+        command.transportContext !== null &&
+        (command.transportContext.exchangeId !== command.exchangeId ||
+          command.caseId !== command.transportContext.caseId);
+      const provenanceMismatch =
+        command.monitorProvenance !== undefined &&
+        command.monitorProvenance !== null &&
+        (command.monitorProvenance.caseId !== command.caseId ||
+          command.monitorProvenance.candidateId !== command.candidateRefs[0] ||
+          command.monitorProvenance.findingRevisionId !== command.findingRefs[0] ||
+          command.monitorProvenance.transportContext?.exchangeId !== command.exchangeId);
+      if (
+        !executionAuthorityMatches(command.senderAuthority, command.producingExecution) ||
+        transportContextMismatch ||
+        provenanceMismatch
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "The request authority and acceptance transport context must be immutable and correlated.",
+        });
+      }
+      if (
+        command.blocking &&
+        (sender.collaborationRequests ?? []).some(
+          (request) =>
+            request.blocking &&
+            request.status === "waiting" &&
+            request.producingExecution.executionId === command.producingExecution.executionId &&
+            request.producingExecution.generation === command.producingExecution.generation,
+        )
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only one blocking collaboration request is allowed per execution generation.",
+        });
+      }
+      const reciprocal = (recipient.collaborationRequests ?? []).find(
+        (request) =>
+          request.blocking &&
+          request.status === "waiting" &&
+          request.senderThreadId === recipient.id &&
+          request.recipientThreadId === sender.id,
+      );
+      const directCycle =
+        command.blocking &&
+        reciprocal !== undefined &&
+        (sender.parentThreadId === recipient.id || recipient.parentThreadId === sender.id);
+      const status = directCycle
+        ? "needs-human"
+        : command.blocking
+          ? "waiting"
+          : "notification-delivered";
+      const terminalOutcome = directCycle ? "needs-human" : !command.blocking ? "completed" : null;
+      const request: CollaborationRequest = {
+        requestId: command.requestId,
+        kind: command.kind,
+        exchangeId: command.exchangeId,
+        senderThreadId: sender.id,
+        recipientThreadId: recipient.id,
+        blocking: command.blocking,
+        ...(command.caseId !== undefined ? { caseId: command.caseId } : {}),
+        ...(command.transportContext !== undefined
+          ? { transportContext: command.transportContext }
+          : {}),
+        senderAuthority: command.senderAuthority,
+        recipientAuthority: command.recipientAuthority,
+        producingExecution: command.producingExecution,
+        payloadRef: command.payloadRef,
+        candidateRefs: Object.freeze([...command.candidateRefs]),
+        findingRefs: Object.freeze([...command.findingRefs]),
+        ...(command.monitorProvenance !== undefined
+          ? {
+              monitorProvenance:
+                command.monitorProvenance === null
+                  ? null
+                  : Object.freeze({
+                      ...command.monitorProvenance,
+                      transportContext:
+                        command.monitorProvenance.transportContext === null
+                          ? null
+                          : Object.freeze({
+                              ...command.monitorProvenance.transportContext,
+                            }),
+                      workflow: Object.freeze({ ...command.monitorProvenance.workflow }),
+                      requiredCoverage: Object.freeze({
+                        ...command.monitorProvenance.requiredCoverage,
+                        required: Object.freeze([
+                          ...command.monitorProvenance.requiredCoverage.required,
+                        ]),
+                        covered: Object.freeze([
+                          ...command.monitorProvenance.requiredCoverage.covered,
+                        ]),
+                      }),
+                      location:
+                        command.monitorProvenance.location === null
+                          ? null
+                          : Object.freeze({ ...command.monitorProvenance.location }),
+                    }),
+            }
+          : {}),
+        supersedesRequestId: command.supersedesRequestId ?? null,
+        deliveryQueuedTurnId: directCycle ? null : command.delivery.queuedTurnId,
+        responseDeliveryQueuedTurnId: null,
+        responseRef: null,
+        response: null,
+        consumedExecution: null,
+        status,
+        terminalOutcome,
+        createdAt: command.createdAt,
+        updatedAt: command.createdAt,
+      };
+      const superseded = command.supersedesRequestId
+        ? collaborationRequestLocation(readModel, command.supersedesRequestId)
+        : null;
+      if (
+        command.supersedesRequestId !== undefined &&
+        (superseded === null ||
+          superseded.request.senderThreadId !== sender.id ||
+          superseded.request.recipientThreadId !== recipient.id ||
+          !superseded.request.blocking ||
+          superseded.request.status !== "waiting")
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only the bound sender may supersede its active blocking request.",
+        });
+      }
+      const events: PlannedOrchestrationEvent[] = [];
+      if (superseded !== null) {
+        const retired: CollaborationRequest = {
+          ...superseded.request,
+          status: "superseded",
+          terminalOutcome: "superseded",
+          updatedAt: command.createdAt,
+        };
+        for (const threadId of new Set([
+          superseded.request.senderThreadId,
+          superseded.request.recipientThreadId,
+        ])) {
+          events.push(
+            collaborationRequestEvent(command, threadId, retired, "superseded", command.createdAt),
+          );
+        }
+        for (const [queuedTurnId, ownerThreadId] of [
+          [superseded.request.deliveryQueuedTurnId, superseded.request.recipientThreadId],
+          [superseded.request.responseDeliveryQueuedTurnId, superseded.request.senderThreadId],
+        ] as const) {
+          if (queuedTurnId === null) continue;
+          events.push({
+            ...withEventBase({
+              aggregateKind: "thread",
+              aggregateId: ownerThreadId,
+              occurredAt: command.createdAt,
+              commandId: command.commandId,
+            }),
+            type: "thread.queued-turn-deleted" as const,
+            payload: {
+              threadId: ownerThreadId,
+              queuedTurnId,
+              deletedAt: command.createdAt,
+            },
+          });
+        }
+      }
+      events.push(
+        collaborationRequestEvent(command, sender.id, request, "created", command.createdAt),
+        collaborationRequestEvent(command, recipient.id, request, "created", command.createdAt),
+      );
+      if (!directCycle) {
+        events.push(
+          collaborationQueueEvent(
+            command,
+            recipient.id,
+            command.delivery,
+            {
+              kind: "collaboration-request",
+              requestId: request.requestId,
+              exchangeId: request.exchangeId,
+            },
+            command.createdAt,
+          ),
+        );
+      }
+      return events;
+    }
+
+    case "thread.collaboration-request.respond": {
+      const location = collaborationRequestLocation(readModel, command.requestId);
+      if (!location) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Unknown collaboration request '${command.requestId}'.`,
+        });
+      }
+      const { request } = location;
+      if (
+        request.recipientThreadId !== command.threadId ||
+        request.exchangeId !== command.exchangeId ||
+        !collaborationResponseAuthorityMatches(
+          request.recipientAuthority,
+          command.responderAuthority,
+        ) ||
+        request.status !== "waiting"
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The collaboration request is no longer available for response.",
+        });
+      }
+      const response = {
+        responseId: command.responseId,
+        requestId: request.requestId,
+        exchangeId: request.exchangeId,
+        responderThreadId: command.threadId,
+        responderAuthority: command.responderAuthority,
+        payloadRef: command.payloadRef,
+        outcome: command.outcome,
+        createdAt: command.createdAt,
+      };
+      const nextRequest: CollaborationRequest = {
+        ...request,
+        status: "response-ready",
+        responseDeliveryQueuedTurnId: command.delivery.queuedTurnId,
+        responseRef: response.responseId,
+        response,
+        updatedAt: command.createdAt,
+      };
+      const events: PlannedOrchestrationEvent[] = [
+        collaborationRequestEvent(
+          command,
+          request.senderThreadId,
+          nextRequest,
+          "responded",
+          command.createdAt,
+        ),
+        collaborationRequestEvent(
+          command,
+          request.recipientThreadId,
+          nextRequest,
+          "responded",
+          command.createdAt,
+        ),
+        collaborationQueueEvent(
+          command,
+          request.senderThreadId,
+          command.delivery,
+          {
+            kind: "collaboration-response",
+            requestId: request.requestId,
+            responseId: response.responseId,
+            exchangeId: request.exchangeId,
+          },
+          command.createdAt,
+        ),
+      ];
+      return events;
+    }
+
+    case "thread.collaboration-request.consume": {
+      const location = collaborationRequestLocation(readModel, command.requestId);
+      if (!location || location.request.senderThreadId !== command.threadId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The collaboration request is not owned by this thread.",
+        });
+      }
+      const { request } = location;
+      const consumedAuthorityMatches =
+        request.producingExecution.assignmentId === undefined
+          ? request.producingExecution.executionId === command.consumedExecution.executionId &&
+            command.consumedExecution.generation > request.producingExecution.generation
+          : request.producingExecution.assignmentId === command.consumedExecution.assignmentId &&
+            request.producingExecution.threadId === command.consumedExecution.threadId &&
+            request.producingExecution.dispatchId === command.consumedExecution.dispatchId &&
+            request.producingExecution.executionId === command.consumedExecution.executionId &&
+            command.consumedExecution.generation > request.producingExecution.generation &&
+            command.consumedExecution.turnId !== null;
+      if (
+        request.status !== "response-ready" ||
+        request.responseRef !== command.responseId ||
+        request.response === null ||
+        !consumedAuthorityMatches ||
+        request.senderThreadId !== command.threadId ||
+        (request.producingExecution.threadId !== undefined &&
+          request.producingExecution.threadId !== command.threadId)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The response cannot be consumed by this execution generation.",
+        });
+      }
+      const nextRequest: CollaborationRequest = {
+        ...request,
+        status: "consumed",
+        consumedExecution: command.consumedExecution,
+        terminalOutcome: request.response.outcome,
+        updatedAt: command.createdAt,
+      };
+      const events: PlannedOrchestrationEvent[] = [
+        collaborationRequestEvent(
+          command,
+          command.threadId,
+          nextRequest,
+          "consumed",
+          command.createdAt,
+        ),
+      ];
+      if (request.recipientThreadId !== command.threadId) {
+        events.push(
+          collaborationRequestEvent(
+            command,
+            request.recipientThreadId,
+            nextRequest,
+            "consumed",
+            command.createdAt,
+          ),
+        );
+      }
+      return events;
+    }
+
+    case "thread.collaboration-request.supersede":
+    case "thread.collaboration-request.cancel":
+    case "thread.collaboration-request.override": {
+      const location = collaborationRequestLocation(readModel, command.requestId);
+      if (!location) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Unknown collaboration request '${command.requestId}'.`,
+        });
+      }
+      const request = location.request;
+      const isSupersede = command.type === "thread.collaboration-request.supersede";
+      const isOverride = command.type === "thread.collaboration-request.override";
+      const actorIsSender = command.threadId === request.senderThreadId;
+      const actorIsRecipient = command.threadId === request.recipientThreadId;
+      const actorAuthority = "actorAuthority" in command ? command.actorAuthority : undefined;
+      const actorIsBound = isOverride
+        ? actorIsSender || actorIsRecipient
+        : actorIsSender
+          ? actorAuthority !== undefined &&
+            executionAuthorityMatches(request.senderAuthority, actorAuthority)
+          : actorIsRecipient &&
+            actorAuthority !== undefined &&
+            executionAuthorityMatches(request.recipientAuthority, actorAuthority);
+      if (
+        !actorIsBound ||
+        (isSupersede && !actorIsSender) ||
+        (isSupersede &&
+          !readModel.threads.some((thread) =>
+            (thread.collaborationRequests ?? []).some(
+              (entry) =>
+                entry.requestId === command.supersededByRequestId &&
+                entry.supersedesRequestId === request.requestId &&
+                entry.senderThreadId === request.senderThreadId &&
+                entry.recipientThreadId === request.recipientThreadId,
+            ),
+          ))
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "The collaboration request mutation is not authorized for this request authority.",
+        });
+      }
+      const nextRequest: CollaborationRequest = {
+        ...request,
+        status: isSupersede ? "superseded" : isOverride ? command.outcome : "cancelled",
+        terminalOutcome: isSupersede ? "superseded" : isOverride ? command.outcome : "cancelled",
+        updatedAt: command.createdAt,
+      };
+      const events: PlannedOrchestrationEvent[] = [
+        collaborationRequestEvent(
+          command,
+          location.thread.id,
+          nextRequest,
+          isSupersede ? "superseded" : isOverride ? "override" : "cancelled",
+          command.createdAt,
+        ),
+      ];
+      const otherThreadId =
+        request.senderThreadId === location.thread.id
+          ? request.recipientThreadId
+          : request.senderThreadId;
+      if (otherThreadId !== location.thread.id) {
+        events.push(
+          collaborationRequestEvent(
+            command,
+            otherThreadId,
+            nextRequest,
+            isSupersede ? "superseded" : isOverride ? "override" : "cancelled",
+            command.createdAt,
+          ),
+        );
+      }
+      for (const queuedTurnId of [
+        request.deliveryQueuedTurnId,
+        request.responseDeliveryQueuedTurnId,
+      ]) {
+        if (queuedTurnId === null) continue;
+        const ownerThreadId =
+          queuedTurnId === request.deliveryQueuedTurnId
+            ? request.recipientThreadId
+            : request.senderThreadId;
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: ownerThreadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.queued-turn-deleted",
+          payload: {
+            threadId: ownerThreadId,
+            queuedTurnId,
+            deletedAt: command.createdAt,
+          },
+        });
+      }
+      return events;
+    }
+
+    case "thread.collaboration-response.delete": {
+      const location = collaborationRequestLocation(readModel, command.requestId);
+      if (
+        !location ||
+        !(
+          (location.request.senderThreadId === command.threadId &&
+            executionAuthorityMatches(location.request.senderAuthority, command.actorAuthority)) ||
+          (location.request.recipientThreadId === command.threadId &&
+            executionAuthorityMatches(location.request.recipientAuthority, command.actorAuthority))
+        ) ||
+        location.request.responseRef !== command.responseId ||
+        location.request.status !== "response-ready" ||
+        location.request.response === null ||
+        !["stale", "needs-human"].includes(location.request.response.outcome)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only the current failed response can be deleted and reopened.",
+        });
+      }
+      const nextRequest: CollaborationRequest = {
+        ...location.request,
+        status: "waiting",
+        responseDeliveryQueuedTurnId: null,
+        responseRef: null,
+        response: null,
+        updatedAt: command.createdAt,
+      };
+      const events: PlannedOrchestrationEvent[] = [
+        collaborationRequestEvent(
+          command,
+          command.threadId,
+          nextRequest,
+          "reopened",
+          command.createdAt,
+        ),
+      ];
+      if (location.request.recipientThreadId !== command.threadId) {
+        events.push(
+          collaborationRequestEvent(
+            command,
+            location.request.recipientThreadId,
+            nextRequest,
+            "reopened",
+            command.createdAt,
+          ),
+        );
+      }
+      if (location.request.responseDeliveryQueuedTurnId !== null) {
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.queued-turn-deleted",
+          payload: {
+            threadId: location.request.senderThreadId,
+            queuedTurnId: location.request.responseDeliveryQueuedTurnId,
+            deletedAt: command.createdAt,
+          },
+        });
+      }
+      return events;
+    }
+
+    case "thread.collaboration-state.clear":
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.collaboration-state-cleared",
+        payload: {
+          threadId: command.threadId,
+          clearedAt: command.createdAt,
+        },
+      };
+
+    case "thread.child-wait.deadline-expire": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const wait = thread.nudging?.wait;
+      if (
+        !wait ||
+        wait.deadlineAt !== command.expectedDeadlineAt ||
+        wait.generationId !== command.expectedGenerationId ||
+        wait.satisfiedAt ||
+        childWaitIsSatisfied(wait)
+      ) {
+        return [];
+      }
+      if (Date.parse(command.expiredAt) < Date.parse(wait.deadlineAt)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A child wait cannot expire before its deadline.",
+        });
+      }
+      if (thread.archivedAt !== null || thread.deletedAt !== null) return [];
+
+      const unsettled = wait.assignments.filter((assignment) => assignment.outcome === undefined);
+      if (unsettled.length === 0) return [];
+      const expiredWait = {
+        ...wait,
+        assignments: wait.assignments.map((assignment) =>
+          assignment.outcome === undefined
+            ? { ...assignment, outcome: "blocked" as const }
+            : assignment,
+        ),
+      };
+      const metaEvent: PlannedOrchestrationEvent = {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: thread.id,
+          occurredAt: command.expiredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: thread.id,
+          nudging: { ...thread.nudging, wait: expiredWait },
+          updatedAt: command.expiredAt,
+        },
+      };
+      const notifications: ChildLifecycleNotificationEvent[] = [];
+      const reports: ChildNudgeUpdate[] = [];
+      for (const assignment of unsettled) {
+        const child = readModel.threads.find((entry) => entry.id === assignment.childThreadId);
+        const childTitle = child?.title ?? String(assignment.childThreadId);
+        const assignmentStartedAt =
+          child?.nudging?.delegation?.assignmentId === assignment.assignmentId
+            ? child.nudging.delegation.assignedAt
+            : undefined;
+        const startedAt = assignmentStartedAt ?? wait.deadlineAt;
+        const elapsedSeconds = Math.max(
+          0,
+          Math.floor((Date.parse(command.expiredAt) - Date.parse(startedAt)) / 1_000),
+        );
+        const reportId = `wait-deadline:${createHash("sha256")
+          .update(
+            JSON.stringify([
+              wait.generationId ?? null,
+              wait.deadlineAt,
+              assignment.childThreadId,
+              assignment.assignmentId,
+            ]),
+          )
+          .digest("hex")}`;
+        const report: ChildNudgeUpdate = {
+          id: reportId,
+          assignmentId: assignment.assignmentId,
+          childThreadId: assignment.childThreadId,
+          childTitle,
+          kind: "blocked",
+          wakeReason: "assignment-blocked",
+          summary: `Wait deadline expired: ${childTitle} (${assignment.childThreadId}), assignment ${assignment.assignmentId} remained unsettled for ${elapsedSeconds} seconds ${assignmentStartedAt ? "since assignment start" : "since the deadline (assignment start unavailable)"}.`,
+        };
+        const notification: PlannedOrchestrationEvent = {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.id,
+            occurredAt: command.expiredAt,
+            commandId: command.commandId,
+          }),
+          causationEventId: metaEvent.eventId,
+          type: "thread.child-lifecycle-notified",
+          payload: {
+            parentThreadId: thread.id,
+            childThreadId: assignment.childThreadId,
+            childTitle,
+            lifecycle: "blocked",
+            dedupeKey: childLifecycleDedupeKey(assignment.childThreadId, "blocked", reportId),
+            createdAt: command.expiredAt,
+            report,
+          },
+        };
+        reports.push(report);
+        notifications.push(notification);
+      }
+
+      const parentAfterExpiration = {
+        ...thread,
+        nudging: { ...thread.nudging, wait: expiredWait },
+      };
+      const queueEvent = queueChildNudgeBatch(
+        parentAfterExpiration,
+        reports,
+        notifications[notifications.length - 1]!,
+      );
+      return [metaEvent, ...notifications, queueEvent];
+    }
+
+    case "thread.child.wait.prune": {
+      const parent = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const wait = parent.nudging?.wait;
+      if (!wait) return [];
+      const assignments = wait.assignments.filter(
+        (entry) =>
+          !command.assignments.some(
+            (remove) =>
+              remove.childThreadId === entry.childThreadId &&
+              remove.assignmentId === entry.assignmentId,
+          ),
+      );
+      if (assignments.length === wait.assignments.length) return [];
+      const nextWait =
+        assignments.length === 0 && wait.mode !== "decisions-only"
+          ? null
+          : { ...wait, assignments };
+      const updatedAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: parent.id,
+          occurredAt: updatedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: parent.id,
+          nudging: {
+            ...parent.nudging,
+            wait: nextWait,
+          },
+          updatedAt,
+        },
+      };
+    }
+
     case "thread.meta.update": {
       const thread = yield* requireThread({
         readModel,
@@ -1186,15 +2590,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const occurredAt = nowIso();
       let childWait = command.childWait;
       if (childWait) {
+        if (childWait.deadlineAt !== undefined && !isChildWaitDeadlineAt(childWait.deadlineAt)) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A child wait deadline must be a valid ISO date-time.",
+          });
+        }
         if (
           childWait.satisfiedAt !== undefined ||
           (childWait.mode !== "decisions-only" && childWait.assignments.length === 0) ||
+          (childWait.deadlineAt !== undefined && childWait.mode === "decisions-only") ||
           new Set(childWait.assignments.map((entry) => entry.childThreadId)).size !==
             childWait.assignments.length
         ) {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
-            detail: "A wait requires distinct child assignments and cannot set its own completion.",
+            detail:
+              "A wait requires distinct child assignments, cannot set its own completion, and deadlines require an assignment-based wait.",
           });
         }
         const assignments = [];
@@ -1221,7 +2633,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               : {}),
           });
         }
-        childWait = { mode: childWait.mode, assignments };
+        childWait = {
+          generationId: command.commandId,
+          mode: childWait.mode,
+          assignments,
+          ...(childWait.deadlineAt !== undefined ? { deadlineAt: childWait.deadlineAt } : {}),
+        };
       }
       const metaUpdatedEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
@@ -1263,10 +2680,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
           ...(command.branch !== undefined ? { branch: command.branch } : {}),
           ...(command.worktreePath !== undefined ? { worktreePath: command.worktreePath } : {}),
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           ...(command.pullRequest !== undefined ? { pullRequest: command.pullRequest } : {}),
           ...(command.pullRequestSource !== undefined
             ? { pullRequestSource: command.pullRequestSource }
             : {}),
+          ...(command.pendingPullRequestAssociation !== undefined
+            ? { pendingPullRequestAssociation: command.pendingPullRequestAssociation }
+            : command.pullRequest !== undefined
+              ? { pendingPullRequestAssociation: null }
+              : {}),
           ...(command.pullRequestOwnership !== undefined
             ? { pullRequestOwnership: command.pullRequestOwnership }
             : {}),
@@ -1316,7 +2741,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: existingPinnedAt === null ? occurredAt : thread.updatedAt,
         },
       };
-      const promotionEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      const promotionEvents: PlannedOrchestrationEvent[] = [];
       if (thread.settledOverride === "settled") {
         promotionEvents.push({
           ...withEventBase({
@@ -1485,6 +2910,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           branch: command.branch,
           worktreePath: command.worktreePath,
+          ...(command.workspaceBinding !== undefined
+            ? { workspaceBinding: command.workspaceBinding }
+            : {}),
           updatedAt: occurredAt,
         },
       };
@@ -1493,6 +2921,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         role: "marker",
         branch: command.branch,
         worktreePath: command.worktreePath,
+        ...(command.workspaceBinding !== undefined
+          ? { workspaceBinding: command.workspaceBinding }
+          : {}),
       } as const;
       // The marker is the invariant of a handoff: it records the workspace move
       // whether the thread continues on a generated continuation or on a turn
@@ -1586,7 +3017,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         existing &&
         existing.source === source &&
-        sameThreadPullRequestAssociation(existing.pullRequest, command.pullRequest)
+        sameThreadPullRequestAssociation(existing.pullRequest, command.pullRequest) &&
+        thread.pendingPullRequestAssociation == null
       ) {
         return [];
       }
@@ -1623,7 +3055,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         thread.pullRequest !== null &&
         thread.pullRequest !== undefined &&
         sameThreadPullRequest(thread.pullRequest, command.pullRequest);
-      if (!hasLink && !clearsLegacyPullRequest) {
+      if (!hasLink && !clearsLegacyPullRequest && thread.pendingPullRequestAssociation == null) {
         return [];
       }
       const occurredAt = nowIso();
@@ -1801,11 +3233,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         targetThread.nudging?.delegation?.completedAt === null
           ? targetThread.nudging.delegation
           : undefined;
+      const executionAuthority =
+        activeDelegation?.dispatchId !== undefined &&
+        activeDelegation.dispatchSequence !== undefined &&
+        activeDelegation.dispatchTurnId !== undefined &&
+        activeDelegation.dispatchTurnId !== null
+          ? {
+              executionId: `thread:${targetThread.id}`,
+              assignmentId: activeDelegation.assignmentId,
+              threadId: targetThread.id,
+              generation: activeDelegation.dispatchSequence,
+              dispatchId: activeDelegation.dispatchId,
+              turnId: activeDelegation.dispatchTurnId,
+            }
+          : undefined;
       if (activeDelegation?.decision) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail:
-            "Resolve the current child decision through its correlated response before continuing.",
+          detail: CHILD_DECISION_BLOCKED_DETAIL,
         });
       }
       const execution =
@@ -1827,13 +3272,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         runtimeMode: targetThread.runtimeMode,
         interactionMode: targetThread.interactionMode,
         sourceProposedPlan,
-        source: command.source,
         ...(turnDelegation?.dispatchId
           ? {
               delegationAssignmentId: turnDelegation.assignmentId,
               delegationDispatchId: turnDelegation.dispatchId,
               delegationTransition: turnDelegation.dispatchReason ?? "assigned",
             }
+          : {}),
+        ...(executionAuthority !== undefined ? { executionAuthority } : {}),
+        ...(command.workspaceBinding !== undefined
+          ? { workspaceBinding: command.workspaceBinding }
           : {}),
         at: command.createdAt,
       });
@@ -1880,10 +3328,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               }),
             ]
           : [];
+      const workspaceBindingEvent =
+        command.workspaceBinding !== undefined &&
+        (targetThread.workspaceBinding?.generation !== command.workspaceBinding.generation ||
+          targetThread.workspaceBinding?.canonicalPath !== command.workspaceBinding.canonicalPath)
+          ? [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread",
+                  aggregateId: command.threadId,
+                  occurredAt,
+                  commandId: command.commandId,
+                }),
+                type: "thread.meta-updated" as const,
+                payload: {
+                  threadId: command.threadId,
+                  branch: command.workspaceBinding.branch,
+                  worktreePath: command.workspaceBinding.worktreePath,
+                  workspaceBinding: command.workspaceBinding,
+                  updatedAt: occurredAt,
+                },
+              },
+            ]
+          : [];
       return appendChildLifecycleNotification({
         readModel,
         childThread: targetThread,
         sourceEvents: [
+          ...workspaceBindingEvent,
           userMessageEvent,
           turnStartRequestedEvent,
           ...delegationEvents,
@@ -1923,7 +3395,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               targetThread: thread,
               readModel,
             });
-      const queuedTurn = {
+      const queuedTurn: OrchestrationQueuedTurn = {
         id: command.queuedTurnId,
         threadId: command.threadId,
         message: command.assignment
@@ -1945,7 +3417,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         failedAt: null,
         failureMessage: null,
       };
-      const queuedEvent = {
+      const queuedEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1988,7 +3460,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               "Finish the current assignment and resolve its decision before assigning new work.",
           });
         }
-        return [
+        const parentThread = readModel.threads.find(
+          (entry) => entry.id === thread.parentThreadId && entry.deletedAt === null,
+        );
+        const parentWait = parentThread?.nudging?.wait;
+        const shouldRetargetWait =
+          parentWait !== undefined &&
+          parentWait !== null &&
+          parentWait.satisfiedAt === undefined &&
+          !childWaitIsSatisfied(parentWait) &&
+          parentWait.assignments.some(
+            (entry) =>
+              entry.childThreadId === thread.id &&
+              entry.assignmentId === delegation?.assignmentId &&
+              entry.outcome === undefined,
+          );
+        const assignmentEvents: PlannedOrchestrationEvent[] = [
           queuedEvent,
           nudgingMetaEvent(thread, queuedEvent, {
             ...thread.nudging,
@@ -2002,6 +3489,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             },
           }),
         ];
+        if (shouldRetargetWait && parentThread && parentWait) {
+          assignmentEvents.push(
+            nudgingMetaEvent(parentThread, queuedEvent, {
+              ...parentThread.nudging,
+              wait: {
+                ...parentWait,
+                assignments: parentWait.assignments.map((entry) =>
+                  entry.childThreadId === thread.id &&
+                  entry.assignmentId === delegation?.assignmentId &&
+                  entry.outcome === undefined
+                    ? { ...entry, assignmentId: command.message.messageId }
+                    : entry,
+                ),
+              },
+            }),
+          );
+        }
+        return assignmentEvents;
       }
       if (
         !delegation?.decision ||
@@ -2065,7 +3570,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
         queuedTurnId: command.queuedTurnId,
       });
-      const deleted = {
+      const deleted: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -2181,8 +3686,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (activeDelegation?.decision && !responseDispatched) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail:
-            "Resolve the current child decision through its correlated response before continuing.",
+          detail: CHILD_DECISION_BLOCKED_DETAIL,
         });
       }
       const execution =
@@ -2239,26 +3743,57 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
+      // Persist an isolated workspace binding admitted for this dispatch. The
+      // turn-start-requested payload below carries the binding for provenance,
+      // but no projector applies it to the thread; without this meta-updated
+      // event the provider would keep executing in the stale worktree while
+      // the claimed isolated workspace sits unused.
+      if (
+        command.workspaceBinding !== undefined &&
+        (targetThread.workspaceBinding?.generation !== command.workspaceBinding.generation ||
+          targetThread.workspaceBinding?.canonicalPath !== command.workspaceBinding.canonicalPath)
+      ) {
+        events.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.dispatchedAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.meta-updated",
+          payload: {
+            threadId: command.threadId,
+            branch: command.workspaceBinding.branch,
+            worktreePath: command.workspaceBinding.worktreePath,
+            workspaceBinding: command.workspaceBinding,
+            updatedAt: command.dispatchedAt,
+          },
+        });
+      }
+      const turnOrigin =
+        followUp && queuedTurn.origin?.kind === "child-nudge"
+          ? { ...queuedTurn.origin, updates: followUp.updates }
+          : queuedTurn.origin;
       const { userMessageEvent, turnStartRequestedEvent } = buildTurnStartEvents({
         commandId: command.commandId,
         threadId: command.threadId,
         message: {
           messageId: queuedTurn.message.messageId,
-          text: followUp ? childNudgePrompt(followUp.updates) : queuedTurn.message.text,
+          text: followUp
+            ? childNudgePrompt(
+                followUp.updates,
+                childWaitProgressStatus(nudging?.wait, readModel.threads),
+              )
+            : queuedTurn.message.text,
           attachments: queuedTurn.message.attachments,
         },
-        ...(queuedTurn.origin !== undefined
-          ? {
-              origin: followUp
-                ? { ...queuedTurn.origin, updates: followUp.updates }
-                : queuedTurn.origin,
-            }
-          : {}),
+        ...(turnOrigin !== undefined ? { origin: turnOrigin } : {}),
         modelSelection: queuedTurn.modelSelection,
         titleSeed: queuedTurn.titleSeed,
         runtimeMode: isNudge ? targetThread.runtimeMode : queuedTurn.runtimeMode,
         interactionMode: isNudge ? targetThread.interactionMode : queuedTurn.interactionMode,
         sourceProposedPlan: queuedTurn.sourceProposedPlan,
+        workspaceBinding: command.workspaceBinding ?? targetThread.workspaceBinding ?? undefined,
         ...(turnDelegation?.dispatchId
           ? {
               delegationAssignmentId: turnDelegation.assignmentId,
@@ -2285,23 +3820,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
       const waitSatisfied =
-        isNudge && nudging?.wait && !nudging.wait.satisfiedAt && childWaitIsSatisfied(nudging.wait);
+        isNudge &&
+        followUp &&
+        nudging?.wait &&
+        !nudging.wait.satisfiedAt &&
+        childWaitIsSatisfiedByUpdates(nudging.wait, followUp.updates);
+      let nextNudging: ThreadNudging | null = null;
+      if (execution && nudging) {
+        nextNudging = { ...nudging, delegation: execution.delegation };
+      } else if (responseDispatched && nudging?.delegation) {
+        nextNudging = {
+          ...nudging,
+          delegation: { ...nudging.delegation, pendingResponse: null },
+        };
+      }
+      if (waitSatisfied && nudging?.wait) {
+        nextNudging = {
+          ...(nextNudging ?? nudging),
+          wait: { ...nudging.wait, satisfiedAt: command.dispatchedAt },
+        };
+      }
       const nudgingEvents =
-        execution || responseDispatched || waitSatisfied
-          ? [
-              nudgingMetaEvent(targetThread, dispatchedEvent, {
-                ...nudging,
-                ...(execution
-                  ? { delegation: execution.delegation }
-                  : responseDispatched
-                    ? { delegation: { ...nudging.delegation, pendingResponse: null } }
-                    : {}),
-                ...(waitSatisfied
-                  ? { wait: { ...nudging.wait, satisfiedAt: command.dispatchedAt } }
-                  : {}),
-              }),
-            ]
-          : [];
+        nextNudging === null ? [] : [nudgingMetaEvent(targetThread, dispatchedEvent, nextNudging)];
       return appendChildLifecycleNotification({
         readModel,
         childThread: targetThread,
@@ -2354,7 +3894,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.turnId ??
         targetThread.session?.activeTurnId ??
         (targetThread.latestTurn?.state === "running" ? targetThread.latestTurn.turnId : undefined);
-      const interrupted = {
+      const interrupted: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -2374,6 +3914,86 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             interrupted,
             nudgingMetaEvent(targetThread, interrupted, { ...targetThread.nudging, paused: true }),
           ];
+    }
+
+    case "thread.turn.steer": {
+      yield* requireWritableProjectForThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const { thread: targetThread, turnId: activeTurnId } = yield* requireThreadWithInFlightTurn({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (command.turnId !== undefined && command.turnId !== activeTurnId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            `Turn '${command.turnId}' is no longer the active turn on thread ` +
+            `'${command.threadId}'. Reissue the steer against turn '${activeTurnId}' or send a new turn.`,
+        });
+      }
+      const occurredAt = command.createdAt;
+      const eventBase = () =>
+        withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        });
+      const userMessageEvent: PlannedOrchestrationEvent = {
+        ...eventBase(),
+        type: "thread.message-sent",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.message.messageId,
+          role: "user",
+          text: command.message.text,
+          attachments: command.message.attachments,
+          ...(command.origin !== undefined ? { origin: command.origin } : {}),
+          turnId: activeTurnId,
+          streaming: false,
+          createdAt: occurredAt,
+          updatedAt: occurredAt,
+        },
+      };
+      const steerRequestedEvent: PlannedOrchestrationEvent = {
+        ...eventBase(),
+        causationEventId: userMessageEvent.eventId,
+        type: "thread.turn-steer-requested",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.message.messageId,
+          turnId: activeTurnId,
+          createdAt: occurredAt,
+        },
+      };
+      const lifecycleEvents: PlannedOrchestrationEvent[] = [];
+      if (threadHasSettlementOverride(targetThread)) {
+        lifecycleEvents.push({
+          ...eventBase(),
+          type: "thread.unsettled",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: occurredAt,
+          },
+        });
+      }
+      if (threadIsSnoozed(targetThread)) {
+        lifecycleEvents.push({
+          ...eventBase(),
+          type: "thread.unsnoozed",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: occurredAt,
+          },
+        });
+      }
+      return [userMessageEvent, steerRequestedEvent, ...lifecycleEvents];
     }
 
     case "thread.approval.respond": {
@@ -2456,7 +4076,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      const stopped = {
+      const stopped: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -2472,6 +4092,112 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return thread.nudging?.paused === true
         ? stopped
         : [stopped, nudgingMetaEvent(thread, stopped, { ...thread.nudging, paused: true })];
+    }
+
+    case "thread.validation-run.plan": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        thread.validationRun !== null &&
+        thread.validationRun !== undefined &&
+        validationTargetEquals(thread.validationRun.target, command.target)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A validation run is already planned for this thread.",
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-run-planned",
+        payload: {
+          threadId: command.threadId,
+          run: planValidationRun({
+            id: command.runId,
+            threadId: command.threadId,
+            executorId: command.executorId,
+            target: command.target,
+            requestedAt: command.createdAt,
+          }),
+        },
+      };
+    }
+
+    case "thread.validation-gate.update": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (!thread.validationRun || thread.validationRun.id !== command.runId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation gate update does not match the active validation run.",
+        });
+      }
+      if (
+        thread.validationRun.executorId !== command.executorId ||
+        thread.validationRun.lease?.id !== command.leaseId ||
+        !validationTargetEquals(thread.validationRun.target, command.target)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Validation gate update is not owned by the active lease and target executor.",
+        });
+      }
+      const validationRun = thread.validationRun;
+      const run = yield* Effect.try({
+        try: () =>
+          transitionValidationGate(
+            validationRun,
+            {
+              gateId: command.gateId,
+              status: command.status,
+              command: command.command,
+              startedAt: command.startedAt,
+              completedAt: command.completedAt,
+              exitCode: command.exitCode,
+              outputRef: command.outputRef,
+              blockerReason: command.blockerReason,
+              diagnostics: command.diagnostics,
+            },
+            command.createdAt,
+          ),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: cause instanceof Error ? cause.message : "Invalid validation gate transition.",
+          }),
+      });
+      const gate = run.gates.find((candidate) => candidate.id === command.gateId);
+      if (!gate) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Validation gate '${command.gateId}' was not produced by the transition.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.validation-gate-updated",
+        payload: {
+          threadId: command.threadId,
+          runId: command.runId,
+          gate,
+        },
+      };
     }
 
     case "thread.session.set": {
@@ -2554,6 +4280,37 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           }
         }
       }
+      if (nextActiveTurn !== null && nextActiveTurn !== prevActiveTurn) {
+        const responseReady = (thread.collaborationRequests ?? []).find(
+          (request) =>
+            request.status === "response-ready" &&
+            request.response !== null &&
+            request.responseDeliveryQueuedTurnId !== null,
+        );
+        if (responseReady?.response) {
+          const response = responseReady.response;
+          sourceEvents.push(
+            collaborationRequestEvent(
+              command,
+              thread.id,
+              {
+                ...responseReady,
+                status: "consumed",
+                consumedExecution: {
+                  executionId: command.session.providerInstanceId ?? thread.id,
+                  generation: responseReady.producingExecution.generation + 1,
+                  dispatchId: responseReady.producingExecution.dispatchId,
+                  turnId: nextActiveTurn,
+                },
+                terminalOutcome: response.outcome,
+                updatedAt: command.createdAt,
+              },
+              "consumed",
+              command.createdAt,
+            ),
+          );
+        }
+      }
       if (command.session?.status === "running" && threadHasSettlementOverride(thread)) {
         sourceEvents.push({
           ...withEventBase({
@@ -2587,7 +4344,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               : command.session.status === "stopped"
                 ? "blocked"
                 : null;
-      if (lifecycle === null) {
+      if (lifecycle === null || completedTurnId === null) {
         return sourceEvents.length === 1 ? sessionSetEvent : sourceEvents;
       }
       // Delegated results are reported after checkpoint finalization, not session-idle publication.
@@ -2814,7 +4571,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.diff.complete": {
-      const thread = yield* requireThread({
+      yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
@@ -2840,79 +4597,142 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           completedAt: command.completedAt,
         },
       };
-      const delegation = thread.nudging?.delegation;
-      const authorizedTurn = (delegation?.dispatchTurnId as string | null | undefined) ?? null;
-      if (
-        command.status === "speculative" ||
-        !delegation ||
-        delegation.completedAt !== null ||
-        (delegation.dispatchId !== undefined && authorizedTurn === null) ||
-        (authorizedTurn !== null && command.turnId !== authorizedTurn) ||
-        (delegation.assignedAt !== undefined &&
-          (!thread.latestTurn || thread.latestTurn.requestedAt < delegation.assignedAt)) ||
-        delegation.decision != null ||
-        thread.latestTurn?.turnId !== command.turnId ||
-        (thread.queuedTurns?.length ?? 0) > 0 ||
-        threadHasPendingInteraction(thread) ||
-        (thread.session?.activeTurnId != null && thread.session.activeTurnId !== command.turnId) ||
-        readModel.threads.some(
-          (child) =>
-            child.parentThreadId === thread.id &&
-            child.deletedAt === null &&
-            child.archivedAt === null &&
-            child.nudging?.delegation?.followUp === "automatic" &&
-            child.nudging?.delegation?.completedAt === null,
-        )
-      ) {
-        return turnDiffCompletedEvent;
+      return turnDiffCompletedEvent;
+    }
+
+    case "thread.delegation.settle": {
+      const child = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const settlement = settleDelegation(readModel, child);
+      if (!settlement) return [];
+      return appendDelegationSettlement({
+        readModel,
+        child,
+        settlement,
+        commandId: command.commandId,
+      });
+    }
+
+    case "thread.delegation.stall": {
+      const child = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const episode = delegationStallEpisode(readModel, child);
+      if (!episode || episode.id !== command.stallId || episode.summary !== command.summary) {
+        return [];
       }
-      const completion = thread.activities.findLast(
-        (activity) =>
-          activity.kind === "insights.turn.completed" && activity.turnId === command.turnId,
-      );
-      const state = completion?.payload?.state;
-      const resultMessage = thread.messages.findLast(
-        (message) =>
-          message.role === "assistant" && message.turnId === command.turnId && !message.streaming,
-      );
-      const kind =
-        state === "failed" ? "failed" : state === "completed" ? "result-available" : "blocked";
-      const summary =
-        kind === "result-available"
-          ? `Child returned a result; task success and background completion are not verified.${resultMessage ? `\n${resultMessage.text.slice(0, 3000)}` : " No final result message was recorded."}`
-          : kind === "failed"
-            ? "The delegated execution failed. Inspect the child for details."
-            : "Delegated completion is unconfirmed or interrupted. Inspect the child before continuing.";
-      const report = {
-        id: delegation.dispatchId
-          ? `assignment:${thread.id}:${delegation.dispatchId}:${delegation.assignmentId}`
-          : `assignment:${thread.id}:${delegation.assignmentId}`,
+      const delegation = child.nudging?.delegation;
+      const parent = child.parentThreadId
+        ? readModel.threads.find(
+            (thread) => thread.id === child.parentThreadId && thread.deletedAt === null,
+          )
+        : undefined;
+      if (!delegation || !parent) return [];
+      const report: ChildNudgeUpdate = {
+        id: episode.id,
         assignmentId: delegation.assignmentId,
         ...(delegation.dispatchId ? { dispatchId: delegation.dispatchId } : {}),
-        childThreadId: thread.id,
-        childTitle: thread.title,
-        kind,
-        wakeReason: childWakeReason({ kind }),
-        summary,
-        ...(resultMessage ? { sourceMessageId: resultMessage.id } : {}),
+        childThreadId: child.id,
+        childTitle: child.title,
+        kind: "blocked",
+        wakeReason: "assignment-blocked",
+        summary: command.summary,
       };
-      return appendChildLifecycleNotification({
+      const notification: PlannedOrchestrationEvent = {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: parent.id,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.child-lifecycle-notified",
+        payload: {
+          parentThreadId: parent.id,
+          childThreadId: child.id,
+          childTitle: child.title,
+          lifecycle: "blocked",
+          dedupeKey: childLifecycleDedupeKey(child.id, "blocked", report.id),
+          createdAt: command.createdAt,
+          report,
+        },
+      };
+      return [notification, queueChildNudge(parent, report, notification)];
+    }
+
+    case "thread.child.assignment.unavailable": {
+      const parent = yield* requireThread({
         readModel,
-        childThread: thread,
-        sourceEvents: [
-          turnDiffCompletedEvent,
-          nudgingMetaEvent(thread, turnDiffCompletedEvent, {
-            ...thread.nudging,
-            delegation: { ...delegation, completedAt: command.completedAt, outcome: kind },
-          }),
-        ],
-        sourceEvent: turnDiffCompletedEvent,
-        lifecycle: "reported",
-        sourceKey: report.id,
-        createdAt: command.createdAt,
-        report,
-        originTurnId: command.turnId,
+        command,
+        threadId: command.threadId,
       });
+      if (parent.archivedAt !== null || parent.deletedAt !== null) return [];
+      const wait = parent.nudging?.wait;
+      const assignment = wait?.assignments.find(
+        (entry) =>
+          entry.childThreadId === command.childThreadId &&
+          entry.assignmentId === command.assignmentId,
+      );
+      if (!wait || wait.satisfiedAt || !assignment || assignment.outcome) return [];
+
+      const child = readModel.threads.find((entry) => entry.id === command.childThreadId);
+      const unavailable =
+        !child ||
+        child.archivedAt !== null ||
+        child.deletedAt !== null ||
+        child.parentThreadId !== parent.id ||
+        child.nudging?.delegation?.assignmentId !== command.assignmentId;
+      if (!unavailable) return [];
+
+      const report: ChildNudgeUpdate = {
+        id: `assignment-stale:${command.childThreadId}:${command.assignmentId}`,
+        childThreadId: command.childThreadId,
+        childTitle: child?.title ?? `Unavailable child ${command.childThreadId}`,
+        assignmentId: command.assignmentId,
+        kind: "blocked",
+        summary:
+          "A child assignment in this wait is no longer available because the child was detached, archived, deleted, or reassigned. Revise the wait condition before continuing.",
+        wakeReason: "assignment-blocked",
+      };
+      const createdAt = nowIso();
+      const notification: ChildLifecycleNotificationEvent = {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: parent.id,
+          occurredAt: createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.child-lifecycle-notified",
+        payload: {
+          parentThreadId: parent.id,
+          childThreadId: command.childThreadId,
+          childTitle: report.childTitle,
+          lifecycle: "blocked",
+          dedupeKey: childLifecycleDedupeKey(command.childThreadId, "blocked", report.id),
+          createdAt,
+          report,
+        },
+      };
+      return [
+        notification,
+        nudgingMetaEvent(parent, notification, {
+          ...parent.nudging,
+          wait: {
+            ...wait,
+            assignments: wait.assignments.map((entry) =>
+              entry.childThreadId === command.childThreadId &&
+              entry.assignmentId === command.assignmentId
+                ? { ...entry, outcome: "blocked" }
+                : entry,
+            ),
+          },
+        }),
+        queueChildNudge(parent, report, notification),
+      ];
     }
 
     case "thread.child.report": {
@@ -2972,7 +4792,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: child.id,
           activity: {
-            id: command.commandId,
+            id: EventId.make(command.commandId),
             kind: "delegation.reported",
             tone: "info",
             summary,
@@ -3068,7 +4888,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         sourceKey: report.id,
         createdAt: command.createdAt,
         report,
-        originTurnId: command.originTurnId ?? undefined,
+        ...(command.originTurnId !== undefined ? { originTurnId: command.originTurnId } : {}),
       });
     }
     case "thread.revert.complete": {
@@ -3165,7 +4985,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         lifecycle,
         sourceKey,
         createdAt: command.createdAt,
-        originTurnId: command.activity.turnId ?? undefined,
+        ...(command.activity.turnId !== null ? { originTurnId: command.activity.turnId } : {}),
       });
     }
 
@@ -3194,6 +5014,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       const node = command.definition.nodes[0];
+      if (!node) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The durable workflow coordinator requires one worker node.",
+        });
+      }
       const inputContext =
         command.inputArtifact.payload.kind === "input-context"
           ? command.inputArtifact.payload
@@ -3354,11 +5180,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     default: {
-      command satisfies never;
-      const fallback = command as never as { type: string };
+      const unexpectedCommand: never = command;
+      const commandType = String(unexpectedCommand);
       return yield* new OrchestrationCommandInvariantError({
-        commandType: fallback.type,
-        detail: `Unknown command type: ${fallback.type}`,
+        commandType,
+        detail: `Unknown command type: ${commandType}`,
       });
     }
   }

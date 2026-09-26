@@ -34,11 +34,14 @@ export const readAgentActivityPublishingActive = (
           }),
         ),
       );
-    const [enabled, url, environmentCredential] = yield* Effect.all([
-      readSecretString(PUBLISH_AGENT_ACTIVITY_SECRET),
-      readSecretString(RELAY_URL_SECRET),
-      readSecretString(RELAY_ENVIRONMENT_CREDENTIAL_SECRET),
-    ]);
+    const [enabled, url, environmentCredential] = yield* Effect.all(
+      [
+        readSecretString(PUBLISH_AGENT_ACTIVITY_SECRET),
+        readSecretString(RELAY_URL_SECRET),
+        readSecretString(RELAY_ENVIRONMENT_CREDENTIAL_SECRET),
+      ],
+      { concurrency: "unbounded" },
+    );
     return (
       enabled === "true" &&
       url !== null &&

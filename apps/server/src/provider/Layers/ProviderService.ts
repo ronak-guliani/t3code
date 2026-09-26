@@ -10,6 +10,7 @@
  * @module ProviderServiceLive
  */
 import {
+  CollaborationExecutionAuthority,
   ModelSelection,
   NonNegativeInt,
   ThreadId,
@@ -19,6 +20,7 @@ import {
   ProviderSendTurnInput,
   ProviderSessionForkInput,
   ProviderSessionStartInput,
+  ProviderSteerTurnInput,
   ProviderStopSessionInput,
   type ProviderInstanceId,
   type ProviderDriverKind,
@@ -41,6 +43,7 @@ import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import type * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import {
   type ProviderAdapterError,
+  ProviderAdapterRequestError,
   ProviderUnsupportedError,
   ProviderValidationError,
 } from "../Errors.ts";
@@ -124,6 +127,7 @@ function toRuntimePayloadFromSession(
   session: ProviderSession,
   extra?: {
     readonly modelSelection?: unknown;
+    readonly executionAuthority?: CollaborationExecutionAuthority;
     readonly lastRuntimeEvent?: string;
     readonly lastRuntimeEventAt?: string;
   },
@@ -134,6 +138,9 @@ function toRuntimePayloadFromSession(
     activeTurnId: session.activeTurnId ?? null,
     lastError: session.lastError ?? null,
     ...(extra?.modelSelection !== undefined ? { modelSelection: extra.modelSelection } : {}),
+    ...(extra?.executionAuthority !== undefined
+      ? { executionAuthority: extra.executionAuthority }
+      : {}),
     ...(extra?.lastRuntimeEvent !== undefined ? { lastRuntimeEvent: extra.lastRuntimeEvent } : {}),
     ...(extra?.lastRuntimeEventAt !== undefined
       ? { lastRuntimeEventAt: extra.lastRuntimeEventAt }
@@ -157,10 +164,22 @@ function readPersistedCwd(
   if (!runtimePayload || typeof runtimePayload !== "object" || Array.isArray(runtimePayload)) {
     return undefined;
   }
+
   const rawCwd = "cwd" in runtimePayload ? runtimePayload.cwd : undefined;
   if (typeof rawCwd !== "string") return undefined;
   const trimmed = rawCwd.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readPersistedExecutionAuthority(
+  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
+): CollaborationExecutionAuthority | undefined {
+  if (!runtimePayload || typeof runtimePayload !== "object" || Array.isArray(runtimePayload)) {
+    return undefined;
+  }
+  const raw =
+    "executionAuthority" in runtimePayload ? runtimePayload.executionAuthority : undefined;
+  return Schema.is(CollaborationExecutionAuthority)(raw) ? raw : undefined;
 }
 
 const dieOnMissingBindingInstanceId = (
@@ -249,7 +268,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const getAdapter = (instanceId: ProviderInstanceId) =>
     getInstance(instanceId).pipe(Effect.map((instance) => instance.adapter));
 
-  const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
+  const prepareMcpSession = (
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    executionAuthority?: CollaborationExecutionAuthority,
+  ) =>
     serverSettings.getSettings.pipe(
       Effect.map((settings) => {
         const capabilities = new Set<McpInvocationContext.McpCapability>();
@@ -268,7 +291,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       ),
       Effect.flatMap((capabilities) =>
         capabilities.size > 0
-          ? issueMcpCredential({ threadId, providerInstanceId, capabilities })
+          ? issueMcpCredential({
+              threadId,
+              providerInstanceId,
+              capabilities,
+              ...(executionAuthority === undefined ? {} : { executionAuthority }),
+            })
           : revokeMcpCredential(threadId, providerInstanceId).pipe(Effect.as(undefined)),
       ),
     );
@@ -310,6 +338,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     threadId: ThreadId,
     extra?: {
       readonly modelSelection?: unknown;
+      readonly executionAuthority?: CollaborationExecutionAuthority;
       readonly lastRuntimeEvent?: string;
       readonly lastRuntimeEventAt?: string;
     },
@@ -442,7 +471,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
       const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
 
-      const credential = yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
+      const executionAuthority = readPersistedExecutionAuthority(input.binding.runtimePayload);
+      const credential = yield* prepareMcpSession(
+        input.binding.threadId,
+        bindingInstanceId,
+        executionAuthority,
+      );
       const resumed = yield* adapter
         .startSession({
           threadId: input.binding.threadId,
@@ -639,7 +673,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             "provider.cwd.effective": effectiveCwd ?? "",
           });
           const adapter = instanceInfo.adapter;
-          const credential = yield* prepareMcpSession(threadId, resolvedInstanceId);
+          const credential = yield* prepareMcpSession(
+            threadId,
+            resolvedInstanceId,
+            input.executionAuthority,
+          );
           const session = yield* adapter
             .startSession({
               ...input,
@@ -669,6 +707,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           });
           yield* upsertSessionBinding(sessionWithInstance, threadId, {
             modelSelection: input.modelSelection,
+            ...(input.executionAuthority === undefined
+              ? {}
+              : { executionAuthority: input.executionAuthority }),
           });
           yield* analytics.record("provider.session.started", {
             provider: sessionWithInstance.provider,
@@ -812,6 +853,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
           runtimePayload: {
             ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+            ...(input.executionAuthority === undefined
+              ? {}
+              : { executionAuthority: input.executionAuthority }),
             activeTurnId: null,
             lastRuntimeEvent: "provider.sendTurn",
             lastRuntimeEventAt: new Date().toISOString(),
@@ -887,6 +931,61 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     },
   );
+
+  const steerTurn: ProviderServiceShape["steerTurn"] = Effect.fn("steerTurn")(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.steerTurn",
+      schema: ProviderSteerTurnInput,
+      payload: rawInput,
+    });
+    const attachments = input.attachments ?? [];
+    if (!input.input && attachments.length === 0) {
+      return yield* toValidationError(
+        "ProviderService.steerTurn",
+        "Either input text or at least one attachment is required",
+      );
+    }
+    let metricProvider = "unknown";
+    return yield* Effect.gen(function* () {
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.steerTurn",
+        allowRecovery: true,
+      });
+      metricProvider = routed.adapter.provider;
+      yield* Effect.annotateCurrentSpan({
+        "provider.operation": "steer-turn",
+        "provider.kind": routed.adapter.provider,
+        "provider.thread_id": input.threadId,
+        "provider.turn_id": input.turnId,
+      });
+      const steer = routed.adapter.steerTurn;
+      if (!steer) {
+        return yield* new ProviderAdapterRequestError({
+          provider: routed.adapter.provider,
+          method: "turn/steer",
+          detail:
+            `Provider '${routed.adapter.provider}' does not support steering the active turn. ` +
+            `Interrupt the turn before starting another one, or queue the message.`,
+        });
+      }
+      const turn = yield* steer({ ...input, attachments });
+      yield* analytics.record("provider.turn.steered", {
+        provider: routed.adapter.provider,
+        attachmentCount: attachments.length,
+        hasInput: typeof input.input === "string" && input.input.trim().length > 0,
+      });
+      return turn;
+    }).pipe(
+      withMetrics({
+        counter: providerTurnsTotal,
+        outcomeAttributes: () =>
+          providerMetricAttributes(metricProvider, {
+            operation: "steer",
+          }),
+      }),
+    );
+  });
 
   const respondToRequest: ProviderServiceShape["respondToRequest"] = Effect.fn("respondToRequest")(
     function* (rawInput) {
@@ -1209,6 +1308,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     forkSession,
     sendTurn,
     interruptTurn,
+    steerTurn,
     respondToRequest,
     respondToUserInput,
     stopSession,

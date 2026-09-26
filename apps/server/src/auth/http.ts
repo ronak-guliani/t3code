@@ -169,7 +169,7 @@ export const authBootstrapRouteLayer = HttpRouter.add(
       status: 200,
       headers: browserApiCorsHeaders,
     }).pipe(
-      HttpServerResponse.setCookie(sessions.cookieName, result.sessionToken, {
+      HttpServerResponse.setCookie(result.cookieName ?? sessions.cookieName, result.sessionToken, {
         expires: DateTime.toDate(result.response.expiresAt),
         httpOnly: true,
         path: "/",

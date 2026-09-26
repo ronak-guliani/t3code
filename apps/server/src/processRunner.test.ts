@@ -20,6 +20,26 @@ describe("runProcess", () => {
     expect(result.stdoutTruncated).toBe(true);
     expect(result.stderrTruncated).toBe(false);
   });
+
+  it("rejects before spawning when already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      runProcess("node", ["-e", "process.exit(0)"], { signal: controller.signal }),
+    ).rejects.toThrow("aborted before it started");
+  });
+
+  it("terminates a running child when the signal aborts", async () => {
+    const controller = new AbortController();
+    const pending = runProcess("node", ["-e", "setTimeout(() => {}, 20_000)"], {
+      signal: controller.signal,
+      timeoutMs: 15_000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    controller.abort();
+    // Without the abort kill the child would sleep past the test timeout.
+    await expect(pending).rejects.toThrow("aborted");
+  }, 10_000);
 });
 
 describe("isWindowsCommandNotFound", () => {

@@ -1,6 +1,13 @@
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { DEFAULT_MODEL, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  DEFAULT_MODEL,
+  DEFAULT_MODEL_BY_PROVIDER,
+  DEFAULT_PROVIDER_DRIVER_KIND,
+  defaultInstanceIdForDriver,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Option, Ref, Stream } from "effect";
 import { TestClock } from "effect/testing";
@@ -133,10 +140,10 @@ it.each([
   ),
 );
 
-it("uses the canonical Codex default for auto-bootstrapped model selection", () => {
+it("uses the canonical provider default for auto-bootstrapped model selection", () => {
   assert.deepStrictEqual(getAutoBootstrapDefaultModelSelection(), {
-    instanceId: ProviderInstanceId.make("codex"),
-    model: DEFAULT_MODEL,
+    instanceId: defaultInstanceIdForDriver(DEFAULT_PROVIDER_DRIVER_KIND),
+    model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_DRIVER_KIND] ?? DEFAULT_MODEL,
   });
 });
 
@@ -260,6 +267,7 @@ it.effect("launchStartupHeartbeat does not block the caller while counts are loa
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
+          readThread: () => Effect.die("unused"),
         }),
         Effect.provideService(AnalyticsService, {
           record: () => Effect.void,
@@ -324,6 +332,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         getThreadDetailSnapshotById: () => Effect.die("unused"),
         listThreadProjectIds: () => Effect.die("unused"),
         getThreadActivitiesPage: () => Effect.die("unused"),
+        readThread: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {
         getReadModel: () => Effect.die("unused"),
@@ -372,6 +381,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
         getThreadDetailSnapshotById: () => Effect.die("unused"),
         listThreadProjectIds: () => Effect.die("unused"),
         getThreadActivitiesPage: () => Effect.die("unused"),
+        readThread: () => Effect.die("unused"),
       }),
       Effect.provideService(OrchestrationEngineService, {
         getReadModel: () => Effect.die("unused"),

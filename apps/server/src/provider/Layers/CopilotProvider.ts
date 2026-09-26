@@ -50,9 +50,11 @@ const withDefaultCopilotIdentity = (snapshot: Omit<ServerProvider, "instanceId" 
 });
 
 const COPILOT_REASONING_LEVELS = [
+  { value: "none", label: "None" },
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium", isDefault: true },
   { value: "high", label: "High" },
+  { value: "max", label: "Max" },
 ] as const;
 
 const COPILOT_REASONING_LEVELS_WITH_XHIGH = [
@@ -100,6 +102,8 @@ function makeCopilotBuiltInModel(slug: string, name: string): ServerProviderMode
 const COPILOT_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   makeCopilotBuiltInModel("auto", "Auto"),
   makeCopilotBuiltInModel("gpt-6-astra", "GPT-6 Astra"),
+  makeCopilotBuiltInModel("gpt-6-luna", "GPT-6 Luna"),
+  makeCopilotBuiltInModel("gpt-6-sol", "GPT-6 Sol"),
   makeCopilotBuiltInModel("gpt-5.5", "GPT-5.5"),
   makeCopilotBuiltInModel("gpt-5.4", "GPT-5.4"),
   makeCopilotBuiltInModel("gpt-5.4-mini", "GPT-5.4 Mini"),
@@ -120,7 +124,9 @@ const COPILOT_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   makeCopilotBuiltInModel("gpt-4.1", "GPT-4.1"),
   makeCopilotBuiltInModel("gpt-4o", "GPT-4o"),
   makeCopilotBuiltInModel("claude-fable-5", "Claude Fable 5"),
+  makeCopilotBuiltInModel("claude-fable-5.1", "Claude Fable 5.1"),
   makeCopilotBuiltInModel("claude-opus-5", "Claude Opus 5"),
+  makeCopilotBuiltInModel("claude-opus-5.5", "Claude Opus 5.5"),
   makeCopilotBuiltInModel("claude-opus-4.8", "Claude Opus 4.8"),
   makeCopilotBuiltInModel("claude-opus-4.7", "Claude Opus 4.7"),
   makeCopilotBuiltInModel("claude-opus-4.6", "Claude Opus 4.6"),
@@ -139,10 +145,12 @@ const COPILOT_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   makeCopilotBuiltInModel("gemini-3-pro-preview", "Gemini 3 Pro Preview"),
   makeCopilotBuiltInModel("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
   makeCopilotBuiltInModel("gemini-2.5-pro", "Gemini 2.5 Pro"),
+  makeCopilotBuiltInModel("grok-4.7", "Grok 4.7"),
   makeCopilotBuiltInModel("grok-4.6", "Grok 4.6"),
   makeCopilotBuiltInModel("grok-4.5", "Grok 4.5"),
   makeCopilotBuiltInModel("grok-code-fast-1", "Grok Code Fast 1"),
   makeCopilotBuiltInModel("kimi-k2.7-code", "Kimi K2.7 Code"),
+  makeCopilotBuiltInModel("kimi-k3", "Kimi K3"),
   makeCopilotBuiltInModel("mai-code-1.1-flash", "MAI-Code 1.1 Flash"),
   makeCopilotBuiltInModel("mai-code-1-flash-picker", "MAI-Code-1 Flash Picker"),
 ];

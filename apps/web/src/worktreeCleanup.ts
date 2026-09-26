@@ -1,3 +1,4 @@
+import { isProjectCheckoutPath } from "./components/BranchToolbar.logic";
 import type { Thread } from "./types";
 
 function normalizeWorktreePath(path: string | null): string | null {
@@ -11,6 +12,7 @@ function normalizeWorktreePath(path: string | null): string | null {
 export function getOrphanedWorktreePathForThread(
   threads: ReadonlyArray<Pick<Thread, "id" | "worktreePath">>,
   threadId: Thread["id"],
+  projectCwd?: string | null,
 ): string | null {
   const targetThread = threads.find((thread) => thread.id === threadId);
   if (!targetThread) {
@@ -19,6 +21,11 @@ export function getOrphanedWorktreePathForThread(
 
   const targetWorktreePath = normalizeWorktreePath(targetThread.worktreePath);
   if (!targetWorktreePath) {
+    return null;
+  }
+
+  // Never offer worktree cleanup for the project checkout itself.
+  if (isProjectCheckoutPath(targetWorktreePath, projectCwd ?? null)) {
     return null;
   }
 

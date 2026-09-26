@@ -1,4 +1,9 @@
-import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import type {
+  CollaborationExecutionAuthority,
+  EnvironmentId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { DeviceToolUnavailableError, PreviewAutomationUnavailableError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -12,6 +17,7 @@ export interface McpInvocationScope {
   readonly providerInstanceId: ProviderInstanceId;
   readonly capabilities: ReadonlySet<McpCapability>;
   readonly issuedAt: number;
+  readonly executionAuthority?: CollaborationExecutionAuthority;
 }
 
 export class McpInvocationContext extends Context.Service<

@@ -157,7 +157,13 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const workspaceCwd = threadContext.value.worktreePath ?? threadContext.value.workspaceRoot;
+      const workspaceCwd = yield* Effect.gen(function* () {
+        const worktreePath = threadContext.value.worktreePath;
+        if (worktreePath !== null && (yield* checkpointStore.isGitRepository(worktreePath))) {
+          return worktreePath;
+        }
+        return threadContext.value.workspaceRoot;
+      });
       if (!workspaceCwd) {
         return yield* new CheckpointInvariantError({
           operation,
@@ -194,6 +200,9 @@ const make = Effect.gen(function* () {
             ? {}
             : { ignoreWhitespace: input.ignoreWhitespace }),
           paths: range.diffPaths,
+          ...(threadContext.value.workspaceBinding == null
+            ? {}
+            : { workspaceBinding: threadContext.value.workspaceBinding }),
         })
         .pipe(
           Effect.catchTag("CheckpointRefUnavailableError", (error) => {

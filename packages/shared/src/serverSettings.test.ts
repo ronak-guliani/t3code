@@ -149,6 +149,22 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  it("replaces delegated thread selection without touching text generation", () => {
+    const patched = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      delegatedThreadModelSelection: {
+        instanceId: ProviderInstanceId.make("copilot"),
+        model: "gpt-6-sol",
+      },
+    });
+    expect(patched.delegatedThreadModelSelection).toEqual({
+      instanceId: "copilot",
+      model: "gpt-6-sol",
+    });
+    expect(patched.textGenerationModelSelection).toEqual(
+      DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
+    );
+  });
+
   it("accepts array-based text generation selection patches", () => {
     expect(
       applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {

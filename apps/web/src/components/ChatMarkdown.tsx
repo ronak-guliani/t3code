@@ -23,6 +23,7 @@ import ReactMarkdown from "react-markdown";
 import { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useShallow } from "zustand/react/shallow";
+import { stabilizeStringMap } from "./chat/MessagesTimeline.logic";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -54,6 +55,8 @@ import {
 } from "../lib/chatLinkClassification";
 import { githubPullRequestNavigation, openPullRequestLink } from "../lib/openPullRequestLink";
 import { usePrimaryEnvironmentId } from "~/environments/primary";
+import { useProjectEntriesQuery } from "./files/projectFilesQueryState";
+import { buildFileParentSuffixByPath } from "../filePathDisambiguation";
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { useOpenLink } from "~/browser/useOpenLink";
 import { readEnvironmentApi } from "~/environmentApi";
@@ -392,17 +395,88 @@ function normalizeReferenceIdentifier(identifier: string): string {
   return identifier.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-function remarkTagInlineCode(cwd?: string) {
+const CHAT_FILE_POSITION_SUFFIX_PATTERN = /:(\d+(?:[,:]\d+)*)$/;
+
+function extractChatFilePositionSuffix(codeText: string): string | null {
+  const match = codeText.trim().match(CHAT_FILE_POSITION_SUFFIX_PATTERN);
+  return match?.[1] ?? null;
+}
+
+function buildChatInlineCodeLabel(
+  meta: MarkdownFileLinkMeta,
+  parentSuffix: string | undefined,
+  originalText: string,
+): string {
+  const raw = extractChatFilePositionSuffix(originalText);
+  if (raw && raw.includes(",")) {
+    const labelParts = [meta.basename];
+    if (parentSuffix) {
+      labelParts.push(parentSuffix);
+    }
+    labelParts.push(`L${raw}`);
+    return labelParts.join(" · ");
+  }
+  return buildFileLinkLabel(meta, parentSuffix);
+}
+
+interface WorkspaceFileEntryLike {
+  readonly path: string;
+  readonly kind: string;
+}
+
+function findWorkspaceRelativeForBasename(
+  basename: string,
+  entries: ReadonlyArray<WorkspaceFileEntryLike>,
+): string | null {
+  const matches = entries.filter(
+    (entry) =>
+      entry.kind === "file" && (entry.path === basename || entry.path.endsWith(`/${basename}`)),
+  );
+  if (matches.length === 0) return null;
+  const sorted = [...matches].sort((a, b) => {
+    const aDepth = a.path.split("/").length;
+    const bDepth = b.path.split("/").length;
+    if (aDepth !== bDepth) return aDepth - bDepth;
+    if (a.path.length !== b.path.length) return a.path.length - b.path.length;
+    return a.path.localeCompare(b.path);
+  });
+  return sorted[0]?.path ?? null;
+}
+
+function resolveChatInlineCodeMeta(
+  codeText: string,
+  cwd: string | undefined,
+  entries: ReadonlyArray<WorkspaceFileEntryLike>,
+): MarkdownFileLinkMeta | null {
+  const base = resolveInlineCodeFileLinkMeta(codeText, cwd);
+  if (!base || !cwd || entries.length === 0) return base;
+  const trimmed = codeText.trim();
+  const suffix = extractChatFilePositionSuffix(trimmed);
+  const pathPart = suffix ? trimmed.slice(0, -(suffix.length + 1)) : trimmed;
+  if (pathPart.includes("/") || pathPart.includes("\\")) return base;
+  const basename = pathPart.split(/[\\/]/).at(-1) ?? pathPart;
+  if (!basename) return base;
+  const relative = findWorkspaceRelativeForBasename(basename, entries);
+  if (!relative) return base;
+  // Re-resolve with the workspace-relative path so the file panel opens the
+  // real nested file instead of `cwd/basename`.
+  const candidate = suffix ? `${relative}:${suffix}` : relative;
+  return resolveMarkdownFileLinkMeta(candidate, cwd) ?? base;
+}
+
+function remarkTagInlineCode(resolve: (codeText: string) => MarkdownFileLinkMeta | null) {
   return () => (tree: MarkdownAstNode) => {
     const inlineCodeCandidates: Array<{
       node: MarkdownAstNode;
       meta: MarkdownFileLinkMeta;
+      original: string;
     }> = [];
     const visit = (node: MarkdownAstNode, insideLink: boolean) => {
       if (node.type === "inlineCode" && !insideLink) {
-        const meta = resolveInlineCodeFileLinkMeta(node.value ?? "", cwd);
+        const original = node.value ?? "";
+        const meta = resolve(original);
         if (meta) {
-          inlineCodeCandidates.push({ node, meta });
+          inlineCodeCandidates.push({ node, meta, original });
         }
       }
       const childInsideLink = insideLink || node.type === "link" || node.type === "linkReference";
@@ -410,16 +484,20 @@ function remarkTagInlineCode(cwd?: string) {
     };
 
     visit(tree, false);
-    const suffixByPath = buildFileLinkParentSuffixByPath(
+    const suffixByPath = buildFileParentSuffixByPath(
       inlineCodeCandidates.map(({ meta }) => meta.filePath),
     );
-    for (const { node, meta } of inlineCodeCandidates) {
+    for (const { node, meta, original } of inlineCodeCandidates) {
       node.data = {
         ...node.data,
         hProperties: {
           ...node.data?.hProperties,
           dataInlineCode: "",
-          dataInlineCodeLabel: buildFileLinkLabel(meta, suffixByPath.get(meta.filePath)),
+          dataInlineCodeLabel: buildChatInlineCodeLabel(
+            meta,
+            suffixByPath.get(meta.filePath),
+            original,
+          ),
         },
       };
     }
@@ -767,16 +845,17 @@ const MarkdownExternalLink = memo(function MarkdownExternalLink({
 const MarkdownPullRequestLink = memo(function MarkdownPullRequestLink({
   href,
   children,
+  threadRef,
   ...props
-}: MarkdownExternalLinkProps) {
+}: MarkdownExternalLinkProps & { readonly threadRef?: ScopedThreadRef }) {
   const handleClick = useCallback(
     (event: ReactMouseEvent<HTMLAnchorElement>) => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
         return;
       }
-      openPullRequestLink(event, href);
+      openPullRequestLink(event, href, threadRef);
     },
-    [href],
+    [href, threadRef],
   );
 
   return (
@@ -785,66 +864,6 @@ const MarkdownPullRequestLink = memo(function MarkdownPullRequestLink({
     </a>
   );
 });
-
-function pathParentSegments(path: string): string[] {
-  const normalized = path.replaceAll("\\", "/");
-  const segments = normalized.split("/").filter((segment) => segment.length > 0);
-  return segments.slice(0, -1);
-}
-
-function buildFileLinkParentSuffixByPath(filePaths: ReadonlyArray<string>): Map<string, string> {
-  const groups = new Map<string, Set<string>>();
-  for (const filePath of filePaths) {
-    const pathSegments = filePath
-      .replaceAll("\\", "/")
-      .split("/")
-      .filter((segment) => segment.length > 0);
-    const basename = pathSegments[pathSegments.length - 1];
-    if (!basename) continue;
-    const group = groups.get(basename) ?? new Set<string>();
-    group.add(filePath);
-    groups.set(basename, group);
-  }
-
-  const suffixByPath = new Map<string, string>();
-  for (const group of groups.values()) {
-    const uniquePaths = [...group];
-    if (uniquePaths.length < 2) continue;
-
-    const parentSegmentsByPath = new Map(
-      uniquePaths.map((filePath) => [filePath, pathParentSegments(filePath)]),
-    );
-    const minUniqueDepthByPath = new Map<string, number>();
-
-    for (const filePath of uniquePaths) {
-      const segments = parentSegmentsByPath.get(filePath) ?? [];
-      let resolvedDepth = segments.length;
-      for (let depth = 1; depth <= segments.length; depth += 1) {
-        const candidate = segments.slice(-depth).join("/");
-        const collision = uniquePaths.some((otherPath) => {
-          if (otherPath === filePath) return false;
-          const otherSegments = parentSegmentsByPath.get(otherPath) ?? [];
-          return otherSegments.slice(-depth).join("/") === candidate;
-        });
-        if (!collision) {
-          resolvedDepth = depth;
-          break;
-        }
-      }
-      minUniqueDepthByPath.set(filePath, resolvedDepth);
-    }
-
-    for (const filePath of uniquePaths) {
-      const segments = parentSegmentsByPath.get(filePath) ?? [];
-      if (segments.length === 0) continue;
-      const minUniqueDepth = minUniqueDepthByPath.get(filePath) ?? 1;
-      const suffixDepth = Math.min(segments.length, Math.max(minUniqueDepth, 2));
-      suffixByPath.set(filePath, segments.slice(-suffixDepth).join("/"));
-    }
-  }
-
-  return suffixByPath;
-}
 
 export function githubRepositoryForProject(
   project:
@@ -1131,7 +1150,19 @@ const markdownComponentsWithoutRuntimeState = {
   },
 } satisfies Components;
 
-function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdownProps) {
+const EMPTY_WORKSPACE_ENTRIES: ReadonlyArray<WorkspaceFileEntryLike> = [];
+
+interface ChatMarkdownViewProps extends ChatMarkdownProps {
+  readonly workspaceEntries: ReadonlyArray<WorkspaceFileEntryLike>;
+}
+
+function ChatMarkdownView({
+  text,
+  cwd,
+  isStreaming = false,
+  threadRef,
+  workspaceEntries,
+}: ChatMarkdownViewProps) {
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   const normalizedText = useMemo(
@@ -1185,6 +1216,14 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
     ],
     [environmentIds, primaryEnvironmentId, savedEnvironmentById],
   );
+  const resolveChatInlineCode = useCallback(
+    (codeText: string) => resolveChatInlineCodeMeta(codeText, cwd, workspaceEntries),
+    [cwd, workspaceEntries],
+  );
+  // Stabilize the map identity when streaming text grows without adding new
+  // references: a fresh Map per chunk would otherwise rebuild remarkPlugins
+  // and force react-markdown to re-tokenize the active row every chunk.
+  const githubReferencesRef = useRef<ReadonlyMap<string, string> | undefined>(undefined);
   const githubReferences = useMemo(() => {
     const references = new Map<string, string>();
     const navigation = currentThread?.pullRequest?.url
@@ -1227,7 +1266,9 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
       );
     }
 
-    return references;
+    const stabilized = stabilizeStringMap(references, githubReferencesRef.current);
+    githubReferencesRef.current = stabilized;
+    return stabilized;
   }, [
     currentProject?.repositoryIdentity?.canonicalKey,
     currentProject?.repositoryIdentity?.name,
@@ -1252,7 +1293,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
     return metaByHref;
   }, [cwd, text]);
   const fileLinkParentSuffixByPath = useMemo(() => {
-    return buildFileLinkParentSuffixByPath(
+    return buildFileParentSuffixByPath(
       [...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath),
     );
   }, [markdownFileLinkMetaByHref]);
@@ -1273,7 +1314,11 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
       const linkedPullRequestUrl = resolveMarkdownPullRequestUrl(node?.properties);
       if (linkedPullRequestUrl) {
         return (
-          <MarkdownPullRequestLink href={linkedPullRequestUrl} {...props}>
+          <MarkdownPullRequestLink
+            href={linkedPullRequestUrl}
+            {...(threadRef ? { threadRef } : {})}
+            {...props}
+          >
             {props.children}
           </MarkdownPullRequestLink>
         );
@@ -1344,7 +1389,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
 
       if (node?.properties?.dataInlineCode != null) {
         const codeText = nodeToPlainText(children);
-        const fileLinkMeta = resolveInlineCodeFileLinkMeta(codeText, cwd);
+        const fileLinkMeta = resolveChatInlineCode(codeText);
         const label = node.properties.dataInlineCodeLabel;
         if (fileLinkMeta && typeof label === "string") {
           return (
@@ -1368,7 +1413,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
         </code>
       );
     },
-    [cwd, resolvedTheme, threadRef],
+    [resolveChatInlineCode, cwd, resolvedTheme, threadRef],
   );
   const markdownComponents = useMemo<Components>(
     () => ({
@@ -1379,23 +1424,30 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
     }),
     [markdownAnchor, markdownCode, markdownPre],
   );
+  // Stable plugin array: react-markdown re-tokenizes when the array identity
+  // changes, so factory plugins must be memoized across streaming renders.
+  // threadRef is a stable context object upstream; depend on its primitives.
+  const remarkPlugins = useMemo(
+    () => [
+      remarkGfm,
+      remarkClassifyChatLinks({
+        ...(threadRef ? { environmentId: threadRef.environmentId } : {}),
+        baseOrigin:
+          typeof window === "undefined"
+            ? "http://localhost"
+            : (window.location?.origin ?? "http://localhost"),
+        trustedOrigins,
+        githubReferences,
+      }),
+      remarkTagInlineCode(resolveChatInlineCode),
+    ],
+    [resolveChatInlineCode, githubReferences, threadRef?.environmentId, trustedOrigins],
+  );
 
   return (
     <div className="chat-markdown w-full min-w-0 leading-relaxed text-foreground/80">
       <ReactMarkdown
-        remarkPlugins={[
-          remarkGfm,
-          remarkClassifyChatLinks({
-            ...(threadRef ? { environmentId: threadRef.environmentId } : {}),
-            baseOrigin:
-              typeof window === "undefined"
-                ? "http://localhost"
-                : (window.location?.origin ?? "http://localhost"),
-            trustedOrigins,
-            githubReferences,
-          }),
-          remarkTagInlineCode(cwd),
-        ]}
+        remarkPlugins={remarkPlugins}
         components={markdownComponents}
         urlTransform={markdownUrlTransform}
       >
@@ -1403,6 +1455,38 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
       </ReactMarkdown>
     </div>
   );
+}
+
+function ChatMarkdownWithWorkspaceEntries({
+  threadRef,
+  cwd,
+  ...rest
+}: ChatMarkdownProps & { readonly threadRef: ScopedThreadRef; readonly cwd: string }) {
+  // The query is cached per cwd, so per-message cost is a filtered scan only when
+  // a bare basename is actually encountered.
+  const workspaceEntriesQuery = useProjectEntriesQuery(threadRef.environmentId, cwd);
+  const workspaceEntries = useMemo(
+    () => workspaceEntriesQuery.data?.entries ?? EMPTY_WORKSPACE_ENTRIES,
+    [workspaceEntriesQuery.data],
+  );
+  return (
+    <ChatMarkdownView
+      {...rest}
+      threadRef={threadRef}
+      cwd={cwd}
+      workspaceEntries={workspaceEntries}
+    />
+  );
+}
+
+function ChatMarkdown(props: ChatMarkdownProps) {
+  const { threadRef, cwd } = props;
+  // Skip the workspace file index when there is no thread/cwd to resolve
+  // against; bare basenames fall back to cwd-only resolution in the view.
+  if (threadRef && cwd) {
+    return <ChatMarkdownWithWorkspaceEntries {...props} threadRef={threadRef} cwd={cwd} />;
+  }
+  return <ChatMarkdownView {...props} workspaceEntries={EMPTY_WORKSPACE_ENTRIES} />;
 }
 
 export default memo(ChatMarkdown);

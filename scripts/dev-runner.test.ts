@@ -4,14 +4,70 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Path } from "effect";
 
 import {
+  buildDevRunnerArgs,
   checkPortAvailabilityOnHosts,
   createDevRunnerEnv,
   findFirstAvailableOffset,
+  isBrowserAllowedPort,
+  isProxiableBindHost,
+  resolveDevT3Home,
   resolveModePortOffsets,
   resolveOffset,
 } from "./dev-runner.ts";
 
 it.layer(NodeServices.layer)("dev-runner", (it) => {
+  describe("buildDevRunnerArgs", () => {
+    it.effect("places filters before the task for every development mode", () =>
+      Effect.sync(() => {
+        assert.deepStrictEqual(buildDevRunnerArgs("dev", []), [
+          "run",
+          "--parallel",
+          "--filter",
+          "@t3tools/contracts",
+          "--filter",
+          "@t3tools/web",
+          "--filter",
+          "t3",
+          "dev",
+        ]);
+        assert.deepStrictEqual(buildDevRunnerArgs("dev:server", []), [
+          "run",
+          "--filter",
+          "t3",
+          "dev",
+        ]);
+        assert.deepStrictEqual(buildDevRunnerArgs("dev:web", []), [
+          "run",
+          "--filter",
+          "@t3tools/web",
+          "dev",
+        ]);
+        assert.deepStrictEqual(buildDevRunnerArgs("dev:desktop", []), [
+          "run",
+          "--parallel",
+          "--filter",
+          "@t3tools/desktop",
+          "--filter",
+          "@t3tools/web",
+          "dev",
+        ]);
+      }),
+    );
+
+    it.effect("keeps runner arguments before the task", () =>
+      Effect.sync(() => {
+        assert.deepStrictEqual(buildDevRunnerArgs("dev:web", ["--host", "127.0.0.1"]), [
+          "run",
+          "--filter",
+          "@t3tools/web",
+          "--host",
+          "127.0.0.1",
+          "dev",
+        ]);
+      }),
+    );
+  });
+
   describe("resolveOffset", () => {
     it.effect("uses explicit T3CODE_PORT_OFFSET when provided", () =>
       Effect.sync(() => {
@@ -43,9 +99,143 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         assert.ok(error.includes("Invalid T3CODE_PORT_OFFSET"));
       }),
     );
+
+    it.effect("derives a stable offset from the worktree path", () =>
+      Effect.sync(() => {
+        const first = resolveOffset({
+          portOffset: undefined,
+          devInstance: undefined,
+          worktreePath: "/repo/.t3-thread-workspaces/abc123",
+        });
+        const second = resolveOffset({
+          portOffset: undefined,
+          devInstance: undefined,
+          worktreePath: "/repo/.t3-thread-workspaces/abc123",
+        });
+        assert.ok(first.offset >= 1);
+        assert.ok(first.offset <= 3000);
+        assert.deepStrictEqual(second, first);
+        assert.ok(first.source.startsWith("worktree "));
+      }),
+    );
+
+    it.effect("keeps default ports outside a worktree", () =>
+      Effect.sync(() => {
+        assert.deepStrictEqual(resolveOffset({ portOffset: undefined, devInstance: undefined }), {
+          offset: 0,
+          source: "default ports",
+        });
+      }),
+    );
+  });
+
+  describe("isProxiableBindHost", () => {
+    it.effect("accepts loopback and wildcards, rejects LAN IPs", () =>
+      Effect.sync(() => {
+        for (const host of ["", "localhost", "127.0.0.1", "::1", "0.0.0.0", "::"]) {
+          assert.equal(isProxiableBindHost(host), true, host || "(empty)");
+        }
+        assert.equal(isProxiableBindHost("192.168.1.10"), false);
+      }),
+    );
+  });
+
+  describe("isBrowserAllowedPort", () => {
+    it.effect("rejects fetch-blocked ports", () =>
+      Effect.sync(() => {
+        assert.equal(isBrowserAllowedPort(5733), true);
+        assert.equal(isBrowserAllowedPort(6000), false);
+        assert.equal(isBrowserAllowedPort(22), false);
+      }),
+    );
+  });
+
+  describe("resolveDevT3Home", () => {
+    it.effect("prefers --home-dir over worktree and ambient homes", () =>
+      Effect.sync(() => {
+        assert.equal(
+          resolveDevT3Home({
+            flagHome: "/tmp/explicit",
+            worktreeHome: "/repo/.t3-work/.t3",
+            envHome: "/home/user/.t3-dev",
+          }),
+          "/tmp/explicit",
+        );
+      }),
+    );
+
+    it.effect("prefers the worktree home over ambient T3CODE_HOME", () =>
+      Effect.sync(() => {
+        assert.equal(
+          resolveDevT3Home({
+            flagHome: undefined,
+            worktreeHome: "/repo/.t3-work/.t3",
+            envHome: "/home/user/.t3-dev",
+          }),
+          "/repo/.t3-work/.t3",
+        );
+      }),
+    );
+
+    it.effect("falls back to ambient T3CODE_HOME outside a worktree", () =>
+      Effect.sync(() => {
+        assert.equal(
+          resolveDevT3Home({
+            flagHome: undefined,
+            worktreeHome: undefined,
+            envHome: "/home/user/.t3-dev",
+          }),
+          "/home/user/.t3-dev",
+        );
+        assert.equal(
+          resolveDevT3Home({ flagHome: undefined, worktreeHome: undefined, envHome: undefined }),
+          undefined,
+        );
+      }),
+    );
+
+    it.effect("ignores blank selections", () =>
+      Effect.sync(() => {
+        assert.equal(
+          resolveDevT3Home({ flagHome: "  ", worktreeHome: "/repo/.t3", envHome: "/home/.t3-dev" }),
+          "/repo/.t3",
+        );
+      }),
+    );
   });
 
   describe("createDevRunnerEnv", () => {
+    for (const mode of ["dev", "dev:server", "dev:web", "dev:desktop"] as const) {
+      it.effect(`uses one loopback hostname for ${mode} web, HTTP, and WebSocket URLs`, () =>
+        Effect.gen(function* () {
+          const env = yield* createDevRunnerEnv({
+            mode,
+            baseEnv: {
+              VITE_DEV_SERVER_URL: "http://localhost:9999",
+              VITE_HTTP_URL: "http://localhost:9998",
+              VITE_WS_URL: "ws://localhost:9998",
+            },
+            serverOffset: 3,
+            webOffset: 3,
+            t3Home: "/tmp/dev-runner-test",
+            noBrowser: true,
+            autoBootstrapProjectFromCwd: undefined,
+            logWebSocketEvents: undefined,
+            host: undefined,
+            port: undefined,
+            devUrl: undefined,
+          });
+
+          assert.equal(env.HOST, "127.0.0.1");
+          assert.equal(env.PORT, "5736");
+          assert.equal(env.T3CODE_PORT, "13776");
+          assert.equal(env.VITE_DEV_SERVER_URL, "http://127.0.0.1:5736");
+          assert.equal(env.VITE_HTTP_URL, "http://127.0.0.1:13776");
+          assert.equal(env.VITE_WS_URL, "ws://127.0.0.1:13776");
+        }),
+      );
+    }
+
     it.effect("defaults T3CODE_HOME to isolated development state when not provided", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
@@ -107,6 +297,7 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
 
         assert.equal(env.T3CODE_HOME, path.resolve("/tmp/custom-t3"));
         assert.equal(env.T3CODE_PORT, "4222");
+        assert.equal(env.HOST, "localhost");
         assert.equal(env.VITE_HTTP_URL, "http://localhost:4222");
         assert.equal(env.VITE_WS_URL, "ws://localhost:4222");
         assert.equal(env.T3CODE_NO_BROWSER, "1");
@@ -236,8 +427,31 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         });
 
         assert.equal(env.T3CODE_PORT, "13773");
-        assert.equal(env.VITE_HTTP_URL, "http://localhost:13773");
-        assert.equal(env.VITE_WS_URL, "ws://localhost:13773");
+        assert.equal(env.VITE_HTTP_URL, "http://127.0.0.1:13773");
+        assert.equal(env.VITE_WS_URL, "ws://127.0.0.1:13773");
+      }),
+    );
+
+    it.effect("defaults T3CODE_NO_BROWSER=1 unless explicitly enabled", () =>
+      Effect.gen(function* () {
+        const base = {
+          mode: "dev",
+          baseEnv: {},
+          serverOffset: 0,
+          webOffset: 0,
+          t3Home: undefined,
+          autoBootstrapProjectFromCwd: undefined,
+          logWebSocketEvents: undefined,
+          host: undefined,
+          port: undefined,
+          devUrl: undefined,
+        } as const;
+
+        const defaulted = yield* createDevRunnerEnv({ ...base, noBrowser: undefined });
+        assert.equal(defaulted.T3CODE_NO_BROWSER, "1");
+
+        const enabled = yield* createDevRunnerEnv({ ...base, noBrowser: false });
+        assert.equal(enabled.T3CODE_NO_BROWSER, "0");
       }),
     );
   });

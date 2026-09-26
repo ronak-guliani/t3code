@@ -62,4 +62,30 @@ describe("PullRequestRow", () => {
     await row.click();
     expect(onSelect).toHaveBeenCalled();
   });
+
+  it("warms the detail on hover and keyboard focus", async () => {
+    const onSelect = vi.fn();
+    const onHoverStart = vi.fn();
+    const onHoverEnd = vi.fn();
+    const onFocusRow = vi.fn();
+    await render(
+      <PullRequestRow
+        entry={entry}
+        selected={false}
+        onSelect={onSelect}
+        onHoverStart={onHoverStart}
+        onHoverEnd={onHoverEnd}
+        onFocusRow={onFocusRow}
+      />,
+    );
+
+    const row = page.getByRole("button", { name: /improve pull request navigation/i });
+    await row.hover();
+    expect(onHoverStart).toHaveBeenCalledWith(entry);
+
+    // Keyboard focus is intentional on its own: focusing the row warms the detail.
+    document.querySelector("button")?.focus();
+    expect(onFocusRow).toHaveBeenCalledWith(entry);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
 });

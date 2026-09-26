@@ -1,5 +1,5 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { EnvironmentId, PullRequestRef, ScopedThreadRef } from "@t3tools/contracts";
 import { create } from "zustand";
 
 export type RightPanelKind =
@@ -10,7 +10,9 @@ export type RightPanelKind =
   | "insights"
   | "preview"
   | "device"
-  | "terminal";
+  | "terminal"
+  | "pull-requests"
+  | "pull-request";
 
 export interface DeviceTabTarget {
   hostId: string;
@@ -29,7 +31,17 @@ export type RightPanelSurface =
   | { id: "insights"; kind: "insights" }
   | { id: "plan"; kind: "plan" }
   | { id: `file:${string}`; kind: "file"; relativePath: string; revealLine: number | null }
-  | { id: `terminal:${string}`; kind: "terminal"; resourceId: string };
+  | { id: `terminal:${string}`; kind: "terminal"; resourceId: string }
+  | { id: "pull-requests"; kind: "pull-requests" }
+  | {
+      id: `pull-request:${string}`;
+      kind: "pull-request";
+      environmentId: EnvironmentId;
+      reference: PullRequestRef;
+      host?: string;
+      url?: string;
+      title?: string;
+    };
 
 export interface ThreadRightPanelState {
   readonly isOpen: boolean;
@@ -39,11 +51,24 @@ export interface ThreadRightPanelState {
 
 interface RightPanelStoreState {
   readonly byThreadKey: Readonly<Record<string, ThreadRightPanelState>>;
-  readonly open: (ref: ScopedThreadRef, kind: Exclude<RightPanelKind, "file" | "terminal">) => void;
+  readonly open: (
+    ref: ScopedThreadRef,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
+  ) => void;
   readonly openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
   readonly openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget) => void;
   readonly openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
   readonly openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
+  readonly openPullRequest: (
+    ref: ScopedThreadRef,
+    input: {
+      environmentId: EnvironmentId;
+      reference: PullRequestRef;
+      host?: string;
+      url?: string;
+      title?: string;
+    },
+  ) => void;
   readonly activateSurface: (ref: ScopedThreadRef, surfaceId: string) => void;
   readonly closeSurface: (ref: ScopedThreadRef, surfaceId: string) => void;
   readonly closeOtherSurfaces: (ref: ScopedThreadRef, surfaceId: string) => void;
@@ -55,7 +80,7 @@ interface RightPanelStoreState {
   readonly closeBrowser: (ref: ScopedThreadRef) => void;
   readonly toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
   ) => void;
   readonly removeThread: (ref: ScopedThreadRef) => void;
 }
@@ -72,7 +97,7 @@ const browserSurface = (tabId: string | null): RightPanelSurface =>
     : { id: "browser:new", kind: "preview", resourceId: null };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal">,
+  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request">,
 ): RightPanelSurface => ({ id: kind, kind }) as RightPanelSurface;
 
 function updateState(
@@ -180,6 +205,24 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set) => ({
             ? (surfaces[Math.min(index, surfaces.length - 1)]?.id ?? null)
             : current.activeSurfaceId;
         return { isOpen: current.isOpen && surfaces.length > 0, surfaces, activeSurfaceId };
+      }),
+    })),
+  openPullRequest: (ref, input) =>
+    set((state) => ({
+      byThreadKey: updateState(state.byThreadKey, ref, (current) => {
+        const { environmentId, reference, host, url, title } = input;
+        const id =
+          `pull-request:${environmentId}:${reference.projectId}:${reference.repository}:${reference.number}` as const;
+        const surface: RightPanelSurface = {
+          id,
+          kind: "pull-request",
+          environmentId,
+          reference,
+          ...(host ? { host } : {}),
+          ...(url ? { url } : {}),
+          ...(title ? { title } : {}),
+        };
+        return upsert(current, surface);
       }),
     })),
   closeOtherSurfaces: (ref, surfaceId) =>

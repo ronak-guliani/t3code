@@ -8,10 +8,12 @@
  */
 import {
   CommandId,
+  CollaborationRequest,
   GitPullRequestAssociation,
   IsoDateTime,
   ModelSelection,
   NonNegativeInt,
+  PendingPullRequestAssociation,
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
@@ -20,6 +22,9 @@ import {
   ThreadId,
   ThreadNudging,
   TurnId,
+  ValidationRequest,
+  ValidationRun,
+  WorkspaceBinding,
 } from "@t3tools/contracts";
 import { Effect, Option, Schema, Context } from "effect";
 
@@ -27,6 +32,7 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionThread = Schema.Struct({
   nudging: Schema.optional(ThreadNudging),
+  collaborationRequests: Schema.optionalKey(Schema.Array(CollaborationRequest)),
   threadId: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
@@ -39,11 +45,15 @@ export const ProjectionThread = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
+  workspaceBinding: Schema.optionalKey(Schema.NullOr(WorkspaceBinding)),
   pullRequest: Schema.NullOr(GitPullRequestAssociation).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  pendingPullRequestAssociation: Schema.optionalKey(Schema.NullOr(PendingPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(Schema.NullOr(ReviewSnapshot)),
   reviewResult: Schema.optionalKey(Schema.NullOr(ReviewResult)),
+  validationRequest: Schema.optionalKey(Schema.NullOr(ValidationRequest)),
+  validationRun: Schema.optionalKey(Schema.NullOr(ValidationRun)),
   latestTurnId: Schema.NullOr(TurnId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

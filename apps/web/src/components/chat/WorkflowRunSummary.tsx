@@ -18,9 +18,11 @@ export interface WorkflowRunPresentation {
 export function WorkflowRunsButton({
   runs,
   onNavigateThread,
+  showBadge = true,
 }: {
   readonly runs: ReadonlyArray<WorkflowRunPresentation>;
   readonly onNavigateThread: (threadId: ThreadId) => void;
+  readonly showBadge?: boolean;
 }) {
   if (runs.length === 0) {
     return null;
@@ -42,7 +44,7 @@ export function WorkflowRunsButton({
                   aria-label="Workflow runs"
                 >
                   <WorkflowIcon className="size-3" />
-                  {runningCount > 0 ? (
+                  {showBadge && runningCount > 0 ? (
                     <span className="absolute -right-1 -top-1 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-medium leading-none text-primary-foreground">
                       {runningCount}
                     </span>

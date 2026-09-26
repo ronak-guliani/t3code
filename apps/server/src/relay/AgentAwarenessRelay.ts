@@ -284,11 +284,14 @@ export const make = Effect.gen(function* () {
       );
 
   const readRelayConfig = Effect.gen(function* () {
-    const [url, issuer, environmentCredential] = yield* Effect.all([
-      readSecretString(RELAY_URL_SECRET),
-      readSecretString(RELAY_ISSUER_SECRET),
-      readSecretString(RELAY_ENVIRONMENT_CREDENTIAL_SECRET),
-    ]);
+    const [url, issuer, environmentCredential] = yield* Effect.all(
+      [
+        readSecretString(RELAY_URL_SECRET),
+        readSecretString(RELAY_ISSUER_SECRET),
+        readSecretString(RELAY_ENVIRONMENT_CREDENTIAL_SECRET),
+      ],
+      { concurrency: "unbounded" },
+    );
     return url && environmentCredential
       ? { url, issuer: issuer ?? url, environmentCredential }
       : null;
@@ -483,10 +486,13 @@ export const make = Effect.gen(function* () {
 
   const start: AgentAwarenessRelay["Service"]["start"] = Effect.fn("AgentAwarenessRelay.start")(
     function* () {
-      const [relayConfig, publishEnabled] = yield* Effect.all([
-        readRelayConfig.pipe(Effect.orElseSucceed(() => null)),
-        readPublishAgentActivityEnabled.pipe(Effect.orElseSucceed(() => false)),
-      ]);
+      const [relayConfig, publishEnabled] = yield* Effect.all(
+        [
+          readRelayConfig.pipe(Effect.orElseSucceed(() => null)),
+          readPublishAgentActivityEnabled.pipe(Effect.orElseSucceed(() => false)),
+        ],
+        { concurrency: "unbounded" },
+      );
       const startupState = resolveAgentActivityPublishingStartupState({
         relayConfigured: relayConfig !== null,
         publishEnabled,

@@ -31,6 +31,7 @@ import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts
 import { runProcess } from "../../processRunner.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
+import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -378,6 +379,12 @@ describe("logCleanupCauseUnlessInterrupted", () => {
           Layer.provide(
             Layer.mock(TerminalManager)({
               close: () => Effect.void,
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(WorkspaceOwnershipRepository)({
+              getByThreadId: () => Effect.succeed([]),
+              release: () => Effect.void,
             }),
           ),
           Layer.provide(

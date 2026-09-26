@@ -341,13 +341,18 @@ export function mobileThreadTreeRows(
         search and filtered views keep passing an explicit reveal set. */
     readonly includeAllDescendants?: boolean | undefined;
     /** Thread keys whose inline children stay hidden behind the parent
-        chevron. Selected threads, reveal matches, and their ancestors
-        always force-expand so navigation targets never vanish. */
+        chevron. Ancestors of the selected thread always force-expand so
+        navigation targets never vanish; reveal matches stay reachable
+        through the Related pill instead of overriding the collapse. */
     readonly collapsedKeys?: ReadonlySet<string> | undefined;
   } = {},
 ): MobileThreadTreeRow[] {
-  // Forced paths ignore collapse: the selected conversation, explicit
-  // reveals, and every ancestor above them stay visible together.
+  // An explicit collapse always wins, except along the selected
+  // conversation's ancestor path: every ancestor above the selected thread
+  // forces open so navigation targets never vanish. The selected thread
+  // itself stays collapsible so its own chevron never looks dead.
+  // Active/unread reveal matches stay reachable through the Related pill
+  // and the rolled-up group status instead of overriding the user's collapse.
   const parentByKey = new Map<string, string>();
   {
     const pending = [...nodes];
@@ -367,8 +372,13 @@ export function mobileThreadTreeRows(
       key = parentByKey.get(key);
     }
   };
-  forceLine(options.selectedThreadKey);
-  options.revealThreadKeys?.forEach(forceLine);
+  // Force only the ancestor path: the selected thread itself stays
+  // collapsible so its own chevron never looks dead.
+  const selectedParent =
+    options.selectedThreadKey == null
+      ? options.selectedThreadKey
+      : parentByKey.get(options.selectedThreadKey);
+  forceLine(selectedParent);
   const rows: MobileThreadTreeRow[] = [];
   const pending: Array<{ node: MobileThreadTreeNode; depth: number; ancestorsOpen: boolean }> = [];
   for (let index = nodes.length - 1; index >= 0; index--) {

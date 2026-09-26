@@ -14,6 +14,8 @@ import {
   resolveExternalActionUrl,
   shouldHandleInternalActionClick,
   stabilizeReadonlyStringSet,
+  stabilizeResponseMetaByTurnId,
+  stabilizeStringMap,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 
@@ -1252,8 +1254,9 @@ describe("workspace handoff rows", () => {
     expect(rows.map((row) => row.kind)).toEqual([
       "message",
       "reasoning",
-      "message",
       "workspace-handoff",
+      "reasoning",
+      "message",
       "reasoning",
       "message",
     ]);
@@ -1267,22 +1270,25 @@ describe("workspace handoff rows", () => {
     expect(markerRow?.origin.worktreePath).toBe("/tmp/handoff");
   });
 
-  it("defers the mid-turn marker past the turn it was requested in", () => {
+  it("places work logged after the move below the transition", () => {
     const rows = deriveHandoffRows();
 
     const markerIndex = rows.findIndex((row) => row.kind === "workspace-handoff");
-    const preHandoffAssistantIndex = rows.findIndex(
-      (row) => row.kind === "message" && row.message.id === "assistant-1",
+    const postHandoffReasoning = rows.find(
+      (row) =>
+        row.kind === "reasoning" && row.rows.some((nestedRow) => nestedRow.id === "work-b-entry"),
     );
 
-    // The marker is emitted mid-turn but must not split that turn's work: the
-    // pre-handoff tool activity still collapses into a single reasoning group.
-    const reasoningRow = rows.find(
+    expect(markerIndex).toBeGreaterThan(-1);
+    expect(rows.findIndex((row) => row.kind === "reasoning")).toBeLessThan(markerIndex);
+    expect(postHandoffReasoning).toBeDefined();
+    expect(rows.indexOf(postHandoffReasoning!)).toBeGreaterThan(markerIndex);
+
+    const preHandoffReasoning = rows.find(
       (row): row is Extract<(typeof rows)[number], { kind: "reasoning" }> =>
-        row.kind === "reasoning",
+        row.kind === "reasoning" && row.rows.some((nestedRow) => nestedRow.id === "work-a-entry"),
     );
-    expect(reasoningRow?.rows.map((row) => row.id)).toEqual(["work-a-entry", "work-b-entry"]);
-    expect(markerIndex).toBeGreaterThan(preHandoffAssistantIndex);
+    expect(preHandoffReasoning?.rows.map((row) => row.id)).toEqual(["work-a-entry"]);
   });
 
   it("moves the suppressed continuation revert anchor onto the marker", () => {
@@ -1420,6 +1426,66 @@ describe("stabilizeReadonlyStringSet", () => {
     const second = stabilizeReadonlyStringSet(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS, first);
     expect(second).toBe(first);
     expect(second).toBe(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS);
+  });
+});
+
+describe("stabilizeStringMap", () => {
+  it("reuses the previous map when entries are unchanged", () => {
+    const previous = new Map([
+      ["#1", "https://example.com/1"],
+      ["#2", "https://example.com/2"],
+    ]);
+    const next = new Map([
+      ["#1", "https://example.com/1"],
+      ["#2", "https://example.com/2"],
+    ]);
+
+    expect(stabilizeStringMap(next, previous)).toBe(previous);
+  });
+
+  it("returns the next map when an entry value changes", () => {
+    const previous = new Map([["#1", "https://example.com/1"]]);
+    const next = new Map([["#1", "https://example.com/other"]]);
+
+    expect(stabilizeStringMap(next, previous)).toBe(next);
+  });
+});
+
+describe("stabilizeResponseMetaByTurnId", () => {
+  const settled = TurnId.make("turn-settled");
+  const active = TurnId.make("turn-active");
+
+  it("reuses settled entry objects when only the active turn changes", () => {
+    const settledEntry = { model: "mock-model", usedTokens: 100 };
+    const previous = new Map([
+      [settled, settledEntry],
+      [active, { model: "mock-model", usedTokens: 1 }],
+    ]);
+    // Fresh objects with equal settled values, as rebuilt from threadActivities.
+    const next = new Map([
+      [settled, { model: "mock-model", usedTokens: 100 }],
+      [active, { model: "mock-model", usedTokens: 2 }],
+    ]);
+
+    const stabilized = stabilizeResponseMetaByTurnId(next, previous);
+    expect(stabilized).not.toBe(next);
+    expect(stabilized.get(settled)).toBe(settledEntry);
+    expect(stabilized.get(active)).toEqual({ model: "mock-model", usedTokens: 2 });
+  });
+
+  it("returns the previous map when every entry is identical", () => {
+    const previous = new Map([[settled, { model: "mock-model" }]]);
+    const next = new Map(previous);
+
+    expect(stabilizeResponseMetaByTurnId(next, previous)).toBe(previous);
+  });
+
+  it("uses the new value when a settled entry value changes", () => {
+    const previous = new Map([[settled, { model: "mock-model", usedTokens: 100 }]]);
+    const next = new Map([[settled, { model: "mock-model", usedTokens: 101 }]]);
+
+    const stabilized = stabilizeResponseMetaByTurnId(next, previous);
+    expect(stabilized.get(settled)).toBe(next.get(settled));
   });
 });
 

@@ -1,6 +1,7 @@
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
 import {
+  extractRuntimeActivityDetail,
   extractWorkLogToolLifecycleStatus,
   mergeWorkLogToolData,
 } from "@t3tools/client-runtime/work-log/presentation";
@@ -791,6 +792,8 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       ? payload.detail
       : null;
   const taskLabel = taskSummary || taskDetailAsLabel;
+  const isRuntimeActivity =
+    activity.kind === "runtime.warning" || activity.kind === "runtime.error";
   const detail = isTaskActivity
     ? !taskDetailAsLabel &&
       payload &&
@@ -798,7 +801,8 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       payload.detail.length > 0
       ? stripTrailingExitCode(payload.detail).output
       : null
-    : extractToolDetail(payload, title ?? activity.summary);
+    : ((isRuntimeActivity ? extractRuntimeActivityDetail(payload) : null) ??
+      extractToolDetail(payload, title ?? activity.summary));
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
   const entry: DerivedWorkLogEntry = {
     id: activity.id,

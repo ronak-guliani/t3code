@@ -110,14 +110,18 @@ function withParent(
   };
 }
 
-function finish(id: string): Extract<OrchestrationCommand, { type: "thread.turn.diff.complete" }> {
+function finish(
+  id: string,
+  turnId = TurnId.make(`turn-${id}`),
+  completedAt = finished,
+): Extract<OrchestrationCommand, { type: "thread.turn.diff.complete" }> {
   return {
     type: "thread.turn.diff.complete",
     commandId: CommandId.make(`finish-${id}`),
     threadId: ThreadId.make(id),
-    turnId: TurnId.make(`turn-${id}`),
-    completedAt: finished,
-    createdAt: finished,
+    turnId,
+    completedAt,
+    createdAt: completedAt,
     checkpointRef: CheckpointRef.make(`checkpoint-${id}`),
     status: "ready",
     files: [],
@@ -131,7 +135,15 @@ async function apply(
   readModel: OrchestrationReadModel,
   command: OrchestrationCommand,
   recordedReportOutcome?: "accepted" | "stale",
-) {
+  settleCompletedDelegation = true,
+): Promise<{
+  readonly readModel: OrchestrationReadModel;
+  readonly events: ReadonlyArray<OrchestrationEvent>;
+}> {
+  const completesCurrentTurn =
+    command.type === "thread.turn.diff.complete" &&
+    readModel.threads.find((thread) => thread.id === command.threadId)?.latestTurn?.turnId ===
+      command.turnId;
   const result = await Effect.runPromise(
     decideOrchestrationCommand({
       readModel,
@@ -147,6 +159,24 @@ async function apply(
   );
   for (const event of events) {
     readModel = await Effect.runPromise(projectEvent(readModel, event));
+  }
+  if (
+    settleCompletedDelegation &&
+    command.type === "thread.turn.diff.complete" &&
+    command.status !== "speculative" &&
+    completesCurrentTurn
+  ) {
+    const settled = await apply(
+      readModel,
+      {
+        type: "thread.delegation.settle",
+        commandId: CommandId.make(`settle-${command.commandId}`),
+        threadId: command.threadId,
+      },
+      undefined,
+      false,
+    );
+    return { readModel: settled.readModel, events: [...events, ...settled.events] };
   }
   return { readModel, events };
 }
@@ -167,6 +197,61 @@ function report(
 }
 
 describe("child nudging", () => {
+  it("blocks and reports a waited assignment after its child becomes unavailable exactly once", async () => {
+    const childId = ThreadId.make("a");
+    const assignmentId = MessageId.make("assignment-a");
+    const initial = model(thread("a", true));
+    const detached = {
+      ...initial,
+      threads: initial.threads.map((entry) =>
+        entry.id === parentId
+          ? {
+              ...entry,
+              nudging: {
+                wait: {
+                  mode: "all" as const,
+                  assignments: [{ childThreadId: childId, assignmentId }],
+                },
+              },
+            }
+          : entry.id === childId
+            ? { ...entry, parentThreadId: null }
+            : entry,
+      ),
+    };
+    const command: OrchestrationCommand = {
+      type: "thread.child.assignment.unavailable",
+      commandId: CommandId.make("unavailable-a"),
+      threadId: parentId,
+      childThreadId: childId,
+      assignmentId,
+    };
+
+    const unavailable = await apply(detached, command);
+    expect(unavailable.readModel.threads[0]!.nudging?.wait?.assignments).toEqual([
+      { childThreadId: childId, assignmentId, outcome: "blocked" },
+    ]);
+    expect(unavailable.readModel.threads[0]!.queuedTurns?.[0]?.origin).toMatchObject({
+      kind: "child-nudge",
+      updates: [
+        {
+          id: "assignment-stale:a:assignment-a",
+          childThreadId: childId,
+          assignmentId,
+          kind: "blocked",
+          wakeReason: "assignment-blocked",
+        },
+      ],
+    });
+
+    const duplicate = await apply(unavailable.readModel, {
+      ...command,
+      commandId: CommandId.make("unavailable-a-duplicate"),
+    });
+    expect(duplicate.events).toEqual([]);
+    expect(duplicate.readModel.threads[0]!.queuedTurns).toHaveLength(1);
+  });
+
   it("collects routine results for a fixed two seconds without extending the deadline", async () => {
     let state = model(thread("a", true), thread("b", true));
     state = (await apply(state, finish("a"))).readModel;
@@ -231,6 +316,79 @@ describe("child nudging", () => {
       expect(delivered.events.some((event) => event.eventId === waitEvent?.causationEventId)).toBe(
         true,
       );
+    },
+  );
+
+  it.each(["all", "any"] as const)(
+    "releases an old %s result without consuming the replacement wait",
+    async (mode) => {
+      const oldChild = thread("old-child", true);
+      const newChild = thread("new-child", true);
+      let state = (
+        await apply(model(oldChild, newChild), {
+          type: "thread.meta.update",
+          commandId: CommandId.make(`old-${mode}-wait`),
+          threadId: parentId,
+          childWait: {
+            mode,
+            assignments: [
+              {
+                childThreadId: oldChild.id,
+                assignmentId: oldChild.nudging!.delegation!.assignmentId,
+              },
+            ],
+          },
+        })
+      ).readModel;
+      state = (await apply(state, finish("old-child"))).readModel;
+      const oldNudgeId = state.threads[0]!.queuedTurns![0]!.id;
+      state = withParent(state, {
+        nudging: {
+          wait: {
+            mode,
+            assignments: [
+              {
+                childThreadId: newChild.id,
+                assignmentId: newChild.nudging!.delegation!.assignmentId,
+              },
+            ],
+          },
+        },
+      });
+
+      const oldDelivery = await apply(state, {
+        type: "thread.queued-turn.dispatch",
+        commandId: CommandId.make(`dispatch-old-${mode}-result`),
+        threadId: parentId,
+        queuedTurnId: oldNudgeId,
+        dispatchedAt: "2026-09-09T00:01:02.000Z",
+      });
+      expect(oldDelivery.readModel.threads[0]!.nudging?.wait).toMatchObject({
+        mode,
+        assignments: [
+          {
+            childThreadId: newChild.id,
+            assignmentId: newChild.nudging!.delegation!.assignmentId,
+          },
+        ],
+      });
+      expect(oldDelivery.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBeUndefined();
+
+      const newCompletion = await apply(oldDelivery.readModel, finish("new-child"));
+      expect(
+        newCompletion.events.filter((event) => event.type === "thread.queued-turn-created"),
+      ).toHaveLength(1);
+      expect(newCompletion.readModel.threads[0]!.nudging?.wait).toMatchObject({
+        mode,
+        assignments: [
+          {
+            childThreadId: newChild.id,
+            assignmentId: newChild.nudging!.delegation!.assignmentId,
+            outcome: "result-available",
+          },
+        ],
+      });
+      expect(newCompletion.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBeUndefined();
     },
   );
 
@@ -459,6 +617,12 @@ describe("child nudging", () => {
 
   it("reuses a finished child with a new assignment and rejects old or uncorrelated reports", async () => {
     let state = (await apply(model(thread("a", true)), finish("a"))).readModel;
+    state = {
+      ...state,
+      threads: state.threads.map((entry) =>
+        entry.id === parentId ? { ...entry, nudging: { ...entry.nudging, wait: null } } : entry,
+      ),
+    };
     const assign: OrchestrationCommand = {
       type: "thread.queued-turn.create",
       commandId: CommandId.make("assign"),
@@ -495,6 +659,251 @@ describe("child nudging", () => {
     ).resolves.toBeDefined();
   });
 
+  it("removes failed batch entries without overwriting a revised parent wait", async () => {
+    const failedChild = thread("failed-child", true);
+    const remainingChild = thread("remaining-child", true);
+    const failedAssignment = {
+      childThreadId: failedChild.id,
+      assignmentId: failedChild.nudging!.delegation!.assignmentId,
+    };
+    const remainingAssignment = {
+      childThreadId: remainingChild.id,
+      assignmentId: remainingChild.nudging!.delegation!.assignmentId,
+    };
+    const state = withParent(model(failedChild, remainingChild), {
+      nudging: {
+        wait: { mode: "any", assignments: [failedAssignment, remainingAssignment] },
+      },
+    });
+
+    const prune = {
+      type: "thread.child.wait.prune",
+      commandId: CommandId.make("prune-failed-batch-assignment"),
+      threadId: parentId,
+      assignments: [failedAssignment],
+    } as OrchestrationCommand;
+    const result = await apply(state, prune);
+
+    expect(result.readModel.threads[0]!.nudging?.wait).toEqual({
+      mode: "any",
+      assignments: [remainingAssignment],
+    });
+    const duplicate = await apply(result.readModel, {
+      ...prune,
+      commandId: CommandId.make("prune-failed-batch-assignment-again"),
+    });
+    expect(duplicate.events).toEqual([]);
+  });
+
+  it("retargets an unsettled wait when a child gets new work and satisfies it on completion", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        completedAt: finished,
+        outcome: undefined,
+      },
+    };
+    const previousAssignmentId = MessageId.make("assignment-child");
+    const nextAssignmentId = MessageId.make("assignment-next");
+    let state = withParent(model(child), {
+      nudging: {
+        wait: {
+          mode: "all",
+          assignments: [{ childThreadId: child.id, assignmentId: previousAssignmentId }],
+        },
+      },
+    });
+    const assignedAt = "2026-09-09T00:02:00.000Z";
+    state = (
+      await apply(state, {
+        type: "thread.queued-turn.create",
+        commandId: CommandId.make("reassign-waiting-child"),
+        threadId: child.id,
+        queuedTurnId: QueuedTurnId.make("assignment-next-queue"),
+        assignment: { followUp: "automatic" },
+        message: {
+          messageId: nextAssignmentId,
+          role: "user",
+          text: "Continue the work",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: assignedAt,
+      })
+    ).readModel;
+
+    expect(state.threads[0]!.nudging?.wait?.assignments).toEqual([
+      { childThreadId: child.id, assignmentId: nextAssignmentId },
+    ]);
+
+    const nextTurnId = TurnId.make("turn-assignment-next");
+    const assignedChild = state.threads.find((entry) => entry.id === child.id)!;
+    state = {
+      ...state,
+      threads: state.threads.map((entry) =>
+        entry.id !== child.id
+          ? entry
+          : {
+              ...entry,
+              queuedTurns: [],
+              latestTurn: {
+                ...entry.latestTurn!,
+                turnId: nextTurnId,
+                state: "completed",
+                requestedAt: assignedAt,
+                startedAt: assignedAt,
+                completedAt: "2026-09-09T00:03:00.000Z",
+              },
+              messages: [
+                ...entry.messages,
+                {
+                  id: MessageId.make("result-assignment-next"),
+                  role: "assistant",
+                  text: "Updated result",
+                  turnId: nextTurnId,
+                  streaming: false,
+                  createdAt: assignedAt,
+                  updatedAt: "2026-09-09T00:03:00.000Z",
+                },
+              ],
+              activities: [
+                ...entry.activities,
+                {
+                  id: EventId.make("completion-assignment-next"),
+                  kind: "insights.turn.completed",
+                  tone: "info",
+                  summary: "Turn completed",
+                  payload: { state: "completed" },
+                  turnId: nextTurnId,
+                  createdAt: "2026-09-09T00:03:00.000Z",
+                },
+              ],
+              nudging: {
+                ...entry.nudging,
+                delegation: {
+                  ...entry.nudging!.delegation!,
+                  dispatchTurnId: nextTurnId,
+                },
+              },
+            },
+      ),
+    };
+    expect(assignedChild.nudging?.delegation?.assignmentId).toBe(nextAssignmentId);
+    state = (await apply(state, finish("child", nextTurnId, "2026-09-09T00:03:00.000Z"))).readModel;
+    expect(state.threads[0]!.nudging?.wait?.assignments).toEqual([
+      {
+        childThreadId: child.id,
+        assignmentId: nextAssignmentId,
+        outcome: "result-available",
+      },
+    ]);
+
+    const queued = state.threads[0]!.queuedTurns![0]!;
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("dispatch-reassigned-result"),
+      threadId: parentId,
+      queuedTurnId: queued.id,
+      dispatchedAt: "2026-09-09T00:03:03.000Z",
+    });
+    expect(
+      delivered.events.filter((event) => event.type === "thread.turn-start-requested"),
+    ).toHaveLength(1);
+    expect(delivered.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBe(
+      "2026-09-09T00:03:03.000Z",
+    );
+  });
+
+  it("keeps an already-settled wait entry tied to its completed assignment after reassignment", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        completedAt: finished,
+        outcome: "failed",
+      },
+    };
+    const previousAssignmentId = MessageId.make("assignment-child");
+    const nextAssignmentId = MessageId.make("assignment-next");
+    const state = withParent(model(child), {
+      nudging: {
+        wait: {
+          mode: "all",
+          assignments: [
+            {
+              childThreadId: child.id,
+              assignmentId: previousAssignmentId,
+              outcome: "failed",
+            },
+          ],
+        },
+      },
+    });
+
+    const reassigned = await apply(state, {
+      type: "thread.queued-turn.create",
+      commandId: CommandId.make("reassign-settled-child"),
+      threadId: child.id,
+      queuedTurnId: QueuedTurnId.make("assignment-next-queue"),
+      assignment: { followUp: "automatic" },
+      message: {
+        messageId: nextAssignmentId,
+        role: "user",
+        text: "Continue the work",
+        attachments: [],
+      },
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      createdAt: "2026-09-09T00:02:00.000Z",
+    });
+
+    expect(reassigned.readModel.threads[0]!.nudging?.wait?.assignments).toEqual([
+      {
+        childThreadId: child.id,
+        assignmentId: previousAssignmentId,
+        outcome: "failed",
+      },
+    ]);
+  });
+
+  it("delivers an already-queued result after the child is reassigned", async () => {
+    let state = (await apply(model(thread("child", true)), finish("child"))).readModel;
+    const oldResult = state.threads[0]!.queuedTurns![0]!;
+    state = (
+      await apply(state, {
+        type: "thread.queued-turn.create",
+        commandId: CommandId.make("reassign-after-result"),
+        threadId: ThreadId.make("child"),
+        queuedTurnId: QueuedTurnId.make("assignment-next-queue"),
+        assignment: { followUp: "automatic" },
+        message: {
+          messageId: MessageId.make("assignment-next"),
+          role: "user",
+          text: "Continue the work",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: "2026-09-09T00:02:00.000Z",
+      })
+    ).readModel;
+
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("deliver-old-result"),
+      threadId: parentId,
+      queuedTurnId: oldResult.id,
+      dispatchedAt: "2026-09-09T00:01:03.000Z",
+    });
+
+    expect(
+      delivered.events.filter((event) => event.type === "thread.turn-start-requested"),
+    ).toHaveLength(1);
+    expect(delivered.readModel.threads[0]!.messages[0]!.text).toContain("Result evidence");
+  });
+
   it("rejects empty, foreign, and forged-complete wait conditions", async () => {
     for (const childWait of [
       { mode: "all" as const, assignments: [] },
@@ -515,6 +924,26 @@ describe("child nudging", () => {
         }),
       ).rejects.toThrow();
     }
+  });
+
+  it("rejects an unparseable deadline before persisting a child wait", async () => {
+    await expect(
+      apply(model(thread("child", true)), {
+        type: "thread.meta.update",
+        commandId: CommandId.make("invalid-wait-deadline"),
+        threadId: parentId,
+        childWait: {
+          mode: "all",
+          deadlineAt: "not-a-date",
+          assignments: [
+            {
+              childThreadId: ThreadId.make("child"),
+              assignmentId: MessageId.make("assignment-child"),
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow("A child wait deadline must be a valid ISO date-time");
   });
 
   it("bounds a batch at 32 reports and rejects edits to generated prompts", async () => {
@@ -748,12 +1177,88 @@ describe("child nudging", () => {
       activity: completion,
       createdAt: finished,
     });
-    const result = await apply(completed.readModel, finish("child"));
-    expect(result.readModel.threads[1]!.nudging?.delegation?.completedAt).toBe(finished);
-    expect(result.readModel.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
+    const authoritativeReadModel = {
+      ...completed.readModel,
+      threads: completed.readModel.threads.map((thread) =>
+        thread.id === child.id
+          ? {
+              ...thread,
+              latestTurn: {
+                ...thread.latestTurn!,
+                state: "completed" as const,
+                completedAt: finished,
+              },
+            }
+          : thread,
+      ),
+    };
+    const result = await apply(authoritativeReadModel, finish("child"), undefined, false);
+    expect(result.events.map((event) => event.type)).toEqual(["thread.turn-diff-completed"]);
+    expect(result.readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+    expect(result.readModel.threads[0]!.queuedTurns).toHaveLength(0);
+
+    const settled = await apply(result.readModel, {
+      type: "thread.delegation.settle",
+      commandId: CommandId.make("settle-after-checkpoint"),
+      threadId: child.id,
+    });
+    expect(settled.readModel.threads[1]!.nudging?.delegation?.completedAt).toBe(finished);
+    expect(settled.readModel.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
       kind: "child-nudge",
       updates: [{ kind: "result-available" }],
     });
+    expect(
+      (
+        await apply(settled.readModel, {
+          type: "thread.delegation.settle",
+          commandId: CommandId.make("settle-after-checkpoint-again"),
+          threadId: child.id,
+        })
+      ).events,
+    ).toEqual([]);
+  });
+
+  it("settles only the bound turn and deduplicates its assignment report", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-settlement",
+        dispatchTurnId: child.latestTurn!.turnId,
+      },
+    };
+    const settle: OrchestrationCommand = {
+      type: "thread.delegation.settle",
+      commandId: CommandId.make("settle-child"),
+      threadId: child.id,
+    };
+    const first = await apply(model(child), settle);
+    expect(first.readModel.threads[1]!.nudging?.delegation?.completedAt).toBe(finished);
+    expect(first.readModel.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
+      updates: [{ id: "assignment:child:dispatch-settlement:assignment-child" }],
+    });
+
+    const duplicate = await apply(first.readModel, {
+      ...settle,
+      commandId: CommandId.make("settle-child-again"),
+    });
+    expect(duplicate.events).toEqual([]);
+    expect(duplicate.readModel.threads[0]!.queuedTurns).toHaveLength(1);
+
+    const superseded = thread("child", true);
+    superseded.nudging = {
+      delegation: {
+        ...superseded.nudging!.delegation!,
+        dispatchId: "dispatch-settlement",
+        dispatchTurnId: TurnId.make("superseded-turn"),
+      },
+    };
+    const stale = await apply(model(superseded), {
+      ...settle,
+      commandId: CommandId.make("settle-superseded"),
+    });
+    expect(stale.readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+    expect(stale.events).toEqual([]);
   });
 
   it("notifies when provider startup fails and does not produce a second terminal report", async () => {
@@ -1046,6 +1551,248 @@ describe("child nudging", () => {
         delegationAssignmentId: child.nudging!.delegation!.assignmentId,
         delegationDispatchId: "dispatch-a",
       },
+    });
+  });
+
+  it("settles a stopped delegated turn as blocked exactly once after it becomes idle", async () => {
+    const child = thread("child", true);
+    const runningTurnId = child.latestTurn!.turnId;
+    child.latestTurn = {
+      ...child.latestTurn!,
+      state: "running",
+      completedAt: null,
+    };
+    child.session = {
+      threadId: child.id,
+      status: "running",
+      providerName: "copilot",
+      providerInstanceId: ProviderInstanceId.make("copilot"),
+      runtimeMode: "approval-required",
+      activeTurnId: runningTurnId,
+      lastError: null,
+      updatedAt: started,
+    };
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-stop",
+        dispatchSequence: 1,
+        dispatchTurnId: runningTurnId,
+      },
+    };
+    let state = model(child);
+
+    state = (
+      await apply(state, {
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("interrupt-for-stop"),
+        threadId: child.id,
+        turnId: runningTurnId,
+        createdAt: finished,
+      })
+    ).readModel;
+    state = (
+      await apply(state, {
+        type: "thread.session.set",
+        commandId: CommandId.make("idle-after-stop"),
+        threadId: child.id,
+        session: {
+          threadId: child.id,
+          status: "ready",
+          providerName: "copilot",
+          providerInstanceId: ProviderInstanceId.make("copilot"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: finished,
+        },
+        createdAt: finished,
+      })
+    ).readModel;
+
+    expect(state.threads[1]!.latestTurn).toMatchObject({
+      turnId: runningTurnId,
+      state: "interrupted",
+    });
+    const settlement = await apply(state, {
+      type: "thread.delegation.settle",
+      commandId: CommandId.make("settle-stop"),
+      threadId: child.id,
+    });
+    expect(settlement.readModel.threads[1]!.nudging?.delegation).toMatchObject({
+      completedAt: finished,
+      outcome: "blocked",
+    });
+    const duplicate = await apply(settlement.readModel, {
+      type: "thread.delegation.settle",
+      commandId: CommandId.make("settle-stop-again"),
+      threadId: child.id,
+    });
+    expect(duplicate.events).toEqual([]);
+  });
+
+  it("keeps a steer continuation open, then settles its completed turn", async () => {
+    const child = thread("child", true);
+    const interruptedTurnId = child.latestTurn!.turnId;
+    child.latestTurn = { ...child.latestTurn!, state: "running", completedAt: null };
+    child.session = {
+      threadId: child.id,
+      status: "running",
+      providerName: "copilot",
+      providerInstanceId: ProviderInstanceId.make("copilot"),
+      runtimeMode: "approval-required",
+      activeTurnId: interruptedTurnId,
+      lastError: null,
+      updatedAt: started,
+    };
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-steer",
+        dispatchSequence: 1,
+        dispatchTurnId: interruptedTurnId,
+      },
+    };
+    let state = model(child);
+    state = (
+      await apply(state, {
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("interrupt-for-steer"),
+        threadId: child.id,
+        turnId: interruptedTurnId,
+        createdAt: finished,
+      })
+    ).readModel;
+    state = (
+      await apply(state, {
+        type: "thread.session.set",
+        commandId: CommandId.make("idle-before-steer"),
+        threadId: child.id,
+        session: {
+          threadId: child.id,
+          status: "ready",
+          providerName: "copilot",
+          providerInstanceId: ProviderInstanceId.make("copilot"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: finished,
+        },
+        createdAt: finished,
+      })
+    ).readModel;
+    const steeredAt = "2026-09-09T00:01:01.000Z";
+    state = (
+      await apply(state, {
+        type: "thread.turn.start",
+        commandId: CommandId.make("start-steered-turn"),
+        threadId: child.id,
+        message: {
+          messageId: MessageId.make("steered-message"),
+          role: "user",
+          text: "Continue with this correction",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: steeredAt,
+      })
+    ).readModel;
+    const premature = await apply(state, {
+      type: "thread.delegation.settle",
+      commandId: CommandId.make("premature-steer-settlement"),
+      threadId: child.id,
+    });
+    expect(premature.events).toEqual([]);
+
+    const steeredTurnId = TurnId.make("turn-steered");
+    const completedAt = "2026-09-09T00:02:00.000Z";
+    state = {
+      ...state,
+      threads: state.threads.map((entry) =>
+        entry.id !== child.id
+          ? entry
+          : {
+              ...entry,
+              latestTurn: {
+                turnId: steeredTurnId,
+                state: "completed",
+                requestedAt: steeredAt,
+                startedAt: steeredAt,
+                completedAt,
+                assistantMessageId: MessageId.make("steered-result"),
+              },
+              session: {
+                ...entry.session!,
+                status: "ready",
+                activeTurnId: null,
+                updatedAt: completedAt,
+              },
+              messages: [
+                ...entry.messages,
+                {
+                  id: MessageId.make("steered-result"),
+                  role: "assistant",
+                  text: "Steered result",
+                  turnId: steeredTurnId,
+                  streaming: false,
+                  createdAt: completedAt,
+                  updatedAt: completedAt,
+                },
+              ],
+              activities: [
+                ...entry.activities,
+                {
+                  id: EventId.make("steered-completion"),
+                  kind: "insights.turn.completed",
+                  tone: "info",
+                  summary: "Turn completed",
+                  payload: { state: "completed" },
+                  turnId: steeredTurnId,
+                  createdAt: completedAt,
+                },
+              ],
+              nudging: {
+                ...entry.nudging,
+                delegation: {
+                  ...entry.nudging!.delegation!,
+                  dispatchTurnId: steeredTurnId,
+                },
+              },
+            },
+      ),
+    };
+    const settlement = await apply(state, {
+      type: "thread.delegation.settle",
+      commandId: CommandId.make("settle-steered-turn"),
+      threadId: child.id,
+    });
+    expect(settlement.readModel.threads[1]!.nudging?.delegation).toMatchObject({
+      completedAt,
+      outcome: "result-available",
+    });
+  });
+
+  it("settles a later assignment even when the child follow-up preference remains paused", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      paused: true,
+      delegation: {
+        ...child.nudging!.delegation!,
+        dispatchId: "dispatch-later-assignment",
+        dispatchSequence: 2,
+        dispatchTurnId: child.latestTurn!.turnId,
+      },
+    };
+    const settlement = await apply(model(child), {
+      type: "thread.delegation.settle",
+      commandId: CommandId.make("settle-paused-child-assignment"),
+      threadId: child.id,
+    });
+
+    expect(settlement.readModel.threads[1]!.nudging?.delegation).toMatchObject({
+      completedAt: finished,
+      outcome: "result-available",
     });
   });
 
@@ -1441,6 +2188,457 @@ describe("child nudging", () => {
       dispatchSequence: 2,
       dispatchTurnId: null,
     });
+  });
+
+  it("wakes once when a three-child all wait reaches terminal state", async () => {
+    const ids = ["child-a", "child-b", "child-c"];
+    let state = model(...ids.map((id) => thread(id, true)));
+    state = (
+      await apply(state, {
+        type: "thread.meta.update",
+        commandId: CommandId.make("wait-three"),
+        threadId: parentId,
+        childWait: {
+          mode: "all",
+          assignments: ids.map((id) => ({
+            childThreadId: ThreadId.make(id),
+            assignmentId: MessageId.make(`assignment-${id}`),
+          })),
+        },
+      })
+    ).readModel;
+    state = (await apply(state, finish(ids[0]!))).readModel;
+    state = (await apply(state, finish(ids[1]!))).readModel;
+    // One coalesced batch holds both results while the third is pending.
+    expect(state.threads[0]!.queuedTurns).toHaveLength(1);
+    const held = {
+      type: "thread.queued-turn.dispatch" as const,
+      commandId: CommandId.make("held-dispatch"),
+      threadId: parentId,
+      queuedTurnId: state.threads[0]!.queuedTurns![0]!.id,
+      dispatchedAt: "2026-09-09T00:01:02.000Z",
+    };
+    await expect(apply(state, held)).rejects.toThrow("Waiting for 1 child");
+    state = (await apply(state, finish(ids[2]!))).readModel;
+    expect(state.threads[0]!.queuedTurns).toHaveLength(1);
+    expect(state.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
+      kind: "child-nudge",
+      updates: ids.map((id) => ({
+        childThreadId: id,
+        assignmentId: `assignment-${id}`,
+        kind: "result-available",
+      })),
+    });
+    const delivered = await apply(state, { ...held, commandId: CommandId.make("final-dispatch") });
+    expect(
+      delivered.events.filter((event) => event.type === "thread.turn-start-requested"),
+    ).toHaveLength(1);
+    expect(delivered.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBe(held.dispatchedAt);
+  });
+
+  it("expires an all wait once with a blocked report for each unsettled assignment", async () => {
+    const settledChild = thread("settled", true);
+    const stalledChild = thread("stalled", true);
+    const stalledChildTwo = thread("stalled-two", true);
+    settledChild.nudging = {
+      ...settledChild.nudging!,
+      delegation: { ...settledChild.nudging!.delegation!, assignedAt: started },
+    };
+    stalledChild.nudging = {
+      ...stalledChild.nudging!,
+      delegation: { ...stalledChild.nudging!.delegation!, assignedAt: started },
+    };
+    stalledChildTwo.nudging = {
+      ...stalledChildTwo.nudging!,
+      delegation: { ...stalledChildTwo.nudging!.delegation!, assignedAt: started },
+    };
+    const deadlineAt = "2026-09-09T00:00:30.000Z";
+    const state = withParent(model(settledChild, stalledChild, stalledChildTwo), {
+      nudging: {
+        wait: {
+          mode: "all",
+          deadlineAt,
+          assignments: [
+            {
+              childThreadId: ThreadId.make("settled"),
+              assignmentId: MessageId.make("assignment-settled"),
+              outcome: "result-available",
+            },
+            {
+              childThreadId: ThreadId.make("stalled"),
+              assignmentId: MessageId.make("assignment-stalled"),
+            },
+            {
+              childThreadId: ThreadId.make("stalled-two"),
+              assignmentId: MessageId.make("assignment-stalled-two"),
+            },
+          ],
+        } as NonNullable<OrchestrationThread["nudging"]>["wait"],
+      },
+    });
+    const command = {
+      type: "thread.child-wait.deadline-expire",
+      commandId: CommandId.make("expire-wait"),
+      threadId: parentId,
+      expectedDeadlineAt: deadlineAt,
+      expiredAt: "2026-09-09T00:01:00.000Z",
+    } as unknown as OrchestrationCommand;
+    const expired = await apply(state, command);
+    const reports = expired.events.filter(
+      (event) =>
+        event.type === "thread.child-lifecycle-notified" &&
+        event.payload.report?.id.startsWith("wait-deadline:"),
+    );
+    expect(reports).toHaveLength(2);
+    expect(reports[0]).toMatchObject({
+      type: "thread.child-lifecycle-notified",
+      payload: {
+        childThreadId: "stalled",
+        childTitle: "stalled",
+        lifecycle: "blocked",
+        report: {
+          childThreadId: "stalled",
+          assignmentId: "assignment-stalled",
+          kind: "blocked",
+          summary: expect.stringContaining("60 seconds since assignment start"),
+        },
+      },
+    });
+    expect(reports[1]).toMatchObject({
+      type: "thread.child-lifecycle-notified",
+      payload: {
+        childThreadId: "stalled-two",
+        report: {
+          assignmentId: "assignment-stalled-two",
+          kind: "blocked",
+        },
+      },
+    });
+    expect(expired.readModel.threads[0]!.nudging?.wait?.assignments).toEqual([
+      {
+        childThreadId: "settled",
+        assignmentId: "assignment-settled",
+        outcome: "result-available",
+      },
+      {
+        childThreadId: "stalled",
+        assignmentId: "assignment-stalled",
+        outcome: "blocked",
+      },
+      {
+        childThreadId: "stalled-two",
+        assignmentId: "assignment-stalled-two",
+        outcome: "blocked",
+      },
+    ]);
+    expect(expired.readModel.threads[0]!.queuedTurns).toHaveLength(1);
+    expect(expired.readModel.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
+      kind: "child-nudge",
+      updates: [
+        { childThreadId: "stalled", assignmentId: "assignment-stalled", kind: "blocked" },
+        { childThreadId: "stalled-two", assignmentId: "assignment-stalled-two", kind: "blocked" },
+      ],
+    });
+
+    const retried = await apply(expired.readModel, command);
+    expect(retried.events).toHaveLength(0);
+    expect(retried.readModel.threads[0]!.queuedTurns).toHaveLength(1);
+  });
+
+  it("ignores an expiry command from a replaced wait with the same deadline", async () => {
+    const deadlineAt = "2026-09-09T00:00:30.000Z";
+    const child = thread("child", true);
+    const assignment = {
+      childThreadId: ThreadId.make("child"),
+      assignmentId: MessageId.make("assignment-child"),
+    };
+    const previousGenerationId = CommandId.make("previous-wait");
+    let state = model(child);
+
+    state = (
+      await apply(state, {
+        type: "thread.meta.update",
+        commandId: previousGenerationId,
+        threadId: parentId,
+        childWait: { mode: "all", deadlineAt, assignments: [assignment] },
+      })
+    ).readModel;
+    state = (
+      await apply(state, {
+        type: "thread.meta.update",
+        commandId: CommandId.make("replacement-wait"),
+        threadId: parentId,
+        childWait: { mode: "all", deadlineAt, assignments: [assignment] },
+      })
+    ).readModel;
+
+    const staleExpiry = {
+      type: "thread.child-wait.deadline-expire",
+      commandId: CommandId.make("stale-wait-expiry"),
+      threadId: parentId,
+      expectedDeadlineAt: deadlineAt,
+      expectedGenerationId: previousGenerationId,
+      expiredAt: "2026-09-09T00:01:00.000Z",
+    } as unknown as OrchestrationCommand;
+    const expired = await apply(state, staleExpiry);
+
+    expect(expired.events).toHaveLength(0);
+    expect(expired.readModel.threads[0]!.nudging?.wait?.assignments[0]?.outcome).toBeUndefined();
+  });
+
+  it("renders outstanding wait progress when a child nudge is dispatched", async () => {
+    const ids = ["child-a", "child-b", "child-c", "child-d"];
+    const children = ids.map((id) => thread(id, true));
+    children[3]!.title = "Search API";
+    const assignments = ids.map((id, index) => ({
+      childThreadId: ThreadId.make(id),
+      assignmentId: MessageId.make(`assignment-${id}`),
+      ...(index === 0 ? { outcome: "result-available" as const } : {}),
+    }));
+    const stalledUpdate = {
+      id: "stalled-report",
+      childThreadId: ThreadId.make("child-d"),
+      childTitle: "Search API",
+      assignmentId: MessageId.make("assignment-child-d"),
+      kind: "blocked" as const,
+      wakeReason: "assignment-blocked" as const,
+    };
+    const parent = {
+      ...thread("parent"),
+      nudging: { wait: { mode: "all" as const, assignments } },
+      queuedTurns: [
+        {
+          id: QueuedTurnId.make("wait-progress-nudge"),
+          threadId: parentId,
+          message: {
+            messageId: MessageId.make("wait-progress-message"),
+            role: "user" as const,
+            text: "Child assignment updates",
+            attachments: [],
+          },
+          origin: {
+            kind: "child-nudge" as const,
+            updates: Array.from({ length: 32 }, (_, index) => ({
+              ...stalledUpdate,
+              id: `stalled-report-${index}`,
+              summary: "界".repeat(1_200),
+            })),
+          },
+          runtimeMode: "approval-required" as const,
+          interactionMode: "default" as const,
+          createdAt: finished,
+          updatedAt: finished,
+          failedAt: null,
+          failureMessage: null,
+        },
+      ],
+    };
+    const state = { ...createEmptyReadModel(started), threads: [parent, ...children] };
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("dispatch-wait-progress"),
+      threadId: parentId,
+      queuedTurnId: QueuedTurnId.make("wait-progress-nudge"),
+      dispatchedAt: finished,
+    });
+    const message = delivered.events.find(
+      (event) => event.type === "thread.message-sent" && event.payload.role === "user",
+    );
+    expect(message?.type).toBe("thread.message-sent");
+    if (message?.type !== "thread.message-sent") throw new Error("Expected a user message");
+    expect(message.payload.text).toContain(
+      "Wait (all): 1/4 settled; still waiting on child-b (child-b), child-c (child-c), Search API (child-d)",
+    );
+    expect(Buffer.byteLength(message.payload.text, "utf8")).toBeLessThanOrEqual(24 * 1024);
+  });
+
+  it("renders assignment progress for a decisions-only wait", async () => {
+    const child = thread("child", true);
+    child.title = "Search API";
+    const parent = {
+      ...thread("parent"),
+      nudging: {
+        wait: {
+          mode: "decisions-only" as const,
+          assignments: [
+            {
+              childThreadId: ThreadId.make("child"),
+              assignmentId: MessageId.make("assignment-child"),
+            },
+          ],
+        },
+      },
+      queuedTurns: [
+        {
+          id: QueuedTurnId.make("decision-only-progress"),
+          threadId: parentId,
+          message: {
+            messageId: MessageId.make("decision-only-progress-message"),
+            role: "user" as const,
+            text: "Child assignment updates",
+            attachments: [],
+          },
+          origin: {
+            kind: "child-nudge" as const,
+            updates: [
+              {
+                id: "blocked-child-report",
+                childThreadId: ThreadId.make("child"),
+                childTitle: "Search API",
+                assignmentId: MessageId.make("assignment-child"),
+                kind: "blocked" as const,
+                wakeReason: "assignment-blocked" as const,
+                summary: "The assignment is blocked.",
+              },
+            ],
+          },
+          runtimeMode: "approval-required" as const,
+          interactionMode: "default" as const,
+          createdAt: finished,
+          updatedAt: finished,
+          failedAt: null,
+          failureMessage: null,
+        },
+      ],
+    };
+    const state = { ...createEmptyReadModel(started), threads: [parent, child] };
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("dispatch-decision-only-progress"),
+      threadId: parentId,
+      queuedTurnId: QueuedTurnId.make("decision-only-progress"),
+      dispatchedAt: finished,
+    });
+    const message = delivered.events.find(
+      (event) => event.type === "thread.message-sent" && event.payload.role === "user",
+    );
+    expect(message?.type).toBe("thread.message-sent");
+    if (message?.type !== "thread.message-sent") throw new Error("Expected a user message");
+    expect(message.payload.text).toContain(
+      "Wait (decisions-only): 0/1 settled; still waiting on Search API (child)",
+    );
+  });
+
+  it("wakes again once routine results settle after an immediate failure wake", async () => {
+    const ids = ["child-a", "child-b", "child-c"];
+    const failedChild = thread(ids[0]!, true);
+    failedChild.activities = [{ ...failedChild.activities[0]!, payload: { state: "failed" } }];
+    let state = (
+      await apply(model(failedChild, ...ids.slice(1).map((id) => thread(id, true))), {
+        type: "thread.meta.update",
+        commandId: CommandId.make("wait-after-failure"),
+        threadId: parentId,
+        childWait: {
+          mode: "all",
+          assignments: ids.map((id) => ({
+            childThreadId: ThreadId.make(id),
+            assignmentId: MessageId.make(`assignment-${id}`),
+          })),
+        },
+      })
+    ).readModel;
+    state = (await apply(state, finish(ids[0]!))).readModel;
+    const failureDispatch = {
+      type: "thread.queued-turn.dispatch" as const,
+      commandId: CommandId.make("failure-wake"),
+      threadId: parentId,
+      queuedTurnId: state.threads[0]!.queuedTurns![0]!.id,
+      dispatchedAt: finished,
+    };
+    const failureWake = await apply(state, failureDispatch);
+    expect(
+      failureWake.events.filter((event) => event.type === "thread.turn-start-requested"),
+    ).toHaveLength(1);
+    state = failureWake.readModel;
+
+    state = withParent(state, {
+      latestTurn: {
+        turnId: TurnId.make("parent-response"),
+        state: "completed",
+        requestedAt: finished,
+        startedAt: finished,
+        completedAt: "2026-09-09T00:01:01.000Z",
+        assistantMessageId: MessageId.make("parent-response"),
+      },
+    });
+    state = (
+      await apply(state, {
+        ...finish(ids[1]!),
+        completedAt: "2026-09-09T00:01:02.000Z",
+        createdAt: "2026-09-09T00:01:02.000Z",
+      })
+    ).readModel;
+    state = (
+      await apply(state, {
+        ...finish(ids[2]!),
+        completedAt: "2026-09-09T00:01:03.000Z",
+        createdAt: "2026-09-09T00:01:03.000Z",
+      })
+    ).readModel;
+    expect(state.threads[0]!.queuedTurns).toHaveLength(1);
+    const terminalDispatch = {
+      type: "thread.queued-turn.dispatch" as const,
+      commandId: CommandId.make("terminal-wake"),
+      threadId: parentId,
+      queuedTurnId: state.threads[0]!.queuedTurns![0]!.id,
+      dispatchedAt: "2026-09-09T00:01:05.000Z",
+    };
+    const terminalWake = await apply(state, terminalDispatch);
+    expect(
+      terminalWake.events.filter((event) => event.type === "thread.turn-start-requested"),
+    ).toHaveLength(1);
+    expect(terminalWake.readModel.threads[0]!.nudging?.wait).toMatchObject({
+      assignments: [
+        { outcome: "failed" },
+        { outcome: "result-available" },
+        { outcome: "result-available" },
+      ],
+      satisfiedAt: terminalDispatch.dispatchedAt,
+    });
+    expect(
+      terminalWake.events.filter((event) => event.type === "thread.queued-turn-created"),
+    ).toHaveLength(0);
+  });
+
+  it("delivers a legacy report outside the current wait without consuming that wait", async () => {
+    const child = thread("child", true);
+    child.nudging = {
+      delegation: {
+        ...child.nudging!.delegation!,
+        assignmentId: MessageId.make("assignment-child-new"),
+      },
+    };
+    let state = withParent(model(child), {
+      nudging: {
+        wait: {
+          mode: "all",
+          assignments: [
+            {
+              childThreadId: ThreadId.make("child"),
+              assignmentId: MessageId.make("assignment-child-old"),
+            },
+          ],
+        },
+      },
+    });
+    state = (await apply(state, finish("child"))).readModel;
+    const queue = state.threads[0]!.queuedTurns!;
+    expect(queue).toHaveLength(1);
+    const updates = queue[0]!.origin?.kind === "child-nudge" ? queue[0]!.origin.updates : [];
+    expect(updates.map((update) => update.kind)).toEqual(["result-available"]);
+    expect(state.threads[0]!.nudging?.wait?.assignments).toMatchObject([
+      { assignmentId: "assignment-child-old" },
+    ]);
+    expect(state.threads[0]!.nudging?.wait?.satisfiedAt).toBeUndefined();
+    const delivered = await apply(state, {
+      type: "thread.queued-turn.dispatch",
+      commandId: CommandId.make("legacy-stale-dispatch"),
+      threadId: parentId,
+      queuedTurnId: queue[0]!.id,
+      dispatchedAt: "2026-09-09T00:01:02.000Z",
+    });
+    expect(delivered.readModel.threads[0]!.messages).toHaveLength(1);
+    expect(delivered.readModel.threads[0]!.nudging?.wait?.satisfiedAt).toBeUndefined();
   });
 
   it("keeps exact legacy keys for pre-fence reports", async () => {

@@ -248,11 +248,10 @@ export const make = Effect.fn("background.policy.make")(function* () {
   const publishMutex = yield* Semaphore.make(1);
 
   const snapshot = Effect.gen(function* () {
-    const [hostPower, leases, now] = yield* Effect.all([
-      hostPowerMonitor.snapshot,
-      Ref.get(leasesRef),
-      DateTime.now,
-    ]);
+    const [hostPower, leases, now] = yield* Effect.all(
+      [hostPowerMonitor.snapshot, Ref.get(leasesRef), DateTime.now],
+      { concurrency: "unbounded" },
+    );
     return computeSnapshot({ hostPower, leases, now });
   });
 

@@ -11,9 +11,12 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { PNG } from "pngjs";
 
 import packageJson from "../../package.json" with { type: "json" };
+import type { McpAuthError } from "@t3tools/contracts";
+import { enforceFinalSnapshotTextBudget } from "@t3tools/shared/previewAutomationBudgets";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { resolveBrowserEvidenceDir, saveBrowserEvidenceFile } from "./PreviewEvidence.ts";
 import {
   PreviewSnapshotToolkitHandlersLive,
   PreviewStandardToolkitHandlersLive,
@@ -26,6 +29,8 @@ import {
 } from "./toolkits/preview/tools.ts";
 import { PullRequestMonitorToolkitHandlersLive } from "./toolkits/pullRequestMonitor/handlers.ts";
 import { PullRequestMonitorToolkit } from "./toolkits/pullRequestMonitor/tools.ts";
+import { CollaborativeAcceptanceToolkitHandlersLive } from "./toolkits/collaborativeAcceptance/handlers.ts";
+import { CollaborativeAcceptanceToolkit } from "./toolkits/collaborativeAcceptance/tools.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import {
   DeviceScreenshotToolkitHandlersLive,
@@ -39,9 +44,10 @@ import {
 
 export const invalidMcpCredentialBody = {
   error: "invalid_mcp_credential",
+  recovery: "reconnect-required",
   message:
     "The T3 Code MCP session credential is invalid or expired. Restart the chat/session to reconnect browser automation.",
-} as const;
+} as const satisfies McpAuthError;
 
 export const invalidMcpCredentialResponse = HttpServerResponse.jsonUnsafe(
   {
@@ -175,7 +181,17 @@ const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
   }).pipe(Effect.as(result));
 };
 
-export const encodePreviewSnapshotResult = async (encodedResult: unknown) => {
+export interface PreviewSnapshotEncodeOptions {
+  /** Persist the screenshot as server-side evidence and return its screenshotPath. */
+  readonly save?: boolean | undefined;
+  /** Explicit evidence directory (tests). Defaults to the shared evidence dir. */
+  readonly evidenceDir?: string | undefined;
+}
+
+export const encodePreviewSnapshotResult = async (
+  encodedResult: unknown,
+  options?: PreviewSnapshotEncodeOptions,
+) => {
   const snapshot = encodedResult as {
     readonly screenshot: {
       readonly mimeType: "image/png";
@@ -183,9 +199,15 @@ export const encodePreviewSnapshotResult = async (encodedResult: unknown) => {
       readonly width: number;
       readonly height: number;
     };
+    readonly screenshotCaptureFailure?: {
+      readonly _tag: "PreviewScreenshotCaptureFailed";
+      readonly operation: "Page.captureScreenshot";
+    };
     readonly [key: string]: unknown;
   };
-  const { screenshot, ...page } = snapshot;
+  // A host-provided screenshotPath is never trusted: only the path returned
+  // by saveBrowserEvidenceFile below is presented as server-persisted evidence.
+  const { screenshot, screenshotPath: _hostScreenshotPath, ...page } = snapshot;
   const bytes = Buffer.from(screenshot.data, "base64");
   const boundedPng =
     screenshot.width > 0 &&
@@ -222,40 +244,69 @@ export const encodePreviewSnapshotResult = async (encodedResult: unknown) => {
       height: screenshot.height,
     },
   };
+  const screenshotCaptureFailure = snapshot.screenshotCaptureFailure
+    ? {
+        ...snapshot.screenshotCaptureFailure,
+        message:
+          "The browser could not capture a screenshot. Page text is diagnostic only; visual validation did not pass.",
+      }
+    : null;
   if (
+    screenshotCaptureFailure ||
     !decoded ||
     decoded.width !== screenshot.width ||
     decoded.height !== screenshot.height ||
     decoded.data.length !== screenshot.width * screenshot.height * 4
   ) {
+    // Budget the exact payloads returned below, after their error fields are
+    // appended, so neither can exceed the ceiling.
+    const structured = enforceFinalSnapshotTextBudget({
+      ...metadata,
+      error: screenshotCaptureFailure ?? {
+        _tag: "PreviewScreenshotInvalid",
+        operation: "snapshot",
+        message:
+          "The browser returned an empty, oversized, or undecodable screenshot. Page text is diagnostic only; visual validation did not pass. Reveal the browser, wait for rendering, and retry the snapshot.",
+      },
+    });
+    const textPayload = enforceFinalSnapshotTextBudget({
+      ...metadata,
+      error:
+        "Visual capture failed. Reveal the browser and retry; do not publish this capture as evidence.",
+    });
     return new McpSchema.CallToolResult({
       isError: true,
-      structuredContent: {
-        ...metadata,
-        error: {
-          _tag: "PreviewScreenshotInvalid",
-          operation: "snapshot",
-          message:
-            "The browser returned an empty, oversized, or undecodable screenshot. Page text is diagnostic only; visual validation did not pass. Reveal the browser, wait for rendering, and retry the snapshot.",
-        },
-      },
+      structuredContent: structured,
       content: [
         {
           type: "text",
-          text: JSON.stringify({
-            ...metadata,
-            error:
-              "Visual capture failed. Reveal the browser and retry; do not publish this capture as evidence.",
-          }),
+          text: JSON.stringify(textPayload),
         },
       ],
     });
   }
+  let screenshotPath: string | undefined;
+  if (options?.save === true) {
+    try {
+      screenshotPath = await saveBrowserEvidenceFile({
+        directory: resolveBrowserEvidenceDir(options.evidenceDir),
+        prefix: "preview-snapshot",
+        extension: "png",
+        bytes,
+      });
+    } catch {
+      screenshotPath = undefined;
+    }
+  }
+  const budgeted = enforceFinalSnapshotTextBudget({
+    ...metadata,
+    ...(screenshotPath === undefined ? {} : { screenshotPath }),
+  });
   return new McpSchema.CallToolResult({
     isError: false,
-    structuredContent: metadata,
+    structuredContent: budgeted,
     content: [
-      { type: "text", text: JSON.stringify(metadata) },
+      { type: "text", text: JSON.stringify(budgeted) },
       {
         type: "image",
         data: new Uint8Array(bytes),
@@ -305,7 +356,11 @@ const registerPreviewSnapshotTool = Effect.fn("McpHttpServer.registerPreviewSnap
             Effect.matchCauseEffect({
               onFailure: previewSnapshotFailure,
               onSuccess: ({ encodedResult }) =>
-                Effect.promise(() => encodePreviewSnapshotResult(encodedResult)),
+                Effect.promise(() =>
+                  encodePreviewSnapshotResult(encodedResult, {
+                    save: (payload as { readonly save?: boolean }).save === true,
+                  }),
+                ),
             }),
           );
         }),
@@ -487,6 +542,10 @@ export const PullRequestMonitorToolkitRegistrationLive = McpServer.toolkit(
   PullRequestMonitorToolkit,
 ).pipe(Layer.provide(PullRequestMonitorToolkitHandlersLive));
 
+export const CollaborativeAcceptanceToolkitRegistrationLive = McpServer.toolkit(
+  CollaborativeAcceptanceToolkit,
+).pipe(Layer.provide(CollaborativeAcceptanceToolkitHandlersLive));
+
 const DeviceStandardToolkitRegistrationLive = McpServer.toolkit(DeviceStandardToolkit).pipe(
   Layer.provide(DeviceStandardToolkitHandlersLive),
 );
@@ -510,10 +569,12 @@ const mcpTransport = (path: "/mcp" | "/mcp-device") =>
 export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestMonitorToolkitRegistrationLive,
+  CollaborativeAcceptanceToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(mcpTransport("/mcp")));
 
 export const layerWithDevice = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestMonitorToolkitRegistrationLive,
+  CollaborativeAcceptanceToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(mcpTransport("/mcp-device")));

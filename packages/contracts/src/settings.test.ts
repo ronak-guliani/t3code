@@ -270,6 +270,24 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     expect(DEFAULT_SERVER_SETTINGS.providerInstances).toEqual({});
   });
 
+  it("defaults text generation to Copilot", () => {
+    expect(DEFAULT_SERVER_SETTINGS.textGenerationModelSelection).toMatchObject({
+      instanceId: "copilot",
+      model: "gpt-6-luna",
+    });
+  });
+
+  it("defaults delegated threads to Copilot gpt-6-luna", () => {
+    expect(DEFAULT_SERVER_SETTINGS.delegatedThreadModelSelection).toMatchObject({
+      instanceId: "copilot",
+      model: "gpt-6-luna",
+    });
+    expect(decodeServerSettings({}).delegatedThreadModelSelection).toMatchObject({
+      instanceId: "copilot",
+      model: "gpt-6-luna",
+    });
+  });
+
   it("decodes a fully empty config (legacy on-disk shape) without complaint", () => {
     const decoded = decodeServerSettings({});
     expect(decoded.providerInstances).toEqual({});
@@ -396,6 +414,59 @@ describe("RECOMMENDED_FONT_SIZES_BY_UI_DENSITY", () => {
     for (const sizes of Object.values(RECOMMENDED_FONT_SIZES_BY_UI_DENSITY)) {
       expect(sizes.sidebarMetaFontSize).toBeLessThan(sizes.sidebarFontSize);
     }
+  });
+});
+
+describe("ClientSettings.headerSidebarButtons", () => {
+  it("defaults all header and sidebar buttons to visible", () => {
+    expect(decodeClientSettings({}).headerShowProjectScripts).toBe(true);
+    expect(decodeClientSettings({}).headerShowOpenIn).toBe(true);
+    expect(decodeClientSettings({}).headerShowGitActions).toBe(true);
+    expect(decodeClientSettings({}).headerShowWorkflows).toBe(true);
+    expect(decodeClientSettings({}).headerShowWorkflowRuns).toBe(true);
+    expect(decodeClientSettings({}).headerShowExportChat).toBe(true);
+    expect(decodeClientSettings({}).headerShowInsightsToggle).toBe(true);
+    expect(decodeClientSettings({}).headerShowBrowserToggle).toBe(true);
+    expect(decodeClientSettings({}).headerShowFilesToggle).toBe(true);
+    expect(decodeClientSettings({}).headerShowTerminalToggle).toBe(true);
+    expect(decodeClientSettings({}).headerShowDiffToggle).toBe(true);
+    expect(decodeClientSettings({}).sidebarShowSearch).toBe(true);
+    expect(decodeClientSettings({}).sidebarShowPullRequests).toBe(true);
+    expect(decodeClientSettings({}).sidebarShowSkills).toBe(true);
+    expect(decodeClientSettings({}).sidebarShowNewThread).toBe(true);
+  });
+
+  it("defaults confirms off except the default-branch git guard", () => {
+    expect(decodeClientSettings({}).headerExportConfirm).toBe(false);
+    expect(decodeClientSettings({}).projectScriptsConfirmRun).toBe(false);
+    expect(decodeClientSettings({}).openInUpdatePreferred).toBe(true);
+    expect(decodeClientSettings({}).gitConfirmDefaultBranch).toBe(true);
+    expect(decodeClientSettings({}).gitShowQuickAction).toBe(true);
+    expect(decodeClientSettings({}).workflowConfirmRun).toBe(false);
+    expect(decodeClientSettings({}).workflowPrewarmOnHover).toBe(true);
+    expect(decodeClientSettings({}).workflowRunsShowBadge).toBe(true);
+    expect(decodeClientSettings({}).sidebarSearchShowShortcut).toBe(true);
+    expect(decodeClientSettings({}).sidebarNewThreadConfirm).toBe(false);
+  });
+
+  it("accepts visibility and behavior patches", () => {
+    expect(
+      decodeClientSettingsPatch({
+        headerShowGitActions: false,
+        headerShowExportChat: false,
+        sidebarShowSkills: false,
+        headerExportConfirm: true,
+        gitShowQuickAction: false,
+        workflowPrewarmOnHover: false,
+      }),
+    ).toEqual({
+      headerShowGitActions: false,
+      headerShowExportChat: false,
+      sidebarShowSkills: false,
+      headerExportConfirm: true,
+      gitShowQuickAction: false,
+      workflowPrewarmOnHover: false,
+    });
   });
 });
 

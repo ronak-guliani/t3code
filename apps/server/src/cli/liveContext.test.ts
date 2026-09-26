@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { runProcess } from "../processRunner.ts";
 import { WorkspacePathsLive } from "../workspace/Layers/WorkspacePaths.ts";
-import { findProjectForCli, type CliSnapshot } from "./liveContext.ts";
+import { findProjectForCli, findThreadForCli, type CliSnapshot } from "./liveContext.ts";
 
 const testLayer = WorkspacePathsLive.pipe(Layer.provideMerge(NodeServices.layer));
 
@@ -19,12 +19,19 @@ const project = (id: string, title: string, workspaceRoot: string) => ({
   deletedAt: null,
 });
 
-const thread = (id: string, projectId: string, worktreePath: string) => ({
+const thread = (
+  id: string,
+  projectId: string,
+  worktreePath: string,
+  archivedAt: string | null = null,
+  title?: string,
+) => ({
   id,
   projectId,
   worktreePath,
-  archivedAt: null,
+  archivedAt,
   deletedAt: null,
+  ...(title === undefined ? {} : { title }),
 });
 
 const snapshot = (
@@ -63,6 +70,7 @@ describe("findProjectForCli", () => {
     await expect(resolveProject(value, " project-1 ")).resolves.toMatchObject({
       id: "project-1",
     });
+
     await expect(resolveProject(value, "Project Two")).resolves.toMatchObject({
       id: "project-2",
     });
@@ -171,5 +179,47 @@ describe("findProjectForCli", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("findThreadForCli", () => {
+  it("keeps archived threads out of mutation-style resolution by default", async () => {
+    const value = snapshot(
+      [],
+      [thread("archived-thread", "project-1", "/unused/thread", "2026-09-15T00:00:00.000Z")],
+    );
+
+    await expect(Effect.runPromise(findThreadForCli(value, "archived-thread"))).rejects.toThrow(
+      "Unarchive it first",
+    );
+    await expect(
+      Effect.runPromise(findThreadForCli(value, "archived-thread", { includeArchived: true })),
+    ).resolves.toMatchObject({ id: "archived-thread", archivedAt: "2026-09-15T00:00:00.000Z" });
+  });
+
+  it("resolves archived titles only when explicitly requested", async () => {
+    const value = snapshot(
+      [],
+      [
+        thread(
+          "archived-one",
+          "project-1",
+          "/unused/one",
+          "2026-09-15T00:00:00.000Z",
+          "Archived title",
+        ),
+        thread(
+          "archived-two",
+          "project-1",
+          "/unused/two",
+          "2026-09-15T00:00:00.000Z",
+          "Archived title",
+        ),
+      ],
+    );
+
+    await expect(
+      Effect.runPromise(findThreadForCli(value, "Archived title", { includeArchived: true })),
+    ).rejects.toThrow("Multiple threads are named 'Archived title'.");
   });
 });

@@ -208,17 +208,22 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
   });
 
   const summary: Effect.Effect<DeviceHostSummary> = Effect.gen(function* () {
-    const [platforms, hubInstalled, agentDeviceInstalled] = yield* Effect.all([
-      Effect.all([platformAvailability("ios"), platformAvailability("android")]),
-      isDeviceHubInstalled(config.baseDir).pipe(
-        Effect.provideService(FileSystem.FileSystem, fs),
-        Effect.provideService(Path.Path, path),
-      ),
-      isAgentDeviceInstalled(config.baseDir).pipe(
-        Effect.provideService(FileSystem.FileSystem, fs),
-        Effect.provideService(Path.Path, path),
-      ),
-    ]);
+    const [platforms, hubInstalled, agentDeviceInstalled] = yield* Effect.all(
+      [
+        Effect.all([platformAvailability("ios"), platformAvailability("android")], {
+          concurrency: "unbounded",
+        }),
+        isDeviceHubInstalled(config.baseDir).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+        ),
+        isAgentDeviceInstalled(config.baseDir).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+        ),
+      ],
+      { concurrency: "unbounded" },
+    );
     return {
       id: hostId,
       kind: "local",
@@ -545,10 +550,13 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
     yield* onPhase("starting");
     const hub = yield* spawnHub(hubTool);
     const candidate = helperPaths(hubTool);
-    const [axExists, cliExists] = yield* Effect.all([
-      fs.exists(candidate.serveSimAxSettings).pipe(Effect.orElseSucceed(() => false)),
-      fs.exists(candidate.serveSimCli).pipe(Effect.orElseSucceed(() => false)),
-    ]);
+    const [axExists, cliExists] = yield* Effect.all(
+      [
+        fs.exists(candidate.serveSimAxSettings).pipe(Effect.orElseSucceed(() => false)),
+        fs.exists(candidate.serveSimCli).pipe(Effect.orElseSucceed(() => false)),
+      ],
+      { concurrency: "unbounded" },
+    );
     const next: RunningHost = {
       hub,
       agentDevice: null,

@@ -1,16 +1,18 @@
 import {
   type ChatAttachment,
+  type CollaborationExecutionAuthority,
   CommandId,
   EventId,
   type ModelSelection,
-  type MessageId,
+  MessageId,
   type OrchestrationEvent,
+  type OrchestrationThread,
   ProviderDriverKind,
   type OrchestrationSession,
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
-  type TurnId,
+  TurnId,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import { Cache, Cause, Duration, Effect, Equal, Layer, Option, Schema, Stream } from "effect";
@@ -37,6 +39,12 @@ import {
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
+import { WorkspaceOwnershipRepositoryLive } from "../../persistence/Layers/WorkspaceOwnership.ts";
+import {
+  acceptanceAuthorityForThread,
+  acceptanceAuthorityMatchesThread,
+} from "../../collaborativeAcceptance/authority.ts";
 
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -48,6 +56,7 @@ type ProviderIntentEvent = Extract<
       | "thread.runtime-mode-set"
       | "thread.provider-fork-requested"
       | "thread.turn-start-requested"
+      | "thread.turn-steer-requested"
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
@@ -111,6 +120,27 @@ export function providerErrorLabelFromInstanceHint(input: {
     input.instanceId ?? input.modelSelectionInstanceId ?? input.sessionProvider,
   );
 }
+
+export const validateProviderExecutionAuthority = (
+  thread: OrchestrationThread,
+  supplied: CollaborationExecutionAuthority | undefined,
+) => {
+  if (
+    supplied !== undefined &&
+    (supplied === null ||
+      typeof supplied !== "object" ||
+      !acceptanceAuthorityMatchesThread(supplied, thread))
+  ) {
+    return Effect.fail(
+      new ProviderAdapterRequestError({
+        provider: providerErrorLabel(thread.session?.providerName ?? undefined),
+        method: "thread.turn.start",
+        detail: `Thread '${thread.id}' received execution authority that does not match its current durable delegation.`,
+      }),
+    );
+  }
+  return Effect.succeed(supplied ?? acceptanceAuthorityForThread(thread));
+};
 
 function findProviderAdapterRequestError(
   cause: Cause.Cause<ProviderServiceError>,
@@ -182,6 +212,7 @@ const make = Effect.gen(function* () {
   const gitStatusBroadcaster = yield* GitStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const workspaceOwnership = yield* WorkspaceOwnershipRepository;
   const handledTurnStartKeys = yield* Cache.make<string, true>({
     capacity: HANDLED_TURN_START_KEY_MAX,
     timeToLive: HANDLED_TURN_START_KEY_TTL,
@@ -202,6 +233,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly kind:
       | "provider.turn.start.failed"
+      | "provider.turn.steer.failed"
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
@@ -376,7 +408,6 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
-
     const cwd = resolveThreadWorkspaceCwd({
       thread,
       projects: readModel.projects,
@@ -395,6 +426,9 @@ const make = Effect.gen(function* () {
     const baselineMatchesWorkspace = yield* checkpointStore.checkpointRefMatchesWorkspace({
       cwd,
       checkpointRef,
+      ...(thread.workspaceBinding !== undefined
+        ? { workspaceBinding: thread.workspaceBinding }
+        : {}),
     });
     if (baselineMatchesWorkspace) {
       return;
@@ -403,14 +437,28 @@ const make = Effect.gen(function* () {
     yield* checkpointStore.captureCheckpoint({
       cwd,
       checkpointRef,
+      ...(thread.workspaceBinding !== undefined
+        ? { workspaceBinding: thread.workspaceBinding }
+        : {}),
     });
   });
+
+  const assertWorkspaceOwnershipForThread = Effect.fn("assertWorkspaceOwnershipForThread")(
+    function* (threadId: ThreadId) {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const thread = readModel.threads.find((entry) => entry.id === threadId);
+      if (thread?.workspaceBinding !== undefined) {
+        yield* workspaceOwnership.assertOwned(thread.workspaceBinding, thread.id);
+      }
+    },
+  );
 
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
     createdAt: string,
     options?: {
       readonly modelSelection?: ModelSelection;
+      readonly executionAuthority?: CollaborationExecutionAuthority;
     },
   ) {
     const readModel = yield* orchestrationEngine.getReadModel();
@@ -419,6 +467,10 @@ const make = Effect.gen(function* () {
       return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
     }
 
+    const executionAuthority = yield* validateProviderExecutionAuthority(
+      thread,
+      options?.executionAuthority,
+    );
     const desiredRuntimeMode = thread.runtimeMode;
     const requestedModelSelection = options?.modelSelection;
     const resolveActiveSession = (threadId: ThreadId) =>
@@ -542,6 +594,7 @@ const make = Effect.gen(function* () {
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         runtimeMode: desiredRuntimeMode,
+        ...(executionAuthority === undefined ? {} : { executionAuthority }),
       });
 
     const bindSessionToThread = (session: ProviderSession) =>
@@ -651,6 +704,7 @@ const make = Effect.gen(function* () {
     readonly interactionMode?: "default" | "plan";
     readonly delegationAssignmentId?: MessageId;
     readonly delegationDispatchId?: string;
+    readonly executionAuthority?: CollaborationExecutionAuthority;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -659,11 +713,14 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
-    yield* ensureSessionForThread(
-      input.threadId,
-      input.createdAt,
-      input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {},
+    const executionAuthority = yield* validateProviderExecutionAuthority(
+      thread,
+      input.executionAuthority,
     );
+    yield* ensureSessionForThread(input.threadId, input.createdAt, {
+      ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+      ...(executionAuthority !== undefined ? { executionAuthority } : {}),
+    });
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }
@@ -709,6 +766,7 @@ const make = Effect.gen(function* () {
       ...(input.delegationDispatchId !== undefined
         ? { delegationDispatchId: input.delegationDispatchId }
         : {}),
+      ...(executionAuthority === undefined ? {} : { executionAuthority }),
     };
   });
 
@@ -958,22 +1016,6 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const isFirstUserMessageTurn =
-      thread.messages.filter((entry) => entry.role === "user").length === 1;
-    if (isFirstUserMessageTurn) {
-      const generationInput = {
-        messageText: message.text,
-        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-      };
-
-      yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
-        threadId: event.payload.threadId,
-        branch: thread.branch,
-        worktreePath: thread.worktreePath,
-        ...generationInput,
-      }).pipe(Effect.forkScoped);
-    }
-
     const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
       if (Cause.hasInterruptsOnly(cause)) {
         return Effect.void;
@@ -1011,6 +1053,32 @@ const make = Effect.gen(function* () {
         ),
       );
 
+    const ownershipIsCurrent = yield* assertWorkspaceOwnershipForThread(
+      event.payload.threadId,
+    ).pipe(
+      Effect.as(true),
+      Effect.catchCause((cause) => recoverTurnStartFailure(cause).pipe(Effect.as(false))),
+    );
+    if (!ownershipIsCurrent) {
+      return;
+    }
+
+    const isFirstUserMessageTurn =
+      thread.messages.filter((entry) => entry.role === "user").length === 1;
+    if (isFirstUserMessageTurn) {
+      const generationInput = {
+        messageText: message.text,
+        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+      };
+
+      yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
+        threadId: event.payload.threadId,
+        branch: thread.branch,
+        worktreePath: thread.worktreePath,
+        ...generationInput,
+      }).pipe(Effect.forkScoped);
+    }
+
     yield* ensurePreTurnBaselineForThread(event.payload.threadId).pipe(
       Effect.catch((error) =>
         Effect.logWarning("provider command reactor failed to capture pre-turn checkpoint", {
@@ -1033,6 +1101,9 @@ const make = Effect.gen(function* () {
         : {}),
       ...(event.payload.delegationDispatchId !== undefined
         ? { delegationDispatchId: event.payload.delegationDispatchId }
+        : {}),
+      ...(event.payload.executionAuthority !== undefined
+        ? { executionAuthority: event.payload.executionAuthority }
         : {}),
       createdAt: event.payload.createdAt,
     }).pipe(
@@ -1158,6 +1229,70 @@ const make = Effect.gen(function* () {
       activityTurnId: event.payload.turnId ?? thread.session?.activeTurnId ?? null,
       createdAt: event.payload.createdAt,
     });
+  });
+
+  const processTurnSteerRequested = Effect.fn("processTurnSteerRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.turn-steer-requested" }>,
+  ) {
+    const steerFailed = (detail: string, options?: { readonly messageId?: MessageId }) =>
+      appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.turn.steer.failed",
+        summary: "Provider turn steer failed",
+        detail,
+        turnId: event.payload.turnId,
+        createdAt: event.payload.createdAt,
+        ...(options?.messageId !== undefined ? { messageId: options.messageId } : {}),
+      });
+
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread) {
+      return;
+    }
+    const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
+    if (!message || message.role !== "user") {
+      yield* steerFailed(
+        `User message '${event.payload.messageId}' was not found for turn steer request.`,
+        { messageId: event.payload.messageId },
+      );
+      return;
+    }
+    // The steered turn must still be the active provider turn. A completed,
+    // interrupted, or replaced turn fails here without touching provider state,
+    // so a late steer can never resurrect or cross into another turn.
+    const activeTurnId = thread.session?.activeTurnId ?? null;
+    if (thread.session?.status !== "running" || activeTurnId !== event.payload.turnId) {
+      yield* steerFailed(
+        `Turn '${event.payload.turnId}' is no longer the active turn on thread '${event.payload.threadId}'. Queue the message or send it as a new turn.`,
+        { messageId: event.payload.messageId },
+      );
+      return;
+    }
+    const normalizedInput = toNonEmptyProviderInput(message.text);
+    const normalizedAttachments = message.attachments ?? [];
+    if (!normalizedInput && normalizedAttachments.length === 0) {
+      yield* steerFailed("Steer input is empty.", { messageId: event.payload.messageId });
+      return;
+    }
+    yield* providerService
+      .steerTurn({
+        threadId: event.payload.threadId,
+        turnId: event.payload.turnId,
+        ...(normalizedInput ? { input: normalizedInput } : {}),
+        ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
+      })
+      .pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.void;
+          }
+          // Activity-only failure: the running turn is left untouched so it
+          // can keep streaming; no session state is rewritten here.
+          return steerFailed(formatFailureDetail(cause), {
+            messageId: event.payload.messageId,
+          });
+        }),
+      );
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (
@@ -1330,6 +1465,9 @@ const make = Effect.gen(function* () {
       case "thread.turn-start-requested":
         yield* processTurnStartRequested(event);
         return;
+      case "thread.turn-steer-requested":
+        yield* processTurnSteerRequested(event);
+        return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
@@ -1384,6 +1522,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.provider-fork-requested" ||
         event.type === "thread.turn-start-requested" ||
+        event.type === "thread.turn-steer-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
@@ -1406,4 +1545,5 @@ const make = Effect.gen(function* () {
 
 export const ProviderCommandReactorLive = Layer.effect(ProviderCommandReactor, make).pipe(
   Layer.provideMerge(CheckoutCoordinatorLive),
+  Layer.provideMerge(WorkspaceOwnershipRepositoryLive),
 );

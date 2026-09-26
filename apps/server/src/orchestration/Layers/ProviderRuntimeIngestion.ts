@@ -1,4 +1,3 @@
-// @ts-nocheck
 import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
@@ -1372,6 +1371,7 @@ const make = Effect.gen(function* () {
       if (!thread?.reviewSnapshot) {
         return;
       }
+      const reviewSnapshot = thread.reviewSnapshot;
       const output =
         thread.messages
           .filter(
@@ -1397,10 +1397,10 @@ const make = Effect.gen(function* () {
         thread,
         projects: readModel.projects,
       });
-      if (cwd === null) {
+      if (cwd == null) {
         yield* Effect.logWarning("Discarding review result because the worktree is unavailable", {
           threadId: input.threadId,
-          snapshotHash: thread.reviewSnapshot.diffHash,
+          snapshotHash: reviewSnapshot.diffHash,
         });
         return;
       }
@@ -1408,12 +1408,12 @@ const make = Effect.gen(function* () {
       // the diff as it stands now rather than the snapshot taken at thread
       // creation, which is stale once the user pushes fixes and re-reviews.
       const snapshot = yield* reviewSnapshotVerifier
-        .currentSnapshot({ cwd, snapshot: thread.reviewSnapshot })
+        .currentSnapshot({ cwd, snapshot: reviewSnapshot })
         .pipe(
           Effect.tapError((error) =>
             Effect.logWarning("Discarding review result because the diff could not be resolved", {
               threadId: input.threadId,
-              snapshotHash: thread.reviewSnapshot.diffHash,
+              snapshotHash: reviewSnapshot.diffHash,
               error,
             }),
           ),
@@ -1912,6 +1912,24 @@ const make = Effect.gen(function* () {
           }
         }
 
+        if (event.type === "turn.completed" && !isDuplicateCompletionAfterInterruption) {
+          yield* Effect.forEach(
+            runtimeEventToActivities(
+              event.turnId === undefined && lifecycleTurnId !== undefined
+                ? { ...event, turnId: lifecycleTurnId }
+                : event,
+            ),
+            (activity) =>
+              orchestrationEngine.dispatch({
+                type: "thread.activity.append",
+                commandId: providerCommandId(event, "thread-activity-append"),
+                threadId: thread.id,
+                activity,
+                createdAt: activity.createdAt,
+              }),
+          ).pipe(Effect.asVoid);
+        }
+
         yield* dispatchThreadLifecycleUpdate();
         if (event.type === "turn.completed" && lifecycleTurnId !== undefined) {
           yield* persistReviewResult({
@@ -2245,15 +2263,17 @@ const make = Effect.gen(function* () {
 
       const activities = isDuplicateCompletionAfterInterruption
         ? []
-        : event.type === "item.updated" && !shouldProjectToolUpdate(event)
+        : event.type === "turn.completed"
           ? []
-          : runtimeEventToActivities(
-              event.type === "turn.aborted" &&
-                event.turnId === undefined &&
-                lifecycleTurnId !== undefined
-                ? { ...event, turnId: lifecycleTurnId }
-                : event,
-            );
+          : event.type === "item.updated" && !shouldProjectToolUpdate(event)
+            ? []
+            : runtimeEventToActivities(
+                event.type === "turn.aborted" &&
+                  event.turnId === undefined &&
+                  lifecycleTurnId !== undefined
+                  ? { ...event, turnId: lifecycleTurnId }
+                  : event,
+              );
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",

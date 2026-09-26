@@ -161,11 +161,13 @@ export const makeThreadTitleReactor = Effect.gen(function* () {
     if (thread.title !== previousTitle) {
       return { _tag: "Superseded" } as const;
     }
-    const cwd =
-      resolveThreadWorkspaceCwd({
-        thread,
-        projects: (yield* orchestrationEngine.getReadModel()).projects,
-      }) ?? process.cwd();
+    const cwd = resolveThreadWorkspaceCwd({
+      thread,
+      projects: (yield* orchestrationEngine.getReadModel()).projects,
+    });
+    if (!cwd) {
+      return { _tag: "Completed", title: undefined } as const;
+    }
     const { textGenerationModelSelection: modelSelection } =
       yield* serverSettingsService.getSettings;
     const generated = yield* textGeneration.generateThreadTitle({
@@ -211,11 +213,13 @@ export const makeThreadTitleReactor = Effect.gen(function* () {
       return;
     }
 
-    const cwd =
-      resolveThreadWorkspaceCwd({
-        thread,
-        projects: (yield* orchestrationEngine.getReadModel()).projects,
-      }) ?? process.cwd();
+    const cwd = resolveThreadWorkspaceCwd({
+      thread,
+      projects: (yield* orchestrationEngine.getReadModel()).projects,
+    });
+    if (!cwd) {
+      return;
+    }
     const { textGenerationModelSelection: modelSelection } =
       yield* serverSettingsService.getSettings;
     const attachments = message.attachments ?? [];

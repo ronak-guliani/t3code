@@ -209,27 +209,23 @@ export const make = Effect.gen(function* () {
       Effect.all(
         [
           cli.getPullRequestDetail(input),
-          cli.getRepositoryAccess({
-            cwd: input.cwd,
-            repository: input.repository,
-            host: input.host,
-          }),
-          // A small permissions query replaces the deeply paginated review-thread walk on the
-          // core path. Writes ask again immediately before mutating, so this is presentation.
+          // One GraphQL read for the repository's merge settings and the viewer's standing,
+          // replacing the `gh repo view` plus a second permissions query. Writes ask again
+          // immediately before mutating, so this is presentation.
           cli.getViewerAccess(input),
         ],
-        { concurrency: 3 },
+        { concurrency: 2 },
       ).pipe(
         Effect.mapError(fail("getChangeRequest")),
         Effect.map(
-          ([pullRequest, repository, viewerAccess]): ProviderChangeRequestDetail => ({
+          ([pullRequest, viewerAccess]): ProviderChangeRequestDetail => ({
             ...pullRequest,
             reviewers: pullRequest.reviewRequestLogins.map((login) => ({
               login,
               name: null,
               avatarUrl: null,
             })),
-            mergeCapabilities: repository.mergeCapabilities,
+            mergeCapabilities: viewerAccess.mergeCapabilities,
             viewerPermissions: gitHubViewerPermissions(viewerAccess),
           }),
         ),

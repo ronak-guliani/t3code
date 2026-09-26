@@ -6,6 +6,7 @@ import {
   AuthTerminalOperateScope,
 } from "@t3tools/contracts";
 import { DateTime, Duration, Effect, Fiber, Layer, Stream } from "effect";
+import * as Redacted from "effect/Redacted";
 import { TestClock } from "effect/testing";
 
 import type { ServerConfigShape } from "../../config.ts";
@@ -21,6 +22,30 @@ import {
   SessionCredentialServiceBase,
   SessionCredentialServiceLive,
 } from "./SessionCredentialService.ts";
+import { resolveReusableDevAuth } from "../ReusableDevAuth.ts";
+
+const DEV_AUTH_TOKEN = "reusable-dev-auth-token-that-is-long-enough";
+
+const makeDevSessionCredentialLayer = (devAuthToken?: string) =>
+  SessionCredentialServiceLive.pipe(
+    Layer.provide(SqlitePersistenceMemory),
+    Layer.provide(ServerSecretStoreLive),
+    Layer.provide(
+      Layer.effect(
+        ServerConfig,
+        Effect.gen(function* () {
+          const config = yield* ServerConfig;
+          return {
+            ...config,
+            devUrl: new URL("http://localhost:5733"),
+            ...(devAuthToken === undefined
+              ? { devAuthToken: undefined }
+              : { devAuthToken: Redacted.make(devAuthToken) }),
+          } satisfies ServerConfigShape;
+        }),
+      ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-auth-dev-test-" }))),
+    ),
+  );
 
 const makeServerConfigLayer = (
   overrides?: Partial<Pick<ServerConfigShape, "desktopBootstrapToken">>,
@@ -402,5 +427,45 @@ it.layer(NodeServices.layer)("SessionCredentialServiceLive", (it) => {
         ),
       );
     },
+  );
+
+  it.effect("verifies the configured reusable dev token as an owner session", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionCredentialService;
+      const verified = yield* sessions.verify(DEV_AUTH_TOKEN);
+
+      expect(verified.role).toBe("owner");
+      expect(verified.subject).toBe("reusable-dev-token");
+      expect(verified.sessionId.startsWith("dev-auth-")).toBe(true);
+    }).pipe(Effect.provide(makeDevSessionCredentialLayer(DEV_AUTH_TOKEN))),
+  );
+
+  it.effect("rejects unknown tokens and revoked dev sessions", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionCredentialService;
+      const unknown = yield* Effect.flip(sessions.verify("not-the-dev-token"));
+      expect(unknown._tag).toBe("SessionCredentialError");
+
+      const devAuth = resolveReusableDevAuth({
+        mode: "web",
+        devUrl: new URL("http://localhost:5733"),
+        devAuthToken: Redacted.make(DEV_AUTH_TOKEN),
+      });
+      expect(devAuth?.sessionId.startsWith("dev-auth-")).toBe(true);
+      if (devAuth === undefined) {
+        throw new Error("expected reusable dev auth to resolve");
+      }
+      yield* sessions.revoke(devAuth.sessionId);
+      const revoked = yield* Effect.flip(sessions.verify(DEV_AUTH_TOKEN));
+      expect(revoked.message).toContain("revoked");
+    }).pipe(Effect.provide(makeDevSessionCredentialLayer(DEV_AUTH_TOKEN))),
+  );
+
+  it.effect("ignores the dev token when none is configured", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionCredentialService;
+      const error = yield* Effect.flip(sessions.verify(DEV_AUTH_TOKEN));
+      expect(error._tag).toBe("SessionCredentialError");
+    }).pipe(Effect.provide(makeDevSessionCredentialLayer())),
   );
 });

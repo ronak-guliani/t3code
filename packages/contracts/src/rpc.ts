@@ -9,6 +9,18 @@ import {
 import { ProviderSetupError } from "./providerSetup.ts";
 import { UsageSummaryInput, UsageSummary, UsageReadError, UsagePricing } from "./usage.ts";
 import { NonNegativeInt } from "./baseSchemas.ts";
+import { ThreadId } from "./baseSchemas.ts";
+import {
+  CollaborativeAcceptanceAssessmentSubmission,
+  CollaborativeAcceptanceCaseLookupError,
+  CollaborativeAcceptanceCaseLookupInput,
+  CollaborativeAcceptanceCaseLookupResult,
+  CollaborativeAcceptanceCandidateSubmission,
+  CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptanceError,
+  CollaborativeAcceptancePauseReason,
+  CollaborativeAcceptanceStatus,
+} from "./collaborativeAcceptance.ts";
 import {
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
@@ -82,6 +94,7 @@ import {
   GitResolvePullRequestResult,
   GitRunStackedActionInput,
   GitStatusInput,
+  GitStatusLocalResult,
   GitStatusResult,
   GitStatusStreamEvent,
 } from "./git.ts";
@@ -94,6 +107,7 @@ import {
   OrchestrationGetFullThreadDiffStateError,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetSnapshotError,
+  OrchestrationReadThreadInputError,
   OrchestrationGetThreadActivitiesError,
   OrchestrationGetThreadActivitiesInput,
   OrchestrationGetTurnDiffError,
@@ -328,6 +342,7 @@ export const WS_METHODS = {
   // Git methods
   gitPull: "git.pull",
   gitRefreshStatus: "git.refreshStatus",
+  gitLocalStatus: "git.localStatus",
   gitRunStackedAction: "git.runStackedAction",
   gitListBranches: "git.listBranches",
   gitCreateWorktree: "git.createWorktree",
@@ -436,6 +451,14 @@ export const WS_METHODS = {
   pullRequestMonitorsTransfer: "pullRequestMonitors.transfer",
   pullRequestMonitorsSubmitFindings: "pullRequestMonitors.submitFindings",
   pullRequestMonitorsLaunchFallback: "pullRequestMonitors.launchFallback",
+
+  collaborativeAcceptanceSubmitCandidate: "collaborativeAcceptance.submitCandidate",
+  collaborativeAcceptanceRequestReview: "collaborativeAcceptance.requestReview",
+  collaborativeAcceptanceStatus: "collaborativeAcceptance.status",
+  collaborativeAcceptanceResolveForPullRequest: "collaborativeAcceptance.resolveForPullRequest",
+  collaborativeAcceptanceSubmitAssessment: "collaborativeAcceptance.submitAssessment",
+  collaborativeAcceptancePause: "collaborativeAcceptance.pause",
+  collaborativeAcceptanceResume: "collaborativeAcceptance.resume",
 
   // Streaming subscriptions
   subscribeGitStatus: "subscribeGitStatus",
@@ -802,6 +825,80 @@ export const WsPullRequestMonitorsLaunchFallbackRpc = Rpc.make(
   },
 );
 
+const CollaborativeAcceptanceCaseInput = Schema.Struct({
+  threadId: ThreadId,
+  caseId: CollaborativeAcceptanceCaseId,
+});
+
+export const WsCollaborativeAcceptanceSubmitCandidateRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceSubmitCandidate,
+  {
+    payload: Schema.Struct({
+      threadId: ThreadId,
+      submission: CollaborativeAcceptanceCandidateSubmission,
+    }),
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
+  },
+);
+
+export const WsCollaborativeAcceptanceRequestReviewRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceRequestReview,
+  {
+    payload: CollaborativeAcceptanceCaseInput,
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
+  },
+);
+
+export const WsCollaborativeAcceptanceStatusRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceStatus,
+  {
+    payload: CollaborativeAcceptanceCaseInput,
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
+  },
+);
+
+export const WsCollaborativeAcceptanceResolveForPullRequestRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceResolveForPullRequest,
+  {
+    payload: CollaborativeAcceptanceCaseLookupInput,
+    success: CollaborativeAcceptanceCaseLookupResult,
+    error: CollaborativeAcceptanceCaseLookupError,
+  },
+);
+
+export const WsCollaborativeAcceptanceSubmitAssessmentRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceSubmitAssessment,
+  {
+    payload: Schema.Struct({
+      threadId: ThreadId,
+      submission: CollaborativeAcceptanceAssessmentSubmission,
+    }),
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
+  },
+);
+
+export const WsCollaborativeAcceptancePauseRpc = Rpc.make(WS_METHODS.collaborativeAcceptancePause, {
+  payload: Schema.Struct({
+    ...CollaborativeAcceptanceCaseInput.fields,
+    reason: CollaborativeAcceptancePauseReason,
+  }),
+  success: CollaborativeAcceptanceStatus,
+  error: CollaborativeAcceptanceError,
+});
+
+export const WsCollaborativeAcceptanceResumeRpc = Rpc.make(
+  WS_METHODS.collaborativeAcceptanceResume,
+  {
+    payload: CollaborativeAcceptanceCaseInput,
+    success: CollaborativeAcceptanceStatus,
+    error: CollaborativeAcceptanceError,
+  },
+);
+
 export const WsSubscribeDiscoveredLocalServersRpc = Rpc.make(
   WS_METHODS.subscribeDiscoveredLocalServers,
   {
@@ -827,6 +924,12 @@ export const WsGitPullRpc = Rpc.make(WS_METHODS.gitPull, {
 export const WsGitRefreshStatusRpc = Rpc.make(WS_METHODS.gitRefreshStatus, {
   payload: GitStatusInput,
   success: GitStatusResult,
+  error: GitManagerServiceError,
+});
+
+export const WsGitLocalStatusRpc = Rpc.make(WS_METHODS.gitLocalStatus, {
+  payload: GitStatusInput,
+  success: GitStatusLocalResult,
   error: GitManagerServiceError,
 });
 
@@ -1308,6 +1411,11 @@ export const WsOrchestrationGetArchivedShellSnapshotRpc = Rpc.make(
 );
 
 export const WsRpcGroup = RpcGroup.make(
+  Rpc.make(ORCHESTRATION_WS_METHODS.readThread, {
+    payload: OrchestrationRpcSchemas.readThread.input,
+    success: OrchestrationRpcSchemas.readThread.output,
+    error: Schema.Union([OrchestrationReadThreadInputError, OrchestrationGetSnapshotError]),
+  }),
   WsServerProbeRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
@@ -1365,6 +1473,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsPullRequestMonitorsTransferRpc,
   WsPullRequestMonitorsSubmitFindingsRpc,
   WsPullRequestMonitorsLaunchFallbackRpc,
+  WsCollaborativeAcceptanceSubmitCandidateRpc,
+  WsCollaborativeAcceptanceRequestReviewRpc,
+  WsCollaborativeAcceptanceStatusRpc,
+  WsCollaborativeAcceptanceResolveForPullRequestRpc,
+  WsCollaborativeAcceptanceSubmitAssessmentRpc,
+  WsCollaborativeAcceptancePauseRpc,
+  WsCollaborativeAcceptanceResumeRpc,
   WsSubscribeDiscoveredLocalServersRpc,
   WsDeviceConfigureRpc,
   WsDeviceListRpc,
@@ -1378,6 +1493,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeGitStatusRpc,
   WsGitPullRpc,
   WsGitRefreshStatusRpc,
+  WsGitLocalStatusRpc,
   WsGitRunStackedActionRpc,
   WsGitResolvePullRequestRpc,
   WsGitListOpenPullRequestsRpc,

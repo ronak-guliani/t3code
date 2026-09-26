@@ -1,5 +1,19 @@
-import { PlusIcon, QrCodeIcon } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ChevronRightIcon,
+  EllipsisIcon,
+  KeyboardIcon,
+  LaptopIcon,
+  Link2Icon,
+  MonitorSmartphoneIcon,
+  PlusIcon,
+  QrCodeIcon,
+  RefreshCwIcon,
+  ServerIcon,
+  ShieldCheckIcon,
+  SmartphoneIcon,
+  Trash2Icon,
+} from "lucide-react";
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
   type AuthClientSession,
   type AuthPairingLink,
@@ -13,6 +27,7 @@ import { cn } from "../../lib/utils";
 import { formatElapsedDurationLabel, formatExpiresInLabel } from "../../timestampFormat";
 import {
   SettingsPageContainer,
+  SettingsPageHeader,
   SettingsRow,
   SettingsSection,
   useRelativeTimeTick,
@@ -45,6 +60,10 @@ import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Textarea } from "../ui/textarea";
 import {
   createServerPairingCredential,
@@ -167,11 +186,177 @@ function getSavedBackendStatusTooltip(
     : "Not connected yet.";
 }
 
-/** Direct row in the card – same pattern as the Provider / ACP-agent list rows. */
-const ITEM_ROW_CLASSNAME = "border-t border-border/60 px-4 py-4 first:border-t-0 sm:px-5";
+/**
+ * Shared list rhythm for every Connections list, borrowed from upstream's
+ * EnvironmentRow: one leading icon, a title + status line, and actions that
+ * sit right on desktop and wrap underneath on mobile.
+ */
+function ConnectionListRow({
+  icon,
+  title,
+  meta,
+  error,
+  actions,
+  dimmed = false,
+}: {
+  icon: ReactNode;
+  title: ReactNode;
+  meta?: ReactNode;
+  error?: ReactNode;
+  actions?: ReactNode;
+  dimmed?: boolean;
+}) {
+  return (
+    <div className={cn("px-4 py-4 sm:px-5", dimmed && "opacity-70")}>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40 text-muted-foreground">
+            {icon}
+          </span>
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">{title}</div>
+            {meta}
+            {error}
+          </div>
+        </div>
+        {actions ? (
+          <div className="flex shrink-0 items-center gap-2 pl-11 sm:pl-0">{actions}</div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
-const ITEM_ROW_INNER_CLASSNAME =
-  "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between";
+type StatusPillTone = "live" | "pending" | "error" | "muted";
+
+const STATUS_PILL_TONE_CLASSNAME: Record<StatusPillTone, string> = {
+  live: "border-success/30 bg-success/10 text-success-foreground",
+  pending: "border-warning/30 bg-warning/10 text-warning-foreground",
+  error: "border-destructive/30 bg-destructive/10 text-destructive",
+  muted: "border-border/60 bg-muted/50 text-muted-foreground",
+};
+
+function StatusPill({
+  tone,
+  dotClassName,
+  pingClassName,
+  label,
+  tooltipText,
+}: {
+  tone: StatusPillTone;
+  dotClassName: string;
+  pingClassName?: string | null;
+  label: string;
+  tooltipText?: string | null;
+}) {
+  return (
+    <span
+      title={tooltipText ?? undefined}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] leading-4 font-medium whitespace-nowrap",
+        STATUS_PILL_TONE_CLASSNAME[tone],
+      )}
+    >
+      <ConnectionStatusDot dotClassName={dotClassName} pingClassName={pingClassName ?? null} />
+      {label}
+    </span>
+  );
+}
+
+/**
+ * Local equivalent of upstream's FoldedSettingsSection: the section starts
+ * collapsed behind a summary line so pairing details don't crowd the page.
+ * `autoOpen` covers data that arrives after mount (e.g. pairing links from
+ * the auth subscription): the section opens once it turns true unless the
+ * user already toggled it by hand.
+ */
+function CollapsibleSettingsSection({
+  title,
+  description,
+  summary,
+  headerAction,
+  defaultOpen = false,
+  autoOpen = false,
+  children,
+}: {
+  title: string;
+  description?: string;
+  summary?: string | null;
+  headerAction?: ReactNode;
+  defaultOpen?: boolean;
+  autoOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const [userToggled, setUserToggled] = useState(false);
+  useEffect(() => {
+    if (autoOpen && !userToggled) {
+      setOpen(true);
+    }
+  }, [autoOpen, userToggled]);
+  return (
+    <section className="space-y-2.5">
+      <div className="flex items-start justify-between gap-3 px-1">
+        <div className="min-w-0">
+          <h2 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-foreground/50">
+            <span className="inline-block h-px w-3 bg-border" aria-hidden />
+            {title}
+          </h2>
+          {description ? (
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground/80">{description}</p>
+          ) : null}
+        </div>
+        {headerAction ? <div className="flex shrink-0 items-center">{headerAction}</div> : null}
+      </div>
+      <div className="relative overflow-hidden rounded-2xl border bg-card text-card-foreground shadow-sm/4 not-dark:bg-clip-padding before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:shadow-none dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
+        <Collapsible
+          open={open}
+          onOpenChange={(next) => {
+            setUserToggled(true);
+            setOpen(next);
+          }}
+        >
+          <CollapsibleTrigger className="flex w-full items-center gap-2 px-4 py-3 text-left outline-none sm:px-5">
+            <ChevronRightIcon
+              aria-hidden
+              className={cn(
+                "size-4 shrink-0 text-muted-foreground transition-transform duration-150 motion-reduce:transition-none",
+                open && "rotate-90",
+              )}
+            />
+            <span className="shrink-0 text-sm font-medium text-foreground">
+              {open ? "Hide details" : "Show details"}
+            </span>
+            {summary ? (
+              <span className="min-w-0 truncate text-xs text-muted-foreground">{summary}</span>
+            ) : null}
+          </CollapsibleTrigger>
+          <CollapsiblePanel>
+            <div className="divide-y divide-border/60 border-t border-border/60">{children}</div>
+          </CollapsiblePanel>
+        </Collapsible>
+      </div>
+    </section>
+  );
+}
+
+function summarizeAuthorizedClients(
+  clientSessions: ReadonlyArray<ServerClientSessionRecord>,
+  pairingLinks: ReadonlyArray<ServerPairingLinkRecord>,
+): string | null {
+  const liveCount = clientSessions.filter((session) => session.current || session.connected).length;
+  const bits: Array<string> = [];
+  if (liveCount > 0) {
+    bits.push(`${liveCount} connected`);
+  }
+  if (pairingLinks.length > 0) {
+    bits.push(`${pairingLinks.length} pending ${pairingLinks.length === 1 ? "link" : "links"}`);
+  }
+  if (clientSessions.length > liveCount) {
+    bits.push(`${clientSessions.length - liveCount} offline`);
+  }
+  return bits.length > 0 ? bits.join(" · ") : null;
+}
 
 function sortDesktopPairingLinks(links: ReadonlyArray<ServerPairingLinkRecord>) {
   return [...links].toSorted(
@@ -334,62 +519,69 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
   }
 
   return (
-    <div className={ITEM_ROW_CLASSNAME}>
-      <div className={ITEM_ROW_INNER_CLASSNAME}>
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex min-h-5 items-center gap-1.5">
-            <ConnectionStatusDot
-              tooltipText={`Link created at ${formatAccessTimestamp(pairingLink.createdAt)}`}
-              dotClassName="bg-amber-400"
-            />
-            <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
-            <Popover>
-              {shareablePairingUrl ? (
-                <>
-                  <PopoverTrigger
-                    openOnHover
-                    delay={250}
-                    closeDelay={100}
-                    render={
-                      <button
-                        type="button"
-                        className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground/50 outline-none hover:text-foreground"
-                        aria-label="Show QR code"
-                      />
-                    }
-                  >
-                    <QrCodeIcon aria-hidden className="size-3" />
-                  </PopoverTrigger>
-                  <PopoverPopup side="top" align="start" tooltipStyle className="w-max">
-                    <QRCodeSvg
-                      value={shareablePairingUrl}
-                      size={88}
-                      level="M"
-                      marginSize={2}
-                      title="Pairing link — scan to open on another device"
+    <ConnectionListRow
+      icon={<Link2Icon aria-hidden className="size-4" />}
+      title={
+        <>
+          <h3 className="truncate text-sm font-medium text-foreground">{primaryLabel}</h3>
+          <StatusPill
+            tone="pending"
+            dotClassName="bg-amber-400"
+            label={formatExpiresInLabel(pairingLink.expiresAt, nowMs)}
+            tooltipText={`Link created at ${formatAccessTimestamp(pairingLink.createdAt)} · Expires ${expiresAbsolute}`}
+          />
+          <Popover>
+            {shareablePairingUrl ? (
+              <>
+                <PopoverTrigger
+                  openOnHover
+                  delay={250}
+                  closeDelay={100}
+                  render={
+                    <button
+                      type="button"
+                      className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground/50 outline-none hover:text-foreground"
+                      aria-label="Show QR code"
                     />
-                  </PopoverPopup>
-                </>
-              ) : null}
-            </Popover>
-          </div>
+                  }
+                >
+                  <QrCodeIcon aria-hidden className="size-3" />
+                </PopoverTrigger>
+                <PopoverPopup side="top" align="start" tooltipStyle className="w-max">
+                  <QRCodeSvg
+                    value={shareablePairingUrl}
+                    size={88}
+                    level="M"
+                    marginSize={2}
+                    title="Pairing link — scan to open on another device"
+                  />
+                </PopoverPopup>
+              </>
+            ) : null}
+          </Popover>
+        </>
+      }
+      meta={
+        <>
           <p className="text-xs text-muted-foreground" title={expiresAbsolute}>
-            {[roleLabel, formatExpiresInLabel(pairingLink.expiresAt, nowMs)].join(" · ")}
+            {roleLabel} pairing link
           </p>
           {shareablePairingUrl === null ? (
             <p className="text-[11px] text-muted-foreground/70">
               Copy the token and pair from another client using this backend&apos;s reachable host.
             </p>
           ) : null}
-        </div>
-        <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
+        </>
+      }
+      actions={
+        <>
           <Dialog open={isRevealDialogOpen} onOpenChange={setIsRevealDialogOpen}>
             {canCopyToClipboard ? (
-              <Button size="xs" variant="outline" onClick={handleCopy}>
-                {isCopied ? "Copied" : shareablePairingUrl ? "Copy" : "Copy token"}
+              <Button size="sm" variant="outline" onClick={handleCopy}>
+                {isCopied ? "Copied" : shareablePairingUrl ? "Copy link" : "Copy token"}
               </Button>
             ) : (
-              <DialogTrigger render={<Button size="xs" variant="outline" />}>
+              <DialogTrigger render={<Button size="sm" variant="outline" />}>
                 {shareablePairingUrl ? "Show link" : "Show token"}
               </DialogTrigger>
             )}
@@ -436,16 +628,17 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
             </DialogPopup>
           </Dialog>
           <Button
-            size="xs"
-            variant="destructive-outline"
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground hover:text-destructive"
             disabled={revokingPairingLinkId === pairingLink.id}
             onClick={() => void onRevoke(pairingLink.id)}
           >
             {revokingPairingLinkId === pairingLink.id ? "Revoking…" : "Revoke"}
           </Button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    />
   );
 });
 
@@ -485,40 +678,47 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
       clientSession.subject);
 
   return (
-    <div className={ITEM_ROW_CLASSNAME}>
-      <div className={ITEM_ROW_INNER_CLASSNAME}>
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex min-h-5 items-center gap-1.5">
-            <ConnectionStatusDot
-              tooltipText={statusTooltip}
-              dotClassName={isLive ? "bg-success" : "bg-muted-foreground/30"}
-              pingClassName={isLive ? "bg-success/60 duration-2000" : null}
-            />
-            <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
-            {clientSession.current ? (
-              <span className="text-[10px] text-muted-foreground/80 rounded-md border border-border/50 bg-muted/50 px-1 py-0.5">
-                This device
-              </span>
-            ) : null}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {[roleLabel, ...deviceInfoBits].join(" · ")}
-          </p>
-        </div>
-        <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
-          {!clientSession.current ? (
-            <Button
-              size="xs"
-              variant="destructive-outline"
-              disabled={revokingClientSessionId === clientSession.sessionId}
-              onClick={() => void onRevokeSession(clientSession.sessionId)}
-            >
-              {revokingClientSessionId === clientSession.sessionId ? "Revoking…" : "Revoke"}
-            </Button>
+    <ConnectionListRow
+      icon={<SmartphoneIcon aria-hidden className="size-4" />}
+      title={
+        <>
+          <h3 className="truncate text-sm font-medium text-foreground">{primaryLabel}</h3>
+          <StatusPill
+            tone={isLive ? "live" : "muted"}
+            dotClassName={isLive ? "bg-success" : "bg-muted-foreground/30"}
+            pingClassName={isLive ? "bg-success/60 duration-2000" : null}
+            label={isLive ? "Connected" : "Offline"}
+            tooltipText={statusTooltip}
+          />
+          {clientSession.current ? (
+            <Badge variant="outline" size="sm">
+              This device
+            </Badge>
           ) : null}
-        </div>
-      </div>
-    </div>
+        </>
+      }
+      meta={
+        <p
+          className="truncate text-xs text-muted-foreground"
+          title={[roleLabel, ...deviceInfoBits].join(" · ")}
+        >
+          {[roleLabel, ...deviceInfoBits].join(" · ")}
+        </p>
+      }
+      actions={
+        !clientSession.current ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground hover:text-destructive"
+            disabled={revokingClientSessionId === clientSession.sessionId}
+            onClick={() => void onRevokeSession(clientSession.sessionId)}
+          >
+            {revokingClientSessionId === clientSession.sessionId ? "Revoking…" : "Revoke"}
+          </Button>
+        ) : undefined
+      }
+    />
   );
 });
 
@@ -563,23 +763,21 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
     }
   }, [pairingLabel]);
 
+  const canRevokeOthers =
+    !isRevokingOtherClients && clientSessions.some((clientSession) => !clientSession.current);
+
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-1.5">
       <Button
-        size="xs"
-        variant="destructive-outline"
-        disabled={
-          isRevokingOtherClients || clientSessions.every((clientSession) => clientSession.current)
-        }
-        onClick={() => void onRevokeOtherClients()}
-      >
-        {isRevokingOtherClients ? "Revoking…" : "Revoke others"}
-      </Button>
-      <Button
-        size="xs"
-        variant="default"
+        size="sm"
+        variant="outline"
         disabled={isCreatingMobilePairing || !canCreateMobilePairing}
         onClick={onCreateMobilePairing}
+        title={
+          canCreateMobilePairing
+            ? "Show a QR code to pair a phone or tablet on your local network"
+            : "Enable local network access before pairing over LAN"
+        }
       >
         {isCreatingMobilePairing ? (
           <>
@@ -589,7 +787,7 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
         ) : (
           <>
             <QrCodeIcon className="size-3" />
-            Pair over LAN
+            Pair phone
           </>
         )}
       </Button>
@@ -604,7 +802,7 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
       >
         <DialogTrigger
           render={
-            <Button size="xs" variant="default">
+            <Button size="sm" variant="default">
               <PlusIcon className="size-3" />
               Create link
             </Button>
@@ -614,14 +812,14 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
           <DialogHeader>
             <DialogTitle>Create pairing link</DialogTitle>
             <DialogDescription>
-              Generate a one-time link that another device can use to pair with this backend as an
-              authorized client.
+              Generate a one-time link for a phone, tablet, or browser to pair with this machine.
+              The link expires automatically.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
             <label className="block">
               <span className="mb-1.5 block text-xs font-medium text-foreground">
-                Client label (optional)
+                Device label (optional)
               </span>
               <Input
                 value={pairingLabel}
@@ -646,6 +844,27 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
           </DialogFooter>
         </DialogPopup>
       </Dialog>
+      <Menu>
+        <MenuTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground hover:text-foreground"
+              aria-label="More device actions"
+            />
+          }
+        >
+          <EllipsisIcon className="size-4" />
+        </MenuTrigger>
+        <MenuPopup align="end" className="min-w-48">
+          <MenuItem disabled={!canRevokeOthers} onClick={() => void onRevokeOtherClients()}>
+            <Trash2Icon aria-hidden className="size-3.5" />
+            {isRevokingOtherClients ? "Revoking…" : "Revoke all other devices"}
+          </MenuItem>
+        </MenuPopup>
+      </Menu>
     </div>
   );
 });
@@ -693,9 +912,17 @@ const PairingClientsList = memo(function PairingClientsList({
       ))}
 
       {pairingLinks.length === 0 && clientSessions.length === 0 && !isLoading ? (
-        <div className={ITEM_ROW_CLASSNAME}>
-          <p className="text-xs text-muted-foreground/60">No pairing links or client sessions.</p>
-        </div>
+        <Empty className="gap-0 p-6">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <MonitorSmartphoneIcon aria-hidden />
+            </EmptyMedia>
+            <EmptyTitle>No paired devices yet</EmptyTitle>
+            <EmptyDescription>
+              Create a pairing link or pair your phone to see devices here.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       ) : null}
     </>
   );
@@ -728,19 +955,41 @@ function SavedBackendListRow({
 
   const enabled = record.enabled !== false;
   const connectionState = enabled ? (runtime?.connectionState ?? "disconnected") : "disconnected";
-  const stateDotClassName =
-    connectionState === "connected"
-      ? "bg-success"
-      : connectionState === "connecting"
-        ? "bg-warning"
-        : connectionState === "error"
-          ? "bg-destructive"
-          : "bg-muted-foreground/40";
+  const statusPill =
+    connectionState === "connected" ? (
+      <StatusPill
+        tone="live"
+        dotClassName="bg-success"
+        label="Connected"
+        tooltipText={getSavedBackendStatusTooltip(runtime, record, nowMs)}
+      />
+    ) : connectionState === "connecting" ? (
+      <StatusPill
+        tone="pending"
+        dotClassName="bg-warning"
+        pingClassName="bg-warning/60 duration-2000"
+        label="Connecting"
+        tooltipText={getSavedBackendStatusTooltip(runtime, record, nowMs)}
+      />
+    ) : connectionState === "error" ? (
+      <StatusPill
+        tone="error"
+        dotClassName="bg-destructive"
+        label="Connection error"
+        tooltipText={getSavedBackendStatusTooltip(runtime, record, nowMs)}
+      />
+    ) : (
+      <StatusPill
+        tone="muted"
+        dotClassName="bg-muted-foreground/40"
+        label={enabled ? "Offline" : "Paused"}
+        tooltipText={
+          enabled ? getSavedBackendStatusTooltip(runtime, record, nowMs) : "Off on this device"
+        }
+      />
+    );
   const roleLabel = runtime?.role ? (runtime.role === "owner" ? "Owner" : "Client") : null;
   const descriptorLabel = runtime?.descriptor?.label ?? null;
-  const statusTooltip = enabled
-    ? getSavedBackendStatusTooltip(runtime, record, nowMs)
-    : "Off on this device";
   const metadataBits = [
     roleLabel,
     record.lastConnectedAt
@@ -749,95 +998,176 @@ function SavedBackendListRow({
   ].filter((value): value is string => value !== null);
 
   return (
-    <div className={cn(ITEM_ROW_CLASSNAME, !enabled && "text-muted-foreground")}>
-      <div className={ITEM_ROW_INNER_CLASSNAME}>
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex min-h-5 items-center gap-1.5">
-            <ConnectionStatusDot
-              tooltipText={statusTooltip}
-              dotClassName={stateDotClassName}
-              pingClassName={
-                connectionState === "connecting" ? "bg-warning/60 duration-2000" : null
-              }
-            />
-            <h3 className="text-sm font-medium text-foreground">{record.label}</h3>
-          </div>
-          {metadataBits.length > 0 ? (
-            <p className="text-xs text-muted-foreground">{metadataBits.join(" · ")}</p>
-          ) : null}
-          {descriptorLabel && descriptorLabel !== record.label ? (
-            <p className="text-xs text-muted-foreground">Server label: {descriptorLabel}</p>
-          ) : null}
-          <p className="truncate text-xs text-muted-foreground">
-            {record.httpBaseUrl} · {enabled ? connectionState : "Off on this device"}
-          </p>
-          {enabled && runtime?.lastError ? (
-            <p className="truncate text-xs text-destructive" title={runtime.lastError}>
-              {runtime.lastError}
+    <>
+      <ConnectionListRow
+        dimmed={!enabled}
+        icon={<ServerIcon aria-hidden className="size-4" />}
+        title={
+          <>
+            <h3 className="truncate text-sm font-medium text-foreground">{record.label}</h3>
+            {statusPill}
+          </>
+        }
+        meta={
+          <>
+            {metadataBits.length > 0 ? (
+              <p className="text-xs text-muted-foreground">{metadataBits.join(" · ")}</p>
+            ) : null}
+            {descriptorLabel && descriptorLabel !== record.label ? (
+              <p className="text-xs text-muted-foreground">Server label: {descriptorLabel}</p>
+            ) : null}
+            <p
+              className="truncate font-mono text-[11px] text-muted-foreground/80"
+              title={record.httpBaseUrl}
+            >
+              {record.httpBaseUrl}
             </p>
-          ) : null}
-        </div>
-        <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={!enabled || isSwitching || reconnectingEnvironmentId === environmentId}
-            onClick={() => void onReconnect(environmentId)}
-          >
-            {reconnectingEnvironmentId === environmentId ? "Reconnecting…" : "Reconnect"}
-          </Button>
-          <Switch
-            aria-label={`Enable ${record.label}`}
-            checked={enabled}
-            disabled={isSwitching || removingEnvironmentId === environmentId}
-            onCheckedChange={(checked) => {
-              setIsSwitching(true);
-              void setSavedEnvironmentEnabled(environmentId, checked)
-                .catch((error) => {
-                  toastManager.add({
-                    type: "error",
-                    title: "Could not change environment connection",
-                    description: error instanceof Error ? error.message : String(error),
-                  });
-                })
-                .finally(() => setIsSwitching(false));
-            }}
-          />
-          <Button
-            size="xs"
-            variant="destructive-outline"
-            disabled={removingEnvironmentId === environmentId}
-            onClick={() => setConfirmRemove(true)}
-          >
-            {removingEnvironmentId === environmentId ? "Removing…" : "Remove from this device"}
-          </Button>
-        </div>
-        <AlertDialog open={confirmRemove} onOpenChange={setConfirmRemove}>
-          <AlertDialogPopup>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Remove {record.label} from this device?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This forgets its saved connection and credential. Pair again to reconnect. Switch it
-                off instead to pause without forgetting it. Neither action stops server-side work or
-                deregisters the host from your account.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  setConfirmRemove(false);
-                  onRemove(environmentId);
-                }}
+            {enabled && runtime?.lastError ? (
+              <p className="truncate text-xs text-destructive" title={runtime.lastError}>
+                {runtime.lastError}
+              </p>
+            ) : null}
+          </>
+        }
+        actions={
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!enabled || isSwitching || reconnectingEnvironmentId === environmentId}
+              onClick={() => void onReconnect(environmentId)}
+              title={enabled ? "Retry the connection now" : "Unpause to reconnect"}
+            >
+              {reconnectingEnvironmentId === environmentId ? (
+                <>
+                  <RefreshCwIcon aria-hidden className="size-3 animate-spin" />
+                  Reconnecting…
+                </>
+              ) : (
+                <>
+                  <RefreshCwIcon aria-hidden className="size-3" />
+                  Reconnect
+                </>
+              )}
+            </Button>
+            <Switch
+              aria-label={`Enable ${record.label}`}
+              title={enabled ? "Pause without forgetting" : "Resume this connection"}
+              checked={enabled}
+              disabled={isSwitching || removingEnvironmentId === environmentId}
+              onCheckedChange={(checked) => {
+                setIsSwitching(true);
+                void setSavedEnvironmentEnabled(environmentId, checked)
+                  .catch((error) => {
+                    toastManager.add({
+                      type: "error",
+                      title: "Could not change environment connection",
+                      description: error instanceof Error ? error.message : String(error),
+                    });
+                  })
+                  .finally(() => setIsSwitching(false));
+              }}
+            />
+            <Menu>
+              <MenuTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="text-muted-foreground hover:text-foreground"
+                    aria-label={`More actions for ${record.label}`}
+                    disabled={removingEnvironmentId === environmentId}
+                  />
+                }
               >
-                Remove from this device
-              </Button>
-            </AlertDialogFooter>
-          </AlertDialogPopup>
-        </AlertDialog>
-      </div>
-    </div>
+                <EllipsisIcon className="size-4" />
+              </MenuTrigger>
+              <MenuPopup align="end" className="min-w-48">
+                <MenuItem variant="destructive" onClick={() => setConfirmRemove(true)}>
+                  <Trash2Icon aria-hidden className="size-3.5" />
+                  Remove from this device
+                </MenuItem>
+              </MenuPopup>
+            </Menu>
+          </>
+        }
+      />
+      <AlertDialog open={confirmRemove} onOpenChange={setConfirmRemove}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove {record.label} from this device?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This forgets its saved connection and credential. Pair again to reconnect. Switch it
+              off instead to pause without forgetting it. Neither action stops server-side work or
+              deregisters the host from your account.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setConfirmRemove(false);
+                onRemove(environmentId);
+              }}
+            >
+              Remove from this device
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+    </>
+  );
+}
+
+function AddEnvironmentModeCard({
+  active,
+  icon,
+  title,
+  description,
+  onSelect,
+  disabled,
+}: {
+  active: boolean;
+  icon: ReactNode;
+  title: string;
+  description: string;
+  onSelect: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={active}
+      disabled={disabled}
+      onClick={onSelect}
+      className={cn(
+        "flex items-start gap-3 rounded-xl border p-3 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        active
+          ? "border-primary/50 bg-primary/5 shadow-xs"
+          : "border-border/60 bg-muted/20 hover:border-border hover:bg-muted/40",
+        disabled && "opacity-60",
+      )}
+    >
+      <span
+        className={cn(
+          "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg border",
+          active
+            ? "border-primary/30 bg-background text-foreground"
+            : "border-border/60 bg-background/60 text-muted-foreground",
+        )}
+      >
+        {icon}
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-medium text-foreground">{title}</span>
+        <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
+          {description}
+        </span>
+      </span>
+    </button>
   );
 }
 
@@ -1255,41 +1585,73 @@ export function ConnectionsSettings() {
     () => desktopPairingLinks.filter((pairingLink) => pairingLink.role === "client"),
     [desktopPairingLinks],
   );
+  const liveClientCount = desktopClientSessions.filter(
+    (clientSession) => clientSession.current || clientSession.connected,
+  ).length;
   return (
-    <SettingsPageContainer>
-      <SettingsSection title="T3 Connect account">
-        <SettingsRow
-          title="Account environments"
-          description={CONNECT_ACTION_HELP}
-          control={
-            <a
-              className="text-sm underline"
-              href={connectAccountManagementUrl()}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Manage / Deregister environments
-            </a>
-          }
-        />
-      </SettingsSection>
+    <SettingsPageContainer width="wide">
+      <SettingsPageHeader
+        title="Connections"
+        description="Pair phones and browsers with this machine, control how it can be reached, and manage the environments this client connects to."
+        status={
+          <>
+            {currentSessionRole ? (
+              <Badge variant="outline" size="sm">
+                {currentSessionRole === "owner" ? "Owner session" : "Client session"}
+              </Badge>
+            ) : null}
+            <Badge variant="secondary" size="sm">
+              {savedEnvironmentIds.length}{" "}
+              {savedEnvironmentIds.length === 1 ? "environment" : "environments"}
+            </Badge>
+            {canManageLocalBackend ? (
+              <Badge variant="secondary" size="sm">
+                {liveClientCount} {liveClientCount === 1 ? "device" : "devices"} connected
+              </Badge>
+            ) : null}
+          </>
+        }
+      />
       <LocalEnvironmentsSettings />
       {canManageLocalBackend ? (
         <>
           <RemoteAccessSettings />
-          <SettingsSection title="Manage local backend">
+          <SettingsSection
+            title="This machine"
+            description="The backend running on this device: your account, and who can reach it over the local network."
+            icon={<LaptopIcon aria-hidden className="size-3" />}
+          >
+            <SettingsRow
+              title="T3 Connect account"
+              description={`Environments registered to your T3 account. ${CONNECT_ACTION_HELP}`}
+              control={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  render={
+                    <a
+                      href={connectAccountManagementUrl()}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    />
+                  }
+                >
+                  Manage environments
+                </Button>
+              }
+            />
             {desktopBridge ? (
               <SettingsRow
                 title="Local network access"
                 description={
                   desktopServerExposureState?.endpointUrl
-                    ? `Reachable at ${desktopServerExposureState.endpointUrl}`
+                    ? `Other devices on your network reach this machine at ${desktopServerExposureState.endpointUrl}`
                     : desktopServerExposureState?.mode === "network-accessible"
                       ? desktopServerExposureState.advertisedHost
-                        ? `Exposed on all interfaces. Pairing links use ${desktopServerExposureState.advertisedHost}.`
-                        : "Exposed on all interfaces."
+                        ? `Visible to your local network. Pairing links use ${desktopServerExposureState.advertisedHost}.`
+                        : "Visible to your local network."
                       : desktopServerExposureState
-                        ? "LAN access is disabled. Remote Access works independently."
+                        ? "Only this machine can connect directly. Turn on to pair phones and browsers over your local network."
                         : "Loading…"
                 }
                 status={
@@ -1365,8 +1727,8 @@ export function ConnectionsSettings() {
                 title="Local network access"
                 description={
                   currentAuthPolicy === "remote-reachable"
-                    ? "This backend accepts direct network connections. Change LAN exposure where the server is launched."
-                    : "LAN access is disabled. Use Remote Access above to connect through the tunnel without opening a LAN port."
+                    ? "This backend accepts direct network connections. LAN exposure is controlled where the server is launched."
+                    : "Only this machine can connect directly. Use Remote Access above to connect through the tunnel without opening a LAN port."
                 }
                 control={
                   <Tooltip>
@@ -1392,8 +1754,14 @@ export function ConnectionsSettings() {
           </SettingsSection>
 
           {canShowAuthorizedClients ? (
-            <SettingsSection
-              title="Authorized clients"
+            <CollapsibleSettingsSection
+              title="Devices & pairing"
+              description="Phones, tablets, and browsers paired with this machine. Links expire automatically."
+              summary={summarizeAuthorizedClients(
+                desktopClientSessions,
+                visibleDesktopPairingLinks,
+              )}
+              autoOpen={visibleDesktopPairingLinks.length > 0}
               headerAction={
                 <AuthorizedClientsHeaderAction
                   clientSessions={desktopClientSessions}
@@ -1406,15 +1774,15 @@ export function ConnectionsSettings() {
               }
             >
               {desktopAccessManagementError ? (
-                <div className={ITEM_ROW_CLASSNAME}>
+                <div className="px-4 py-3 sm:px-5">
                   <p className="text-xs text-destructive">{desktopAccessManagementError}</p>
                 </div>
               ) : null}
               {!isLocalBackendNetworkAccessible ? (
-                <div className={ITEM_ROW_CLASSNAME}>
+                <div className="px-4 py-3 sm:px-5">
                   <p className="text-xs text-muted-foreground">
-                    Use Pair remote device above for the tunnel. The LAN pairing action requires
-                    local network access.
+                    Pair over the tunnel with “Pair remote device” above. Pairing links and phone QR
+                    codes need local network access.
                   </p>
                 </div>
               ) : null}
@@ -1428,25 +1796,38 @@ export function ConnectionsSettings() {
                 onRevokePairingLink={handleRevokeDesktopPairingLink}
                 onRevokeClientSession={handleRevokeDesktopClientSession}
               />
-              <MobilePairingDialog
-                state={mobilePairingDialogState}
-                open={mobilePairingDialogOpen}
-                onOpenChange={setMobilePairingDialogOpen}
-              />
-            </SettingsSection>
+            </CollapsibleSettingsSection>
           ) : null}
+          <MobilePairingDialog
+            state={mobilePairingDialogState}
+            open={mobilePairingDialogOpen}
+            onOpenChange={setMobilePairingDialogOpen}
+          />
         </>
       ) : (
-        <SettingsSection title="Local backend access">
-          <SettingsRow
-            title="Owner tools"
-            description="Pairing links and client-session management are only available to owner sessions for this backend."
-          />
+        <SettingsSection
+          title="Devices & pairing"
+          description="Phones, tablets, and browsers paired with this machine."
+        >
+          <div className="flex items-start gap-3 px-4 py-4 sm:px-5">
+            <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40 text-muted-foreground">
+              <ShieldCheckIcon aria-hidden className="size-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">Owner tools hidden</p>
+              <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                Pairing links and device management are only available to owner sessions for this
+                backend.
+              </p>
+            </div>
+          </div>
         </SettingsSection>
       )}
 
       <SettingsSection
-        title="Remote environments"
+        title="Environments"
+        description="Other backends this client connects to. Saved connections reconnect automatically on startup."
+        icon={<ServerIcon aria-hidden className="size-3" />}
         headerAction={
           <Dialog
             open={addBackendDialogOpen}
@@ -1459,56 +1840,44 @@ export function ConnectionsSettings() {
           >
             <DialogTrigger
               render={
-                <Button size="xs" variant="outline">
+                <Button size="sm" variant="outline">
                   <PlusIcon className="size-3" />
                   Add environment
                 </Button>
               }
             />
-            <DialogPopup>
+            <DialogPopup className="max-w-lg">
               <DialogHeader>
-                <DialogTitle>Add Environment</DialogTitle>
-                <DialogDescription>Pair another environment to this client.</DialogDescription>
-                <div className="flex gap-1 rounded-lg border border-border/60 bg-muted/50 p-1">
-                  <button
-                    type="button"
-                    className={cn(
-                      "flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                      savedBackendMode === "pairing-url"
-                        ? "bg-background text-foreground shadow-xs"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                    disabled={isAddingSavedBackend}
-                    onClick={() => setSavedBackendMode("pairing-url")}
-                  >
-                    Pairing URL
-                  </button>
-                  <button
-                    type="button"
-                    className={cn(
-                      "flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                      savedBackendMode === "host-code"
-                        ? "bg-background text-foreground shadow-xs"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                    disabled={isAddingSavedBackend}
-                    onClick={() => setSavedBackendMode("host-code")}
-                  >
-                    Host + code
-                  </button>
-                </div>
+                <DialogTitle>Add environment</DialogTitle>
+                <DialogDescription>
+                  Connect this client to another backend. Choose how you want to enter the pairing
+                  details.
+                </DialogDescription>
               </DialogHeader>
               <DialogPanel>
                 <div className="space-y-4">
-                  {savedBackendMode === "pairing-url" ? (
-                    <p className="text-xs text-muted-foreground">
-                      Enter the full pairing URL from the environment you want to connect to.
-                    </p>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      Enter the backend host and pairing code separately.
-                    </p>
-                  )}
+                  <div
+                    role="radiogroup"
+                    aria-label="Pairing method"
+                    className="grid gap-2 sm:grid-cols-2"
+                  >
+                    <AddEnvironmentModeCard
+                      active={savedBackendMode === "pairing-url"}
+                      icon={<Link2Icon aria-hidden className="size-4" />}
+                      title="Pairing URL"
+                      description="Paste the full link from the other backend."
+                      disabled={isAddingSavedBackend}
+                      onSelect={() => setSavedBackendMode("pairing-url")}
+                    />
+                    <AddEnvironmentModeCard
+                      active={savedBackendMode === "host-code"}
+                      icon={<KeyboardIcon aria-hidden className="size-4" />}
+                      title="Host & code"
+                      description="Enter the host and pairing code separately."
+                      disabled={isAddingSavedBackend}
+                      onSelect={() => setSavedBackendMode("host-code")}
+                    />
+                  </div>
                   <div className="space-y-3">
                     <label className="block">
                       <span className="mb-1.5 block text-xs font-medium text-foreground">
@@ -1570,17 +1939,24 @@ export function ConnectionsSettings() {
                   {savedBackendError ? (
                     <p className="text-xs text-destructive">{savedBackendError}</p>
                   ) : null}
-                  <Button
-                    variant="outline"
-                    className="w-full"
-                    disabled={isAddingSavedBackend}
-                    onClick={() => void handleAddSavedBackend()}
-                  >
-                    <PlusIcon className="size-3.5" />
-                    {isAddingSavedBackend ? "Adding…" : "Add Backend"}
-                  </Button>
                 </div>
               </DialogPanel>
+              <DialogFooter variant="bare">
+                <Button
+                  variant="outline"
+                  disabled={isAddingSavedBackend}
+                  onClick={() => setAddBackendDialogOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  disabled={isAddingSavedBackend}
+                  onClick={() => void handleAddSavedBackend()}
+                >
+                  <PlusIcon className="size-3.5" />
+                  {isAddingSavedBackend ? "Adding…" : "Add environment"}
+                </Button>
+              </DialogFooter>
             </DialogPopup>
           </Dialog>
         }
@@ -1597,12 +1973,17 @@ export function ConnectionsSettings() {
         ))}
 
         {savedEnvironmentIds.length === 0 ? (
-          <div className={ITEM_ROW_CLASSNAME}>
-            <p className="text-xs text-muted-foreground">
-              No remote environments yet. Click &ldquo;Add environment&rdquo; to pair another
-              environment.
-            </p>
-          </div>
+          <Empty className="gap-0 p-6">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <ServerIcon aria-hidden />
+              </EmptyMedia>
+              <EmptyTitle>No other environments yet</EmptyTitle>
+              <EmptyDescription>
+                Add another backend to switch between machines from this client.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         ) : null}
       </SettingsSection>
     </SettingsPageContainer>

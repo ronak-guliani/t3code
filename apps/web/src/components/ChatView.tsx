@@ -1,6 +1,8 @@
 import {
   type ApprovalRequestId,
   DEFAULT_MODEL,
+  DEFAULT_MODEL_BY_PROVIDER,
+  DEFAULT_PROVIDER_DRIVER_KIND,
   defaultInstanceIdForDriver,
   type EnvironmentId,
   type MessageId,
@@ -17,6 +19,7 @@ import {
   type TurnDiffScope,
   type TurnId,
   type KeybindingCommand,
+  type ValidationTarget,
   OrchestrationThreadActivity,
   ProviderInteractionMode,
   ProviderDriverKind,
@@ -38,9 +41,9 @@ import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/proje
 import { truncate } from "@t3tools/shared/String";
 import { Debouncer } from "@tanstack/react-pacer";
 import {
+  type ComponentProps,
   memo,
   lazy,
-  type ComponentProps,
   type ReactNode,
   Suspense,
   useCallback,
@@ -135,19 +138,31 @@ import { PreviewPanel } from "./preview/PreviewPanel";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
-import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
+import {
+  browserMiniPlayerSource,
+  previewMiniPlayerSourceKey,
+  selectThreadPreviewMiniPlayer,
+  usePreviewMiniPlayerStore,
+  type PreviewMiniPlayerSource,
+} from "~/previewMiniPlayerStore";
 import {
   setThreadPlanSidebarOpen,
   useBrowserPanelState,
   useRightPanelStore,
+  type RightPanelSurface,
 } from "~/rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { ThreadPullRequestsPanel } from "./ThreadPullRequestsPanel";
+import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
+import { resolveThreadPullRequests } from "./ThreadPullRequestsPopover";
 import { DevicePanel } from "./device/DevicePanel";
+import { reconcileDeviceSessionPresentation } from "./device/reconcileDeviceSessionPresentation";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { useThreadPreviewState } from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
-import { useDeviceState } from "~/state/device";
+import { deviceEnvironment, useDeviceState } from "~/state/device";
+import { useRetainedDeviceSession } from "~/components/device/useRetainedDeviceSession";
 import { useAtomCommand } from "~/state/use-atom-command";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
@@ -195,6 +210,7 @@ import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { ChatTimelineSection, type ChatTimelineSectionHandle } from "./chat/ChatTimelineSection";
+import { RetainedRightPanelSurface } from "./chat/RetainedRightPanelSurface";
 import { ReviewFindingsCard } from "./chat/ReviewFindingsCard";
 import { formatReviewFindings } from "../lib/reviewFindingFormat";
 import { ChatHeader } from "./chat/ChatHeader";
@@ -204,7 +220,11 @@ import {
 } from "./chat/AgentWorkflowHeaderActions";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
-import { resolveEffectiveEnvMode, resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
+import {
+  resolveActiveProjectRef,
+  resolveEffectiveEnvMode,
+  resolveEnvironmentOptionLabel,
+} from "./BranchToolbar.logic";
 import { ProviderStatusBanner } from "./chat/ProviderStatusBanner";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import {
@@ -254,12 +274,23 @@ export function shouldClosePreviewMiniPlayer(input: {
 }
 
 export function shouldRenderPreviewMiniPlayer(input: {
-  readonly floatingTabId: string | null;
+  readonly source: PreviewMiniPlayerSource | null;
   readonly panelOpen: boolean;
-  readonly panelTabId: string | null;
+  readonly panelSurface: RightPanelSurface | null;
 }): boolean {
-  return (
-    input.floatingTabId !== null && !(input.panelOpen && input.panelTabId === input.floatingTabId)
+  if (input.source === null) return false;
+  if (input.source.kind === "browser") {
+    return !(
+      input.panelOpen &&
+      input.panelSurface?.kind === "preview" &&
+      input.panelSurface.resourceId === input.source.tabId
+    );
+  }
+  return !(
+    input.panelOpen &&
+    input.panelSurface?.kind === "device" &&
+    input.panelSurface.target?.hostId === input.source.hostId &&
+    input.panelSurface.target.deviceId === input.source.deviceId
   );
 }
 
@@ -581,15 +612,10 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     ),
   );
   const draftThread = useComposerDraftStore((store) => store.getDraftThreadByRef(threadRef));
-  const projectRef = useMemo(() => {
-    if (serverThread) {
-      return scopeProjectRef(serverThread.environmentId, serverThread.projectId);
-    }
-    if (draftThread) {
-      return scopeProjectRef(draftThread.environmentId, draftThread.projectId);
-    }
-    return null;
-  }, [serverThread, draftThread]);
+  const projectRef = useMemo(
+    () => resolveActiveProjectRef(serverThread, draftThread),
+    [serverThread, draftThread],
+  );
   const projectEnvironmentId = projectRef?.environmentId;
   const projectProjectId = projectRef?.projectId;
   const project = useStore(
@@ -756,13 +782,9 @@ const RetainedPlanSurface = memo(function RetainedPlanSurface(
 ) {
   const { visible, ...planProps } = props;
   return (
-    <div
-      className={cn("h-full min-h-0", !visible && "hidden")}
-      data-chat-view-right-panel-surface={visible ? "plan" : undefined}
-      aria-hidden={!visible}
-    >
+    <RetainedRightPanelSurface visible={visible} surface="plan">
       <PlanSidebar {...planProps} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -770,13 +792,9 @@ const RetainedPreviewSurface = memo(function RetainedPreviewSurface(
   props: ComponentProps<typeof PreviewPanel>,
 ) {
   return (
-    <div
-      className={cn("h-full min-h-0", !props.visible && "hidden")}
-      data-chat-view-right-panel-surface={props.visible ? "preview" : undefined}
-      aria-hidden={!props.visible}
-    >
+    <RetainedRightPanelSurface visible={props.visible} surface="preview">
       <PreviewPanel {...props} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -787,11 +805,7 @@ const RetainedDiffSurface = memo(function RetainedDiffSurface(props: {
   readonly onDiffSearchChange: (nextSearch: DiffRouteSearch) => void;
 }) {
   return (
-    <div
-      className={cn("h-full min-h-0", !props.visible && "hidden")}
-      data-chat-view-right-panel-surface={props.visible ? "diff" : undefined}
-      aria-hidden={!props.visible}
-    >
+    <RetainedRightPanelSurface visible={props.visible} surface="diff">
       <Suspense fallback={null}>
         <RightPanelDiff
           threadRef={props.threadRef}
@@ -799,7 +813,7 @@ const RetainedDiffSurface = memo(function RetainedDiffSurface(props: {
           onDiffSearchChange={props.onDiffSearchChange}
         />
       </Suspense>
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -808,13 +822,9 @@ const RetainedInsightsSurface = memo(function RetainedInsightsSurface(
 ) {
   const { visible, ...insightsProps } = props;
   return (
-    <div
-      className={cn("h-full min-h-0", !visible && "hidden")}
-      data-chat-view-right-panel-surface={visible ? "insights" : undefined}
-      aria-hidden={!visible}
-    >
+    <RetainedRightPanelSurface visible={visible} surface="insights">
       <InsightsPanel {...insightsProps} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -822,13 +832,9 @@ const RetainedTerminalSurface = memo(function RetainedTerminalSurface(
   props: ComponentProps<typeof PersistentThreadTerminalDrawer>,
 ) {
   return (
-    <div
-      className={cn("h-full min-h-0", !props.visible && "hidden")}
-      data-chat-view-right-panel-surface={props.visible ? "terminal" : undefined}
-      aria-hidden={!props.visible}
-    >
+    <RetainedRightPanelSurface visible={props.visible} surface="terminal">
       <PersistentThreadTerminalDrawer {...props} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -840,13 +846,9 @@ const RetainedFileSurface = memo(function RetainedFileSurface(
 ) {
   const { visible, kind, ...fileProps } = props;
   return (
-    <div
-      className={cn("h-full min-h-0", !visible && "hidden")}
-      data-chat-view-right-panel-surface={visible ? kind : undefined}
-      aria-hidden={!visible}
-    >
+    <RetainedRightPanelSurface visible={visible} surface={kind}>
       <FilePreviewPanel {...fileProps} />
-    </div>
+    </RetainedRightPanelSurface>
   );
 });
 
@@ -1007,6 +1009,7 @@ function ChatViewBody(
     (routeActiveSurface?.kind === "files" || routeActiveSurface?.kind === "file");
   const insightsOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "insights";
   const diffSurfaceOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "diff";
+  const pullRequestsOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "pull-requests";
   const setPlanSidebarOpen = useCallback(
     (open: boolean) => {
       // Close only the plan surface so thread switches / plan dismiss do not
@@ -1109,8 +1112,8 @@ function ChatViewBody(
             threadId,
             draftThread,
             fallbackDraftProject?.defaultModelSelection ?? {
-              instanceId: ProviderInstanceId.make("codex"),
-              model: DEFAULT_MODEL,
+              instanceId: defaultInstanceIdForDriver(DEFAULT_PROVIDER_DRIVER_KIND),
+              model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_DRIVER_KIND] ?? DEFAULT_MODEL,
             },
             localDraftError,
           )
@@ -1119,6 +1122,8 @@ function ChatViewBody(
   );
   const isServerThread = routeKind === "server" && serverThread !== undefined;
   const activeThread = isServerThread ? serverThread : localDraftThread;
+  const activeValidationRun =
+    activeThread?.validationRun ?? serverThreadSummary?.validationRun ?? null;
   const workflowRuns = useStore(
     useShallow((state) =>
       selectWorkflowRunsForParentThread(state, routeKind === "server" ? routeThreadRef : null),
@@ -1434,7 +1439,7 @@ function ChatViewBody(
   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
   const unlockedSelectedProvider = resolveSelectableProvider(
     providerStatuses,
-    selectedProviderByThreadId ?? threadProvider ?? ProviderDriverKind.make("codex"),
+    selectedProviderByThreadId ?? threadProvider ?? DEFAULT_PROVIDER_DRIVER_KIND,
   );
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const activeContextWindow = useMemo(
@@ -1700,6 +1705,26 @@ function ChatViewBody(
   const activeProjectCwd = activeProject?.cwd ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
+  const currentValidationTarget = useMemo((): ValidationTarget | null => {
+    const status = gitStatusQuery.data;
+    if (
+      !activeProject ||
+      !activeThread ||
+      !status?.isRepo ||
+      !status.revision ||
+      !status.dirtyStateFingerprint
+    ) {
+      return null;
+    }
+    return {
+      workspaceRoot: activeProject.cwd,
+      worktreePath: activeThread.worktreePath,
+      branch: status.branch,
+      revision: status.revision,
+      dirtyStateFingerprint: status.dirtyStateFingerprint,
+      environmentIdentity: environmentId,
+    };
+  }, [activeProject, activeThread, environmentId, gitStatusQuery.data]);
   const activeTerminalLaunchContext =
     terminalLaunchContext?.threadId === activeThreadId
       ? terminalLaunchContext
@@ -1873,7 +1898,21 @@ function ChatViewBody(
     setTerminalOpen(!terminalState.terminalOpen);
   }, [activeThreadRef, setTerminalOpen, terminalState.terminalOpen]);
   const closeBrowserPreview = useCallback(() => {
-    if (activeThreadRef) useRightPanelStore.getState().close(activeThreadRef);
+    if (!activeThreadRef) return;
+    const state = useRightPanelStore.getState();
+    const panel = state.byThreadKey[scopedThreadKey(activeThreadRef)];
+    const activeSurface = panel?.surfaces.find((surface) => surface.id === panel.activeSurfaceId);
+    if (activeSurface?.kind === "preview" && activeSurface.resourceId) {
+      usePreviewMiniPlayerStore
+        .getState()
+        .open(activeThreadRef, browserMiniPlayerSource(activeSurface.resourceId));
+    } else if (activeSurface?.kind === "device" && activeSurface.target) {
+      usePreviewMiniPlayerStore.getState().open(activeThreadRef, {
+        kind: "device",
+        ...activeSurface.target,
+      });
+    }
+    state.close(activeThreadRef);
   }, [activeThreadRef]);
   const closeTerminal = useCallback(
     (terminalId: string) => {
@@ -1944,38 +1983,92 @@ function ChatViewBody(
     );
   }, [activeThreadKey]);
   const previewState = useThreadPreviewState(activeThreadRef);
-  const { state: deviceState } = useDeviceState(environmentId);
-  const reconciledDeviceSessionsRef = useRef(new Set<string>());
-  useEffect(() => {
-    if (!activeThreadRef) return;
-    const sessions = deviceState.sessions.filter(
-      (session) => session.threadId === activeThreadRef.threadId,
-    );
-    const currentKeys = new Set(
-      sessions.map(
-        (session) => `${session.threadId}\u0000${session.hostId}\u0000${session.deviceId}`,
-      ),
-    );
-    for (const session of sessions) {
-      const key = `${session.threadId}\u0000${session.hostId}\u0000${session.deviceId}`;
-      if (reconciledDeviceSessionsRef.current.has(key)) continue;
-      const device = deviceState.devices.find(
-        (candidate) => candidate.hostId === session.hostId && candidate.id === session.deviceId,
-      );
-      if (!device) continue;
-      useRightPanelStore.getState().openDevice(activeThreadRef, {
-        hostId: session.hostId,
-        deviceId: session.deviceId,
-        platform: session.platform,
-        name: device.name,
-        ...(deviceState.serverEpoch ? { serverEpoch: deviceState.serverEpoch } : {}),
-      });
-    }
-    reconciledDeviceSessionsRef.current = currentKeys;
-  }, [activeThreadRef, deviceState.devices, deviceState.serverEpoch, deviceState.sessions]);
+  const { state: deviceState, loaded: deviceStateLoaded } = useDeviceState(environmentId);
+  const listDevices = useAtomCommand(deviceEnvironment.list);
+  const openDeviceSession = useAtomCommand(deviceEnvironment.open);
   const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
     activeThreadRef ? selectThreadPreviewMiniPlayer(state.byThreadKey, activeThreadRef) : null,
   );
+  const previousDeviceSessionsRef = useRef(new Map<string, Set<string>>());
+  useEffect(() => {
+    reconcileDeviceSessionPresentation(previousDeviceSessionsRef.current, {
+      activeThreadRef,
+      deviceState: {
+        sessions: deviceState.sessions,
+        devices: deviceState.devices,
+        serverEpoch: deviceState.serverEpoch,
+      },
+      loaded: deviceStateLoaded,
+      floating: settings.browserAutoShowFloatingPreview,
+      sheet: shouldUseRightPanelSheet,
+    });
+  }, [
+    activeThreadRef,
+    deviceState.devices,
+    deviceState.serverEpoch,
+    deviceState.sessions,
+    deviceStateLoaded,
+    settings.browserAutoShowFloatingPreview,
+    shouldUseRightPanelSheet,
+  ]);
+  const floatingDevice =
+    activePreviewMiniPlayer?.source.kind === "device" ? activePreviewMiniPlayer.source : null;
+  const floatingDeviceSessionExists = deviceState.sessions.some(
+    (session) =>
+      session.threadId === activeThreadRef?.threadId &&
+      session.hostId === floatingDevice?.hostId &&
+      session.deviceId === floatingDevice?.deviceId,
+  );
+  useEffect(() => {
+    if (!activeThreadRef || !deviceStateLoaded || !floatingDevice) return;
+    usePreviewMiniPlayerStore
+      .getState()
+      .reconcileDeviceSession(
+        activeThreadRef,
+        floatingDevice,
+        deviceState.serverEpoch ?? "",
+        floatingDeviceSessionExists,
+      );
+  }, [
+    activeThreadRef,
+    deviceStateLoaded,
+    floatingDevice,
+    deviceState.serverEpoch,
+    floatingDeviceSessionExists,
+  ]);
+  const floatingDevicePanelVisible =
+    browserPanel.isOpen &&
+    browserPanel.surfaces.some(
+      (surface) =>
+        surface.id === browserPanel.activeSurfaceId &&
+        surface.kind === "device" &&
+        surface.target?.hostId === floatingDevice?.hostId &&
+        surface.target?.deviceId === floatingDevice?.deviceId,
+    );
+  useRetainedDeviceSession({
+    environmentId,
+    threadId,
+    target: floatingDevice,
+    enabled:
+      Boolean(activeThreadRef) &&
+      deviceStateLoaded &&
+      deviceState.hostStatus !== "disabled" &&
+      !floatingDevicePanelVisible,
+    currentServerEpoch: deviceState.serverEpoch,
+    sessionExists: floatingDeviceSessionExists,
+    listDevices: () =>
+      listDevices({ environmentId, input: { hostId: floatingDevice?.hostId ?? "" } }),
+    openDevice: openDeviceSession,
+    onRecoveryResult: (error) => {
+      if (error)
+        toastManager.add({
+          type: "error",
+          title: "Unable to recover floating device",
+          description: error,
+        });
+    },
+  });
+
   const [composerInsetElement, setComposerInsetElement] = useState<HTMLDivElement | null>(null);
   const [composerBottomInset, setComposerBottomInset] = useState(0);
   useLayoutEffect(() => {
@@ -2009,7 +2102,11 @@ function ChatViewBody(
       activeThreadRef,
     );
     if (floatingPreview) {
-      state.openBrowser(activeThreadRef, floatingPreview.tabId);
+      if (floatingPreview.source.kind === "browser") {
+        state.openBrowser(activeThreadRef, floatingPreview.source.tabId);
+      } else {
+        state.openDevice(activeThreadRef, floatingPreview.source);
+      }
       planSidebarDismissedForTurnRef.current =
         activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
       return;
@@ -2025,13 +2122,14 @@ function ChatViewBody(
     planSidebarDismissedForTurnRef.current =
       activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
   }, [activePlan?.turnId, activeThreadRef, openPreview, sidebarProposedPlan?.turnId]);
-  const activeBrowserSurface = browserPanel.surfaces.find(
+  const activePanelSurface = browserPanel.surfaces.find(
     (surface) => surface.id === browserPanel.activeSurfaceId,
   );
+  const activeBrowserSurface = activePanelSurface;
   const previewMiniPlayerVisible = shouldRenderPreviewMiniPlayer({
-    floatingTabId: activePreviewMiniPlayer?.tabId ?? null,
+    source: activePreviewMiniPlayer?.source ?? null,
     panelOpen: browserPanel.isOpen,
-    panelTabId: activeBrowserSurface?.kind === "preview" ? activeBrowserSurface.resourceId : null,
+    panelSurface: activePanelSurface ?? null,
   });
   const terminalLabels = useMemo(
     () => terminalLabelsById(terminalState.terminalIds),
@@ -2052,8 +2150,8 @@ function ChatViewBody(
       .reconcileBrowserSurfaces(activeThreadRef, Object.keys(previewState.sessions));
   }, [activeThreadRef, previewState.sessions]);
   useEffect(() => {
-    if (!activeThreadRef || !activePreviewMiniPlayer) return;
-    const floatingTabId = activePreviewMiniPlayer.tabId;
+    if (!activeThreadRef || activePreviewMiniPlayer?.source.kind !== "browser") return;
+    const floatingTabId = activePreviewMiniPlayer.source.tabId;
     const sameTabOpenInPanel =
       browserPanel.isOpen &&
       activeBrowserSurface?.kind === "preview" &&
@@ -2195,6 +2293,17 @@ function ChatViewBody(
     planSidebarDismissedForTurnRef.current =
       activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
   }, [activePlan?.turnId, activeThreadRef, sidebarProposedPlan?.turnId]);
+  const togglePullRequests = useCallback(() => {
+    if (!activeThreadRef) return;
+    const state = useRightPanelStore.getState();
+    const panel = state.byThreadKey[scopedThreadKey(activeThreadRef)];
+    const activeSurface = panel?.surfaces.find((surface) => surface.id === panel.activeSurfaceId);
+    if (panel?.isOpen && activeSurface?.kind === "pull-requests") {
+      state.close(activeThreadRef);
+      return;
+    }
+    state.open(activeThreadRef, "pull-requests");
+  }, [activeThreadRef]);
   const closeInsights = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().closeSurface(activeThreadRef, "insights");
   }, [activeThreadRef]);
@@ -2228,6 +2337,9 @@ function ChatViewBody(
   }, [activeThreadRef]);
   const addDeviceSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "device");
+  }, [activeThreadRef]);
+  const addPullRequestsSurface = useCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "pull-requests");
   }, [activeThreadRef]);
   const runProjectScript = useCallback(
     async (
@@ -2788,6 +2900,7 @@ function ChatViewBody(
     activeWorktreePath,
     hasServerThread: isServerThread,
     draftThreadEnvMode: isLocalDraftThread ? draftThread?.envMode : undefined,
+    projectCwd: activeProject?.cwd ?? null,
   });
   const canOverrideServerThreadEnvMode = Boolean(
     isServerThread && activeThread && activeThread.worktreePath === null,
@@ -3457,7 +3570,14 @@ function ChatViewBody(
                       runtimeMode,
                       interactionMode,
                       branch: activeThreadBranch,
-                      worktreePath: activeThread.worktreePath,
+                      // Explicit "Current checkout" choice binds the thread to the
+                      // project checkout so the server does not allocate an
+                      // isolated worktree. Worktree mode keeps worktreePath null
+                      // so a new worktree is created off the base branch.
+                      worktreePath:
+                        sendEnvMode === "local"
+                          ? (activeThread.worktreePath ?? activeProject.cwd)
+                          : activeThread.worktreePath,
                       ...(draftThread?.pullRequest
                         ? { pullRequest: draftThread.pullRequest }
                         : activeThread && "pullRequest" in activeThread && activeThread.pullRequest
@@ -3535,6 +3655,110 @@ function ChatViewBody(
     sendInFlightRef.current = false;
     if (!turnStartSucceeded) {
       resetLocalDispatch();
+    }
+  };
+
+  const onSteer = async () => {
+    const api = readEnvironmentApi(environmentId);
+    if (!api || !activeThread || isSendBusy || isConnecting || sendInFlightRef.current) return;
+    if (phase !== "running") return;
+    if (activePendingProgress) {
+      onAdvanceActivePendingUserInput();
+      return;
+    }
+    if (activePendingApproval) {
+      return;
+    }
+    const sendCtx = composerRef.current?.getSendContext();
+    if (!sendCtx) return;
+    const {
+      images: composerImages,
+      terminalContexts: composerTerminalContexts,
+      previewAnnotations: composerPreviewAnnotations,
+      selectedProvider: ctxSelectedProvider,
+      selectedModel: ctxSelectedModel,
+      selectedProviderModels: ctxSelectedProviderModels,
+      selectedPromptEffort: ctxSelectedPromptEffort,
+    } = sendCtx;
+    const draftPromptForSend = promptRef.current;
+    const promptForSend = composerPreviewAnnotations.reduce(
+      (prompt, annotation) => appendPreviewAnnotationPrompt(prompt, annotation),
+      draftPromptForSend,
+    );
+    const {
+      sendableTerminalContexts: sendableComposerTerminalContexts,
+      expiredTerminalContextCount,
+      hasSendableContent,
+    } = deriveComposerSendState({
+      prompt: promptForSend,
+      imageCount: composerImages.length,
+      terminalContexts: composerTerminalContexts,
+    });
+    if (!hasSendableContent || !activeProject) {
+      return;
+    }
+    sendInFlightRef.current = true;
+    try {
+      const composerImagesSnapshot = [...composerImages];
+      const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
+      const messageTextForSteer = appendTerminalContextsToPrompt(
+        promptForSend,
+        composerTerminalContextsSnapshot,
+      );
+      const steerAttachments = await Promise.all(
+        composerImagesSnapshot.map(async (image) => ({
+          type: "image" as const,
+          name: image.name,
+          mimeType: image.mimeType,
+          sizeBytes: image.sizeBytes,
+          dataUrl: await readFileAsDataUrl(image.file),
+        })),
+      );
+      // Pass the known active turn so a turn that ended since the composer
+      // rendered fails fast instead of steering its replacement.
+      const turnId = resolveInterruptTurnId(activeThread);
+      await api.orchestration.dispatchCommand({
+        type: "thread.turn.steer",
+        commandId: newCommandId(),
+        threadId: activeThread.id,
+        ...(turnId !== undefined ? { turnId } : {}),
+        message: {
+          messageId: newMessageId(),
+          role: "user",
+          text: formatOutgoingPrompt({
+            provider: ctxSelectedProvider,
+            model: ctxSelectedModel,
+            models: ctxSelectedProviderModels,
+            effort: ctxSelectedPromptEffort,
+            text: messageTextForSteer || IMAGE_ONLY_BOOTSTRAP_PROMPT,
+          }),
+          attachments: steerAttachments,
+        },
+        createdAt: new Date().toISOString(),
+      });
+      if (expiredTerminalContextCount > 0) {
+        const toastCopy = buildExpiredTerminalContextToastCopy(
+          expiredTerminalContextCount,
+          "omitted",
+        );
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: toastCopy.title,
+            description: toastCopy.description,
+          }),
+        );
+      }
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+    } catch (err) {
+      setThreadError(
+        activeThread.id,
+        err instanceof Error ? err.message : "Failed to steer the running turn.",
+      );
+    } finally {
+      sendInFlightRef.current = false;
     }
   };
 
@@ -4628,6 +4852,9 @@ function ChatViewBody(
       browserPreviewOpen,
       insightsOpen,
       diffOpen: diffSurfaceOpen,
+      pullRequestsAvailable:
+        resolveThreadPullRequests(activeThread?.pullRequests, activeThread?.pullRequest).length > 0,
+      pullRequestsOpen,
       isGitRepo,
       terminalToggleShortcutLabel,
       diffToggleShortcutLabel: diffPanelShortcutLabel,
@@ -4636,6 +4863,7 @@ function ChatViewBody(
       onToggleBrowserPreview: toggleBrowserPreview,
       onToggleInsights: toggleInsights,
       onToggleDiff,
+      onTogglePullRequests: togglePullRequests,
     }),
     [
       activeProject,
@@ -4651,7 +4879,11 @@ function ChatViewBody(
       terminalToggleShortcutLabel,
       toggleBrowserPreview,
       toggleInsights,
+      togglePullRequests,
       toggleTerminalVisibility,
+      pullRequestsOpen,
+      activeThread?.pullRequests,
+      activeThread?.pullRequest,
     ],
   );
   // A fresh JSX node every render would defeat ChatHeader's memo, re-rendering
@@ -4748,6 +4980,30 @@ function ChatViewBody(
               }}
             />
           ) : null;
+        case "pull-requests":
+          return activeThreadRef ? (
+            <ThreadPullRequestsPanel
+              key={surface.id}
+              threadRef={activeThreadRef}
+              links={activeThread?.pullRequests}
+              fallbackPullRequest={activeThread?.pullRequest}
+              visible={visible}
+            />
+          ) : null;
+        case "pull-request":
+          return (
+            <div className={cn("min-h-0 flex-1", !visible && "hidden")} key={surface.id}>
+              <PullRequestDetailPanel
+                environmentId={surface.environmentId}
+                reference={surface.reference}
+                onClose={() => {
+                  if (activeThreadRef) {
+                    useRightPanelStore.getState().closeSurface(activeThreadRef, surface.id);
+                  }
+                }}
+              />
+            </div>
+          );
         case "files":
         case "file":
           return activeThreadRef ? (
@@ -4864,6 +5120,8 @@ function ChatViewBody(
                   copilotResumeCommand={copilotResumeCommand}
                   isRevertingCheckpoint={isRevertingCheckpoint}
                   reviewResultActive={activeThread.reviewResult?.status === "parsed"}
+                  validationRun={activeValidationRun}
+                  currentValidationTarget={currentValidationTarget}
                   listRef={legendListRef}
                   messagesViewportRef={messagesViewportRef}
                   gitCwd={gitCwd ?? undefined}
@@ -4977,6 +5235,7 @@ function ChatViewBody(
                     onSend={onSend}
                     onComposerIntent={prewarmComposerProviderSession}
                     onInterrupt={onInterrupt}
+                    onSteer={onSteer}
                     onImplementPlanInNewThread={onImplementPlanInNewThread}
                     onRespondToApproval={onRespondToApproval}
                     onUpdateQueuedTurn={onUpdateQueuedTurn}
@@ -5018,7 +5277,7 @@ function ChatViewBody(
                     {...(canCheckoutPullRequestIntoThread
                       ? { onCheckoutPullRequestRequest: openPullRequestDialog }
                       : {})}
-                    {...(hasMultipleEnvironments
+                    {...(hasMultipleEnvironments || (routeKind === "draft" && draftId)
                       ? {
                           availableEnvironments: logicalProjectEnvironments,
                           onEnvironmentChange,
@@ -5050,9 +5309,9 @@ function ChatViewBody(
 
               {activeThreadRef && activePreviewMiniPlayer && previewMiniPlayerVisible ? (
                 <ThreadPreviewMiniPlayer
-                  key={`${activeThreadKey}:${activePreviewMiniPlayer.tabId}`}
+                  key={`${activeThreadKey}:${previewMiniPlayerSourceKey(activePreviewMiniPlayer.source)}`}
                   threadRef={activeThreadRef}
-                  tabId={activePreviewMiniPlayer.tabId}
+                  miniPlayer={activePreviewMiniPlayer}
                   bottomInset={composerBottomInset}
                 />
               ) : null}
@@ -5079,6 +5338,7 @@ function ChatViewBody(
                 onAddDiff={addDiffSurface}
                 onAddInsights={addInsightsSurface}
                 onAddDevice={addDeviceSurface}
+                onAddPullRequests={addPullRequestsSurface}
                 maximized={rightPanelMaximized}
                 onToggleMaximize={toggleRightPanelMaximized}
               >
@@ -5138,6 +5398,7 @@ function ChatViewBody(
             onAddDiff={addDiffSurface}
             onAddInsights={addInsightsSurface}
             onAddDevice={addDeviceSurface}
+            onAddPullRequests={addPullRequestsSurface}
           >
             {renderRightPanelSurfaces()}
           </RightPanelTabs>

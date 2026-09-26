@@ -6,6 +6,7 @@ import {
   getAppModelOptionsForInstance,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
+  resolveDelegatedThreadModelSelectionState,
 } from "./modelSelection";
 
 function provider(input: {
@@ -55,6 +56,26 @@ function settingsWithProviderInstances(): UnifiedSettings {
 }
 
 describe("instance-scoped model selection", () => {
+  it("defaults a fresh model selection to Copilot", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex",
+        models: ["gpt-5.4"],
+      }),
+      provider({
+        provider: ProviderDriverKind.make("copilot"),
+        instanceId: "copilot",
+        models: ["gpt-5.4-mini"],
+      }),
+    ];
+
+    expect(resolveAppModelSelectionState(DEFAULT_UNIFIED_SETTINGS, providers)).toMatchObject({
+      instanceId: "copilot",
+      model: "gpt-5.4-mini",
+    });
+  });
+
   it("keeps custom models on the provider instance that declared them", () => {
     const providers = [
       provider({
@@ -246,6 +267,55 @@ describe("instance-scoped model selection", () => {
     expect(resolveAppModelSelectionState(settings, providers)).toEqual({
       instanceId: ProviderInstanceId.make("claude_openrouter"),
       model: "openai/gpt-5.5",
+    });
+  });
+});
+
+describe("delegated thread model selection", () => {
+  const copilotProviders = [
+    provider({
+      provider: ProviderDriverKind.make("copilot"),
+      instanceId: "copilot",
+      models: ["gpt-6-luna", "gpt-6-sol"],
+    }),
+  ];
+
+  it("defaults to Copilot gpt-6-luna", () => {
+    expect(
+      resolveDelegatedThreadModelSelectionState(DEFAULT_UNIFIED_SETTINGS, copilotProviders),
+    ).toEqual({
+      instanceId: ProviderInstanceId.make("copilot"),
+      model: "gpt-6-luna",
+    });
+  });
+
+  it("keeps an explicit saved selection", () => {
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      delegatedThreadModelSelection: {
+        instanceId: ProviderInstanceId.make("copilot"),
+        model: "gpt-6-sol",
+      },
+    };
+
+    expect(resolveDelegatedThreadModelSelectionState(settings, copilotProviders)).toEqual({
+      instanceId: ProviderInstanceId.make("copilot"),
+      model: "gpt-6-sol",
+    });
+  });
+
+  it("falls back when the saved instance is unavailable", () => {
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      delegatedThreadModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+      },
+    };
+
+    expect(resolveDelegatedThreadModelSelectionState(settings, copilotProviders)).toEqual({
+      instanceId: ProviderInstanceId.make("copilot"),
+      model: "gpt-6-luna",
     });
   });
 });

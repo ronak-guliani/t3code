@@ -368,6 +368,74 @@ describe("MessagesTimeline", () => {
     },
   );
 
+  it("shows specific command and read labels while truncating commands to chat width", async () => {
+    const createdAt = new Date().toISOString();
+    const command =
+      "git status --short && git branch --show-current && git remote -v && git --no-pager log --oneline -5";
+    const screen = await render(
+      <div style={{ width: 320 }}>
+        <MessagesTimeline
+          {...buildProps()}
+          activeTurnInProgress
+          isWorking
+          activeTurnStartedAt={createdAt}
+          timelineEntries={[
+            {
+              id: "long-command",
+              kind: "work",
+              createdAt,
+              entry: {
+                id: "long-command",
+                createdAt,
+                tone: "tool",
+                label: "Ran command",
+                command,
+                itemType: "command_execution",
+                toolLifecycleStatus: "completed",
+                isComplete: true,
+              },
+            },
+            {
+              id: "read-agents",
+              kind: "work",
+              createdAt,
+              entry: {
+                id: "read-agents",
+                createdAt,
+                tone: "tool",
+                label: "Read file",
+                toolData: {
+                  toolName: "view",
+                  rawInput: { path: "./.agents/skills/vercel-react-best-practices/AGENTS.md" },
+                },
+                toolLifecycleStatus: "completed",
+                isComplete: true,
+              },
+            },
+          ]}
+        />
+      </div>,
+    );
+    try {
+      const commandButton = page.getByRole("button", {
+        name: `Expand details: Ran ${command}`,
+        exact: true,
+      });
+      await expect.element(commandButton).toBeVisible();
+      const commandLabel = commandButton.element().querySelector(".chat-work-label")!;
+      expect(commandLabel.textContent).toBe(`Ran ${command}`);
+      expect(commandLabel.getAttribute("title")).toBe(`Ran ${command}`);
+      expect(getComputedStyle(commandLabel).textOverflow).toBe("ellipsis");
+      expect(getComputedStyle(commandLabel).whiteSpace).toBe("nowrap");
+      expect(commandButton.element().getBoundingClientRect().width).toBeLessThanOrEqual(320);
+      await expect
+        .element(page.getByRole("button", { name: "Expand details: Read AGENTS.md", exact: true }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("opens a short history directly without a duplicate summary disclosure", async () => {
     const createdAt = new Date().toISOString();
     const screen = await render(
@@ -884,9 +952,99 @@ describe("MessagesTimeline", () => {
         ]}
       />,
     );
-    await expect.element(page.getByText("Failed pnpm", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("Failed pnpm test", { exact: true })).toBeVisible();
     await expect.element(page.getByRole("button", { name: "Expand Tool Calls (2)" })).toBeVisible();
     expect(document.querySelector(".work-activity-shimmer")).toBeNull();
     await screen.unmount();
+  });
+
+  it("keeps the previous Worked for receipt collapsed when a new turn starts without a server turn id yet", async () => {
+    const props = buildProps();
+    const turnId = TurnId.make("turn-1");
+    const base = [
+      {
+        id: "user-1",
+        kind: "message",
+        createdAt: "2026-09-08T10:00:00.000Z",
+        message: {
+          id: MessageId.make("user-1"),
+          role: "user",
+          text: "first",
+          createdAt: "2026-09-08T10:00:00.000Z",
+          streaming: false,
+        },
+      },
+      {
+        id: "work-1",
+        kind: "work",
+        createdAt: "2026-09-08T10:00:01.000Z",
+        entry: {
+          id: "work-1",
+          createdAt: "2026-09-08T10:00:01.000Z",
+          turnId,
+          label: "Read file",
+          detail: "/src/a.ts",
+          tone: "tool",
+          toolLifecycleStatus: "completed",
+          isComplete: true,
+        },
+      },
+      {
+        id: "asst-1",
+        kind: "message",
+        createdAt: "2026-09-08T10:00:10.000Z",
+        message: {
+          id: MessageId.make("asst-1"),
+          role: "assistant",
+          turnId,
+          text: "done",
+          createdAt: "2026-09-08T10:00:10.000Z",
+          completedAt: "2026-09-08T10:00:12.000Z",
+          streaming: false,
+        },
+      },
+    ] as unknown as TimelineEntry[];
+
+    const screen = await render(<MessagesTimeline {...props} timelineEntries={base} />);
+    try {
+      const receipt = page.getByRole("button", { name: /^Worked for/ });
+      await expect.element(receipt).toBeVisible();
+      await expect.element(receipt).toHaveAttribute("aria-expanded", "false");
+
+      // Optimistic send: working indicator is up but the server has not acked
+      // the new turn, so callers pass a null activeTurnId. The previous
+      // receipt must stay collapsed instead of uncollapsing into Tool Calls.
+      const withNewUser = [
+        ...base,
+        {
+          id: "user-2",
+          kind: "message",
+          createdAt: "2026-09-08T10:01:00.000Z",
+          message: {
+            id: MessageId.make("user-2"),
+            role: "user",
+            text: "second",
+            createdAt: "2026-09-08T10:01:00.000Z",
+            streaming: false,
+          },
+        },
+      ] as unknown as TimelineEntry[];
+      await screen.rerender(
+        <MessagesTimeline
+          {...props}
+          isWorking
+          activeTurnInProgress
+          activeTurnId={null}
+          activeTurnStartedAt={new Date().toISOString()}
+          timelineEntries={withNewUser}
+        />,
+      );
+      await expect.element(receipt).toHaveAttribute("aria-expanded", "false");
+      await expect
+        .element(page.getByRole("button", { name: "Expand Tool Calls (1)", exact: true }))
+        .not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
   });
 });

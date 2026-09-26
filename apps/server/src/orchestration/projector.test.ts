@@ -339,11 +339,127 @@ describe("orchestration projector", () => {
       },
     ]);
 
-    const afterWorkspaceUnlink = await Effect.runPromise(
+    const pendingIntent = {
+      requestId: "association-request",
+      reference: "https://github.com/acme/app/pull/42",
+      requestedAt: later,
+      nextAttemptAt: new Date(Date.parse(later) + 60_000).toISOString(),
+      status: "pending",
+    };
+    const afterPendingAssociation = await Effect.runPromise(
       projectEvent(
         afterWorkspaceRefresh,
         makeEvent({
           sequence: 6,
+          type: "thread.meta-updated",
+          aggregateKind: "thread",
+          aggregateId: "thread-pr",
+          occurredAt: later,
+          commandId: "cmd-pending-association",
+          payload: {
+            threadId: "thread-pr",
+            pendingPullRequestAssociation: pendingIntent,
+            updatedAt: later,
+          },
+        }),
+      ),
+    );
+
+    const afterCollaborationUpdate = await Effect.runPromise(
+      projectEvent(
+        afterPendingAssociation,
+        makeEvent({
+          sequence: 7,
+          type: "thread.collaboration-request-updated",
+          aggregateKind: "thread",
+          aggregateId: "thread-pr",
+          occurredAt: later,
+          commandId: "cmd-collaboration-update",
+          payload: {
+            threadId: "thread-pr",
+            action: "created",
+            request: {
+              requestId: "collaboration-request",
+              kind: "clarification",
+              exchangeId: "exchange",
+              senderThreadId: "thread-pr",
+              recipientThreadId: "thread-pr",
+              blocking: true,
+              senderAuthority: {
+                executionId: "sender",
+                generation: 0,
+                dispatchId: null,
+                turnId: null,
+              },
+              recipientAuthority: {
+                executionId: "recipient",
+                generation: 0,
+                dispatchId: null,
+                turnId: null,
+              },
+              producingExecution: {
+                executionId: "producer",
+                generation: 0,
+                dispatchId: null,
+                turnId: null,
+              },
+              payloadRef: { ref: "payload://request", sha256: "request-hash" },
+              candidateRefs: [],
+              findingRefs: [],
+              supersedesRequestId: null,
+              deliveryQueuedTurnId: null,
+              responseDeliveryQueuedTurnId: null,
+              responseRef: null,
+              response: null,
+              consumedExecution: null,
+              status: "waiting",
+              terminalOutcome: null,
+              createdAt: later,
+              updatedAt: later,
+            },
+            updatedAt: later,
+          },
+        }),
+      ),
+    );
+    const afterPullRequestLink = await Effect.runPromise(
+      projectEvent(
+        afterPendingAssociation,
+        makeEvent({
+          sequence: 7,
+          type: "thread.pull-request-linked",
+          aggregateKind: "thread",
+          aggregateId: "thread-pr",
+          occurredAt: later,
+          commandId: "cmd-link-pull-request",
+          payload: {
+            threadId: "thread-pr",
+            link: {
+              pullRequest: supportingPullRequest,
+              source: "manual",
+              linkedAt: later,
+            },
+            updatedAt: later,
+          },
+        }),
+      ),
+    );
+    expect({
+      afterCollaborationUpdate: afterCollaborationUpdate.threads.find(
+        (thread) => thread.id === "thread-pr",
+      )?.pendingPullRequestAssociation,
+      afterPullRequestLink: afterPullRequestLink.threads.find((thread) => thread.id === "thread-pr")
+        ?.pendingPullRequestAssociation,
+    }).toEqual({
+      afterCollaborationUpdate: pendingIntent,
+      afterPullRequestLink: null,
+    });
+
+    const afterWorkspaceUnlink = await Effect.runPromise(
+      projectEvent(
+        afterPendingAssociation,
+        makeEvent({
+          sequence: 7,
           type: "thread.pull-request-unlinked",
           aggregateKind: "thread",
           aggregateId: "thread-pr",
@@ -364,6 +480,93 @@ describe("orchestration projector", () => {
         pullRequest: supportingPullRequest,
         source: "manual",
         linkedAt: now,
+      },
+    ]);
+    expect(unlinkedThread?.pendingPullRequestAssociation).toBeNull();
+  });
+
+  it("recovers a legacy-only pull request before projecting a newly created one", async () => {
+    const createdAt = "2026-09-17T00:00:00.000Z";
+    const updatedAt = "2026-09-17T00:01:00.000Z";
+    const firstPullRequest = {
+      number: 399,
+      title: "First pull request",
+      url: "https://github.com/acme/app/pull/399",
+      baseBranch: "main",
+      headBranch: "feature/first",
+      state: "open" as const,
+    };
+    const secondPullRequest = {
+      ...firstPullRequest,
+      number: 400,
+      title: "Second pull request",
+      url: "https://github.com/acme/app/pull/400",
+      headBranch: "feature/second",
+    };
+    const withLegacyOnly = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(createdAt),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-multiple-prs",
+          occurredAt: createdAt,
+          commandId: "cmd-thread-multiple-prs",
+          payload: {
+            threadId: "thread-multiple-prs",
+            projectId: "project-1",
+            title: "Multiple PRs",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            branch: "feature/first",
+            worktreePath: null,
+            pullRequest: firstPullRequest,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    ).then((readModel) => ({
+      ...readModel,
+      threads: readModel.threads.map((thread) =>
+        thread.id === "thread-multiple-prs" ? { ...thread, pullRequests: [] } : thread,
+      ),
+    }));
+    const projected = await Effect.runPromise(
+      projectEvent(
+        withLegacyOnly,
+        makeEvent({
+          sequence: 2,
+          type: "thread.meta-updated",
+          aggregateKind: "thread",
+          aggregateId: "thread-multiple-prs",
+          occurredAt: updatedAt,
+          commandId: "cmd-second-pr",
+          payload: {
+            threadId: "thread-multiple-prs",
+            pullRequest: secondPullRequest,
+            pullRequestSource: "created",
+            updatedAt,
+          },
+        }),
+      ),
+    );
+    const thread = projected.threads.find((entry) => entry.id === "thread-multiple-prs");
+
+    expect(thread?.pullRequests).toEqual([
+      {
+        pullRequest: firstPullRequest,
+        source: "recovered",
+        linkedAt: createdAt,
+      },
+      {
+        pullRequest: secondPullRequest,
+        source: "created",
+        linkedAt: updatedAt,
       },
     ]);
   });
@@ -716,6 +919,28 @@ describe("orchestration projector", () => {
       ),
     );
     expect(unarchived.threads[0]?.archivedAt).toBeNull();
+
+    const cleared = await Effect.runPromise(
+      projectEvent(
+        unarchived,
+        makeEvent({
+          sequence: 4,
+          type: "thread.meta-updated",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: later,
+          commandId: "cmd-clear-worktree",
+          payload: {
+            threadId: "thread-1",
+            worktreePath: null,
+            workspaceBinding: null,
+            updatedAt: later,
+          },
+        }),
+      ),
+    );
+    expect(cleared.threads[0]?.worktreePath).toBeNull();
+    expect(cleared.threads[0]).not.toHaveProperty("workspaceBinding");
   });
 
   it("applies queued turn lifecycle events", async () => {

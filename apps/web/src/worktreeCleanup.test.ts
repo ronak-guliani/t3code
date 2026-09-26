@@ -100,6 +100,27 @@ describe("getOrphanedWorktreePathForThread", () => {
       "/tmp/repo/worktrees/feature-a",
     );
   });
+
+  it("never offers cleanup for the project checkout itself", () => {
+    const threads = [makeThread({ worktreePath: "/tmp/repo" })];
+    expect(
+      getOrphanedWorktreePathForThread(threads, ThreadId.make("thread-1"), "/tmp/repo"),
+    ).toBeNull();
+  });
+
+  it("ignores trailing slashes when recognizing the project checkout", () => {
+    const threads = [makeThread({ worktreePath: "/tmp/repo/" })];
+    expect(
+      getOrphanedWorktreePathForThread(threads, ThreadId.make("thread-1"), "/tmp/repo"),
+    ).toBeNull();
+  });
+
+  it("still offers cleanup for real worktrees when a project cwd is known", () => {
+    const threads = [makeThread({ worktreePath: "/tmp/repo/worktrees/feature-a" })];
+    expect(getOrphanedWorktreePathForThread(threads, ThreadId.make("thread-1"), "/tmp/repo")).toBe(
+      "/tmp/repo/worktrees/feature-a",
+    );
+  });
 });
 
 describe("formatWorktreePathForDisplay", () => {

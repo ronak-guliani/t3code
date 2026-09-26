@@ -4,6 +4,7 @@ import {
   Activity,
   FileDiff,
   Files,
+  GitPullRequest,
   Globe2,
   Maximize2,
   Minimize2,
@@ -49,6 +50,8 @@ type Props = {
   readonly onAddDiff: () => void;
   readonly onAddInsights: () => void;
   readonly onAddDevice?: () => void;
+  readonly onAddPullRequests?: () => void;
+  readonly showAddSurface?: boolean;
   readonly maximized?: boolean;
   readonly onToggleMaximize?: () => void;
   readonly children: ReactNode;
@@ -72,6 +75,12 @@ function titleFor(
       return surface.relativePath.split("/").at(-1) ?? surface.relativePath;
     case "terminal":
       return terminalLabels[surface.resourceId] ?? "Terminal";
+    case "pull-request":
+      return surface.title
+        ? `#${surface.reference.number} ${surface.title}`
+        : `Pull request #${surface.reference.number}`;
+    case "pull-requests":
+      return "Pull requests";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -124,6 +133,10 @@ function Icon({
       return <Activity className="size-3.5" />;
     case "terminal":
       return <TerminalSquare className="size-3.5" />;
+    case "pull-request":
+      return <GitPullRequest className="size-3.5" />;
+    case "pull-requests":
+      return <GitPullRequest className="size-3.5" />;
     case "device":
       return <Smartphone className="size-3.5" />;
     case "preview": {
@@ -153,6 +166,8 @@ export function RightPanelTabs({
   onAddDiff,
   onAddInsights,
   onAddDevice,
+  onAddPullRequests,
+  showAddSurface = true,
   maximized = false,
   onToggleMaximize,
   children,
@@ -249,36 +264,41 @@ export function RightPanelTabs({
               </div>
             );
           })}
-          <Menu>
-            <MenuTrigger
-              render={
-                <button
-                  type="button"
-                  aria-label="Add surface"
-                  className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-                >
-                  <Plus className="size-3.5" />
-                </button>
-              }
-            />
-            <MenuPopup>
-              <MenuSub>
-                <MenuSubTrigger>Browser</MenuSubTrigger>
-                <MenuSubPopup className="min-w-40 max-w-56">
-                  {browserProfiles.map((profile) => (
-                    <MenuItem key={profile.id} onClick={() => onAddBrowserInProfile(profile.id)}>
-                      <span className="min-w-0 truncate">{profile.name}</span>
-                    </MenuItem>
-                  ))}
-                </MenuSubPopup>
-              </MenuSub>
-              <MenuItem onClick={onAddTerminal}>Terminal</MenuItem>
-              <MenuItem onClick={onAddFiles}>Files</MenuItem>
-              <MenuItem onClick={onAddDiff}>Diff</MenuItem>
-              <MenuItem onClick={onAddInsights}>Insights</MenuItem>
-              {onAddDevice ? <MenuItem onClick={onAddDevice}>Device</MenuItem> : null}
-            </MenuPopup>
-          </Menu>
+          {showAddSurface ? (
+            <Menu>
+              <MenuTrigger
+                render={
+                  <button
+                    type="button"
+                    aria-label="Add surface"
+                    className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    <Plus className="size-3.5" />
+                  </button>
+                }
+              />
+              <MenuPopup>
+                <MenuSub>
+                  <MenuSubTrigger>Browser</MenuSubTrigger>
+                  <MenuSubPopup className="min-w-40 max-w-56">
+                    {browserProfiles.map((profile) => (
+                      <MenuItem key={profile.id} onClick={() => onAddBrowserInProfile(profile.id)}>
+                        <span className="min-w-0 truncate">{profile.name}</span>
+                      </MenuItem>
+                    ))}
+                  </MenuSubPopup>
+                </MenuSub>
+                <MenuItem onClick={onAddTerminal}>Terminal</MenuItem>
+                <MenuItem onClick={onAddFiles}>Files</MenuItem>
+                <MenuItem onClick={onAddDiff}>Diff</MenuItem>
+                <MenuItem onClick={onAddInsights}>Insights</MenuItem>
+                {onAddDevice ? <MenuItem onClick={onAddDevice}>Device</MenuItem> : null}
+                {onAddPullRequests ? (
+                  <MenuItem onClick={onAddPullRequests}>Pull requests</MenuItem>
+                ) : null}
+              </MenuPopup>
+            </Menu>
+          ) : null}
         </div>
         {onToggleMaximize ? (
           <button

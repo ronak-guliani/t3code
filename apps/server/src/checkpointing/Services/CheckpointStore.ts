@@ -14,23 +14,26 @@ import { Context } from "effect";
 import type { Effect } from "effect";
 
 import type { CheckpointStoreError } from "../Errors.ts";
-import { CheckpointRef } from "@t3tools/contracts";
+import { CheckpointRef, WorkspaceBinding } from "@t3tools/contracts";
 
 export interface CaptureCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
+  readonly workspaceBinding?: WorkspaceBinding;
 }
 
 export interface CheckpointRefMatchesWorkspaceInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
   readonly compareContents?: boolean;
+  readonly workspaceBinding?: WorkspaceBinding;
 }
 
 export interface RestoreCheckpointInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
   readonly fallbackToHead?: boolean;
+  readonly workspaceBinding?: WorkspaceBinding;
 }
 
 export interface DiffCheckpointsInput {
@@ -41,6 +44,7 @@ export interface DiffCheckpointsInput {
   readonly fallbackFromToHead?: boolean;
   readonly ignoreWhitespace?: boolean;
   readonly paths?: ReadonlyArray<string>;
+  readonly workspaceBinding?: WorkspaceBinding;
 }
 
 export interface CheckpointDiffFileSummary {

@@ -8,8 +8,10 @@ import {
   ApprovalRequestId,
   AuthSessionId,
   ChildDecision,
+  ChildWaitAssignmentIdentity,
   ChildWaitCondition,
   CommandId,
+  PendingPullRequestAssociation,
   EditorId,
   KeybindingRule,
   MessageId,
@@ -53,9 +55,12 @@ import {
   Layer,
   LogLevel,
   Option,
+  Result,
   Path,
+  Redacted,
   References,
   Schema,
+  SchemaIssue,
   Stream,
 } from "effect";
 import { Argument, Command, Flag, GlobalFlag } from "effect/unstable/cli";
@@ -99,6 +104,7 @@ import { RepositoryIdentityResolverLive } from "./project/Layers/RepositoryIdent
 import { getAutoBootstrapDefaultModelSelection } from "./serverRuntimeStartup.ts";
 import { readPersistedServerRuntimeState } from "./serverRuntimeState.ts";
 import { DurationFromString } from "./cli/duration.ts";
+import { pendingActivitiesFor } from "./cli/pendingRequests.ts";
 import { WorkspacePaths } from "./workspace/Services/WorkspacePaths.ts";
 import { WorkspacePathsLive } from "./workspace/Layers/WorkspacePaths.ts";
 import {
@@ -110,6 +116,7 @@ import {
   getLiveOrchestrationShellSnapshot,
   isDefinitiveCommandRejectionError,
   printJson,
+  readLiveThread,
   readJsonPayload,
   resolveLiveTarget,
   runReconnectingStream,
@@ -119,9 +126,15 @@ import {
   withLiveSnapshotClient,
   withLiveSnapshotAndRpc,
   watchShell,
+  nowIso,
   CliPayloadError,
   type CliLiveTargetFlags,
 } from "./cli/client.ts";
+import { resolveThreadWorkspaceCwd } from "./checkpointing/Utils.ts";
+import {
+  pullRequestAssociationBlockReason,
+  pullRequestAssociationRetryAt,
+} from "./pullRequestMonitor/pullRequestAssociationValidation.ts";
 import {
   discoverCliEnvironmentCandidates,
   resolveCliEnvironmentCandidate,
@@ -321,6 +334,25 @@ const EnvServerConfig = Config.all({
     Config.map(Option.getOrUndefined),
   ),
   backgroundService: Config.boolean("T3CODE_BACKGROUND_SERVICE").pipe(Config.withDefault(false)),
+  devAuthToken: Config.redacted("T3CODE_DEV_AUTH_TOKEN").pipe(
+    Config.map((token) => Redacted.make(Redacted.value(token).trim())),
+    Config.mapOrFail((token) =>
+      Redacted.value(token).length === 0 || Redacted.value(token).length >= 32
+        ? Effect.succeed(token)
+        : Effect.fail(
+            new Config.ConfigError(
+              new Schema.SchemaError(
+                new SchemaIssue.InvalidValue(Option.none(), {
+                  message: "T3CODE_DEV_AUTH_TOKEN must contain at least 32 characters.",
+                }),
+              ),
+            ),
+          ),
+    ),
+    Config.option,
+    Config.map(Option.filter((token) => Redacted.value(token).length > 0)),
+    Config.map(Option.getOrUndefined),
+  ),
 });
 
 interface CliServerFlags {
@@ -485,6 +517,11 @@ export const resolveServerConfig = (
     );
     const logLevel = Option.getOrElse(cliLogLevel, () => env.logLevel);
 
+    // Reusable dev credential: only honored by web-mode dev servers (devUrl
+    // set). Desktop and non-development servers ignore it. Each environment
+    // seeds its own session row, so worktrees do not share auth state.
+    const devAuthToken = mode === "web" && devUrl !== undefined ? env.devAuthToken : undefined;
+
     const config: ServerConfigShape = {
       logLevel,
       traceMinLevel: env.traceMinLevel,
@@ -511,6 +548,7 @@ export const resolveServerConfig = (
       host,
       staticDir,
       devUrl,
+      devAuthToken,
       noBrowser,
       startupPresentation,
       desktopBootstrapToken,
@@ -1033,6 +1071,9 @@ const authCommand = Command.make("auth").pipe(
 const decodeModelSelection = Schema.decodeUnknownEffect(ModelSelection);
 const decodeChildWaitJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.NullOr(ChildWaitCondition)),
+);
+const decodeChildWaitAssignmentsJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(ChildWaitAssignmentIdentity)),
 );
 const decodeChildDecisionJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ChildDecision));
 const decodeProjectScripts = Schema.decodeUnknownEffect(Schema.Array(ProjectScript));
@@ -1641,17 +1682,63 @@ const chatShowCommand = Command.make("show", {
   ...liveTargetFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
   messages: Flag.boolean("messages").pipe(Flag.withDefault(false)),
+  activities: Flag.boolean("activities").pipe(Flag.withDefault(false)),
+  full: Flag.boolean("full").pipe(
+    Flag.withDescription("Legacy full detail, including checkpoints and activity context."),
+  ),
+  limit: Flag.integer("limit").pipe(
+    Flag.optional,
+    Flag.withDescription("History page size (1-200; default 50)."),
+  ),
+  before: Flag.string("before").pipe(
+    Flag.optional,
+    Flag.withDescription("Opaque page.before cursor from the previous history page."),
+  ),
 }).pipe(
   Command.withDescription("Show a chat."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      if (!flags.messages) {
-        const snapshot = yield* getLiveOrchestrationShellSnapshot(flags);
-        const thread = yield* findThreadForCli(snapshot, flags.chat, { includeArchived: true });
-        return yield* printJson(threadSummary(thread));
+      if (
+        (flags.messages && flags.activities) ||
+        (flags.full &&
+          (flags.messages ||
+            flags.activities ||
+            Option.isSome(flags.limit) ||
+            Option.isSome(flags.before)))
+      ) {
+        return yield* new CliPayloadError({
+          message:
+            "Choose --messages, --activities, or --full; pagination cannot be used with --full.",
+        });
       }
-      yield* withThreadDetail(flags, flags.chat, ({ detail }) => printJson(detail), {
-        includeArchived: true,
+      if (flags.full) {
+        return yield* withThreadDetail(flags, flags.chat, ({ detail }) => printJson(detail), {
+          includeArchived: true,
+        });
+      }
+      const limit = Option.getOrUndefined(flags.limit);
+      if (limit !== undefined && (limit < 1 || limit > 200)) {
+        return yield* new CliPayloadError({ message: "--limit must be between 1 and 200." });
+      }
+      if (
+        !flags.messages &&
+        !flags.activities &&
+        (Option.isSome(flags.before) || limit !== undefined)
+      ) {
+        return yield* new CliPayloadError({
+          message: "Pagination requires --messages or --activities.",
+        });
+      }
+      const result = yield* readLiveThread(flags, {
+        thread: flags.chat,
+        view: flags.messages ? "messages" : flags.activities ? "activities" : "summary",
+        ...(limit !== undefined ? { limit } : {}),
+        ...(Option.isSome(flags.before) ? { before: flags.before.value } : {}),
+      });
+      yield* printJson({
+        ...threadSummary(result.thread),
+        ...(result.messages ? { messages: result.messages, page: result.page } : {}),
+        ...(result.activities ? { activities: result.activities, page: result.page } : {}),
       });
     }),
   ),
@@ -1684,40 +1771,6 @@ const readStringArrayJson = (raw: string, label: string) =>
     },
     catch: (cause) => new CliPayloadError({ message: `Invalid ${label}.`, cause }),
   });
-
-const getPayloadRequestId = (payload: unknown): string | undefined => {
-  if (!isJsonRecord(payload)) return undefined;
-  const requestId = payload.requestId;
-  return typeof requestId === "string" && requestId.length > 0 ? requestId : undefined;
-};
-
-const pendingActivitiesFor = (input: {
-  readonly thread: OrchestrationThread;
-  readonly requestedKind: string;
-  readonly resolvedKind: string;
-}) => {
-  const resolvedRequestIds = new Set(
-    input.thread.activities
-      .filter((activity) => activity.kind === input.resolvedKind)
-      .map((activity) => getPayloadRequestId(activity.payload))
-      .filter((requestId): requestId is string => requestId !== undefined),
-  );
-  return input.thread.activities
-    .filter((activity) => activity.kind === input.requestedKind)
-    .filter((activity) => {
-      const requestId = getPayloadRequestId(activity.payload);
-      return requestId !== undefined && !resolvedRequestIds.has(requestId);
-    })
-    .map((activity) => ({
-      threadId: input.thread.id,
-      threadTitle: input.thread.title,
-      requestId: getPayloadRequestId(activity.payload),
-      turnId: activity.turnId,
-      summary: activity.summary,
-      payload: activity.payload,
-      createdAt: activity.createdAt,
-    }));
-};
 
 const updateServerSettings = (flags: CliLiveTargetFlags, patch: ServerSettingsPatch) =>
   callWsRpc(flags, (client) => client[WS_METHODS.serverUpdateSettings]({ patch }));
@@ -2040,6 +2093,45 @@ const chatSetBranchCommand = Command.make("set-branch", {
 );
 
 const cwdFlag = Flag.string("cwd").pipe(Flag.withDefault(process.cwd()));
+const ASSOCIATION_RECOVERY_DELAY_MS = 60_000;
+
+const updatePendingPullRequestAssociation = (
+  flags: CliLiveTargetFlags,
+  chat: string,
+  requestId: CommandId,
+  workspaceCwd: string,
+  pendingPullRequestAssociation: PendingPullRequestAssociation,
+) =>
+  withThreadDispatch(flags, chat, ({ thread, dispatch }) => {
+    if (thread.pendingPullRequestAssociation?.requestId !== requestId) {
+      return Effect.succeed(false);
+    }
+    return dispatch({
+      type: "thread.meta.update",
+      commandId: CommandId.make(`cli:associate-pr-pending:${crypto.randomUUID()}`),
+      threadId: thread.id,
+      expectedUpdatedAt: thread.updatedAt,
+      expectedWorkspaceCwd: workspaceCwd,
+      pendingPullRequestAssociation,
+    }).pipe(
+      Effect.flatMap(() =>
+        withThreadDispatch(flags, chat, ({ thread: updatedThread }) => {
+          const current = updatedThread.pendingPullRequestAssociation;
+          return Effect.succeed(
+            current?.requestId === pendingPullRequestAssociation.requestId &&
+              current.reference === pendingPullRequestAssociation.reference &&
+              current.requestedAt === pendingPullRequestAssociation.requestedAt &&
+              current.status === pendingPullRequestAssociation.status &&
+              (current.status === "pending" && pendingPullRequestAssociation.status === "pending"
+                ? current.nextAttemptAt === pendingPullRequestAssociation.nextAttemptAt
+                : current.status === "blocked" &&
+                  pendingPullRequestAssociation.status === "blocked" &&
+                  current.reason === pendingPullRequestAssociation.reason),
+          );
+        }),
+      ),
+    );
+  });
 
 const chatAssociatePrCommand = Command.make("associate-pr", {
   ...liveTargetFlags,
@@ -2052,31 +2144,232 @@ const chatAssociatePrCommand = Command.make("associate-pr", {
   Command.withDescription("Durably associate a pull request with a chat."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      const resolved = yield* callWsRpc(flags, (client) =>
-        client[WS_METHODS.gitResolvePullRequest]({
-          cwd: flags.cwd,
-          reference: flags.reference,
-        }),
+      const reference = flags.reference.trim();
+      if (reference.length === 0) {
+        return yield* Effect.fail(new Error("A pull request URL or number is required."));
+      }
+      const requestId = CommandId.make(`cli:associate-pr:${crypto.randomUUID()}`);
+      const requestedAt = nowIso();
+      const pending: PendingPullRequestAssociation = {
+        requestId,
+        reference,
+        requestedAt,
+        nextAttemptAt: new Date(
+          Date.parse(requestedAt) + ASSOCIATION_RECOVERY_DELAY_MS,
+        ).toISOString(),
+        status: "pending",
+      };
+      const context = yield* withThreadDispatch(
+        flags,
+        flags.chat,
+        ({ thread, snapshot, dispatch }) =>
+          Effect.gen(function* () {
+            const workspaceCwd = resolveThreadWorkspaceCwd({
+              thread,
+              projects: snapshot.projects,
+            });
+            if (!workspaceCwd || workspaceCwd !== flags.cwd) {
+              return yield* Effect.fail(
+                new Error("The requested checkout is not the current workspace for this chat."),
+              );
+            }
+            yield* dispatch({
+              type: "thread.meta.update",
+              commandId: CommandId.make(`cli:associate-pr-intent:${crypto.randomUUID()}`),
+              threadId: thread.id,
+              expectedUpdatedAt: thread.updatedAt,
+              expectedWorkspaceCwd: workspaceCwd,
+              pendingPullRequestAssociation: pending,
+            });
+            return {
+              threadId: thread.id,
+              projectId: thread.projectId,
+              branch: thread.branch,
+              worktreePath: thread.worktreePath,
+              pullRequestUrl: thread.pullRequest?.url ?? null,
+              workspaceCwd,
+            };
+          }),
       );
-      yield* withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
-        Effect.gen(function* () {
-          const result = yield* dispatch({
-            type: "thread.meta.update",
-            commandId: CommandId.make(crypto.randomUUID()),
-            threadId: thread.id,
-            pullRequest: resolved.pullRequest,
-            pullRequestOwnership: "transfer",
-          });
-          yield* dispatch({
-            type: "thread.pull-request.link",
-            commandId: CommandId.make(crypto.randomUUID()),
-            threadId: thread.id,
-            pullRequest: resolved.pullRequest,
-            source: "agent",
-          });
-          yield* printJson({ pullRequest: resolved.pullRequest, result });
-        }),
+      const intentPersisted = yield* withThreadDispatch(flags, flags.chat, ({ thread }) =>
+        Effect.succeed(thread.pendingPullRequestAssociation?.requestId === requestId),
       );
+      if (!intentPersisted) {
+        return yield* Effect.fail(
+          new Error("The pull request association request was superseded before resolution."),
+        );
+      }
+
+      const localStatus = yield* callWsRpc(flags, (client) =>
+        client[WS_METHODS.gitLocalStatus]({ cwd: context.workspaceCwd }),
+      );
+      if (
+        !localStatus.isRepo ||
+        !localStatus.hasOriginRemote ||
+        localStatus.isDefaultBranch ||
+        context.branch === null ||
+        localStatus.branch !== context.branch
+      ) {
+        const blocked: PendingPullRequestAssociation = {
+          ...pending,
+          status: "blocked",
+          reason: "workspace-changed",
+        };
+        const updated = yield* updatePendingPullRequestAssociation(
+          flags,
+          flags.chat,
+          requestId,
+          context.workspaceCwd,
+          blocked,
+        );
+        yield* printJson({
+          status: updated ? "blocked" : "superseded",
+          reference,
+          ...(updated ? { reason: blocked.reason } : {}),
+        });
+        return;
+      }
+
+      const resolution = yield* Effect.result(
+        callWsRpc(flags, (client) =>
+          client[WS_METHODS.gitResolvePullRequest]({
+            cwd: context.workspaceCwd,
+            reference,
+          }),
+        ),
+      );
+      if (Result.isFailure(resolution)) {
+        const retryAt = pullRequestAssociationRetryAt(resolution.failure);
+        if (retryAt) {
+          const retryPending: PendingPullRequestAssociation = {
+            ...pending,
+            nextAttemptAt: retryAt,
+          };
+          const updated = yield* updatePendingPullRequestAssociation(
+            flags,
+            flags.chat,
+            requestId,
+            context.workspaceCwd,
+            retryPending,
+          );
+          yield* printJson(
+            updated
+              ? {
+                  status: "pending",
+                  reference,
+                  retryAt,
+                  message: "GitHub reads are rate-limited; no pull request has been associated.",
+                }
+              : { status: "superseded", reference },
+          );
+          return;
+        }
+
+        const blocked: PendingPullRequestAssociation = {
+          ...pending,
+          status: "blocked",
+          reason: "resolve-failed",
+        };
+        yield* updatePendingPullRequestAssociation(
+          flags,
+          flags.chat,
+          requestId,
+          context.workspaceCwd,
+          blocked,
+        );
+        return yield* Effect.fail(resolution.failure);
+      }
+
+      const verifiedLocalStatus = yield* callWsRpc(flags, (client) =>
+        client[WS_METHODS.gitLocalStatus]({ cwd: context.workspaceCwd }),
+      );
+      const associationResult = yield* withThreadDispatch(
+        flags,
+        flags.chat,
+        ({ thread, snapshot, dispatch }) =>
+          Effect.gen(function* () {
+            if (thread.pendingPullRequestAssociation?.requestId !== requestId) {
+              return { status: "superseded" as const };
+            }
+            if (
+              thread.projectId !== context.projectId ||
+              thread.branch !== context.branch ||
+              thread.worktreePath !== context.worktreePath ||
+              (thread.pullRequest?.url ?? null) !== context.pullRequestUrl ||
+              resolveThreadWorkspaceCwd({ thread, projects: snapshot.projects }) !==
+                context.workspaceCwd
+            ) {
+              const blocked: PendingPullRequestAssociation = {
+                ...pending,
+                status: "blocked",
+                reason: "thread-changed",
+              };
+              yield* dispatch({
+                type: "thread.meta.update",
+                commandId: CommandId.make(`cli:associate-pr-block:${crypto.randomUUID()}`),
+                threadId: thread.id,
+                expectedUpdatedAt: thread.updatedAt,
+                expectedWorkspaceCwd: context.workspaceCwd,
+                pendingPullRequestAssociation: blocked,
+              });
+              return { status: "blocked" as const, reason: blocked.reason };
+            }
+
+            const project = snapshot.projects.find((entry) => entry.id === thread.projectId);
+            const reason = pullRequestAssociationBlockReason({
+              thread,
+              project,
+              localStatus: verifiedLocalStatus,
+              pullRequest: resolution.success.pullRequest,
+            });
+            if (reason) {
+              const blocked: PendingPullRequestAssociation = {
+                ...pending,
+                status: "blocked",
+                reason,
+              };
+              yield* dispatch({
+                type: "thread.meta.update",
+                commandId: CommandId.make(`cli:associate-pr-block:${crypto.randomUUID()}`),
+                threadId: thread.id,
+                expectedUpdatedAt: thread.updatedAt,
+                expectedWorkspaceCwd: context.workspaceCwd,
+                pendingPullRequestAssociation: blocked,
+              });
+              return { status: "blocked" as const, reason };
+            }
+
+            const result = yield* dispatch({
+              type: "thread.meta.update",
+              commandId: CommandId.make(`cli:associate-pr:${crypto.randomUUID()}`),
+              threadId: thread.id,
+              expectedUpdatedAt: thread.updatedAt,
+              expectedWorkspaceCwd: context.workspaceCwd,
+              pullRequest: resolution.success.pullRequest,
+              pullRequestSource: "agent",
+              pullRequestOwnership: "transfer",
+              pendingPullRequestAssociation: null,
+            });
+            return {
+              status: "associated" as const,
+              pullRequest: resolution.success.pullRequest,
+              result,
+            };
+          }),
+      );
+      if (associationResult.status === "associated") {
+        const confirmed = yield* withThreadDispatch(flags, flags.chat, ({ thread }) =>
+          Effect.succeed(
+            thread.pullRequest?.url === associationResult.pullRequest.url &&
+              thread.pendingPullRequestAssociation == null,
+          ),
+        );
+        if (!confirmed) {
+          yield* printJson({ status: "superseded", reference });
+          return;
+        }
+      }
+      yield* printJson(associationResult);
     }),
   ),
 );
@@ -2257,6 +2550,18 @@ const chatNewCommand = Command.make("new", {
   ),
   title: Flag.string("title").pipe(Flag.withDefault("New chat")),
   followUp: Flag.choice("follow-up", ["automatic", "notify-only"]).pipe(Flag.optional),
+  threadId: Flag.string("thread-id").pipe(
+    Flag.optional,
+    Flag.withDescription("Preallocated child id for an atomic delegation batch."),
+  ),
+  assignmentId: Flag.string("assignment-id").pipe(
+    Flag.optional,
+    Flag.withDescription("Preallocated assignment id for an atomic delegation batch."),
+  ),
+  parentWait: Flag.string("parent-wait").pipe(
+    Flag.optional,
+    Flag.withDescription("Parent wait condition to record atomically with this child creation."),
+  ),
   runtimeMode: runtimeModeFlag,
   interactionMode: interactionModeFlag,
   branch: Flag.string("branch").pipe(Flag.optional),
@@ -2289,6 +2594,27 @@ const chatNewCommand = Command.make("new", {
         if (Option.isSome(flags.followUp) && parent === null) {
           return yield* Effect.fail(new Error("--follow-up requires --parent"));
         }
+        const requestedThreadId = Option.getOrUndefined(flags.threadId);
+        const requestedAssignmentId = Option.getOrUndefined(flags.assignmentId);
+        if ((requestedThreadId === undefined) !== (requestedAssignmentId === undefined)) {
+          return yield* Effect.fail(
+            new Error("--thread-id and --assignment-id must be provided together"),
+          );
+        }
+        const parentWait = Option.isSome(flags.parentWait)
+          ? yield* decodeChildWaitJson(flags.parentWait.value)
+          : undefined;
+        if (
+          parentWait !== undefined &&
+          (parent === null ||
+            !Option.isSome(flags.followUp) ||
+            flags.followUp.value !== "automatic" ||
+            requestedThreadId === undefined)
+        ) {
+          return yield* Effect.fail(
+            new Error("--parent-wait requires an identified automatic child with a parent"),
+          );
+        }
         const modelSelection = yield* resolveModelSelectionWithDefault(
           flags,
           resolveDefaultModelSelectionForProject(project),
@@ -2307,8 +2633,8 @@ const chatNewCommand = Command.make("new", {
           return;
         }
 
-        const threadId = ThreadId.make(crypto.randomUUID());
-        const firstMessageId = MessageId.make(crypto.randomUUID());
+        const threadId = ThreadId.make(requestedThreadId ?? crypto.randomUUID());
+        const firstMessageId = MessageId.make(requestedAssignmentId ?? crypto.randomUUID());
         const createdAt = new Date().toISOString();
         const outcome = yield* runNestedThreadCreationPhases(
           threadId,
@@ -2330,6 +2656,7 @@ const chatNewCommand = Command.make("new", {
                     },
                   }
                 : {}),
+              ...(parentWait !== undefined ? { parentWait } : {}),
               title: flags.title,
               modelSelection,
               runtimeMode: flags.runtimeMode,
@@ -2458,6 +2785,41 @@ const chatInterruptCommand = Command.make("interrupt", {
           commandId: CommandId.make(crypto.randomUUID()),
           threadId: thread.id,
           ...(turn !== undefined ? { turnId: TurnId.make(turn) } : {}),
+          createdAt: new Date().toISOString(),
+        });
+        yield* printJson(result);
+      }),
+    ),
+  ),
+);
+
+const chatSteerCommand = Command.make("steer", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  prompt: Argument.string("prompt").pipe(
+    Argument.withDescription("Follow-up text to steer the running turn with."),
+  ),
+  turn: Flag.string("turn").pipe(
+    Flag.optional,
+    Flag.withDescription("Expected active turn id. Fails when it no longer matches."),
+  ),
+}).pipe(
+  Command.withDescription("Steer the running turn without interrupting it."),
+  Command.withHandler((flags) =>
+    withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
+      Effect.gen(function* () {
+        const turn = Option.getOrUndefined(flags.turn);
+        const result = yield* dispatch({
+          type: "thread.turn.steer",
+          commandId: CommandId.make(crypto.randomUUID()),
+          threadId: thread.id,
+          ...(turn !== undefined ? { turnId: TurnId.make(turn) } : {}),
+          message: {
+            messageId: MessageId.make(crypto.randomUUID()),
+            role: "user",
+            text: flags.prompt,
+            attachments: [],
+          },
           createdAt: new Date().toISOString(),
         });
         yield* printJson(result);
@@ -2661,6 +3023,7 @@ const chatCommand = Command.make("chat").pipe(
     chatNewCommand,
     chatStreamCommand,
     chatInterruptCommand,
+    chatSteerCommand,
     chatStopCommand,
     chatQueueCommand,
     Command.make("wait", {
@@ -2680,6 +3043,28 @@ const chatCommand = Command.make("chat").pipe(
               commandId: CommandId.make(crypto.randomUUID()),
               threadId: thread.id,
               childWait,
+            }).pipe(Effect.flatMap(printJson));
+          }),
+        ),
+      ),
+    ),
+    Command.make("wait-prune", {
+      ...liveTargetFlags,
+      chat: Argument.string("chat"),
+      assignments: Argument.string("assignments"),
+    }).pipe(
+      Command.withDescription(
+        "Remove only specified child assignments from the current wait condition.",
+      ),
+      Command.withHandler((flags) =>
+        withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
+          Effect.gen(function* () {
+            const assignments = yield* decodeChildWaitAssignmentsJson(flags.assignments);
+            yield* dispatch({
+              type: "thread.child.wait.prune",
+              commandId: CommandId.make(crypto.randomUUID()),
+              threadId: thread.id,
+              assignments,
             }).pipe(Effect.flatMap(printJson));
           }),
         ),
@@ -3041,19 +3426,23 @@ const diffTurnCommand = Command.make("turn", {
   scope: Flag.choice("scope", ["turn", "snapshot"]).pipe(Flag.withDefault("snapshot")),
   ignoreWhitespace: ignoreWhitespaceFlag,
 }).pipe(
-  Command.withDescription("Get a turn diff."),
+  Command.withDescription("Get a turn diff for an active or archived thread."),
   Command.withHandler((flags) =>
-    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
-      Effect.gen(function* () {
-        const result = yield* client[ORCHESTRATION_WS_METHODS.getTurnDiff]({
-          threadId: thread.id,
-          fromTurnCount: Math.max(0, flags.turn - 1),
-          toTurnCount: flags.turn,
-          scope: flags.scope,
-          ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-        });
-        yield* printJson(result);
-      }),
+    withThreadRpc(
+      flags,
+      flags.chat,
+      ({ thread, client }) =>
+        Effect.gen(function* () {
+          const result = yield* client[ORCHESTRATION_WS_METHODS.getTurnDiff]({
+            threadId: thread.id,
+            fromTurnCount: Math.max(0, flags.turn - 1),
+            toTurnCount: flags.turn,
+            scope: flags.scope,
+            ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+          });
+          yield* printJson(result);
+        }),
+      { includeArchived: true },
     ),
   ),
 );
@@ -3064,19 +3453,23 @@ const diffThreadCommand = Command.make("thread", {
   toTurn: Flag.integer("to-turn").pipe(Flag.optional),
   ignoreWhitespace: ignoreWhitespaceFlag,
 }).pipe(
-  Command.withDescription("Get the full thread diff."),
+  Command.withDescription("Get the full diff for an active or archived thread."),
   Command.withHandler((flags) =>
-    withThreadDetailRpc(flags, flags.chat, ({ thread, detail, client }) =>
-      Effect.gen(function* () {
-        const toTurnCount =
-          Option.getOrUndefined(flags.toTurn) ?? latestCheckpointTurnCount(detail);
-        const result = yield* client[ORCHESTRATION_WS_METHODS.getFullThreadDiff]({
-          threadId: thread.id,
-          toTurnCount,
-          ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-        });
-        yield* printJson(result);
-      }),
+    withThreadDetailRpc(
+      flags,
+      flags.chat,
+      ({ thread, detail, client }) =>
+        Effect.gen(function* () {
+          const toTurnCount =
+            Option.getOrUndefined(flags.toTurn) ?? latestCheckpointTurnCount(detail);
+          const result = yield* client[ORCHESTRATION_WS_METHODS.getFullThreadDiff]({
+            threadId: thread.id,
+            toTurnCount,
+            ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+          });
+          yield* printJson(result);
+        }),
+      { includeArchived: true },
     ),
   ),
 );
@@ -3088,27 +3481,33 @@ const diffStateCommand = Command.make("state", {
   scope: Flag.choice("scope", ["turn", "snapshot"]).pipe(Flag.withDefault("snapshot")),
   ignoreWhitespace: ignoreWhitespaceFlag,
 }).pipe(
-  Command.withDescription("Get diff loading/error/state metadata."),
+  Command.withDescription(
+    "Get diff loading/error/state metadata for an active or archived thread.",
+  ),
   Command.withHandler((flags) =>
-    withThreadDetailRpc(flags, flags.chat, ({ thread, detail, client }) =>
-      Effect.gen(function* () {
-        const turn = Option.getOrUndefined(flags.turn);
-        const result =
-          turn === undefined
-            ? yield* client[ORCHESTRATION_WS_METHODS.getFullThreadDiffState]({
-                threadId: thread.id,
-                toTurnCount: latestCheckpointTurnCount(detail),
-                ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-              })
-            : yield* client[ORCHESTRATION_WS_METHODS.getTurnDiffState]({
-                threadId: thread.id,
-                fromTurnCount: Math.max(0, turn - 1),
-                toTurnCount: turn,
-                scope: flags.scope,
-                ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
-              });
-        yield* printJson(result);
-      }),
+    withThreadDetailRpc(
+      flags,
+      flags.chat,
+      ({ thread, detail, client }) =>
+        Effect.gen(function* () {
+          const turn = Option.getOrUndefined(flags.turn);
+          const result =
+            turn === undefined
+              ? yield* client[ORCHESTRATION_WS_METHODS.getFullThreadDiffState]({
+                  threadId: thread.id,
+                  toTurnCount: latestCheckpointTurnCount(detail),
+                  ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+                })
+              : yield* client[ORCHESTRATION_WS_METHODS.getTurnDiffState]({
+                  threadId: thread.id,
+                  fromTurnCount: Math.max(0, turn - 1),
+                  toTurnCount: turn,
+                  scope: flags.scope,
+                  ...(flags.ignoreWhitespace ? { ignoreWhitespace: true } : {}),
+                });
+          yield* printJson(result);
+        }),
+      { includeArchived: true },
     ),
   ),
 );
@@ -3122,10 +3521,12 @@ const checkpointListCommand = Command.make("list", {
   ...liveTargetFlags,
   chat: Argument.string("thread").pipe(Argument.withDescription("Thread id or title.")),
 }).pipe(
-  Command.withDescription("List thread checkpoints."),
+  Command.withDescription("List checkpoints for an active or archived thread."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      yield* withThreadDetail(flags, flags.chat, ({ detail }) => printJson(detail.checkpoints));
+      yield* withThreadDetail(flags, flags.chat, ({ detail }) => printJson(detail.checkpoints), {
+        includeArchived: true,
+      });
     }),
   ),
 );
@@ -4131,6 +4532,68 @@ const prMonitorCommand = Command.make("pr-monitor").pipe(
   ]),
 );
 
+// --- collaborative acceptance ---------------------------------------------
+const acceptanceStatusCommand = Command.make("status", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  caseId: Argument.string("case-id").pipe(Argument.withDescription("Acceptance case id.")),
+}).pipe(
+  Command.withDescription("Read the durable collaborative acceptance projection."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      client[WS_METHODS.collaborativeAcceptanceStatus]({
+        threadId: thread.id,
+        caseId: flags.caseId,
+      }).pipe(Effect.flatMap(printJson)),
+    ),
+  ),
+);
+
+const acceptancePauseCommand = Command.make("pause", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  caseId: Argument.string("case-id").pipe(Argument.withDescription("Acceptance case id.")),
+  reason: Argument.string("reason").pipe(
+    Argument.withDescription("Typed pause reason, for example budget-exhausted."),
+  ),
+}).pipe(
+  Command.withDescription("Pause collaborative acceptance automation."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      client[WS_METHODS.collaborativeAcceptancePause]({
+        threadId: thread.id,
+        caseId: flags.caseId,
+        reason: flags.reason,
+      }).pipe(Effect.flatMap(printJson)),
+    ),
+  ),
+);
+
+const acceptanceResumeCommand = Command.make("resume", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  caseId: Argument.string("case-id").pipe(Argument.withDescription("Acceptance case id.")),
+}).pipe(
+  Command.withDescription("Resume collaborative acceptance automation."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      client[WS_METHODS.collaborativeAcceptanceResume]({
+        threadId: thread.id,
+        caseId: flags.caseId,
+      }).pipe(Effect.flatMap(printJson)),
+    ),
+  ),
+);
+
+const acceptanceCommand = Command.make("acceptance").pipe(
+  Command.withDescription("Inspect and steer collaborative acceptance coordination."),
+  Command.withSubcommands([
+    acceptanceStatusCommand,
+    acceptancePauseCommand,
+    acceptanceResumeCommand,
+  ]),
+);
+
 const reviewCommand = Command.make("review", {
   ...liveTargetFlags,
   ...modelSelectionFlags,
@@ -4770,10 +5233,10 @@ const observabilityGetCommand = Command.make("get", {
   Command.withHandler((flags) =>
     withLiveRpcClient(flags, (client) =>
       Effect.gen(function* () {
-        const [settings, config] = yield* Effect.all([
-          client[WS_METHODS.serverGetSettings]({}),
-          client[WS_METHODS.serverGetConfig]({}),
-        ]);
+        const [settings, config] = yield* Effect.all(
+          [client[WS_METHODS.serverGetSettings]({}), client[WS_METHODS.serverGetConfig]({})],
+          { concurrency: "unbounded" },
+        );
         yield* printJson({ settings: settings.observability, runtime: config.observability });
       }),
     ),
@@ -5529,6 +5992,7 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
       projectCommand,
       chatCommand,
       prMonitorCommand,
+      acceptanceCommand,
       reviewCommand,
       approvalCommand,
       inputCommand,

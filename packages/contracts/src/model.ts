@@ -131,6 +131,8 @@ const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const COPILOT_DRIVER_KIND = ProviderDriverKind.make("copilot");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 
+export const DEFAULT_PROVIDER_DRIVER_KIND = COPILOT_DRIVER_KIND;
+
 export const DEFAULT_MODEL = "gpt-5.4";
 export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini";
 
@@ -149,7 +151,7 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER: Partial<
   [CODEX_DRIVER_KIND]: DEFAULT_GIT_TEXT_GENERATION_MODEL,
   [CLAUDE_DRIVER_KIND]: "claude-haiku-4-5",
   [CURSOR_DRIVER_KIND]: "composer-2",
-  [COPILOT_DRIVER_KIND]: "gpt-5.4-mini",
+  [COPILOT_DRIVER_KIND]: "gpt-6-luna",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
 };
 
@@ -192,9 +194,22 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "opus-4.5": "claude-opus-4-5",
   },
   [COPILOT_DRIVER_KIND]: {
+    fable: "claude-fable-5.1",
+    "fable-5.1": "claude-fable-5.1",
+    "claude-fable-5.1": "claude-fable-5.1",
+    "fable-5": "claude-fable-5",
+    "claude-fable-5": "claude-fable-5",
     opus: "claude-opus-5",
+    "opus-5.5": "claude-opus-5.5",
+    "claude-opus-5.5": "claude-opus-5.5",
     "opus-5": "claude-opus-5",
     "claude-opus-5": "claude-opus-5",
+    "6-luna": "gpt-6-luna",
+    "gpt-6-luna": "gpt-6-luna",
+    "openai/gpt-6-luna": "gpt-6-luna",
+    "6-sol": "gpt-6-sol",
+    "gpt-6-sol": "gpt-6-sol",
+    "openai/gpt-6-sol": "gpt-6-sol",
     "opus-4.8": "claude-opus-4.8",
     "claude-opus-4.8": "claude-opus-4.8",
     "5.5": "gpt-5.5",
@@ -214,6 +229,14 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "5.6-terra": "gpt-5.6-terra",
     "gpt-5.6-terra": "gpt-5.6-terra",
     "openai/gpt-5.6-terra": "gpt-5.6-terra",
+    grok: "grok-4.7",
+    "grok-4.7": "grok-4.7",
+    "xai/grok-4.7": "grok-4.7",
+    "grok-4.6": "grok-4.6",
+    "xai/grok-4.6": "grok-4.6",
+    kimi: "kimi-k3",
+    "kimi-k3": "kimi-k3",
+    "kimi-k2.7-code": "kimi-k2.7-code",
   },
   [OPENCODE_DRIVER_KIND]: {},
 };

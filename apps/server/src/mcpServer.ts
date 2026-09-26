@@ -6,10 +6,10 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { Effect, Schema } from "effect";
-import type { ProviderInstanceId, RuntimeMode } from "@t3tools/contracts";
+import type { ModelSelection, ProviderInstanceId, RuntimeMode } from "@t3tools/contracts";
 import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 import { killProcessTree } from "@t3tools/shared/processTree";
-import { ChildDecision, ChildWaitCondition, ThreadId } from "@t3tools/contracts";
+import { ChildDecision, ChildWaitCondition, MessageId, ThreadId } from "@t3tools/contracts";
 
 import { issueCrossThreadDispatchCapability } from "./orchestration/CrossThreadDispatchCapability.ts";
 import { composeDelegationPrompt, DELEGATION_PROMPT_BLOCKS } from "./delegationPrompt.ts";
@@ -49,6 +49,13 @@ export interface McpServeOptions {
   readonly cliBaseDir?: string;
   readonly runtimeMode?: RuntimeMode;
   readonly providerInstanceId?: ProviderInstanceId;
+  readonly defaultModel?: string;
+  /**
+   * Settings-backed delegated-thread default. Explicit per-delegation
+   * `defaults.model` / `child.model` values always win over this; the parent
+   * session model is never inherited. Factory default is Copilot `gpt-6-luna`.
+   */
+  readonly delegatedDefaultModelSelection?: ModelSelection;
 }
 
 export interface McpHttpServer {
@@ -92,6 +99,7 @@ const TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
   ["worktree_handoff", "create_isolated_workspace"],
   ["switch_workspace", "switch_workspace"],
   ["use_existing_worktree", "switch_workspace"],
+  ["delegate_work", "delegate_work"],
   ["create_nested_thread", "create_nested_thread"],
   ["create_nested_threads", "create_nested_threads"],
   ["send_to_thread", "send_to_thread"],
@@ -1146,11 +1154,14 @@ function nestedThreadCommandArgs(
     readonly project: string;
     readonly title: string;
     readonly prompt: string;
-    readonly model: string;
+    readonly model: string | undefined;
     readonly reasoning: string | undefined;
     readonly workspace: IsolatedWorkspaceSpec | undefined;
     readonly dryRun: boolean;
     readonly followUp: "automatic" | "notify-only";
+    readonly threadId?: string;
+    readonly assignmentId?: string;
+    readonly parentWait?: ChildWaitCondition | null;
   },
 ): ReadonlyArray<string> {
   return [
@@ -1165,6 +1176,11 @@ function nestedThreadCommandArgs(
     options.threadId,
     "--follow-up",
     input.followUp,
+    ...(input.threadId ? ["--thread-id", input.threadId] : []),
+    ...(input.assignmentId ? ["--assignment-id", input.assignmentId] : []),
+    ...(!input.dryRun && input.parentWait !== undefined
+      ? ["--parent-wait", JSON.stringify(input.parentWait)]
+      : []),
     ...(!input.dryRun
       ? [
           "--cross-thread-source",
@@ -1173,10 +1189,7 @@ function nestedThreadCommandArgs(
           issueCrossThreadDispatchCapability(ThreadId.make(options.threadId)),
         ]
       : []),
-    "--provider",
-    options.providerInstanceId,
-    "--model",
-    input.model,
+    ...(input.model ? ["--provider", options.providerInstanceId, "--model", input.model] : []),
     ...(input.reasoning ? ["--reasoning", input.reasoning] : []),
     "--runtime-mode",
     options.runtimeMode,
@@ -1191,33 +1204,95 @@ function nestedThreadCommandArgs(
   ];
 }
 
+interface NestedThreadCreationPolicy {
+  readonly toolName: "create_nested_thread" | "create_nested_threads" | "delegate_work";
+  readonly requireExplicitProject: boolean;
+  readonly requireExplicitModel: boolean;
+}
+
+const SINGLE_NESTED_THREAD_POLICY: NestedThreadCreationPolicy = {
+  toolName: "create_nested_thread",
+  requireExplicitProject: true,
+  requireExplicitModel: true,
+};
+
+const BATCH_NESTED_THREAD_POLICY: NestedThreadCreationPolicy = {
+  toolName: "create_nested_threads",
+  requireExplicitProject: true,
+  requireExplicitModel: true,
+};
+
+const DELEGATE_WORK_POLICY: NestedThreadCreationPolicy = {
+  toolName: "delegate_work",
+  requireExplicitProject: false,
+  requireExplicitModel: false,
+};
+
 async function createNestedThreadToolImpl(
   options: McpServeOptions,
   args: Record<string, unknown>,
   dependencies: NestedThreadToolDependencies,
+  policy: NestedThreadCreationPolicy = SINGLE_NESTED_THREAD_POLICY,
 ): Promise<NestedThreadCreationOutcome> {
-  validateNestedThreadContext(options, "create_nested_thread");
-  const project = asString(args.project)?.trim();
+  validateNestedThreadContext(options, policy.toolName);
+  const project = asString(args.project)?.trim() || options.cwd;
   const title = asString(args.title)?.trim();
   const prompt = asString(args.prompt)?.trim();
   const model = asString(args.model)?.trim();
   const reasoning = asString(args.reasoning)?.trim();
   if (args.dryRun !== undefined && typeof args.dryRun !== "boolean") {
-    throw new NestedThreadValidationError("create_nested_thread dryRun must be a boolean");
+    throw new NestedThreadValidationError(`${policy.toolName} dryRun must be a boolean`);
   }
   const dryRun = args.dryRun === true;
   const followUp = args.followUp === undefined ? "automatic" : args.followUp;
   if (followUp !== "automatic" && followUp !== "notify-only") {
     throw new NestedThreadValidationError("followUp must be automatic or notify-only");
   }
-  if (!project)
-    throw new NestedThreadValidationError("create_nested_thread requires a non-empty project");
+  const threadId = asString(args.threadId)?.trim();
+  const assignmentId = asString(args.assignmentId)?.trim();
+  if ((threadId === undefined) !== (assignmentId === undefined)) {
+    throw new NestedThreadValidationError(
+      `${policy.toolName} internal child and assignment identifiers must be provided together`,
+    );
+  }
+  let parentWait: ChildWaitCondition | null | undefined;
+  if (args.parentWait !== undefined) {
+    try {
+      parentWait = decodeChildWait(args.parentWait);
+    } catch (error) {
+      throw new NestedThreadValidationError(
+        `${policy.toolName} parentWait is invalid: ${toErrorMessage(error)}`,
+      );
+    }
+  }
+  if (parentWait !== undefined && (followUp !== "automatic" || !threadId)) {
+    throw new NestedThreadValidationError(
+      `${policy.toolName} parentWait requires an identified automatic child`,
+    );
+  }
+  if (policy.requireExplicitProject && !asString(args.project)?.trim()) {
+    throw new NestedThreadValidationError(`${policy.toolName} requires a non-empty project`);
+  }
   if (!title)
-    throw new NestedThreadValidationError("create_nested_thread requires a non-empty title");
+    throw new NestedThreadValidationError(`${policy.toolName} requires a non-empty title`);
   if (!prompt)
-    throw new NestedThreadValidationError("create_nested_thread requires a non-empty prompt");
-  if (!model)
-    throw new NestedThreadValidationError("create_nested_thread requires a non-empty model");
+    throw new NestedThreadValidationError(`${policy.toolName} requires a non-empty prompt`);
+  if (policy.requireExplicitModel && !model) {
+    throw new NestedThreadValidationError(`${policy.toolName} requires a non-empty model`);
+  }
+  if (reasoning && !model) {
+    throw new NestedThreadValidationError(
+      `${policy.toolName} reasoning requires an explicit model`,
+    );
+  }
+  // The implicit settings default must not satisfy the explicit-model check above.
+  // Resolve it here so reasoning without an explicit model fails before `--reasoning`
+  // can be forwarded to whatever implicit model would apply.
+  const effectiveModel =
+    model ||
+    options.delegatedDefaultModelSelection?.model?.trim() ||
+    options.defaultModel?.trim() ||
+    "gpt-6-luna";
 
   const childPrompt =
     args.promptTemplate === undefined
@@ -1227,16 +1302,14 @@ async function createNestedThreadToolImpl(
   let workspace: IsolatedWorkspaceSpec | undefined;
   if (args.workspace !== undefined) {
     if (!args.workspace || typeof args.workspace !== "object" || Array.isArray(args.workspace)) {
-      throw new NestedThreadValidationError("create_nested_thread workspace must be an object");
+      throw new NestedThreadValidationError(`${policy.toolName} workspace must be an object`);
     }
     const workspaceInput = asRecord(args.workspace);
     if (asString(workspaceInput.mode) !== "isolated") {
-      throw new NestedThreadValidationError(
-        "create_nested_thread workspace mode must be 'isolated'",
-      );
+      throw new NestedThreadValidationError(`${policy.toolName} workspace mode must be 'isolated'`);
     }
     try {
-      workspace = parseIsolatedWorkspaceSpec(workspaceInput, "create_nested_thread");
+      workspace = parseIsolatedWorkspaceSpec(workspaceInput, policy.toolName);
     } catch (error) {
       throw new NestedThreadValidationError(toErrorMessage(error));
     }
@@ -1245,7 +1318,8 @@ async function createNestedThreadToolImpl(
   const authenticatedOptions = {
     ...options,
     threadId: options.threadId,
-    providerInstanceId: options.providerInstanceId,
+    providerInstanceId:
+      options.delegatedDefaultModelSelection?.instanceId ?? options.providerInstanceId,
     runtimeMode: options.runtimeMode,
   };
   const validationOutcome = await invokeNestedThreadCli(
@@ -1254,11 +1328,13 @@ async function createNestedThreadToolImpl(
       project,
       title,
       prompt: childPrompt,
-      model,
+      model: effectiveModel,
       reasoning,
       workspace,
       dryRun: true,
       followUp,
+      ...(threadId ? { threadId } : {}),
+      ...(assignmentId ? { assignmentId } : {}),
     }),
     true,
   );
@@ -1268,20 +1344,26 @@ async function createNestedThreadToolImpl(
 
   if (!workspace) {
     if (dryRun) return validationOutcome;
-    return await invokeNestedThreadCli(
+    const creationOutcome = await invokeNestedThreadCli(
       options,
       nestedThreadCommandArgs(authenticatedOptions, {
         project,
         title,
         prompt: childPrompt,
-        model,
+        model: effectiveModel,
         reasoning,
         workspace,
         dryRun: false,
         followUp,
+        ...(threadId ? { threadId } : {}),
+        ...(assignmentId ? { assignmentId } : {}),
+        ...(parentWait !== undefined ? { parentWait } : {}),
       }),
       false,
     );
+    return creationOutcome.status === "created" && assignmentId
+      ? { ...creationOutcome, assignmentId }
+      : creationOutcome;
   }
 
   const initialPreflight = await preflightGitWorktree(options.cwd, workspace);
@@ -1341,11 +1423,14 @@ async function createNestedThreadToolImpl(
       project,
       title,
       prompt: childPrompt,
-      model,
+      model: effectiveModel,
       reasoning,
       workspace,
       dryRun: false,
       followUp,
+      ...(threadId ? { threadId } : {}),
+      ...(assignmentId ? { assignmentId } : {}),
+      ...(parentWait !== undefined ? { parentWait } : {}),
     }),
     false,
   );
@@ -1357,7 +1442,11 @@ async function createNestedThreadToolImpl(
     );
   }
   if (creationOutcome.status === "created" || creationOutcome.status === "ambiguous") {
-    return { ...creationOutcome, workspaceCreated: true };
+    return {
+      ...creationOutcome,
+      ...(creationOutcome.status === "created" && assignmentId ? { assignmentId } : {}),
+      workspaceCreated: true,
+    };
   }
   const outcomeWithWorkspace = { ...creationOutcome, workspaceCreated: true };
   if (creationOutcome.threadId !== null) {
@@ -1438,18 +1527,17 @@ const portableWorkspaceIdentityKey = (value: string): string =>
 
 async function batchWorkspaceIdentity(
   args: Record<string, unknown>,
+  toolName: string,
 ): Promise<BatchWorkspaceIdentity | null> {
   if (args.workspace === undefined) return null;
   if (!args.workspace || typeof args.workspace !== "object" || Array.isArray(args.workspace)) {
-    throw new NestedThreadValidationError("create_nested_threads workspace must be an object");
+    throw new NestedThreadValidationError(`${toolName} workspace must be an object`);
   }
   const workspaceInput = asRecord(args.workspace);
   if (asString(workspaceInput.mode) !== "isolated") {
-    throw new NestedThreadValidationError(
-      "create_nested_threads workspace mode must be 'isolated'",
-    );
+    throw new NestedThreadValidationError(`${toolName} workspace mode must be 'isolated'`);
   }
-  const workspace = parseIsolatedWorkspaceSpec(workspaceInput, "create_nested_threads");
+  const workspace = parseIsolatedWorkspaceSpec(workspaceInput, toolName);
   const resolvedPath = await resolvePathThroughExistingAncestor(workspace.path);
   return {
     branchKey: portableWorkspaceIdentityKey(workspace.branch),
@@ -1486,14 +1574,15 @@ async function createNestedThreadsTool(
   options: McpServeOptions,
   args: Record<string, unknown>,
   dependencyOverrides: Partial<NestedThreadToolDependencies> = {},
+  policy: NestedThreadCreationPolicy = BATCH_NESTED_THREAD_POLICY,
 ): Promise<string> {
-  validateNestedThreadContext(options, "create_nested_threads");
+  validateNestedThreadContext(options, policy.toolName);
   if (!Array.isArray(args.children)) {
-    throw new NestedThreadValidationError("create_nested_threads requires a children array");
+    throw new NestedThreadValidationError(`${policy.toolName} requires a children array`);
   }
   if (args.children.length === 0 || args.children.length > MAX_NESTED_THREAD_BATCH_SIZE) {
     throw new NestedThreadValidationError(
-      `create_nested_threads children must contain between 1 and ${String(MAX_NESTED_THREAD_BATCH_SIZE)} items`,
+      `${policy.toolName} children must contain between 1 and ${String(MAX_NESTED_THREAD_BATCH_SIZE)} items`,
     );
   }
   const concurrency = args.concurrency ?? DEFAULT_NESTED_THREAD_BATCH_CONCURRENCY;
@@ -1504,7 +1593,7 @@ async function createNestedThreadsTool(
     concurrency > MAX_NESTED_THREAD_BATCH_CONCURRENCY
   ) {
     throw new NestedThreadValidationError(
-      `create_nested_threads concurrency must be an integer between 1 and ${String(MAX_NESTED_THREAD_BATCH_CONCURRENCY)}`,
+      `${policy.toolName} concurrency must be an integer between 1 and ${String(MAX_NESTED_THREAD_BATCH_CONCURRENCY)}`,
     );
   }
 
@@ -1518,7 +1607,7 @@ async function createNestedThreadsTool(
     children.map(async (child) => {
       if (child === null) return new NestedThreadValidationError("Batch child must be an object");
       try {
-        return await batchWorkspaceIdentity(child);
+        return await batchWorkspaceIdentity(child, policy.toolName);
       } catch (error) {
         return error instanceof Error ? error : new Error(String(error));
       }
@@ -1576,7 +1665,7 @@ async function createNestedThreadsTool(
       );
     }
     try {
-      return await createNestedThreadToolImpl(options, child, dependencies);
+      return await createNestedThreadToolImpl(options, child, dependencies, policy);
     } catch (error) {
       return batchItemFailure(error);
     }
@@ -1585,6 +1674,119 @@ async function createNestedThreadsTool(
   return serializeNestedThreadBatchOutcome({
     results: outcomes.map((outcome, index) => ({ index, outcome })),
   });
+}
+
+function delegateWorkChild(
+  options: McpServeOptions,
+  defaults: Record<string, unknown>,
+  child: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    project: child.project ?? defaults.project ?? options.cwd,
+    title: child.title,
+    prompt: child.prompt,
+    // Keep only the explicit model here. The implicit settings default is resolved
+    // in createNestedThreadToolImpl after the explicit-model validation, so
+    // `reasoning` without an explicit model fails instead of silently targeting
+    // the implicit default.
+    model: child.model ?? defaults.model,
+    reasoning: child.reasoning ?? defaults.reasoning,
+    promptTemplate: child.promptTemplate ?? defaults.promptTemplate,
+    followUp: child.followUp ?? defaults.followUp ?? "automatic",
+    dryRun: child.dryRun ?? defaults.dryRun,
+    workspace: child.workspace,
+  };
+}
+
+async function delegateWorkTool(
+  options: McpServeOptions,
+  args: Record<string, unknown>,
+  dependencyOverrides: Partial<NestedThreadToolDependencies> = {},
+): Promise<string> {
+  validateNestedThreadContext(options, "delegate_work");
+  const parentThreadId = options.threadId;
+  if (!parentThreadId) {
+    throw new NestedThreadValidationError("delegate_work requires a T3 provider session");
+  }
+  if (
+    args.defaults !== undefined &&
+    (!args.defaults || typeof args.defaults !== "object" || Array.isArray(args.defaults))
+  ) {
+    throw new NestedThreadValidationError("delegate_work defaults must be an object");
+  }
+  if (!Array.isArray(args.children)) {
+    throw new NestedThreadValidationError("delegate_work requires a children array");
+  }
+  const defaults = args.defaults === undefined ? {} : asRecord(args.defaults);
+  if (
+    args.wait !== undefined &&
+    args.wait !== "all" &&
+    args.wait !== "any" &&
+    args.wait !== "none"
+  ) {
+    throw new NestedThreadValidationError("delegate_work wait must be all, any, or none");
+  }
+  const children = args.children.map((child) =>
+    child && typeof child === "object" && !Array.isArray(child)
+      ? delegateWorkChild(options, defaults, asRecord(child))
+      : child,
+  );
+  const childIdentities = children.map((child) => {
+    if (!child || typeof child !== "object" || Array.isArray(child)) return null;
+    const record = asRecord(child);
+    return {
+      threadId: crypto.randomUUID(),
+      assignmentId: crypto.randomUUID(),
+      followUp: record.followUp,
+      dryRun: record.dryRun === true,
+    };
+  });
+  const automaticCount = childIdentities.filter(
+    (identity) => identity?.followUp === "automatic",
+  ).length;
+  const waitMode = args.wait ?? (automaticCount > 1 ? "all" : "none");
+  if (waitMode !== "none" && automaticCount === 0) {
+    throw new NestedThreadValidationError(
+      "delegate_work wait all or any requires at least one automatic child",
+    );
+  }
+  const waitableIndices = new Set(
+    childIdentities.flatMap((identity, index) =>
+      identity?.followUp === "automatic" && !identity.dryRun ? [index] : [],
+    ),
+  );
+  const preparedChildren = children.map((child, index) => {
+    const identity = childIdentities[index];
+    if (!identity || !child || typeof child !== "object" || Array.isArray(child)) return child;
+    const parentWait: ChildWaitCondition | undefined =
+      waitMode !== "none" && waitableIndices.has(index)
+        ? {
+            mode: waitMode,
+            assignments: [
+              {
+                childThreadId: ThreadId.make(identity.threadId),
+                assignmentId: MessageId.make(identity.assignmentId),
+              },
+            ],
+          }
+        : undefined;
+    return {
+      ...asRecord(child),
+      threadId: identity.threadId,
+      assignmentId: identity.assignmentId,
+      ...(parentWait ? { parentWait } : {}),
+    };
+  });
+  const serializedBatch = await createNestedThreadsTool(
+    options,
+    {
+      children: preparedChildren,
+      ...(args.concurrency !== undefined ? { concurrency: args.concurrency } : {}),
+    },
+    dependencyOverrides,
+    DELEGATE_WORK_POLICY,
+  );
+  return serializedBatch;
 }
 
 async function sendToThreadTool(
@@ -1953,6 +2155,30 @@ const NESTED_THREAD_INPUT_PROPERTIES = {
 
 const NESTED_THREAD_REQUIRED_INPUTS = ["project", "title", "prompt", "model"] as const;
 
+const DELEGATE_WORK_DEFAULT_PROPERTIES = {
+  followUp: NESTED_THREAD_INPUT_PROPERTIES.followUp,
+  project: {
+    ...NESTED_THREAD_INPUT_PROPERTIES.project,
+    description:
+      "Project id, title, or workspace root. Defaults to the authenticated parent workspace.",
+  },
+  promptTemplate: NESTED_THREAD_INPUT_PROPERTIES.promptTemplate,
+  model: {
+    ...NESTED_THREAD_INPUT_PROPERTIES.model,
+    description:
+      "Model slug for every child unless overridden. Defaults to the settings delegated-thread model (factory Copilot gpt-6-luna).",
+  },
+  reasoning: NESTED_THREAD_INPUT_PROPERTIES.reasoning,
+  dryRun: NESTED_THREAD_INPUT_PROPERTIES.dryRun,
+} as const;
+
+const DELEGATE_WORK_CHILD_PROPERTIES = {
+  title: NESTED_THREAD_INPUT_PROPERTIES.title,
+  prompt: NESTED_THREAD_INPUT_PROPERTIES.prompt,
+  ...DELEGATE_WORK_DEFAULT_PROPERTIES,
+  workspace: NESTED_THREAD_INPUT_PROPERTIES.workspace,
+} as const;
+
 const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "assign_to_thread",
@@ -1972,7 +2198,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "set_child_wait",
     description:
-      "Set when this parent should continue: any selected result, all selected results, or decisions/blockers only. Pass null to restore automatic follow-up. Use exact assignment IDs from spawn/assignment results or chat show. Membership is fixed; partial spawn failures must be handled explicitly. Never interrupts an active turn or overrides Stop.",
+      "Set when this parent should continue: any selected result, all selected results, or decisions/blockers only. Optionally set deadlineAt as an ISO timestamp; any assignments still unsettled at that deadline are reported as blocked without stopping the children. Pass null to restore automatic follow-up. Use exact assignment IDs from spawn/assignment results or chat show. Membership is fixed; partial spawn failures must be handled explicitly. Never interrupts an active turn or overrides Stop.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1983,6 +2209,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
               type: "object",
               properties: {
                 mode: { type: "string", enum: ["any", "all", "decisions-only"] },
+                deadlineAt: { type: "string", format: "date-time" },
                 assignments: {
                   type: "array",
                   maxItems: 32,
@@ -2151,9 +2378,49 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
     },
   },
   {
+    name: "delegate_work",
+    description:
+      "Canonical delegation tool for one or many helper threads. Supply children with only title and prompt; shared project, model, reasoning, prompt template, follow-up policy, and dry-run settings belong in defaults and may be overridden per child. Project defaults to the authenticated parent workspace; model defaults to the settings delegated-thread model (factory Copilot gpt-6-luna). For automatic children, wait selects all, any, or no batch wait; the default is all when more than one automatic child is created and none for one child or notify-only work. The wait is installed atomically with child creation and revised to include only created assignments before this tool returns. T3 preserves input order, rejects workspace collisions before mutation, and returns indexed outcomes including partial failures.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        defaults: {
+          type: "object",
+          properties: DELEGATE_WORK_DEFAULT_PROPERTIES,
+          additionalProperties: false,
+        },
+        children: {
+          type: "array",
+          minItems: 1,
+          maxItems: MAX_NESTED_THREAD_BATCH_SIZE,
+          items: {
+            type: "object",
+            properties: DELEGATE_WORK_CHILD_PROPERTIES,
+            required: ["title", "prompt"],
+            additionalProperties: false,
+          },
+        },
+        concurrency: {
+          type: "integer",
+          minimum: 1,
+          maximum: MAX_NESTED_THREAD_BATCH_CONCURRENCY,
+          default: DEFAULT_NESTED_THREAD_BATCH_CONCURRENCY,
+          description: "Maximum number of child creations in flight.",
+        },
+        wait: {
+          type: "string",
+          enum: ["all", "any", "none"],
+          description:
+            "Parent follow-up policy for automatic children. Defaults to all for batches with more than one automatic child, otherwise none. Notify-only children are never included.",
+        },
+      },
+      required: ["children"],
+    },
+  },
+  {
     name: "create_isolated_workspace",
     description:
-      "Move the current calling thread to a new isolated checkout instead of running git worktree add directly. Creates a Git worktree, durably binds this T3 thread to it, and queues an automatic continuation. Never use this tool to prepare a workspace for a future delegated thread; pass workspace to create_nested_thread instead. After calling, do not edit the new worktree during the current turn; finish so T3 can restart in the bound workspace and continue automatically.",
+      "Move the current calling thread to a new isolated checkout instead of running git worktree add directly. Creates a Git worktree, durably binds this T3 thread to it, and queues an automatic continuation. Never use this tool to prepare a workspace for a future delegated thread; pass workspace to delegate_work instead. After calling, do not edit the new worktree during the current turn; finish so T3 can restart in the bound workspace and continue automatically.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2179,7 +2446,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "create_nested_thread",
     description:
-      "Create and start a helper thread nested under the current T3 thread. Every result includes status, threadId, threadUrl, retryable, workspaceCreated, cleanupPerformed, errorCode, and message. When the child needs an isolated checkout, pass workspace here so T3 validates ownership and collisions, revalidates for races, then creates and binds the child before its first turn without moving the parent. Set dryRun to validate without mutation. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
+      "Compatibility only — use delegate_work for every new delegation. Create and start a helper thread nested under the current T3 thread. Every result includes status, threadId, threadUrl, retryable, workspaceCreated, cleanupPerformed, errorCode, and message. When the child needs an isolated checkout, pass workspace here so T3 validates ownership and collisions, revalidates for races, then creates and binds the child before its first turn without moving the parent. Set dryRun to validate without mutation. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
     inputSchema: {
       type: "object",
       properties: NESTED_THREAD_INPUT_PROPERTIES,
@@ -2189,7 +2456,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "create_nested_threads",
     description:
-      "Create and start multiple sibling helper threads under the authenticated current T3 thread. Returns one indexed NestedThreadCreationOutcome per child in input order, including partial failures. Runs at most four creations concurrently. Every item sharing a workspace branch or canonical path with another batch item is rejected before mutation; other items continue. Never retry a non-retryable or ambiguous item.",
+      "Compatibility only — use delegate_work for every new delegation. Create and start multiple sibling helper threads under the authenticated current T3 thread. Returns one indexed NestedThreadCreationOutcome per child in input order, including partial failures. Runs at most four creations concurrently. Every item sharing a workspace branch or canonical path with another batch item is rejected before mutation; other items continue. Never retry a non-retryable or ambiguous item.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2329,6 +2596,8 @@ async function callTool(options: McpServeOptions, name: string, args: Record<str
       return await createIsolatedWorkspaceTool(options, args);
     case "switch_workspace":
       return await switchWorkspaceTool(options, args);
+    case "delegate_work":
+      return await delegateWorkTool(options, args);
     case "create_nested_thread":
       return await createNestedThreadTool(options, args);
     case "create_nested_threads":
@@ -2475,6 +2744,7 @@ export const __testing = {
   availableTools,
   cleanupNestedWorkspace,
   createIsolatedWorkspaceTool,
+  delegateWorkTool,
   createNestedThreadTool,
   createNestedThreadsTool,
   sendToThreadTool,

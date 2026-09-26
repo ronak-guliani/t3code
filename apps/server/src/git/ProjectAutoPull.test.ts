@@ -259,6 +259,30 @@ describe("ProjectAutoPull", () => {
     }).pipe(Effect.provide(GitLayer)),
   );
 
+  it.effect("runs the network pull outside the short-command pool", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const pullInputs: Array<Parameters<typeof f.core.execute>[0]> = [];
+      const core = {
+        ...f.core,
+        execute: (input: Parameters<typeof f.core.execute>[0]) =>
+          Effect.gen(function* () {
+            if (input.operation === "ProjectAutoPull.pull") pullInputs.push(input);
+            return yield* f.core.execute(input);
+          }),
+      };
+      yield* Effect.gen(function* () {
+        const service = yield* ProjectAutoPull;
+        yield* service.attempt(f.cwd);
+        assert.equal(pullInputs.length, 1);
+        // Deadline unchanged; only pool membership is opted out.
+        assert.equal(pullInputs[0]?.timeoutMs, 30_000);
+        assert.equal(pullInputs[0]?.bypassProcessPool, true);
+        assert.equal(yield* f.git(f.cwd, ["rev-parse", "HEAD"]), f.after);
+      }).pipe(Effect.provide(f.serviceLayer), Effect.provideService(GitCore, core));
+    }).pipe(Effect.provide(GitLayer)),
+  );
+
   it.effect("backs off failed pulls instead of retrying on every refresh", () =>
     Effect.gen(function* () {
       const f = yield* fixture;

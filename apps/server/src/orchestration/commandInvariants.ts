@@ -6,6 +6,7 @@ import type {
   OrchestrationThread,
   ProjectId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
 
@@ -38,6 +39,15 @@ export function listThreadsByProjectId(
 ): ReadonlyArray<OrchestrationThread> {
   return readModel.threads.filter((thread) => thread.projectId === projectId);
 }
+
+/**
+ * Detail for the invariant that blocks turn starts and unrelated queued-turn
+ * dispatches while a child decision is pending. Only the correlated decision
+ * response (pendingResponse) may dispatch. Shared with QueuedTurnReactor so a
+ * reword here cannot silently revert the reactor to failing queued turns.
+ */
+export const CHILD_DECISION_BLOCKED_DETAIL =
+  "Resolve the current child decision through its correlated response before continuing.";
 
 export function requireProject(input: {
   readonly readModel: OrchestrationReadModel;
@@ -144,7 +154,7 @@ export function threadHasInFlightTurn(thread: OrchestrationThread): boolean {
   if (thread.latestTurn === null || thread.latestTurn.completedAt === null) {
     return true;
   }
-  return latestUserMessage.createdAt >= thread.latestTurn.completedAt;
+  return latestUserMessage.createdAt > thread.latestTurn.completedAt;
 }
 
 export function threadHasQueuedTurnStart(
@@ -291,6 +301,36 @@ export function requireThreadReadyForTurnStart(input: {
           )
         : Effect.succeed(thread),
     ),
+  );
+}
+
+export function resolveActiveTurnId(thread: OrchestrationThread): TurnId | undefined {
+  return (
+    thread.session?.activeTurnId ??
+    (thread.latestTurn?.state === "running" ? thread.latestTurn.turnId : undefined)
+  );
+}
+
+export function requireThreadWithInFlightTurn(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly threadId: ThreadId;
+}): Effect.Effect<
+  { readonly thread: OrchestrationThread; readonly turnId: TurnId },
+  OrchestrationCommandInvariantError
+> {
+  return requireThread(input).pipe(
+    Effect.flatMap((thread) => {
+      const turnId = resolveActiveTurnId(thread);
+      return turnId === undefined
+        ? Effect.fail(
+            invariantError(
+              input.command.type,
+              `Thread '${input.threadId}' has no active turn to steer yet. Queue the message or wait for the turn to start.`,
+            ),
+          )
+        : Effect.succeed({ thread, turnId });
+    }),
   );
 }
 

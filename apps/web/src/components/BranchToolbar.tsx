@@ -1,4 +1,4 @@
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
+import { scopeThreadRef } from "@t3tools/client-runtime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
@@ -13,12 +13,14 @@ import { memo, useMemo } from "react";
 import type { ContextWindowSnapshot } from "../lib/contextWindow";
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useIsMobile } from "../hooks/useMediaQuery";
+import { useEnvironment } from "../state/environments";
 import { useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { cn } from "~/lib/utils";
 import {
   type EnvMode,
   type EnvironmentOption,
+  resolveActiveProjectRef,
   resolveCurrentWorkspaceLabel,
   resolveEnvModeLabel,
   resolveEffectiveEnvMode,
@@ -40,7 +42,6 @@ import {
   MenuTrigger,
 } from "./ui/menu";
 import { Separator } from "./ui/separator";
-import { EnvironmentIdentity } from "./EnvironmentIdentity";
 
 interface BranchToolbarProps {
   environmentId: EnvironmentId;
@@ -69,6 +70,7 @@ interface MobileRunContextSelectorProps {
   onEnvironmentChange: ((environmentId: EnvironmentId) => void) | undefined;
   effectiveEnvMode: EnvMode;
   activeWorktreePath: string | null;
+  projectCwd: string | null;
   onEnvModeChange: (mode: EnvMode) => void;
 }
 
@@ -81,6 +83,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
   onEnvironmentChange,
   effectiveEnvMode,
   activeWorktreePath,
+  projectCwd,
   onEnvModeChange,
 }: MobileRunContextSelectorProps) {
   const activeEnvironment = useMemo(
@@ -96,16 +99,16 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
         ? FolderGitIcon
         : FolderIcon;
   const workspaceLabel = envModeLocked
-    ? resolveLockedWorkspaceLabel(activeWorktreePath)
+    ? resolveLockedWorkspaceLabel(activeWorktreePath, projectCwd)
     : effectiveEnvMode === "worktree"
       ? resolveEnvModeLabel("worktree")
-      : resolveCurrentWorkspaceLabel(activeWorktreePath);
+      : resolveCurrentWorkspaceLabel(activeWorktreePath, projectCwd);
 
   return (
     <Menu>
       <MenuTrigger
         render={<Button variant="ghost" size="xs" />}
-        className="min-w-0 max-w-[48%] flex-1 justify-start text-muted-foreground/70 hover:text-foreground/80 md:hidden"
+        className="min-w-0 flex-1 justify-start text-muted-foreground/70 hover:text-foreground/80 md:hidden"
       >
         {showEnvironmentPicker ? (
           <>
@@ -163,7 +166,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
                   <FolderIcon className="size-3" />
                 )}
                 <span className="min-w-0 truncate">
-                  {resolveCurrentWorkspaceLabel(activeWorktreePath)}
+                  {resolveCurrentWorkspaceLabel(activeWorktreePath, projectCwd)}
                 </span>
               </span>
             </MenuRadioItem>
@@ -177,6 +180,31 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
         </MenuGroup>
       </MenuPopup>
     </Menu>
+  );
+});
+
+const BranchToolbarDeviceLabel = memo(function BranchToolbarDeviceLabel({
+  environmentId,
+  availableEnvironments,
+}: {
+  environmentId: EnvironmentId;
+  availableEnvironments: readonly EnvironmentOption[] | undefined;
+}) {
+  const pickerMatch = useMemo(
+    () => availableEnvironments?.find((env) => env.environmentId === environmentId) ?? null,
+    [availableEnvironments, environmentId],
+  );
+  const connectedEnvironment = useEnvironment(environmentId);
+  const deviceLabel = pickerMatch?.label ?? connectedEnvironment?.label ?? null;
+  if (!deviceLabel) return null;
+  return (
+    <span
+      className="inline-flex min-w-0 max-w-24 shrink items-center truncate border border-transparent px-[calc(--spacing(2)-1px)] text-sm font-medium text-muted-foreground/70 sm:max-w-40 sm:text-xs"
+      title={`Execution environment: ${deviceLabel}`}
+      aria-label={`Execution environment: ${deviceLabel}`}
+    >
+      <span className="truncate">{deviceLabel}</span>
+    </span>
   );
 });
 
@@ -206,11 +234,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   const draftThread = useComposerDraftStore((store) =>
     draftId ? store.getDraftSession(draftId) : store.getDraftThreadByRef(threadRef),
   );
-  const activeProjectRef = serverThread
-    ? scopeProjectRef(serverThread.environmentId, serverThread.projectId)
-    : draftThread
-      ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
-      : null;
+  const activeProjectRef = resolveActiveProjectRef(serverThread, draftThread);
   const activeProjectSelector = useMemo(
     () => createProjectSelectorByRef(activeProjectRef),
     [activeProjectRef],
@@ -218,12 +242,14 @@ export const BranchToolbar = memo(function BranchToolbar({
   const activeProject = useStore(activeProjectSelector);
   const hasActiveThread = serverThread !== undefined || draftThread !== null;
   const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
+  const activeProjectCwd = activeProject?.cwd ?? null;
   const effectiveEnvMode =
     effectiveEnvModeOverride ??
     resolveEffectiveEnvMode({
       activeWorktreePath,
       hasServerThread: serverThread !== undefined,
       draftThreadEnvMode: draftThread?.envMode,
+      projectCwd: activeProjectCwd,
     });
   const canPrepareServerWorktree = Boolean(
     serverThread !== undefined &&
@@ -245,7 +271,9 @@ export const BranchToolbar = memo(function BranchToolbar({
   return (
     <div
       className={cn(
-        "mx-auto flex w-full max-w-3xl items-center gap-2 pb-3 pt-1",
+        "[--composer-drawer-inset:1.375rem] relative isolate mx-auto -mt-4 flex w-[calc(100%-2*var(--composer-drawer-inset))] max-w-[calc(48rem-2*var(--composer-drawer-inset))] items-center gap-2 overflow-x-clip overflow-y-visible px-1 pt-5 pb-1 text-xs font-normal text-muted-foreground/70",
+        "before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-b-[16px] before:border before:border-border/70 before:mask-[linear-gradient(to_bottom,transparent_0_1rem,black_1rem)] before:shadow-[0_12px_28px_-18px_rgb(0_0_0/40%)]",
+        "dark:before:border-white/7 dark:before:bg-[linear-gradient(to_bottom,transparent_0_1rem,rgb(0_0_0/18%)_1rem,transparent_calc(1rem+10px)),linear-gradient(rgb(255_255_255/1%),rgb(255_255_255/1%))] dark:before:shadow-[0_14px_32px_-18px_rgb(0_0_0/75%)]",
         showGitControls ? "justify-between" : "justify-end",
       )}
       style={{
@@ -253,23 +281,31 @@ export const BranchToolbar = memo(function BranchToolbar({
         paddingRight: "calc(env(safe-area-inset-right) + var(--spacing) * 2.5)",
       }}
     >
-      {!showEnvironmentPicker ? (
-        <EnvironmentIdentity environmentId={environmentId} compact={isMobile} />
-      ) : null}
       {showGitControls ? (
         <>
           {isMobile ? (
-            <MobileRunContextSelector
-              envLocked={envLocked}
-              envModeLocked={envModeLocked}
-              environmentId={environmentId}
-              availableEnvironments={availableEnvironments}
-              showEnvironmentPicker={showEnvironmentPicker}
-              onEnvironmentChange={onEnvironmentChange}
-              effectiveEnvMode={effectiveEnvMode}
-              activeWorktreePath={activeWorktreePath}
-              onEnvModeChange={onEnvModeChange}
-            />
+            <div className="flex min-w-0 flex-1 items-center gap-1">
+              <MobileRunContextSelector
+                envLocked={envLocked}
+                envModeLocked={envModeLocked}
+                environmentId={environmentId}
+                availableEnvironments={availableEnvironments}
+                showEnvironmentPicker={showEnvironmentPicker}
+                onEnvironmentChange={onEnvironmentChange}
+                effectiveEnvMode={effectiveEnvMode}
+                activeWorktreePath={activeWorktreePath}
+                projectCwd={activeProjectCwd}
+                onEnvModeChange={onEnvModeChange}
+              />
+              {/* The Run-on picker already names the device; only show the
+                  static label when there is no picker. */}
+              {showEnvironmentPicker ? null : (
+                <BranchToolbarDeviceLabel
+                  environmentId={environmentId}
+                  availableEnvironments={availableEnvironments}
+                />
+              )}
+            </div>
           ) : (
             <div className="flex min-w-0 shrink-0 items-center gap-1">
               {showEnvironmentPicker && availableEnvironments && onEnvironmentChange && (
@@ -287,8 +323,15 @@ export const BranchToolbar = memo(function BranchToolbar({
                 envLocked={envModeLocked}
                 effectiveEnvMode={effectiveEnvMode}
                 activeWorktreePath={activeWorktreePath}
+                projectCwd={activeProjectCwd}
                 onEnvModeChange={onEnvModeChange}
               />
+              {showEnvironmentPicker ? null : (
+                <BranchToolbarDeviceLabel
+                  environmentId={environmentId}
+                  availableEnvironments={availableEnvironments}
+                />
+              )}
             </div>
           )}
 

@@ -38,18 +38,24 @@ export function resolveThreadWorkspaceCwd(input: {
   readonly thread: {
     readonly projectId: ProjectId;
     readonly worktreePath: string | null;
+    readonly workspaceBinding?: {
+      readonly worktreePath: string;
+    };
   };
   readonly projects: ReadonlyArray<{
     readonly id: ProjectId;
     readonly workspaceRoot: string;
   }>;
 }): string | undefined {
-  const worktreeCwd = input.thread.worktreePath ?? undefined;
+  const worktreeCwd =
+    input.thread.workspaceBinding?.worktreePath ?? input.thread.worktreePath ?? undefined;
   if (worktreeCwd) {
     return worktreeCwd;
   }
 
-  return input.projects.find((project) => project.id === input.thread.projectId)?.workspaceRoot;
+  // A missing binding is an ambiguous legacy state. Falling back to the
+  // project checkout would let a resumed provider write the human's root.
+  return undefined;
 }
 
 export function latestCapturedCheckpointTurnCount(

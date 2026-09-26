@@ -131,10 +131,13 @@ const resolveCanonicalWorkspaceFile = Effect.fn("AssetAccess.resolveCanonicalWor
     );
     if (Option.isNone(resolved)) return null;
 
-    const [canonicalRoot, canonicalFile] = yield* Effect.all([
-      optionOnNotFound(fileSystem.realPath(input.workspaceRoot)),
-      optionOnNotFound(fileSystem.realPath(resolved.value.absolutePath)),
-    ]);
+    const [canonicalRoot, canonicalFile] = yield* Effect.all(
+      [
+        optionOnNotFound(fileSystem.realPath(input.workspaceRoot)),
+        optionOnNotFound(fileSystem.realPath(resolved.value.absolutePath)),
+      ],
+      { concurrency: "unbounded" },
+    );
     if (Option.isNone(canonicalRoot) || Option.isNone(canonicalFile)) return null;
 
     const path = yield* Path.Path;

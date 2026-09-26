@@ -17,6 +17,7 @@ export type SettingsSectionPath =
   | "/settings/general"
   | "/settings/connections"
   | "/settings/workflows"
+  | "/settings/pull-request-collaboration"
   | "/settings/archived";
 
 export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
@@ -27,6 +28,11 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   { label: "General", to: "/settings/general", icon: Settings2Icon },
   { label: "Connections", to: "/settings/connections", icon: Link2Icon },
   { label: "Agent Workflows", to: "/settings/workflows", icon: WorkflowIcon },
+  {
+    label: "PR collaboration",
+    to: "/settings/pull-request-collaboration",
+    icon: WorkflowIcon,
+  },
   { label: "Archive", to: "/settings/archived", icon: ArchiveIcon },
 ];
 

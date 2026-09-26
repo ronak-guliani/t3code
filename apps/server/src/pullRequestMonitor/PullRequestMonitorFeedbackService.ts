@@ -7,6 +7,7 @@ import {
   type PullRequestMonitorContextResult,
   type PullRequestMonitorFeedbackDelivery,
   type PullRequestMonitorFeedbackDeliveryId,
+  type PullRequestMonitorFeedbackActorRole,
   type PullRequestMonitorFeedbackItem,
   type PullRequestMonitorFeedbackItemId,
   type PullRequestMonitorFeedbackReport,
@@ -52,6 +53,7 @@ import {
   findingContextTurns,
   formatFindingDetail,
 } from "./findingContext.ts";
+import { buildMonitorAcceptanceProvenance } from "./acceptanceProvenance.ts";
 
 /** Debounce window so CI/review bursts batch into one queued delivery. */
 export const FEEDBACK_DEBOUNCE_MS = 15_000;
@@ -159,6 +161,8 @@ export class PullRequestMonitorFeedbackService extends Context.Service<
       readonly monitor: PullRequestMonitorRecord;
       readonly reviewThreadId: ThreadId;
       readonly findings: ReadonlyArray<PullRequestMonitorFinding>;
+      readonly reviewedHeadSha?: string;
+      readonly origin?: "provider" | "reviewer";
     }) => Effect.Effect<ReadonlyArray<PullRequestMonitorSubmittedFinding>, PullRequestMonitorError>;
     readonly flushDueDeliveries: Effect.Effect<void>;
     /**
@@ -268,7 +272,8 @@ export const layer = Layer.effect(
         let needsHumanCount = 0;
         for (const item of items) {
           if (item.status === "verifying") verifyingCount += 1;
-          else if (item.disposition === "needs-human") needsHumanCount += 1;
+          else if (item.disposition === "needs-human" || item.reviewerDisposition === "needs-human")
+            needsHumanCount += 1;
           else openCount += 1;
         }
         return {
@@ -335,14 +340,26 @@ export const layer = Layer.effect(
       Effect.gen(function* () {
         if (input.findings.length === 0) return [];
         const now = yield* isoNow();
-        const headSha = input.monitor.headSha ?? "unknown";
+        const headSha = input.reviewedHeadSha ?? input.monitor.headSha ?? "unknown";
         // Findings are scoped to the head they were reviewed against, so a re-review after a
         // push records a new revision instead of colliding with the previous one.
-        const sourceRevision = `review:${headSha}`;
+        const defaultSourceRevision = `review:${headSha}`;
         const submitted: PullRequestMonitorSubmittedFinding[] = [];
         const newRevisionIds: string[] = [];
 
         for (const finding of input.findings) {
+          const acceptanceInput = finding.acceptanceProvenance;
+          if (acceptanceInput !== undefined && acceptanceInput.headSha !== headSha) {
+            return yield* monitorError(
+              "Acceptance provenance head does not match the reviewed finding head.",
+              {
+                cause: {
+                  reviewedHeadSha: headSha,
+                  provenanceHeadSha: acceptanceInput.headSha,
+                },
+              },
+            );
+          }
           const key =
             finding.key ??
             stableHash([finding.title, finding.path ?? "", String(finding.line ?? 0)]);
@@ -357,21 +374,34 @@ export const layer = Layer.effect(
             500,
           );
           const existing = yield* feedbackStore.getItem(itemId);
+          const origin = input.origin ?? "reviewer";
+          const closedByExplicitAgreement =
+            existing?.status === "closed" &&
+            (existing.disposition === "withdrawn" ||
+              existing.disposition === "rejected-with-reviewer-agreement");
           yield* feedbackStore.upsertOpenItem({
             item: {
               id: itemId,
               monitorId: input.monitor.id,
               stableKey,
               kind: "review-finding",
-              status: "open",
-              disposition: null,
-              dispositionNote: null,
-              dispositionAt: null,
-              dispositionByThreadId: null,
+              status: closedByExplicitAgreement ? "closed" : "open",
+              disposition: closedByExplicitAgreement ? (existing?.disposition ?? null) : null,
+              dispositionNote: closedByExplicitAgreement
+                ? (existing?.dispositionNote ?? null)
+                : null,
+              dispositionAt: closedByExplicitAgreement ? (existing?.dispositionAt ?? null) : null,
+              dispositionByThreadId: closedByExplicitAgreement
+                ? (existing?.dispositionByThreadId ?? null)
+                : null,
               firstSeenAt: existing?.firstSeenAt ?? now,
               lastSeenAt: now,
               currentRevisionId: null,
               summary,
+              origin,
+              originThreadId: input.reviewThreadId,
+              childDisposition: existing?.childDisposition ?? null,
+              reviewerDisposition: existing?.reviewerDisposition ?? null,
             },
           });
 
@@ -387,6 +417,7 @@ export const layer = Layer.effect(
             finding.severity,
             finding.path ?? "",
             String(finding.line ?? 0),
+            ...(acceptanceInput === undefined ? [] : [JSON.stringify(acceptanceInput)]),
             ...(finding.provenance === undefined
               ? []
               : [
@@ -398,7 +429,17 @@ export const layer = Layer.effect(
                   String(finding.provenance.endLine),
                 ]),
           ]);
+          const sourceRevision = acceptanceInput?.sourceRevision ?? defaultSourceRevision;
           const revisionId = stableRevisionId(itemId, sourceRevision, contentHash);
+          const acceptanceProvenance =
+            acceptanceInput === undefined
+              ? undefined
+              : buildMonitorAcceptanceProvenance({
+                  monitorId: input.monitor.id,
+                  findingId: itemId,
+                  findingRevisionId: revisionId,
+                  provenance: acceptanceInput,
+                });
           const inserted = yield* feedbackStore.insertRevision({
             id: revisionId,
             itemId,
@@ -408,7 +449,15 @@ export const layer = Layer.effect(
             headSha,
             createdAt: now,
             summary,
-            payload: { event, finding, reviewThreadId: input.reviewThreadId, contentVersion: 1 },
+            payload: {
+              event,
+              finding,
+              reviewThreadId: input.reviewThreadId,
+              origin,
+              reviewedHeadSha: headSha,
+              ...(acceptanceProvenance === undefined ? {} : { acceptanceProvenance }),
+              contentVersion: 1,
+            },
           });
           if (inserted) newRevisionIds.push(revisionId);
           submitted.push({ key, itemId, revisionId, created: inserted });
@@ -1057,31 +1106,77 @@ export const layer = Layer.effect(
           return yield* monitorError("Feedback item was not found on this monitor.");
         }
         const now = yield* isoNow();
-        // An agent's prose never closes a finding. `resolved` parks the item in
-        // `verifying`; only a later reconciliation against fresh provider state closes it.
-        const status =
-          input.disposition === "resolved"
-            ? ("verifying" as const)
-            : input.disposition === "rejected"
-              ? ("closed" as const)
-              : ("open" as const);
+        const reviewerReport =
+          input.reporterThreadId !== null &&
+          input.reporterThreadId !== undefined &&
+          item.origin === "reviewer" &&
+          item.originThreadId === input.reporterThreadId;
+        let actorRole: PullRequestMonitorFeedbackActorRole;
+        let status: PullRequestMonitorFeedbackItem["status"];
+        let storedDisposition: PullRequestMonitorFeedbackItem["disposition"];
+        let childDisposition = item.childDisposition ?? null;
+        let reviewerDisposition = item.reviewerDisposition ?? null;
+
+        if (reviewerReport) {
+          if (
+            input.disposition !== "withdrawn" &&
+            input.disposition !== "revised" &&
+            input.disposition !== "upheld" &&
+            input.disposition !== "needs-human"
+          ) {
+            return yield* monitorError(
+              "Reviewer findings accept only withdrawn, revised, upheld, or needs-human outcomes.",
+            );
+          }
+          actorRole = "reviewer";
+          reviewerDisposition = input.disposition;
+          if (input.disposition === "withdrawn") {
+            const agreedRejection = childDisposition === "rejected";
+            storedDisposition = agreedRejection ? "rejected-with-reviewer-agreement" : "withdrawn";
+            status = "closed";
+          } else {
+            storedDisposition = input.disposition;
+            status = "open";
+          }
+        } else {
+          if (
+            input.disposition !== "accepted" &&
+            input.disposition !== "resolved" &&
+            input.disposition !== "rejected" &&
+            input.disposition !== "needs-human"
+          ) {
+            return yield* monitorError(
+              "Child findings accept only accepted, resolved, rejected, or needs-human outcomes.",
+            );
+          }
+          actorRole = "child";
+          childDisposition = input.disposition;
+          // A child rejection is a live dispute, not closure. Only a reviewer withdrawal
+          // after that rejection produces rejected-with-reviewer-agreement.
+          status = input.disposition === "resolved" ? "verifying" : "open";
+          storedDisposition = input.disposition;
+        }
         const reportRow: PullRequestMonitorFeedbackReport = {
           id: `fb_report_${stableHash([monitor.id, item.id, input.disposition, now])}`,
           monitorId: monitor.id,
           itemId: item.id,
-          disposition: input.disposition,
+          disposition: storedDisposition!,
           note: input.note ?? null,
           reporterThreadId: input.reporterThreadId ?? null,
           createdAt: now,
+          actorRole,
         };
         yield* feedbackStore.reportDisposition({
           itemId: item.id,
-          disposition: input.disposition,
+          disposition: storedDisposition!,
           note: input.note ?? null,
           at: now,
           byThreadId: input.reporterThreadId ?? null,
           status,
+          childDisposition,
+          reviewerDisposition,
           report: reportRow,
+          actorRole,
         });
         // Immediate post-report recheck so dispositions are verified against fresh PR state.
         yield* input.requestRecheck(monitor);

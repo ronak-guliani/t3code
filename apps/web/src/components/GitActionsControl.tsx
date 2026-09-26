@@ -68,6 +68,8 @@ interface GitActionsControlProps {
   gitCwd: string | null;
   activeThreadRef: ScopedThreadRef | null;
   draftId?: DraftId;
+  confirmOnDefaultBranch?: boolean;
+  showQuickAction?: boolean;
 }
 
 interface PendingDefaultBranchAction {
@@ -225,6 +227,8 @@ export default function GitActionsControl({
   gitCwd,
   activeThreadRef,
   draftId,
+  confirmOnDefaultBranch = true,
+  showQuickAction = true,
 }: GitActionsControlProps) {
   const activeEnvironmentId = activeThreadRef?.environmentId ?? null;
   const threadToastData = useMemo(
@@ -654,6 +658,7 @@ export default function GitActionsControl({
       actionCanCommit &&
       (action === "commit" || !!actionStatus?.hasWorkingTreeChanges || featureBranch);
     if (
+      confirmOnDefaultBranch &&
       !skipDefaultBranchPrompt &&
       requiresDefaultBranchConfirmation(action, actionIsDefaultBranch) &&
       actionBranch
@@ -1030,43 +1035,45 @@ export default function GitActionsControl({
         </Button>
       ) : (
         <Group aria-label="Git actions" className="shrink-0">
-          {quickActionDisabledReason ? (
-            <Popover>
-              <PopoverTrigger
-                openOnHover
-                render={
-                  <Button
-                    aria-label={quickAction.label}
-                    aria-disabled="true"
-                    className="cursor-not-allowed rounded-e-none border-e-0 border-transparent px-0 opacity-64 before:rounded-e-none hover:border-input hover:shadow-xs/5"
-                    size="icon-xs"
-                    variant="outline"
-                    title={quickAction.label}
-                  />
-                }
+          {showQuickAction ? (
+            quickActionDisabledReason ? (
+              <Popover>
+                <PopoverTrigger
+                  openOnHover
+                  render={
+                    <Button
+                      aria-label={quickAction.label}
+                      aria-disabled="true"
+                      className="cursor-not-allowed rounded-e-none border-e-0 border-transparent px-0 opacity-64 before:rounded-e-none hover:border-input hover:shadow-xs/5"
+                      size="icon-xs"
+                      variant="outline"
+                      title={quickAction.label}
+                    />
+                  }
+                >
+                  <GitQuickActionIcon quickAction={quickAction} />
+                  <span className="sr-only">{quickAction.label}</span>
+                </PopoverTrigger>
+                <PopoverPopup tooltipStyle side="bottom" align="start">
+                  {quickActionDisabledReason}
+                </PopoverPopup>
+              </Popover>
+            ) : (
+              <Button
+                variant="outline"
+                size="icon-xs"
+                className="border-transparent px-0 shadow-none hover:border-input hover:shadow-xs/5"
+                disabled={isGitActionRunning || quickAction.disabled}
+                onClick={runQuickAction}
+                aria-label={quickAction.label}
+                title={quickAction.label}
               >
                 <GitQuickActionIcon quickAction={quickAction} />
                 <span className="sr-only">{quickAction.label}</span>
-              </PopoverTrigger>
-              <PopoverPopup tooltipStyle side="bottom" align="start">
-                {quickActionDisabledReason}
-              </PopoverPopup>
-            </Popover>
-          ) : (
-            <Button
-              variant="outline"
-              size="icon-xs"
-              className="border-transparent px-0 shadow-none hover:border-input hover:shadow-xs/5"
-              disabled={isGitActionRunning || quickAction.disabled}
-              onClick={runQuickAction}
-              aria-label={quickAction.label}
-              title={quickAction.label}
-            >
-              <GitQuickActionIcon quickAction={quickAction} />
-              <span className="sr-only">{quickAction.label}</span>
-            </Button>
-          )}
-          <GroupSeparator />
+              </Button>
+            )
+          ) : null}
+          {showQuickAction ? <GroupSeparator /> : null}
           <Menu
             onOpenChange={(open) => {
               if (open) {

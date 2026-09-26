@@ -121,6 +121,7 @@ describe("MCP Streamable HTTP server", () => {
     const server = await startMcpHttpServer({
       cwd: process.cwd(),
       toolsets: new Set([
+        "delegate_work",
         "create_isolated_workspace",
         "switch_workspace",
         "create_nested_thread",
@@ -155,6 +156,7 @@ describe("MCP Streamable HTTP server", () => {
         id: 1,
         result: {
           tools: [
+            { name: "delegate_work" },
             { name: "create_isolated_workspace" },
             { name: "switch_workspace" },
             { name: "create_nested_thread" },
@@ -1748,6 +1750,470 @@ Report the outcome, material findings or changes, validation results, commit SHA
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("delegate_work MCP tool", () => {
+  const options = (cwd: string, cliCommand: string) => ({
+    cwd,
+    toolsets: new Set(["delegate_work"]),
+    threadId: "parent-1",
+    cliCommand,
+    runtimeMode: "full-access" as const,
+    providerInstanceId: ProviderInstanceId.make("copilot"),
+    delegatedDefaultModelSelection: {
+      instanceId: ProviderInstanceId.make("copilot"),
+      model: "gpt-6-luna",
+    },
+  });
+
+  it("publishes one compact interface for singular and batch delegation", () => {
+    expect(__testing.availableTools(new Set(["delegate_work"]))).toEqual([
+      expect.objectContaining({
+        name: "delegate_work",
+        inputSchema: expect.objectContaining({
+          properties: expect.objectContaining({
+            defaults: expect.objectContaining({
+              properties: expect.objectContaining({
+                project: expect.any(Object),
+                model: expect.any(Object),
+                promptTemplate: expect.any(Object),
+              }),
+            }),
+            wait: expect.objectContaining({
+              type: "string",
+              enum: ["all", "any", "none"],
+            }),
+            children: expect.objectContaining({
+              minItems: 1,
+              maxItems: 16,
+              items: expect.objectContaining({
+                required: ["title", "prompt"],
+              }),
+            }),
+          }),
+          required: ["children"],
+        }),
+      }),
+    ]);
+  });
+
+  it("adds only successfully created children to the wait without follow-up pruning", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-delegate-wait-"));
+    const callsPath = path.join(root, "cli-calls.jsonl");
+    const originalCallsPath = process.env.T3_MCP_TEST_CALLS;
+    const cliScript = `
+      const fs = require("node:fs");
+      const args = process.argv.slice(1);
+      fs.appendFileSync(process.env.T3_MCP_TEST_CALLS, JSON.stringify(args) + "\\n");
+      const value = (flag) => {
+        const index = args.indexOf(flag);
+        return index < 0 ? undefined : args[index + 1];
+      };
+      const chatIndex = args.indexOf("chat");
+      const command = chatIndex < 0 ? undefined : args[chatIndex + 1];
+      if (args.includes("--dry-run")) {
+        console.log(JSON.stringify({
+          status: "dry-run",
+          threadId: null,
+          threadUrl: null,
+          retryable: false,
+          workspaceCreated: false,
+          cleanupPerformed: false,
+          errorCode: null,
+          message: "Nested-thread inputs are valid; no thread or workspace was created."
+        }));
+      } else if (command === "wait-prune") {
+        process.exitCode = 17;
+      } else if (value("--title") === "Fail") {
+        console.log(JSON.stringify({
+          status: "failed",
+          threadId: value("--thread-id"),
+          threadUrl: null,
+          retryable: false,
+          workspaceCreated: false,
+          cleanupPerformed: false,
+          errorCode: "THREAD_CLEANUP_REJECTED",
+          message: "The failed child was retained."
+        }));
+      } else {
+        console.log(JSON.stringify({
+          ...${JSON.stringify(createdOutcome)},
+          threadId: value("--thread-id") || "child-created",
+          assignmentId: value("--assignment-id") || "assignment-created"
+        }));
+      }
+    `;
+
+    try {
+      process.env.T3_MCP_TEST_CALLS = callsPath;
+      const result = JSON.parse(
+        await __testing.delegateWorkTool(
+          {
+            ...options(root, process.execPath),
+            cliArgsPrefix: ["-e", cliScript, "--"],
+          },
+          {
+            wait: "all",
+            concurrency: 1,
+            children: [
+              { title: "Keep", prompt: "Complete this work." },
+              { title: "Fail", prompt: "This creation will fail." },
+              {
+                title: "Notify",
+                prompt: "Record this work without a wake.",
+                followUp: "notify-only",
+              },
+            ],
+          },
+        ),
+      );
+      const calls = (await readFile(callsPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+      const firstCreate = calls.find((args) => {
+        const chatIndex = args.indexOf("chat");
+        const titleIndex = args.indexOf("--title");
+        return (
+          chatIndex >= 0 &&
+          args[chatIndex + 1] === "new" &&
+          !args.includes("--dry-run") &&
+          titleIndex >= 0 &&
+          args[titleIndex + 1] === "Keep"
+        );
+      })!;
+      const parentWaitIndex = firstCreate.indexOf("--parent-wait");
+      expect(parentWaitIndex).toBeGreaterThan(-1);
+      const firstWait = JSON.parse(firstCreate[parentWaitIndex + 1]!);
+      const failedCreate = calls.find((args) => {
+        const chatIndex = args.indexOf("chat");
+        const titleIndex = args.indexOf("--title");
+        return (
+          chatIndex >= 0 &&
+          args[chatIndex + 1] === "new" &&
+          !args.includes("--dry-run") &&
+          titleIndex >= 0 &&
+          args[titleIndex + 1] === "Fail"
+        );
+      })!;
+
+      expect(
+        result.results.map((entry: { outcome: { status: string } }) => entry.outcome.status),
+      ).toEqual(["created", "failed", "created"]);
+      expect(firstWait).toEqual({
+        mode: "all",
+        assignments: [
+          {
+            childThreadId: firstCreate[firstCreate.indexOf("--thread-id") + 1],
+            assignmentId: firstCreate[firstCreate.indexOf("--assignment-id") + 1],
+          },
+        ],
+      });
+      const failedWaitIndex = failedCreate.indexOf("--parent-wait");
+      expect(failedWaitIndex).toBeGreaterThan(-1);
+      expect(JSON.parse(failedCreate[failedWaitIndex + 1]!)).toEqual({
+        mode: "all",
+        assignments: [
+          {
+            childThreadId: failedCreate[failedCreate.indexOf("--thread-id") + 1],
+            assignmentId: failedCreate[failedCreate.indexOf("--assignment-id") + 1],
+          },
+        ],
+      });
+      expect(
+        calls.some((args) => {
+          const chatIndex = args.indexOf("chat");
+          return chatIndex >= 0 && args[chatIndex + 1] === "wait-prune";
+        }),
+      ).toBe(false);
+
+      await writeFile(callsPath, "");
+      await __testing.delegateWorkTool(
+        {
+          ...options(root, process.execPath),
+          cliArgsPrefix: ["-e", cliScript, "--"],
+        },
+        {
+          wait: "all",
+          children: [{ title: "Fail", prompt: "The retained child failed to start." }],
+        },
+      );
+      const failedOnlyCalls = (await readFile(callsPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+      expect(
+        failedOnlyCalls.some((args) => {
+          const chatIndex = args.indexOf("chat");
+          return chatIndex >= 0 && args[chatIndex + 1] === "wait-prune";
+        }),
+      ).toBe(false);
+    } finally {
+      if (originalCallsPath === undefined) delete process.env.T3_MCP_TEST_CALLS;
+      else process.env.T3_MCP_TEST_CALLS = originalCallsPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("defaults multi-child automatic work to all and leaves notify-only work ungrouped", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-delegate-wait-default-"));
+    const callsPath = path.join(root, "cli-calls.jsonl");
+    const originalCallsPath = process.env.T3_MCP_TEST_CALLS;
+    const cliScript = `
+      const fs = require("node:fs");
+      const args = process.argv.slice(1);
+      fs.appendFileSync(process.env.T3_MCP_TEST_CALLS, JSON.stringify(args) + "\\n");
+      const value = (flag) => {
+        const index = args.indexOf(flag);
+        return index < 0 ? undefined : args[index + 1];
+      };
+      const chatIndex = args.indexOf("chat");
+      const command = chatIndex < 0 ? undefined : args[chatIndex + 1];
+      if (args.includes("--dry-run")) {
+        console.log(JSON.stringify({
+          status: "dry-run",
+          threadId: null,
+          threadUrl: null,
+          retryable: false,
+          workspaceCreated: false,
+          cleanupPerformed: false,
+          errorCode: null,
+          message: "Nested-thread inputs are valid; no thread or workspace was created."
+        }));
+      } else if (command === "wait") {
+        console.log(JSON.stringify({ updated: true }));
+      } else {
+        console.log(JSON.stringify({
+          ...${JSON.stringify(createdOutcome)},
+          threadId: value("--thread-id") || "child-created",
+          assignmentId: value("--assignment-id") || "assignment-created"
+        }));
+      }
+    `;
+    const invoke = async (
+      defaults: Record<string, unknown> | undefined,
+      children: Array<{ title: string; prompt: string }>,
+    ) => {
+      await writeFile(callsPath, "");
+      await __testing.delegateWorkTool(
+        {
+          ...options(root, process.execPath),
+          cliArgsPrefix: ["-e", cliScript, "--"],
+        },
+        {
+          ...(defaults ? { defaults } : {}),
+          concurrency: 1,
+          children,
+        },
+      );
+      return (await readFile(callsPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+    };
+    const isCreate = (args: string[]) => {
+      const chatIndex = args.indexOf("chat");
+      return chatIndex >= 0 && args[chatIndex + 1] === "new" && !args.includes("--dry-run");
+    };
+    const isWait = (args: string[]) => {
+      const chatIndex = args.indexOf("chat");
+      return chatIndex >= 0 && args[chatIndex + 1] === "wait";
+    };
+
+    try {
+      process.env.T3_MCP_TEST_CALLS = callsPath;
+      const automaticCalls = await invoke(undefined, [
+        { title: "First", prompt: "First result." },
+        { title: "Second", prompt: "Second result." },
+      ]);
+      const automaticCreate = automaticCalls.find(isCreate)!;
+      const automaticWaitIndex = automaticCreate.indexOf("--parent-wait");
+      expect(automaticWaitIndex).toBeGreaterThan(-1);
+      const automaticWait = JSON.parse(automaticCreate[automaticWaitIndex + 1]!);
+      expect(automaticWait).toMatchObject({ mode: "all", assignments: expect.any(Array) });
+      expect(automaticWait.assignments).toHaveLength(1);
+
+      const notifyOnlyCalls = await invoke({ followUp: "notify-only" }, [
+        { title: "Notify first", prompt: "Record first." },
+        { title: "Notify second", prompt: "Record second." },
+      ]);
+      expect(
+        notifyOnlyCalls.filter(isCreate).every((args) => !args.includes("--parent-wait")),
+      ).toBe(true);
+      expect(notifyOnlyCalls.some(isWait)).toBe(false);
+    } finally {
+      if (originalCallsPath === undefined) delete process.env.T3_MCP_TEST_CALLS;
+      else process.env.T3_MCP_TEST_CALLS = originalCallsPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("derives project and model defaults without repeating them per child", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-delegate-work-"));
+    const cliPath = path.join(root, "t3-test");
+    const argsPath = path.join(root, "cli-args.txt");
+    const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+
+    try {
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+      process.env.T3_MCP_TEST_ARGS = argsPath;
+
+      const result = JSON.parse(
+        await __testing.delegateWorkTool(options(root, cliPath), {
+          children: [{ title: "Investigate nesting", prompt: "Find the root cause." }],
+        }),
+      );
+
+      expect(result.results).toEqual([
+        { index: 0, outcome: { ...createdOutcome, assignmentId: expect.any(String) } },
+      ]);
+      expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
+        "--log-level",
+        "error",
+        "chat",
+        "new",
+        "--project",
+        root,
+        "--parent",
+        "parent-1",
+        "--follow-up",
+        "automatic",
+        "--thread-id",
+        expect.any(String),
+        "--assignment-id",
+        expect.any(String),
+        "--cross-thread-source",
+        "parent-1",
+        "--cross-thread-capability",
+        expect.any(String),
+        "--provider",
+        "copilot",
+        "--model",
+        "gpt-6-luna",
+        "--runtime-mode",
+        "full-access",
+        "--title",
+        "Investigate nesting",
+        "Find the root cause.",
+      ]);
+    } finally {
+      if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
+      else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the factory gpt-6-luna default with no configured default", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-delegate-factory-"));
+    const cliPath = path.join(root, "t3-test");
+    const argsPath = path.join(root, "cli-args.txt");
+    const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+
+    try {
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+      process.env.T3_MCP_TEST_ARGS = argsPath;
+
+      await __testing.delegateWorkTool(
+        {
+          cwd: root,
+          toolsets: new Set(["delegate_work"]),
+          threadId: "parent-1",
+          cliCommand: cliPath,
+          runtimeMode: "full-access" as const,
+          providerInstanceId: ProviderInstanceId.make("copilot"),
+        },
+        {
+          children: [{ title: "Investigate nesting", prompt: "Find the root cause." }],
+        },
+      );
+
+      const args = (await readFile(argsPath, "utf8")).trim().split("\n");
+      expect(args).toContain("copilot");
+      expect(args).toContain("gpt-6-luna");
+    } finally {
+      if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
+      else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects reasoning without an explicit model even with a settings default", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-delegate-reasoning-"));
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const result = JSON.parse(
+        await __testing.delegateWorkTool(options(root, cliPath), {
+          children: [
+            {
+              title: "Investigate nesting",
+              prompt: "Find the root cause.",
+              reasoning: "high",
+            },
+          ],
+        }),
+      );
+
+      expect(result.results).toEqual([
+        expect.objectContaining({
+          index: 0,
+          outcome: expect.objectContaining({
+            errorCode: "VALIDATION_FAILED",
+            message: expect.stringContaining("reasoning requires an explicit model"),
+          }),
+        }),
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("applies shared defaults while allowing child overrides", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-delegate-defaults-"));
+    const cliPath = path.join(root, "t3-test");
+    const argsPath = path.join(root, "cli-args.txt");
+    const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+
+    try {
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+      process.env.T3_MCP_TEST_ARGS = argsPath;
+
+      await __testing.delegateWorkTool(options(root, cliPath), {
+        defaults: {
+          project: "project-1",
+          model: "gpt-5.6-sol",
+          reasoning: "high",
+          followUp: "notify-only",
+        },
+        children: [
+          {
+            title: "Implement nesting",
+            prompt: "Implement the change.",
+            model: "gpt-5.6-terra",
+            reasoning: "medium",
+          },
+        ],
+      });
+
+      const args = (await readFile(argsPath, "utf8")).trim().split("\n");
+      expect(args).toContain("project-1");
+      expect(args).toContain("notify-only");
+      expect(args).toContain("gpt-5.6-terra");
+      expect(args).toContain("medium");
+      expect(args).not.toContain("gpt-5.6-sol");
+      expect(args).not.toContain("high");
+    } finally {
+      if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
+      else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

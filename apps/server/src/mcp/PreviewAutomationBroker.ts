@@ -7,6 +7,7 @@ import {
   PreviewAutomationTargetNotFoundError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
+  PreviewAutomationNoSupportedHostError,
   PreviewAutomationPinnedHostUnsupportedOperationError,
   PreviewAutomationRemoteUnavailableError,
   PreviewAutomationRequestQueueClosedError,
@@ -130,7 +131,16 @@ interface NoRoutableHost {
   readonly kind: "no-routable-host";
 }
 
-type HostRoute = RoutedHostRequest | PinnedHostUnsupportedOperation | NoRoutableHost;
+interface NoSupportedHost {
+  readonly kind: "no-supported-host";
+  readonly connectedClientCount: number;
+}
+
+type HostRoute =
+  | RoutedHostRequest
+  | PinnedHostUnsupportedOperation
+  | NoSupportedHost
+  | NoRoutableHost;
 
 const removeConnectionFromState = (
   current: BrokerState,
@@ -594,8 +604,16 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
               )[0];
         if (!connection) {
           if (!hasLiveAssignment) assignments.delete(assignmentKey);
+          const connectedClientCount = Array.from(current.clients.values()).filter(
+            (host) => host.environmentId === input.scope.environmentId,
+          ).length;
           return [
-            { kind: "no-routable-host" } satisfies NoRoutableHost,
+            input.operation === "preflight" && connectedClientCount > 0
+              ? ({
+                  kind: "no-supported-host",
+                  connectedClientCount,
+                } satisfies NoSupportedHost)
+              : ({ kind: "no-routable-host" } satisfies NoRoutableHost),
             { ...current, assignments },
           ] as const;
         }
@@ -682,6 +700,16 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
               clientId: selected.clientId,
               connectionId: selected.connectionId,
               supportedOperations: selected.supportedOperations,
+            });
+          }
+          if (selected.kind === "no-supported-host") {
+            return yield* new PreviewAutomationNoSupportedHostError({
+              operation: input.operation,
+              environmentId: input.scope.environmentId,
+              threadId: input.scope.threadId,
+              providerSessionId: input.scope.providerSessionId,
+              providerInstanceId: input.scope.providerInstanceId,
+              connectedClientCount: selected.connectedClientCount,
             });
           }
           const now = yield* Clock.currentTimeMillis;

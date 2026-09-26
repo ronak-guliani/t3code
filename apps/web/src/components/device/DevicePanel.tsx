@@ -7,6 +7,7 @@ import type {
 import {
   ChevronLeft,
   Home,
+  PictureInPicture2,
   Power,
   RotateCcw,
   SlidersHorizontal,
@@ -14,9 +15,10 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useRightPanelStore, type RightPanelSurface } from "~/rightPanelStore";
+import { usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
 import { Button } from "~/components/ui/button";
 import { DiscoveryList, DiscoveryListRow } from "~/components/ui/discovery-list";
 import { Dialog } from "~/components/ui/dialog";
@@ -32,6 +34,7 @@ import { DeviceStreamView, type DeviceStreamHandle } from "./DeviceStreamView";
 import { DeviceLoadingView } from "./DeviceLoadingView";
 import { DeviceSetup } from "./DeviceSetup";
 import { DeviceToolsPanel } from "./DeviceToolsPanel";
+import { useRetainedDeviceSession } from "./useRetainedDeviceSession";
 import { PreviewPanelShell, type PreviewPanelMode } from "../preview/PreviewPanelShell";
 
 const platformLabel = (platform: DevicePlatform) =>
@@ -39,11 +42,6 @@ const platformLabel = (platform: DevicePlatform) =>
 
 const deviceKey = (device: Pick<DeviceSummary, "hostId" | "id">) =>
   `${device.hostId}\u0000${device.id}`;
-
-export const shouldRecoverDeviceTarget = (
-  targetServerEpoch: string | undefined,
-  currentServerEpoch: string | undefined,
-) => targetServerEpoch === undefined || targetServerEpoch !== currentServerEpoch;
 
 /** Each surface owns one host/device; only the visible surface streams. */
 export function DevicePanel(props: {
@@ -64,8 +62,6 @@ export function DevicePanel(props: {
   const [handle, setHandle] = useState<DeviceStreamHandle | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [axOverlay, setAxOverlay] = useState(false);
-  const [recovering, setRecovering] = useState(false);
-  const recoveryTargetRef = useRef<string | null>(null);
   const { access } = useDeviceHubAccess(environmentId, "local", props.visible, state.hubBasePath);
 
   const hostDisabled = state.hostStatus === "disabled";
@@ -93,69 +89,22 @@ export function DevicePanel(props: {
       )
     : undefined;
 
-  useEffect(() => {
-    const target = props.surface.target;
-    if (!props.visible || !loaded || hostDisabled || !target) {
-      recoveryTargetRef.current = null;
-      setRecovering(false);
-      return;
-    }
-    if (activeSession && activeDevice) {
-      recoveryTargetRef.current = null;
-      setRecovering(false);
-      return;
-    }
-    if (!shouldRecoverDeviceTarget(target.serverEpoch, state.serverEpoch)) {
-      recoveryTargetRef.current = null;
-      setRecovering(false);
-      return;
-    }
-    const recoveryKey = `${target.hostId}\u0000${target.deviceId}`;
-    if (recoveryTargetRef.current === recoveryKey) return;
-    recoveryTargetRef.current = recoveryKey;
-    setRecovering(true);
-    setOperationError(null);
-    void (async () => {
-      const listed = await list({ environmentId, input: { hostId: target.hostId } });
-      if (listed._tag === "Failure") {
-        setOperationError(formatEnvironmentQueryError(listed.cause));
-        return;
-      }
-      const device = listed.value.devices.find(
-        (candidate) => candidate.hostId === target.hostId && candidate.id === target.deviceId,
-      );
-      if (!device) {
-        setOperationError(
-          `${target.name ?? "The retained device"} is not currently available. Refresh devices to retry.`,
-        );
-        return;
-      }
-      const reopened = await open({
-        environmentId,
-        input: {
-          threadId,
-          hostId: device.hostId,
-          deviceId: device.id,
-          platform: device.platform,
-        },
-      });
-      if (reopened._tag === "Failure") {
-        setOperationError(formatEnvironmentQueryError(reopened.cause));
-      }
-    })().finally(() => setRecovering(false));
-  }, [
-    activeDevice,
-    activeSession,
+  const [recoveryRetryKey, setRecoveryRetryKey] = useState(0);
+  const recovering = useRetainedDeviceSession({
+    retryKey: recoveryRetryKey,
     environmentId,
-    hostDisabled,
-    list,
-    loaded,
-    open,
-    props.surface.target,
-    props.visible,
-    state.serverEpoch,
     threadId,
-  ]);
+    enabled: props.visible && loaded && !hostDisabled,
+    currentServerEpoch: state.serverEpoch || undefined,
+    target: props.surface.target,
+    sessionExists: activeSession !== undefined && activeDevice !== undefined,
+    listDevices: useCallback(
+      () => list({ environmentId, input: { hostId: props.surface.target?.hostId ?? "" } }),
+      [environmentId, list, props.surface.target?.hostId],
+    ),
+    openDevice: useCallback((input) => open(input), [open]),
+    onRecoveryResult: setOperationError,
+  });
 
   const grouped = useMemo(() => groupDevices(state), [state]);
 
@@ -207,6 +156,19 @@ export function DevicePanel(props: {
       if (result._tag === "Failure") setOperationError(formatEnvironmentQueryError(result.cause));
       else useRightPanelStore.getState().closeSurface(props.threadRef, props.surface.id);
     });
+  };
+
+  const floatActive = () => {
+    if (!activeDevice) return;
+    usePreviewMiniPlayerStore.getState().open(props.threadRef, {
+      kind: "device",
+      hostId: activeDevice.hostId,
+      deviceId: activeDevice.id,
+      platform: activeDevice.platform,
+      name: activeDevice.name,
+      ...(state.serverEpoch ? { serverEpoch: state.serverEpoch } : {}),
+    });
+    useRightPanelStore.getState().close(props.threadRef);
   };
 
   const bootingDevices =
@@ -290,6 +252,9 @@ export function DevicePanel(props: {
             >
               <SlidersHorizontal />
             </Toggle>
+            <DeviceButton label="Float device over chat" onClick={floatActive}>
+              <PictureInPicture2 />
+            </DeviceButton>
             <DeviceButton label="Power off" onClick={() => closeActive(true)}>
               <Power />
             </DeviceButton>
@@ -450,7 +415,7 @@ export function DevicePanel(props: {
                   variant={grouped.length > 0 ? "ghost" : "outline"}
                   size="sm"
                   onClick={() => {
-                    recoveryTargetRef.current = null;
+                    setRecoveryRetryKey((key) => key + 1);
                     void list({ environmentId, input: {} });
                   }}
                 >

@@ -8,6 +8,7 @@
  */
 import { Context } from "effect";
 import type { Effect, Scope } from "effect";
+import type { CollaborativeAcceptanceError } from "@t3tools/contracts";
 
 /**
  * OrchestrationReactorShape - Service API for orchestration reactor lifecycle.
@@ -19,7 +20,7 @@ export interface OrchestrationReactorShape {
    * The returned effect must be run in a scope so all worker fibers can be
    * finalized on shutdown.
    */
-  readonly start: () => Effect.Effect<void, never, Scope.Scope>;
+  readonly start: () => Effect.Effect<void, CollaborativeAcceptanceError, Scope.Scope>;
 }
 
 /**

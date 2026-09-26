@@ -34,10 +34,14 @@ vi.mock("expo-secure-store", () => ({
   getItemAsync: async () => null,
   setItemAsync: async () => {},
 }));
+vi.mock("expo-haptics", () => ({
+  selectionAsync: vi.fn(),
+}));
 vi.mock("../../state/use-thread-pr", () => ({
   useThreadPr: () => null,
 }));
 
+import * as Haptics from "expo-haptics";
 import { CompactThreadRow } from "./compact-thread-row";
 import { presentThreadPr } from "../../state/thread-pr-presentation";
 import { PendingTaskListRow, ThreadListRow } from "./thread-list-items";
@@ -570,6 +574,7 @@ describe("compact inbox row", () => {
     ).toBe(false);
     collapse?.onPress?.();
     expect(onToggleExpanded).toHaveBeenCalledOnce();
+    expect(Haptics.selectionAsync).toHaveBeenCalledOnce();
 
     harness.pressables.length = 0;
     harness.menus.length = 0;
@@ -583,6 +588,27 @@ describe("compact inbox row", () => {
     expect(
       harness.pressables.some((item) => item.accessibilityLabel?.startsWith("Related chats")),
     ).toBe(true);
+  });
+
+  it("shares the parent surface on nested rows, keeping indentation for grouping", () => {
+    const backgroundOf = (element: (typeof harness.views)[number]) => {
+      const styles = Array.isArray(element?.style) ? element.style : [element?.style];
+      return styles.find(
+        (entry) => typeof entry === "object" && entry !== null && "backgroundColor" in entry,
+      ) as { backgroundColor?: unknown } | undefined;
+    };
+    renderToStaticMarkup(
+      <CompactThreadRow title="Parent" timestamp="2m" status="ready" onPress={() => {}} />,
+    );
+    const parentBackground = backgroundOf(harness.views[0])?.backgroundColor;
+    harness.views.length = 0;
+    renderToStaticMarkup(
+      <CompactThreadRow title="Child" timestamp="1m" status="ready" depth={1} onPress={() => {}} />,
+    );
+    expect(backgroundOf(harness.views[0])?.backgroundColor).toBe(parentBackground);
+    expect(harness.views[0]?.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ paddingStart: 30 })]),
+    );
   });
 
   it("hides the chevron without a toggle handler or children", () => {

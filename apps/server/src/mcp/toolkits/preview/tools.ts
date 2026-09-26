@@ -2,11 +2,14 @@ import {
   PreviewAutomationClickInput,
   PreviewAutomationError,
   PreviewAutomationEvaluateInput,
+  PreviewAutomationEvaluateResult,
   PreviewAutomationListTabsInput,
   PreviewAutomationNavigateInput,
   PreviewAutomationOpenAndSnapshotInput,
   PreviewAutomationOpenAndSnapshotResult,
   PreviewAutomationOpenInput,
+  PreviewAutomationPreflightInput,
+  PreviewAutomationPreflightResult,
   PreviewAutomationPressInput,
   PreviewAutomationRecordingArtifact,
   PreviewAutomationRecordingStatus,
@@ -120,7 +123,7 @@ export const PreviewTabsTool = readonlyBrowserTool(
 export const PreviewSnapshotTool = readonlyBrowserTool(
   Tool.make("preview_snapshot", {
     description:
-      "Inspect a page before interacting. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Returns page state, semantic elements, diagnostics summary, action history, and a PNG screenshot. Budgets default to context-safe sizes; set includeAccessibilityTree=true only when needed.",
+      "Inspect a page before interacting. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Returns page state, semantic elements, diagnostics summary, action history, and a PNG screenshot. Budgets default to context-safe sizes; set includeAccessibilityTree=true only when needed. Pass save=true to persist the screenshot as server-side evidence and receive its screenshotPath.",
     parameters: PreviewAutomationSnapshotInput,
     success: PreviewAutomationSnapshot,
     failure: PreviewAutomationError,
@@ -137,6 +140,17 @@ export const PreviewOpenAndSnapshotTool = safeBrowserTool(
     failure: PreviewAutomationError,
     dependencies,
   }).annotate(Tool.Title, "Open browser and snapshot"),
+);
+
+export const PreviewPreflightTool = safeBrowserTool(
+  Tool.make("preview_preflight", {
+    description:
+      "Perform one deterministic browser pairing preflight. It reports browser support/visibility/tab attachment, validates this MCP session, and optionally probes a target's token-free T3 environment descriptor plus app route. Pairing URLs are never opened, and token-bearing URLs are not returned in diagnostics. Use this before preview_open_and_snapshot or preview_navigate.",
+    parameters: PreviewAutomationPreflightInput,
+    success: PreviewAutomationPreflightResult,
+    failure: PreviewAutomationError,
+    dependencies,
+  }).annotate(Tool.Title, "Preflight preview pairing"),
 );
 
 export const PreviewClickTool = browserTool(
@@ -186,9 +200,9 @@ export const PreviewScrollTool = safeBrowserTool(
 export const PreviewEvaluateTool = browserTool(
   Tool.make("preview_evaluate", {
     description:
-      "Evaluate JavaScript in the tab selected by tabId, or this agent session's current tab when omitted. Returns a serializable result up to 64 KB; the expression may mutate page state.",
+      "Evaluate JavaScript in the tab selected by tabId, or this agent session's current tab when omitted. Returns { value } with the serializable result up to 64 KB; the expression may mutate page state.",
     parameters: PreviewAutomationEvaluateInput,
-    success: Schema.Unknown,
+    success: PreviewAutomationEvaluateResult,
     failure: PreviewAutomationError,
     dependencies,
   }).annotate(Tool.Title, "Evaluate JavaScript in preview"),
@@ -218,7 +232,8 @@ export const PreviewRecordingStartTool = safeBrowserTool(
 
 export const PreviewRecordingStopTool = safeBrowserTool(
   Tool.make("preview_recording_stop", {
-    description: "Stop the active browser recording and save it as a local evidence artifact.",
+    description:
+      "Stop the active browser recording. The finished recording is transferred to the server and the returned path is readable in the agent environment (transferred=true); older hosts fall back to the browser host's local path.",
     parameters: PreviewAutomationTabTargetInput,
     success: PreviewAutomationRecordingArtifact,
     failure: PreviewAutomationError,
@@ -231,6 +246,7 @@ export const PreviewToolkit = Toolkit.make(
   PreviewTabsTool,
   PreviewOpenTool,
   PreviewOpenAndSnapshotTool,
+  PreviewPreflightTool,
   PreviewNavigateTool,
   PreviewResizeTool,
   PreviewSetAppearanceTool,
@@ -249,6 +265,7 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewStatusTool,
   PreviewTabsTool,
   PreviewOpenTool,
+  PreviewPreflightTool,
   PreviewNavigateTool,
   PreviewResizeTool,
   PreviewSetAppearanceTool,

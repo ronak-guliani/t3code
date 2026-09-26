@@ -1,4 +1,4 @@
-import type { PullRequestListEntry } from "@t3tools/contracts";
+import type { EnvironmentId, PullRequestListEntry } from "@t3tools/contracts";
 import { memo } from "react";
 
 import { cn } from "~/lib/utils";
@@ -12,16 +12,15 @@ import {
   pullRequestLabelColor,
 } from "./pullRequestPresentation";
 
-/**
- * Each slot past the first only appears once the meta line is wide enough to
- * hold it, so a narrow row shows one label and a "+N" while a wide one spreads
- * out up to three.
- */
 const LABEL_SLOTS = [
   { pill: "", overflow: "@xl/pr-row-meta:hidden" },
   { pill: "hidden @xl/pr-row-meta:inline-flex", overflow: "@3xl/pr-row-meta:hidden" },
   { pill: "hidden @3xl/pr-row-meta:inline-flex", overflow: "" },
 ] as const;
+
+type PullRequestRowEntry = PullRequestListEntry & {
+  readonly environmentId?: EnvironmentId;
+};
 
 function PullRequestRowLabels({ labels }: { readonly labels: PullRequestListEntry["labels"] }) {
   if (labels.length === 0) return null;
@@ -30,7 +29,6 @@ function PullRequestRowLabels({ labels }: { readonly labels: PullRequestListEntr
       {LABEL_SLOTS.map((slot, index) => {
         const label = labels[index];
         if (!label) return null;
-        const dot = pullRequestLabelColor(label.color);
         const remaining = labels.length - index - 1;
         return (
           <span
@@ -43,7 +41,9 @@ function PullRequestRowLabels({ labels }: { readonly labels: PullRequestListEntr
             <span
               aria-hidden
               className="size-2 shrink-0 rounded-full bg-muted-foreground"
-              {...(dot ? { style: { backgroundColor: dot } } : {})}
+              {...(pullRequestLabelColor(label.color)
+                ? { style: { backgroundColor: pullRequestLabelColor(label.color)! } }
+                : {})}
             />
             <span className="truncate">{label.name}</span>
             {remaining > 0 ? (
@@ -61,21 +61,36 @@ function PullRequestRowImpl({
   selected,
   matchedElsewhere,
   onSelect,
+  onHoverStart,
+  onHoverEnd,
+  onFocusRow,
 }: {
-  readonly entry: PullRequestListEntry;
+  readonly entry: PullRequestRowEntry;
   readonly selected: boolean;
   /**
    * A search found this, but in something the row does not show — a
    * description, a comment, a commit message.
    */
   readonly matchedElsewhere?: boolean;
-  readonly onSelect: (entry: PullRequestListEntry) => void;
+  readonly onSelect: (entry: PullRequestRowEntry) => void;
+  /**
+   * Warm the detail before it opens. Hover is delayed by the route so crossing
+   * rows costs nothing; keyboard focus prefetches at once because focus is
+   * already intentional.
+   */
+  readonly onHoverStart?: (entry: PullRequestRowEntry) => void;
+  readonly onHoverEnd?: () => void;
+  readonly onFocusRow?: (entry: PullRequestRowEntry) => void;
 }) {
   return (
     <button
       type="button"
       aria-current={selected ? "true" : undefined}
       onClick={() => onSelect(entry)}
+      onPointerEnter={onHoverStart ? () => onHoverStart(entry) : undefined}
+      onPointerLeave={onHoverEnd}
+      onFocus={onFocusRow ? () => onFocusRow(entry) : undefined}
+      onBlur={onHoverEnd}
       className={cn(
         "@container/pr-row grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         // Offscreen rows are skipped for style, layout and paint: a long list
@@ -103,7 +118,7 @@ function PullRequestRowImpl({
           <PullRequestDiffStat
             additions={entry.additions}
             deletions={entry.deletions}
-            className="shrink-0 text-[11px] whitespace-nowrap"
+            className="shrink-0 whitespace-nowrap text-[11px]"
           />
         </span>
         <PullRequestMetaLine className="@container/pr-row-meta col-start-1 row-start-2 overflow-hidden text-xs text-muted-foreground/70">
@@ -121,7 +136,7 @@ function PullRequestRowImpl({
           />
           {entry.labels.length > 0 ? <PullRequestRowLabels labels={entry.labels} /> : null}
         </PullRequestMetaLine>
-        <span className="col-start-2 row-start-2 flex items-center justify-self-end gap-3 text-[11px] whitespace-nowrap text-muted-foreground/70 tabular-nums">
+        <span className="col-start-2 row-start-2 flex items-center justify-self-end gap-3 whitespace-nowrap text-[11px] text-muted-foreground/70 tabular-nums">
           <span className="hidden @sm/pr-row:inline">
             {formatRelativeTimeLabel(entry.updatedAt)}
           </span>

@@ -10,6 +10,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import {
+  CollaborationExecutionAuthority,
   ChatAttachment,
   ModelSelection,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -63,6 +64,12 @@ export const ProviderSessionStartInput = Schema.Struct({
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,
+  /**
+   * Server-authenticated execution binding for provider-created MCP sessions.
+   * Provider callers may omit this for non-collaboration sessions; acceptance
+   * mutations reject scopes without a complete binding.
+   */
+  executionAuthority: Schema.optional(CollaborationExecutionAuthority),
 });
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
@@ -90,6 +97,7 @@ export const ProviderSendTurnInput = Schema.Struct({
   interactionMode: Schema.optional(ProviderInteractionMode),
   delegationAssignmentId: Schema.optional(MessageId),
   delegationDispatchId: Schema.optional(TrimmedNonEmptyString),
+  executionAuthority: Schema.optional(CollaborationExecutionAuthority),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 
@@ -105,6 +113,18 @@ export const ProviderInterruptTurnInput = Schema.Struct({
   turnId: Schema.optional(TurnId),
 });
 export type ProviderInterruptTurnInput = typeof ProviderInterruptTurnInput.Type;
+
+export const ProviderSteerTurnInput = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  input: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
+  ),
+  attachments: Schema.optional(
+    Schema.Array(ChatAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
+  ),
+});
+export type ProviderSteerTurnInput = typeof ProviderSteerTurnInput.Type;
 
 export const ProviderStopSessionInput = Schema.Struct({
   threadId: ThreadId,

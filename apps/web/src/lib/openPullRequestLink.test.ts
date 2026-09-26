@@ -7,6 +7,7 @@ import {
   findGitHubPullRequestProject,
   githubPullRequestNavigation,
   findPullRequestBrowserThread,
+  findPullRequestCreationThread,
 } from "./openPullRequestLink";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-a");
@@ -43,6 +44,90 @@ it("routes PR links only to an active explicitly associated thread in the select
     owner,
   );
 });
+
+it.each(["created", "agent", "recovered"] as const)(
+  "finds a %s PR creation association from the durable link history",
+  (source) => {
+    const reference = { projectId: PROJECT_ID, repository: "owner/repo", number: 291 };
+    const creator = {
+      id: ThreadId.make("creator"),
+      environmentId: ENVIRONMENT_ID,
+      projectId: PROJECT_ID,
+      archivedAt: "2026-09-05T00:00:00Z",
+      pullRequest: null,
+      pullRequests: [
+        {
+          pullRequest: {
+            number: 291,
+            title: "Browser",
+            url: "https://github.com/owner/repo/pull/291",
+            baseBranch: "main",
+            headBranch: "feature",
+            state: "merged" as const,
+          },
+          source,
+          linkedAt: "2026-09-01T00:00:00Z",
+        },
+      ],
+    };
+
+    expect(findPullRequestBrowserThread([creator], ENVIRONMENT_ID, reference)).toBeUndefined();
+    expect(findPullRequestCreationThread([creator], ENVIRONMENT_ID, reference)).toBe(creator);
+  },
+);
+
+it("does not present a manual PR link as creation provenance", () => {
+  const reference = { projectId: PROJECT_ID, repository: "owner/repo", number: 291 };
+  const linked = {
+    id: ThreadId.make("linked"),
+    environmentId: ENVIRONMENT_ID,
+    projectId: PROJECT_ID,
+    pullRequests: [
+      {
+        pullRequest: {
+          number: 291,
+          title: "Browser",
+          url: "https://github.com/owner/repo/pull/291",
+          baseBranch: "main",
+          headBranch: "feature",
+          state: "open" as const,
+        },
+        source: "manual" as const,
+        linkedAt: "2026-09-01T00:00:00Z",
+      },
+    ],
+  };
+
+  expect(findPullRequestCreationThread([linked], ENVIRONMENT_ID, reference)).toBeUndefined();
+});
+
+it("routes an active thread whose matching PR is in durable link history", () => {
+  const reference = { projectId: PROJECT_ID, repository: "owner/repo", number: 291 };
+  const linked = {
+    id: ThreadId.make("linked"),
+    environmentId: ENVIRONMENT_ID,
+    projectId: PROJECT_ID,
+    archivedAt: null,
+    pullRequest: null,
+    pullRequests: [
+      {
+        pullRequest: {
+          number: 291,
+          title: "Browser",
+          url: "https://github.com/owner/repo/pull/291",
+          baseBranch: "main",
+          headBranch: "feature",
+          state: "open" as const,
+        },
+        source: "manual" as const,
+        linkedAt: "2026-09-01T00:00:00Z",
+      },
+    ],
+  };
+
+  expect(findPullRequestBrowserThread([linked], ENVIRONMENT_ID, reference)).toBe(linked);
+});
+
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
     id: PROJECT_ID,

@@ -2,7 +2,9 @@ import { Effect, Layer } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 
 import { ServerConfig } from "./config.ts";
+import { installAgentCliEnvironment } from "./cli/agentEnvironment.ts";
 import { ServerStartupClaimLive } from "./serverStartupClaim.ts";
+import { timeStartupLayer } from "./startupTiming.ts";
 import {
   assetRouteLayer,
   attachmentsRouteLayer,
@@ -43,6 +45,19 @@ import { TurnLifecycleRuntimeLayerLive } from "./orchestration/Layers/TurnLifecy
 import { ThreadTitleReactorLive } from "./orchestration/Layers/ThreadTitleReactor.ts";
 import { QueuedTurnReactorLive } from "./orchestration/Layers/QueuedTurnReactor.ts";
 import { WorkflowCoordinatorReactorLive } from "./orchestration/Layers/WorkflowCoordinatorReactor.ts";
+import { ValidationCoordinatorReactorLive } from "./orchestration/Layers/ValidationCoordinatorReactor.ts";
+import { RepositoryValidationRunnerLive } from "./validation/RepositoryValidationRunner.ts";
+import {
+  ValidationArtifactStoreService,
+  makeFileValidationArtifactStore,
+} from "./validation/RepositoryValidationRunner.ts";
+import { ValidationEnvironmentServiceLive } from "./validation/ValidationEnvironmentService.ts";
+import { ValidationGateExecutorLive } from "./validation/ValidationGateExecutor.ts";
+import {
+  ValidationCoordinatorTargetResolverLive,
+  ValidationLifecycleLive,
+} from "./validation/ValidationLifecycle.ts";
+import { BootstrapCredentialServiceLive } from "./auth/Layers/BootstrapCredentialService.ts";
 import { ReviewSnapshotVerifierLive } from "./orchestration/Layers/ReviewSnapshotVerifier.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
@@ -86,6 +101,7 @@ import {
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
+  orchestrationThreadReadRouteLayer,
   worktreeCleanupInventoryRouteLayer,
   worktreeCleanupKeepRouteLayer,
   worktreeCleanupRetryRouteLayer,
@@ -108,13 +124,17 @@ import { routes as remoteAccessRoutes } from "./remoteAccess/http.ts";
 import { connectHttpApiRoutesLayer } from "./cloud/http.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { pullRequestHttpApiRoutesLayer } from "./pullRequest/http.ts";
+import * as PullRequestReadCache from "./pullRequest/PullRequestReadCache.ts";
 import { layer as PullRequestProviderRegistryLive } from "./pullRequest/PullRequestProviderRegistry.ts";
 import { layer as PullRequestServiceLive } from "./pullRequest/PullRequestService.ts";
 import { layer as pullRequestMonitorFeedbackServiceLayer } from "./pullRequestMonitor/PullRequestMonitorFeedbackService.ts";
 import { layer as pullRequestMonitorAssociationReactorLayer } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
 import { layer as pullRequestAssociationRecoveryLayer } from "./pullRequestMonitor/PullRequestAssociationRecovery.ts";
 import { layer as pullRequestMonitorReviewHandoffReactorLayer } from "./pullRequestMonitor/PullRequestReviewHandoffReactor.ts";
+import { layer as createdPullRequestReviewReactorLayer } from "./pullRequestMonitor/CreatedPullRequestReviewReactor.ts";
 import { ProjectionStateRepositoryLive } from "./persistence/Layers/ProjectionState.ts";
+import { CollaborativeAcceptanceRepositoryLive } from "./persistence/Layers/CollaborativeAcceptance.ts";
+import { CollaborativeAcceptanceCoordinatorLive } from "./collaborativeAcceptance/Coordinator.ts";
 import { layer as pullRequestMonitorServiceLayer } from "./pullRequestMonitor/PullRequestMonitorService.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
@@ -146,10 +166,13 @@ const HttpServerLive = Layer.unwrap(
         ...(config.host ? { hostname: config.host } : {}),
       });
     } else {
-      const [NodeHttpServer, NodeHttp] = yield* Effect.all([
-        Effect.promise(() => import("@effect/platform-node/NodeHttpServer")),
-        Effect.promise(() => import("node:http")),
-      ]);
+      const [NodeHttpServer, NodeHttp] = yield* Effect.all(
+        [
+          Effect.promise(() => import("@effect/platform-node/NodeHttpServer")),
+          Effect.promise(() => import("node:http")),
+        ],
+        { concurrency: "unbounded" },
+      );
       return NodeHttpServer.layer(NodeHttp.createServer, {
         host: config.host,
         port: config.port,
@@ -170,16 +193,46 @@ const PlatformServicesLive = Layer.unwrap(
   }),
 );
 
+const ValidationArtifactStoreLive = Layer.effect(
+  ValidationArtifactStoreService,
+  Effect.gen(function* () {
+    const config = yield* ServerConfig;
+    const { join } = yield* Effect.promise(() => import("node:path"));
+    return makeFileValidationArtifactStore(join(config.baseDir, "validation", "artifacts"));
+  }),
+);
+
+const ValidationGateExecutorWiredLive = ValidationGateExecutorLive.pipe(
+  Layer.provide(
+    RepositoryValidationRunnerLive.pipe(
+      Layer.provide(ProcessRunner.layer),
+      Layer.provide(ValidationArtifactStoreLive),
+    ),
+  ),
+  Layer.provide(ValidationEnvironmentServiceLive),
+  Layer.provide(BootstrapCredentialServiceLive),
+);
+
+const ValidationLifecycleWiredLive = ValidationLifecycleLive.pipe(
+  Layer.provideMerge(ValidationCoordinatorTargetResolverLive),
+  Layer.provide(ValidationGateExecutorWiredLive),
+);
+
+const ValidationCoordinatorWiredLive = ValidationCoordinatorReactorLive.pipe(
+  Layer.provide(ValidationLifecycleWiredLive),
+);
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(TurnLifecycleRuntimeLayerLive),
   Layer.provideMerge(ThreadTitleReactorLive),
   Layer.provideMerge(QueuedTurnReactorLive),
   Layer.provideMerge(WorkflowCoordinatorReactorLive),
+  Layer.provideMerge(ValidationCoordinatorWiredLive),
   Layer.provideMerge(ReviewSnapshotVerifierLive),
   Layer.provideMerge(ProjectionWorkflowRepositoryLive),
   Layer.provideMerge(ThreadDeletionReactorLive),
   Layer.provideMerge(RuntimeReceiptBusLive),
+  Layer.provideMerge(createdPullRequestReviewReactorLayer),
 );
 
 const CheckpointingLayerLive = Layer.empty.pipe(
@@ -200,7 +253,9 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
 );
 
-const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
+export const PersistenceLayerLive = CollaborativeAcceptanceRepositoryLive.pipe(
+  Layer.provideMerge(SqlitePersistenceLayerLive),
+);
 
 const GitManagerLayerLive = GitManagerLive.pipe(
   Layer.provideMerge(ProjectSetupScriptRunnerLive),
@@ -225,6 +280,7 @@ const GitLayerLive = Layer.empty.pipe(
 
 const PullRequestLayerLive = PullRequestServiceLive.pipe(
   Layer.provideMerge(PullRequestProviderRegistryLive),
+  Layer.provideMerge(PullRequestReadCache.layer),
 );
 
 const PullRequestMonitorFeedbackServiceLive = pullRequestMonitorFeedbackServiceLayer.pipe(
@@ -362,6 +418,10 @@ const RemoteAccessRoutesLayerLive = remoteAccessRoutes as unknown as Layer.Layer
 
 const BackgroundLayerLive = BackgroundPolicy.layer.pipe(Layer.provideMerge(HostPowerMonitor.layer));
 
+const AcceptanceOrchestrationLayerLive = OrchestrationLayerLive.pipe(
+  Layer.provideMerge(CollaborativeAcceptanceCoordinatorLive),
+);
+
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(CheckpointingLayerLive),
@@ -369,7 +429,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(PullRequestLayerLive),
   Layer.provideMerge(PullRequestMonitorLayerLive),
   Layer.provideMerge(ProviderLayerLive),
-  Layer.provideMerge(OrchestrationLayerLive),
+  Layer.provideMerge(AcceptanceOrchestrationLayerLive),
   Layer.provideMerge(TerminalLayerLive),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(KeybindingsLive),
@@ -447,6 +507,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
+  orchestrationThreadReadRouteLayer,
   worktreeCleanupInventoryRouteLayer,
   worktreeCleanupKeepRouteLayer,
   worktreeCleanupRetryRouteLayer,
@@ -469,6 +530,7 @@ export const makeServerLayer = Layer.unwrap(
     const config = yield* ServerConfig;
 
     fixPath();
+    yield* installAgentCliEnvironment(config.baseDir, config.baseDir);
 
     const httpListeningLayer = Layer.effectDiscard(
       Effect.gen(function* () {
@@ -523,7 +585,7 @@ export const makeServerLayer = Layer.unwrap(
 
     return serverApplicationLayer.pipe(
       Layer.provide(ServerAdvertisedEndpoints.layer),
-      Layer.provideMerge(RuntimeServicesLive),
+      Layer.provideMerge(timeStartupLayer("runtime.services", RuntimeServicesLive)),
       Layer.provideMerge(DeviceLayerLive),
       Layer.provideMerge(HttpServerLive),
       Layer.provide(ObservabilityLive),

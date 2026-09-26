@@ -50,6 +50,88 @@ const exists = (filePath: string) =>
     return fileInfo._tag === "Success";
   });
 
+const WorkspaceBindingClearTestLayer = makeProjectionPipelinePrefixedTestLayer(
+  "t3-projection-binding-clear-test-",
+);
+
+it.layer(WorkspaceBindingClearTestLayer)("Workspace binding recovery", (it) => {
+  it.effect("clears persisted workspace bindings with missing worktree paths", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-09-16T12:00:00.000Z";
+      const projectId = ProjectId.make("project-binding-clear");
+      const threadId = ThreadId.make("thread-binding-clear");
+      const binding = {
+        canonicalPath: "/repo",
+        worktreePath: "/repo/.t3-thread-workspaces/thread-binding-clear",
+        branch: "feature/binding-clear",
+        generation: 1,
+      };
+      const project = (event: Parameters<typeof projectionPipeline.projectEvent>[0]) =>
+        projectionPipeline.projectEvent(event);
+
+      yield* project({
+        sequence: 1,
+        type: "thread.created",
+        eventId: EventId.make("evt-binding-clear-created"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-binding-clear-created"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-binding-clear-created"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId,
+          title: "Binding clear",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: binding.branch,
+          worktreePath: binding.worktreePath,
+          workspaceBinding: binding,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+      yield* project({
+        sequence: 2,
+        type: "thread.meta-updated",
+        eventId: EventId.make("evt-binding-clear-meta"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-binding-clear-meta"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-binding-clear-meta"),
+        metadata: {},
+        payload: {
+          threadId,
+          worktreePath: null,
+          workspaceBinding: null,
+          updatedAt: createdAt,
+        },
+      });
+
+      const rows = yield* sql<{
+        readonly worktreePath: string | null;
+        readonly binding: string | null;
+      }>`
+        SELECT worktree_path AS "worktreePath", workspace_binding_json AS "binding"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.equal(rows[0]?.worktreePath, null);
+      assert.equal(rows[0]?.binding, "null");
+    }),
+  );
+});
+
 const BaseTestLayer = makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-test-");
 
 it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
@@ -219,6 +301,116 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }).pipe(
       Effect.provide(
         Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-pr-refresh-")),
+      ),
+    ),
+  );
+
+  it.effect("recovers a legacy-only PR before projecting a newly created PR", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-09-17T00:00:00.000Z";
+      const updatedAt = "2026-09-17T00:01:00.000Z";
+      const projectId = ProjectId.make("project-multiple-prs");
+      const threadId = ThreadId.make("thread-multiple-prs");
+      const firstPullRequest = {
+        number: 399,
+        title: "First pull request",
+        url: "https://github.com/acme/app/pull/399",
+        baseBranch: "main",
+        headBranch: "feature/first",
+        state: "open" as const,
+      };
+      const secondPullRequest = {
+        ...firstPullRequest,
+        number: 400,
+        title: "Second pull request",
+        url: "https://github.com/acme/app/pull/400",
+        headBranch: "feature/second",
+      };
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-multiple-prs-created"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-multiple-prs-created"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-multiple-prs-created"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId,
+          title: "Multiple PRs",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "feature/first",
+          worktreePath: "/tmp/multiple-prs",
+          pullRequest: firstPullRequest,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+      yield* sql`
+        DELETE FROM projection_thread_pull_requests
+        WHERE thread_id = ${threadId}
+      `;
+      yield* appendAndProject({
+        type: "thread.meta-updated",
+        eventId: EventId.make("evt-multiple-prs-second"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: updatedAt,
+        commandId: CommandId.make("cmd-multiple-prs-second"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-multiple-prs-second"),
+        metadata: {},
+        payload: {
+          threadId,
+          pullRequest: secondPullRequest,
+          pullRequestSource: "created",
+          updatedAt,
+        },
+      });
+
+      const rows = yield* sql<{
+        readonly pullRequest: string;
+        readonly source: string;
+        readonly linkedAt: string;
+      }>`
+        SELECT
+          pull_request_json AS "pullRequest",
+          source,
+          linked_at AS "linkedAt"
+        FROM projection_thread_pull_requests
+        WHERE thread_id = ${threadId}
+        ORDER BY linked_at ASC, rowid ASC
+      `;
+      assert.deepStrictEqual(rows, [
+        {
+          pullRequest: JSON.stringify(firstPullRequest),
+          source: "recovered",
+          linkedAt: createdAt,
+        },
+        {
+          pullRequest: JSON.stringify(secondPullRequest),
+          source: "created",
+          linkedAt: updatedAt,
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-multiple-prs-")),
       ),
     ),
   );
@@ -4134,7 +4326,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: null,
+        worktreePath: "/tmp/pinning-pipeline-worktree",
         createdAt,
       });
 
@@ -4222,7 +4414,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: null,
+        worktreePath: "/tmp/title-regeneration-pipeline-worktree",
         createdAt,
       });
 
@@ -4296,7 +4488,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           interactionMode: "default",
           runtimeMode: "full-access",
           branch: null,
-          worktreePath: null,
+          worktreePath: "/tmp/handoff-origin-thread-worktree",
           createdAt,
         });
 
@@ -4328,7 +4520,11 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
 
         const queuedSnapshot = yield* snapshotQuery.getSnapshot();
         const queuedThread = queuedSnapshot.threads.find((entry) => entry.id === threadId);
-        assert.deepEqual(queuedThread?.queuedTurns?.[0]?.origin, origin);
+        const persistedOrigin = queuedThread?.queuedTurns?.[0]?.origin;
+        assert.deepEqual(persistedOrigin, {
+          ...origin,
+          workspaceBinding: queuedThread?.workspaceBinding,
+        });
         assert.equal(queuedThread?.branch, "feature/handoff");
 
         yield* engine.dispatch({
@@ -4349,9 +4545,16 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         );
 
         assert.equal(marker?.role, "system");
-        assert.deepEqual(marker?.origin, { ...origin, role: "marker" });
+        assert.deepEqual(marker?.origin, {
+          ...origin,
+          role: "marker",
+          workspaceBinding: thread?.workspaceBinding,
+        });
         assert.equal(continuation?.role, "user");
-        assert.deepEqual(continuation?.origin, origin);
+        assert.deepEqual(continuation?.origin, {
+          ...origin,
+          workspaceBinding: thread?.workspaceBinding,
+        });
       }),
   );
 });

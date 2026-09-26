@@ -269,3 +269,48 @@ describe("buildThreadActionItems", () => {
     expect(items.map((item) => item.value)).toEqual(["thread:environment-local:thread-active"]);
   });
 });
+
+it.each([
+  "#10839",
+  "10839",
+  "pingdotgg/t3code#10839",
+  "https://github.com/pingdotgg/t3code/pull/10839",
+  "https://github.com/pingdotgg/t3code/pull/10839?tab=files#diff-123",
+])("finds linked threads from PR query %s", (query) => {
+  const items = buildThreadActionItems({
+    threads: [
+      makeThread({
+        title: "Implementation",
+        pullRequests: [
+          {
+            pullRequest: {
+              number: 10839,
+              url: "https://github.com/pingdotgg/t3code/pull/10839",
+              title: "Find linked PR threads",
+              baseBranch: "main",
+              headBranch: "feat/search",
+              state: "open",
+            },
+            source: "manual",
+            linkedAt: "2026-09-08T00:00:00Z",
+          },
+        ],
+      }),
+      makeThread({ id: ThreadId.make("unrelated"), title: "Other work" }),
+    ],
+    projectTitleById: new Map(),
+    sortOrder: "updated_at",
+    icon: null,
+    runThread: async () => undefined,
+  });
+  const groups = filterCommandPaletteGroups({
+    activeGroups: [],
+    query,
+    isInSubmenu: false,
+    projectSearchItems: [],
+    threadSearchItems: items,
+  });
+  expect(groups.flatMap((group) => group.items.map((item) => item.title))).toEqual([
+    "Implementation",
+  ]);
+});

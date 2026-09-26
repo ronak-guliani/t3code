@@ -114,4 +114,73 @@ describe("toShellStreamEvent", () => {
         .map((event) => (event.kind === "thread-removed" ? event.threadId : null)),
     ).toEqual([ThreadId.make("parent"), ThreadId.make("child")]);
   });
+
+  describe("activity-appended shell filtering", () => {
+    const threadId = ThreadId.make("thread-stream-filter");
+    const activityEvent = (kind: string, payload: unknown, sequence: number) =>
+      ({
+        sequence,
+        eventId: EventId.make(`event-activity-${sequence}`),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-03T00:00:00.000Z",
+        commandId: CommandId.make("cmd-activity"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-activity"),
+        metadata: {},
+        type: "thread.activity-appended",
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make(`activity-${sequence}`),
+            tone: "tool",
+            kind,
+            summary: "Activity",
+            payload,
+            turnId: null,
+            createdAt: "2026-08-03T00:00:00.000Z",
+          },
+        },
+      }) as Extract<OrchestrationEvent, { type: "thread.activity-appended" }>;
+
+    const runWithReadCounter = async (
+      events: ReadonlyArray<Extract<OrchestrationEvent, { type: "thread.activity-appended" }>>,
+    ) => {
+      let shellReads = 0;
+      const query = {
+        getProjectShellById: () => Effect.die("Activity events do not read projects"),
+        getThreadShellById: () => {
+          shellReads += 1;
+          return Effect.succeed(Option.none());
+        },
+      } satisfies Pick<ProjectionSnapshotQueryShape, "getProjectShellById" | "getThreadShellById">;
+      const results = await Effect.runPromise(
+        Effect.all(events.map((event) => toShellStreamEvent(query, event))),
+      );
+      return { shellReads, results };
+    };
+
+    it("skips the shell re-read for activities that change no shell field", async () => {
+      const { shellReads, results } = await runWithReadCounter([
+        activityEvent("tool.updated", { detail: "running" }, 1),
+        activityEvent("provider.approval.respond.failed", { detail: "boom" }, 2),
+        activityEvent("task.started", { taskType: "plan" }, 3),
+      ]);
+
+      expect(shellReads).toBe(0);
+      expect(results.every(Option.isNone)).toBe(true);
+    });
+
+    it("still re-reads the shell for approval, input, and task boundaries", async () => {
+      const { shellReads, results } = await runWithReadCounter([
+        activityEvent("approval.requested", { requestKind: "command" }, 4),
+        activityEvent("user-input.requested", {}, 5),
+        activityEvent("task.started", { taskType: "background-agent" }, 6),
+        activityEvent("task.completed", {}, 7),
+      ]);
+
+      expect(shellReads).toBe(4);
+      expect(results.every(Option.isNone)).toBe(true);
+    });
+  });
 });

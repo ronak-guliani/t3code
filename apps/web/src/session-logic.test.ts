@@ -1115,6 +1115,42 @@ describe("deriveWorkLogEntries", () => {
     );
   });
 
+  it("surfaces runtime warning messages as expandable detail", () => {
+    const [entry] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "runtime-warning-message",
+          kind: "runtime.warning",
+          summary: "Runtime warning",
+          tone: "info",
+          payload: { message: "Retrying after 429" },
+        }),
+      ],
+      undefined,
+    );
+    expect(entry?.detail).toBe("Retrying after 429");
+  });
+
+  it("appends object detail to runtime error messages", () => {
+    const [entry] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "runtime-error-object-detail",
+          kind: "runtime.error",
+          summary: "Runtime error",
+          tone: "error",
+          payload: {
+            message: "Provider runtime error",
+            detail: { type: "retry", attempt: 2 },
+          },
+        }),
+      ],
+      undefined,
+    );
+    expect(entry?.detail).toContain("Provider runtime error");
+    expect(entry?.detail).toContain('"attempt": 2');
+  });
+
   it.each([
     "package.json:2: output",
     "directConnectSmoke.integration.test.ts(419,13): error",

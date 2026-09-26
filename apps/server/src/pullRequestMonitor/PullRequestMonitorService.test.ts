@@ -1,6 +1,9 @@
 import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
+  CollaborativeAcceptanceCandidateId,
+  CollaborativeAcceptanceCaseId,
+  CollaborativeAcceptanceExchangeId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -33,6 +36,7 @@ import MigrationFeedback from "../persistence/Migrations/072_PullRequestMonitorF
 import MigrationOwnership from "../persistence/Migrations/073_PullRequestMonitorOwnership.ts";
 import MigrationFallback from "../persistence/Migrations/074_PullRequestMonitorFallback.ts";
 import MigrationRevisionIdentity from "../persistence/Migrations/076_PullRequestMonitorRevisionIdentity.ts";
+import MigrationReviewDisputes from "../persistence/Migrations/098_PullRequestMonitorReviewDisputes.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -47,7 +51,7 @@ import {
   PullRequestMonitorService,
 } from "./PullRequestMonitorService.ts";
 import { emptyCursor } from "./monitorDiff.ts";
-import { LEASE_TTL_MS } from "./pollSchedule.ts";
+import { LEASE_TTL_MS, POLL_BATCH_LIMIT } from "./pollSchedule.ts";
 import { emptyFeedbackReadiness } from "./readiness.ts";
 import { PullRequestMonitorStore } from "./PullRequestMonitorStore.ts";
 import { handoffToSubmitInput } from "./PullRequestReviewHandoffReactor.ts";
@@ -90,6 +94,11 @@ function sampleSnapshot(
       requiredChecksKnown: true,
       baseComparisonKnown: true,
     },
+    requiredCheckCoverage: {
+      expected: [],
+      observed: [],
+      completeness: "complete",
+    },
     reviews: [],
     reviewThreads: [],
     issueComments: [],
@@ -97,6 +106,8 @@ function sampleSnapshot(
     ...overrides,
   };
 }
+
+let pullRequestDetailCalls = 0;
 
 const fakePullRequests = PullRequestService.PullRequestService.of({
   list: () => Effect.die("unused"),
@@ -150,7 +161,13 @@ const fakePullRequests = PullRequestService.PullRequestService.of({
       labels: [],
       checks: [],
       mergeCapabilities: { merge: true, squash: true, rebase: true },
-    }),
+    }).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          pullRequestDetailCalls += 1;
+        }),
+      ),
+    ),
   activity: () => Effect.die("unused"),
   diff: () => Effect.die("unused"),
   runAction: () => Effect.die("unused"),
@@ -163,6 +180,7 @@ const fakePullRequests = PullRequestService.PullRequestService.of({
   invalidate: () => Effect.void,
   monitorSnapshot: () =>
     Effect.gen(function* () {
+      monitorSnapshotCalls += 1;
       const snapshot = currentSnapshot;
       // Runs while the poll attempt is in flight: the seam where a slow provider read
       // can outlive the attempt's lease.
@@ -175,6 +193,7 @@ const fakePullRequests = PullRequestService.PullRequestService.of({
 let currentSnapshot: PullRequestMonitorSnapshot = sampleSnapshot();
 /** Injected mid-read behaviour; tests reset it to `Effect.void` after one use. */
 let monitorSnapshotHook: Effect.Effect<void, PullRequestOperationError> = Effect.void;
+let monitorSnapshotCalls = 0;
 
 const knownThreads = new Map<
   string,
@@ -353,6 +372,7 @@ const MigratedSql = Layer.effectDiscard(
     yield* MigrationOwnership;
     yield* MigrationFallback;
     yield* MigrationRevisionIdentity;
+    yield* MigrationReviewDisputes;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layerMemory()));
 
@@ -441,6 +461,31 @@ layer("PullRequestMonitorService", (it) => {
       const stopped = yield* service.stop({ monitorId: started.monitor.id });
       assert.strictEqual(stopped.monitor.enabled, false);
       assert.strictEqual(stopped.monitor.status, "stopped");
+    }),
+  );
+
+  it.effect("bounds each background sweep to the global poll budget", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const sql = yield* SqlClient.SqlClient;
+
+      for (let number = 100; number < 100 + POLL_BATCH_LIMIT + 2; number += 1) {
+        yield* service.start({
+          projectId,
+          repository: "acme/app",
+          number,
+        });
+      }
+
+      yield* sql`
+        UPDATE pull_request_monitors
+        SET next_poll_at = '1970-01-01T00:00:00.000Z'
+        WHERE enabled = 1
+      `.pipe(Effect.orDie);
+
+      const before = monitorSnapshotCalls;
+      yield* service.pollOnce;
+      assert.strictEqual(monitorSnapshotCalls - before, POLL_BATCH_LIMIT);
     }),
   );
 
@@ -548,6 +593,47 @@ layer("PullRequestMonitorService", (it) => {
 
       assert.isNull(resumed.monitor.ownerThreadId);
       assert.strictEqual(resumed.monitor.enabled, true);
+    }),
+  );
+
+  it.effect("does not automatically re-enable a terminal monitor", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const owner = ThreadId.make("terminal-monitor-owner");
+      seedThread(owner, "/tmp/terminal-monitor", {
+        number: 1045,
+        url: "https://github.com/acme/app/pull/1045",
+      });
+      const originalSnapshot = currentSnapshot;
+      currentSnapshot = sampleSnapshot({
+        number: 1045,
+        state: "closed",
+      });
+
+      const terminal = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1045,
+        ownerThreadId: owner,
+      });
+      assert.strictEqual(terminal.monitor.status, "terminal");
+      assert.isFalse(terminal.monitor.enabled);
+
+      const detailCallsBeforeEnsure = pullRequestDetailCalls;
+      const snapshotCallsBeforeEnsure = monitorSnapshotCalls;
+      const ensured = yield* service.start({
+        projectId,
+        repository: " ACME/app ",
+        number: 1045,
+        ownerThreadId: owner,
+        requireAssociatedOwner: true,
+      });
+
+      assert.strictEqual(ensured.monitor.status, "terminal");
+      assert.isFalse(ensured.monitor.enabled);
+      assert.strictEqual(pullRequestDetailCalls, detailCallsBeforeEnsure);
+      assert.strictEqual(monitorSnapshotCalls, snapshotCallsBeforeEnsure);
+      currentSnapshot = originalSnapshot;
     }),
   );
 
@@ -1777,6 +1863,88 @@ layer("PullRequestMonitorService", (it) => {
     }),
   );
 
+  it.effect("persists immutable acceptance provenance with the finding revision", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const owner = ThreadId.make("thr_acceptance_owner");
+      const reviewer = ThreadId.make("thr_acceptance_review");
+      seedThread(owner);
+      seedThread(reviewer);
+
+      const submitted = yield* monitors.submitFindings({
+        reference: { projectId, repository: "acme/app", number: 9069 },
+        reviewThreadId: reviewer,
+        reviewedHeadSha: "deadbeef",
+        ownerThreadId: owner,
+        findings: [
+          {
+            key: "acceptance-finding",
+            title: "Acceptance evidence",
+            detail: "Preserve the exact review provenance.",
+            severity: "major",
+            acceptanceProvenance: {
+              caseId: CollaborativeAcceptanceCaseId.make("case-acceptance"),
+              candidateId: CollaborativeAcceptanceCandidateId.make("candidate-1"),
+              transportContext: {
+                caseId: CollaborativeAcceptanceCaseId.make("case-acceptance"),
+                exchangeId: CollaborativeAcceptanceExchangeId.make("exchange-1"),
+              },
+              headSha: "deadbeef",
+              sourceRevision: "provider-source-1",
+              workflow: { identity: "review-workflow", version: "2" },
+              requiredCoverage: {
+                required: ["diff", "threads"],
+                covered: ["diff"],
+                applicability: "known",
+              },
+              diffHash: "diff-acceptance",
+              location: {
+                path: "src/example.ts",
+                side: "new",
+                startLine: 8,
+                endLine: 9,
+              },
+            },
+          },
+        ],
+      });
+
+      const context = yield* monitors.context({
+        monitorId: submitted.monitor.id,
+        revisionIds: [submitted.findings[0]!.revisionId],
+      });
+      const payload = context.revisions?.[0]?.payload as {
+        readonly acceptanceProvenance?: unknown;
+      };
+      assert.deepStrictEqual(payload.acceptanceProvenance, {
+        monitorId: submitted.monitor.id,
+        caseId: "case-acceptance",
+        candidateId: "candidate-1",
+        transportContext: {
+          caseId: "case-acceptance",
+          exchangeId: "exchange-1",
+        },
+        headSha: "deadbeef",
+        sourceRevision: "provider-source-1",
+        findingId: submitted.findings[0]!.itemId,
+        findingRevisionId: submitted.findings[0]!.revisionId,
+        workflow: { identity: "review-workflow", version: "2" },
+        requiredCoverage: {
+          required: ["diff", "threads"],
+          covered: ["diff"],
+          applicability: "known",
+        },
+        diffHash: "diff-acceptance",
+        location: {
+          path: "src/example.ts",
+          side: "new",
+          startLine: 8,
+          endLine: 9,
+        },
+      });
+    }),
+  );
+
   it.effect(
     "delivers a manual review body intact and retrieves its immutable delivered revision",
     () =>
@@ -2084,6 +2252,131 @@ layer("PullRequestMonitorService", (it) => {
       assert.strictEqual(items[0]?.disposition, "resolved-upstream");
       currentSnapshot = sampleSnapshot();
     }),
+  );
+
+  it.effect(
+    "keeps parent findings and child disputes distinct until explicit reviewer agreement",
+    () =>
+      Effect.gen(function* () {
+        const monitors = yield* PullRequestMonitorService;
+        const sql = yield* SqlClient.SqlClient;
+        const reviewer = ThreadId.make("thr_parent_review");
+        const child = ThreadId.make("thr_child_dispute");
+        seedThread(reviewer);
+        seedThread(child);
+        const originalSnapshot = currentSnapshot;
+        const reference = { projectId, repository: "acme/app", number: 65 } as const;
+        const submitted = yield* monitors.submitFindings({
+          reference,
+          reviewThreadId: reviewer,
+          reviewedHeadSha: "deadbeef",
+          findings: [
+            {
+              key: "parent-dispute",
+              title: "Parent finding",
+              detail: "Keep this evidence exact.",
+              severity: "major",
+            },
+            {
+              key: "parent-fixed",
+              title: "Fixed finding",
+              detail: "This is fixed on the next head.",
+              severity: "minor",
+            },
+          ],
+        });
+        const disputeId = submitted.findings[0]!.itemId;
+        const fixedId = submitted.findings[1]!.itemId;
+
+        const rejected = yield* monitors.report({
+          monitorId: submitted.monitor.id,
+          itemId: disputeId,
+          disposition: "rejected",
+          note: "Child disputes the finding.",
+          reporterThreadId: child,
+        });
+        assert.strictEqual(rejected.item.status, "open");
+        assert.strictEqual(rejected.item.disposition, "rejected");
+        assert.strictEqual(rejected.item.childDisposition, "rejected");
+        assert.isNull(rejected.item.reviewerDisposition ?? null);
+
+        const upheld = yield* monitors.report({
+          monitorId: submitted.monitor.id,
+          itemId: disputeId,
+          disposition: "upheld",
+          note: "Reviewer confirms the finding.",
+          reporterThreadId: reviewer,
+        });
+        assert.strictEqual(upheld.item.status, "open");
+        assert.strictEqual(upheld.item.disposition, "upheld");
+        assert.strictEqual(upheld.item.childDisposition, "rejected");
+        assert.strictEqual(upheld.item.reviewerDisposition, "upheld");
+
+        const revised = yield* monitors.report({
+          monitorId: submitted.monitor.id,
+          itemId: disputeId,
+          disposition: "revised",
+          note: "Reviewer narrows the required change.",
+          reporterThreadId: reviewer,
+        });
+        assert.strictEqual(revised.item.status, "open");
+        assert.strictEqual(revised.item.disposition, "revised");
+        assert.strictEqual(revised.item.reviewerDisposition, "revised");
+
+        const needsHuman = yield* monitors.report({
+          monitorId: submitted.monitor.id,
+          itemId: disputeId,
+          disposition: "needs-human",
+          note: "The dispute needs an operator decision.",
+          reporterThreadId: reviewer,
+        });
+        assert.strictEqual(needsHuman.item.status, "open");
+        assert.strictEqual(needsHuman.item.reviewerDisposition, "needs-human");
+
+        const agreedWithdrawal = yield* monitors.report({
+          monitorId: submitted.monitor.id,
+          itemId: disputeId,
+          disposition: "withdrawn",
+          note: "Reviewer agrees the child rejection is correct.",
+          reporterThreadId: reviewer,
+        });
+        assert.strictEqual(agreedWithdrawal.item.status, "closed");
+        assert.strictEqual(agreedWithdrawal.item.disposition, "rejected-with-reviewer-agreement");
+        assert.strictEqual(agreedWithdrawal.item.childDisposition, "rejected");
+        assert.strictEqual(agreedWithdrawal.item.reviewerDisposition, "withdrawn");
+
+        currentSnapshot = sampleSnapshot({
+          headSha: "feedface",
+          sourceRevision: "rev-fixed",
+        });
+        const fixed = yield* monitors.report({
+          monitorId: submitted.monitor.id,
+          itemId: fixedId,
+          disposition: "resolved",
+          note: "Fixed on the new head.",
+          reporterThreadId: child,
+        });
+        assert.strictEqual(fixed.item.status, "verifying");
+        assert.strictEqual(fixed.item.disposition, "resolved");
+        assert.isTrue(fixed.awaitingVerification);
+        yield* sql`
+          UPDATE pull_request_monitors
+          SET next_poll_at = CASE
+            WHEN monitor_id = ${submitted.monitor.id} THEN '1970-01-01T00:00:00.000Z'
+            ELSE '2099-01-01T00:00:00.000Z'
+          END
+          WHERE enabled = 1
+        `.pipe(Effect.orDie);
+        yield* monitors.pollOnce;
+        const verified = yield* monitors.context({
+          monitorId: submitted.monitor.id,
+          includeClosed: true,
+        });
+        const verifiedItem = verified.items.find((item) => item.id === fixedId);
+        assert.strictEqual(verifiedItem?.status, "closed");
+        assert.strictEqual(verifiedItem?.disposition, "resolved-upstream");
+        currentSnapshot = originalSnapshot;
+      }),
   );
 
   it.effect("delivers unresolved review feedback when the head moves before delivery", () =>

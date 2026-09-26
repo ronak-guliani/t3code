@@ -24,6 +24,8 @@ import type {
   RuntimeMode,
   ThreadNudging,
   ThreadPullRequestLink,
+  ValidationRequest,
+  ValidationRun,
 } from "@t3tools/contracts";
 
 export type SessionPhase = "disconnected" | "connecting" | "ready" | "running";
@@ -136,6 +138,8 @@ export interface Thread {
   worktreePath: string | null;
   pullRequest?: GitPullRequestAssociation | null;
   pullRequests?: readonly ThreadPullRequestLink[];
+  validationRequest?: ValidationRequest | null | undefined;
+  validationRun?: ValidationRun | null | undefined;
   reviewSnapshot?: ReviewSnapshot | undefined;
   reviewResult?: ReviewResult | null | undefined;
   turnDiffSummaries: TurnDiffSummary[];
@@ -172,6 +176,8 @@ export interface ThreadShell {
   worktreePath: string | null;
   pullRequest?: GitPullRequestAssociation | null;
   pullRequests?: readonly ThreadPullRequestLink[];
+  validationRequest?: ValidationRequest | null | undefined;
+  validationRun?: ValidationRun | null | undefined;
 }
 
 export interface ThreadTurnState {
@@ -199,6 +205,7 @@ export interface SidebarThreadSummary {
   worktreePath: string | null;
   pullRequest?: GitPullRequestAssociation | null;
   pullRequests?: readonly ThreadPullRequestLink[];
+  validationRun?: ValidationRun | null | undefined;
   latestUserMessageAt: string | null;
   latestChildNotificationAt?: string | null;
   hasPendingApprovals: boolean;

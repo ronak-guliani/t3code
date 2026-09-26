@@ -6,6 +6,14 @@
 - Use `pnpm test` for the Vite Plus test suite.
 - Current toolchain: `pnpm@11.10.0`, `node@^24.13.1`.
 - When creating a worktree for a chat, create a new pull request after the work is complete. Create without separately confirming the title or body.
+- Standing publication rule: whenever you make changes in a worktree, always commit them and create a pull request once the work is complete. Do not ask for confirmation — neither for creating the PR nor for its title or body. This standing instruction counts as publication authorization under skill-delivery.md; only an explicit per-request restriction (e.g. "leave uncommitted", "do not push") overrides it.
+
+## Testing Strategy
+
+- Never write unit tests after writing the code they test. If isolation is necessary, identify failure modes and write the tests first.
+- Highly prefer E2E tests as the sole testing mechanism. Use them to verify complex features work rather than adding low-signal isolated tests.
+- At the end of E2E tests, produce a verifiable, repeatable artifact that records the tested revision, reproduction steps, assertions, and observed results (for example, a test report with a trace or recording).
+- If a system must be tested in isolation, first write down all the ways it could fail, then write the test and implementation code. Keep isolated tests only when they catch real bugs E2E tests miss.
 
 ## Links in Responses
 

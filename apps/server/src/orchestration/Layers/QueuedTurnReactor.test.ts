@@ -1,5 +1,6 @@
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  ChildWaitCondition,
   CommandId,
   EventId,
   MessageId,
@@ -18,7 +19,7 @@ import {
   type PullRequestMonitorSnapshot,
   type ServerSettings,
 } from "@t3tools/contracts";
-import { Effect, Layer, Stream } from "effect";
+import { Effect, Layer, PubSub, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
@@ -122,9 +123,168 @@ function queuedReadModel(
   };
 }
 
+function delegatedReadModel(
+  options: {
+    readonly blockedItems?: boolean;
+    readonly activeTurn?: boolean;
+    readonly pendingApproval?: boolean;
+  } = {},
+): OrchestrationReadModel {
+  const state = queuedReadModel();
+  const parent = state.threads[0]!;
+  const childId = ThreadId.make("child-settlement");
+  const turnId = TurnId.make("turn-child-settlement");
+  const completionActivity = {
+    id: EventId.make("child-completion"),
+    kind: "insights.turn.completed" as const,
+    tone: "info" as const,
+    summary: "Turn completed",
+    payload: { state: "completed" },
+    turnId,
+    createdAt: now,
+  };
+  const child = {
+    ...parent,
+    id: childId,
+    parentThreadId: parent.id,
+    title: "Delegated child",
+    latestTurn: {
+      turnId,
+      state: options.activeTurn ? ("running" as const) : ("completed" as const),
+      requestedAt: now,
+      startedAt: now,
+      completedAt: options.activeTurn ? null : now,
+      assistantMessageId: null,
+    },
+    queuedTurns: options.blockedItems
+      ? [
+          {
+            ...parent.queuedTurns![0]!,
+            id: QueuedTurnId.make("failed-child-queued-turn"),
+            threadId: childId,
+            failedAt: now,
+            failureMessage: "The queued turn failed",
+          },
+        ]
+      : [],
+    activities: [
+      ...(options.activeTurn ? [] : [completionActivity]),
+      ...(options.pendingApproval
+        ? [
+            {
+              id: EventId.make("child-pending-approval"),
+              kind: "approval.requested" as const,
+              tone: "approval" as const,
+              summary: "Approval required",
+              payload: { requestId: "approval-child-settlement" },
+              turnId,
+              createdAt: now,
+            },
+          ]
+        : []),
+    ],
+    checkpoints: [],
+    session: options.activeTurn
+      ? {
+          threadId: childId,
+          status: "running" as const,
+          providerName: "copilot",
+          runtimeMode: "approval-required" as const,
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: now,
+        }
+      : null,
+    nudging: {
+      delegation: {
+        assignmentId: MessageId.make("assignment-child-settlement"),
+        dispatchId: "dispatch-child-settlement",
+        dispatchSequence: 1,
+        dispatchTurnId: turnId,
+        followUp: "automatic" as const,
+        completedAt: null,
+        assignedAt: now,
+      },
+    },
+  };
+  return { ...state, threads: [parent, child] };
+}
+
+function childEvent(
+  child: OrchestrationReadModel["threads"][number],
+  eventId: string,
+  type: "thread.queued-turn-deleted" | "thread.activity-appended",
+  activityKind:
+    | "approval.resolved"
+    | "insights.turn.completed"
+    | "tool.completed" = "approval.resolved",
+): OrchestrationEvent {
+  const eventBase = {
+    sequence: 2,
+    eventId: EventId.make(eventId),
+    aggregateKind: "thread" as const,
+    aggregateId: child.id,
+    occurredAt: now,
+    commandId: CommandId.make(eventId),
+    causationEventId: null,
+    correlationId: CommandId.make(eventId),
+    metadata: {},
+  };
+  if (type === "thread.queued-turn-deleted") {
+    return {
+      ...eventBase,
+      type,
+      payload: {
+        threadId: child.id,
+        queuedTurnId: QueuedTurnId.make("failed-child-queued-turn"),
+        deletedAt: now,
+      },
+    };
+  }
+  return {
+    ...eventBase,
+    type,
+    payload: {
+      threadId: child.id,
+      activity: {
+        id: EventId.make(`${eventId}-activity`),
+        kind: activityKind,
+        tone: "info",
+        summary:
+          activityKind === "approval.resolved"
+            ? "Approval resolved"
+            : activityKind === "insights.turn.completed"
+              ? "Turn completed"
+              : "Tool completed",
+        payload:
+          activityKind === "approval.resolved"
+            ? { requestId: "approval-child-settlement" }
+            : activityKind === "insights.turn.completed"
+              ? { state: "completed" }
+              : { toolCallId: "tool-call-1" },
+        turnId: child.latestTurn?.turnId ?? null,
+        createdAt: now,
+      },
+    },
+  };
+}
+
+function settlementCommands(commands: ReadonlyArray<OrchestrationCommand>) {
+  return commands.filter((command) => (command.type as string) === "thread.delegation.settle");
+}
+
+function unavailableAssignmentCommands(commands: ReadonlyArray<OrchestrationCommand>) {
+  return commands.filter((command) => command.type === "thread.child.assignment.unavailable");
+}
+
+function delegationStallCommands(commands: ReadonlyArray<OrchestrationCommand>) {
+  return commands.filter((command) => (command.type as string) === "thread.delegation.stall");
+}
+
 function pullRequestLayer(
   snapshot: PullRequestMonitorSnapshot,
   snapshotError?: PullRequestOperationError,
+  snapshotDelayMs = 0,
 ) {
   return Layer.succeed(
     PullRequestService,
@@ -142,8 +302,13 @@ function pullRequestLayer(
       reviewerCandidates: () => Effect.die("unused"),
       requestReviewers: () => Effect.die("unused"),
       invalidate: () => Effect.void,
-      monitorSnapshot: () =>
-        snapshotError === undefined ? Effect.succeed(snapshot) : Effect.fail(snapshotError),
+      monitorSnapshot: () => {
+        const result =
+          snapshotError === undefined ? Effect.succeed(snapshot) : Effect.fail(snapshotError);
+        return snapshotDelayMs > 0
+          ? Effect.sleep(snapshotDelayMs).pipe(Effect.andThen(result))
+          : result;
+      },
     }),
   );
 }
@@ -154,20 +319,24 @@ async function runReactor(
   options?: {
     readonly waitAfterStartMs?: number;
     readonly firstDispatchDelayMs?: number;
+    readonly snapshotDelayMs?: number;
     readonly snapshotError?: PullRequestOperationError;
     readonly onRetryQueuedDelivery?: (deliveryId: string) => void;
     readonly retryQueuedDeliveryError?: PullRequestMonitorError;
     readonly resume?: {
       readonly readModel: OrchestrationReadModel;
       readonly event: OrchestrationEvent;
+      readonly additionalEvents?: ReadonlyArray<OrchestrationEvent>;
     };
     readonly providerInstances?: ServerSettings["providerInstances"];
     readonly optIn?: boolean;
     readonly enableAfterStart?: boolean;
+    readonly delegationIdleStallThresholdMs?: number;
   },
 ): Promise<ReadonlyArray<OrchestrationCommand>> {
   let readModel = readModelInput;
   const commands: OrchestrationCommand[] = [];
+  const domainEvents = await Effect.runPromise(PubSub.unbounded<OrchestrationEvent>());
   let dispatchesStarted = 0;
   const engineLayer = Layer.succeed(OrchestrationEngineService, {
     getReadModel: () => Effect.succeed(readModel),
@@ -175,7 +344,49 @@ async function runReactor(
     dispatch: (command) =>
       Effect.sync(() => {
         commands.push(command);
-        if (
+        if ((command.type as string) === "thread.delegation.settle" && "threadId" in command) {
+          readModel = {
+            ...readModel,
+            threads: readModel.threads.map((thread) =>
+              thread.id !== command.threadId || !thread.nudging?.delegation
+                ? thread
+                : {
+                    ...thread,
+                    nudging: {
+                      ...thread.nudging,
+                      delegation: {
+                        ...thread.nudging.delegation,
+                        completedAt: now,
+                        outcome: "result-available",
+                      },
+                    },
+                  },
+            ),
+          };
+        } else if (command.type === "thread.child.assignment.unavailable") {
+          readModel = {
+            ...readModel,
+            threads: readModel.threads.map((thread) =>
+              thread.id !== command.threadId || !thread.nudging?.wait
+                ? thread
+                : {
+                    ...thread,
+                    nudging: {
+                      ...thread.nudging,
+                      wait: {
+                        ...thread.nudging.wait,
+                        assignments: thread.nudging.wait.assignments.map((assignment) =>
+                          assignment.childThreadId === command.childThreadId &&
+                          assignment.assignmentId === command.assignmentId
+                            ? { ...assignment, outcome: "blocked" as const }
+                            : assignment,
+                        ),
+                      },
+                    },
+                  },
+            ),
+          };
+        } else if (
           command.type === "thread.queued-turn.dispatch" ||
           command.type === "thread.queued-turn.delete"
         ) {
@@ -222,19 +433,8 @@ async function runReactor(
         const delay = dispatchesStarted++ === 0 ? (options?.firstDispatchDelayMs ?? 0) : 0;
         return delay > 0 ? Effect.sleep(delay).pipe(Effect.andThen(effect)) : effect;
       }),
-    streamDomainEvents: options?.resume
-      ? Stream.fromEffect(
-          Effect.sync(() => {
-            const resume = options.resume;
-            if (!resume) throw new Error("Expected a resume event.");
-            expect(commands).toHaveLength(0);
-            readModel = resume.readModel;
-            return resume.event;
-          }),
-        )
-      : Stream.never,
-    // Unused by these tests; Effect.never satisfies the scoped subscription type.
-    acquireDomainEventSubscription: Effect.never,
+    streamDomainEvents: Stream.empty,
+    acquireDomainEventSubscription: PubSub.subscribe(domainEvents),
   });
   const feedbackLayer = Layer.succeed(
     PullRequestMonitorFeedbackService,
@@ -256,7 +456,7 @@ async function runReactor(
   );
   const layer = QueuedTurnReactorLive.pipe(
     Layer.provide(engineLayer),
-    Layer.provide(pullRequestLayer(snapshot, options?.snapshotError)),
+    Layer.provide(pullRequestLayer(snapshot, options?.snapshotError, options?.snapshotDelayMs)),
     Layer.provide(feedbackLayer),
     Layer.provideMerge(
       ServerSettingsService.layerTest({
@@ -269,6 +469,8 @@ async function runReactor(
             enabled: true,
           },
         },
+        delegationIdleStallThresholdMs:
+          options?.delegationIdleStallThresholdMs ?? 10 * 365 * 24 * 60 * 60 * 1_000,
       }),
     ),
   );
@@ -278,6 +480,15 @@ async function runReactor(
       Effect.gen(function* () {
         const reactor = yield* QueuedTurnReactor;
         yield* reactor.start();
+        if (options?.resume) {
+          expect(commands).toHaveLength(0);
+          readModel = options.resume.readModel;
+          yield* Effect.forEach(
+            [options.resume.event, ...(options.resume.additionalEvents ?? [])],
+            (event) => PubSub.publish(domainEvents, event),
+            { discard: true },
+          );
+        }
         if (options?.enableAfterStart) {
           const settings = yield* ServerSettingsService;
           yield* settings.updateSettings({
@@ -292,6 +503,789 @@ async function runReactor(
 }
 
 describe("QueuedTurnReactor", () => {
+  it("reconciles unavailable child assignments on startup", async () => {
+    const base = delegatedReadModel();
+    const parent = base.threads[0]!;
+    const child = base.threads[1]!;
+    const assignmentId = child.nudging!.delegation!.assignmentId;
+    const detached = {
+      ...base,
+      threads: base.threads.map((thread) =>
+        thread.id === parent.id
+          ? {
+              ...thread,
+              nudging: {
+                wait: {
+                  mode: "all" as const,
+                  assignments: [{ childThreadId: child.id, assignmentId }],
+                },
+              },
+            }
+          : thread.id === child.id
+            ? { ...thread, parentThreadId: null }
+            : thread,
+      ),
+    };
+
+    const commands = await runReactor(detached, monitorSnapshot("head"));
+
+    expect(unavailableAssignmentCommands(commands)).toHaveLength(1);
+    expect(unavailableAssignmentCommands(commands)[0]).toMatchObject({
+      threadId: parent.id,
+      childThreadId: child.id,
+      assignmentId,
+    });
+  });
+
+  it("does not mark a not-yet-created child unavailable during startup reconciliation", async () => {
+    const state = queuedReadModel();
+    const parent = state.threads[0]!;
+    const missingChildId = ThreadId.make("child-create-in-flight");
+    const assignmentId = MessageId.make("assignment-create-in-flight");
+    const commands = await runReactor(
+      {
+        ...state,
+        threads: [
+          {
+            ...parent,
+            queuedTurns: [],
+            nudging: {
+              wait: {
+                mode: "all",
+                assignments: [{ childThreadId: missingChildId, assignmentId }],
+              },
+            },
+          },
+        ],
+      },
+      monitorSnapshot("head"),
+    );
+
+    expect(unavailableAssignmentCommands(commands)).toEqual([]);
+  });
+
+  it("invalidates a parent wait when its child is detached from the hierarchy", async () => {
+    const base = delegatedReadModel({ activeTurn: true });
+    const parent = base.threads[0]!;
+    const child = base.threads[1]!;
+    const assignmentId = child.nudging!.delegation!.assignmentId;
+    const finished = delegatedReadModel();
+    const detached = {
+      ...finished,
+      threads: finished.threads.map((thread) =>
+        thread.id === parent.id
+          ? {
+              ...thread,
+              queuedTurns: [],
+              nudging: {
+                wait: {
+                  mode: "all" as const,
+                  assignments: [{ childThreadId: child.id, assignmentId }],
+                },
+              },
+            }
+          : thread.id === child.id
+            ? { ...thread, parentThreadId: null }
+            : thread,
+      ),
+    };
+    const event: OrchestrationEvent = {
+      sequence: 2,
+      eventId: EventId.make("child-detached"),
+      aggregateKind: "thread",
+      aggregateId: child.id,
+      occurredAt: now,
+      commandId: CommandId.make("child-detached"),
+      causationEventId: null,
+      correlationId: CommandId.make("child-detached"),
+      metadata: {},
+      type: "thread.decoupled",
+      payload: { threadId: child.id, updatedAt: now },
+    };
+    const commands = await runReactor(base, monitorSnapshot("head"), {
+      resume: {
+        readModel: detached,
+        event,
+        additionalEvents: [{ ...event, eventId: EventId.make("child-detached-duplicate") }],
+      },
+    });
+
+    expect(unavailableAssignmentCommands(commands)).toHaveLength(1);
+    expect(unavailableAssignmentCommands(commands)[0]).toMatchObject({
+      threadId: parent.id,
+      childThreadId: child.id,
+      assignmentId,
+    });
+  });
+
+  it("settles after queued work and pending approval clear, despite duplicate state triggers", async () => {
+    const blocked = delegatedReadModel({ blockedItems: true, pendingApproval: true });
+    const child = blocked.threads[1]!;
+    const cleared = {
+      ...blocked,
+      threads: blocked.threads.map((thread) =>
+        thread.id === child.id
+          ? {
+              ...thread,
+              queuedTurns: [],
+              activities: [
+                ...thread.activities,
+                {
+                  id: EventId.make("child-approval-resolved"),
+                  kind: "approval.resolved" as const,
+                  tone: "info" as const,
+                  summary: "Approval resolved",
+                  payload: { requestId: "approval-child-settlement" },
+                  turnId: child.latestTurn!.turnId,
+                  createdAt: now,
+                },
+              ],
+            }
+          : thread,
+      ),
+    };
+    const commands = await runReactor(blocked, monitorSnapshot("head"), {
+      resume: {
+        readModel: cleared,
+        event: childEvent(child, "queued-work-cleared", "thread.queued-turn-deleted"),
+        additionalEvents: [
+          childEvent(child, "approval-cleared", "thread.activity-appended"),
+          childEvent(child, "duplicate-settlement-trigger", "thread.activity-appended"),
+        ],
+      },
+    });
+
+    expect(settlementCommands(commands)).toHaveLength(1);
+  });
+
+  it("settles provider completion when checkpoint capture is unavailable", async () => {
+    const active = delegatedReadModel({ activeTurn: true });
+    const idle = delegatedReadModel();
+    const child = active.threads[1]!;
+    const commands = await runReactor(active, monitorSnapshot("head"), {
+      resume: {
+        readModel: idle,
+        event: childEvent(
+          child,
+          "provider-turn-completed",
+          "thread.activity-appended",
+          "insights.turn.completed",
+        ),
+      },
+    });
+
+    expect(settlementCommands(commands)).toHaveLength(1);
+    expect(commands.some((command) => command.type === "thread.turn.diff.complete")).toBe(false);
+  });
+
+  it("does not settle from unrelated streamed activity", async () => {
+    const active = delegatedReadModel({ activeTurn: true });
+    const idle = delegatedReadModel();
+    const child = active.threads[1]!;
+    const commands = await runReactor(active, monitorSnapshot("head"), {
+      resume: {
+        readModel: idle,
+        event: childEvent(child, "tool-completed", "thread.activity-appended", "tool.completed"),
+      },
+    });
+
+    expect(settlementCommands(commands)).toHaveLength(0);
+  });
+
+  it("does not index settlement state for an unrelated session event", async () => {
+    const initial = queuedReadModel();
+    const ordinaryThread = { ...initial.threads[0]!, queuedTurns: [] };
+    let threadIterations = 0;
+    const threads = new Proxy([ordinaryThread], {
+      get(target, property, receiver) {
+        if (property === Symbol.iterator) {
+          threadIterations += 1;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const resumed = { ...initial, threads };
+    const event: OrchestrationEvent = {
+      sequence: 2,
+      eventId: EventId.make("ordinary-session-set"),
+      aggregateKind: "thread",
+      aggregateId: ordinaryThread.id,
+      occurredAt: now,
+      commandId: CommandId.make("ordinary-session-set"),
+      causationEventId: null,
+      correlationId: CommandId.make("ordinary-session-set"),
+      metadata: {},
+      type: "thread.session-set",
+      payload: {
+        threadId: ordinaryThread.id,
+        session: {
+          threadId: ordinaryThread.id,
+          status: "idle",
+          providerName: "copilot",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+      },
+    };
+
+    const commands = await runReactor(initial, monitorSnapshot("head"), {
+      resume: { readModel: resumed, event },
+    });
+
+    expect(threadIterations).toBe(0);
+    expect(settlementCommands(commands)).toHaveLength(0);
+  });
+
+  it("settles another thread while PR monitor revalidation is slow", async () => {
+    const active = delegatedReadModel({ activeTurn: true });
+    const parent = active.threads[0]!;
+    const child = active.threads[1]!;
+    const monitorOrigin: NonNullable<OrchestrationQueuedTurn["origin"]> = {
+      kind: "pull-request-monitor",
+      repository: "acme/app",
+      number: 42,
+      headSha: "head-current",
+    };
+    const initial = {
+      ...active,
+      threads: active.threads.map((thread) =>
+        thread.id === parent.id ? { ...thread, queuedTurns: [] } : thread,
+      ),
+    };
+    const idle = delegatedReadModel();
+    const resumed = {
+      ...idle,
+      threads: idle.threads.map((thread) =>
+        thread.id === parent.id
+          ? {
+              ...thread,
+              queuedTurns: [
+                {
+                  ...thread.queuedTurns![0]!,
+                  origin: monitorOrigin,
+                },
+              ],
+            }
+          : thread,
+      ),
+    };
+    const monitorWake: OrchestrationEvent = {
+      sequence: 2,
+      eventId: EventId.make("monitor-wake"),
+      aggregateKind: "thread",
+      aggregateId: parent.id,
+      occurredAt: now,
+      commandId: CommandId.make("monitor-wake"),
+      causationEventId: null,
+      correlationId: CommandId.make("monitor-wake"),
+      metadata: {},
+      type: "thread.meta-updated",
+      payload: { threadId: parent.id, updatedAt: now },
+    };
+    const commands = await runReactor(initial, monitorSnapshot("head-current"), {
+      snapshotDelayMs: 200,
+      waitAfterStartMs: 40,
+      resume: {
+        readModel: resumed,
+        event: monitorWake,
+        additionalEvents: [
+          childEvent(
+            child,
+            "provider-turn-completed-behind-monitor",
+            "thread.activity-appended",
+            "insights.turn.completed",
+          ),
+        ],
+      },
+    });
+
+    expect(settlementCommands(commands)).toHaveLength(1);
+  });
+
+  it("reconciles an idle open delegation on startup", async () => {
+    const commands = await runReactor(delegatedReadModel(), monitorSnapshot("head"));
+
+    expect(settlementCommands(commands)).toHaveLength(1);
+  });
+
+  it("settles an interrupted Stop once after the steer grace expires", async () => {
+    const state = delegatedReadModel();
+    const child = state.threads[1]!;
+    const interruptedAt = new Date(Date.now() - 1_900).toISOString();
+    const interruptedState: OrchestrationReadModel = {
+      ...state,
+      threads: state.threads.map((thread) =>
+        thread.id !== child.id
+          ? thread
+          : {
+              ...thread,
+              latestTurn: {
+                ...thread.latestTurn!,
+                state: "interrupted" as const,
+                completedAt: interruptedAt,
+              },
+              session: {
+                threadId: child.id,
+                status: "ready" as const,
+                providerName: "copilot",
+                runtimeMode: "approval-required" as const,
+                activeTurnId: null,
+                lastError: null,
+                updatedAt: interruptedAt,
+              },
+              nudging: { ...thread.nudging, paused: true },
+            },
+      ),
+    };
+    const commands = await runReactor(interruptedState, monitorSnapshot("head"), {
+      waitAfterStartMs: 250,
+    });
+
+    expect(settlementCommands(commands)).toHaveLength(1);
+  });
+
+  it("does not settle an interrupted steer after its continuation is persisted", async () => {
+    const state = delegatedReadModel();
+    const child = state.threads[1]!;
+    const interruptedAt = new Date(Date.now() - 1_900).toISOString();
+    const interruptedState: OrchestrationReadModel = {
+      ...state,
+      threads: state.threads.map((thread) =>
+        thread.id !== child.id
+          ? thread
+          : {
+              ...thread,
+              latestTurn: {
+                ...thread.latestTurn!,
+                state: "interrupted" as const,
+                completedAt: interruptedAt,
+              },
+              session: {
+                threadId: child.id,
+                status: "ready" as const,
+                providerName: "copilot",
+                runtimeMode: "approval-required" as const,
+                activeTurnId: null,
+                lastError: null,
+                updatedAt: interruptedAt,
+              },
+              nudging: { ...thread.nudging, paused: true },
+            },
+      ),
+    };
+    const continuationAt = new Date(Date.parse(interruptedAt) + 50).toISOString();
+    const continuationMessageId = MessageId.make("steer-continuation");
+    const continuationState: OrchestrationReadModel = {
+      ...interruptedState,
+      threads: interruptedState.threads.map((thread) =>
+        thread.id !== child.id
+          ? thread
+          : {
+              ...thread,
+              messages: [
+                ...thread.messages,
+                {
+                  id: continuationMessageId,
+                  role: "user" as const,
+                  text: "Continue with this correction",
+                  turnId: null,
+                  streaming: false,
+                  createdAt: continuationAt,
+                  updatedAt: continuationAt,
+                },
+              ],
+            },
+      ),
+    };
+    const commands = await runReactor(interruptedState, monitorSnapshot("head"), {
+      waitAfterStartMs: 250,
+      resume: {
+        readModel: continuationState,
+        event: {
+          sequence: 2,
+          eventId: EventId.make("steer-turn-start-requested"),
+          aggregateKind: "thread",
+          aggregateId: child.id,
+          occurredAt: continuationAt,
+          commandId: CommandId.make("steer-turn-start"),
+          causationEventId: null,
+          correlationId: CommandId.make("steer-turn-start"),
+          metadata: {},
+          type: "thread.turn-start-requested",
+          payload: {
+            threadId: child.id,
+            messageId: continuationMessageId,
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            createdAt: continuationAt,
+          },
+        },
+      },
+    });
+
+    expect(settlementCommands(commands)).toEqual([]);
+  });
+
+  it("reports an idle failed queued turn as one durable stall episode without settling", async () => {
+    const stalled = delegatedReadModel({ blockedItems: true });
+    const first = await runReactor(stalled, monitorSnapshot("head"), {
+      delegationIdleStallThresholdMs: 1_000,
+    });
+    const second = await runReactor(stalled, monitorSnapshot("head"), {
+      delegationIdleStallThresholdMs: 1_000,
+    });
+
+    expect(delegationStallCommands(first)).toHaveLength(1);
+    expect(delegationStallCommands(first)[0]).toMatchObject({
+      threadId: ThreadId.make("child-settlement"),
+      summary: expect.stringContaining("failed queued turn"),
+    });
+    expect(delegationStallCommands(second)[0]?.commandId).toBe(
+      delegationStallCommands(first)[0]?.commandId,
+    );
+    expect(settlementCommands(first)).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: "queued retry",
+      update: (thread: OrchestrationReadModel["threads"][number]) => ({
+        ...thread,
+        queuedTurns: [
+          ...(thread.queuedTurns ?? []),
+          {
+            ...thread.queuedTurns![0]!,
+            id: QueuedTurnId.make("retry-child-queued-turn"),
+            message: {
+              ...thread.queuedTurns![0]!.message,
+              messageId: MessageId.make("retry-child-message"),
+              text: "Retry the delegated work",
+            },
+            failedAt: null,
+            failureMessage: null,
+          },
+        ],
+      }),
+    },
+    {
+      name: "projected in-flight continuation",
+      update: (thread: OrchestrationReadModel["threads"][number]) => ({
+        ...thread,
+        messages: [
+          ...thread.messages,
+          {
+            id: MessageId.make("child-in-flight-continuation"),
+            role: "user" as const,
+            text: "Continue after the failed queued turn",
+            turnId: null,
+            streaming: false,
+            createdAt: new Date(Date.parse(now) + 1_000).toISOString(),
+            updatedAt: new Date(Date.parse(now) + 1_000).toISOString(),
+          },
+        ],
+      }),
+    },
+  ])("does not report a failed queued turn while a $name can make progress", async ({ update }) => {
+    const stalled = delegatedReadModel({ blockedItems: true });
+    const child = stalled.threads[1]!;
+    const commands = await runReactor(
+      {
+        ...stalled,
+        threads: stalled.threads.map((thread) =>
+          thread.id === child.id ? update(thread) : thread,
+        ),
+      },
+      monitorSnapshot("head"),
+      { delegationIdleStallThresholdMs: 1_000 },
+    );
+
+    expect(delegationStallCommands(commands)).toEqual([]);
+  });
+
+  it("bounds a failed queued turn stall summary when the failure detail is huge", async () => {
+    const stalled = delegatedReadModel({ blockedItems: true });
+    const child = stalled.threads[1]!;
+    const hugeFailure = `provider failed\n${"x".repeat(10_000)}`;
+    const commands = await runReactor(
+      {
+        ...stalled,
+        threads: stalled.threads.map((thread) =>
+          thread.id !== child.id
+            ? thread
+            : {
+                ...thread,
+                queuedTurns: (thread.queuedTurns ?? []).map((turn) => ({
+                  ...turn,
+                  failureMessage: hugeFailure,
+                })),
+              },
+        ),
+      },
+      monitorSnapshot("head"),
+      { delegationIdleStallThresholdMs: 1_000 },
+    );
+    const stall = delegationStallCommands(commands)[0];
+
+    expect(stall).toMatchObject({
+      type: "thread.delegation.stall",
+      summary: expect.stringContaining("provider failed"),
+    });
+    expect("summary" in stall! ? stall.summary.length : Number.POSITIVE_INFINITY).toBeLessThan(
+      1_000,
+    );
+  });
+
+  it("bounds an open-decision stall summary at the command boundary", async () => {
+    const stalled = delegatedReadModel();
+    const child = stalled.threads[1]!;
+    const commands = await runReactor(
+      {
+        ...stalled,
+        threads: stalled.threads.map((thread) =>
+          thread.id !== child.id || !thread.nudging?.delegation
+            ? thread
+            : {
+                ...thread,
+                nudging: {
+                  ...thread.nudging,
+                  delegation: {
+                    ...thread.nudging.delegation,
+                    decision: {
+                      id: "decision-child-settlement",
+                      childThreadId: thread.id,
+                      childTitle: thread.title,
+                      assignmentId: thread.nudging.delegation.assignmentId,
+                      kind: "decision-needed",
+                      summary: "x".repeat(4_000),
+                    },
+                  },
+                },
+              },
+        ),
+      },
+      monitorSnapshot("head"),
+      { delegationIdleStallThresholdMs: 1_000 },
+    );
+    const stall = delegationStallCommands(commands)[0];
+
+    expect(stall).toMatchObject({
+      type: "thread.delegation.stall",
+      summary: expect.stringContaining("open decision"),
+    });
+    expect(
+      "summary" in stall! ? stall.summary.length : Number.POSITIVE_INFINITY,
+    ).toBeLessThanOrEqual(1_000);
+  });
+
+  it.each([
+    {
+      name: "pending approval",
+      update: (_state: OrchestrationReadModel): OrchestrationReadModel =>
+        delegatedReadModel({ pendingApproval: true }),
+      summary: "pending approval",
+    },
+    {
+      name: "pending input",
+      update: (state: OrchestrationReadModel): OrchestrationReadModel => ({
+        ...state,
+        threads: state.threads.map((thread) =>
+          thread.id !== ThreadId.make("child-settlement")
+            ? thread
+            : {
+                ...thread,
+                activities: [
+                  {
+                    id: EventId.make("child-pending-input"),
+                    kind: "user-input.requested",
+                    tone: "approval",
+                    summary: "Input required",
+                    payload: { requestId: "input-child-settlement" },
+                    turnId: thread.latestTurn?.turnId ?? null,
+                    createdAt: now,
+                  },
+                ],
+              },
+        ),
+      }),
+      summary: "pending input",
+    },
+    {
+      name: "open decision",
+      update: (state: OrchestrationReadModel): OrchestrationReadModel => ({
+        ...state,
+        threads: state.threads.map((thread) =>
+          thread.id !== ThreadId.make("child-settlement") || !thread.nudging?.delegation
+            ? thread
+            : {
+                ...thread,
+                nudging: {
+                  ...thread.nudging,
+                  delegation: {
+                    ...thread.nudging.delegation,
+                    decision: {
+                      id: "decision-child-settlement",
+                      childThreadId: thread.id,
+                      childTitle: thread.title,
+                      assignmentId: thread.nudging.delegation.assignmentId,
+                      kind: "decision-needed",
+                      summary: "Choose a path",
+                      decision: { question: "Which path?" },
+                    },
+                  },
+                },
+              },
+        ),
+      }),
+      summary: "open decision",
+    },
+  ])("reports an idle $name stall", async ({ update, summary }) => {
+    const commands = await runReactor(update(delegatedReadModel()), monitorSnapshot("head"), {
+      delegationIdleStallThresholdMs: 1_000,
+    });
+
+    expect(delegationStallCommands(commands)).toHaveLength(1);
+    expect(delegationStallCommands(commands)[0]).toMatchObject({
+      threadId: ThreadId.make("child-settlement"),
+      summary: expect.stringContaining(summary),
+    });
+    expect(settlementCommands(commands)).toEqual([]);
+  });
+
+  it("does not report unfinished grandchildren while one is actively running", async () => {
+    const state = delegatedReadModel();
+    const child = state.threads[1]!;
+    const grandchildId = ThreadId.make("grandchild-settlement");
+    const commands = await runReactor(
+      {
+        ...state,
+        threads: [
+          ...state.threads,
+          {
+            ...child,
+            id: grandchildId,
+            parentThreadId: child.id,
+            title: "Grandchild",
+            latestTurn: {
+              ...child.latestTurn!,
+              state: "running",
+              completedAt: null,
+            },
+            session: {
+              threadId: grandchildId,
+              status: "running",
+              providerName: "copilot",
+              runtimeMode: "approval-required",
+              activeTurnId: child.latestTurn!.turnId,
+              lastError: null,
+              updatedAt: now,
+            },
+            nudging: {
+              delegation: {
+                assignmentId: MessageId.make("assignment-grandchild-settlement"),
+                followUp: "automatic",
+                completedAt: null,
+                assignedAt: now,
+              },
+            },
+          },
+        ],
+      },
+      monitorSnapshot("head"),
+      { delegationIdleStallThresholdMs: 1_000 },
+    );
+
+    expect(delegationStallCommands(commands)).toEqual([]);
+  });
+
+  it("delays an unfinished-grandchildren report until recent grandchild activity is stale", async () => {
+    const state = delegatedReadModel();
+    const child = state.threads[1]!;
+    const recentAt = new Date(Date.now()).toISOString();
+    const grandchildId = ThreadId.make("grandchild-settlement");
+    const commands = await runReactor(
+      {
+        ...state,
+        threads: [
+          ...state.threads,
+          {
+            ...child,
+            id: grandchildId,
+            parentThreadId: child.id,
+            title: "Grandchild",
+            updatedAt: recentAt,
+            latestTurn: null,
+            session: null,
+            activities: [
+              {
+                id: EventId.make("grandchild-recent-progress"),
+                kind: "delegation.reported",
+                tone: "info",
+                summary: "Still working",
+                payload: {},
+                turnId: null,
+                createdAt: recentAt,
+              },
+            ],
+            nudging: {
+              delegation: {
+                assignmentId: MessageId.make("assignment-grandchild-settlement"),
+                followUp: "automatic",
+                completedAt: null,
+                assignedAt: now,
+              },
+            },
+          },
+        ],
+      },
+      monitorSnapshot("head"),
+      { delegationIdleStallThresholdMs: 60_000, waitAfterStartMs: 30 },
+    );
+
+    expect(delegationStallCommands(commands)).toEqual([]);
+  });
+
+  it("reports unfinished grandchildren after every grandchild is idle and stale", async () => {
+    const state = delegatedReadModel();
+    const child = state.threads[1]!;
+    const grandchildId = ThreadId.make("grandchild-settlement");
+    const commands = await runReactor(
+      {
+        ...state,
+        threads: [
+          ...state.threads,
+          {
+            ...child,
+            id: grandchildId,
+            parentThreadId: child.id,
+            title: "Grandchild",
+            latestTurn: null,
+            session: null,
+            activities: [],
+            nudging: {
+              delegation: {
+                assignmentId: MessageId.make("assignment-grandchild-settlement"),
+                followUp: "automatic",
+                completedAt: null,
+                assignedAt: now,
+              },
+            },
+          },
+        ],
+      },
+      monitorSnapshot("head"),
+      { delegationIdleStallThresholdMs: 1_000 },
+    );
+
+    expect(delegationStallCommands(commands)).toEqual([
+      expect.objectContaining({
+        type: "thread.delegation.stall",
+        summary: expect.stringContaining("unfinished grandchildren"),
+      }),
+    ]);
+  });
+
   it("retains a deadline wake that arrives while an explicit turn owns the drain", async () => {
     const collectUntil = new Date(Date.now() + 150).toISOString();
     const state = queuedReadModel({
@@ -404,13 +1398,223 @@ describe("QueuedTurnReactor", () => {
         ],
       },
     });
-    const commands = await runReactor(state, monitorSnapshot("head"), { waitAfterStartMs: 300 });
+    const commands = await runReactor(state, monitorSnapshot("head"), { waitAfterStartMs: 500 });
     expect(commands).toHaveLength(1);
     const command = commands[0]!;
     expect(command.type).toBe("thread.queued-turn.dispatch");
     if (command.type === "thread.queued-turn.dispatch") {
       expect(Date.parse(command.dispatchedAt)).toBeGreaterThanOrEqual(Date.parse(collectUntil));
     }
+  });
+
+  it("reconstructs an expired child-wait deadline at startup and expires it once", async () => {
+    const deadlineAt = new Date(Date.now() - 50).toISOString();
+    const state = queuedReadModel();
+    const parent = state.threads[0]!;
+    const wait = {
+      mode: "all",
+      deadlineAt,
+      generationId: CommandId.make("deadline-wait-generation"),
+      assignments: [
+        {
+          childThreadId: ThreadId.make("child"),
+          assignmentId: MessageId.make("assignment"),
+        },
+      ],
+    } as ChildWaitCondition;
+    const persisted = {
+      ...state,
+      threads: [
+        { ...parent, queuedTurns: [], nudging: { wait } },
+        {
+          ...parent,
+          id: ThreadId.make("child"),
+          parentThreadId: threadId,
+          title: "Child",
+          queuedTurns: [],
+          nudging: {
+            delegation: {
+              assignmentId: MessageId.make("assignment"),
+              followUp: "automatic" as const,
+              completedAt: null,
+            },
+          },
+        },
+      ],
+    };
+    const commands = await runReactor(persisted, monitorSnapshot("head"), {
+      waitAfterStartMs: 80,
+    });
+
+    expect(commands).toMatchObject([
+      {
+        type: "thread.child-wait.deadline-expire",
+        threadId,
+        expectedDeadlineAt: deadlineAt,
+        expectedGenerationId: CommandId.make("deadline-wait-generation"),
+      },
+    ]);
+  });
+
+  it("does not issue a stalled wake when every child settles before the deadline", async () => {
+    const deadlineAt = new Date(Date.now() + 120).toISOString();
+    const state = queuedReadModel();
+    const parent = state.threads[0]!;
+    const waiting = {
+      mode: "all",
+      deadlineAt,
+      assignments: [
+        {
+          childThreadId: ThreadId.make("child"),
+          assignmentId: MessageId.make("assignment"),
+        },
+      ],
+    } as ChildWaitCondition;
+    const settled = {
+      ...waiting,
+      assignments: waiting.assignments.map((assignment) => ({
+        ...assignment,
+        outcome: "result-available" as const,
+      })),
+    };
+    const waitingModel = {
+      ...state,
+      threads: [
+        { ...parent, queuedTurns: [], nudging: { wait: waiting } },
+        {
+          ...parent,
+          id: ThreadId.make("child"),
+          parentThreadId: threadId,
+          title: "Child",
+          queuedTurns: [],
+          nudging: {
+            delegation: {
+              assignmentId: MessageId.make("assignment"),
+              followUp: "automatic" as const,
+              completedAt: null,
+            },
+          },
+        },
+      ],
+    };
+    const settledModel = {
+      ...state,
+      threads: [
+        { ...parent, queuedTurns: [], nudging: { wait: settled } },
+        {
+          ...parent,
+          id: ThreadId.make("child"),
+          parentThreadId: threadId,
+          title: "Child",
+          queuedTurns: [],
+          nudging: {
+            delegation: {
+              assignmentId: MessageId.make("assignment"),
+              followUp: "automatic" as const,
+              completedAt: null,
+            },
+          },
+        },
+      ],
+    };
+    const commands = await runReactor(waitingModel, monitorSnapshot("head"), {
+      waitAfterStartMs: 250,
+      resume: {
+        readModel: settledModel,
+        event: {
+          eventId: EventId.make("child-wait-settled"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: CommandId.make("settle-child-wait"),
+          causationEventId: null,
+          correlationId: CommandId.make("settle-child-wait"),
+          metadata: {},
+          sequence: 2,
+          type: "thread.meta-updated",
+          payload: {
+            threadId,
+            nudging: { wait: settled },
+            updatedAt: now,
+          },
+        },
+      },
+    });
+
+    expect(commands.map((command) => command.type)).not.toContain(
+      "thread.child-wait.deadline-expire",
+    );
+  });
+
+  it("waits (without failing) while a child decision is pending", async () => {
+    const decision = {
+      id: "decision-1",
+      childThreadId: ThreadId.make("child"),
+      childTitle: "Child",
+      assignmentId: MessageId.make("assignment"),
+      kind: "decision-needed" as const,
+      summary: "Which approach?",
+    };
+    const model = queuedReadModel();
+    const waiting = {
+      ...model,
+      threads: model.threads.map((thread) => ({
+        ...thread,
+        nudging: {
+          delegation: {
+            assignmentId: MessageId.make("assignment"),
+            followUp: "automatic" as const,
+            completedAt: null,
+            decision,
+          },
+        },
+      })),
+    };
+    expect(await runReactor(waiting, monitorSnapshot("head-current"))).toEqual([]);
+  });
+
+  it("dispatches the correlated decision response ahead of waiting turns", async () => {
+    const decision = {
+      id: "decision-1",
+      childThreadId: ThreadId.make("child"),
+      childTitle: "Child",
+      assignmentId: MessageId.make("assignment"),
+      kind: "decision-needed" as const,
+      summary: "Which approach?",
+    };
+    const answerId = QueuedTurnId.make("answer");
+    const model = queuedReadModel();
+    const thread = model.threads[0]!;
+    // Production shape: the decider clears `decision` atomically when it
+    // creates `pendingResponse`, so a real answer is decision-null plus
+    // pendingResponse set.
+    const commands = await runReactor(
+      {
+        ...model,
+        threads: [
+          {
+            ...thread,
+            queuedTurns: [
+              ...(thread.queuedTurns ?? []),
+              { ...thread.queuedTurns![0]!, id: answerId, origin: undefined },
+            ],
+            nudging: {
+              delegation: {
+                assignmentId: MessageId.make("assignment"),
+                followUp: "automatic" as const,
+                completedAt: null,
+                decision: null,
+                pendingResponse: { queuedTurnId: answerId, report: decision },
+              },
+            },
+          },
+        ],
+      },
+      monitorSnapshot("head-current"),
+    );
+    expect(commands).toMatchObject([
+      { type: "thread.queued-turn.dispatch", queuedTurnId: answerId },
+    ]);
   });
 
   it("recovers a nudge after restart, but skips it while paused without blocking user work", async () => {
@@ -675,6 +1879,44 @@ describe("QueuedTurnReactor", () => {
       queuedTurnId,
     });
     expect(commands[0]?.commandId).toEqual(expect.stringMatching(/^server:queued-turn\.dispatch:/));
+  });
+
+  it("dispatches after stopping a turn whose message shares its completion timestamp", async () => {
+    const model = queuedReadModel();
+    const thread = model.threads[0]!;
+    const commands = await runReactor(
+      {
+        ...model,
+        threads: [
+          {
+            ...thread,
+            messages: [
+              {
+                id: MessageId.make("message-stopped"),
+                role: "user",
+                text: "stop",
+                attachments: [],
+                turnId: null,
+                streaming: false,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+            latestTurn: {
+              turnId: TurnId.make("turn-stopped"),
+              state: "interrupted",
+              requestedAt: now,
+              startedAt: now,
+              completedAt: now,
+              assistantMessageId: null,
+            },
+          },
+        ],
+      },
+      monitorSnapshot("head-current"),
+    );
+
+    expect(commands.map((command) => command.type)).toEqual(["thread.queued-turn.dispatch"]);
   });
 
   it("deletes a stale PR monitor turn instead of dispatching it", async () => {

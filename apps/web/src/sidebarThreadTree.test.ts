@@ -14,6 +14,7 @@ import {
   deriveSidebarThreadsWithAgentRuns,
   expandSidebarThreadsWithAgentRuns,
   isThreadInSubtree,
+  selectAncestorThreadKeys,
   selectVisibleSidebarThreads,
   selectVisibleThreadRows,
 } from "./sidebarThreadTree";
@@ -577,5 +578,66 @@ describe("selectVisibleThreadRows", () => {
       olderRoot.id,
       olderChild.id,
     ]);
+  });
+});
+
+describe("selectAncestorThreadKeys", () => {
+  it("returns parent keys from the direct parent up to the root", () => {
+    const root = thread("thread-1");
+    const parent = thread("thread-2", { parentThreadId: root.id });
+    const child = thread("thread-3", { parentThreadId: parent.id });
+
+    expect(selectAncestorThreadKeys([root, parent, child], environmentId, child.id)).toEqual([
+      key(parent.id),
+      key(root.id),
+    ]);
+  });
+
+  it("returns an empty list for root threads and unknown ids", () => {
+    const root = thread("thread-1");
+
+    expect(selectAncestorThreadKeys([root], environmentId, root.id)).toEqual([]);
+    expect(
+      selectAncestorThreadKeys([root], environmentId, ThreadId.make("thread-missing")),
+    ).toEqual([]);
+  });
+
+  it("ignores parents from other environments and stops at cycles", () => {
+    const otherEnvironmentId = EnvironmentId.make("env-b");
+    const loopA = thread("thread-2", { parentThreadId: ThreadId.make("thread-3") });
+    const loopB = thread("thread-3", { parentThreadId: loopA.id });
+    const foreignParent = thread("thread-9", {
+      environmentId: otherEnvironmentId,
+      parentThreadId: null,
+    });
+    const child = thread("thread-4", { parentThreadId: foreignParent.id });
+
+    expect(selectAncestorThreadKeys([loopA, loopB], environmentId, loopA.id)).toEqual([
+      key(loopB.id),
+    ]);
+    // The foreign parent is not in this environment, so the chain stops.
+    expect(selectAncestorThreadKeys([child, foreignParent], environmentId, child.id)).toEqual([]);
+  });
+
+  it("pins ancestors so archiving a nested thread keeps the tree expanded", () => {
+    // Regression: archiving a nested thread navigated away from its subtree,
+    // dropping the active-descendant expansion and collapsing every parent.
+    const root = thread("thread-1");
+    const parent = thread("thread-2", { parentThreadId: root.id });
+    const child = thread("thread-3", { parentThreadId: parent.id });
+    const threads = [root, parent, child];
+    const ancestorKeys = selectAncestorThreadKeys(threads, environmentId, child.id);
+    const overrides = new Map(ancestorKeys.map((ancestorKey) => [ancestorKey, true] as const));
+
+    const rows = buildSidebarThreadRows({
+      threads: [root, parent],
+      pinnedThreadKeys: [],
+      expandedOverrideByThreadKey: overrides,
+      sortOrder: "created_at",
+      resolveThreadStatus: () => null,
+    }).rowViews;
+
+    expect(rows.map((row) => row.thread.id)).toEqual([root.id, parent.id]);
+    expect(rows.every((row) => !row.hasChildren || row.isExpanded)).toBe(true);
   });
 });

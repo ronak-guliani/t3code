@@ -13,6 +13,8 @@ import type {
   TurnId,
 } from "@t3tools/contracts";
 import {
+  DEFAULT_PROVIDER_DRIVER_KIND,
+  defaultInstanceIdForDriver,
   ProviderDriverKind,
   ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -78,7 +80,11 @@ import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPreviewAnnotationCards } from "./ComposerPreviewAnnotationCards";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
-import { CopilotCompletionWarning } from "./CopilotCompletionWarning";
+import {
+  COPILOT_COMPLETION_TOAST_DESCRIPTION,
+  COPILOT_COMPLETION_TOAST_TITLE,
+  hasCopilotPostCompletionWarning,
+} from "./copilotCompletionToast";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { ChildFollowUpPanel } from "./ChildFollowUpPanel";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
@@ -96,9 +102,10 @@ import { Separator } from "../ui/separator";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { toastManager } from "../ui/toast";
+import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
   CircleAlertIcon,
+  PaperclipIcon,
   ListTodoIcon,
   type LucideIcon,
   LockIcon,
@@ -287,6 +294,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
+  onSteer: () => void;
   onImplementPlanInNewThread: () => void;
 }) {
   return (
@@ -307,6 +315,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
         onInterrupt={props.onInterrupt}
+        onSteer={props.onSteer}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
       />
     </>
@@ -432,6 +441,7 @@ export interface ChatComposerProps {
   onSend: (e?: { preventDefault: () => void }) => void;
   onComposerIntent: () => void;
   onInterrupt: () => void;
+  onSteer: () => void;
   onImplementPlanInNewThread: () => void;
   onRespondToApproval: (
     requestId: ApprovalRequestId,
@@ -515,6 +525,7 @@ export const ChatComposer = memo(
       onSend,
       onComposerIntent,
       onInterrupt,
+      onSteer,
       onImplementPlanInNewThread,
       onRespondToApproval,
       onUpdateQueuedTurn,
@@ -624,7 +635,7 @@ export const ChatComposer = memo(
         providerInstanceEntries,
         providerStatuses,
         explicitSelectedInstanceId,
-      ) ?? ProviderDriverKind.make("codex");
+      ) ?? DEFAULT_PROVIDER_DRIVER_KIND;
     const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
     const lockedContinuationGroupKey = useMemo((): string | null => {
       if (!lockedProvider || !activeThread) return null;
@@ -694,7 +705,7 @@ export const ChatComposer = memo(
         providerInstanceEntries[0]?.instanceId ??
         activeThreadModelSelection?.instanceId ??
         activeProjectDefaultModelSelection?.instanceId ??
-        ProviderInstanceId.make("codex")
+        defaultInstanceIdForDriver(DEFAULT_PROVIDER_DRIVER_KIND)
       );
     }, [
       activeProjectDefaultModelSelection?.instanceId,
@@ -843,6 +854,7 @@ export const ChatComposer = memo(
     const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
     const composerFormRef = useRef<HTMLFormElement>(null);
     const composerSurfaceRef = useRef<HTMLDivElement>(null);
+    const composerAttachmentInputRef = useRef<HTMLInputElement>(null);
     const composerFormHeightRef = useRef(0);
     const composerSelectLockRef = useRef(false);
     const composerMenuOpenRef = useRef(false);
@@ -1353,6 +1365,23 @@ export const ChatComposer = memo(
       dragDepthRef.current = 0;
       setIsDragOverComposer(false);
     }, [draftId, activeThreadId, promptRef]);
+
+    const copilotWarningToastShownRef = useRef<Set<string>>(new Set());
+    const activeThreadActivities = activeThread?.activities;
+    useEffect(() => {
+      if (!activeThreadId) return;
+      const threadKey = String(activeThreadId);
+      if (copilotWarningToastShownRef.current.has(threadKey)) return;
+      if (!hasCopilotPostCompletionWarning(activeThreadActivities)) return;
+      copilotWarningToastShownRef.current.add(threadKey);
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: COPILOT_COMPLETION_TOAST_TITLE,
+          description: COPILOT_COMPLETION_TOAST_DESCRIPTION,
+        }),
+      );
+    }, [activeThreadActivities, activeThreadId]);
 
     // ------------------------------------------------------------------
     // Footer compact layout observation
@@ -1906,6 +1935,14 @@ export const ChatComposer = memo(
       addComposerImages(imageFiles);
     };
 
+    const onComposerAttachmentInputChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
+      const files = Array.from(event.currentTarget.files ?? []);
+      if (files.length > 0) {
+        addComposerImages(files);
+      }
+      event.currentTarget.value = "";
+    };
+
     const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
       if (!event.dataTransfer.types.includes("Files")) return;
       event.preventDefault();
@@ -2127,7 +2164,7 @@ export const ChatComposer = memo(
       >
         <div
           className={cn(
-            "group rounded-[22px] p-px transition-colors duration-200",
+            "group relative z-10 rounded-[22px] p-px transition-colors duration-200",
             composerProviderState.composerFrameClassName,
           )}
           onDragEnter={editingQueuedTurn ? undefined : onComposerDragEnter}
@@ -2139,8 +2176,8 @@ export const ChatComposer = memo(
             ref={composerSurfaceRef}
             data-chat-composer-mobile-collapsed={isComposerCollapsedMobile ? "true" : "false"}
             className={cn(
-              "rounded-[20px] border bg-card transition-colors duration-200 has-focus-visible:border-ring/45",
-              isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border",
+              "rounded-[20px] bg-card transition-[background-color] duration-200 has-focus-visible:ring-1 has-focus-visible:ring-ring/45",
+              isDragOverComposer ? "bg-accent/45 ring-1 ring-primary/70" : null,
               composerProviderState.composerSurfaceClassName,
             )}
             onFocusCapture={(event) => {
@@ -2162,7 +2199,6 @@ export const ChatComposer = memo(
             onPointerEnter={onComposerIntent}
             onBlurCapture={scheduleComposerCollapseCheck}
           >
-            <CopilotCompletionWarning activities={activeThread?.activities} />
             {activeThread ? (
               <ChildFollowUpPanel
                 key={activeThread.id}
@@ -2499,6 +2535,35 @@ export const ChatComposer = memo(
                   }
                   className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
                 >
+                  {!editingQueuedTurn ? (
+                    <>
+                      <input
+                        ref={composerAttachmentInputRef}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        onChange={onComposerAttachmentInputChange}
+                      />
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              onPointerDown={(event) => event.preventDefault()}
+                              onClick={() => composerAttachmentInputRef.current?.click()}
+                              aria-label="Attach images"
+                            />
+                          }
+                        >
+                          <PaperclipIcon />
+                        </TooltipTrigger>
+                        <TooltipPopup>Attach images</TooltipPopup>
+                      </Tooltip>
+                    </>
+                  ) : null}
                   <ComposerFooterPrimaryActions
                     compact={isComposerPrimaryActionsCompact}
                     pendingAction={pendingPrimaryAction}
@@ -2514,6 +2579,7 @@ export const ChatComposer = memo(
                     preserveComposerFocusOnPointerDown={isMobileViewport}
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}
+                    onSteer={onSteer}
                     onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
                   />
                 </div>

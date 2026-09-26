@@ -1311,8 +1311,8 @@ function createDraftThreadState(
       (nextWorktreePath
         ? "worktree"
         : projectChanged
-          ? "local"
-          : (existingThread?.envMode ?? "local")),
+          ? "worktree"
+          : (existingThread?.envMode ?? "worktree")),
     promotedTo: null,
   };
 }
@@ -1537,7 +1537,7 @@ function normalizePersistedDraftThreads(
           interactionMode: DEFAULT_INTERACTION_MODE,
           branch: null,
           worktreePath: null,
-          envMode: "local",
+          envMode: "worktree",
           promotedTo: null,
         };
       } else if (
@@ -2342,8 +2342,8 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 (nextWorktreePath
                   ? "worktree"
                   : projectChanged
-                    ? "local"
-                    : (existing.envMode ?? "local")),
+                    ? "worktree"
+                    : (existing.envMode ?? "worktree")),
               promotedTo: existing.promotedTo ?? null,
             };
             const isUnchanged =

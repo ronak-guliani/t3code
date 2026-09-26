@@ -8,6 +8,7 @@ import {
   PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
   isProviderSendTurnSupportedImageMimeType,
   ClientOrchestrationCommand,
+  InternalOrchestrationCommand,
   DiffState,
   ModelSelection,
   MessageOrigin,
@@ -23,6 +24,7 @@ import {
   ProjectCreateCommand,
   ThreadMetaUpdatedPayload,
   ThreadTurnStartCommand,
+  ThreadTurnSteerCommand,
   ThreadCreatedPayload,
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
@@ -41,7 +43,9 @@ const decodeProjectCreateCommand = Schema.decodeUnknownEffect(ProjectCreateComma
 const decodeProjectCreatedPayload = Schema.decodeUnknownEffect(ProjectCreatedPayload);
 const decodeProjectMetaUpdatedPayload = Schema.decodeUnknownEffect(ProjectMetaUpdatedPayload);
 const decodeThreadTurnStartCommand = Schema.decodeUnknownEffect(ThreadTurnStartCommand);
+const decodeThreadTurnSteerCommand = Schema.decodeUnknownEffect(ThreadTurnSteerCommand);
 const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
+const decodeInternalOrchestrationCommand = Schema.decodeUnknownEffect(InternalOrchestrationCommand);
 const decodeMessageOrigin = Schema.decodeUnknownEffect(MessageOrigin);
 const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
   ThreadTurnStartRequestedPayload,
@@ -357,6 +361,88 @@ it.effect("decodes thread.turn.start defaults for provider and runtime mode", ()
     assert.strictEqual(parsed.modelSelection, undefined);
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
     assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
+  }),
+);
+
+it.effect("decodes thread.turn.steer with optional turn targeting", () =>
+  Effect.gen(function* () {
+    const withoutTurn = yield* decodeThreadTurnSteerCommand({
+      type: "thread.turn.steer",
+      commandId: "cmd-steer-1",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-steer-1",
+        role: "user",
+        text: "steer now",
+        attachments: [],
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(withoutTurn.type, "thread.turn.steer");
+    assert.strictEqual(withoutTurn.turnId, undefined);
+
+    const withTurn = yield* decodeThreadTurnSteerCommand({
+      type: "thread.turn.steer",
+      commandId: "cmd-steer-2",
+      threadId: "thread-1",
+      turnId: "turn-active",
+      message: {
+        messageId: "msg-steer-2",
+        role: "user",
+        text: "steer this turn",
+        attachments: [],
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(withTurn.turnId, "turn-active");
+
+    const viaUnion = yield* decodeOrchestrationCommand({
+      type: "thread.turn.steer",
+      commandId: "cmd-steer-3",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-steer-3",
+        role: "user",
+        text: "steer via union",
+        attachments: [],
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(viaUnion.type, "thread.turn.steer");
+
+    const viaClientUnion = yield* decodeClientOrchestrationCommand({
+      type: "thread.turn.steer",
+      commandId: "cmd-steer-4",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-steer-4",
+        role: "user",
+        text: "steer via client union",
+        attachments: [],
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(viaClientUnion.type, "thread.turn.steer");
+
+    const steerEvent = yield* decodeOrchestrationEvent({
+      sequence: 1,
+      eventId: "event-turn-steer-requested",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      type: "thread.turn-steer-requested",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      commandId: "cmd-steer-1",
+      causationEventId: "event-message-sent",
+      correlationId: "cmd-steer-1",
+      metadata: {},
+      payload: {
+        threadId: "thread-1",
+        messageId: "msg-steer-1",
+        turnId: "turn-active",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    assert.strictEqual(steerEvent.type, "thread.turn-steer-requested");
   }),
 );
 
@@ -771,6 +857,26 @@ it.effect("rejects an explicit title combined with title regeneration", () =>
   }),
 );
 
+it.effect("rejects an unparseable child wait deadline", () =>
+  Effect.gen(function* () {
+    for (const deadlineAt of ["not-a-date", "2026-09-25", "2026-02-30T00:00:00.000Z"]) {
+      const result = yield* Effect.exit(
+        decodeOrchestrationCommand({
+          type: "thread.meta.update",
+          commandId: "cmd-invalid-child-wait-deadline",
+          threadId: "thread-1",
+          childWait: {
+            mode: "all",
+            assignments: [{ childThreadId: "child-1", assignmentId: "assignment-1" }],
+            deadlineAt,
+          },
+        }),
+      );
+      assert.strictEqual(result._tag, "Failure");
+    }
+  }),
+);
+
 it.effect("accepts a source proposed plan reference in thread.turn.start", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadTurnStartCommand({
@@ -829,6 +935,32 @@ it.effect("accepts a cross-thread source id but not derived provenance from clie
       assert.strictEqual(parsed.crossThreadDispatchCapability, "capability");
       assert.strictEqual("origin" in parsed, false);
     }
+  }),
+);
+
+it.effect("keeps validation mutations on the internal executor command path", () =>
+  Effect.gen(function* () {
+    const command = {
+      type: "thread.validation-run.plan",
+      commandId: "command-validation-plan",
+      threadId: "thread-validation",
+      runId: "run-validation",
+      executorId: "executor-validation",
+      target: {
+        workspaceRoot: "/workspace",
+        worktreePath: null,
+        branch: "main",
+        revision: "revision-1",
+        dirtyStateFingerprint: "dirty-1",
+        environmentIdentity: "environment-1",
+      },
+      createdAt: "2026-09-17T00:00:00.000Z",
+    } as const;
+
+    const clientResult = yield* Effect.result(decodeClientOrchestrationCommand(command));
+    assert.equal(clientResult._tag, "Failure");
+    const internal = yield* decodeInternalOrchestrationCommand(command);
+    assert.equal(internal.type, "thread.validation-run.plan");
   }),
 );
 

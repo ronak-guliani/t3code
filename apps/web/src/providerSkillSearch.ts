@@ -14,8 +14,12 @@ import { formatProviderSkillDisplayName } from "./providerSkillPresentation";
 
 const skillAgentIdByProvider: Partial<Record<string, ServerSkillAgentId>> = {
   claude: "claude-code",
+  claudeAgent: "claude-code",
   codex: "codex",
   copilot: "copilot-cli",
+  "copilot-acp-native": "copilot-cli",
+  opencode: "opencode",
+  cursor: "cursor",
 };
 
 export function providerSkillsFromCatalog(

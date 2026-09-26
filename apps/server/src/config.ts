@@ -7,6 +7,7 @@
  * @module ServerConfig
  */
 import { Effect, FileSystem, Layer, LogLevel, Path, Schema, Context } from "effect";
+import type * as Redacted from "effect/Redacted";
 
 export const DEFAULT_PORT = 3773;
 
@@ -62,6 +63,7 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly baseDir: string;
   readonly staticDir: string | undefined;
   readonly devUrl: URL | undefined;
+  readonly devAuthToken?: Redacted.Redacted<string> | undefined;
   readonly noBrowser: boolean;
   readonly startupPresentation: StartupPresentation;
   readonly desktopBootstrapToken: string | undefined;
@@ -167,6 +169,7 @@ export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShap
           desktopBootstrapToken: undefined,
           staticDir: undefined,
           devUrl,
+          devAuthToken: undefined,
           noBrowser: false,
           startupPresentation: "browser",
         } satisfies ServerConfigShape;

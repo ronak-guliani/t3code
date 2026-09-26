@@ -724,6 +724,80 @@ describe("decider queued turns", () => {
     });
   });
 
+  it("persists an admitted isolated binding when dispatching a queued turn", async () => {
+    const now = "2026-03-01T00:00:00.000Z";
+    const dispatchedAt = "2026-03-01T00:00:01.000Z";
+    const threadId = asThreadId("thread-isolated-dispatch");
+    const queuedTurnId = asQueuedTurnId("queued-turn-isolated");
+    const readModel = await makeThreadReadModel({ now, threadId });
+    const createdEvent = (await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.queued-turn.create",
+          commandId: CommandId.make("cmd-isolated-queue-create"),
+          threadId,
+          queuedTurnId,
+          message: {
+            messageId: asMessageId("message-isolated-1"),
+            role: "user",
+            text: "queued prompt",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: now,
+        },
+        readModel,
+      }),
+    )) as OrchestrationEvent;
+    const withQueue = await Effect.runPromise(
+      projectEvent(readModel, { ...createdEvent, sequence: 2 }),
+    );
+
+    const binding = {
+      canonicalPath: "/tmp/isolated-worktree",
+      worktreePath: "/tmp/isolated-worktree",
+      branch: "t3/thread/abc",
+      generation: 1,
+    };
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.queued-turn.dispatch",
+          commandId: CommandId.make("cmd-isolated-queue-dispatch"),
+          threadId,
+          queuedTurnId,
+          workspaceBinding: binding,
+          dispatchedAt,
+        },
+        readModel: withQueue,
+      }),
+    );
+
+    const events = Array.isArray(result) ? result : [result];
+    expect(events.map((event) => event.type)).toEqual([
+      "thread.meta-updated",
+      "thread.message-sent",
+      "thread.turn-start-requested",
+      "thread.queued-turn-dispatched",
+    ]);
+    expect(events[0]?.payload).toMatchObject({
+      threadId,
+      worktreePath: binding.worktreePath,
+      workspaceBinding: binding,
+    });
+
+    let projected = withQueue;
+    let sequence = 2;
+    for (const event of events) {
+      sequence += 1;
+      projected = await Effect.runPromise(projectEvent(projected, { ...event, sequence }));
+    }
+    expect(
+      projected.threads.find((thread) => thread.id === threadId)?.workspaceBinding,
+    ).toMatchObject(binding);
+  });
+
   it("carries a handoff continuation origin onto the dispatched user message", async () => {
     const now = "2026-03-01T00:00:00.000Z";
     const dispatchedAt = "2026-03-01T00:00:01.000Z";

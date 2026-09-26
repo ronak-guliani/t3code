@@ -1119,10 +1119,13 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
       Effect.gen(function* () {
         yield* requireSupported;
         const activePaths = paths!;
-        const owned = yield* Effect.all([
-          attempt("checking launchd definition", () => host.exists(activePaths.definitionPath)),
-          attempt("checking service artifacts", () => host.exists(activePaths.instanceDir)),
-        ]);
+        const owned = yield* Effect.all(
+          [
+            attempt("checking launchd definition", () => host.exists(activePaths.definitionPath)),
+            attempt("checking service artifacts", () => host.exists(activePaths.instanceDir)),
+          ],
+          { concurrency: "unbounded" },
+        );
         const serviceState = yield* supervisorState;
         yield* stopLoaded;
         yield* disableTarget;

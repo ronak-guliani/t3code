@@ -29,7 +29,6 @@ import {
   decodePullRequestListJson,
   decodePullRequestSearchJson,
   decodePullRequestStatsJson,
-  decodeRepositoryAccessJson,
   decodeReviewerCandidatesJson,
   decodeReviewThreadCommentsJson,
   decodeReviewThreadsJson,
@@ -40,7 +39,6 @@ import {
   PULL_REQUEST_ACTIVITY_JSON_FIELDS,
   PULL_REQUEST_DETAIL_JSON_FIELDS,
   PULL_REQUEST_LIST_JSON_FIELDS,
-  REPOSITORY_ACCESS_JSON_FIELDS,
   RESOLVE_REVIEW_THREAD_GRAPHQL_MUTATION,
   REVIEWER_CANDIDATES_GRAPHQL_QUERY,
   REVIEW_THREAD_COMMENTS_GRAPHQL_QUERY,
@@ -316,20 +314,13 @@ export class GitHubPullRequestCli extends Context.Service<
       readonly ids: ReadonlyArray<string>;
     }) => Effect.Effect<ReadonlyMap<string, string>, GitHubPullRequestCliError>;
 
-    /** One `gh repo view`, which answers what the repository allows and where the viewer stands. */
-    readonly getRepositoryAccess: (input: {
-      readonly cwd: string;
-      readonly repository: string;
-      readonly host: string;
-    }) => Effect.Effect<GitHubRepositoryAccess, GitHubPullRequestCliError>;
-
-    /** The viewer's standing on its own, for deciding a write without reading the whole detail. */
+    /** One GraphQL read for the repository's merge settings and the viewer's standing. */
     readonly getViewerAccess: (input: {
       readonly cwd: string;
       readonly repository: string;
       readonly host: string;
       readonly number: number;
-    }) => Effect.Effect<GitHubViewerAccess, GitHubPullRequestCliError>;
+    }) => Effect.Effect<GitHubViewerAccess & GitHubRepositoryAccess, GitHubPullRequestCliError>;
 
     /** Who this pull request may be sent to, and who it has already been sent to. */
     readonly listReviewerCandidates: (input: {
@@ -1164,34 +1155,6 @@ export const make = Effect.gen(function* () {
           }),
         );
     },
-
-    getRepositoryAccess: (input) =>
-      github
-        .execute({
-          cwd: input.cwd,
-          args: [
-            "repo",
-            "view",
-            `${input.host}/${input.repository}`,
-            "--json",
-            REPOSITORY_ACCESS_JSON_FIELDS,
-          ],
-        })
-        .pipe(
-          Effect.flatMap((result) => {
-            const decoded = decodeRepositoryAccessJson(result.stdout.trim());
-            return Result.isSuccess(decoded)
-              ? Effect.succeed(decoded.success)
-              : Effect.fail(
-                  new GitHubPullRequestReadError({
-                    command: "gh",
-                    cwd: input.cwd,
-                    operation: "getRepositoryAccess",
-                    cause: decoded.failure,
-                  }),
-                );
-          }),
-        ),
 
     getViewerAccess: (input) => {
       const { owner, name } = parseRepositorySelector(input.repository);
