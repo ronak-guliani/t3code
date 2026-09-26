@@ -401,13 +401,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           ...(recordedReportOutcome !== undefined ? { recordedReportOutcome } : {}),
         });
         const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
-        // A failed metadata precondition is an accepted no-op. Persist its
-        // receipt so retrying the same command cannot apply it to a later state.
+        // State-dependent no-ops are accepted once so retries cannot apply
+        // them to a later state.
         if (
           eventBases.length === 0 &&
-          admittedCommand.type === "thread.meta.update" &&
-          (admittedCommand.expectedUpdatedAt !== undefined ||
-            admittedCommand.expectedWorkspaceCwd !== undefined)
+          (admittedCommand.type === "thread.delegation.settle" ||
+            admittedCommand.type === "thread.child.wait.prune" ||
+            (admittedCommand.type === "thread.meta.update" &&
+              (admittedCommand.expectedUpdatedAt !== undefined ||
+                admittedCommand.expectedWorkspaceCwd !== undefined)))
         ) {
           yield* commandReceiptRepository.upsert({
             commandId: command.commandId,
