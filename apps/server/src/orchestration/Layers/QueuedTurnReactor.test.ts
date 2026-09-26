@@ -948,6 +948,62 @@ describe("QueuedTurnReactor", () => {
     expect(settlementCommands(first)).toEqual([]);
   });
 
+  it.each([
+    {
+      name: "queued retry",
+      update: (thread: OrchestrationReadModel["threads"][number]) => ({
+        ...thread,
+        queuedTurns: [
+          ...(thread.queuedTurns ?? []),
+          {
+            ...thread.queuedTurns![0]!,
+            id: QueuedTurnId.make("retry-child-queued-turn"),
+            message: {
+              ...thread.queuedTurns![0]!.message,
+              messageId: MessageId.make("retry-child-message"),
+              text: "Retry the delegated work",
+            },
+            failedAt: null,
+            failureMessage: null,
+          },
+        ],
+      }),
+    },
+    {
+      name: "projected in-flight continuation",
+      update: (thread: OrchestrationReadModel["threads"][number]) => ({
+        ...thread,
+        messages: [
+          ...thread.messages,
+          {
+            id: MessageId.make("child-in-flight-continuation"),
+            role: "user" as const,
+            text: "Continue after the failed queued turn",
+            turnId: null,
+            streaming: false,
+            createdAt: new Date(Date.parse(now) + 1_000).toISOString(),
+            updatedAt: new Date(Date.parse(now) + 1_000).toISOString(),
+          },
+        ],
+      }),
+    },
+  ])("does not report a failed queued turn while a $name can make progress", async ({ update }) => {
+    const stalled = delegatedReadModel({ blockedItems: true });
+    const child = stalled.threads[1]!;
+    const commands = await runReactor(
+      {
+        ...stalled,
+        threads: stalled.threads.map((thread) =>
+          thread.id === child.id ? update(thread) : thread,
+        ),
+      },
+      monitorSnapshot("head"),
+      { delegationIdleStallThresholdMs: 1_000 },
+    );
+
+    expect(delegationStallCommands(commands)).toEqual([]);
+  });
+
   it("bounds a failed queued turn stall summary when the failure detail is huge", async () => {
     const stalled = delegatedReadModel({ blockedItems: true });
     const child = stalled.threads[1]!;

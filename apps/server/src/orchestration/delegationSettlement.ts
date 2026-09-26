@@ -145,6 +145,12 @@ export function delegationStallEpisode(
       child.latestTurn?.requestedAt,
       child.session?.updatedAt,
     ) ?? child.createdAt;
+  if (
+    threadHasInFlightTurn(child) ||
+    (child.queuedTurns ?? []).some((turn) => turn.failedAt === null)
+  ) {
+    return null;
+  }
   const failedTurn = (child.queuedTurns ?? [])
     .filter((turn): turn is typeof turn & { readonly failedAt: string } => turn.failedAt !== null)
     .sort(
