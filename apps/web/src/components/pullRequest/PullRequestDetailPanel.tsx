@@ -930,8 +930,6 @@ export function PullRequestDetailPanel({
       <header className="shrink-0 border-b border-border/60 bg-chat-background">
         <div className="flex h-8 items-center gap-2 border-b border-border/60 px-4 text-xs text-muted-foreground">
           <div className="flex min-w-0 flex-1 items-center gap-1">
-            <span className="min-w-0 truncate font-medium">{detail.repository}</span>
-            <span aria-hidden>/</span>
             <a
               className={cn(
                 "inline-flex shrink-0 items-center gap-0.5 font-medium underline-offset-2 hover:underline",
