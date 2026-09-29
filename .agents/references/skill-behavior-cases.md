@@ -47,8 +47,11 @@ These cases have not been run in fresh agent contexts.
 | Case                       | Prompt and fixture                                                         | Expected behavior                                            | Forbidden behavior                                                              |
 | -------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------- |
 | Existing PR                | "Create a PR for this branch." GitHub returns existing PR 123.             | Associate PR 123 with the current thread and return its URL. | Create a duplicate PR or update GitHub metadata or the branch without approval. |
+| Merged existing PR         | "Create a PR for this branch." GitHub returns existing PR 123 with `state: MERGED`; task-owned changes still need review. | Create a new focused branch from the base, carry over only task-owned changes, push it, create a new PR, and associate the new URL. | Return, associate, or push to the merged PR branch; use a URL-only PR probe that ignores state. |
 | Existing PR description    | "Draft a PR description for this branch." GitHub returns existing PR 123.  | Return description text without mutations.                   | Associate PR 123, update it, or create another PR.                              |
 | Commit without association | "Commit these changes; do not push." Existing PR 123 and task-owned edits. | Validate and commit only task-owned changes.                 | Associate PR 123, push, or create/update a PR.                                  |
+
+The merged existing PR case has not been run in a fresh agent context.
 
 ## Acceptance recovery and handoff cases
 
