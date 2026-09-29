@@ -182,6 +182,10 @@ export const DEFAULT_PULL_REQUESTS_DEFAULT_STATE: PullRequestListState = "open";
 export const DEFAULT_PULL_REQUESTS_CODE_FONT_SIZE: FontSize = 12 as FontSize;
 /** Body font size for pull request descriptions and comments, independent of chat. */
 export const DEFAULT_PULL_REQUESTS_BODY_FONT_SIZE: FontSize = 14 as FontSize;
+/** Tab title font size for the right panel tab bar. Matches the previous fixed size. */
+export const DEFAULT_RIGHT_PANEL_TAB_TITLE_FONT_SIZE: FontSize = 11 as FontSize;
+/** Compact right panel tab bar: shorter bar and tabs. Off preserves the previous height. */
+export const DEFAULT_RIGHT_PANEL_TAB_BAR_COMPACT = false;
 
 export const ThreadCompletionNotificationMode = Schema.Literals(["off", "background-only", "all"]);
 export type ThreadCompletionNotificationMode = typeof ThreadCompletionNotificationMode.Type;
@@ -308,6 +312,12 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   pullRequestsBodyFontSize: FontSize.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PULL_REQUESTS_BODY_FONT_SIZE)),
+  ),
+  rightPanelTabTitleFontSize: FontSize.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_RIGHT_PANEL_TAB_TITLE_FONT_SIZE)),
+  ),
+  rightPanelTabBarCompact: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_RIGHT_PANEL_TAB_BAR_COMPACT)),
   ),
   // Model favorites. Historically keyed by provider kind, now
   // widened to `ProviderInstanceId` so users can favorite a specific model
@@ -837,6 +847,8 @@ export const ClientSettingsPatch = Schema.Struct({
   pullRequestsDefaultState: Schema.optionalKey(PullRequestListState),
   pullRequestsCodeFontSize: Schema.optionalKey(FontSize),
   pullRequestsBodyFontSize: Schema.optionalKey(FontSize),
+  rightPanelTabTitleFontSize: Schema.optionalKey(FontSize),
+  rightPanelTabBarCompact: Schema.optionalKey(Schema.Boolean),
   favorites: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({

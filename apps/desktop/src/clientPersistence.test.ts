@@ -79,6 +79,8 @@ const clientSettings: ClientSettings = {
   pullRequestsDefaultState: "open",
   pullRequestsCodeFontSize: 12,
   pullRequestsBodyFontSize: 14,
+  rightPanelTabTitleFontSize: 11,
+  rightPanelTabBarCompact: false,
   favorites: [],
   providerModelPreferences: {},
   sidebarProjectGroupingMode: "repository_path",

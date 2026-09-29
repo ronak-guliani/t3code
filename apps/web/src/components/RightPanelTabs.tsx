@@ -18,6 +18,7 @@ import { type MouseEvent, type ReactNode, useState } from "react";
 
 import type { RightPanelSurface } from "~/rightPanelStore";
 import { cn } from "~/lib/utils";
+import { useSettings } from "~/hooks/useSettings";
 import { useBrowserDefaults } from "~/browser/browserDefaults";
 import { useTheme } from "~/hooks/useTheme";
 import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanelShell";
@@ -188,6 +189,8 @@ export function RightPanelTabs({
 }: Props) {
   const browserProfiles = useBrowserDefaults().profiles;
   const { resolvedTheme } = useTheme();
+  const tabTitleFontSize = useSettings((state) => state.rightPanelTabTitleFontSize);
+  const tabBarCompact = useSettings((state) => state.rightPanelTabBarCompact);
   const activeSurface = surfaces.find((surface) => surface.id === activeSurfaceId);
   const closeOnMiddleClick = (event: MouseEvent, surface: RightPanelSurface) => {
     if (event.button !== 1) return;
@@ -198,7 +201,10 @@ export function RightPanelTabs({
   return (
     <PreviewPanelShell mode={mode} maximized={maximized}>
       <div
-        className="flex h-8 shrink-0 items-center gap-1 border-b border-border/70 bg-muted/20 px-1.5"
+        className={cn(
+          "flex shrink-0 items-center gap-1 border-b border-border/70 bg-muted/20 px-1.5",
+          tabBarCompact ? "h-7" : "h-8",
+        )}
         data-right-panel-tabbar
       >
         <div
@@ -215,12 +221,20 @@ export function RightPanelTabs({
               <div
                 key={surface.id}
                 className={cn(
-                  "group flex h-6 min-w-0 max-w-44 shrink-0 items-center rounded-md border",
-                  surface.kind === "preview" ? "text-[10px]" : "text-[11px]",
+                  "group flex min-w-0 max-w-44 shrink-0 items-center rounded-md border",
+                  tabBarCompact ? "h-5" : "h-6",
                   active
                     ? "border-border/70 bg-background text-foreground shadow-xs/5"
                     : "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground",
                 )}
+                // Browser tabs show URLs, so they read one size smaller —
+                // the same 11/10 relationship the fixed sizes had before.
+                style={{
+                  fontSize:
+                    surface.kind === "preview"
+                      ? Math.max(6, tabTitleFontSize - 1)
+                      : tabTitleFontSize,
+                }}
               >
                 <button
                   type="button"

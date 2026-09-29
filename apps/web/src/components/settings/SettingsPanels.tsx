@@ -1162,6 +1162,13 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.pullRequestsBodyFontSize !== DEFAULT_UNIFIED_SETTINGS.pullRequestsBodyFontSize
         ? ["Pull requests body font size"]
         : []),
+      ...(settings.rightPanelTabTitleFontSize !==
+      DEFAULT_UNIFIED_SETTINGS.rightPanelTabTitleFontSize
+        ? ["Tab title font size"]
+        : []),
+      ...(settings.rightPanelTabBarCompact !== DEFAULT_UNIFIED_SETTINGS.rightPanelTabBarCompact
+        ? ["Compact tab bar"]
+        : []),
       ...(settings.browserAutoShowFloatingPreview !==
       DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview
         ? ["Agent browser preview"]
@@ -1246,6 +1253,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.pullRequestsDefaultState,
       settings.pullRequestsCodeFontSize,
       settings.pullRequestsBodyFontSize,
+      settings.rightPanelTabTitleFontSize,
+      settings.rightPanelTabBarCompact,
       settings.enableAssistantStreaming,
       settings.agentWorkflows,
       settings.sidebarFontSize,
@@ -2285,6 +2294,75 @@ export function GeneralSettingsPanel() {
                 ))}
               </SelectPopup>
             </Select>
+          }
+        />
+        <SettingsRow
+          title="Tab title font size"
+          description="Font size for titles in the right panel tab bar."
+          resetAction={
+            settings.rightPanelTabTitleFontSize !==
+            DEFAULT_UNIFIED_SETTINGS.rightPanelTabTitleFontSize ? (
+              <SettingResetButton
+                label="tab title font size"
+                onClick={() =>
+                  updateSettings({
+                    rightPanelTabTitleFontSize: DEFAULT_UNIFIED_SETTINGS.rightPanelTabTitleFontSize,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={String(settings.rightPanelTabTitleFontSize)}
+              onValueChange={(value) => {
+                const num = Number(value);
+                if (isFontSize(num)) {
+                  updateSettings({ rightPanelTabTitleFontSize: num });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Tab title font size">
+                <SelectValue>
+                  {FONT_SIZE_OPTIONS.find(
+                    (option) => option.value === settings.rightPanelTabTitleFontSize,
+                  )?.label ?? "11px"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {FONT_SIZE_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={String(option.value)}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Compact tab bar"
+          description="Use a shorter right panel tab bar with shorter tabs."
+          resetAction={
+            settings.rightPanelTabBarCompact !==
+            DEFAULT_UNIFIED_SETTINGS.rightPanelTabBarCompact ? (
+              <SettingResetButton
+                label="compact tab bar"
+                onClick={() =>
+                  updateSettings({
+                    rightPanelTabBarCompact: DEFAULT_UNIFIED_SETTINGS.rightPanelTabBarCompact,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.rightPanelTabBarCompact}
+              onCheckedChange={(checked) =>
+                updateSettings({ rightPanelTabBarCompact: Boolean(checked) })
+              }
+              aria-label="Compact tab bar"
+            />
           }
         />
         {(
