@@ -21,7 +21,7 @@ import {
   type WsRpcProtocolClient,
   type WsRpcProtocolSocketUrlProvider,
 } from "./protocol";
-import { isTransportConnectionErrorMessage } from "./transportError";
+import { isTransportConnectionErrorMessage } from "@t3tools/client-runtime";
 import { recordWsDiagnostic } from "./wsDiagnostics";
 
 interface SubscribeOptions {

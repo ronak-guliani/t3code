@@ -4,7 +4,7 @@ import {
   type SidebarStateMutation,
   type SidebarStateSnapshot,
 } from "@t3tools/contracts";
-import { isTransportConnectionErrorMessage } from "./rpc/transportError";
+import { isTransportConnectionErrorMessage } from "@t3tools/client-runtime";
 import { reportClientError } from "./lib/clientLogger";
 
 interface SidebarStateClient {
