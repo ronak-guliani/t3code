@@ -320,7 +320,7 @@ export default function FileBrowserPanel({
 
   return (
     <div
-      className="flex min-h-0 flex-1 flex-col bg-background"
+      className="flex min-h-0 flex-1 flex-col bg-chat-background"
       data-file-browser-panel={`${environmentId}:${cwd}`}
     >
       <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border/60 px-2.5">
