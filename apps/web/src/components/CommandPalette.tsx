@@ -1103,9 +1103,16 @@ function OpenCommandPaletteDialog() {
     return null;
   };
 
+  // autoHighlight="always" keeps the first row visually highlighted, but the
+  // highlight callback only fires on change — so before the user navigates,
+  // Tab acts on the first visible row instead of doing nothing.
+  const highlightedItem =
+    highlightedItemValue === null
+      ? (displayedGroups.flatMap((group) => group.items)[0] ?? null)
+      : findDisplayedItem(highlightedItemValue);
   const highlightedScopeItem =
-    currentView === null && !isBrowsing && !isActionsOnly && highlightedItemValue !== null
-      ? (findDisplayedItem(highlightedItemValue)?.scope ?? null)
+    currentView === null && !isBrowsing && !isActionsOnly
+      ? (highlightedItem?.scope ?? null)
       : null;
   const pendingQualifier =
     currentView === null && !isBrowsing && !isActionsOnly
