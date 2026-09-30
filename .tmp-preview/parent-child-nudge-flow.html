@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Parent–Child Nudging — Full Updated Flow (PR #500, merged)</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#111; --muted:#5b5b5b; --card:#f5f5f5; --line:#e2e2e2; --accent:#0b5fff; --good:#0a7a2f; --bad:#b00020; --warn:#9a5b00; --new:#6a3fb5; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#101014; --fg:#f2f2f2; --muted:#a8a8a8; --card:#18181e; --line:#2c2c34; --accent:#6ea8ff; --new:#b79cff; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  header, main { max-width: 1020px; margin: 0 auto; padding: 24px; }
+  header { border-bottom: 1px solid var(--line); }
+  h1 { font-size: 27px; margin: 0 0 8px; }
+  h2 { font-size: 20px; margin-top: 34px; border-bottom:1px solid var(--line); padding-bottom:6px; }
+  h3 { font-size: 16px; margin: 18px 0 8px; }
+  p.sub { color: var(--muted); margin: 4px 0; }
+  a { color: var(--accent); }
+  .grid { display:grid; gap:12px; }
+  @media(min-width:780px){ .grid.two{grid-template-columns:1fr 1fr;} .grid.three{grid-template-columns:1fr 1fr 1fr;} .grid.five{grid-template-columns:repeat(5,1fr);} }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .card.new { border-color: var(--new); border-width:2px; }
+  code, .mono { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size: 13px; }
+  code { background: rgba(127,127,127,.15); padding: 1px 6px; border-radius: 6px; }
+  pre { background: var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; overflow:auto; font-size:13px; }
+  .pill { display:inline-block; font-size:12px; font-weight:700; padding:2px 10px; border-radius:999px; border:1px solid var(--line); margin:2px 4px 2px 0; }
+  .tag-new { color:var(--new); border-color:var(--new); }
+  .good{color:var(--good);} .bad{color:var(--bad);} .warn{color:var(--warn);} .newc{color:var(--new);}
+  table { width:100%; border-collapse: collapse; font-size:14.5px; }
+  th,td { text-align:left; padding:10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  ul.tight li, ol.tight li { margin: 6px 0; }
+  .flow { display:flex; flex-wrap:wrap; gap:6px; align-items:stretch; }
+  .step { flex:1 1 150px; }
+  .arrow { align-self:center; color:var(--muted); font-weight:700; }
+  footer { color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Parent–child nudging — full updated flow</h1>
+  <p class="sub">Shipped in <a href="https://github.com/ronak-guliani/t3code/pull/500">ronak-guliani/t3code#500</a> (merge <code>02e16bc279</code>). Event-sourced wake-up: no polling, wake only via <span class="mono">QueuedTurnReactor</span>.</p>
+  <p><span class="pill">1 parent</span><span class="pill">N children</span><span class="pill">exactly-once terminal nudge</span><span class="pill tag-new">★ = new in #500</span></p>
+</header>
+<main>
+
+<h2>1. The full flow, end to end</h2>
+<div class="flow">
+  <div class="card step"><strong>① Spawn</strong><br/><span class="mono">delegate_work</span> creates each child with<br/><span class="mono">delegation:{assignmentId, dispatchId, dispatchTurnId, followUp: automatic | notify-only, completedAt: null}</span><br/><code>mcpServer.ts:1223</code> · <code>decider.ts:3167</code></div>
+  <div class="arrow">→</div>
+  <div class="card step"><strong>② Wait (optional)</strong><br/>Parent calls <span class="mono">set_child_wait {mode: all | any, assignments:[{childThreadId, assignmentId}]}</span>. Membership is fixed at set time; outcomes snapshot from current delegations.<br/><code>decider.ts:2290</code></div>
+  <div class="arrow">→</div>
+  <div class="card step"><strong>③ Child finishes</strong><br/><span class="mono">turn.diff.complete</span> builds <span class="mono">result-available | failed | blocked</span>, stamps <span class="mono">completedAt</span>, calls <span class="mono">appendChildLifecycleNotification()</span>.<br/><code>decider.ts:307, 4141</code></div>
+  <div class="arrow">→</div>
+  <div class="card step"><strong>④ Queue nudge</strong><br/>If <span class="mono">kind ≠ progress</span> and <span class="mono">followUp = automatic</span>, <span class="mono">queueChildNudge()</span> coalesces into the tail <span class="mono">child-nudge</span> batch (≤32, ≤24&nbsp;KiB) with <span class="mono">collectUntil = +2s</span>.<br/><code>childNudging.ts:84</code></div>
+  <div class="arrow">→</div>
+  <div class="card step"><strong>⑤ Dispatch</strong><br/><span class="mono">drainThread() + evaluateChildFollowUp()</span> releases the nudge as one parent turn once the wait is satisfied (failures/decisions cut the line). Wait marked <span class="mono">satisfiedAt</span> once.<br/><code>QueuedTurnReactor.ts:92</code> · <code>childFollowUp.ts:78</code></div>
+</div>
+
+<h2>2. The three gates between “child done” and “parent wakes”</h2>
+<table>
+<tr><th>Gate</th><th>Rule</th><th>Outcome</th></tr>
+<tr><td><strong>Authority fence</strong><br/><code>decider.ts:327–356, 4171+</code></td><td>Report must come from the authorized <span class="mono">(dispatch, turn)</span> execution. Superseded turns, turn-absent signals on fenced work, pending approval/input, or non-empty child queue stay diagnostic-only.</td><td class="warn">No delegation completion, no wait update, no nudge. By design.</td></tr>
+<tr><td><strong>Wait membership</strong><br/><code>childFollowUp.ts:30–54</code></td><td><span class="mono">all</span> needs every assignment <span class="mono">result-available</span>; <span class="mono">any</span> needs one. Reassigned children get new <span class="mono">assignmentId</span>s, so old wait entries go stale.</td><td>Held nudge shows <span class="mono">Waiting for N children</span> / <span class="mono">assignment unavailable</span>. <span class="newc">★ Stale entries now wake fail-fast (see §3).</span></td></tr>
+<tr><td><strong>Dispatch holds</strong><br/><code>childFollowUp.ts:100–125</code> · <code>QueuedTurnReactor.ts:57,136</code></td><td>Stop/paused, archived parent, active turn, approval/input, pending child decision, unexpired <span class="mono">collectUntil</span> (“Collecting…”), or a user message ahead in queue all hold the nudge. <span class="mono">child-lifecycle-notified</span> alone never drains.</td><td>Nudge stays queued until the hold clears; user messages always run first.</td></tr>
+</table>
+<p>Intentional non-wakes (unchanged): <span class="mono">kind: progress</span>, <span class="mono">followUp: notify-only</span>, <span class="mono">decisions-only</span> waits for routine results.</p>
+
+<h2>3. What #500 changed <span class="pill tag-new">★ new</span></h2>
+<div class="grid two">
+<div class="card new"><h3>★ A. Stale-wait diagnostic wake</h3>
+<p>When a child terminally completes under a <em>newer</em> assignment than the parent wait references, the normal wait update can't match — previously a silent infinite hold. Now <span class="mono">appendChildLifecycleNotification()</span> emits a second report alongside the real result:</p>
+<ul class="tight">
+<li><span class="mono">kind: blocked</span>, <span class="mono">wakeReason: assignment-blocked</span>, id <span class="mono">assignment-stale:&lt;child&gt;:&lt;waitAssignment&gt;</span></li>
+<li>Marks the stale wait entry <span class="mono">blocked</span> (never fakes success) and coalesces into the same tail batch</li>
+<li>Parent wakes immediately (blockers bypass waits) with both the real result and revise-the-wait guidance</li>
+</ul>
+<p><code>decider.ts:405–580</code> · helper <span class="mono">staleChildWaitAssignments()</span> in <code>childFollowUp.ts:58</code></p></div>
+<div class="card new"><h3>★ B. Filter + reason precedence</h3>
+<ul class="tight">
+<li><span class="mono">evaluateChildFollowUp()</span> keeps <span class="mono">assignment-stale:</span> diagnostics instead of dropping them as assignment mismatches (<code>childFollowUp.ts:92</code>)</li>
+<li><span class="mono">childWaitBlockReason()</span> reports <span class="mono">needs attention</span> for already-recorded failures/blockers even if the child was since reassigned or archived (<code>childFollowUp.ts:42</code>)</li>
+<li>Web <span class="mono">ChildFollowUpPanel</span> inherits the clearer message (display-only, no logic change)</li>
+</ul></div>
+</div>
+<div class="card new" style="margin-top:12px"><h3>★ C. Parent drain on child queue events</h3>
+<p><span class="mono">QueuedTurnReactor</span> now also drains the parent when a child emits <span class="mono">queued-turn-created / updated</span> (previously only <span class="mono">meta-updated / archived / deleted / decoupled</span>), so assignment changes on a child re-evaluate a waiting parent instead of depending on a later unrelated event. No new timers or polling. <code>QueuedTurnReactor.ts:433</code></p></div>
+
+<h2>4. The original bug, walked through</h2>
+<pre>Parent spawns 4 helpers (automatic) + set_child_wait(all × 4)
+  → 4 × turn.diff.complete → 4 × result-available expected
+  → observed: all children done, parent stuck on “Waiting for 1 child”
+
+Stranding required just ONE of:
+  R1  4th completion dropped by the fence (stale turn / pending interaction /
+      child-has-unfinished-children guard) → no report at all
+  R2  batch spawned notify-only, or only progress reports → correctly no wake
+  R3  one child reassigned → wait references old assignmentId → hold forever ★ fixed
+  R4  Stop/paused, active turn, approval/input, collectUntil, or user message
+      (“check on helper threads” runs BEFORE the nudge) → held, not lost</pre>
+
+<h2>5. Live E2E proof (ran pre-merge, env torn down)</h2>
+<ol class="tight">
+<li>Worktree server, isolated home. Parent + 3 children via <span class="mono">chat create</span>; automatic delegations via <span class="mono">queue add --assignment-follow-up automatic</span>; <span class="mono">wait: all × 3</span>.</li>
+<li>All 3 children completed with real provider turns (<span class="mono">result-available</span>); wait outcomes updated per assignment.</li>
+<li>Completions predating the wait delivered their own immediate nudge (correct — a wait can't gate the past); the remaining results coalesced into <strong>one</strong> terminal nudge dispatched after the last completion: <span class="mono">satisfiedAt</span> set, no stuck wait, no duplicate wakes.</li>
+</ol>
+
+<h2>6. Files shipped</h2>
+<table>
+<tr><th>File</th><th>Change</th></tr>
+<tr><td><code>packages/shared/src/childFollowUp.ts</code></td><td><span class="mono">staleChildWaitAssignments()</span>, diagnostic filter exemption, reason reorder</td></tr>
+<tr><td><code>apps/server/src/orchestration/decider.ts</code></td><td>Diagnostic notification + wait update + coalesced nudge in <span class="mono">appendChildLifecycleNotification</span></td></tr>
+<tr><td><code>apps/server/src/orchestration/Layers/QueuedTurnReactor.ts</code></td><td>Parent drain on child queue events</td></tr>
+<tr><td><code>apps/server/src/orchestration/decider.nudging.test.ts</code></td><td>3-child <span class="mono">wait=all</span> single-wake test + stale-diagnostic test (76 tests green with reactor suite)</td></tr>
+<tr><td><code>apps/server/src/orchestration/commandInvariants.test.ts</code> · <code>packages/contracts/src/settings.test.ts</code></td><td>Two pre-existing stale fixtures repaired to unblock CI (null <span class="mono">turnId</span>; <span class="mono">gpt-5.4-mini</span> → <span class="mono">gpt-6-luna</span> default)</td></tr>
+</table>
+
+<footer>Merged as <code>02e16bc279</code> · <a href="https://github.com/ronak-guliani/t3code/pull/500">ronak-guliani/t3code#500</a>. Line numbers refer to the merged revision.</footer>
+</main>
+</body>
+</html>
