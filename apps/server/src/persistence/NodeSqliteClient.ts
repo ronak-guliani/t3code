@@ -24,9 +24,10 @@ import type { Connection } from "effect/unstable/sql/SqlConnection";
 import { SqlError, classifySqliteError } from "effect/unstable/sql/SqlError";
 import * as Statement from "effect/unstable/sql/Statement";
 
+import { DEFAULT_SQLITE_READ_POOL_SIZE } from "./SqlitePolicy.ts";
+
 const ATTR_DB_SYSTEM_NAME = "db.system.name";
 const DEFAULT_BUSY_TIMEOUT_MILLIS = 5_000;
-const DEFAULT_READ_POOL_SIZE = 4;
 
 const WORKER_SOURCE = String.raw`
 (async () => {
@@ -488,7 +489,7 @@ const makeWorkerBacked = Effect.fn("makeWorkerBacked")(function* (
   const readPoolSize =
     options.readonly || options.disableWAL
       ? 0
-      : Math.max(1, Math.floor(options.readPoolSize ?? DEFAULT_READ_POOL_SIZE));
+      : Math.max(1, Math.floor(options.readPoolSize ?? DEFAULT_SQLITE_READ_POOL_SIZE));
   const readers = yield* Effect.forEach(Array.from({ length: readPoolSize }), () =>
     makeWorkerClient(options, true),
   );

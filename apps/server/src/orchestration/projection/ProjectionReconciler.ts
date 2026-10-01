@@ -16,6 +16,7 @@ import { ProjectionThreadActivityRepository } from "../../persistence/Services/P
 import { ProjectionThreadMessageRepository } from "../../persistence/Services/ProjectionThreadMessages.ts";
 import { ProjectionThreadProposedPlanRepository } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
+import { DEFAULT_SQLITE_READ_POOL_SIZE } from "../../persistence/SqlitePolicy.ts";
 
 function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
   if (typeof payload !== "object" || payload === null) {
@@ -96,7 +97,7 @@ function deriveHasActionableProposedPlan(input: {
 }
 
 // Match the file-backed Node SQLite read pool while bounding bootstrap fan-out.
-const MAX_CONCURRENT_SHELL_SUMMARY_REFRESHES = 4;
+const MAX_CONCURRENT_SHELL_SUMMARY_REFRESHES = DEFAULT_SQLITE_READ_POOL_SIZE;
 
 interface ProjectionReconcilerShape {
   readonly drain: Effect.Effect<void, ProjectionRepositoryError | PlatformError.PlatformError>;
