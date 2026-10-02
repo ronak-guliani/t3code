@@ -282,14 +282,15 @@ const SIDEBAR_THREAD_WINDOW_SIZE = 30;
  * (Escape, blur, unmount) clears the ghost and never reorders.
  *
  * Ghost position lives in the bridge's external store, so pointer moves
- * re-render only the ghost — never the sidebar list.
+ * re-render only the ghost — never the sidebar list. The drop payload and
+ * list edges are resolved once at activation; only the ghost position and
+ * target hit test run per move.
  */
 const THREAD_CONTEXT_DRAG_LIST_SELECTOR = "[data-thread-context-list]";
 
 interface SidebarThreadContextDragSource {
   readonly threadKey: string;
   readonly title: string;
-  readonly threadRef: ScopedThreadRef;
 }
 
 let activeThreadContextGesture: {
@@ -300,19 +301,30 @@ let activeThreadContextGesture: {
   readonly listEl: Element | null;
   activated: boolean;
   outside: boolean;
+  /** List horizontal bounds, captured once at activation. */
+  listLeft: number;
+  listRight: number;
+  /** Drop payload, resolved once at activation: the selection cannot change mid-gesture. */
+  refs: ScopedThreadRef[] | null;
+  title: string;
   cleanup: () => void;
 } | null = null;
 
 /**
- * Set when a context drop dispatched during the current gesture so the
- * pinned `onDragEnd` firing after release can stand down even under the
- * nested per-project `DndContext`s. Consumed (cleared) by the next pinned
- * drag end.
+ * Set when a gesture released outside the list or was cancelled, so a
+ * trailing pinned `onDragEnd` from the same pointer stands down even under
+ * the nested per-project `DndContext`s. Cleared when the next gesture
+ * starts and consumed (cleared) by the next pinned drag end, so an
+ * unpinned-row drop can never disable a later genuine reorder.
  */
 let consumedThreadContextDrop = false;
 
 function cancelActiveThreadContextGesture(): void {
-  activeThreadContextGesture?.cleanup();
+  const gesture = activeThreadContextGesture;
+  if (gesture?.activated) {
+    consumedThreadContextDrop = true;
+  }
+  gesture?.cleanup();
 }
 
 function resolveThreadContextDragPayload(activeKey: string): {
@@ -362,9 +374,17 @@ function startSidebarThreadContextGesture(
     listEl,
     activated: false,
     outside: false,
+    listLeft: 0,
+    listRight: 0,
+    refs: null as ScopedThreadRef[] | null,
+    title: "",
     cleanup: () => {},
   };
   activeThreadContextGesture = gesture;
+  // A fresh gesture owns the flag: a previous unpinned-row drop (whose
+  // DndContext never fires drag end) must not suppress this gesture's
+  // genuine reorder.
+  consumedThreadContextDrop = false;
 
   const suppressReleaseClick = () => {
     const suppress = (click: Event) => {
@@ -398,6 +418,13 @@ function startSidebarThreadContextGesture(
 
   const cancel = () => {
     const wasActive = gesture.activated;
+    if (wasActive) {
+      // Stand down a trailing dnd-kit drag from the same pointer: dnd-kit
+      // aborts its own drag on Escape, but blur/unmount paths leave it live,
+      // and either way the release after a cancelled gesture must not
+      // reorder. The next gesture start clears this again.
+      consumedThreadContextDrop = true;
+    }
     cleanup();
     // A cancelled press must not navigate on release; an untouched press
     // keeps plain-click behavior.
@@ -423,11 +450,24 @@ function startSidebarThreadContextGesture(
       // accumulating a stray selection. Clicks never reach this path.
       document.getSelection()?.removeAllRanges();
       suppressReleaseClick();
+      // Resolve once: the selection cannot change mid-gesture, the title is
+      // fixed, and only the list's horizontal edges matter for exit
+      // detection, so per-move work stays at ghost position + hit test.
+      const bounds = listEl?.getBoundingClientRect();
+      gesture.listLeft = bounds?.left ?? 0;
+      gesture.listRight = bounds?.right ?? Number.POSITIVE_INFINITY;
+      gesture.title = source.title.trim() || "Thread";
+      gesture.refs = resolveThreadContextDragPayload(source.threadKey).refs;
     } else if (native.cancelable) {
       native.preventDefault();
     }
-    const bounds = listEl?.getBoundingClientRect();
-    const outside = bounds ? isThreadContextDragOutsideList(point, bounds) : true;
+    const outside =
+      gesture.listEl === null
+        ? true
+        : isThreadContextDragOutsideList(point, {
+            left: gesture.listLeft,
+            right: gesture.listRight,
+          });
     if (!outside) {
       if (gesture.outside) {
         // Back over the list: drop the ghost so the dnd-kit reorder preview
@@ -438,9 +478,10 @@ function startSidebarThreadContextGesture(
       return;
     }
     gesture.outside = true;
-    const title = source.title.trim() || "Thread";
-    const { count } = resolveThreadContextDragPayload(source.threadKey);
-    moveThreadContextDrag(point, { title, count });
+    moveThreadContextDrag(point, {
+      title: gesture.title,
+      count: Math.max(1, gesture.refs?.length ?? 0),
+    });
   };
 
   const onUp = (native: Event) => {
@@ -448,9 +489,9 @@ function startSidebarThreadContextGesture(
     const wasOutside = gesture.activated && gesture.outside;
     const point =
       native instanceof PointerEvent ? pointFromEvent(native) : { x: startX, y: startY };
+    const refs = gesture.refs ?? [];
     cleanup();
     if (!wasOutside) return;
-    const { refs } = resolveThreadContextDragPayload(source.threadKey);
     // Integration seam: pass `{ enabled: <composer-can-accept> }` once the
     // composer exposes it; the bridge honors the gate without new contracts.
     // The return reports receiver acceptance — found target alone is not
@@ -716,7 +757,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const contextDragPointerDown = useSidebarThreadContextDragSource({
     threadKey,
     title: thread.title,
-    threadRef,
   });
   const pendingTurnKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
   const pendingTurn = usePendingTurnStore(

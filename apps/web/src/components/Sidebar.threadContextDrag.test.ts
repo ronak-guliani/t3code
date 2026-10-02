@@ -3,27 +3,15 @@ import { describe, expect, it } from "vitest";
 import {
   THREAD_CONTEXT_DRAG_ACTIVATION_DISTANCE,
   isThreadContextDragOutsideList,
-  isThreadRowEligibleForContextDrag,
   resolvePinnedDragEndShouldReorder,
   resolveThreadContextDragRefs,
   shouldIgnoreThreadContextDragStart,
 } from "./Sidebar.logic";
 
 describe("sidebar thread-context drag gating", () => {
-  it("arms every real thread row, pinned or not", () => {
-    expect(isThreadRowEligibleForContextDrag({ isDraft: false, isPinned: true }).eligible).toBe(
-      true,
-    );
-    expect(isThreadRowEligibleForContextDrag({ isDraft: false, isPinned: false }).eligible).toBe(
-      true,
-    );
-  });
-
-  it("never arms draft rows", () => {
-    expect(isThreadRowEligibleForContextDrag({ isDraft: true, isPinned: false }).eligible).toBe(
-      false,
-    );
-  });
+  // Row eligibility is structural, not gated: every SidebarThreadRow arms the
+  // gesture while SidebarDraftRow (unsent composer state) never attaches it,
+  // so there is no eligibility helper to unit test.
 
   it("ignores presses on drafts and action controls to preserve clicks", () => {
     // Draft discard button, overflow menu trigger, expand chevron, port
