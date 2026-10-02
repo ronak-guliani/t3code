@@ -21,6 +21,7 @@
 
 ## Runtime lifecycle and projection foundations
 
+- Before designing anything on the current orchestration path, check `docs/orchestration-v2/` — it holds the target model, and its adapters already implement the parts the current path is missing. A current-path spec that re-derives a v2 primitive (thread lineage, context transfer with lazy typed resolution, per-adapter capability flags, run-status gates) is wasted work twice over. Forking is the concrete case: v1 forks eagerly and whole-session with no anchor, while v2 models a fork as a thread relationship plus a pending transfer resolved on first dispatch as a native fork or portable context.
 - Runtime PID files published after HTTP startup are observations, not startup ownership. Hold a shared per-state-directory OS-backed claim before constructing runtime services/migrations, revalidate legacy runtime evidence under it, and never unlink the claim file to recover a crash.
 
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
