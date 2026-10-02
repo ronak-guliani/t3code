@@ -53,6 +53,7 @@ import {
 } from "../lib/terminalContext";
 import { isMacPlatform } from "../lib/utils";
 import { __resetLocalApiForTests } from "../localApi";
+import { __resetClientSettingsPersistenceForTests } from "../hooks/useSettings";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { getServerConfig } from "../rpc/serverState";
 import { getRouter } from "../router";
@@ -5002,6 +5003,76 @@ describe("ChatView timeline estimator parity (full app)", () => {
     } finally {
       await mounted.cleanup();
       localStorage.removeItem("t3code:client-settings:v1");
+    }
+  });
+
+  it("scales the under-composer toolbar with the composer metadata font size", async () => {
+    // The BranchToolbar strip sizes itself from --app-composer-meta-font-size
+    // (see BranchToolbar.tsx), so seed the client setting and prove the
+    // mounted row follows it at 11px and then at 14px.
+    async function expectToolbarFontSize(expectedPx: number) {
+      const toolbar = await waitForElement(
+        () => document.querySelector<HTMLElement>('div[class*="--composer-drawer-inset"]'),
+        "Unable to find the under-composer toolbar.",
+      );
+
+      await vi.waitFor(
+        () => {
+          expect(
+            document.documentElement.style.getPropertyValue("--app-composer-meta-font-size"),
+          ).toBe(`${expectedPx}px`);
+          expect(getComputedStyle(toolbar).fontSize).toBe(`${expectedPx}px`);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    }
+
+    localStorage.setItem(
+      "t3code:client-settings:v1",
+      JSON.stringify({
+        ...DEFAULT_CLIENT_SETTINGS,
+        composerMetaFontSize: 11,
+      }),
+    );
+    const elevenMounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-composer-meta-font-11" as MessageId,
+        targetText: "composer meta font 11",
+      }),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await expectToolbarFontSize(11);
+    } finally {
+      await elevenMounted.cleanup();
+    }
+
+    // Reset the hydrated client-settings snapshot so the second mount picks up
+    // the newly seeded value instead of reusing the first mount's 11px.
+    __resetClientSettingsPersistenceForTests();
+    localStorage.setItem(
+      "t3code:client-settings:v1",
+      JSON.stringify({
+        ...DEFAULT_CLIENT_SETTINGS,
+        composerMetaFontSize: 14,
+      }),
+    );
+    const fourteenMounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-composer-meta-font-14" as MessageId,
+        targetText: "composer meta font 14",
+      }),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await expectToolbarFontSize(14);
+    } finally {
+      localStorage.removeItem("t3code:client-settings:v1");
+      await fourteenMounted.cleanup();
     }
   });
 
