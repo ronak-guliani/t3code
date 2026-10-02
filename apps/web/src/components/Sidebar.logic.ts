@@ -955,10 +955,9 @@ export function resolveThreadContextDragRefs(input: {
 }
 
 export function isThreadContextDragOutsideList(
-  point: { readonly x: number; readonly y: number },
+  point: { readonly x: number },
   bounds: { readonly left: number; readonly right: number },
 ): boolean {
-  void point.y;
   return point.x < bounds.left || point.x > bounds.right;
 }
 

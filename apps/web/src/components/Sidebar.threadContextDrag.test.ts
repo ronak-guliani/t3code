@@ -85,11 +85,11 @@ describe("sidebar thread-context drag gating", () => {
 
   it("treats horizontal list exit as the context gesture, vertical moves as reorder", () => {
     const bounds = { left: 0, right: 260 };
-    expect(isThreadContextDragOutsideList({ x: 130, y: 400 }, bounds)).toBe(false);
-    expect(isThreadContextDragOutsideList({ x: 400, y: 400 }, bounds)).toBe(true);
-    expect(isThreadContextDragOutsideList({ x: -20, y: 400 }, bounds)).toBe(true);
+    expect(isThreadContextDragOutsideList({ x: 130 }, bounds)).toBe(false);
+    expect(isThreadContextDragOutsideList({ x: 400 }, bounds)).toBe(true);
+    expect(isThreadContextDragOutsideList({ x: -20 }, bounds)).toBe(true);
     // Returning to the sidebar resumes the reorder preview.
-    expect(isThreadContextDragOutsideList({ x: 130, y: 450 }, bounds)).toBe(false);
+    expect(isThreadContextDragOutsideList({ x: 130 }, bounds)).toBe(false);
   });
 
   it("never reorders on a context drop, even inside nested project contexts", () => {

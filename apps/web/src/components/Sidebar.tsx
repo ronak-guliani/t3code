@@ -327,10 +327,7 @@ function cancelActiveThreadContextGesture(): void {
   gesture?.cleanup();
 }
 
-function resolveThreadContextDragPayload(activeKey: string): {
-  readonly refs: ScopedThreadRef[];
-  readonly count: number;
-} {
+function resolveThreadContextDragPayload(activeKey: string): ScopedThreadRef[] {
   const selectedKeys = [...useThreadSelectionStore.getState().selectedThreadKeys];
   const keys = resolveThreadContextDragRefs({
     activeKey,
@@ -342,7 +339,7 @@ function resolveThreadContextDragPayload(activeKey: string): {
     const ref = parseScopedThreadKey(key);
     if (ref) refs.push(ref);
   }
-  return { refs, count: Math.max(1, refs.length) };
+  return refs;
 }
 
 function startSidebarThreadContextGesture(
@@ -457,7 +454,7 @@ function startSidebarThreadContextGesture(
       gesture.listLeft = bounds?.left ?? 0;
       gesture.listRight = bounds?.right ?? Number.POSITIVE_INFINITY;
       gesture.title = source.title.trim() || "Thread";
-      gesture.refs = resolveThreadContextDragPayload(source.threadKey).refs;
+      gesture.refs = resolveThreadContextDragPayload(source.threadKey);
     } else if (native.cancelable) {
       native.preventDefault();
     }
