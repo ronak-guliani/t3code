@@ -327,25 +327,15 @@ function cancelActiveThreadContextGesture(): void {
   gesture?.cleanup();
 }
 
-function resolveThreadContextDragPayload(activeKey: string): ScopedThreadRef[] {
-  const selectedKeys = [...useThreadSelectionStore.getState().selectedThreadKeys];
-  const keys = resolveThreadContextDragRefs({
-    activeKey,
-    selectedKeys,
-    parseScopedKey: parseScopedThreadKey,
-  });
-  const refs: ScopedThreadRef[] = [];
-  for (const key of keys) {
-    const ref = parseScopedThreadKey(key);
-    if (ref) refs.push(ref);
-  }
-  return refs;
-}
-
 function startSidebarThreadContextGesture(
   event: React.PointerEvent,
   source: SidebarThreadContextDragSource,
 ): void {
+  // A fresh press owns the flag, before any ignore checks: a press on a row
+  // control skips this gesture yet can still start a pinned dnd-kit drag,
+  // and a previous unpinned-row drop (whose DndContext never fires drag end)
+  // must not suppress that genuine reorder.
+  consumedThreadContextDrop = false;
   if (activeThreadContextGesture) return;
   const nativeTarget = event.target instanceof Element ? event.target : null;
   if (
@@ -378,10 +368,6 @@ function startSidebarThreadContextGesture(
     cleanup: () => {},
   };
   activeThreadContextGesture = gesture;
-  // A fresh gesture owns the flag: a previous unpinned-row drop (whose
-  // DndContext never fires drag end) must not suppress this gesture's
-  // genuine reorder.
-  consumedThreadContextDrop = false;
 
   const suppressReleaseClick = () => {
     const suppress = (click: Event) => {
@@ -444,9 +430,10 @@ function startSidebarThreadContextGesture(
       if (distance <= THREAD_CONTEXT_DRAG_ACTIVATION_DISTANCE) return;
       gesture.activated = true;
       // Rows are `select-none`; clearing here keeps the drag from
-      // accumulating a stray selection. Clicks never reach this path.
+      // accumulating a stray selection. In-list release clicks still reach
+      // the row: suppression is armed only once the pointer leaves the
+      // list, so wobbly clicks and unpinned in-list drags keep navigating.
       document.getSelection()?.removeAllRanges();
-      suppressReleaseClick();
       // Resolve once: the selection cannot change mid-gesture, the title is
       // fixed, and only the list's horizontal edges matter for exit
       // detection, so per-move work stays at ghost position + hit test.
@@ -454,7 +441,11 @@ function startSidebarThreadContextGesture(
       gesture.listLeft = bounds?.left ?? 0;
       gesture.listRight = bounds?.right ?? Number.POSITIVE_INFINITY;
       gesture.title = source.title.trim() || "Thread";
-      gesture.refs = resolveThreadContextDragPayload(source.threadKey);
+      gesture.refs = resolveThreadContextDragRefs({
+        activeKey: source.threadKey,
+        selectedKeys: [...useThreadSelectionStore.getState().selectedThreadKeys],
+        parseScopedKey: parseScopedThreadKey,
+      });
     } else if (native.cancelable) {
       native.preventDefault();
     }
@@ -474,7 +465,12 @@ function startSidebarThreadContextGesture(
       }
       return;
     }
-    gesture.outside = true;
+    if (!gesture.outside) {
+      // The release click only needs suppression when it lands outside the
+      // list; a cancelled gesture arms its own suppression in cancel().
+      gesture.outside = true;
+      suppressReleaseClick();
+    }
     moveThreadContextDrag(point, {
       title: gesture.title,
       count: Math.max(1, gesture.refs?.length ?? 0),

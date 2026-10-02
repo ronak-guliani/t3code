@@ -940,18 +940,23 @@ export function shouldIgnoreThreadContextDragStart(input: {
   return input.closest(THREAD_CONTEXT_DRAG_INTERACTIVE_SELECTOR) != null;
 }
 
-export function resolveThreadContextDragRefs(input: {
+export function resolveThreadContextDragRefs<T>(input: {
   readonly activeKey: string;
   readonly selectedKeys: readonly string[];
-  readonly parseScopedKey: (key: string) => unknown;
-}): string[] {
+  readonly parseScopedKey: (key: string) => T | null;
+}): T[] {
   // The multi-selection travels when the picked-up row is part of it;
-  // otherwise only the picked-up row does. Unparseable keys never leak into
-  // the drop payload.
+  // otherwise only the picked-up row does. Each candidate is parsed exactly
+  // once; unparseable keys never leak into the drop payload.
   const keys = input.selectedKeys.includes(input.activeKey)
     ? [...input.selectedKeys]
     : [input.activeKey];
-  return keys.filter((key) => input.parseScopedKey(key) != null);
+  const refs: T[] = [];
+  for (const key of keys) {
+    const ref = input.parseScopedKey(key);
+    if (ref != null) refs.push(ref);
+  }
+  return refs;
 }
 
 export function isThreadContextDragOutsideList(

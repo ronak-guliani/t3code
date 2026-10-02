@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   THREAD_CONTEXT_DRAG_ACTIVATION_DISTANCE,
@@ -81,6 +81,18 @@ describe("sidebar thread-context drag gating", () => {
         parseScopedKey: parse,
       }),
     ).toEqual([]);
+  });
+
+  it("parses each candidate key exactly once", () => {
+    const parse = vi.fn((key: string) => (key.includes(":") ? { key } : null));
+    expect(
+      resolveThreadContextDragRefs({
+        activeKey: "env:thread-2",
+        selectedKeys: ["env:thread-1", "env:thread-2", "env:thread-3"],
+        parseScopedKey: parse,
+      }),
+    ).toEqual([{ key: "env:thread-1" }, { key: "env:thread-2" }, { key: "env:thread-3" }]);
+    expect(parse).toHaveBeenCalledTimes(3);
   });
 
   it("treats horizontal list exit as the context gesture, vertical moves as reorder", () => {
