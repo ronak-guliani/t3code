@@ -12,7 +12,7 @@ thread, but the Pi provider fork is unimplemented, so the forked thread never ge
 provider session: the user gets an error activity and a thread that cannot take a turn. The same
 fork works on Copilot, Claude, and OpenCode, so behavior silently differs by provider.
 
-The current path also has no model for what a fork *is*. It eagerly asks the provider to fork the
+The current path also has no model for what a fork _is_. It eagerly asks the provider to fork the
 whole source session during the fork itself, so the fork cannot be anchored at the message the
 user chose, cannot be deferred until the user picks an agent, has no durable record of how
 continuity was achieved, and has no defined path when a provider cannot fork — it simply fails
@@ -32,7 +32,7 @@ outright — it either resolves or records exactly why it could not.
 1. As a Pi user, I want to fork a chat from a message, so that I can branch off a conversation without losing the original.
 2. As a Pi user, I want the forked thread to take a turn immediately, so that I can keep typing in it.
 3. As a Pi user, I want the forked thread to remember the conversation up to the turn I forked from, so that the model is not starting from nothing.
-4. As a Pi user, I want the forked thread to *not* remember turns after the fork point, so that my new direction is not polluted by the old one.
+4. As a Pi user, I want the forked thread to _not_ remember turns after the fork point, so that my new direction is not polluted by the old one.
 5. As a user, I want forking to be cheap and instant even on a long chat, so that I do not wait for provider work I may never use.
 6. As a user, I want to choose the agent on the forked thread's first turn rather than at fork time, so that a fork is not bound to the source provider.
 7. As a user, I want to see how the fork's context was carried — native fork or portable context — so that I know whether the model really has my history.
