@@ -291,6 +291,12 @@ const THREAD_CONTEXT_DRAG_LIST_SELECTOR = "[data-thread-context-list]";
 interface SidebarThreadContextDragSource {
   readonly threadKey: string;
   readonly title: string;
+  /**
+   * Virtual agent-run rows show the run's name but resolve to the parent
+   * thread's ref, so arming them would label the ghost with one identity
+   * and drop another. They keep click-only behavior.
+   */
+  readonly disabled: boolean;
 }
 
 let activeThreadContextGesture: {
@@ -337,6 +343,7 @@ function startSidebarThreadContextGesture(
   // must not suppress that genuine reorder.
   consumedThreadContextDrop = false;
   if (activeThreadContextGesture) return;
+  if (source.disabled) return;
   const nativeTarget = event.target instanceof Element ? event.target : null;
   if (
     shouldIgnoreThreadContextDragStart({
@@ -372,17 +379,22 @@ function startSidebarThreadContextGesture(
   const suppressReleaseClick = () => {
     const suppress = (click: Event) => {
       click.stopPropagation();
-      document.removeEventListener("click", suppress, { capture: true });
+      disarmReleaseClickSuppression();
     };
-    document.addEventListener("click", suppress, { capture: true });
     // A release outside the document never produces that click; a fresh
     // press ends the suppression instead of eating a future click.
     const clearOnPress = () => {
+      disarmReleaseClickSuppression();
+    };
+    const disarmReleaseClickSuppression = () => {
       document.removeEventListener("click", suppress, { capture: true });
       document.removeEventListener("pointerdown", clearOnPress, { capture: true });
     };
+    document.addEventListener("click", suppress, { capture: true });
     document.addEventListener("pointerdown", clearOnPress, { capture: true });
+    return disarmReleaseClickSuppression;
   };
+  let disarmReleaseClick: (() => void) | null = null;
 
   const cleanup = () => {
     if (activeThreadContextGesture !== gesture) return;
@@ -418,14 +430,15 @@ function startSidebarThreadContextGesture(
 
   const onMove = (native: Event) => {
     if (!(native instanceof PointerEvent) || native.pointerId !== pointerId) return;
+    // A release outside the window can be missed: the browser then delivers
+    // moves with no button held and never a pointerup. Without this the
+    // ghost would stick and the gesture would stay armed forever.
+    if ((native.buttons & 1) === 0) {
+      cancel();
+      return;
+    }
     const point = pointFromEvent(native);
     if (!gesture.activated) {
-      // A release outside the window can be missed: never arm when the
-      // initiating button is no longer held.
-      if ((native.buttons & 1) === 0) {
-        cleanup();
-        return;
-      }
       const distance = Math.hypot(point.x - startX, point.y - startY);
       if (distance <= THREAD_CONTEXT_DRAG_ACTIVATION_DISTANCE) return;
       gesture.activated = true;
@@ -458,9 +471,12 @@ function startSidebarThreadContextGesture(
           });
     if (!outside) {
       if (gesture.outside) {
-        // Back over the list: drop the ghost so the dnd-kit reorder preview
-        // resumes underneath.
+        // Back over the list: drop the ghost and disarm click suppression
+        // so the dnd-kit reorder preview resumes underneath and an in-list
+        // release reaches the row.
         gesture.outside = false;
+        disarmReleaseClick?.();
+        disarmReleaseClick = null;
         endThreadContextDrag();
       }
       return;
@@ -469,7 +485,8 @@ function startSidebarThreadContextGesture(
       // The release click only needs suppression when it lands outside the
       // list; a cancelled gesture arms its own suppression in cancel().
       gesture.outside = true;
-      suppressReleaseClick();
+      disarmReleaseClick?.();
+      disarmReleaseClick = suppressReleaseClick();
     }
     moveThreadContextDrag(point, {
       title: gesture.title,
@@ -750,6 +767,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const contextDragPointerDown = useSidebarThreadContextDragSource({
     threadKey,
     title: thread.title,
+    disabled: virtualAgentRun != null,
   });
   const pendingTurnKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
   const pendingTurn = usePendingTurnStore(

@@ -9,9 +9,10 @@ import {
 } from "./Sidebar.logic";
 
 describe("sidebar thread-context drag gating", () => {
-  // Row eligibility is structural, not gated: every SidebarThreadRow arms the
-  // gesture while SidebarDraftRow (unsent composer state) never attaches it,
-  // so there is no eligibility helper to unit test.
+  // Row eligibility is structural, not gated: real thread rows arm the
+  // gesture while SidebarDraftRow (unsent composer state) never attaches it
+  // and virtual agent-run rows opt out (run label, parent ref), so there is
+  // no eligibility helper to unit test.
 
   it("ignores presses on drafts and action controls to preserve clicks", () => {
     // Draft discard button, overflow menu trigger, expand chevron, port
