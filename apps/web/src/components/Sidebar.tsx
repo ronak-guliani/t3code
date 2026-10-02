@@ -338,6 +338,10 @@ function startSidebarThreadContextGesture(
   source: SidebarThreadContextDragSource,
 ): void {
   if (activeThreadContextGesture) return;
+  // A previous unpinned/nested context drop leaves no pinned drag end to
+  // consume the flag — reset it here so the next gesture starts clean and a
+  // stale set can never suppress an ordinary pinned reorder.
+  consumedThreadContextDrop = false;
   const nativeTarget = event.target instanceof Element ? event.target : null;
   if (
     shouldIgnoreThreadContextDragStart({
@@ -1616,6 +1620,12 @@ const PinnedThreadDragContext = memo(function PinnedThreadDragContext({
 
     return closestCorners(args);
   }, []);
+  const handlePinnedThreadDragStart = useCallback(() => {
+    // A stale set from an unpinned/nested context drop must not suppress the
+    // next ordinary pinned reorder — the context gesture has no pinned drag
+    // end to consume it, so clear it when a real pinned drag begins.
+    consumedThreadContextDrop = false;
+  }, []);
   const handlePinnedThreadDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event;
@@ -1644,6 +1654,7 @@ const PinnedThreadDragContext = memo(function PinnedThreadDragContext({
       sensors={pinnedThreadDnDSensors}
       collisionDetection={pinnedThreadCollisionDetection}
       modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
+      onDragStart={handlePinnedThreadDragStart}
       onDragEnd={handlePinnedThreadDragEnd}
     >
       <SortableContext items={[...sortablePinnedThreadKeys]} strategy={verticalListSortingStrategy}>

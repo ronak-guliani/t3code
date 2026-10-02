@@ -7,6 +7,7 @@ import {
   type ModelSelection,
   type ProviderDriverKind,
   type ScopedThreadRef,
+  THREAD_CONTEXT_MAX_RECORDS,
   type ThreadContextRecord,
   type ThreadId,
   type TurnId,
@@ -356,17 +357,37 @@ export function buildThreadContextForSend(
     if (!referencedIds.has(key) || seen.has(key)) continue;
     seen.add(key);
     filtered.push(record);
-    if (filtered.length >= 32) break;
+    if (filtered.length >= THREAD_CONTEXT_MAX_RECORDS) break;
   }
   if (filtered.length === 0) return undefined;
   return { version: 1, records: filtered };
+}
+
+export function countReferencedThreadContexts(
+  prompt: string,
+  records: ReadonlyArray<ThreadContextRecord>,
+): number {
+  if (records.length === 0) return 0;
+  const referencedIds = new Set(
+    collectThreadContextReferences(prompt).map((occurrence) => String(occurrence.contextId)),
+  );
+  if (referencedIds.size === 0) return 0;
+  const seen = new Set<string>();
+  let count = 0;
+  for (const record of records) {
+    const key = String(record.contextId);
+    if (!referencedIds.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    count += 1;
+  }
+  return count;
 }
 
 export function deriveComposerSendState(options: {
   prompt: string;
   imageCount: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
-  threadContextCount?: number | undefined;
+  threadContexts?: ReadonlyArray<ThreadContextRecord> | undefined;
 }): {
   trimmedPrompt: string;
   sendableTerminalContexts: TerminalContextDraft[];
@@ -385,7 +406,7 @@ export function deriveComposerSendState(options: {
       trimmedPrompt.length > 0 ||
       options.imageCount > 0 ||
       sendableTerminalContexts.length > 0 ||
-      (options.threadContextCount ?? 0) > 0,
+      countReferencedThreadContexts(options.prompt, options.threadContexts ?? []) > 0,
   };
 }
 

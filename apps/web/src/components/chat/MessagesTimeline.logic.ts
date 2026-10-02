@@ -3,35 +3,33 @@ import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../..
 import {
   type DelegationAuditEvent,
   type MessageId,
-  type ThreadContextRecord,
   type TurnId,
   type WorkspaceHandoffOrigin,
 } from "@t3tools/contracts";
 import { isReviewOutputText } from "@t3tools/shared/workflows/reviewOutput";
 import { collectThreadContextReferences } from "@t3tools/shared/threadContext";
 
-export function collectTimelineThreadContextLabels(text: string): string[] {
+export interface TimelineThreadContextChip {
+  readonly contextId: string;
+  readonly label: string;
+}
+
+/**
+ * Sent thread chips render from the message text's inline
+ * `t3-context://` references. `ChatMessage` carries no `context` field —
+ * identity lives in the link — so chips key by `contextId`, never by label,
+ * keeping duplicate titles distinct.
+ */
+export function collectTimelineThreadContextChips(text: string): TimelineThreadContextChip[] {
   const seen = new Set<string>();
-  const labels: string[] = [];
+  const chips: TimelineThreadContextChip[] = [];
   for (const occurrence of collectThreadContextReferences(text)) {
     const key = String(occurrence.contextId);
     if (seen.has(key)) continue;
     seen.add(key);
-    labels.push(occurrence.label);
+    chips.push({ contextId: key, label: occurrence.label });
   }
-  return labels;
-}
-
-export function selectTimelineThreadContextRecords(message: {
-  text: string;
-  context?: { records?: ReadonlyArray<ThreadContextRecord> } | undefined;
-}): ThreadContextRecord[] {
-  const inlineIds = new Set(
-    collectThreadContextReferences(message.text).map((occurrence) => String(occurrence.contextId)),
-  );
-  const records = message.context?.records ?? [];
-  if (inlineIds.size === 0) return [...records];
-  return records.filter((record) => inlineIds.has(String(record.contextId)));
+  return chips;
 }
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;

@@ -929,16 +929,6 @@ const THREAD_CONTEXT_DRAG_INTERACTIVE_SELECTOR = [
   "[role='dialog']",
 ].join(", ");
 
-export function isThreadRowEligibleForContextDrag(input: {
-  readonly isDraft: boolean;
-  readonly isPinned: boolean;
-}): { readonly eligible: boolean } {
-  // Drafts are unsent composer state, not threads: they navigate, never drag.
-  // Every real row — pinned roots and unpinned/nested rows alike — can drag.
-  void input.isPinned;
-  return { eligible: !input.isDraft };
-}
-
 export function shouldIgnoreThreadContextDragStart(input: {
   readonly button: number;
   readonly isPrimary: boolean;

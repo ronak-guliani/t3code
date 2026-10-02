@@ -3391,7 +3391,7 @@ function ChatViewBody(
       prompt: promptForSend,
       imageCount: composerImages.length,
       terminalContexts: composerTerminalContexts,
-      threadContextCount: composerThreadContexts.length,
+      threadContexts: composerThreadContexts,
     });
     const threadContextForSend = buildThreadContextForSend(promptForSend, composerThreadContexts);
     const piSessionCommand = ctxSelectedProvider === "pi" ? parsePiSessionCommand(trimmed) : null;

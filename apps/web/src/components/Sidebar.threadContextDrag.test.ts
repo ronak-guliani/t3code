@@ -3,28 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   THREAD_CONTEXT_DRAG_ACTIVATION_DISTANCE,
   isThreadContextDragOutsideList,
-  isThreadRowEligibleForContextDrag,
   resolvePinnedDragEndShouldReorder,
   resolveThreadContextDragRefs,
   shouldIgnoreThreadContextDragStart,
 } from "./Sidebar.logic";
 
 describe("sidebar thread-context drag gating", () => {
-  it("arms every real thread row, pinned or not", () => {
-    expect(isThreadRowEligibleForContextDrag({ isDraft: false, isPinned: true }).eligible).toBe(
-      true,
-    );
-    expect(isThreadRowEligibleForContextDrag({ isDraft: false, isPinned: false }).eligible).toBe(
-      true,
-    );
-  });
-
-  it("never arms draft rows", () => {
-    expect(isThreadRowEligibleForContextDrag({ isDraft: true, isPinned: false }).eligible).toBe(
-      false,
-    );
-  });
-
   it("ignores presses on drafts and action controls to preserve clicks", () => {
     // Draft discard button, overflow menu trigger, expand chevron, port
     // button, rename input, and links all opt out of the drag gesture.

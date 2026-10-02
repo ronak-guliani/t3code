@@ -139,6 +139,7 @@ import {
   queryThreadContextCandidates,
   removeThreadContextReference,
   type ThreadContextCandidate,
+  type ThreadContextCandidateView,
 } from "../../threadContextAttach";
 import { ThreadContextChip } from "./ThreadContextChip";
 import "./threadContextDrop.css";
@@ -921,12 +922,13 @@ export const ChatComposer = memo(
           prompt,
           imageCount: composerImages.length,
           terminalContexts: composerTerminalContexts,
+          threadContexts: composerThreadContexts,
         }),
-      [composerImages.length, composerTerminalContexts, prompt],
+      [composerImages.length, composerTerminalContexts, composerThreadContexts, prompt],
     );
     const hasComposerSubmitContent = editingQueuedTurn
       ? editingQueuedTurn.text.trim().length > 0 || editingQueuedTurn.hasAttachments
-      : composerSendState.hasSendableContent || composerThreadContexts.length > 0;
+      : composerSendState.hasSendableContent;
 
     // ------------------------------------------------------------------
     // Derived: composer trigger / menu
@@ -956,15 +958,21 @@ export const ChatComposer = memo(
     );
     const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
     const primaryDescriptor = usePrimaryEnvironmentDescriptor();
-    const threadContextSupported = primaryDescriptor?.capabilities.threadContext !== false;
-    const composerThreadShells = useStore((state) => {
-      const envState = state.environmentStateById[environmentId];
-      if (!envState) return EMPTY_THREAD_SHELLS;
-      const shells = Object.values(envState.threadShellById);
+    // Fail closed: a missing capability (older servers omit the optional key)
+    // means unsupported, and the descriptor is scoped to its own environment
+    // so a multi-environment composer never consults the wrong server.
+    const threadContextSupported =
+      primaryDescriptor?.environmentId === environmentId &&
+      primaryDescriptor?.capabilities.threadContext === true;
+    const threadShellRecord = useStore(
+      (state) => state.environmentStateById[environmentId]?.threadShellById,
+    );
+    const composerThreadShells = useMemo(() => {
+      const shells = threadShellRecord ? Object.values(threadShellRecord) : EMPTY_THREAD_SHELLS;
       return shells.length > 0 ? shells : EMPTY_THREAD_SHELLS;
-    });
+    }, [threadShellRecord]);
     const draftThreadIds = useComposerDraftStore((state) => state.draftThreadsByThreadKey);
-    const threadCandidates = useMemo<ThreadContextCandidate[]>(() => {
+    const threadCandidates = useMemo<ThreadContextCandidateView[]>(() => {
       if (!isPathTrigger || pathTriggerQuery.trim().length === 0 || !threadContextSupported) {
         return [];
       }
@@ -986,17 +994,7 @@ export const ChatComposer = memo(
         query: pathTriggerQuery,
         environmentId,
         selfThreadId: (activeThreadId ?? routeThreadRef.threadId) as ThreadId,
-      }).map((entry) => ({
-        environmentId: entry.environmentId,
-        threadId: entry.threadId,
-        title: entry.title,
-        projectId: entry.projectId,
-        projectName: entry.projectName,
-        archivedAt: entry.archivedAt,
-        updatedAt: entry.updatedAt,
-        createdAt: entry.createdAt,
-        isDraft: entry.isDraft,
-      }));
+      });
     }, [
       activeThreadId,
       composerThreadShells,
@@ -1039,8 +1037,12 @@ export const ChatComposer = memo(
           type: "thread" as const,
           threadId: String(candidate.threadId),
           environmentId: String(candidate.environmentId),
-          label: candidate.title,
-          description: candidate.projectName ?? candidate.projectId ?? "Attach thread as context",
+          label: candidate.displayLabel,
+          description:
+            candidate.disambiguation ??
+            candidate.projectName ??
+            candidate.projectId ??
+            "Attach thread as context",
         }));
         return [...fileItems, ...threadItems];
       }
@@ -1787,7 +1789,7 @@ export const ChatComposer = memo(
           environmentId,
           selfThreadId: (activeThreadId ?? routeThreadRef.threadId) as ThreadId,
           capabilities: {
-            threadContext: primaryDescriptor?.capabilities.threadContext ?? true,
+            threadContext: threadContextSupported,
           },
           resolveThread: (ref) => {
             const shell = threadShellById.get(String(ref.threadId));
@@ -1836,7 +1838,7 @@ export const ChatComposer = memo(
         composerThreadContexts,
         environmentId,
         isSendBusy,
-        primaryDescriptor?.capabilities.threadContext,
+        threadContextSupported,
         promptRef,
         routeThreadRef.threadId,
         setComposerDraftPrompt,
@@ -2219,7 +2221,7 @@ export const ChatComposer = memo(
             environmentId,
             selfThreadId: (activeThreadId ?? routeThreadRef.threadId) as ThreadId,
             capabilities: {
-              threadContext: primaryDescriptor?.capabilities.threadContext ?? true,
+              threadContext: threadContextSupported,
             },
           },
         );

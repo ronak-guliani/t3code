@@ -981,3 +981,35 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     ).toBe(true);
   });
 });
+
+describe("deriveComposerSendState thread context", () => {
+  const threadRecord = (contextId: string) => ({
+    version: 1 as const,
+    kind: "thread" as const,
+    contextId: contextId as never,
+    label: "Attached",
+    environmentId: EnvironmentId.make("env-a"),
+    threadId: ThreadId.make("thread-a"),
+    title: "Attached",
+  });
+
+  it("does not enable Send for stale chips whose reference was deleted", () => {
+    const state = deriveComposerSendState({
+      prompt: "",
+      imageCount: 0,
+      terminalContexts: [],
+      threadContexts: [threadRecord("ctx-1")],
+    });
+    expect(state.hasSendableContent).toBe(false);
+  });
+
+  it("enables Send when the chip reference is still in the prompt", () => {
+    const state = deriveComposerSendState({
+      prompt: "[Attached](t3-context://v1/thread/ctx-1) ",
+      imageCount: 0,
+      terminalContexts: [],
+      threadContexts: [threadRecord("ctx-1")],
+    });
+    expect(state.hasSendableContent).toBe(true);
+  });
+});

@@ -5,6 +5,7 @@ import type { TimelineEntry } from "../../session-logic";
 import type { TurnDiffSummary } from "../../types";
 import {
   collectReviewOutputMessageIds,
+  collectTimelineThreadContextChips,
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
@@ -1746,5 +1747,19 @@ describe("deriveRevertTurnCountByUserMessageId", () => {
       { "turn-1": 1 },
     );
     expect([...result]).toEqual([[MessageId.make("user-1"), 0]]);
+  });
+});
+
+describe("collectTimelineThreadContextChips", () => {
+  it("keys chips by contextId so duplicate titles stay distinct", () => {
+    const chips = collectTimelineThreadContextChips(
+      "[Same](t3-context://v1/thread/thread-aaa) and [Same](t3-context://v1/thread/thread-bbb)",
+    );
+    expect(chips.map((chip) => chip.contextId)).toEqual(["thread-aaa", "thread-bbb"]);
+    expect(new Set(chips.map((chip) => chip.contextId)).size).toBe(chips.length);
+  });
+
+  it("returns no chips for plain prose", () => {
+    expect(collectTimelineThreadContextChips("hello world")).toEqual([]);
   });
 });
