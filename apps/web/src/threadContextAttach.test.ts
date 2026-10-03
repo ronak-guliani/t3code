@@ -6,6 +6,7 @@ import {
   importThreadContextClipboard,
   queryThreadContextCandidates,
   attachThreadContexts,
+  splicePastedThreadContext,
   type ThreadContextCandidate,
 } from "./threadContextAttach";
 
@@ -260,5 +261,97 @@ describe("thread context clipboard", () => {
     });
     expect(imported.ok).toBe(true);
     expect(imported.records.length).toBe(1);
+  });
+});
+
+describe("splicePastedThreadContext", () => {
+  const shellCandidates = [
+    {
+      threadId: ThreadId.make("thread-a"),
+      title: "Alpha",
+      archivedAt: null as string | null,
+    },
+    {
+      threadId: ThreadId.make("thread-b"),
+      title: "Beta",
+      archivedAt: null as string | null,
+    },
+  ];
+
+  it("splices pasted text at the caret instead of replacing the draft", () => {
+    const pasted = "see [Beta](t3-context://v1/thread/thread-thread-b) ok";
+    const outcome = splicePastedThreadContext({
+      existingPrompt: "hello world",
+      existingRecords: [],
+      pastedText: pasted,
+      caret: 5,
+      environmentId: ENV_A,
+      selfThreadId: ThreadId.make("self-id"),
+      supported: true,
+      candidates: shellCandidates,
+    });
+    expect(outcome.prompt).toBe(`hello${pasted} world`);
+    expect(outcome.cursor).toBe(5 + pasted.length);
+    expect(outcome.records.length).toBe(1);
+    expect(outcome.dangling).toBe(0);
+  });
+
+  it("resolves cross-chat pastes with no destination records and keeps text on dangling refs", () => {
+    const pasted =
+      "[Beta](t3-context://v1/thread/thread-thread-b) and [Ghost](t3-context://v1/thread/thread-ghost)";
+    const outcome = splicePastedThreadContext({
+      existingPrompt: "",
+      existingRecords: [],
+      pastedText: pasted,
+      caret: 0,
+      environmentId: ENV_A,
+      selfThreadId: ThreadId.make("self-id"),
+      supported: true,
+      candidates: shellCandidates,
+    });
+    // Text is always preserved; only the resolvable thread attaches.
+    expect(outcome.prompt).toBe(pasted);
+    expect(outcome.records.length).toBe(1);
+    expect(outcome.dangling).toBe(1);
+  });
+
+  it("rejects self references without dropping the pasted text", () => {
+    const pasted = "[Me](t3-context://v1/thread/thread-self-id)";
+    const outcome = splicePastedThreadContext({
+      existingPrompt: "draft ",
+      existingRecords: [],
+      pastedText: pasted,
+      caret: 6,
+      environmentId: ENV_A,
+      selfThreadId: ThreadId.make("self-id"),
+      supported: true,
+      candidates: [
+        {
+          threadId: ThreadId.make("self-id"),
+          title: "Me",
+          archivedAt: null,
+        },
+      ],
+    });
+    expect(outcome.prompt).toBe(`draft ${pasted}`);
+    expect(outcome.records).toEqual([]);
+    expect(outcome.rejectedSelf).toBe(1);
+  });
+
+  it("inserts text only when the server does not support thread context", () => {
+    const pasted = "see [Beta](t3-context://v1/thread/thread-thread-b)";
+    const outcome = splicePastedThreadContext({
+      existingPrompt: "hi ",
+      existingRecords: [],
+      pastedText: pasted,
+      caret: 3,
+      environmentId: ENV_A,
+      selfThreadId: ThreadId.make("self-id"),
+      supported: false,
+      candidates: shellCandidates,
+    });
+    expect(outcome.prompt).toBe(`hi ${pasted}`);
+    expect(outcome.records).toEqual([]);
+    expect(outcome.unsupported).toBe(true);
   });
 });

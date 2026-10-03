@@ -135,9 +135,9 @@ import { formatProviderSkillDisplayName } from "../../providerSkillPresentation"
 import { providerSkillsFromCatalog, searchProviderSkills } from "../../providerSkillSearch";
 import {
   attachThreadContexts,
-  importThreadContextClipboard,
   queryThreadContextCandidates,
   removeThreadContextReference,
+  splicePastedThreadContext,
   type ThreadContextCandidate,
   type ThreadContextCandidateView,
 } from "../../threadContextAttach";
@@ -1788,6 +1788,12 @@ export const ChatComposer = memo(
         const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
         const existingRecords = draft?.threadContexts ?? composerThreadContexts;
         const existingPrompt = input.basePrompt ?? promptRef.current;
+        // Approval/question/queue-edit states render their own answering
+        // surface inside this same form: a sidebar drop must not mutate the
+        // draft prompt there with no chip rendered and the reference landing
+        // in the wrong buffer.
+        const attachDisabled =
+          isComposerApprovalState || pendingUserInputs.length > 0 || editingQueuedTurn !== null;
         const outcome = attachThreadContexts({
           existingPrompt,
           existingRecords,
@@ -1804,7 +1810,7 @@ export const ChatComposer = memo(
           },
           caret: input.caret,
           busy: isSendBusy,
-          disabled: false,
+          disabled: attachDisabled,
         });
         if (!outcome.ok) {
           toastManager.add(
@@ -1842,8 +1848,11 @@ export const ChatComposer = memo(
         addComposerDraftThreadContexts,
         composerDraftTarget,
         composerThreadContexts,
+        editingQueuedTurn,
         environmentId,
+        isComposerApprovalState,
         isSendBusy,
+        pendingUserInputs.length,
         threadContextSupported,
         promptRef,
         routeThreadRef.threadId,
@@ -2219,55 +2228,65 @@ export const ChatComposer = memo(
     const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
       const pastedText = event.clipboardData.getData("text/plain");
       if (pastedText && pastedText.includes("t3-context://v1/thread/")) {
+        // Resolve against the composer environment's live threads so snippets
+        // copied from another chat attach; the text itself is always kept.
+        event.preventDefault();
         const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
-        const imported = importThreadContextClipboard(
+        const snapshot = readComposerSnapshot();
+        const caret = Math.max(0, Math.min(snapshot.value.length, snapshot.expandedCursor));
+        const outcome = splicePastedThreadContext({
+          existingPrompt: snapshot.value,
+          existingRecords: draft?.threadContexts ?? composerThreadContexts,
           pastedText,
-          draft?.threadContexts ?? composerThreadContexts,
-          {
-            environmentId,
-            selfThreadId: (activeThreadId ?? routeThreadRef.threadId) as ThreadId,
-            capabilities: {
-              threadContext: threadContextSupported,
-            },
-          },
-        );
-        if (!imported.ok) {
-          event.preventDefault();
+          caret,
+          environmentId,
+          selfThreadId: (activeThreadId ?? routeThreadRef.threadId) as ThreadId,
+          supported: threadContextSupported,
+          candidates: composerThreadShells.map((shell) => ({
+            threadId: shell.id,
+            title: shell.title,
+            archivedAt: shell.archivedAt,
+          })),
+        });
+        promptRef.current = outcome.prompt;
+        setComposerDraftPrompt(composerDraftTarget, outcome.prompt);
+        if (outcome.inserted.length > 0) {
+          addComposerDraftThreadContexts(composerDraftTarget, outcome.prompt, outcome.inserted);
+        }
+        const nextCollapsedCursor = collapseExpandedComposerCursor(outcome.prompt, outcome.cursor);
+        setComposerCursor(nextCollapsedCursor);
+        setComposerTrigger(detectComposerTrigger(outcome.prompt, outcome.cursor));
+        window.requestAnimationFrame(() => {
+          composerEditorRef.current?.focusAt(nextCollapsedCursor);
+        });
+        if (outcome.unsupported) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "info",
+              title: "Pasted as plain text",
+              description: "This server does not support thread context.",
+            }),
+          );
+        } else if (outcome.rejectedSelf > 0) {
           toastManager.add(
             stackedThreadToast({
               type: "warning",
               title: "Could not paste thread context",
-              description: imported.reason ?? "Pasted context is unavailable.",
+              description: "Cannot attach the current thread to itself.",
             }),
           );
-          return;
+        } else if (outcome.dangling > 0) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "warning",
+              title: "Pasted thread unavailable",
+              description:
+                outcome.dangling === 1
+                  ? "One pasted thread no longer exists; its text was kept."
+                  : `${outcome.dangling} pasted threads no longer exist; their text was kept.`,
+            }),
+          );
         }
-        const inserted = imported.records.filter(
-          (record) =>
-            !(draft?.threadContexts ?? []).some(
-              (existing) => String(existing.contextId) === String(record.contextId),
-            ),
-        );
-        // Splice the snippet into the existing draft at the caret — the
-        // import operates on the pasted text only, so assigning its prompt
-        // would discard whatever the user had already typed.
-        event.preventDefault();
-        const snapshot = readComposerSnapshot();
-        const caret = Math.max(0, Math.min(snapshot.value.length, snapshot.expandedCursor));
-        const nextPrompt =
-          snapshot.value.slice(0, caret) + pastedText + snapshot.value.slice(caret);
-        promptRef.current = nextPrompt;
-        setComposerDraftPrompt(composerDraftTarget, nextPrompt);
-        if (inserted.length > 0) {
-          addComposerDraftThreadContexts(composerDraftTarget, nextPrompt, inserted);
-        }
-        const nextExpandedCursor = caret + pastedText.length;
-        const nextCollapsedCursor = collapseExpandedComposerCursor(nextPrompt, nextExpandedCursor);
-        setComposerCursor(nextCollapsedCursor);
-        setComposerTrigger(detectComposerTrigger(nextPrompt, nextExpandedCursor));
-        window.requestAnimationFrame(() => {
-          composerEditorRef.current?.focusAt(nextCollapsedCursor);
-        });
         return;
       }
       const files = Array.from(event.clipboardData.files);
@@ -2501,7 +2520,16 @@ export const ChatComposer = memo(
 
     // Render
     // ------------------------------------------------------------------
-    const threadDropDisabled = isSendBusy || isConnecting || !threadContextSupported;
+    // Mirror the chip row and editor gating: the pending panels render inside
+    // this same form, so the sidebar bridge must see a disabled target there
+    // instead of resolving the form and mutating a hidden draft.
+    const threadDropDisabled =
+      isSendBusy ||
+      isConnecting ||
+      !threadContextSupported ||
+      isComposerApprovalState ||
+      pendingUserInputs.length > 0 ||
+      editingQueuedTurn !== null;
     return (
       <form
         ref={composerFormRef}
