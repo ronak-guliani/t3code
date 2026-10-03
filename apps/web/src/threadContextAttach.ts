@@ -282,36 +282,26 @@ export function attachThreadContexts(
     insertions.push(`${formatThreadContextReference({ contextId, label })} `);
     insertedIds.push(String(ref.threadId));
   }
+  // Stored records whose text was deleted get their reference text back,
+  // even when the batch also carries new threads; batches that are fully
+  // referenced stay a successful no-op.
+  const referenced = referencedContextIds(input.existingPrompt);
+  const seenMissing = new Set<string>();
+  for (const ref of input.refs) {
+    const record = recordsByScope.get(scopedKeyOf(ref));
+    if (!record) continue;
+    if (referenced.has(String(record.contextId))) continue;
+    if (seenMissing.has(String(record.contextId))) continue;
+    const resolved = input.resolveThread(ref);
+    if (!resolved || !resolved.title || resolved.title.trim().length === 0) {
+      return { ...unchanged, ok: false, reason: "That thread no longer exists." };
+    }
+    seenMissing.add(String(record.contextId));
+    insertions.push(`${formatThreadContextReference(record)} `);
+    insertedIds.push(String(record.threadId));
+  }
   if (insertions.length === 0) {
-    // Every requested thread is already stored. Re-insert reference text for
-    // stored records whose text was deleted so the chip becomes visible
-    // again; batches that are fully referenced stay a successful no-op.
-    const referenced = referencedContextIds(input.existingPrompt);
-    const missing: ThreadContextRecord[] = [];
-    for (const ref of input.refs) {
-      const record = recordsByScope.get(scopedKeyOf(ref));
-      if (!record) continue;
-      if (referenced.has(String(record.contextId))) continue;
-      if (missing.some((entry) => entry.contextId === record.contextId)) continue;
-      const resolved = input.resolveThread(ref);
-      if (!resolved || !resolved.title || resolved.title.trim().length === 0) {
-        return { ...unchanged, ok: false, reason: "That thread no longer exists." };
-      }
-      missing.push(record);
-    }
-    if (missing.length === 0) {
-      return { ...unchanged, ok: true, reason: null };
-    }
-    const reinsertions = missing.map((record) => `${formatThreadContextReference(record)} `);
-    const reinserted = insertReferencesAtCaret(input.existingPrompt, reinsertions, input.caret);
-    return {
-      ok: true,
-      reason: null,
-      prompt: reinserted.prompt,
-      records: [...input.existingRecords],
-      insertedIds: missing.map((record) => String(record.threadId)),
-      cursor: reinserted.cursor,
-    };
+    return { ...unchanged, ok: true, reason: null };
   }
   const inserted = insertReferencesAtCaret(input.existingPrompt, insertions, input.caret);
   return {
@@ -425,10 +415,21 @@ export interface MergeThreadContextClipboardInput {
   existingPrompt: string;
   existingRecords: ReadonlyArray<ThreadContextRecord>;
   caret?: number | undefined;
+  /**
+   * Ordered prompt offsets to replace (e.g. the editor selection). A
+   * collapsed or absent range inserts at the caret; a real range replaces
+   * the selected text instead of retaining it.
+   */
+  replaceRange?: { start: number; end: number } | undefined;
   environmentId: EnvironmentId;
   selfThreadId: ThreadId;
   capabilities: ThreadContextCapabilities;
   resolveThread: (ref: ScopedThreadRef) => ThreadResolution | null;
+}
+
+function clampPromptOffset(prompt: string, value: number | undefined): number | null {
+  if (value === undefined || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(prompt.length, Math.floor(value)));
 }
 
 export function mergeThreadContextClipboard(
@@ -518,10 +519,17 @@ export function mergeThreadContextClipboard(
           const stored = reboundByPastedId.get(String(occurrence.contextId));
           return stored ? formatThreadContextReference(stored) : occurrence.source;
         });
-  // The pasted text lands at the caret; unrelated draft content is retained.
-  const at = caretOrEnd(input.existingPrompt, input.caret);
+  // The pasted text replaces the selected range when one is carried;
+  // otherwise it lands at the caret. Unrelated draft content is retained.
+  const rangeStart = clampPromptOffset(input.existingPrompt, input.replaceRange?.start);
+  const rangeEnd = clampPromptOffset(input.existingPrompt, input.replaceRange?.end);
+  const range =
+    rangeStart !== null && rangeEnd !== null && rangeEnd > rangeStart
+      ? { start: rangeStart, end: rangeEnd }
+      : null;
+  const at = range ? range.start : caretOrEnd(input.existingPrompt, input.caret);
   const before = input.existingPrompt.slice(0, at);
-  const after = input.existingPrompt.slice(at);
+  const after = input.existingPrompt.slice(range ? range.end : at);
   const spacer = before.length > 0 && !before.endsWith(" ") && reboundText.length > 0 ? " " : "";
   const nextPrompt = `${before}${spacer}${reboundText}${after}`;
   return {

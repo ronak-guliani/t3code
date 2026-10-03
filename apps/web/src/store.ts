@@ -270,6 +270,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     createdAt: message.createdAt,
     streaming: message.streaming,
     ...(message.origin !== undefined ? { origin: message.origin } : {}),
+    ...(message.context !== undefined ? { context: message.context } : {}),
     ...(message.streaming ? {} : { completedAt: message.updatedAt }),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
   };
@@ -1553,6 +1554,7 @@ function updateThreadMessageState(
               : {}),
           ...(incoming.attachments !== undefined ? { attachments: incoming.attachments } : {}),
           ...(incoming.origin !== undefined ? { origin: incoming.origin } : {}),
+          ...(incoming.context !== undefined ? { context: incoming.context } : {}),
         };
 
   let nextMessageIds = messageIds;

@@ -4,6 +4,7 @@ import type {
   ModelSelection,
   OrchestrationLatestTurn,
   OrchestrationBackgroundAgentRunShell,
+  OrchestrationMessageContext,
   OrchestrationQueuedTurn,
   OrchestrationProposedPlanId,
   RepositoryIdentity,
@@ -59,6 +60,8 @@ export interface ChatMessage {
   text: string;
   attachments?: ChatAttachment[];
   origin?: MessageOrigin | undefined;
+  /** Structured thread references riding on the message; drives timeline chips. */
+  context?: OrchestrationMessageContext | undefined;
   turnId?: TurnId | null;
   createdAt: string;
   completedAt?: string | undefined;

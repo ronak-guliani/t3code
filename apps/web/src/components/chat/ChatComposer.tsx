@@ -79,7 +79,11 @@ import {
   shouldUseCompactComposerPrimaryActions,
   shouldUseCompactComposerFooter,
 } from "../composerFooterLayout";
-import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
+import {
+  type ComposerPromptEditorHandle,
+  type ComposerPromptEditorSelection,
+  ComposerPromptEditor,
+} from "../ComposerPromptEditor";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
@@ -1789,16 +1793,22 @@ export const ChatComposer = memo(
       cursor: number;
       expandedCursor: number;
       terminalContextIds: string[];
+      selection: ComposerPromptEditorSelection;
     } => {
       const editorSnapshot = composerEditorRef.current?.readSnapshot();
       if (editorSnapshot) {
         return editorSnapshot;
       }
+      const fallbackExpandedCursor = expandCollapsedComposerCursor(
+        promptRef.current,
+        composerCursor,
+      );
       return {
         value: promptRef.current,
         cursor: composerCursor,
-        expandedCursor: expandCollapsedComposerCursor(promptRef.current, composerCursor),
+        expandedCursor: fallbackExpandedCursor,
         terminalContextIds: composerTerminalContexts.map((context) => context.id),
+        selection: { start: fallbackExpandedCursor, end: fallbackExpandedCursor },
       };
     }, [composerCursor, composerTerminalContexts, promptRef]);
 
@@ -2370,6 +2380,9 @@ export const ChatComposer = memo(
           if (!shell || shell.archivedAt !== null) return null;
           return { title: shell.title };
         };
+        // A selected range is replaced; a collapsed caret inserts.
+        const replaceRange =
+          snapshot.selection.start < snapshot.selection.end ? snapshot.selection : undefined;
         if (editingQueuedTurn) {
           const merged = mergeThreadContextClipboard({
             pastedText,
@@ -2377,6 +2390,7 @@ export const ChatComposer = memo(
             existingPrompt: editingQueuedTurn.text,
             existingRecords: editingQueuedTurn.threadContexts,
             caret: snapshot.expandedCursor,
+            replaceRange,
             environmentId,
             selfThreadId,
             capabilities: { threadContext: threadContextSupported },
@@ -2414,6 +2428,7 @@ export const ChatComposer = memo(
           existingPrompt: promptRef.current,
           existingRecords,
           caret: snapshot.expandedCursor,
+          replaceRange,
           environmentId,
           selfThreadId,
           capabilities: { threadContext: threadContextSupported },
@@ -2612,11 +2627,16 @@ export const ChatComposer = memo(
         },
         addTerminalContext: (selection: TerminalContextSelection) => {
           if (!activeThread) return;
+          const expandedFallbackCursor = expandCollapsedComposerCursor(
+            promptRef.current,
+            composerCursor,
+          );
           const snapshot = composerEditorRef.current?.readSnapshot() ?? {
             value: promptRef.current,
             cursor: composerCursor,
-            expandedCursor: expandCollapsedComposerCursor(promptRef.current, composerCursor),
+            expandedCursor: expandedFallbackCursor,
             terminalContextIds: composerTerminalContexts.map((context) => context.id),
+            selection: { start: expandedFallbackCursor, end: expandedFallbackCursor },
           };
           const insertion = insertInlineTerminalContextPlaceholder(
             snapshot.value,

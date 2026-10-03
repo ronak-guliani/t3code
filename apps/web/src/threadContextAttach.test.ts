@@ -554,6 +554,70 @@ describe("thread context structured clipboard", () => {
     expect(merged.prompt).not.toContain("ctx-foreign-copy");
   });
 
+  it("reinserts deleted references in mixed batches with new threads", () => {
+    const resolveThread = (ref: { threadId: unknown }) => ({
+      title: `Title ${String(ref.threadId)}`,
+    });
+    const first = attachThreadContexts({
+      existingPrompt: "",
+      existingRecords: [],
+      refs: [{ environmentId: ENV_A, threadId: selfThreadId("t-kept") }],
+      environmentId: ENV_A,
+      selfThreadId: selfThreadId("self"),
+      capabilities: { threadContext: true },
+      resolveThread,
+    });
+    expect(first.ok).toBe(true);
+    // The chip text was deleted; the stored record stays for undo.
+    const mixed = attachThreadContexts({
+      existingPrompt: "follow up ",
+      existingRecords: first.records,
+      refs: [
+        { environmentId: ENV_A, threadId: selfThreadId("t-kept") },
+        { environmentId: ENV_A, threadId: selfThreadId("t-new") },
+      ],
+      environmentId: ENV_A,
+      selfThreadId: selfThreadId("self"),
+      capabilities: { threadContext: true },
+      resolveThread,
+      caret: 10,
+    });
+    expect(mixed.ok).toBe(true);
+    expect(mixed.records.length).toBe(2);
+    // The kept thread reuses its stored identity; the new one is added.
+    expect(mixed.records[0]!.contextId).toBe(first.records[0]!.contextId);
+    const occurrences = mixed.prompt.match(/t3-context:\/\/v1\/thread\/[^\s)]+/g) ?? [];
+    expect(occurrences.length).toBe(2);
+  });
+
+  it("replaces the selected range when pasting structured context", () => {
+    const merged = mergeThreadContextClipboard({
+      pastedText: "[New](t3-context://v1/thread/ctx-new) ",
+      pastedRecords: [
+        {
+          version: 1 as const,
+          kind: "thread" as const,
+          contextId: ThreadContextId.make("ctx-new"),
+          label: "New",
+          environmentId: ENV_A,
+          threadId: ThreadId.make("t-new"),
+          title: "New",
+        },
+      ],
+      existingPrompt: "replace [Old](t3-context://v1/thread/ctx-old) me",
+      existingRecords: [],
+      caret: 0,
+      replaceRange: { start: 8, end: 46 },
+      environmentId: ENV_A,
+      selfThreadId: selfThreadId("self"),
+      capabilities: { threadContext: true },
+      resolveThread: () => ({ title: "New" }),
+    });
+    expect(merged.ok).toBe(true);
+    expect(merged.prompt).toBe("replace [New](t3-context://v1/thread/ctx-new) me");
+    expect(merged.records.length).toBe(1);
+  });
+
   it("rejects foreign, self, and dangling pastes atomically", () => {
     const foreign = mergeThreadContextClipboard({
       pastedText: "[X](t3-context://v1/thread/ctx-x) ",

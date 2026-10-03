@@ -9,6 +9,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   QueuedTurnId,
+  ThreadContextId,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
@@ -37,7 +38,10 @@ import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./t
 import type { SidebarThreadSummary } from "./types";
 import { deriveInsights, isInsightActivity } from "./insights";
 import { deriveTimelineEntries } from "./session-logic";
-import { deriveMessagesTimelineRows } from "./components/chat/MessagesTimeline.logic";
+import {
+  deriveMessagesTimelineRows,
+  selectTimelineThreadContextChips,
+} from "./components/chat/MessagesTimeline.logic";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 const remoteEnvironmentId = EnvironmentId.make("environment-remote");
@@ -1265,6 +1269,119 @@ describe("incremental orchestration updates", () => {
     expect(rows.map((row) => row.kind)).toEqual(["workspace-handoff"]);
     expect(JSON.stringify(rows)).not.toContain("Continue the task from the previous user request");
     expect(JSON.stringify(rows)).not.toContain("Moved to feature/handoff (/tmp/handoff)");
+  });
+
+  it("preserves message thread context through snapshot hydration", () => {
+    const threadId = ThreadId.make("thread-1");
+    const state = makeEmptyState();
+    const context = {
+      version: 1 as const,
+      records: [
+        {
+          version: 1 as const,
+          kind: "thread" as const,
+          contextId: ThreadContextId.make("ctx-snapshot"),
+          label: "Snapshot thread",
+          environmentId: localEnvironmentId,
+          threadId: ThreadId.make("thread-attached"),
+          title: "Snapshot thread",
+        },
+      ],
+    };
+
+    const next = syncServerThreadDetail(
+      state,
+      {
+        id: threadId,
+        projectId: ProjectId.make("project-1"),
+        title: "Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("copilot"),
+          model: "gpt-5.4-mini",
+        },
+        runtimeMode: "full-access",
+        pendingRuntimeMode: null,
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        latestTurn: null,
+        createdAt: "2026-05-01T20:40:00.000Z",
+        updatedAt: "2026-05-01T20:40:15.000Z",
+        archivedAt: null,
+        deletedAt: null,
+        validationRequest: null,
+        messages: [
+          {
+            id: MessageId.make("message-1"),
+            role: "user",
+            text: "see [Snapshot thread](t3-context://v1/thread/ctx-snapshot)",
+            turnId: TurnId.make("turn-1"),
+            streaming: false,
+            context,
+            createdAt: "2026-05-01T20:40:01.000Z",
+            updatedAt: "2026-05-01T20:40:01.000Z",
+          },
+        ],
+        proposedPlans: [],
+        activities: [],
+        hasMoreActivities: false,
+        hasMoreCurrentTurnActivities: false,
+        checkpoints: [],
+        session: null,
+      },
+      localEnvironmentId,
+    );
+
+    const projected = selectEnvironmentState(next, localEnvironmentId).messageByThreadId[
+      threadId
+    ]?.[MessageId.make("message-1")];
+    expect(projected?.context).toEqual(context);
+    // The projected message binds its chip instead of rendering unavailable.
+    expect(selectTimelineThreadContextChips(projected!)).toEqual([
+      { key: "ctx-snapshot", title: "Snapshot thread", unavailable: false },
+    ]);
+  });
+
+  it("keeps message thread context on live message events", () => {
+    const threadId = ThreadId.make("thread-1");
+    const state = makeState(makeThread({ id: threadId, messages: [] }));
+    const context = {
+      version: 1 as const,
+      records: [
+        {
+          version: 1 as const,
+          kind: "thread" as const,
+          contextId: ThreadContextId.make("ctx-live"),
+          label: "Live thread",
+          environmentId: localEnvironmentId,
+          threadId: ThreadId.make("thread-attached"),
+          title: "Live thread",
+        },
+      ],
+    };
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId: MessageId.make("message-live"),
+        role: "user",
+        text: "see [Live thread](t3-context://v1/thread/ctx-live)",
+        turnId: TurnId.make("turn-1"),
+        streaming: false,
+        context,
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    const message =
+      localEnvironmentStateOf(next).messageByThreadId[threadId]?.[MessageId.make("message-live")];
+    expect(message?.context).toEqual(context);
+    expect(selectTimelineThreadContextChips(message!)).toEqual([
+      { key: "ctx-live", title: "Live thread", unavailable: false },
+    ]);
   });
 
   it("preserves state identity for no-op project and thread deletes", () => {

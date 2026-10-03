@@ -1004,6 +1004,12 @@ function collectTerminalContextIds(node: LexicalNode): string[] {
   return [];
 }
 
+export interface ComposerPromptEditorSelection {
+  /** Ordered expanded offsets; equal when collapsed. */
+  start: number;
+  end: number;
+}
+
 export interface ComposerPromptEditorHandle {
   focus: () => void;
   focusAt: (cursor: number) => void;
@@ -1013,6 +1019,7 @@ export interface ComposerPromptEditorHandle {
     cursor: number;
     expandedCursor: number;
     terminalContextIds: string[];
+    selection: ComposerPromptEditorSelection;
   };
 }
 
@@ -1748,8 +1755,9 @@ function ComposerPromptEditorInner({
     cursor: number;
     expandedCursor: number;
     terminalContextIds: string[];
+    selection: ComposerPromptEditorSelection;
   } => {
-    let snapshot = snapshotRef.current;
+    let snapshot = { ...snapshotRef.current, selection: { start: 0, end: 0 } };
     editor.getEditorState().read(() => {
       const nextValue = $getRoot().getTextContent();
       const fallbackCursor = clampCollapsedComposerCursor(nextValue, snapshotRef.current.cursor);
@@ -1766,14 +1774,28 @@ function ComposerPromptEditorInner({
         $readExpandedSelectionOffsetFromEditorState(fallbackExpandedCursor),
       );
       const terminalContextIds = collectTerminalContextIds($getRoot());
+      const selectionRange = getSelectionRangeForExpandedComposerOffsets($getSelection());
+      const selection =
+        selectionRange === null
+          ? { start: nextExpandedCursor, end: nextExpandedCursor }
+          : {
+              start: clampExpandedCursor(nextValue, selectionRange.start),
+              end: clampExpandedCursor(nextValue, selectionRange.end),
+            };
       snapshot = {
         value: nextValue,
         cursor: nextCursor,
         expandedCursor: nextExpandedCursor,
         terminalContextIds,
+        selection,
       };
     });
-    snapshotRef.current = snapshot;
+    snapshotRef.current = {
+      value: snapshot.value,
+      cursor: snapshot.cursor,
+      expandedCursor: snapshot.expandedCursor,
+      terminalContextIds: snapshot.terminalContextIds,
+    };
     return snapshot;
   }, [editor]);
 

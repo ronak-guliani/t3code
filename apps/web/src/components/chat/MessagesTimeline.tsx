@@ -4,7 +4,6 @@ import {
   EnvironmentId,
   EventId,
   type MessageId,
-  type ThreadContextRecord,
   ThreadId,
   type TurnDiffScope,
   TurnId,
@@ -788,12 +787,7 @@ const TimelineRowContent = memo(function TimelineRowContent(props: { row: Timeli
                   forceExpanded={ctx.activeChatFindRowId === row.id}
                 />
                 {(() => {
-                  const threadChips = selectTimelineThreadContextChips(
-                    row.message as {
-                      text: string;
-                      context?: { records?: ThreadContextRecord[] } | undefined;
-                    },
-                  );
+                  const threadChips = selectTimelineThreadContextChips(row.message);
                   if (threadChips.length === 0) return null;
                   return (
                     <div className="mt-2 flex flex-wrap justify-end gap-1.5">
