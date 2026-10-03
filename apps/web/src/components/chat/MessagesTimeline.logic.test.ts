@@ -19,6 +19,7 @@ import {
   stabilizeReadonlyStringSet,
   stabilizeResponseMetaByTurnId,
   stabilizeStringMap,
+  stripThreadContextReferencesForDisplay,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 
@@ -1761,5 +1762,19 @@ describe("collectTimelineThreadContextChips", () => {
 
   it("returns no chips for plain prose", () => {
     expect(collectTimelineThreadContextChips("hello world")).toEqual([]);
+  });
+});
+
+describe("stripThreadContextReferencesForDisplay", () => {
+  it("replaces inline thread links with their labels", () => {
+    expect(
+      stripThreadContextReferencesForDisplay(
+        "see [Auth refactor](t3-context://v1/thread/thread-aaa) please",
+      ),
+    ).toBe("see Auth refactor please");
+  });
+
+  it("leaves plain prose untouched", () => {
+    expect(stripThreadContextReferencesForDisplay("hello world")).toBe("hello world");
   });
 });

@@ -74,6 +74,7 @@ import {
   resolveExternalActionUrl,
   shouldHandleInternalActionClick,
   stabilizeReadonlyStringSet,
+  stripThreadContextReferencesForDisplay,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
@@ -774,7 +775,7 @@ const TimelineRowContent = memo(function TimelineRowContent(props: { row: Timeli
                 ))}
                 <CollapsibleUserMessageBody
                   rowId={row.id}
-                  text={visibleText}
+                  text={stripThreadContextReferencesForDisplay(visibleText)}
                   terminalContexts={terminalContexts}
                   collapsedLineLimit={resolveMessagePreviewLineLimit(
                     row.message.origin?.kind,

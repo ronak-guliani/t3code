@@ -145,6 +145,7 @@ import { ThreadContextChip } from "./ThreadContextChip";
 import "./threadContextDrop.css";
 import { THREAD_CONTEXT_DROP_EVENT, threadContextDropTargetProps } from "./threadContextDrag";
 import { usePrimaryEnvironmentDescriptor } from "../../environments/primary/context";
+import { useSavedEnvironmentRuntimeStore } from "../../environments/runtime";
 import { useStore } from "../../store";
 
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
@@ -958,12 +959,17 @@ export const ChatComposer = memo(
     );
     const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
     const primaryDescriptor = usePrimaryEnvironmentDescriptor();
-    // Fail closed: a missing capability (older servers omit the optional key)
-    // means unsupported, and the descriptor is scoped to its own environment
-    // so a multi-environment composer never consults the wrong server.
-    const threadContextSupported =
-      primaryDescriptor?.environmentId === environmentId &&
-      primaryDescriptor?.capabilities.threadContext === true;
+    const activeEnvironmentDescriptor = useSavedEnvironmentRuntimeStore(
+      (state) => state.byId[environmentId]?.descriptor ?? null,
+    );
+    // Fail closed per environment: a missing capability (older servers omit
+    // the optional key) means unsupported. Prefer the active environment's
+    // own descriptor so secondary/remote composers gate on the server that
+    // will actually receive the context.
+    const activeDescriptor =
+      activeEnvironmentDescriptor ??
+      (primaryDescriptor?.environmentId === environmentId ? primaryDescriptor : null);
+    const threadContextSupported = activeDescriptor?.capabilities.threadContext === true;
     const threadShellRecord = useStore(
       (state) => state.environmentStateById[environmentId]?.threadShellById,
     );
@@ -2236,27 +2242,33 @@ export const ChatComposer = memo(
           );
           return;
         }
-        if (imported.records.length > (draft?.threadContexts.length ?? 0)) {
-          event.preventDefault();
-          const inserted = imported.records.filter(
-            (record) =>
-              !(draft?.threadContexts ?? []).some(
-                (existing) => String(existing.contextId) === String(record.contextId),
-              ),
-          );
-          promptRef.current = imported.prompt;
-          setComposerDraftPrompt(composerDraftTarget, imported.prompt);
-          if (inserted.length > 0) {
-            addComposerDraftThreadContexts(composerDraftTarget, imported.prompt, inserted);
-          }
-          const nextCursor = collapseExpandedComposerCursor(
-            imported.prompt,
-            imported.prompt.length,
-          );
-          setComposerCursor(nextCursor);
-          setComposerTrigger(detectComposerTrigger(imported.prompt, imported.prompt.length));
-          return;
+        const inserted = imported.records.filter(
+          (record) =>
+            !(draft?.threadContexts ?? []).some(
+              (existing) => String(existing.contextId) === String(record.contextId),
+            ),
+        );
+        // Splice the snippet into the existing draft at the caret — the
+        // import operates on the pasted text only, so assigning its prompt
+        // would discard whatever the user had already typed.
+        event.preventDefault();
+        const snapshot = readComposerSnapshot();
+        const caret = Math.max(0, Math.min(snapshot.value.length, snapshot.expandedCursor));
+        const nextPrompt =
+          snapshot.value.slice(0, caret) + pastedText + snapshot.value.slice(caret);
+        promptRef.current = nextPrompt;
+        setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+        if (inserted.length > 0) {
+          addComposerDraftThreadContexts(composerDraftTarget, nextPrompt, inserted);
         }
+        const nextExpandedCursor = caret + pastedText.length;
+        const nextCollapsedCursor = collapseExpandedComposerCursor(nextPrompt, nextExpandedCursor);
+        setComposerCursor(nextCollapsedCursor);
+        setComposerTrigger(detectComposerTrigger(nextPrompt, nextExpandedCursor));
+        window.requestAnimationFrame(() => {
+          composerEditorRef.current?.focusAt(nextCollapsedCursor);
+        });
+        return;
       }
       const files = Array.from(event.clipboardData.files);
       if (files.length === 0) return;

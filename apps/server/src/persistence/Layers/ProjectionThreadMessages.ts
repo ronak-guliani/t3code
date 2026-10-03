@@ -228,7 +228,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
         `,
   });
 
-  // Revert trimming only inspects identity/ordering columns: text,  // attachments, and origins are never selected or JSON-decoded.
+  // Revert trimming only inspects identity/ordering columns: text,
+  // attachments, context, and origins are never selected or JSON-decoded.
   const listProjectionThreadMessageRevertKeyRows = SqlSchema.findAll({
     Request: ListProjectionThreadMessagesInput,
     Result: ProjectionThreadMessageRevertKey,

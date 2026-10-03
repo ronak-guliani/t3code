@@ -7,7 +7,10 @@ import {
   type WorkspaceHandoffOrigin,
 } from "@t3tools/contracts";
 import { isReviewOutputText } from "@t3tools/shared/workflows/reviewOutput";
-import { collectThreadContextReferences } from "@t3tools/shared/threadContext";
+import {
+  collectThreadContextReferences,
+  replaceThreadContextReferences,
+} from "@t3tools/shared/threadContext";
 
 export interface TimelineThreadContextChip {
   readonly contextId: string;
@@ -30,6 +33,17 @@ export function collectTimelineThreadContextChips(text: string): TimelineThreadC
     chips.push({ contextId: key, label: occurrence.label });
   }
   return chips;
+}
+
+/**
+ * Display text for the user bubble: each inline `t3-context://` reference is
+ * replaced by its label so the bubble never shows raw link markup. The
+ * underlying message text is untouched, so selection-independent copy paths
+ * still carry the full link.
+ */
+export function stripThreadContextReferencesForDisplay(text: string): string {
+  if (!text.includes("t3-context://v1/thread/")) return text;
+  return replaceThreadContextReferences(text, (occurrence) => occurrence.label);
 }
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
