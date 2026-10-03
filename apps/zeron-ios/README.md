@@ -8,14 +8,14 @@ under streaming — without forking zeron's sync substrate.
 
 ## What we take
 
-| From zeron                  | Size         | Why                                                                                        |
-| --------------------------- | ------------ | ------------------------------------------------------------------------------------------ |
-| `apps/ios/Zeron/**/*.swift` | 10,591 lines | UIKit shell. Only 5 of 36 files touch Rust; the rest is domain-free UI.                    |
-| `crates/text`               | 4,062        | UAX#14 segmentation + rustybuzz measurement. Deps: rustybuzz, icu\__, unicode-_. No zeron. |
-| `crates/markdown`           | 2,160        | Block model + incremental reparse. Deps: pulldown-cmark only.                              |
-| `crates/syntax`             | 1,354        | Tree-sitter highlighting. Deps: tree-sitter grammars only.                                 |
-| `crates/mobile/layout`      | ~4,300       | Rows → measured display lists, prefix-sum offsets, `rowsIn(y0,y1)`.                        |
-| `scripts/ios/build-core.sh` | 60           | UniFFI static-lib + binding generation.                                                    |
+| From zeron                  | Size         | Why                                                                     |
+| --------------------------- | ------------ | ----------------------------------------------------------------------- |
+| `apps/ios/Zeron/**/*.swift` | 10,591 lines | UIKit shell. Only 5 of 36 files touch Rust; the rest is domain-free UI. |
+| `crates/text`               | 4,062        | UAX#14 segmentation + rustybuzz measurement. No zeron deps.             |
+| `crates/markdown`           | 2,160        | Block model + incremental reparse. Deps: pulldown-cmark only.           |
+| `crates/syntax`             | 1,354        | Tree-sitter highlighting. Deps: tree-sitter grammars only.              |
+| `crates/mobile/src/layout`  | ~4,300       | Rows → measured display lists, prefix-sum offsets, `rowsIn(y0,y1)`.     |
+| `scripts/ios/build-core.sh` | 60           | UniFFI static-lib + binding generation.                                 |
 
 Total: **~22.5k lines**, all MIT, all domain-neutral.
 
@@ -48,6 +48,10 @@ publishes `LayoutFrame`s; Swift only paints at the given coordinates.
 ### Phase 1 — Layout core, domain-free (1 week)
 
 - Vendor the four crates. Strip every `zeron_*` path in `Cargo.toml`; keep only third-party deps.
+  The retained sets are `rustybuzz`, `icu-segmenter`, `icu-properties`, `unicode-segmentation`,
+  `unicode-bidi`, `hashbrown`, `rustc-hash` (`crates/text`); `pulldown-cmark`
+  (`crates/markdown`); `tree-sitter` plus the pinned grammars (`crates/syntax`). Verified against
+  upstream `Cargo.toml` — none of these four crates references the zeron workspace.
 - Port `crates/text/tests/coretext.rs` (line-break parity against CoreText on the same font bytes).
 - Port `crates/mobile/src/layout/tests.rs` and `crates/mobile/src/layout/fixture.md` verbatim —
   these are the paint/measure-agreement, streaming-equals-full-parse, and prefix-reuse assertions.
