@@ -12,6 +12,7 @@ import { matchThreadContextTitle, scopedThreadKey } from "@t3tools/client-runtim
 import {
   collectThreadContextReferences,
   formatThreadContextReference,
+  replaceThreadContextReferences,
   sanitizeThreadContextLabel,
 } from "@t3tools/shared/threadContext";
 import * as Schema from "effect/Schema";
@@ -450,10 +451,16 @@ export function mergeThreadContextClipboard(
   const occurrences = collectThreadContextReferences(input.pastedText);
   const byId = new Map(input.pastedRecords.map((record) => [String(record.contextId), record]));
   const accepted: ThreadContextRecord[] = [];
-  const acceptedKeys = new Set<string>();
+  const storedByScope = new Map<string, ThreadContextRecord>();
   for (const existing of input.existingRecords) {
-    acceptedKeys.add(scopedKeyOf(existing));
+    const scopeKey = scopedKeyOf(existing);
+    if (!storedByScope.has(scopeKey)) storedByScope.set(scopeKey, existing);
   }
+  const acceptedKeys = new Set<string>(storedByScope.keys());
+  // Pasted ids for already-attached threads must be rebound to the stored
+  // record's identity; otherwise the prompt keeps a foreign contextId that
+  // binds to nothing and the context is silently dropped on send.
+  const reboundByPastedId = new Map<string, ThreadContextRecord>();
   const seenIds = new Set<string>();
   for (const occurrence of occurrences) {
     const key = String(occurrence.contextId);
@@ -489,6 +496,11 @@ export function mergeThreadContextClipboard(
       return { ...unchanged, reason: "That thread no longer exists." };
     }
     const scopeKey = scopedKeyOf(record);
+    const stored = storedByScope.get(scopeKey);
+    if (stored) {
+      reboundByPastedId.set(key, stored);
+      continue;
+    }
     if (acceptedKeys.has(scopeKey)) continue;
     acceptedKeys.add(scopeKey);
     accepted.push(record);
@@ -499,20 +511,26 @@ export function mergeThreadContextClipboard(
       reason: `Thread context is limited to ${THREAD_CONTEXT_MAX_RECORDS} threads.`,
     };
   }
+  const reboundText =
+    reboundByPastedId.size === 0
+      ? input.pastedText
+      : replaceThreadContextReferences(input.pastedText, (occurrence) => {
+          const stored = reboundByPastedId.get(String(occurrence.contextId));
+          return stored ? formatThreadContextReference(stored) : occurrence.source;
+        });
   // The pasted text lands at the caret; unrelated draft content is retained.
   const at = caretOrEnd(input.existingPrompt, input.caret);
   const before = input.existingPrompt.slice(0, at);
   const after = input.existingPrompt.slice(at);
-  const spacer =
-    before.length > 0 && !before.endsWith(" ") && input.pastedText.length > 0 ? " " : "";
-  const nextPrompt = `${before}${spacer}${input.pastedText}${after}`;
+  const spacer = before.length > 0 && !before.endsWith(" ") && reboundText.length > 0 ? " " : "";
+  const nextPrompt = `${before}${spacer}${reboundText}${after}`;
   return {
     ok: true,
     reason: null,
     prompt: nextPrompt,
     records: [...input.existingRecords, ...accepted],
     insertedIds: accepted.map((record) => String(record.threadId)),
-    cursor: (before + spacer + input.pastedText).length,
+    cursor: (before + spacer + reboundText).length,
   };
 }
 

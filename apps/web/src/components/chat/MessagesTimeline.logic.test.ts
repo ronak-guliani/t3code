@@ -19,6 +19,7 @@ import {
   stabilizeReadonlyStringSet,
   stabilizeResponseMetaByTurnId,
   stabilizeStringMap,
+  stripTimelineThreadContextReferences,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 
@@ -1795,5 +1796,15 @@ describe("timeline thread context chips", () => {
       },
     });
     expect(chips).toEqual([{ key: "ctx-a", title: "A live", unavailable: false }]);
+  });
+});
+
+describe("stripTimelineThreadContextReferences", () => {
+  it("removes inline references so chips are the only representation", () => {
+    expect(stripTimelineThreadContextReferences("see [A](t3-context://v1/thread/ctx-a) now")).toBe(
+      "see now",
+    );
+    expect(stripTimelineThreadContextReferences("plain text")).toBe("plain text");
+    expect(stripTimelineThreadContextReferences("")).toBe("");
   });
 });

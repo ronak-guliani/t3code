@@ -517,6 +517,43 @@ describe("thread context structured clipboard", () => {
     expect(merged.cursor).toBeGreaterThan(5);
   });
 
+  it("rebinds pasted references to the already-attached record identity", () => {
+    const stored = {
+      version: 1 as const,
+      kind: "thread" as const,
+      contextId: contextId("ctx-stored"),
+      label: "Shared",
+      environmentId: ENV_A,
+      threadId: selfThreadId("t-shared"),
+      title: "Shared",
+    };
+    const merged = mergeThreadContextClipboard({
+      pastedText: "see [Shared](t3-context://v1/thread/ctx-foreign-copy) ",
+      pastedRecords: [
+        {
+          version: 1 as const,
+          kind: "thread" as const,
+          contextId: contextId("ctx-foreign-copy"),
+          label: "Shared",
+          environmentId: ENV_A,
+          threadId: selfThreadId("t-shared"),
+          title: "Shared",
+        },
+      ],
+      existingPrompt: "draft ",
+      existingRecords: [stored],
+      caret: 6,
+      environmentId: ENV_A,
+      selfThreadId: selfThreadId("other"),
+      capabilities: { threadContext: true },
+      resolveThread: () => ({ title: "Shared" }),
+    });
+    expect(merged.ok).toBe(true);
+    expect(merged.records.length).toBe(1);
+    expect(merged.prompt).toContain("t3-context://v1/thread/ctx-stored");
+    expect(merged.prompt).not.toContain("ctx-foreign-copy");
+  });
+
   it("rejects foreign, self, and dangling pastes atomically", () => {
     const foreign = mergeThreadContextClipboard({
       pastedText: "[X](t3-context://v1/thread/ctx-x) ",

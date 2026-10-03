@@ -400,7 +400,9 @@ export function buildThreadContextForQueueUpdate(input: {
 /**
  * Synchronous retry guard: the failed send cleared the composer draft, so a
  * restore is safe only when the draft is still empty. Reads the store draft
- * directly instead of the mirrored refs, which lag behind the clear.
+ * directly instead of the mirrored refs, which lag behind the clear. A
+ * missing draft counts as cleared: the clear deletes the entry outright when
+ * nothing else (model, runtime mode) keeps it alive.
  */
 export function isComposerDraftCleared(
   draft:
@@ -413,7 +415,7 @@ export function isComposerDraftCleared(
     | null
     | undefined,
 ): boolean {
-  if (!draft) return false;
+  if (!draft) return true;
   return (
     draft.prompt.length === 0 &&
     draft.imageCount === 0 &&

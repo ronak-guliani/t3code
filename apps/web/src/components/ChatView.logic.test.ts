@@ -1055,7 +1055,9 @@ describe("thread context send builders", () => {
         threadContextCount: 2,
       }),
     ).toBe(false);
-    expect(isComposerDraftCleared(null)).toBe(false);
-    expect(isComposerDraftCleared(undefined)).toBe(false);
+    // The optimistic clear deletes the entry outright when no composer
+    // settings keep it alive: a missing draft is a cleared draft.
+    expect(isComposerDraftCleared(null)).toBe(true);
+    expect(isComposerDraftCleared(undefined)).toBe(true);
   });
 });

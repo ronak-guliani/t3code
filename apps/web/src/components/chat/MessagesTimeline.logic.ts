@@ -10,6 +10,25 @@ import {
 import { isReviewOutputText } from "@t3tools/shared/workflows/reviewOutput";
 import { collectThreadContextReferences } from "@t3tools/shared/threadContext";
 
+/**
+ * Remove inline thread references from rendered message text so the chip
+ * list below is the only representation (mirrors how terminal-context
+ * placeholders are stripped before display). Structured records and copy
+ * sources keep the original text; only display is affected.
+ */
+export function stripTimelineThreadContextReferences(text: string): string {
+  if (!text.includes("](t3-context://v1/thread/")) return text;
+  let result = "";
+  let cursor = 0;
+  for (const occurrence of collectThreadContextReferences(text)) {
+    result += text.slice(cursor, occurrence.start);
+    cursor = occurrence.end;
+    // Swallow one trailing space left by insertion.
+    if (text[cursor] === " ") cursor += 1;
+  }
+  return result + text.slice(cursor);
+}
+
 export interface TimelineThreadContextChip {
   /** Context identity: stable React key and record binding, never the label. */
   key: string;

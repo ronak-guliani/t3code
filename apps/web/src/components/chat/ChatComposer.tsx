@@ -2450,6 +2450,13 @@ export const ChatComposer = memo(
         });
         return;
       }
+      // Queued-turn edits accept text and thread context only: attachments
+      // belong to the composer draft, so swallow file pastes here just like
+      // the drag handlers stay disabled while editing.
+      if (editingQueuedTurn) {
+        event.preventDefault();
+        return;
+      }
       const files = Array.from(event.clipboardData.files);
       if (files.length === 0) return;
       const imageFiles = files.filter((file) => file.type.startsWith("image/"));

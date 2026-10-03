@@ -75,6 +75,7 @@ import {
   selectTimelineThreadContextChips,
   shouldHandleInternalActionClick,
   stabilizeReadonlyStringSet,
+  stripTimelineThreadContextReferences,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
@@ -735,6 +736,7 @@ const TimelineRowContent = memo(function TimelineRowContent(props: { row: Timeli
           const regularImages = userImages.filter(
             (image) => !image.name.startsWith("preview-annotation-"),
           );
+          visibleText = stripTimelineThreadContextReferences(visibleText);
           return (
             <div className="flex flex-col items-end">
               {row.message.origin?.kind === "cross-thread" ? (
