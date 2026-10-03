@@ -542,6 +542,39 @@ export function mergeThreadContextClipboard(
   };
 }
 
+export interface RestoreRemovedThreadContextOutcome {
+  prompt: string;
+  recordsToAdd: ThreadContextRecord[];
+  /** False when the reference is already visible: nothing to do. */
+  restored: boolean;
+}
+
+/**
+ * Re-apply one removed reference onto the *current* draft. Undoing chip
+ * removal must not clobber edits made after the removal: the reference text
+ * is appended to whatever the draft now holds, reusing a same-scope record
+ * when one is already stored.
+ */
+export function restoreRemovedThreadContextReference(input: {
+  currentPrompt: string;
+  currentRecords: ReadonlyArray<ThreadContextRecord>;
+  removedRecord: ThreadContextRecord;
+}): RestoreRemovedThreadContextOutcome {
+  const scopeKey = scopedKeyOf(input.removedRecord);
+  const storedSameScope = input.currentRecords.find((record) => scopedKeyOf(record) === scopeKey);
+  const record = storedSameScope ?? input.removedRecord;
+  if (referencedContextIds(input.currentPrompt).has(String(record.contextId))) {
+    return { prompt: input.currentPrompt, recordsToAdd: [], restored: false };
+  }
+  const insertion = `${formatThreadContextReference(record)} `;
+  const spacer = input.currentPrompt.length > 0 && !/\s$/.test(input.currentPrompt) ? " " : "";
+  return {
+    prompt: `${input.currentPrompt}${spacer}${insertion}`,
+    recordsToAdd: storedSameScope ? [] : [input.removedRecord],
+    restored: true,
+  };
+}
+
 export function removeThreadContextReference(
   prompt: string,
   contextId: string,

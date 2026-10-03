@@ -6,6 +6,7 @@ import {
   isThreadContextSupported,
   mergeThreadContextClipboard,
   parseThreadContextClipboardPayload,
+  restoreRemovedThreadContextReference,
   selectedThreadContextRecords,
   selectThreadContextDescriptor,
   serializeThreadContextClipboard,
@@ -616,6 +617,46 @@ describe("thread context structured clipboard", () => {
     expect(merged.ok).toBe(true);
     expect(merged.prompt).toBe("replace [New](t3-context://v1/thread/ctx-new) me");
     expect(merged.records.length).toBe(1);
+  });
+
+  it("restores a removed reference into the current draft without clobbering edits", () => {
+    const removed = {
+      version: 1 as const,
+      kind: "thread" as const,
+      contextId: contextId("ctx-removed"),
+      label: "Removed",
+      environmentId: ENV_A,
+      threadId: selfThreadId("t-removed"),
+      title: "Removed",
+    };
+    const restored = restoreRemovedThreadContextReference({
+      currentPrompt: "new typing since removal",
+      currentRecords: [],
+      removedRecord: removed,
+    });
+    expect(restored.restored).toBe(true);
+    expect(restored.prompt.startsWith("new typing since removal")).toBe(true);
+    expect(restored.prompt).toContain("t3-context://v1/thread/ctx-removed");
+    expect(restored.recordsToAdd).toEqual([removed]);
+
+    const alreadyVisible = restoreRemovedThreadContextReference({
+      currentPrompt: "see [Removed](t3-context://v1/thread/ctx-removed) ok",
+      currentRecords: [removed],
+      removedRecord: removed,
+    });
+    expect(alreadyVisible.restored).toBe(false);
+    expect(alreadyVisible.recordsToAdd).toEqual([]);
+
+    // A same-scope record stored afterwards is reused instead of duplicated.
+    const replacement = { ...removed, contextId: contextId("ctx-replacement") };
+    const reused = restoreRemovedThreadContextReference({
+      currentPrompt: "other text",
+      currentRecords: [replacement],
+      removedRecord: removed,
+    });
+    expect(reused.restored).toBe(true);
+    expect(reused.prompt).toContain("t3-context://v1/thread/ctx-replacement");
+    expect(reused.recordsToAdd).toEqual([]);
   });
 
   it("rejects foreign, self, and dangling pastes atomically", () => {

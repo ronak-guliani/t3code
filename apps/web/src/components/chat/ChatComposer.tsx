@@ -150,6 +150,7 @@ import {
   isThreadContextSupported,
   mergeThreadContextClipboard,
   parseThreadContextClipboardPayload,
+  restoreRemovedThreadContextReference,
   selectThreadContextDescriptor,
   THREAD_CONTEXT_CLIPBOARD_MIME,
   queryThreadContextCandidates,
@@ -1982,10 +1983,54 @@ export const ChatComposer = memo(
             actionProps: {
               children: "Undo",
               onClick: () => {
-                promptRef.current = previousPrompt;
-                setComposerDraftPrompt(composerDraftTarget, previousPrompt);
-                setComposerDraftThreadContexts(composerDraftTarget, previousRecords);
-                setComposerTrigger(detectComposerTrigger(previousPrompt, previousPrompt.length));
+                const current = useComposerDraftStore
+                  .getState()
+                  .getComposerDraft(composerDraftTarget);
+                const postRemovalRecords = previousRecords.filter(
+                  (entry) => String(entry.contextId) !== String(contextId),
+                );
+                const pristine =
+                  current !== null &&
+                  current.prompt === cleaned.prompt &&
+                  current.threadContexts.length === postRemovalRecords.length &&
+                  current.threadContexts.every(
+                    (entry, index) =>
+                      String(entry.contextId) === String(postRemovalRecords[index]?.contextId),
+                  );
+                if (pristine) {
+                  promptRef.current = previousPrompt;
+                  setComposerDraftPrompt(composerDraftTarget, previousPrompt);
+                  setComposerDraftThreadContexts(composerDraftTarget, previousRecords);
+                  setComposerTrigger(detectComposerTrigger(previousPrompt, previousPrompt.length));
+                  return;
+                }
+                // The draft moved on since the removal: restore only the
+                // removed reference into the current text instead of
+                // clobbering subsequent edits and attachments.
+                const restored = restoreRemovedThreadContextReference({
+                  currentPrompt: current?.prompt ?? promptRef.current,
+                  currentRecords: current?.threadContexts ?? [],
+                  removedRecord,
+                });
+                if (!restored.restored) return;
+                promptRef.current = restored.prompt;
+                setComposerDraftPrompt(composerDraftTarget, restored.prompt);
+                if (restored.recordsToAdd.length > 0) {
+                  addComposerDraftThreadContexts(
+                    composerDraftTarget,
+                    restored.prompt,
+                    restored.recordsToAdd,
+                  );
+                }
+                const nextCursor = collapseExpandedComposerCursor(
+                  restored.prompt,
+                  restored.prompt.length,
+                );
+                setComposerCursor(nextCursor);
+                setComposerTrigger(detectComposerTrigger(restored.prompt, restored.prompt.length));
+                window.requestAnimationFrame(() => {
+                  composerEditorRef.current?.focusAt(nextCursor);
+                });
               },
             },
             timeout: 8_000,
@@ -1993,9 +2038,12 @@ export const ChatComposer = memo(
         );
       },
       [
+        addComposerDraftThreadContexts,
         composerDraftTarget,
+        composerEditorRef,
         promptRef,
         removeComposerDraftThreadContext,
+        setComposerCursor,
         setComposerDraftPrompt,
         setComposerDraftThreadContexts,
       ],
@@ -2465,15 +2513,16 @@ export const ChatComposer = memo(
         });
         return;
       }
-      // Queued-turn edits accept text and thread context only: attachments
-      // belong to the composer draft, so swallow file pastes here just like
-      // the drag handlers stay disabled while editing.
+      const files = Array.from(event.clipboardData.files);
+      if (files.length === 0) return;
+      // Queued-turn edits accept text and thread context only: file
+      // attachments belong to the composer draft, so swallow file pastes
+      // here just like the drag handlers stay disabled while editing.
+      // Plain-text pastes fall through to the editor's normal handling.
       if (editingQueuedTurn) {
         event.preventDefault();
         return;
       }
-      const files = Array.from(event.clipboardData.files);
-      if (files.length === 0) return;
       const imageFiles = files.filter((file) => file.type.startsWith("image/"));
       if (imageFiles.length === 0) return;
       event.preventDefault();
