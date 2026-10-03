@@ -945,6 +945,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : previousMessage?.origin !== undefined
                 ? { origin: previousMessage.origin }
                 : {}),
+            ...(event.payload.context !== undefined
+              ? { context: event.payload.context }
+              : previousMessage?.context !== undefined
+                ? { context: previousMessage.context }
+                : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,

@@ -2084,7 +2084,10 @@ export const ChatComposer = memo(
         if (!(event instanceof CustomEvent)) return;
         const refs = event.detail as ReadonlyArray<ScopedThreadRef>;
         if (!Array.isArray(refs) || refs.length === 0) return;
-        const outcome = runSharedThreadAttach({ refs: [...refs] });
+        const outcome = runSharedThreadAttach({
+          refs: [...refs],
+          caret: readComposerSnapshot().expandedCursor,
+        });
         if (outcome) {
           event.preventDefault();
         }
@@ -2093,7 +2096,7 @@ export const ChatComposer = memo(
       return () => {
         form.removeEventListener(THREAD_CONTEXT_DROP_EVENT, onThreadContextDrop as EventListener);
       };
-    }, [runSharedThreadAttach]);
+    }, [readComposerSnapshot, runSharedThreadAttach]);
 
     const onSelectComposerItem = useCallback(
       (item: ComposerCommandItem) => {
@@ -2403,6 +2406,21 @@ export const ChatComposer = memo(
       const pastedText = event.clipboardData.getData("text/plain");
       const structuredPayload = event.clipboardData.getData(THREAD_CONTEXT_CLIPBOARD_MIME);
       if (structuredPayload || (pastedText && pastedText.includes("t3-context://v1/thread/"))) {
+        // While an approval or provider question is pending the editor shows
+        // its answer, not the composer draft: structured references would
+        // land in the wrong document, so reject them like drops do. Plain
+        // text keeps the native path below.
+        if (isComposerApprovalState || pendingUserInputs.length > 0) {
+          event.preventDefault();
+          toastManager.add(
+            stackedThreadToast({
+              type: "warning",
+              title: "Could not paste thread context",
+              description: "Answer the pending question first, then paste the reference.",
+            }),
+          );
+          return;
+        }
         const pastedRecords = structuredPayload
           ? (parseThreadContextClipboardPayload(structuredPayload) ?? [])
           : [];

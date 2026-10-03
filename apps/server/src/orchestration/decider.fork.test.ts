@@ -1,9 +1,11 @@
 import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  EnvironmentId,
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  ThreadContextId,
   ThreadId,
   TurnId,
   type OrchestrationCommand,
@@ -156,6 +158,66 @@ describe("decider thread.fork", () => {
       MessageId.make("assistant-1"),
     ]);
     expect(forkThread?.messages[0]?.turnId).toBe(forkThread?.messages[1]?.turnId);
+  });
+
+  it("preserves thread context records when forking messages", async () => {
+    const baseReadModel = createReadModel();
+    const sourceThread = baseReadModel.threads[0];
+    if (!sourceThread) throw new Error("missing source thread");
+    const context = {
+      version: 1 as const,
+      records: [
+        {
+          version: 1 as const,
+          kind: "thread" as const,
+          contextId: ThreadContextId.make("ctx-fork"),
+          label: "Forked thread",
+          environmentId: EnvironmentId.make("env-fork"),
+          threadId: ThreadId.make("thread-attached"),
+          title: "Forked thread",
+        },
+      ],
+    };
+    const readModel: OrchestrationReadModel = {
+      ...baseReadModel,
+      threads: [
+        {
+          ...sourceThread,
+          messages: sourceThread.messages.map((message) =>
+            message.id === MessageId.make("user-1")
+              ? {
+                  ...message,
+                  text: "see [Forked thread](t3-context://v1/thread/ctx-fork)",
+                  context,
+                }
+              : message,
+          ),
+        },
+      ],
+    };
+    const command: Extract<OrchestrationCommand, { type: "thread.fork" }> = {
+      type: "thread.fork",
+      commandId: CommandId.make("fork-command"),
+      sourceThreadId,
+      threadId: forkThreadId,
+      targetMessageId: MessageId.make("assistant-1"),
+      createdAt: "2025-01-01T00:01:00.000Z",
+    };
+
+    const result = await Effect.runPromise(decideOrchestrationCommand({ command, readModel }));
+    const events = Array.isArray(result) ? result : [result];
+    const sent = events.filter((event) => event.type === "thread.message-sent");
+    expect(sent.length).toBe(2);
+    expect(sent[0]?.payload).toMatchObject({ context });
+
+    let projected = readModel;
+    let sequence = 0;
+    for (const event of events) {
+      sequence += 1;
+      projected = await Effect.runPromise(projectEvent(projected, { ...event, sequence }));
+    }
+    const forkThread = projected.threads.find((thread) => thread.id === forkThreadId);
+    expect(forkThread?.messages[0]?.context).toEqual(context);
   });
 
   it("rejects forking from a streaming assistant response", async () => {

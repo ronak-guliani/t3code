@@ -2,10 +2,12 @@ import {
   CheckpointRef,
   CommandId,
   CorrelationId,
+  EnvironmentId,
   EventId,
   MessageId,
   ProjectId,
   QueuedTurnId,
+  ThreadContextId,
   ThreadId,
   TurnId,
   ProviderInstanceId,
@@ -4639,5 +4641,147 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           workspaceBinding: thread?.workspaceBinding,
         });
       }),
+  );
+});
+
+const ThreadContextPersistenceTestLayer = makeProjectionPipelinePrefixedTestLayer(
+  "t3-projection-thread-context-persist-",
+);
+
+it.layer(ThreadContextPersistenceTestLayer)("Thread context persistence", (it) => {
+  it.effect("persists message context through SQL projection and preserves it on updates", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-10-03T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-context-persist");
+      const messageId = MessageId.make("message-context-persist");
+      const context = {
+        version: 1 as const,
+        records: [
+          {
+            version: 1 as const,
+            kind: "thread" as const,
+            contextId: ThreadContextId.make("ctx-persist"),
+            label: "Persisted thread",
+            environmentId: EnvironmentId.make("env-persist"),
+            threadId: ThreadId.make("thread-attached"),
+            title: "Persisted thread",
+          },
+        ],
+      };
+      const project = (event: Parameters<typeof projectionPipeline.projectEvent>[0]) =>
+        projectionPipeline.projectEvent(event);
+
+      yield* project({
+        sequence: 1,
+        type: "thread.created",
+        eventId: EventId.make("evt-context-persist-created"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-context-persist-created"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-context-persist-created"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-context-persist"),
+          title: "Context persist",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+      yield* project({
+        sequence: 2,
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-context-persist-sent"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-context-persist-sent"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-context-persist-sent"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId,
+          role: "user",
+          text: "see [Persisted thread](t3-context://v1/thread/ctx-persist)",
+          context,
+          turnId: null,
+          streaming: false,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+
+      const readContextJson = Effect.gen(function* () {
+        const rows = yield* sql<{ readonly contextJson: string | null }>`
+          SELECT context_json AS "contextJson"
+          FROM projection_thread_messages
+          WHERE message_id = ${messageId}
+        `;
+        return rows[0]?.contextJson ?? null;
+      });
+      const stored = yield* readContextJson;
+      assert.isNotNull(stored);
+      assert.deepEqual(JSON.parse(stored as string), {
+        version: 1,
+        records: [
+          {
+            version: 1,
+            kind: "thread",
+            contextId: "ctx-persist",
+            label: "Persisted thread",
+            environmentId: "env-persist",
+            threadId: "thread-attached",
+            title: "Persisted thread",
+          },
+        ],
+      });
+
+      // An update that omits context must preserve the stored records.
+      yield* project({
+        sequence: 3,
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-context-persist-updated"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-context-persist-updated"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-context-persist-updated"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId,
+          role: "user",
+          text: "see [Persisted thread](t3-context://v1/thread/ctx-persist) edited",
+          turnId: null,
+          streaming: false,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+      const preserved = yield* readContextJson;
+      assert.isNotNull(preserved);
+      assert.deepEqual(
+        (JSON.parse(preserved as string) as { records: unknown[] }).records.length,
+        1,
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-thread-context-")),
+      ),
+    ),
   );
 });
