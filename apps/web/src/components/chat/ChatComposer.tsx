@@ -2,6 +2,7 @@ import type {
   ApprovalRequestId,
   EnvironmentId,
   ModelSelection,
+  OrchestrationMessageContext,
   OrchestrationQueuedTurn,
   ProjectEntry,
   ProviderApprovalDecision,
@@ -21,6 +22,7 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   QueuedTurnId,
+  ThreadId as ThreadIdBrand,
 } from "@t3tools/contracts";
 import {
   resolveProviderSkillsForCwd,
@@ -53,7 +55,12 @@ import {
   expandCollapsedComposerCursor,
   replaceTextRange,
 } from "../../composer-logic";
-import { deriveComposerSendState, readFileAsDataUrl } from "../ChatView.logic";
+import {
+  buildThreadContextForQueueUpdate,
+  countReferencedThreadContexts,
+  deriveComposerSendState,
+  readFileAsDataUrl,
+} from "../ChatView.logic";
 import {
   type ComposerImageAttachment,
   type DraftId,
@@ -127,7 +134,8 @@ import {
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
 import { automaticPrFeedbackBlockReason } from "@t3tools/shared/automaticPrFeedback";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
-import type { SessionPhase, Thread } from "../../types";
+import type { ProjectId } from "@t3tools/contracts";
+import type { Project, SessionPhase, Thread } from "../../types";
 import type { ActivePlanState } from "../../session-logic";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
 import type { PendingApproval, PendingUserInput } from "../../session-logic";
@@ -135,15 +143,19 @@ import { formatProviderSkillDisplayName } from "../../providerSkillPresentation"
 import { providerSkillsFromCatalog, searchProviderSkills } from "../../providerSkillSearch";
 import {
   attachThreadContexts,
-  importThreadContextClipboard,
+  isThreadContextSupported,
+  mergeThreadContextClipboard,
+  parseThreadContextClipboardPayload,
+  selectThreadContextDescriptor,
+  THREAD_CONTEXT_CLIPBOARD_MIME,
   queryThreadContextCandidates,
   removeThreadContextReference,
   type ThreadContextCandidate,
 } from "../../threadContextAttach";
-import { ThreadContextChip } from "./ThreadContextChip";
 import "./threadContextDrop.css";
 import { THREAD_CONTEXT_DROP_EVENT, threadContextDropTargetProps } from "./threadContextDrag";
 import { usePrimaryEnvironmentDescriptor } from "../../environments/primary/context";
+import { useSavedEnvironmentRuntimeStore } from "../../environments/runtime";
 import { useStore } from "../../store";
 
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
@@ -175,12 +187,13 @@ const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 type ThreadShellSnapshot = {
   id: ThreadId;
   title: string;
-  projectId: unknown;
+  projectId: ProjectId;
   archivedAt: string | null;
   updatedAt?: string | undefined;
   createdAt: string;
 };
-const EMPTY_THREAD_SHELLS: ThreadShellSnapshot[] = [];
+const EMPTY_THREAD_SHELL_MAP: Record<ThreadId, ThreadShellSnapshot> = {};
+const EMPTY_PROJECT_MAP: Record<ProjectId, Project> = {};
 const COMPOSER_FLOATING_LAYER_SELECTOR = [
   '[data-slot="popover-popup"]',
   '[data-slot="menu-popup"]',
@@ -459,7 +472,6 @@ export interface ChatComposerProps {
   promptRef: React.MutableRefObject<string>;
   composerImagesRef: React.MutableRefObject<ComposerImageAttachment[]>;
   composerTerminalContextsRef: React.MutableRefObject<TerminalContextDraft[]>;
-  composerThreadContextsRef?: React.MutableRefObject<ThreadContextRecord[]> | undefined;
 
   // Scroll
   shouldAutoScrollRef: React.MutableRefObject<boolean>;
@@ -476,7 +488,11 @@ export interface ChatComposerProps {
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
   ) => Promise<void>;
-  onUpdateQueuedTurn: (queuedTurnId: QueuedTurnId, text: string) => void;
+  onUpdateQueuedTurn: (
+    queuedTurnId: QueuedTurnId,
+    text: string,
+    context?: OrchestrationMessageContext | undefined,
+  ) => void;
   onDeleteQueuedTurn: (queuedTurnId: QueuedTurnId) => void;
   onSelectActivePendingUserInputOption: (questionId: string, optionLabel: string) => void;
   onAdvanceActivePendingUserInput: () => void;
@@ -550,7 +566,6 @@ export const ChatComposer = memo(
       promptRef,
       composerImagesRef,
       composerTerminalContextsRef,
-      composerThreadContextsRef,
       shouldAutoScrollRef,
       scheduleStickToBottom,
       onSend,
@@ -890,6 +905,7 @@ export const ChatComposer = memo(
       id: QueuedTurnId;
       text: string;
       hasAttachments: boolean;
+      threadContexts: ThreadContextRecord[];
     } | null>(null);
     const isMobileViewport = useMediaQuery("max-sm");
     const isComposerCollapsedMobile = isMobileViewport && !isComposerFocused;
@@ -924,9 +940,15 @@ export const ChatComposer = memo(
         }),
       [composerImages.length, composerTerminalContexts, prompt],
     );
+    // Only prompt-referenced records count: text-deleted references keep
+    // their stored record for undo, but must not mark an empty draft sendable.
+    const referencedComposerThreadContexts = countReferencedThreadContexts(
+      editingQueuedTurn?.text ?? prompt,
+      editingQueuedTurn?.threadContexts ?? composerThreadContexts,
+    );
     const hasComposerSubmitContent = editingQueuedTurn
       ? editingQueuedTurn.text.trim().length > 0 || editingQueuedTurn.hasAttachments
-      : composerSendState.hasSendableContent || composerThreadContexts.length > 0;
+      : composerSendState.hasSendableContent || referencedComposerThreadContexts > 0;
 
     // ------------------------------------------------------------------
     // Derived: composer trigger / menu
@@ -955,14 +977,31 @@ export const ChatComposer = memo(
       }),
     );
     const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
+    // Gate the selected environment explicitly: the primary descriptor only
+    // applies when it describes this composer. Unknown servers stay closed.
     const primaryDescriptor = usePrimaryEnvironmentDescriptor();
-    const threadContextSupported = primaryDescriptor?.capabilities.threadContext !== false;
-    const composerThreadShells = useStore((state) => {
-      const envState = state.environmentStateById[environmentId];
-      if (!envState) return EMPTY_THREAD_SHELLS;
-      const shells = Object.values(envState.threadShellById);
-      return shells.length > 0 ? shells : EMPTY_THREAD_SHELLS;
+    const savedDescriptor = useSavedEnvironmentRuntimeStore(
+      (state) => state.byId[environmentId]?.descriptor ?? null,
+    );
+    const selectedDescriptor = selectThreadContextDescriptor({
+      environmentId,
+      primaryDescriptor,
+      savedDescriptor,
     });
+    const threadContextSupported = isThreadContextSupported(selectedDescriptor);
+    // Subscribe the stable shell map (never a fresh array) so the external
+    // store snapshot stays referentially stable; derive lists with useMemo.
+    const threadShellByIdRecord = useStore(
+      (state) =>
+        state.environmentStateById[environmentId]?.threadShellById ?? EMPTY_THREAD_SHELL_MAP,
+    );
+    const composerThreadShells = useMemo(
+      () => Object.values(threadShellByIdRecord),
+      [threadShellByIdRecord],
+    );
+    const projectById = useStore(
+      (state) => state.environmentStateById[environmentId]?.projectById ?? EMPTY_PROJECT_MAP,
+    );
     const draftThreadIds = useComposerDraftStore((state) => state.draftThreadsByThreadKey);
     const threadCandidates = useMemo<ThreadContextCandidate[]>(() => {
       if (!isPathTrigger || pathTriggerQuery.trim().length === 0 || !threadContextSupported) {
@@ -976,7 +1015,7 @@ export const ChatComposer = memo(
         threadId: shell.id,
         title: shell.title,
         projectId: shell.projectId ? String(shell.projectId) : null,
-        projectName: null,
+        projectName: projectById[shell.projectId]?.name ?? null,
         archivedAt: shell.archivedAt,
         updatedAt: shell.updatedAt ?? shell.createdAt,
         createdAt: shell.createdAt,
@@ -985,7 +1024,7 @@ export const ChatComposer = memo(
       return queryThreadContextCandidates(inputs, {
         query: pathTriggerQuery,
         environmentId,
-        selfThreadId: (activeThreadId ?? routeThreadRef.threadId) as ThreadId,
+        selfThreadId: activeThreadId ?? routeThreadRef.threadId,
       }).map((entry) => ({
         environmentId: entry.environmentId,
         threadId: entry.threadId,
@@ -1004,6 +1043,7 @@ export const ChatComposer = memo(
       environmentId,
       isPathTrigger,
       pathTriggerQuery,
+      projectById,
       routeThreadRef.threadId,
       threadContextSupported,
     ]);
@@ -1032,7 +1072,7 @@ export const ChatComposer = memo(
           label: basenameOfPath(entry.path),
           description: entry.parentPath ?? "",
         }));
-        // Bare @ leaves file results unchanged; typed queries append thread matches.
+        // Bare @ leaves file results unchanged; typed queries lead with thread matches.
         if (composerTrigger.query.trim().length === 0) return fileItems;
         const threadItems = threadCandidates.map((candidate) => ({
           id: `thread:${String(candidate.environmentId)}:${String(candidate.threadId)}`,
@@ -1042,7 +1082,7 @@ export const ChatComposer = memo(
           label: candidate.title,
           description: candidate.projectName ?? candidate.projectId ?? "Attach thread as context",
         }));
-        return [...fileItems, ...threadItems];
+        return [...threadItems, ...fileItems];
       }
       if (composerTrigger.kind === "slash-command") {
         const builtInSlashCommandItems = [
@@ -1282,6 +1322,9 @@ export const ChatComposer = memo(
           id: queuedTurn.id,
           text: nextText,
           hasAttachments: queuedTurn.message.attachments.length > 0,
+          // Hydrate the queued turn's context records so edits retain them
+          // and removing the last reference clears them explicitly.
+          threadContexts: [...(queuedTurn.message.context?.records ?? [])],
         });
         promptRef.current = nextText;
         const nextCursor = collapseExpandedComposerCursor(nextText, nextText.length);
@@ -1301,9 +1344,18 @@ export const ChatComposer = memo(
       ) {
         return;
       }
-      onUpdateQueuedTurn(editingQueuedTurn.id, editingQueuedTurn.text);
+      const queuedTurn = queuedTurns.find((turn) => turn.id === editingQueuedTurn.id);
+      onUpdateQueuedTurn(
+        editingQueuedTurn.id,
+        editingQueuedTurn.text,
+        buildThreadContextForQueueUpdate({
+          text: editingQueuedTurn.text,
+          records: editingQueuedTurn.threadContexts,
+          previousRecords: queuedTurn?.message.context?.records ?? [],
+        }),
+      );
       stopEditingQueuedTurn();
-    }, [editingQueuedTurn, onUpdateQueuedTurn, stopEditingQueuedTurn]);
+    }, [editingQueuedTurn, onUpdateQueuedTurn, queuedTurns, stopEditingQueuedTurn]);
 
     const addComposerImage = useCallback(
       (image: ComposerImageAttachment) => {
@@ -1387,12 +1439,6 @@ export const ChatComposer = memo(
     useEffect(() => {
       composerTerminalContextsRef.current = composerTerminalContexts;
     }, [composerTerminalContexts, composerTerminalContextsRef]);
-
-    useEffect(() => {
-      if (composerThreadContextsRef) {
-        composerThreadContextsRef.current = [...composerThreadContexts];
-      }
-    }, [composerThreadContexts, composerThreadContextsRef]);
 
     // ------------------------------------------------------------------
     // Composer menu highlight sync
@@ -1775,8 +1821,69 @@ export const ChatComposer = memo(
       return map;
     }, [composerThreadShells]);
 
+    // Live titles for inline thread chips, keyed by context identity.
+    const threadContextTitles = useMemo(() => {
+      const titles = new Map<string, string>();
+      const records = editingQueuedTurn?.threadContexts ?? composerThreadContexts;
+      for (const record of records) {
+        const live = threadShellById.get(String(record.threadId))?.title?.trim();
+        titles.set(String(record.contextId), live && live.length > 0 ? live : record.title);
+      }
+      return titles;
+    }, [composerThreadContexts, editingQueuedTurn, threadShellById]);
+
+    // Drops and picker selections share one attach path. Queue edits merge
+    // into the editing turn; everything else targets the composer draft.
+    // Disabled reflects every real non-accepting target state (busy,
+    // connecting, approvals, custom questions); capability uses the selected
+    // environment with no fallback for unknown servers.
     const runSharedThreadAttach = useCallback(
       (input: { refs: ScopedThreadRef[]; basePrompt?: string; caret?: number }) => {
+        const threadAttachDisabled =
+          isSendBusy || isConnecting || isComposerApprovalState || pendingUserInputs.length > 0;
+        const selfThreadId = activeThreadId ?? routeThreadRef.threadId;
+        const resolveThread = (ref: ScopedThreadRef) => {
+          const shell = threadShellById.get(String(ref.threadId));
+          if (!shell || shell.archivedAt !== null) return null;
+          return { title: shell.title };
+        };
+        if (editingQueuedTurn) {
+          const outcome = attachThreadContexts({
+            existingPrompt: input.basePrompt ?? editingQueuedTurn.text,
+            existingRecords: editingQueuedTurn.threadContexts,
+            refs: input.refs,
+            environmentId,
+            selfThreadId,
+            capabilities: { threadContext: threadContextSupported },
+            resolveThread,
+            caret: input.caret,
+            busy: isSendBusy,
+            disabled: threadAttachDisabled,
+          });
+          if (!outcome.ok) {
+            toastManager.add(
+              stackedThreadToast({
+                type: "warning",
+                title: "Could not attach thread",
+                description: outcome.reason ?? "Attachment rejected.",
+              }),
+            );
+            return null;
+          }
+          setEditingQueuedTurn((current) =>
+            current
+              ? { ...current, text: outcome.prompt, threadContexts: outcome.records }
+              : current,
+          );
+          promptRef.current = outcome.prompt;
+          const nextCursor = collapseExpandedComposerCursor(outcome.prompt, outcome.cursor);
+          setComposerCursor(nextCursor);
+          setComposerTrigger(detectComposerTrigger(outcome.prompt, outcome.cursor));
+          window.requestAnimationFrame(() => {
+            composerEditorRef.current?.focusAt(nextCursor);
+          });
+          return outcome;
+        }
         const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
         const existingRecords = draft?.threadContexts ?? composerThreadContexts;
         const existingPrompt = input.basePrompt ?? promptRef.current;
@@ -1785,18 +1892,12 @@ export const ChatComposer = memo(
           existingRecords,
           refs: input.refs,
           environmentId,
-          selfThreadId: (activeThreadId ?? routeThreadRef.threadId) as ThreadId,
-          capabilities: {
-            threadContext: primaryDescriptor?.capabilities.threadContext ?? true,
-          },
-          resolveThread: (ref) => {
-            const shell = threadShellById.get(String(ref.threadId));
-            if (!shell || shell.archivedAt !== null) return null;
-            return { title: shell.title, projectName: null };
-          },
+          selfThreadId,
+          capabilities: { threadContext: threadContextSupported },
+          resolveThread,
           caret: input.caret,
           busy: isSendBusy,
-          disabled: false,
+          disabled: threadAttachDisabled,
         });
         if (!outcome.ok) {
           toastManager.add(
@@ -1834,12 +1935,16 @@ export const ChatComposer = memo(
         addComposerDraftThreadContexts,
         composerDraftTarget,
         composerThreadContexts,
+        editingQueuedTurn,
         environmentId,
+        isComposerApprovalState,
+        isConnecting,
         isSendBusy,
-        primaryDescriptor?.capabilities.threadContext,
+        pendingUserInputs.length,
         promptRef,
         routeThreadRef.threadId,
         setComposerDraftPrompt,
+        threadContextSupported,
         threadShellById,
       ],
     );
@@ -1884,6 +1989,34 @@ export const ChatComposer = memo(
         setComposerDraftPrompt,
         setComposerDraftThreadContexts,
       ],
+    );
+
+    // Inline chip × removal: queue edits stay local, drafts remove with undo.
+    const onRemoveThreadContextFromEditor = useCallback(
+      (contextId: ThreadContextRecord["contextId"]) => {
+        if (editingQueuedTurn) {
+          const removed = removeThreadContextReference(editingQueuedTurn.text, String(contextId));
+          if (!removed.removed) return;
+          setEditingQueuedTurn((current) =>
+            current
+              ? {
+                  ...current,
+                  text: removed.prompt,
+                  threadContexts: current.threadContexts.filter(
+                    (entry) => String(entry.contextId) !== String(contextId),
+                  ),
+                }
+              : current,
+          );
+          promptRef.current = removed.prompt;
+          const nextCursor = collapseExpandedComposerCursor(removed.prompt, removed.prompt.length);
+          setComposerCursor(nextCursor);
+          setComposerTrigger(detectComposerTrigger(removed.prompt, removed.prompt.length));
+          return;
+        }
+        removeThreadContextWithUndo(contextId);
+      },
+      [editingQueuedTurn, promptRef, removeThreadContextWithUndo],
     );
 
     useEffect(() => {
@@ -1995,7 +2128,7 @@ export const ChatComposer = memo(
           const basePrompt =
             snapshot.value.slice(0, trigger.rangeStart) + snapshot.value.slice(trigger.rangeEnd);
           const outcome = runSharedThreadAttach({
-            refs: [scopeThreadRef(environmentId, item.threadId as ThreadId)],
+            refs: [scopeThreadRef(environmentId, ThreadIdBrand.make(item.threadId))],
             basePrompt,
             caret: trigger.rangeStart,
           });
@@ -2210,51 +2343,112 @@ export const ChatComposer = memo(
     // ------------------------------------------------------------------
     const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
       const pastedText = event.clipboardData.getData("text/plain");
-      if (pastedText && pastedText.includes("t3-context://v1/thread/")) {
-        const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
-        const imported = importThreadContextClipboard(
-          pastedText,
-          draft?.threadContexts ?? composerThreadContexts,
-          {
-            environmentId,
-            selfThreadId: (activeThreadId ?? routeThreadRef.threadId) as ThreadId,
-            capabilities: {
-              threadContext: primaryDescriptor?.capabilities.threadContext ?? true,
-            },
-          },
-        );
-        if (!imported.ok) {
+      const structuredPayload = event.clipboardData.getData(THREAD_CONTEXT_CLIPBOARD_MIME);
+      if (structuredPayload || (pastedText && pastedText.includes("t3-context://v1/thread/"))) {
+        const pastedRecords = structuredPayload
+          ? (parseThreadContextClipboardPayload(structuredPayload) ?? [])
+          : [];
+        if (!structuredPayload) {
+          // References without the structured payload cannot be validated
+          // against the destination environment: reject loudly instead of
+          // pasting dangling chips.
           event.preventDefault();
           toastManager.add(
             stackedThreadToast({
               type: "warning",
               title: "Could not paste thread context",
-              description: imported.reason ?? "Pasted context is unavailable.",
+              description:
+                "Copy the reference from a composer so its thread records travel with it.",
             }),
           );
           return;
         }
-        if (imported.records.length > (draft?.threadContexts.length ?? 0)) {
-          event.preventDefault();
-          const inserted = imported.records.filter(
-            (record) =>
-              !(draft?.threadContexts ?? []).some(
-                (existing) => String(existing.contextId) === String(record.contextId),
-              ),
-          );
-          promptRef.current = imported.prompt;
-          setComposerDraftPrompt(composerDraftTarget, imported.prompt);
-          if (inserted.length > 0) {
-            addComposerDraftThreadContexts(composerDraftTarget, imported.prompt, inserted);
+        const snapshot = readComposerSnapshot();
+        const selfThreadId = activeThreadId ?? routeThreadRef.threadId;
+        const resolveThread = (ref: ScopedThreadRef) => {
+          const shell = threadShellById.get(String(ref.threadId));
+          if (!shell || shell.archivedAt !== null) return null;
+          return { title: shell.title };
+        };
+        if (editingQueuedTurn) {
+          const merged = mergeThreadContextClipboard({
+            pastedText,
+            pastedRecords,
+            existingPrompt: editingQueuedTurn.text,
+            existingRecords: editingQueuedTurn.threadContexts,
+            caret: snapshot.expandedCursor,
+            environmentId,
+            selfThreadId,
+            capabilities: { threadContext: threadContextSupported },
+            resolveThread,
+          });
+          if (!merged.ok) {
+            event.preventDefault();
+            toastManager.add(
+              stackedThreadToast({
+                type: "warning",
+                title: "Could not paste thread context",
+                description: merged.reason ?? "Pasted context is unavailable.",
+              }),
+            );
+            return;
           }
-          const nextCursor = collapseExpandedComposerCursor(
-            imported.prompt,
-            imported.prompt.length,
+          event.preventDefault();
+          setEditingQueuedTurn((current) =>
+            current ? { ...current, text: merged.prompt, threadContexts: merged.records } : current,
           );
+          promptRef.current = merged.prompt;
+          const nextCursor = collapseExpandedComposerCursor(merged.prompt, merged.cursor);
           setComposerCursor(nextCursor);
-          setComposerTrigger(detectComposerTrigger(imported.prompt, imported.prompt.length));
+          setComposerTrigger(detectComposerTrigger(merged.prompt, merged.cursor));
+          window.requestAnimationFrame(() => {
+            composerEditorRef.current?.focusAt(nextCursor);
+          });
           return;
         }
+        const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+        const existingRecords = draft?.threadContexts ?? composerThreadContexts;
+        const merged = mergeThreadContextClipboard({
+          pastedText,
+          pastedRecords,
+          existingPrompt: promptRef.current,
+          existingRecords,
+          caret: snapshot.expandedCursor,
+          environmentId,
+          selfThreadId,
+          capabilities: { threadContext: threadContextSupported },
+          resolveThread,
+        });
+        if (!merged.ok) {
+          event.preventDefault();
+          toastManager.add(
+            stackedThreadToast({
+              type: "warning",
+              title: "Could not paste thread context",
+              description: merged.reason ?? "Pasted context is unavailable.",
+            }),
+          );
+          return;
+        }
+        event.preventDefault();
+        const inserted = merged.records.filter(
+          (record) =>
+            !existingRecords.some(
+              (existing) => String(existing.contextId) === String(record.contextId),
+            ),
+        );
+        promptRef.current = merged.prompt;
+        setComposerDraftPrompt(composerDraftTarget, merged.prompt);
+        if (inserted.length > 0) {
+          addComposerDraftThreadContexts(composerDraftTarget, merged.prompt, inserted);
+        }
+        const nextCursor = collapseExpandedComposerCursor(merged.prompt, merged.cursor);
+        setComposerCursor(nextCursor);
+        setComposerTrigger(detectComposerTrigger(merged.prompt, merged.cursor));
+        window.requestAnimationFrame(() => {
+          composerEditorRef.current?.focusAt(nextCursor);
+        });
+        return;
       }
       const files = Array.from(event.clipboardData.files);
       if (files.length === 0) return;
@@ -2487,7 +2681,12 @@ export const ChatComposer = memo(
 
     // Render
     // ------------------------------------------------------------------
-    const threadDropDisabled = isSendBusy || isConnecting || !threadContextSupported;
+    const threadDropDisabled =
+      isSendBusy ||
+      isConnecting ||
+      isComposerApprovalState ||
+      pendingUserInputs.length > 0 ||
+      !threadContextSupported;
     return (
       <form
         ref={composerFormRef}
@@ -2662,23 +2861,6 @@ export const ChatComposer = memo(
               {!isComposerApprovalState &&
                 pendingUserInputs.length === 0 &&
                 !editingQueuedTurn &&
-                composerThreadContexts.length > 0 && (
-                  <div className="mb-2 flex flex-wrap gap-1.5" data-thread-context-chips="true">
-                    {composerThreadContexts.map((record) => (
-                      <ThreadContextChip
-                        key={String(record.contextId)}
-                        record={record}
-                        liveTitle={threadShellById.get(String(record.threadId))?.title ?? null}
-                        disabled={isSendBusy || isConnecting}
-                        onRemove={removeThreadContextWithUndo}
-                      />
-                    ))}
-                  </div>
-                )}
-
-              {!isComposerApprovalState &&
-                pendingUserInputs.length === 0 &&
-                !editingQueuedTurn &&
                 composerPreviewAnnotations.length > 0 && (
                   <ComposerPreviewAnnotationCards
                     annotations={composerPreviewAnnotations}
@@ -2784,11 +2966,14 @@ export const ChatComposer = memo(
                     ? composerTerminalContexts
                     : []
                 }
+                threadContexts={editingQueuedTurn?.threadContexts ?? composerThreadContexts}
+                threadContextTitles={threadContextTitles}
                 skills={selectedProviderSkills}
                 onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
+                onRemoveThreadContext={onRemoveThreadContextFromEditor}
                 onChange={onPromptChange}
                 onCommandKeyDown={onComposerCommandKey}
-                onPaste={editingQueuedTurn ? (event) => event.preventDefault() : onComposerPaste}
+                onPaste={onComposerPaste}
                 placeholder={
                   isComposerApprovalState
                     ? (activePendingApproval?.detail ?? "Resolve this approval request to continue")

@@ -66,14 +66,13 @@ import { MessageCopyButton } from "./MessageCopyButton";
 import { ChildFollowUpReceipt } from "./ChildFollowUpPanel";
 import {
   collectReviewOutputMessageIds,
-  collectTimelineThreadContextLabels,
   computeStableMessagesTimelineRows,
   deriveDelegationOperationSummary,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveExternalActionUrl,
-  selectTimelineThreadContextRecords,
+  selectTimelineThreadContextChips,
   shouldHandleInternalActionClick,
   stabilizeReadonlyStringSet,
   type StableMessagesTimelineRowsState,
@@ -785,29 +784,30 @@ const TimelineRowContent = memo(function TimelineRowContent(props: { row: Timeli
                   forceExpanded={ctx.activeChatFindRowId === row.id}
                 />
                 {(() => {
-                  const threadRecords = selectTimelineThreadContextRecords(
+                  const threadChips = selectTimelineThreadContextChips(
                     row.message as {
                       text: string;
                       context?: { records?: ThreadContextRecord[] } | undefined;
                     },
                   );
-                  const threadLabels =
-                    threadRecords.length > 0
-                      ? threadRecords.map((record) => record.title || record.label)
-                      : collectTimelineThreadContextLabels(visibleText);
-                  if (threadLabels.length === 0) return null;
+                  if (threadChips.length === 0) return null;
                   return (
                     <div className="mt-2 flex flex-wrap justify-end gap-1.5">
-                      {threadLabels.map((label) => (
+                      {threadChips.map((chip) => (
                         <span
-                          key={label}
-                          className="inline-flex max-w-60 items-center gap-1 rounded-md border border-border/70 bg-muted/60 px-1.5 py-0.5 text-xs text-foreground"
-                          title={label}
+                          key={chip.key}
+                          className={cn(
+                            "inline-flex max-w-60 items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs",
+                            chip.unavailable
+                              ? "border-dashed border-border/70 bg-muted/40 text-muted-foreground"
+                              : "border-border/70 bg-muted/60 text-foreground",
+                          )}
+                          title={chip.unavailable ? "Thread reference unavailable" : chip.title}
                         >
                           <span aria-hidden="true" className="text-muted-foreground">
                             #
                           </span>
-                          <span className="truncate font-medium">{label}</span>
+                          <span className="truncate font-medium">{chip.title}</span>
                         </span>
                       ))}
                     </div>

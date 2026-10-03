@@ -7,6 +7,7 @@ import {
   type EnvironmentId,
   type MessageId,
   type ModelSelection,
+  type OrchestrationMessageContext,
   type ProjectScript,
   type ProjectId,
   type QueuedTurnId,
@@ -59,7 +60,12 @@ import { flushSync } from "react-dom";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
-import { usePrimaryEnvironmentId } from "../environments/primary/context";
+import {
+  readPrimaryEnvironmentDescriptor,
+  usePrimaryEnvironmentId,
+} from "../environments/primary/context";
+import { getSavedEnvironmentRuntimeState } from "../environments/runtime/catalog";
+import { isThreadContextSupported, selectThreadContextDescriptor } from "../threadContextAttach";
 import { readEnvironmentConnection } from "../environments/runtime";
 import { readEnvironmentApi } from "../environmentApi";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
@@ -236,10 +242,12 @@ import {
   buildLocalDraftThread,
   buildThreadContextForSend,
   canStartThreadTurn,
+  countReferencedThreadContexts,
   createThreadPlanCatalogSelector,
   deriveComposerSendState,
   deriveTimelineWorkState,
   getActivityHistoryKey,
+  isComposerDraftCleared,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
   mergeActivityWindows,
@@ -984,7 +992,6 @@ function ChatViewBody(
   const promptRef = useRef("");
   const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>([]);
-  const composerThreadContextsRef = useRef<ThreadContextRecord[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -3350,6 +3357,15 @@ function ChatViewBody(
 
   const onSend = async (e?: { preventDefault: () => void }, providerCommand?: string) => {
     e?.preventDefault();
+    // Gate the selected environment explicitly: the primary descriptor only
+    // applies when it describes this chat. Unknown servers stay closed.
+    const threadContextSupported = isThreadContextSupported(
+      selectThreadContextDescriptor({
+        environmentId,
+        primaryDescriptor: readPrimaryEnvironmentDescriptor(),
+        savedDescriptor: getSavedEnvironmentRuntimeState(environmentId).descriptor,
+      }),
+    );
     const api = readEnvironmentApi(environmentId);
     if (!api || !activeThread || isSendBusy || isConnecting || sendInFlightRef.current) return;
     if (activePendingProgress) {
@@ -3374,7 +3390,6 @@ function ChatViewBody(
     } = sendCtx as typeof sendCtx & { threadContexts?: ThreadContextRecord[] };
     const draftPromptForSend = promptRef.current;
     const draftThreadContextsForSend = [...composerThreadContexts];
-    composerThreadContextsRef.current = [...composerThreadContexts];
     const promptForSend =
       providerCommand !== undefined
         ? `/${providerCommand}`
@@ -3382,6 +3397,12 @@ function ChatViewBody(
             (prompt, annotation) => appendPreviewAnnotationPrompt(prompt, annotation),
             draftPromptForSend,
           );
+    // Only prompt-referenced records count: text-deleted references keep
+    // their stored record for undo, but must not mark an empty draft sendable.
+    const referencedThreadContextCount = countReferencedThreadContexts(
+      promptForSend,
+      composerThreadContexts,
+    );
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
@@ -3391,9 +3412,19 @@ function ChatViewBody(
       prompt: promptForSend,
       imageCount: composerImages.length,
       terminalContexts: composerTerminalContexts,
-      threadContextCount: composerThreadContexts.length,
+      threadContextCount: referencedThreadContextCount,
     });
     const threadContextForSend = buildThreadContextForSend(promptForSend, composerThreadContexts);
+    if (threadContextForSend && !threadContextSupported) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: "Thread context is not supported here",
+          description: "This server does not support thread context. Update the server to send it.",
+        }),
+      );
+      return;
+    }
     const piSessionCommand = ctxSelectedProvider === "pi" ? parsePiSessionCommand(trimmed) : null;
     if (piSessionCommand) {
       const composerHasNonPromptContent =
@@ -3531,6 +3562,7 @@ function ChatViewBody(
       await onSubmitPlanFollowUp({
         text: followUp.text,
         interactionMode: followUp.interactionMode,
+        context: buildThreadContextForSend(followUp.text, composerThreadContexts),
       });
       return;
     }
@@ -3837,12 +3869,24 @@ function ChatViewBody(
       }
       turnStartSucceeded = true;
     })().catch(async (err: unknown) => {
+      // Read the cleared draft synchronously from the store: the mirrored
+      // refs lag behind the optimistic clear, so a ref-based guard would
+      // skip the restore exactly when thread context was attached. Newer
+      // user edits (any non-empty field) still block the restore.
+      const clearedDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
       if (
         !turnStartSucceeded &&
         promptRef.current.length === 0 &&
-        composerImagesRef.current.length === 0 &&
-        composerTerminalContextsRef.current.length === 0 &&
-        composerThreadContextsRef.current.length === 0
+        isComposerDraftCleared(
+          clearedDraft
+            ? {
+                prompt: clearedDraft.prompt,
+                imageCount: clearedDraft.images.length,
+                terminalContextCount: clearedDraft.terminalContexts.length,
+                threadContextCount: clearedDraft.threadContexts.length,
+              }
+            : null,
+        )
       ) {
         usePendingTurnStore
           .getState()
@@ -3851,7 +3895,6 @@ function ChatViewBody(
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
         composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
-        composerThreadContextsRef.current = [...draftThreadContextsForSend];
         setComposerDraftPrompt(composerDraftTarget, draftPromptForSend);
         addComposerDraftImages(composerDraftTarget, retryComposerImages);
         setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
@@ -3892,17 +3935,31 @@ function ChatViewBody(
     const {
       images: composerImages,
       terminalContexts: composerTerminalContexts,
+      threadContexts: steerThreadContexts = [],
       previewAnnotations: composerPreviewAnnotations,
       selectedProvider: ctxSelectedProvider,
       selectedModel: ctxSelectedModel,
       selectedProviderModels: ctxSelectedProviderModels,
       selectedPromptEffort: ctxSelectedPromptEffort,
-    } = sendCtx;
+    } = sendCtx as typeof sendCtx & { threadContexts?: ThreadContextRecord[] };
     const draftPromptForSend = promptRef.current;
     const promptForSend = composerPreviewAnnotations.reduce(
       (prompt, annotation) => appendPreviewAnnotationPrompt(prompt, annotation),
       draftPromptForSend,
     );
+    // The steer command has no context transport: reject loudly instead of
+    // silently dropping attached threads.
+    if (countReferencedThreadContexts(promptForSend, steerThreadContexts) > 0) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: "Steering cannot carry thread context",
+          description:
+            "Remove the attached threads or send a queued message instead; steering has no context transport.",
+        }),
+      );
+      return;
+    }
     const {
       sendableTerminalContexts: sendableComposerTerminalContexts,
       expiredTerminalContextCount,
@@ -4012,7 +4069,11 @@ function ChatViewBody(
   };
 
   const onUpdateQueuedTurn = useCallback(
-    (queuedTurnId: QueuedTurnId, text: string) => {
+    (
+      queuedTurnId: QueuedTurnId,
+      text: string,
+      context?: OrchestrationMessageContext | undefined,
+    ) => {
       const api = readEnvironmentApi(environmentId);
       if (!api || !activeThreadId) return;
       void api.orchestration
@@ -4022,6 +4083,7 @@ function ChatViewBody(
           threadId: activeThreadId,
           queuedTurnId,
           text,
+          ...(context ? { context } : {}),
           updatedAt: new Date().toISOString(),
         })
         .catch((err: unknown) => {
@@ -4222,9 +4284,11 @@ function ChatViewBody(
     async ({
       text,
       interactionMode: nextInteractionMode,
+      context,
     }: {
       text: string;
       interactionMode: "default" | "plan";
+      context?: OrchestrationMessageContext | undefined;
     }) => {
       const api = readEnvironmentApi(environmentId);
       if (
@@ -4314,6 +4378,7 @@ function ChatViewBody(
             role: "user",
             text: outgoingMessageText,
             attachments: [],
+            ...(context ? { context } : {}),
           },
           modelSelection: ctxSelectedModelSelection,
           titleSeed: activeThread.title,
@@ -5529,7 +5594,6 @@ function ChatViewBody(
                     promptRef={promptRef}
                     composerImagesRef={composerImagesRef}
                     composerTerminalContextsRef={composerTerminalContextsRef}
-                    composerThreadContextsRef={composerThreadContextsRef}
                     shouldAutoScrollRef={isAtEndRef}
                     scheduleStickToBottom={scrollToEnd}
                     onSend={onSend}
