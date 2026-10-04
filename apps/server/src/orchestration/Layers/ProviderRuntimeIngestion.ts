@@ -54,7 +54,6 @@ import {
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { parseReviewResult } from "../reviewResult.ts";
-import { ReviewSnapshotVerifier } from "../Services/ReviewSnapshotVerifier.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerCommandIdFromEventId = (eventId: string, tag: string): CommandId =>
@@ -858,8 +857,6 @@ const make = Effect.gen(function* () {
             yield* Deferred.succeed(waiter, undefined);
           }
         });
-  const reviewSnapshotVerifier = yield* ReviewSnapshotVerifier;
-
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
     timeToLive: TURN_MESSAGE_IDS_BY_TURN_TTL,
@@ -1419,35 +1416,13 @@ const make = Effect.gen(function* () {
       ) {
         return;
       }
-      const cwd = resolveThreadWorkspaceCwd({
-        thread,
-        projects: readModel.projects,
-      });
-      if (cwd == null) {
-        yield* Effect.logWarning("Discarding review result because the worktree is unavailable", {
-          threadId: input.threadId,
-          snapshotHash: reviewSnapshot.diffHash,
-        });
-        return;
-      }
-      // The reviewer inspects the working tree live, so anchor its findings to
-      // the diff as it stands now rather than the snapshot taken at thread
-      // creation, which is stale once the user pushes fixes and re-reviews.
-      const snapshot = yield* reviewSnapshotVerifier
-        .currentSnapshot({ cwd, snapshot: reviewSnapshot })
-        .pipe(
-          Effect.tapError((error) =>
-            Effect.logWarning("Discarding review result because the diff could not be resolved", {
-              threadId: input.threadId,
-              snapshotHash: reviewSnapshot.diffHash,
-              error,
-            }),
-          ),
-          Effect.orElseSucceed(() => null),
-        );
-      if (snapshot === null) {
-        return;
-      }
+      // Anchor findings to the snapshot the reviewer was actually given for
+      // this turn (bound when the review started). Never re-resolve the diff
+      // here: a finalization-time refresh can fail (dropping findings the
+      // reviewer already produced) or observe a newer patch the reviewer
+      // never examined (mis-attributing or hiding those findings). GitHub
+      // availability stays off the rendering/finalization path.
+      const snapshot = reviewSnapshot;
 
       yield* orchestrationEngine.dispatch({
         type: "thread.review-result.set",
