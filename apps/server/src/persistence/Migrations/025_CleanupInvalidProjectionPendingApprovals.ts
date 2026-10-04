@@ -6,7 +6,8 @@ export default Effect.gen(function* () {
 
   yield* sql`
     DELETE FROM projection_pending_approvals
-    WHERE NOT EXISTS (
+    WHERE status = 'pending'
+      AND NOT EXISTS (
       SELECT 1
       FROM projection_thread_activities AS activity
       WHERE activity.kind = 'approval.requested'
