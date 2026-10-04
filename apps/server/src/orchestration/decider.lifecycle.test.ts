@@ -565,6 +565,141 @@ describe("decider thread lifecycle", () => {
     expect(updated).not.toHaveProperty("payload.pullRequest");
   });
 
+  it("guards a pending association update by request ID instead of unrelated thread updates", async () => {
+    const readModel = await lifecycleReadModel();
+    const pendingPullRequestAssociation = {
+      requestId: CommandId.make("associate-pr-current"),
+      reference: "https://github.com/acme/app/pull/42",
+      requestedAt: "2026-09-08T00:00:00.000Z",
+      nextAttemptAt: "2026-09-08T00:01:00.000Z",
+      status: "pending" as const,
+    };
+    const updatedReadModel = {
+      ...readModel,
+      threads: readModel.threads.map((thread) => ({
+        ...thread,
+        updatedAt: "2026-09-08T00:02:00.000Z",
+        pendingPullRequestAssociation,
+      })),
+    };
+
+    const updated = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.meta.update",
+          commandId,
+          threadId,
+          expectedPendingPullRequestAssociationRequestId: pendingPullRequestAssociation.requestId,
+          pendingPullRequestAssociation: {
+            ...pendingPullRequestAssociation,
+            nextAttemptAt: "2026-09-08T00:03:00.000Z",
+          },
+        } satisfies OrchestrationCommand,
+        readModel: updatedReadModel,
+      }),
+    );
+
+    expect(updated).toMatchObject({
+      type: "thread.meta-updated",
+      payload: {
+        threadId,
+        pendingPullRequestAssociation: {
+          requestId: pendingPullRequestAssociation.requestId,
+          nextAttemptAt: "2026-09-08T00:03:00.000Z",
+        },
+      },
+    });
+  });
+
+  it("does not update an association intent after a newer request supersedes it", async () => {
+    const readModel = await lifecycleReadModel();
+    const currentRequestId = CommandId.make("associate-pr-current");
+    const supersededRequestId = CommandId.make("associate-pr-superseded");
+    const updatedReadModel = {
+      ...readModel,
+      threads: readModel.threads.map((thread) => ({
+        ...thread,
+        pendingPullRequestAssociation: {
+          requestId: currentRequestId,
+          reference: "https://github.com/acme/app/pull/43",
+          requestedAt: "2026-09-08T00:02:00.000Z",
+          nextAttemptAt: "2026-09-08T00:03:00.000Z",
+          status: "pending" as const,
+        },
+      })),
+    };
+
+    const updated = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.meta.update",
+          commandId,
+          threadId,
+          expectedPendingPullRequestAssociationRequestId: supersededRequestId,
+          pendingPullRequestAssociation: {
+            requestId: supersededRequestId,
+            reference: "https://github.com/acme/app/pull/42",
+            requestedAt: "2026-09-08T00:00:00.000Z",
+            status: "blocked",
+            reason: "resolve-failed",
+          },
+        } satisfies OrchestrationCommand,
+        readModel: updatedReadModel,
+      }),
+    );
+
+    expect(updated).toEqual([]);
+  });
+
+  it("rejects an association commit when its branch context has changed", async () => {
+    const readModel = await lifecycleReadModel();
+    const requestId = CommandId.make("associate-pr-current");
+    const pendingPullRequestAssociation = {
+      requestId,
+      reference: "https://github.com/acme/app/pull/42",
+      requestedAt: "2026-09-08T00:00:00.000Z",
+      nextAttemptAt: "2026-09-08T00:01:00.000Z",
+      status: "pending" as const,
+    };
+    const changedReadModel = {
+      ...readModel,
+      threads: readModel.threads.map((thread) => ({
+        ...thread,
+        branch: "new-branch",
+        pendingPullRequestAssociation,
+      })),
+    };
+
+    const updated = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.meta.update",
+          commandId,
+          threadId,
+          expectedPendingPullRequestAssociationRequestId: requestId,
+          expectedPullRequestAssociationContext: {
+            projectId,
+            branch: null,
+            worktreePath: null,
+            pullRequestUrl: null,
+          },
+          pullRequest: {
+            number: 42,
+            title: "Explicit association",
+            url: "https://github.com/acme/app/pull/42",
+            baseBranch: "main",
+            headBranch: "feature",
+            state: "open",
+          },
+          pendingPullRequestAssociation: null,
+        } satisfies OrchestrationCommand,
+        readModel: changedReadModel,
+      }),
+    );
+
+    expect(updated).toEqual([]);
+  });
+
   it("emits an unlink when it is needed to cancel pending association intent", async () => {
     const readModel = await lifecycleReadModel();
     const pendingPullRequestAssociation = {

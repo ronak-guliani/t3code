@@ -2697,7 +2697,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           command.expectedUpdatedAt !== thread.updatedAt) ||
         (command.expectedWorkspaceCwd !== undefined &&
           command.expectedWorkspaceCwd !==
-            resolveThreadWorkspaceCwd({ thread, projects: readModel.projects }))
+            resolveThreadWorkspaceCwd({ thread, projects: readModel.projects })) ||
+        (command.expectedPendingPullRequestAssociationRequestId !== undefined &&
+          command.expectedPendingPullRequestAssociationRequestId !==
+            (thread.pendingPullRequestAssociation?.requestId ?? null)) ||
+        (command.expectedPullRequestAssociationContext !== undefined &&
+          (command.expectedPullRequestAssociationContext.projectId !== thread.projectId ||
+            command.expectedPullRequestAssociationContext.branch !== thread.branch ||
+            command.expectedPullRequestAssociationContext.worktreePath !== thread.worktreePath ||
+            command.expectedPullRequestAssociationContext.pullRequestUrl !==
+              (thread.pullRequest?.url ?? null)))
       ) {
         return [];
       }
