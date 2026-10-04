@@ -15,15 +15,24 @@ import {
 export const isBrowserPreviewFile = (path: string): boolean =>
   /\.(?:html?|pdf)$/i.test(path.split(/[?#]/, 1)[0] ?? "");
 
+export const isMediaReferenceFile = (path: string): boolean =>
+  /\.(?:html?|pdf|png|jpe?g|gif|svg|webp|avif|ico|bmp|mp4|webm|mov|mp3|wav|txt|log|json|ya?ml|toml|py|tsx?|jsx?|mdx?|rs|go|sh|css)$/i.test(
+    path.split(/[?#]/, 1)[0] ?? "",
+  );
+
 export async function openFileInPreview<E>(input: {
   readonly threadRef: ScopedThreadRef;
-  readonly relativePath: string;
+  readonly filePath: string;
+  readonly line?: number;
+  readonly column?: number;
   readonly httpBaseUrl: string;
   readonly createAssetUrl: (input: {
     readonly resource: {
-      readonly _tag: "workspace-file";
+      readonly _tag: "referenced-file";
       readonly threadId: ScopedThreadRef["threadId"];
       readonly path: string;
+      readonly line?: number;
+      readonly column?: number;
     };
   }) => Promise<{ readonly relativeUrl: string }>;
   readonly openPreview: OpenPreviewMutation<E>;
@@ -33,9 +42,11 @@ export async function openFileInPreview<E>(input: {
   }
   const asset = await input.createAssetUrl({
     resource: {
-      _tag: "workspace-file",
+      _tag: "referenced-file",
       threadId: input.threadRef.threadId,
-      path: input.relativePath,
+      path: input.filePath,
+      ...(input.line === undefined ? {} : { line: input.line }),
+      ...(input.column === undefined ? {} : { column: input.column }),
     },
   });
   let url: string;

@@ -11,6 +11,23 @@ import { ToolActivityNativeAppReference } from "./providerRuntime.ts";
 
 const ASSET_PATH_MAX_LENGTH = 1024;
 
+/** Authored reference carried by messages; it is not an asset URL or a local editor path. */
+export const FileReference = Schema.Struct({
+  threadId: ThreadId,
+  path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
+  line: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+  column: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+});
+export type FileReference = typeof FileReference.Type;
+
+export const ResolvedFileReference = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  mimeType: TrimmedNonEmptyString,
+  sizeBytes: NonNegativeInt,
+  viewMode: Schema.Literals(["html", "document", "media", "text", "download"]),
+});
+export type ResolvedFileReference = typeof ResolvedFileReference.Type;
+
 export const AssetResource = Schema.Union([
   Schema.TaggedStruct("workspace-file", {
     threadId: ThreadId,
@@ -22,6 +39,14 @@ export const AssetResource = Schema.Union([
   Schema.TaggedStruct("media-file", {
     threadId: ThreadId,
     path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
+  }),
+  // Created only after an explicit user action. Unlike media-file, this may
+  // resolve outside the workspace on the owning environment and is always read-only.
+  Schema.TaggedStruct("referenced-file", {
+    threadId: ThreadId,
+    path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
+    line: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+    column: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
   }),
   Schema.TaggedStruct("attachment", {
     attachmentId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
@@ -66,6 +91,8 @@ export const AssetCreateUrlResult = Schema.Struct({
   ),
   /** Pixel size read from the image header, so a client can reserve the exact box before the bytes arrive. */
   imageDimensions: Schema.optional(AssetImageDimensions),
+  /** Server-derived presentation metadata for an explicitly opened file reference. */
+  fileReference: Schema.optional(ResolvedFileReference),
 });
 export type AssetCreateUrlResult = typeof AssetCreateUrlResult.Type;
 

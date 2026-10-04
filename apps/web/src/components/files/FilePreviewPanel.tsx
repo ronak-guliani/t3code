@@ -457,7 +457,7 @@ export function FilePreviewPanel({
       ? () =>
           void openFileInPreview({
             threadRef,
-            relativePath,
+            filePath: relativePath,
             httpBaseUrl,
             createAssetUrl: environmentApi.assets.createUrl,
             openPreview,

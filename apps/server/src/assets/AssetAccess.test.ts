@@ -107,6 +107,123 @@ describe("AssetAccess", () => {
     ).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("issues a read-only media grant for an explicitly referenced external file", () =>
+    withWorkspace((workspaceRoot, outsideRoot) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const externalPath = path.join(outsideRoot, "a report.png");
+        yield* fileSystem.writeFile(externalPath, new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+
+        const result = yield* Effect.exit(
+          issueAssetUrl({
+            resource: {
+              _tag: "referenced-file",
+              threadId: ThreadId.make("thread-1"),
+              path: externalPath,
+            },
+            workspaceRoot,
+          }),
+        );
+        expect(result._tag).toBe("Success");
+        if (result._tag === "Success") {
+          expect(result.value.fileReference).toEqual({
+            name: "a report.png",
+            mimeType: "image/png",
+            sizeBytes: 4,
+            viewMode: "media",
+          });
+          const token = tokenFromRelativeUrl(result.value.relativeUrl);
+          expect(yield* resolveAsset(token, "a report.png")).toEqual({
+            kind: "file",
+            path: yield* fileSystem.realPath(externalPath),
+          });
+          const [payload, signature] = token.split(".");
+          expect(
+            yield* resolveAsset(
+              `${payload}.${signature?.startsWith("a") ? "b" : "a"}${signature?.slice(1)}`,
+              "a report.png",
+            ),
+          ).toBeNull();
+        }
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("does not grant external media paths without the explicit reference resource", () =>
+    withWorkspace((workspaceRoot, outsideRoot) =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const result = yield* Effect.exit(
+          issueAssetUrl({
+            resource: {
+              _tag: "media-file",
+              threadId: ThreadId.make("thread-1"),
+              path: path.join(outsideRoot, "report.png"),
+            },
+            workspaceRoot,
+          }),
+        );
+        expect(result._tag).toBe("Failure");
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("issues exact download grants for unsupported external binaries", () =>
+    withWorkspace((workspaceRoot, outsideRoot) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const archive = path.join(outsideRoot, "archive.zip");
+        yield* fileSystem.writeFile(archive, new Uint8Array([0x50, 0x4b, 0x03, 0x04]));
+        const url = yield* issueAssetUrl({
+          resource: {
+            _tag: "referenced-file",
+            threadId: ThreadId.make("thread-1"),
+            path: archive,
+          },
+          workspaceRoot,
+        });
+        expect(yield* resolveAsset(tokenFromRelativeUrl(url.relativeUrl), "archive.zip")).toEqual({
+          kind: "file",
+          path: yield* fileSystem.realPath(archive),
+          forceDownload: true,
+        });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("limits external HTML grants to safe canonical siblings", () =>
+    withWorkspace((workspaceRoot, outsideRoot) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* fileSystem.writeFileString(
+          path.join(outsideRoot, "report.html"),
+          "<link href='report.css'>",
+        );
+        yield* fileSystem.writeFileString(path.join(outsideRoot, "report.css"), "body {}");
+        yield* fileSystem.writeFileString(path.join(outsideRoot, ".secret.css"), "secret");
+        const secret = path.join(workspaceRoot, "secret.css");
+        yield* fileSystem.writeFileString(secret, "private");
+        yield* Effect.promise(() => symlink(secret, path.join(outsideRoot, "escape.css")));
+        const url = yield* issueAssetUrl({
+          resource: {
+            _tag: "referenced-file",
+            threadId: ThreadId.make("thread-1"),
+            path: path.join(outsideRoot, "report.html"),
+          },
+          workspaceRoot,
+        });
+        const token = tokenFromRelativeUrl(url.relativeUrl);
+        expect(yield* resolveAsset(token, "report.css")).not.toBeNull();
+        expect(yield* resolveAsset(token, ".secret.css")).toBeNull();
+        expect(yield* resolveAsset(token, "escape.css")).toBeNull();
+        expect(yield* resolveAsset(token, "%2e%2e%2foutside.css")).toBeNull();
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rejects a workspace path that escapes through a symlink", () =>
     withWorkspace((workspaceRoot, outsideRoot) =>
       Effect.gen(function* () {
@@ -126,6 +243,17 @@ describe("AssetAccess", () => {
         }).pipe(Effect.flip);
 
         expect(error._tag).toBe("AssetWorkspaceAssetNotFoundError");
+        const explicitReference = yield* Effect.exit(
+          issueAssetUrl({
+            resource: {
+              _tag: "referenced-file",
+              threadId: ThreadId.make("thread-1"),
+              path: path.join(workspaceRoot, "escape.html"),
+            },
+            workspaceRoot,
+          }),
+        );
+        expect(explicitReference._tag).toBe("Failure");
       }),
     ).pipe(Effect.provide(testLayer)),
   );

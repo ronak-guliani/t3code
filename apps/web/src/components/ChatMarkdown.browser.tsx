@@ -106,6 +106,7 @@ vi.mock("../rightPanelStore", () => ({
 
 vi.mock("../browser/openFileInPreview", () => ({
   isBrowserPreviewFile: (path: string) => /\.(?:html?|pdf)$/i.test(path),
+  isMediaReferenceFile: (path: string) => /\.(?:html?|pdf|txt|ts)$/i.test(path),
   openFileInPreview: openFileInPreviewMock,
 }));
 
@@ -731,7 +732,7 @@ describe("ChatMarkdown", () => {
         await vi.waitFor(() => {
           expect(openFileInPreviewMock).toHaveBeenCalledWith({
             threadRef,
-            relativePath: `/repo/project/./${fileName}`,
+            filePath: `/repo/project/./${fileName}`,
             httpBaseUrl: "http://localhost:3773",
             createAssetUrl: createAssetUrlMock,
             openPreview: openPreviewMock,
@@ -758,7 +759,8 @@ describe("ChatMarkdown", () => {
       await vi.waitFor(() => {
         expect(openFileInPreviewMock).toHaveBeenCalledWith({
           threadRef,
-          relativePath: "/repo/project/./report.html",
+          filePath: "/repo/project/./report.html",
+          line: 12,
           httpBaseUrl: "http://localhost:3773",
           createAssetUrl: createAssetUrlMock,
           openPreview: openPreviewMock,
@@ -851,7 +853,7 @@ describe("ChatMarkdown", () => {
     }
   });
 
-  it("falls back to the external editor for files outside the workspace", async () => {
+  it("opens external text references through the owning environment, never the local editor", async () => {
     const filePath = "/Users/other/project/outside.ts";
     const screen = await render(
       <ChatMarkdown
@@ -864,10 +866,16 @@ describe("ChatMarkdown", () => {
     try {
       await page.getByRole("link", { name: "outside.ts" }).click();
       await vi.waitFor(() => {
-        expect(openInPreferredEditorMock).toHaveBeenCalledWith(expect.anything(), filePath);
+        expect(openFileInPreviewMock).toHaveBeenCalledWith({
+          threadRef,
+          filePath,
+          httpBaseUrl: "http://localhost:3773",
+          createAssetUrl: createAssetUrlMock,
+          openPreview: openPreviewMock,
+        });
       });
       expect(openFileMock).not.toHaveBeenCalled();
-      expect(openFileInPreviewMock).not.toHaveBeenCalled();
+      expect(openFileInPreviewMock).toHaveBeenCalledTimes(1);
     } finally {
       await screen.unmount();
     }

@@ -58,7 +58,11 @@ import { githubPullRequestNavigation, openPullRequestLink } from "../lib/openPul
 import { usePrimaryEnvironmentId } from "~/environments/primary";
 import { useProjectEntriesQuery } from "./files/projectFilesQueryState";
 import { buildFileParentSuffixByPath } from "../filePathDisambiguation";
-import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
+import {
+  isBrowserPreviewFile,
+  isMediaReferenceFile,
+  openFileInPreview,
+} from "~/browser/openFileInPreview";
 import { useOpenLink } from "~/browser/useOpenLink";
 import { readEnvironmentApi } from "~/environmentApi";
 import { isPreviewSupportedInRuntime } from "~/previewStateStore";
@@ -124,6 +128,8 @@ const TRAILING_PARTIAL_WEB_CITATION_PATTERN = /\uE200cite[\s\S]*$/;
 const MemoizedReactMarkdown = memo(ReactMarkdown);
 const EMPTY_GITHUB_REFERENCES: ReadonlyMap<string, string> = new Map();
 const EMPTY_MARKDOWN_FILE_LINK_META_BY_HREF: ReadonlyMap<string, MarkdownFileLinkMeta> = new Map();
+const isAbsoluteFileReference = (path: string) =>
+  path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || /^\\\\/.test(path);
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
 const MAX_HIGHLIGHT_CACHE_MEMORY_BYTES = 50 * 1024 * 1024;
 const highlightedCodeCache = new LRUCache<string>(
@@ -801,6 +807,7 @@ interface MarkdownFileLinkProps {
   threadRef?: ScopedThreadRef;
   cwd?: string | undefined;
   line?: number | undefined;
+  column?: number | undefined;
   className?: string | undefined;
 }
 
@@ -1050,6 +1057,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   threadRef,
   cwd,
   line,
+  column,
   className,
 }: MarkdownFileLinkProps) {
   const environmentApi = threadRef ? readEnvironmentApi(threadRef.environmentId) : undefined;
@@ -1061,11 +1069,15 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       environmentApi &&
       httpBaseUrl &&
       isPreviewSupportedInRuntime() &&
-      isBrowserPreviewFile(filePath)
+      (isBrowserPreviewFile(filePath) ||
+        (!toWorkspaceRelativePath(filePath, cwd) &&
+          (isMediaReferenceFile(filePath) || isAbsoluteFileReference(filePath))))
     ) {
       void openFileInPreview({
         threadRef,
-        relativePath: filePath,
+        filePath,
+        ...(line === undefined ? {} : { line }),
+        ...(column === undefined ? {} : { column }),
         httpBaseUrl,
         createAssetUrl: environmentApi.assets.createUrl,
         openPreview,
@@ -1222,6 +1234,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.threadRef?.threadId === next.threadRef?.threadId &&
     previous.cwd === next.cwd &&
     previous.line === next.line &&
+    previous.column === next.column &&
     previous.className === next.className
   );
 }
@@ -1479,6 +1492,7 @@ function ChatMarkdownView({
           {...(threadRef ? { threadRef } : {})}
           {...(cwd ? { cwd } : {})}
           {...(fileLinkMeta.line !== undefined ? { line: fileLinkMeta.line } : {})}
+          {...(fileLinkMeta.column !== undefined ? { column: fileLinkMeta.column } : {})}
           className={props.className}
         />
       );
@@ -1532,6 +1546,7 @@ function ChatMarkdownView({
               {...(threadRef ? { threadRef } : {})}
               {...(cwd ? { cwd } : {})}
               {...(fileLinkMeta.line !== undefined ? { line: fileLinkMeta.line } : {})}
+              {...(fileLinkMeta.column !== undefined ? { column: fileLinkMeta.column } : {})}
             />
           );
         }

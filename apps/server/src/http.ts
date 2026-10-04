@@ -1,5 +1,6 @@
 import Mime from "@effect/platform-node/Mime";
-import { Data, Effect, FileSystem, Option, Path } from "effect";
+import { createReadStream } from "node:fs";
+import { Data, Effect, FileSystem, Option, Path, Stream } from "effect";
 import { cast } from "effect/Function";
 import {
   HttpBody,
@@ -33,6 +34,8 @@ import {
 } from "./httpCors.ts";
 
 const PROJECT_FAVICON_CACHE_CONTROL = "public, max-age=3600";
+const HTML_ASSET_CONTENT_SECURITY_POLICY =
+  "sandbox allow-scripts; default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; form-action 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
 const FALLBACK_PROJECT_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#6b728080" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" data-fallback="project-favicon"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/></svg>`;
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -214,20 +217,92 @@ export const assetRouteLayer = HttpRouter.add(
     }
 
     const fileSystem = yield* FileSystem.FileSystem;
-    const data = yield* fileSystem
-      .readFile(asset.path)
-      .pipe(Effect.catch(() => Effect.succeed(null)));
-    if (!data) {
+    const info = yield* fileSystem.stat(asset.path).pipe(Effect.catch(() => Effect.succeed(null)));
+    if (!info || info.type !== "File") {
       return HttpServerResponse.text("Internal Server Error", { status: 500 });
     }
-    return HttpServerResponse.uint8Array(data, {
-      status: 200,
-      contentType: Mime.getType(asset.path) ?? "application/octet-stream",
-      headers: {
-        "Cache-Control": "private, max-age=3600",
+    const size = Number(info.size);
+    const mimeType = asset.forceDownload
+      ? "application/octet-stream"
+      : (Mime.getType(asset.path) ?? "application/octet-stream");
+    const contentDisposition = `attachment; filename*=UTF-8''${encodeURIComponent((yield* Path.Path).basename(asset.path))}`;
+    const range = request.headers["range"];
+    const rangeMatch = range?.match(/^bytes=(\d*)-(\d*)$/);
+    if (range && !rangeMatch) {
+      return HttpServerResponse.text("Range Not Satisfiable", {
+        status: 416,
+        headers: { "Content-Range": `bytes */${size}` },
+      });
+    }
+    const start = rangeMatch
+      ? rangeMatch[1]
+        ? Number(rangeMatch[1])
+        : Math.max(0, size - Number(rangeMatch[2] || 0))
+      : 0;
+    const end = rangeMatch
+      ? rangeMatch[2]
+        ? Math.min(size - 1, Number(rangeMatch[2]))
+        : size - 1
+      : size - 1;
+    if (rangeMatch) {
+      if (start > end || start >= size) {
+        return HttpServerResponse.text("Range Not Satisfiable", {
+          status: 416,
+          headers: { "Content-Range": `bytes */${size}` },
+        });
+      }
+      const headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Range": `bytes ${start}-${end}/${size}`,
+        "Content-Length": String(Math.max(0, end - start + 1)),
+        "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
+        ...(asset.forceDownload ? { "Content-Disposition": contentDisposition } : {}),
+      };
+      return HttpServerResponse.stream(
+        Stream.fromAsyncIterable(
+          createReadStream(asset.path, { start, end }),
+          (cause) => new Error(String(cause)),
+        ),
+        {
+          status: 206,
+          contentType: mimeType,
+          headers:
+            mimeType === "text/html"
+              ? {
+                  ...headers,
+                  "Content-Security-Policy": HTML_ASSET_CONTENT_SECURITY_POLICY,
+                }
+              : headers,
+        },
+      );
+    }
+    const headers: Record<string, string> = {
+      "Cache-Control": "private, no-store",
+      "Accept-Ranges": "bytes",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Length": String(size),
+      ...(asset.forceDownload || mimeType === "application/octet-stream"
+        ? { "Content-Disposition": contentDisposition }
+        : {}),
+      ...(mimeType === "text/html"
+        ? { "Content-Security-Policy": HTML_ASSET_CONTENT_SECURITY_POLICY }
+        : {}),
+    };
+    if (size === 0)
+      return HttpServerResponse.uint8Array(new Uint8Array(), {
+        status: 200,
+        contentType: mimeType,
+        headers,
+      });
+    return HttpServerResponse.stream(
+      Stream.fromAsyncIterable(createReadStream(asset.path), (cause) => new Error(String(cause))),
+      {
+        status: 200,
+        contentType: mimeType,
+        headers,
       },
-    });
+    );
   }),
 );
 
