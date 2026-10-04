@@ -26,6 +26,10 @@ import {
   CHILD_DECISION_BLOCKED_DETAIL,
   isThreadReadyForQueuedDispatch,
 } from "../commandInvariants.ts";
+import {
+  buildInteractionDismissalActivities,
+  isInteractionSessionDead,
+} from "../interactionDismissal.ts";
 import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import { isAutomaticChildNudgeBlocked } from "../childNudging.ts";
 import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
@@ -59,6 +63,8 @@ const isChildDecisionBlockedCause = (cause: Cause.Cause<unknown>): boolean => {
 
 const serverCommandId = (tag: string): CommandId =>
   CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
+
+const RESTART_DISMISSAL_REASON = "The server restarted before the provider work completed.";
 
 function threadIdForEvent(event: OrchestrationEvent): ThreadId | null {
   return event.aggregateKind === "thread" ? (event.aggregateId as ThreadId) : null;
@@ -696,6 +702,93 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     );
   });
 
+  // Restart recovery, part 1: provider callbacks are process-local, so any
+  // approval/user-input request left unresolved on a thread without a live
+  // session can never be answered. Dismiss it so the thread stops looking
+  // blocked; the user can re-ask. Awaited before the first drain so the gate
+  // observes the dismissal.
+  const reconcileOrphanedInteractionRequests = Effect.fn(
+    "QueuedTurnReactor.reconcileOrphanedInteractionRequests",
+  )(function* () {
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const now = new Date().toISOString();
+    for (const thread of readModel.threads) {
+      if (thread.archivedAt !== null || thread.deletedAt !== null) {
+        continue;
+      }
+      if (!isInteractionSessionDead(thread.session)) {
+        continue;
+      }
+      const activities = buildInteractionDismissalActivities({
+        thread,
+        reason: RESTART_DISMISSAL_REASON,
+        createdAt: now,
+      });
+      for (const activity of activities) {
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.activity.append",
+            commandId: serverCommandId("interaction-dismissal"),
+            threadId: thread.id,
+            activity,
+            createdAt: now,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("queued turn reactor failed to dismiss orphaned request", {
+                threadId: thread.id,
+                activityId: activity.id,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          );
+      }
+    }
+  });
+
+  // Restart recovery, part 2: hold automatic dispatch of queues whose provider
+  // session is definitively gone (stopped or errored). Their queued prompts
+  // predate the restart and would otherwise fire into a recreated session
+  // without prior context; the user resumes them explicitly via
+  // thread.queue.resume. All other queues keep draining untouched: the decider
+  // and gate enforce the hold wherever it is set, but the reactor only issues
+  // holds where context loss is certain. Awaited before the first drain so the
+  // hold commits before any dispatch is attempted.
+  const holdQueuesWithPendingTurns = Effect.fn("QueuedTurnReactor.holdQueuesWithPendingTurns")(
+    function* () {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const now = new Date().toISOString();
+      for (const thread of readModel.threads) {
+        if (thread.archivedAt !== null || thread.deletedAt !== null) {
+          continue;
+        }
+        const sessionStatus = thread.session?.status;
+        if (sessionStatus !== "stopped" && sessionStatus !== "error") {
+          continue;
+        }
+        if (thread.queueHeld === true || (thread.queuedTurns ?? []).length === 0) {
+          continue;
+        }
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.queue.hold",
+            commandId: serverCommandId("queue-hold"),
+            threadId: thread.id,
+            reason: "restart-recovery",
+            createdAt: now,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("queued turn reactor failed to hold queue after restart", {
+                threadId: thread.id,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          );
+      }
+    },
+  );
+
   const start: QueuedTurnReactorShape["start"] = Effect.fn("start")(function* () {
     const subscription = yield* orchestrationEngine.acquireDomainEventSubscription;
     yield* Effect.forkScoped(
@@ -746,6 +839,8 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         }),
       ),
     );
+    yield* reconcileOrphanedInteractionRequests();
+    yield* holdQueuesWithPendingTurns();
     yield* drainQueuedThreads;
     const startupIndex = indexReadModel(yield* orchestrationEngine.getReadModel());
     yield* Effect.forEach(

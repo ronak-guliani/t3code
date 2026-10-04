@@ -871,4 +871,128 @@ describe("decider queued turns", () => {
       },
     });
   });
+
+  async function makeQueuedTurnModel(input: {
+    readonly now: string;
+    readonly threadId: ThreadId;
+    readonly queuedTurnId: ReturnType<typeof asQueuedTurnId>;
+  }) {
+    const readModel = await makeThreadReadModel({ now: input.now, threadId: input.threadId });
+    const createdEvent = (await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.queued-turn.create",
+          commandId: CommandId.make("cmd-queue-create-hold"),
+          threadId: input.threadId,
+          queuedTurnId: input.queuedTurnId,
+          message: {
+            messageId: asMessageId("message-queued-hold"),
+            role: "user",
+            text: "queued prompt",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: input.now,
+        },
+        readModel,
+      }),
+    )) as OrchestrationEvent;
+    return Effect.runPromise(projectEvent(readModel, { ...createdEvent, sequence: 2 }));
+  }
+
+  it("holds a queue with pending turns until explicitly resumed", async () => {
+    const now = "2026-03-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-queue-hold");
+    const withQueue = await makeQueuedTurnModel({
+      now,
+      threadId,
+      queuedTurnId: asQueuedTurnId("queued-turn-hold"),
+    });
+
+    const held = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.queue.hold",
+          commandId: CommandId.make("cmd-queue-hold"),
+          threadId,
+          reason: "restart-recovery",
+          createdAt: now,
+        },
+        readModel: withQueue,
+      }),
+    );
+    const heldEvents = Array.isArray(held) ? held : [held];
+    expect(heldEvents.map((event) => event.type)).toEqual(["thread.queue-held"]);
+
+    const heldModel = await Effect.runPromise(
+      projectEvent(withQueue, { ...heldEvents[0], sequence: 3 }),
+    );
+    expect(heldModel.threads.find((thread) => thread.id === threadId)?.queueHeld).toBe(true);
+
+    const dispatch = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.queued-turn.dispatch",
+          commandId: CommandId.make("cmd-queue-dispatch-held"),
+          threadId,
+          queuedTurnId: asQueuedTurnId("queued-turn-hold"),
+          dispatchedAt: now,
+        },
+        readModel: heldModel,
+      }).pipe(Effect.flip),
+    );
+    expect(String(dispatch)).toContain("held");
+
+    const resumed = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.queue.resume",
+          commandId: CommandId.make("cmd-queue-resume"),
+          threadId,
+          createdAt: now,
+        },
+        readModel: heldModel,
+      }),
+    );
+    const resumedEvents = Array.isArray(resumed) ? resumed : [resumed];
+    expect(resumedEvents.map((event) => event.type)).toEqual(["thread.queue-resumed"]);
+
+    const resumedModel = await Effect.runPromise(
+      projectEvent(heldModel, { ...resumedEvents[0], sequence: 4 }),
+    );
+    expect(resumedModel.threads.find((thread) => thread.id === threadId)?.queueHeld).toBe(false);
+  });
+
+  it("treats redundant hold and resume as no-ops", async () => {
+    const now = "2026-03-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-queue-hold-noop");
+
+    const emptyHold = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.queue.hold",
+          commandId: CommandId.make("cmd-queue-hold-empty"),
+          threadId,
+          reason: "restart-recovery",
+          createdAt: now,
+        },
+        readModel: await makeThreadReadModel({ now, threadId }),
+      }),
+    );
+    expect(emptyHold).toEqual([]);
+
+    const emptyResume = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.queue.resume",
+          commandId: CommandId.make("cmd-queue-resume-empty"),
+          threadId,
+          createdAt: now,
+        },
+        readModel: await makeThreadReadModel({ now, threadId }),
+      }),
+    );
+    expect(emptyResume).toEqual([]);
+  });
 });

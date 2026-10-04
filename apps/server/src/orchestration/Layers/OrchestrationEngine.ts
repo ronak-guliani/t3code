@@ -409,6 +409,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           eventBases.length === 0 &&
           (admittedCommand.type === "thread.delegation.settle" ||
             admittedCommand.type === "thread.child.wait.prune" ||
+            admittedCommand.type === "thread.queue.hold" ||
+            admittedCommand.type === "thread.queue.resume" ||
             (admittedCommand.type === "thread.meta.update" &&
               (admittedCommand.expectedUpdatedAt !== undefined ||
                 admittedCommand.expectedWorkspaceCwd !== undefined)))

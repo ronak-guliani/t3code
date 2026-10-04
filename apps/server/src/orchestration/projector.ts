@@ -57,6 +57,8 @@ import {
   ThreadQueuedTurnDispatchedPayload,
   ThreadQueuedTurnFailedPayload,
   ThreadQueuedTurnUpdatedPayload,
+  ThreadQueueHeldPayload,
+  ThreadQueueResumedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadReviewResultSetPayload,
   ThreadSettledPayload,
@@ -478,6 +480,28 @@ export function projectEvent(
           threads: updateThread(nextBase.threads, payload.threadId, {
             settledOverride: payload.reason === "user" ? "active" : null,
             settledAt: null,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.queue-held":
+      return decodeForEvent(ThreadQueueHeldPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            queueHeld: true,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.queue-resumed":
+      return decodeForEvent(ThreadQueueResumedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            queueHeld: false,
             updatedAt: payload.updatedAt,
           }),
         })),

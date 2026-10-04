@@ -481,7 +481,20 @@ async function runReactor(
         const reactor = yield* QueuedTurnReactor;
         yield* reactor.start();
         if (options?.resume) {
-          expect(commands).toHaveLength(0);
+          // Startup reconciliation may dismiss requests orphaned by dead
+          // sessions and hold queues restored onto dead sessions. Those are
+          // the only commands start() may emit before resume events arrive.
+          const nonReconciliation = commands.filter(
+            (command) =>
+              command.type !== "thread.queue.hold" &&
+              !(
+                command.type === "thread.activity.append" &&
+                typeof command.activity.payload === "object" &&
+                command.activity.payload !== null &&
+                (command.activity.payload as Record<string, unknown>).dismissed === true
+              ),
+          );
+          expect(nonReconciliation).toHaveLength(0);
           readModel = options.resume.readModel;
           yield* Effect.forEach(
             [options.resume.event, ...(options.resume.additionalEvents ?? [])],
@@ -535,6 +548,56 @@ describe("QueuedTurnReactor", () => {
       childThreadId: child.id,
       assignmentId,
     });
+  });
+
+  it("dismisses orphaned requests and holds queues on dead sessions at startup", async () => {
+    const base = queuedReadModel();
+    const thread = base.threads[0]!;
+    const orphaned: OrchestrationReadModel = {
+      ...base,
+      threads: [
+        {
+          ...thread,
+          activities: [
+            {
+              id: EventId.make("orphaned-approval"),
+              kind: "approval.requested" as const,
+              tone: "approval" as const,
+              summary: "Approval required",
+              payload: { requestId: "approval-orphaned" },
+              turnId: null,
+              createdAt: now,
+            },
+          ],
+          session: {
+            threadId: thread.id,
+            status: "stopped" as const,
+            providerName: "copilot",
+            runtimeMode: "approval-required" as const,
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ],
+    };
+
+    const commands = await runReactor(orphaned, monitorSnapshot("head"));
+
+    const dismissals = commands.filter((command) => command.type === "thread.activity.append");
+    expect(dismissals).toHaveLength(1);
+    expect(dismissals[0]).toMatchObject({
+      threadId: thread.id,
+      activity: {
+        kind: "approval.resolved",
+        summary: "Approval dismissed",
+        payload: { requestId: "approval-orphaned", dismissed: true },
+      },
+    });
+    expect(commands.filter((command) => command.type === "thread.queue.hold")).toHaveLength(1);
+    expect(
+      commands.filter((command) => command.type === "thread.queued-turn.dispatch"),
+    ).toHaveLength(0);
   });
 
   it("does not mark a not-yet-created child unavailable during startup reconciliation", async () => {

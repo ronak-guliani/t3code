@@ -34,6 +34,7 @@ import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { assistantTurnCount } from "../Utils.ts";
+import { buildInteractionDismissalActivities } from "../interactionDismissal.ts";
 import {
   ProviderCommandReactor,
   type ProviderCommandReactorShape,
@@ -96,6 +97,11 @@ const serverCommandId = (tag: string): CommandId =>
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
+
+const INTERRUPT_DISMISSAL_REASON =
+  "The provider turn was interrupted before this request was answered.";
+const SESSION_STOP_DISMISSAL_REASON =
+  "The provider session stopped before this request was answered.";
 interface PendingTurnStart {
   readonly key: string;
   readonly messageId: MessageId;
@@ -277,6 +283,36 @@ const make = Effect.gen(function* () {
     return Cause.pretty(cause);
   };
 
+  // Resolves approval/user-input requests orphaned by a dead provider turn.
+  // The provider callback can never answer them, but the unresolved activity
+  // would otherwise block queued-turn dispatch and delegation settlement.
+  // No-op when nothing is unresolved.
+  const dismissOrphanedInteractionRequests = (input: {
+    readonly threadId: ThreadId;
+    readonly reason: string;
+    readonly createdAt: string;
+  }) =>
+    Effect.gen(function* () {
+      const thread = yield* resolveThread(input.threadId);
+      if (!thread) {
+        return;
+      }
+      const activities = buildInteractionDismissalActivities({
+        thread,
+        reason: input.reason,
+        createdAt: input.createdAt,
+      });
+      for (const activity of activities) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId: serverCommandId("interaction-dismissal"),
+          threadId: input.threadId,
+          activity,
+          createdAt: input.createdAt,
+        });
+      }
+    });
+
   const setThreadSession = (input: {
     readonly threadId: ThreadId;
     readonly session: OrchestrationSession;
@@ -366,6 +402,9 @@ const make = Effect.gen(function* () {
                   lastError: detail,
                 }),
               ),
+              // The provider turn may still be alive: its pending requests
+              // stay answerable, so the caller must not dismiss them.
+              Effect.as(false),
             );
           },
           onSuccess: () =>
@@ -373,7 +412,7 @@ const make = Effect.gen(function* () {
               threadId: input.threadId,
               createdAt: input.createdAt,
               lastError: null,
-            }),
+            }).pipe(Effect.as(true)),
         }),
       );
 
@@ -1155,7 +1194,18 @@ const make = Effect.gen(function* () {
               providerTurnId: turn.turnId,
               activityTurnId: turn.turnId,
               createdAt: pendingTurnStart.cancellationRequestedAt ?? event.payload.createdAt,
-            });
+            }).pipe(
+              Effect.flatMap((interrupted) =>
+                interrupted
+                  ? dismissOrphanedInteractionRequests({
+                      threadId: event.payload.threadId,
+                      reason: INTERRUPT_DISMISSAL_REASON,
+                      createdAt:
+                        pendingTurnStart.cancellationRequestedAt ?? event.payload.createdAt,
+                    })
+                  : Effect.void,
+              ),
+            );
           }),
         ),
       );
@@ -1195,6 +1245,11 @@ const make = Effect.gen(function* () {
           createdAt: event.payload.createdAt,
           messageId: pendingTurnStart.messageId,
         });
+        yield* dismissOrphanedInteractionRequests({
+          threadId: event.payload.threadId,
+          reason: INTERRUPT_DISMISSAL_REASON,
+          createdAt: event.payload.createdAt,
+        });
         return;
       }
 
@@ -1213,7 +1268,7 @@ const make = Effect.gen(function* () {
     }
     const hasSession = thread.session && thread.session.status !== "stopped";
     if (!hasSession) {
-      return yield* appendProviderFailureActivity({
+      yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.interrupt.failed",
         summary: "Provider turn interrupt failed",
@@ -1221,14 +1276,27 @@ const make = Effect.gen(function* () {
         turnId: event.payload.turnId ?? null,
         createdAt: event.payload.createdAt,
       });
+      yield* dismissOrphanedInteractionRequests({
+        threadId: event.payload.threadId,
+        reason: INTERRUPT_DISMISSAL_REASON,
+        createdAt: event.payload.createdAt,
+      });
+      return;
     }
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
-    yield* interruptProviderTurn({
+    const interrupted = yield* interruptProviderTurn({
       threadId: event.payload.threadId,
       activityTurnId: event.payload.turnId ?? thread.session?.activeTurnId ?? null,
       createdAt: event.payload.createdAt,
     });
+    if (interrupted) {
+      yield* dismissOrphanedInteractionRequests({
+        threadId: event.payload.threadId,
+        reason: INTERRUPT_DISMISSAL_REASON,
+        createdAt: event.payload.createdAt,
+      });
+    }
   });
 
   const processTurnSteerRequested = Effect.fn("processTurnSteerRequested")(function* (
@@ -1397,9 +1465,15 @@ const make = Effect.gen(function* () {
 
     const now = event.payload.createdAt;
     let stopFailureDetail: string | null = null;
+    // Dismissal is safe only when the provider callback is gone: no session to
+    // stop, or a stop the provider accepted. A failed stop may leave the
+    // session alive with answerable requests.
+    let providerCallbacksDead = !thread.session || thread.session.status === "stopped";
     if (thread.session && thread.session.status !== "stopped") {
+      providerCallbacksDead = true;
       yield* providerService.stopSession({ threadId: thread.id }).pipe(
         Effect.catchCause((cause) => {
+          providerCallbacksDead = false;
           stopFailureDetail = formatFailureDetail(cause);
           return appendProviderFailureActivity({
             threadId: event.payload.threadId,
@@ -1432,6 +1506,13 @@ const make = Effect.gen(function* () {
       },
       createdAt: now,
     });
+    if (providerCallbacksDead) {
+      yield* dismissOrphanedInteractionRequests({
+        threadId: thread.id,
+        reason: SESSION_STOP_DISMISSAL_REASON,
+        createdAt: now,
+      });
+    }
   });
 
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (

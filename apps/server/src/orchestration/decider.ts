@@ -1827,6 +1827,57 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.queue.hold": {
+      const thread = yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // State-dependent no-op: the engine accepts redundant holds as receipts
+      // without events (see OrchestrationEngine no-op path).
+      if (thread.queueHeld === true || (thread.queuedTurns ?? []).length === 0) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.queue-held",
+        payload: {
+          threadId: command.threadId,
+          reason: command.reason,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.queue.resume": {
+      const thread = yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.queueHeld !== true) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.queue-resumed",
+        payload: {
+          threadId: command.threadId,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.snooze": {
       const thread = yield* requireThreadNotArchived({
         readModel,
@@ -3632,6 +3683,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
         queuedTurnId: command.queuedTurnId,
       });
+      if (targetThread.queueHeld === true) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' queue is held after restart recovery. Resume the queue before dispatching.`,
+        });
+      }
       yield* requireThreadReadyForTurnStart({
         readModel,
         command,

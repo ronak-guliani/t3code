@@ -900,6 +900,11 @@ export const OrchestrationThread = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   queuedTurns: Schema.optionalKey(Schema.Array(OrchestrationQueuedTurn)),
+  /**
+   * Restart recovery holds automatic queued-turn dispatch until the user
+   * explicitly resumes it (thread.queue.resume). Absent means not held.
+   */
+  queueHeld: Schema.optional(Schema.Boolean),
   activities: Schema.Array(OrchestrationThreadActivity),
   activityContext: Schema.optionalKey(Schema.Array(OrchestrationThreadActivity)),
   hasMoreActivities: Schema.optionalKey(Schema.Boolean),
@@ -1136,6 +1141,13 @@ const ThreadUnsettleCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   reason: Schema.Literal("user"),
+});
+
+const ThreadQueueResumeCommand = Schema.Struct({
+  type: Schema.Literal("thread.queue.resume"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
 });
 
 const ThreadSnoozeCommand = Schema.Struct({
@@ -1906,6 +1918,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadValidationRequestCommand,
+  ThreadQueueResumeCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -1956,6 +1969,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadValidationRequestCommand,
+  ThreadQueueResumeCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
@@ -1978,6 +1992,14 @@ const ThreadSessionSetCommand = Schema.Struct({
   threadId: ThreadId,
   session: OrchestrationSession,
   expectedActiveTurnId: Schema.optional(TurnId),
+  createdAt: IsoDateTime,
+});
+
+const ThreadQueueHoldCommand = Schema.Struct({
+  type: Schema.Literal("thread.queue.hold"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  reason: Schema.Literal("restart-recovery"),
   createdAt: IsoDateTime,
 });
 
@@ -2087,6 +2109,7 @@ export const InternalOrchestrationCommand = Schema.Union([
   ChatArchiveImportCommand,
   CollaborationRequestConsumeCommand,
   ThreadSessionSetCommand,
+  ThreadQueueHoldCommand,
   ThreadDispatchReplaceCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
@@ -2133,6 +2156,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.unarchived",
   "thread.settled",
   "thread.unsettled",
+  "thread.queue-held",
+  "thread.queue-resumed",
   "thread.snoozed",
   "thread.unsnoozed",
   "thread.pinned",
@@ -2275,6 +2300,17 @@ export const ThreadSettledPayload = Schema.Struct({
 export const ThreadUnsettledPayload = Schema.Struct({
   threadId: ThreadId,
   reason: Schema.Literals(["user", "activity"]),
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadQueueHeldPayload = Schema.Struct({
+  threadId: ThreadId,
+  reason: Schema.Literals(["restart-recovery"]),
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadQueueResumedPayload = Schema.Struct({
+  threadId: ThreadId,
   updatedAt: IsoDateTime,
 });
 
@@ -2695,6 +2731,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.unsettled"),
     payload: ThreadUnsettledPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.queue-held"),
+    payload: ThreadQueueHeldPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.queue-resumed"),
+    payload: ThreadQueueResumedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

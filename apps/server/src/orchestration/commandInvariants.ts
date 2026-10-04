@@ -247,7 +247,11 @@ export function threadHasPendingInteraction(thread: OrchestrationThread): boolea
 }
 
 export function isThreadReadyForQueuedDispatch(thread: OrchestrationThread): boolean {
-  return !threadHasInFlightTurn(thread) && !threadHasPendingInteraction(thread);
+  return (
+    thread.queueHeld !== true &&
+    !threadHasInFlightTurn(thread) &&
+    !threadHasPendingInteraction(thread)
+  );
 }
 
 export function findQueuedTurnById(

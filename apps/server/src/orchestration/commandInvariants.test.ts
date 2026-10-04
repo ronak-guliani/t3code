@@ -15,6 +15,7 @@ import { Effect } from "effect";
 
 import {
   findThreadById,
+  isThreadReadyForQueuedDispatch,
   listThreadsByProjectId,
   requireNonNegativeInteger,
   requireThread,
@@ -338,6 +339,13 @@ describe("commandInvariants", () => {
         ],
       }),
     ).toBe(true);
+  });
+
+  it("blocks queued dispatch while the queue is held for restart recovery", () => {
+    const thread = readModel.threads[0]!;
+    expect(isThreadReadyForQueuedDispatch(thread)).toBe(true);
+    expect(isThreadReadyForQueuedDispatch({ ...thread, queueHeld: true })).toBe(false);
+    expect(isThreadReadyForQueuedDispatch({ ...thread, queueHeld: false })).toBe(true);
   });
 
   it("requires non-negative integers", async () => {
