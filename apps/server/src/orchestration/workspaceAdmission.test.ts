@@ -156,7 +156,8 @@ describe("admitWorkspaceCommand", () => {
         listThreads: () => [],
         claimOwnership: () => Effect.die(new Error("must reject before claiming ownership")),
         hasCleanupReservationByPath: () => Effect.succeed(false),
-        createWorkspaceSnapshotCommit: () => Effect.die("snapshot should not be taken"),
+        createWorkspaceSnapshotCommit: () =>
+          Effect.die(new Error("snapshot must not run in this test")),
       };
       const commands = [
         {
