@@ -1,0 +1,69 @@
+# `crates/`
+
+Rust crates vendored for the native iOS client (`apps/zeron-ios`). See
+[`apps/zeron-ios/README.md`](../apps/zeron-ios/README.md) for why these and not others,
+and [`apps/zeron-ios/PROVENANCE.md`](../apps/zeron-ios/PROVENANCE.md) for license obligations.
+
+## Origin
+
+Everything here is derived from [`zeronsh/zeron`](https://github.com/zeronsh/zeron) at revision
+**`9e1a11158b0626237c814f4bd36f5948483ed797`**. See `PROVENANCE.md` for the full obligations. Zeron is
+MIT licensed, © 2026 Wing; `apps/zeron-ios/LICENSE.zeron` is the upstream license text and must
+travel with this directory.
+
+Changes made at import, all mechanical:
+
+- Crate names `zeron-text` → `t3-text`, `zeron-markdown` → `t3-markdown`; crate-root paths,
+  `use` statements, doc links, and `-p` invocations updated to match.
+- Workspace-inherited fields resolved to concrete values (`unicode-segmentation = "1"`,
+  `pulldown-cmark = "0.12"`), since t3code has no Rust workspace to inherit from.
+- Test asset paths repointed from zeron's repo layout to `assets/` inside this directory.
+- Omitted: `crates/t3-text/examples/profile.rs` (a dev profiling harness for zeron's own
+  transcript corpus; no role in the iOS client) and `crates/t3-text/benches/` plus its
+  `criterion` dev-dependency. The layout benchmark that gates Phase 1 lives in the layout
+  engine, not here.
+
+## Crates
+
+| Crate         | Upstream          | Purpose                                                                                                                                                                                                                                                       |
+| ------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `t3-text`     | `crates/text`     | UAX #14 break opportunities via ICU4X, rustybuzz advance measurement, cached segment widths, pure-arithmetic line layout. The _prepare_ (once) / _layout_ (per width) split is what lets a virtualized list know every row's exact height before it is shown. |
+| `t3-markdown` | `crates/markdown` | Block-level markdown over pulldown-cmark with `IncrementalParser`, so a streamed delta costs O(delta + last block) instead of reparsing the transcript.                                                                                                       |
+
+## Assets
+
+`crates/t3-text/assets/fonts/` holds four Geist faces (~540 KB) vendored from zeron's
+`crates/ui/assets/fonts`, plus the OFL text and a `NOTICE.md`. They are required by the
+integration suite and are the exact bytes the iOS client must register with CoreText — if Rust
+measures a different face than UIKit draws, line breaks disagree and the transcript tears.
+See `assets/fonts/NOTICE.md`.
+
+`crates/t3-text/assets/fixture.md` is the markdown corpus `tests/coretext.rs` folds into its
+line-break corpus. Vendored rather than left to `unwrap_or_default()` so the parity baseline
+below stays the full one.
+
+## Verification
+
+```sh
+cargo build
+cargo test --release
+```
+
+128 tests pass. `tests/coretext.rs` is the authority for line-break correctness: it lays corpora
+out with `t3-text` and with `CTFramesetter` over the _same font bytes_ and compares line starts.
+
+| Corpus | Exact                 | Line-count agreement |
+| ------ | --------------------- | -------------------- |
+| swift  | 3528/3528 (100.00%)   | 100.000%             |
+| broad  | 8568/8568 (100.00%)   | 100.000%             |
+| styled | 5850/5850 (100.00%)   | 100.000%             |
+| random | 30240/30240 (100.00%) | 100.000%             |
+
+**48,186 cases, 100.00%.** This matches zeron's documented result, so the vendor did not
+regress. Re-run it after any dependency bump — `unicode-segmentation` and `rustybuzz` in
+particular are exactly the crates that own line-break rules, and a semver-compatible bump can
+still move a break opportunity.
+
+`tests/coretext.rs` is `#![cfg(target_os = "macos")]` and needs `core-text`, so on Linux and
+Windows it reports 0 tests rather than failing. Do not read a green non-macOS run as parity
+coverage.

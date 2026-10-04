@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["crates/t3-text", "crates/t3-markdown"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# Rust core for the native iOS client (apps/zeron-ios). Vendored from
+# zeronsh/zeron at 9e1a11158b0626237c814f4bd36f5948483ed797 — see
+# crates/README.md and apps/zeron-ios/PROVENANCE.md.
+#
+# The iOS static library is built by apps/zeron-ios/scripts/build-core.sh with
+# --profile ios (device and simulator alike), so even a Debug app build links
+# an optimized core: measurement and line layout are on the phone's hot path.
+
+[profile.ios]
+inherits = "release"
+lto = false
+strip = false
+debug = "line-tables-only"
+incremental = true
+codegen-units = 16
+
+# Archive builds (TestFlight / App Store).
+[profile.ios-dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

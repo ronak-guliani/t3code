@@ -8,16 +8,35 @@ under streaming — without forking zeron's sync substrate.
 
 ## What we take
 
-| From zeron                  | Size         | Why                                                                     |
-| --------------------------- | ------------ | ----------------------------------------------------------------------- |
-| `apps/ios/Zeron/**/*.swift` | 10,591 lines | UIKit shell. Only 5 of 36 files touch Rust; the rest is domain-free UI. |
-| `crates/text`               | 4,062        | UAX#14 segmentation + rustybuzz measurement. No zeron deps.             |
-| `crates/markdown`           | 2,160        | Block model + incremental reparse. Deps: pulldown-cmark only.           |
-| `crates/syntax`             | 1,354        | Tree-sitter highlighting. Deps: tree-sitter grammars only.              |
-| `crates/mobile/src/layout`  | ~4,300       | Rows → measured display lists, prefix-sum offsets, `rowsIn(y0,y1)`.     |
-| `scripts/ios/build-core.sh` | 60           | UniFFI static-lib + binding generation.                                 |
+| From zeron                  | Size         | Status       | Why                                                                                                      |
+| --------------------------- | ------------ | ------------ | -------------------------------------------------------------------------------------------------------- |
+| `crates/text`               | 4,062        | **vendored** | UAX#14 segmentation + rustybuzz measurement. No zeron deps.                                              |
+| `crates/markdown`           | 2,160        | **vendored** | Block model + incremental reparse. Deps: pulldown-cmark only.                                            |
+| `crates/syntax`             | 1,354        | Phase 1      | Tree-sitter highlighting for 28 languages. Only consumer is `layout/markdown.rs`.                        |
+| `crates/mobile/src/layout`  | ~4,300       | Phase 1      | Rows → measured display lists, prefix-sum offsets. **Engine is portable; row model is not** (see below). |
+| `apps/ios/Zeron/**/*.swift` | 10,591 lines | Phase 3      | UIKit shell. Only 5 of 36 files touch Rust; the rest is domain-free UI.                                  |
+| `scripts/ios/build-core.sh` | 60           | Phase 2      | UniFFI static-lib + binding generation.                                                                  |
 
-Total: **~22.5k lines**, all MIT, all domain-neutral.
+Vendored so far: **~6.2k lines + 540 KB of Geist faces**, all MIT.
+
+### Correction: `crates/mobile/src/layout` is not domain-free
+
+This plan originally listed `text`, `markdown`, `syntax` and `layout` as four interchangeable
+domain-neutral crates. Only the first two are. `layout` splits:
+
+- **Portable engine** — `mod.rs` (the prepare/layout machinery), `display.rs`, `style.rs`,
+  `markdown.rs`. No zeron types.
+- **zeron-bound row model** — `rows.rs` and `tools.rs` consume `zeron_doc::parts::MessagePart`,
+  `zeron_doc::schema::SessionMessageEntry`, `zeron_proto::ToolCall` / `ToolDiff` / `view::*`, and
+  `mod.rs:347-372` binds to `zeron_client::SnapshotWatch` and `client_ffi::CoreClient`.
+
+So Phase 1 ports the engine and **rewrites the row model against t3code's thread contracts**
+(`packages/contracts/src/orchestration.ts`, `providerRuntime.ts`). Roughly 2,500 of the 4,300
+lines are rewrite, not copy. This is why Phase 5 exists, and it is larger than first estimated.
+
+`crates/syntax` is deferred with it: its only consumer is `layout/markdown.rs` code-block
+colouring, and it drags 27 tree-sitter grammar crates into an iOS staticlib. The language set
+should be decided when we know what our transcripts actually contain.
 
 ## What we do not take
 
@@ -34,29 +53,43 @@ zeron proves it works with no network via `FixtureSessionSource`. We add a third
 `T3SessionSource`, backed by our contracts. Transcript rows never cross FFI — Rust subscribes and
 publishes `LayoutFrame`s; Swift only paints at the given coordinates.
 
+## Deployment target
+
+**iOS 18.0**, matching `apps/mobile`. `t3-text` is pure Rust over rustybuzz and ICU4X with no
+Apple-version-gated API, so nothing in the vendored core needs zeron's pinned 26.0. Revisit in
+Phase 3: the Swift shell may want 26.0 for Liquid Glass, and that is a UI decision about our own
+screens, not a constraint inherited from the measurement engine.
+
 ## Phases
 
-### Phase 0 — Provenance & skeleton (1 day)
+### Phase 0 — Provenance & skeleton — DONE
 
-- `git subtree add` zeron at the recorded revision; copy `LICENSE` + `THIRD_PARTY_NOTICES.md`.
-- Register `crates/{text,markdown,syntax,layout}` as t3code workspace members, renamed
-  `t3-text`, `t3-markdown`, `t3-syntax`, `t3-layout`.
-- **Decision:** deployment target. zeron pins `IPHONEOS_DEPLOYMENT_TARGET = 26.0`; t3code mobile
-  targets 18.0. Pick 18.0 unless the vendored crates need 26.
-- **Gate:** `cargo build -p t3-text -p t3-markdown -p t3-syntax -p t3-layout` green on stable.
+- Vendored `crates/text` → `crates/t3-text` and `crates/markdown` → `crates/t3-markdown` as
+  t3code's first Rust workspace members (`/Cargo.toml`, `resolver = "3"`, edition 2024).
+  Not `git subtree`: our divergence policy is no upstream tracking, and subtree would vendor
+  zeron's other ~390k lines.
+- Added `ios` / `ios-dist` cargo profiles, renamed from zeron's `mobile` / `mobile-dist`.
+- Vendored four Geist faces + OFL text into `crates/t3-text/assets/fonts/` and the markdown
+  corpus into `assets/fixture.md`, then repointed the test paths off zeron's repo layout.
+  Fonts are required, not incidental: Rust measures the bytes and CoreText draws them, so a
+  mismatch tears line breaks. Geist is kept over t3code's DM Sans because zeron's parity result
+  was established on Geist and re-validating it against a new face is Phase 1 work we would
+  otherwise have to do anyway.
+- `apps/zeron-ios/LICENSE.zeron`, `crates/README.md` (import deltas, verification, baseline).
+- **Gate:** `cargo build` green, `cargo test --release` 128 passed / 0 failed. CoreText parity
+  reproduced exactly at **48,186 cases, 100.00%** line-start agreement (swift 3528, broad 8568,
+  styled 5850, random 30240) — identical to zeron's documented result, so the vendor did not
+  regress.
 
-### Phase 1 — Layout core, domain-free (1 week)
+### Phase 1 — Layout engine + row model (2 weeks, up from 1)
 
-- Vendor the four crates. Strip every `zeron_*` path in `Cargo.toml`; keep only third-party deps.
-  The retained sets are `rustybuzz`, `icu-segmenter`, `icu-properties`, `unicode-segmentation`,
-  `unicode-bidi`, `hashbrown`, `rustc-hash` (`crates/text`); `pulldown-cmark`
-  (`crates/markdown`); `tree-sitter` plus the pinned grammars (`crates/syntax`). Verified against
-  upstream `Cargo.toml` — none of these four crates references the zeron workspace.
-- Port `crates/text/tests/coretext.rs` (line-break parity against CoreText on the same font bytes).
-- Port `crates/mobile/src/layout/tests.rs` and `crates/mobile/src/layout/fixture.md` verbatim —
-  these are the paint/measure-agreement, streaming-equals-full-parse, and prefix-reuse assertions.
-- **Gate:** all ported tests pass. `cargo test --release -p t3-layout --lib bench_layout -- --ignored`
-  reproduces ~30 ms cold layout for 3,300 rows.
+- Vendor the portable slice of `crates/mobile/src/layout` as `crates/t3-layout`, plus
+  `crates/syntax` as `t3-syntax` with a language set we choose.
+- **Rewrite** `rows.rs` and `tools.rs` against t3code thread contracts instead of copying them.
+- Strip `mod.rs:347-372` (`SnapshotWatch` / `CoreClient`) and define the transport-neutral
+  attachment interface Phase 5 will implement.
+- Port `layout/tests.rs` and `fixture.md`; port the layout benchmark behind the Phase 1 gate.
+- **Gate:** all ported tests pass and the ~30 ms cold-layout figure for 3,300 rows reproduces.
 
 ### Phase 2 — UniFFI facade & build pipeline (3 days)
 
@@ -119,3 +152,17 @@ Retarget the vendored `SessionSource` protocol; leave `CoreSessionSource` behind
 
 Phases 0-3 need no server changes and no protocol decisions. If Phase 3's hitch numbers hold,
 the remaining risk is concentrated in Phase 5 and the project is worth continuing.
+
+## Verification
+
+```sh
+cargo build && cargo test --release
+```
+
+Phase 0 result: **128 passed, 0 failed**, and the CoreText parity baseline reproduced exactly at
+48,186 cases / 100.00%. See [`crates/README.md`](../../crates/README.md) for the per-corpus table
+and the caveat that `coretext` reports 0 tests off macOS.
+
+Because `cargo` is not yet wired into `pnpm test`, CI does not run these. Adding that is Phase 2
+work — it belongs with the build pipeline, not here, so that Phase 0 does not add a Rust toolchain
+install to every JavaScript-only pull request.
