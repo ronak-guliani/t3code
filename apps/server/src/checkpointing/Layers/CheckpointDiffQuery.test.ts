@@ -101,8 +101,6 @@ describe("CheckpointDiffQueryLive", () => {
         ],
       });
       const checkpointStore: CheckpointStoreShape = {
-        createWorkspaceSnapshotCommit: () =>
-          Effect.die("CheckpointDiffQuery must not capture a workspace snapshot"),
         isGitRepository: () => Effect.succeed(true),
         captureCheckpoint: () => Effect.void,
         createWorkspaceSnapshotCommit: () =>

@@ -119,7 +119,6 @@ it.layer(TestLayer)("snapshot fork", (it) => {
         const admitted = yield* admitWorkspaceCommand(
           {
             findThread: () => undefined,
-            listThreads: () => [],
             findProject: () => project as never,
             listThreads: () => [],
             claimOwnership: (input) =>
@@ -177,7 +176,6 @@ it.layer(TestLayer)("snapshot fork", (it) => {
         const admitted = yield* admitWorkspaceCommand(
           {
             findThread: () => undefined,
-            listThreads: () => [],
             findProject: () =>
               ({ id: ProjectId.make("snapshot-clean-project"), workspaceRoot: cwd }) as never,
             listThreads: () => [],
@@ -229,7 +227,6 @@ it.layer(TestLayer)("snapshot fork", (it) => {
         const failure = yield* admitWorkspaceCommand(
           {
             findThread: () => undefined,
-            listThreads: () => [],
             findProject: () =>
               ({ id: ProjectId.make("snapshot-failure-project"), workspaceRoot: cwd }) as never,
             listThreads: () => [],
