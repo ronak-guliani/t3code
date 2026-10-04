@@ -73,6 +73,7 @@ export function resolvePullRequestFromCwds(
 const MAX_WORKTREE_CLEANUP_ATTEMPTS = 5;
 const CLEANUP_RECONCILIATION_INTERVAL = "5 minutes";
 const CLEANUP_DUE_SWEEP_INTERVAL = "1 minute";
+const CLEANUP_DUE_SWEEP_BATCH_LIMIT = 16;
 
 /** Sibling directory that holds detached worktrees until their bytes are deleted. */
 export function worktreeTrashDirectory(canonicalWorktreePath: string): string {
@@ -1046,7 +1047,13 @@ const make = Effect.gen(function* () {
 
   const enqueueDueWorktreeCleanups = Effect.fn("enqueueDueWorktreeCleanups")(
     function* () {
-      const jobs = yield* worktreeCleanupJobs.listDue({ now: yield* cleanupNow() });
+      // Deletion events enqueue cleanup immediately; this periodic sweep is
+      // recovery for missed work, so bound each pass instead of flooding the
+      // shared SQLite/cleanup queues with an arbitrarily large backlog.
+      const jobs = yield* worktreeCleanupJobs.listDue({
+        now: yield* cleanupNow(),
+        limit: CLEANUP_DUE_SWEEP_BATCH_LIMIT,
+      });
       yield* Effect.forEach(jobs, (job) => enqueueWorktreeCleanup(job.threadId), {
         concurrency: 1,
         discard: true,

@@ -1610,6 +1610,98 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
+  it("batches concurrent activity appends without changing their per-thread order", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+    const projectId = asProjectId("project-activity-batch");
+    const threadId = ThreadId.make("thread-activity-batch");
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-activity-batch"),
+        projectId,
+        title: "Activity batch",
+        workspaceRoot: "/tmp/project-activity-batch",
+        defaultModelSelection: null,
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-activity-batch"),
+        threadId,
+        projectId,
+        title: "Activity batch",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    const commands = [0, 1, 2, 3].map((index) => ({
+      type: "thread.activity.append" as const,
+      commandId: CommandId.make(`cmd-activity-batch-${index}`),
+      threadId,
+      activity: {
+        id: EventId.make(`activity-batch-${index}`),
+        tone: "info" as const,
+        kind: "tool.started",
+        summary: `Tool ${index} started`,
+        payload: { index },
+        turnId: TurnId.make("turn-activity-batch"),
+        createdAt,
+      },
+      createdAt,
+    }));
+
+    try {
+      const results = await system.run(
+        Effect.all(
+          commands.map((command) => engine.dispatch(command)),
+          {
+            concurrency: "unbounded",
+          },
+        ),
+      );
+      const events = await system.run(
+        Stream.runCollect(engine.readEvents(0)).pipe(
+          Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),
+        ),
+      );
+      const activities = events.filter(
+        (event) => event.type === "thread.activity-appended" && event.payload.threadId === threadId,
+      );
+
+      expect(results.map((result) => result.sequence)).toEqual(
+        results.map((result) => result.sequence).toSorted((left, right) => left - right),
+      );
+      expect(
+        activities.map((event) =>
+          event.type === "thread.activity-appended" ? event.payload.activity.id : "",
+        ),
+      ).toEqual(commands.map((command) => command.activity.id));
+
+      const snapshots = await system.run(Metric.snapshot);
+      expect(
+        hasMetricSnapshot(snapshots, "t3_orchestration_activity_append_batches_total", {
+          aggregateKind: "thread",
+          batchSize: "4",
+        }),
+      ).toBe(true);
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("records failed command dispatches as metric failures", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;

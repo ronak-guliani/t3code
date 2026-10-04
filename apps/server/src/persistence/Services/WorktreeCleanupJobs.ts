@@ -65,6 +65,7 @@ export interface WorktreeCleanupJobRepositoryShape {
   readonly list: () => Effect.Effect<ReadonlyArray<WorktreeCleanupJob>, ProjectionRepositoryError>;
   readonly listDue: (input: {
     readonly now: IsoDateTime;
+    readonly limit: number;
   }) => Effect.Effect<ReadonlyArray<WorktreeCleanupJob>, ProjectionRepositoryError>;
   readonly getByThreadId: (
     threadId: ThreadId,
