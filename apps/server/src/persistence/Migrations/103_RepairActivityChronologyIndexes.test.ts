@@ -31,6 +31,7 @@ it.effect("repairs skipped chronology indexes above the existing migration high-
       [116, "CollaborativeAcceptancePullRequestLookup"],
       [117, "PendingPullRequestFeedbackIndex"],
       [118, "QueueHoldAndShutdownMarker"],
+      [119, "ThreadHistoryWindowIndexes"],
     ]);
     yield* repair;
     assert.deepStrictEqual(yield* runMigrations(), []);

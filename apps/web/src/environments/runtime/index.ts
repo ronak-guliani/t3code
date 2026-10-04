@@ -22,6 +22,8 @@ export {
   getPrimaryEnvironmentConnection,
   hasActiveThreadDetailWork,
   readEnvironmentConnection,
+  loadOlderThreadHistory,
+  loadCompleteThreadHistory,
   reconnectSavedEnvironment,
   repairActiveThreadDetailSubscriptionsAfterStall,
   setSavedEnvironmentEnabled,

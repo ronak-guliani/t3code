@@ -496,7 +496,10 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
       params: Schema.Struct({ threadId: ThreadId }),
       payload: {
         turnLimit: Schema.optional(
-          Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
+          Schema.FiniteFromString.check(
+            Schema.isInt(),
+            Schema.isBetween({ minimum: 1, maximum: 100 }),
+          ),
         ),
         beforeCursor: Schema.optional(TrimmedNonEmptyString),
       },

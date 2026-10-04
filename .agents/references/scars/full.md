@@ -360,6 +360,8 @@
 
 ## Projection performance and service composition
 
+- Turn-history windows must select user anchors and associated rows in SQL before decoding checkpoint/activity JSON. Order legacy NULL sequences by rowid ahead of sequenced rows; timestamp ties cannot define a cursor.
+- Older pages keep loaded/live overlaps authoritative and replay withheld message deltas only after the page's thread-detail watermark. A global snapshot watermark may include events the thread stream never emits; reverts must fence in-flight pages and replace removed anchor cursors with a fresh snapshot.
 - Latest-N-per-thread startup reads must use indexed bounded seeks, not global window ranking over discarded history. Check index presence on upgraded/divergent ledgers as well as fresh databases; a later migration ID can coexist with a skipped index migration.
 - Shell-summary refreshes must only run for events that can change shell fields. The shell stream and reconciler must share the same activity predicate, plus `task.completed` always (it can settle a run) and `task.started` only when the payload carries taskType background-agent.
 - Shell stream mapping must skip `thread.activity-appended` events whose kind cannot change shell fields; otherwise every streaming activity costs a five-query shell re-read plus a WS upsert, consuming bounded read-pool capacity and spamming subscribers.

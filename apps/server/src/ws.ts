@@ -543,6 +543,7 @@ const makeWsRpcLayer = (
           settings,
           shellResumeCompletionMarker: true,
           threadResumeCompletionMarker: true,
+          threadSnapshotPagination: true,
         };
       });
 
@@ -1363,25 +1364,39 @@ const makeWsRpcLayer = (
         [ORCHESTRATION_WS_METHODS.getThreadSnapshot]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getThreadSnapshot,
-            projectionSnapshotQuery.getThreadDetailSnapshotById(input.threadId).pipe(
-              Effect.flatMap((snapshot) => {
-                if (Option.isNone(snapshot)) {
-                  return new OrchestrationGetSnapshotError({
-                    message: `Thread ${input.threadId} was not found`,
-                    cause: input.threadId,
-                  });
-                }
-                return Effect.succeed(snapshot.value).pipe(Effect.map(projectThreadDetailSnapshot));
-              }),
-              Effect.mapError((cause) =>
-                isOrchestrationGetSnapshotError(cause)
-                  ? cause
-                  : new OrchestrationGetSnapshotError({
-                      message: `Failed to load thread ${input.threadId}`,
-                      cause,
-                    }),
+            projectionSnapshotQuery
+              .getThreadDetailSnapshotById(
+                input.threadId,
+                input.turnLimit === undefined && input.beforeCursor === undefined
+                  ? undefined
+                  : {
+                      ...(input.turnLimit === undefined ? {} : { turnLimit: input.turnLimit }),
+                      ...(input.beforeCursor === undefined
+                        ? {}
+                        : { beforeCursor: input.beforeCursor }),
+                    },
+              )
+              .pipe(
+                Effect.flatMap((snapshot) => {
+                  if (Option.isNone(snapshot)) {
+                    return new OrchestrationGetSnapshotError({
+                      message: `Thread ${input.threadId} was not found`,
+                      cause: input.threadId,
+                    });
+                  }
+                  return Effect.succeed(snapshot.value).pipe(
+                    Effect.map(projectThreadDetailSnapshot),
+                  );
+                }),
+                Effect.mapError((cause) =>
+                  isOrchestrationGetSnapshotError(cause)
+                    ? cause
+                    : new OrchestrationGetSnapshotError({
+                        message: `Failed to load thread ${input.threadId}`,
+                        cause,
+                      }),
+                ),
               ),
-            ),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.subscribeShell]: (input) =>
@@ -1552,7 +1567,17 @@ const makeWsRpcLayer = (
               }
 
               const threadSnapshot = yield* projectionSnapshotQuery
-                .getThreadDetailSnapshotById(input.threadId)
+                .getThreadDetailSnapshotById(
+                  input.threadId,
+                  input.turnLimit === undefined && input.beforeCursor === undefined
+                    ? undefined
+                    : {
+                        ...(input.turnLimit === undefined ? {} : { turnLimit: input.turnLimit }),
+                        ...(input.beforeCursor === undefined
+                          ? {}
+                          : { beforeCursor: input.beforeCursor }),
+                      },
+                )
                 .pipe(
                   Effect.mapError(
                     (cause) =>
@@ -1569,7 +1594,7 @@ const makeWsRpcLayer = (
                   cause: input.threadId,
                 });
               }
-              const { snapshotSequence, thread } = threadSnapshot.value;
+              const { snapshotSequence } = threadSnapshot.value;
               const synchronizedThenLive =
                 input.requestCompletionMarker === true
                   ? Stream.concat(
@@ -1583,10 +1608,7 @@ const makeWsRpcLayer = (
               return Stream.concat(
                 Stream.make({
                   kind: "snapshot" as const,
-                  snapshot: projectThreadDetailSnapshot({
-                    snapshotSequence,
-                    thread,
-                  }),
+                  snapshot: projectThreadDetailSnapshot(threadSnapshot.value),
                 }),
                 synchronizedThenLive.pipe(
                   Stream.filter(

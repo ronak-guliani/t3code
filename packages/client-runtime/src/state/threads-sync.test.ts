@@ -4,6 +4,8 @@ import {
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   ProviderInstanceId,
+  MessageId,
+  TurnId,
   ThreadId,
   type OrchestrationThread,
   type OrchestrationThreadStreamItem,
@@ -18,6 +20,8 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
+import * as Deferred from "effect/Deferred";
+import { ThreadSnapshotLoader } from "./threadSnapshotHttp.ts";
 
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import {
@@ -33,6 +37,7 @@ import * as RpcSession from "../rpc/session.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   makeEnvironmentThreadState,
+  requestOlderThreadTurns,
   type EnvironmentThreadState,
 } from "./threads.ts";
 
@@ -69,10 +74,10 @@ const BASE_THREAD: OrchestrationThread = {
 
 type TestThreadInput = OrchestrationThreadStreamItem | Error;
 
-function testSession(client: WsRpcProtocolClient): RpcSession.RpcSession {
+function testSession(client: WsRpcProtocolClient, paginated = false): RpcSession.RpcSession {
   return {
     client,
-    initialConfig: Effect.succeed(TEST_SERVER_CONFIG),
+    initialConfig: Effect.succeed({ ...TEST_SERVER_CONFIG, threadSnapshotPagination: paginated }),
     ready: Effect.void,
     probe: Effect.void,
     closed: Effect.never,
@@ -92,6 +97,7 @@ function awaitThreadState(
 
 const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (options?: {
   readonly cached?: OrchestrationThread;
+  readonly loadPage?: ThreadSnapshotLoader["Service"]["load"];
 }) {
   const inputs = yield* Queue.unbounded<TestThreadInput>();
   const observed = yield* Queue.unbounded<EnvironmentThreadState>();
@@ -118,9 +124,11 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
       ),
   } as unknown as WsRpcProtocolClient;
   const supervisorSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
-    Option.some(testSession(client)),
+    Option.some(testSession(client, options?.loadPage !== undefined)),
   );
-  const prepared = yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(Option.none());
+  const prepared = yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(
+    options?.loadPage ? Option.some({} as PreparedConnection) : Option.none(),
+  );
   const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
     target: TARGET,
     state: supervisorState,
@@ -151,10 +159,13 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
       Ref.update(removedThreads, (current) => [...current, threadId]),
     clear: () => Effect.void,
   });
-  const threadState = yield* makeEnvironmentThreadState(THREAD_ID).pipe(
+  const buildState = makeEnvironmentThreadState(THREAD_ID).pipe(
     Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
     Effect.provideService(Persistence.EnvironmentCacheStore, cache),
   );
+  const threadState = yield* options?.loadPage
+    ? buildState.pipe(Effect.provideService(ThreadSnapshotLoader, { load: options.loadPage }))
+    : buildState;
   yield* SubscriptionRef.changes(threadState).pipe(
     Stream.runForEach((state) =>
       Ref.set(latest, state).pipe(Effect.andThen(Queue.offer(observed, state))),
@@ -172,7 +183,10 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     supervisorSession,
     savedThreads,
     removedThreads,
-    replaceSession: SubscriptionRef.set(supervisorSession, Option.some(testSession(client))),
+    replaceSession: SubscriptionRef.set(
+      supervisorSession,
+      Option.some(testSession(client, options?.loadPage !== undefined)),
+    ),
   };
 });
 
@@ -226,6 +240,252 @@ const deleted = (): OrchestrationThreadStreamItem => ({
 });
 
 describe("EnvironmentThreads", () => {
+  it.effect(
+    "merges an older page while later live deltas continue without lost prefixes or duplicate text",
+    () =>
+      Effect.gen(function* () {
+        const response =
+          yield* Deferred.make<
+            Option.Option<import("@t3tools/contracts").OrchestrationThreadDetailSnapshot>
+          >();
+        const harness = yield* makeHarness({
+          cached: BASE_THREAD,
+          loadPage: () => Deferred.await(response),
+        });
+        const message = {
+          id: MessageId.make("current"),
+          role: "assistant" as const,
+          text: "Current",
+          turnId: TurnId.make("current-turn"),
+          streaming: true,
+          createdAt: BASE_THREAD.createdAt,
+          updatedAt: BASE_THREAD.updatedAt,
+        };
+        yield* Queue.offer(harness.inputs, {
+          kind: "snapshot",
+          snapshot: {
+            snapshotSequence: 1,
+            thread: { ...BASE_THREAD, messages: [message] },
+            page: {
+              snapshotSequence: 1,
+              threadSequence: 1,
+              hasMore: true,
+              beforeCursor: "earlier",
+            },
+          },
+        });
+        yield* awaitThreadState(
+          harness.observed,
+          (s) => Option.isSome(s.page) && s.page.value.hasMore,
+        );
+        expect(requestOlderThreadTurns(TARGET.environmentId, THREAD_ID)).toBe(true);
+        yield* awaitThreadState(
+          harness.observed,
+          (s) => Option.isSome(s.page) && s.page.value.loadingOlder,
+        );
+        const base = titleUpdated("Unused", 2);
+        if (base.kind !== "event") throw new Error("Event fixture missing");
+        const delta = (
+          sequence: number,
+          id: string,
+          turn: string,
+          text: string,
+        ): OrchestrationThreadStreamItem => ({
+          kind: "event",
+          event: {
+            ...base.event,
+            sequence,
+            type: "thread.message-sent",
+            payload: {
+              threadId: THREAD_ID,
+              messageId: MessageId.make(id),
+              role: "assistant",
+              text,
+              turnId: TurnId.make(turn),
+              streaming: true,
+              createdAt: BASE_THREAD.createdAt,
+              updatedAt: BASE_THREAD.updatedAt,
+            },
+          },
+        });
+        yield* Queue.offer(harness.inputs, delta(2, "old", "old-turn", " included"));
+        yield* Queue.offer(harness.inputs, delta(3, "current", "current-turn", "!"));
+        yield* Queue.offer(harness.inputs, delta(4, "old", "old-turn", " tail"));
+        yield* Queue.offer(harness.inputs, titleUpdated("New metadata", 5));
+        yield* awaitThreadState(
+          harness.observed,
+          (s) => Option.isSome(s.data) && s.data.value.title === "New metadata",
+        );
+        yield* Deferred.succeed(
+          response,
+          Option.some({
+            snapshotSequence: 3,
+            page: { snapshotSequence: 3, threadSequence: 2, hasMore: false, beforeCursor: null },
+            thread: {
+              ...BASE_THREAD,
+              title: "Old metadata",
+              messages: [
+                {
+                  ...message,
+                  id: MessageId.make("old"),
+                  turnId: TurnId.make("old-turn"),
+                  text: "Old included",
+                },
+              ],
+            },
+          }),
+        );
+        const final = yield* awaitThreadState(
+          harness.observed,
+          (s) => Option.isSome(s.page) && !s.page.value.loadingOlder,
+        );
+        expect(Option.getOrThrow(final.data).messages.map((m) => m.text)).toEqual([
+          "Old included tail",
+          "Current!",
+        ]);
+        expect(Option.getOrThrow(final.data).title).toBe("New metadata");
+      }),
+  );
+
+  it.effect("keeps explicitly loaded paged history intact as live messages arrive", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const messages = Array.from({ length: 600 }, (_, i) => ({
+        id: MessageId.make(`history-${i}`),
+        role: "user" as const,
+        text: `History ${i}`,
+        turnId: null,
+        streaming: false,
+        createdAt: BASE_THREAD.createdAt,
+        updatedAt: BASE_THREAD.updatedAt,
+      }));
+      yield* Queue.offer(harness.inputs, {
+        kind: "snapshot",
+        snapshot: {
+          snapshotSequence: 1,
+          thread: { ...BASE_THREAD, messages },
+          page: { snapshotSequence: 1, threadSequence: 1, hasMore: false, beforeCursor: null },
+        },
+      });
+      const fields = titleUpdated("Unused", 2);
+      if (fields.kind !== "event") throw new Error("Event fixture missing");
+      yield* Queue.offer(harness.inputs, {
+        kind: "event",
+        event: {
+          ...fields.event,
+          type: "thread.message-sent",
+          payload: {
+            threadId: THREAD_ID,
+            messageId: MessageId.make("new-history-message"),
+            role: "user",
+            text: "New",
+            turnId: null,
+            streaming: false,
+            createdAt: BASE_THREAD.createdAt,
+            updatedAt: BASE_THREAD.updatedAt,
+          },
+        },
+      } as OrchestrationThreadStreamItem);
+      const state = yield* awaitThreadState(
+        harness.observed,
+        (state) =>
+          Option.isSome(state.data) &&
+          state.data.value.messages.some((m) => m.id === "new-history-message"),
+      );
+      expect(Option.getOrThrow(state.data).messages.length).toBe(601);
+    }),
+  );
+
+  it.effect(
+    "does not construct partial historical messages from deltas outside the loaded window",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* Queue.offer(harness.inputs, {
+          kind: "snapshot",
+          snapshot: {
+            snapshotSequence: 1,
+            thread: BASE_THREAD,
+            page: {
+              snapshotSequence: 1,
+              threadSequence: 1,
+              hasMore: true,
+              beforeCursor: "earlier",
+            },
+          },
+        });
+        const fields = titleUpdated("Unused", 2);
+        if (fields.kind !== "event") throw new Error("Event fixture missing");
+        yield* Queue.offer(harness.inputs, {
+          kind: "event",
+          event: {
+            ...fields.event,
+            type: "thread.message-sent",
+            payload: {
+              threadId: THREAD_ID,
+              messageId: MessageId.make("unloaded-message"),
+              role: "assistant",
+              text: "partial delta",
+              turnId: TurnId.make("unloaded-turn"),
+              streaming: true,
+              createdAt: BASE_THREAD.createdAt,
+              updatedAt: BASE_THREAD.updatedAt,
+            },
+          },
+        });
+        yield* Queue.offer(harness.inputs, titleUpdated("After historical delta", 3));
+        const state = yield* awaitThreadState(
+          harness.observed,
+          (state) =>
+            Option.isSome(state.data) && state.data.value.title === "After historical delta",
+        );
+        expect(Option.getOrThrow(state.data).messages).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "reopens a paged detail subscription after a revert invalidates its history anchor",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* Queue.offer(harness.inputs, {
+          kind: "snapshot",
+          snapshot: {
+            snapshotSequence: 1,
+            thread: BASE_THREAD,
+            page: {
+              snapshotSequence: 1,
+              threadSequence: 1,
+              hasMore: true,
+              beforeCursor: "removed-anchor",
+            },
+          },
+        });
+        const fields = titleUpdated("Unused", 2);
+        if (fields.kind !== "event") throw new Error("Event fixture missing");
+        yield* Queue.offer(harness.inputs, {
+          kind: "event",
+          event: {
+            ...fields.event,
+            type: "thread.reverted",
+            payload: { threadId: THREAD_ID, turnCount: 0 },
+          },
+        });
+        for (let i = 0; i < 1000 && (yield* Ref.get(harness.subscriptionCount)) < 2; i++)
+          yield* Effect.yieldNow;
+        expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+        yield* Queue.offer(
+          harness.inputs,
+          snapshot({ ...BASE_THREAD, title: "After fresh history" }),
+        );
+        const state = yield* awaitThreadState(
+          harness.observed,
+          (state) => Option.isSome(state.data) && state.data.value.title === "After fresh history",
+        );
+        expect(Option.isNone(state.page)).toBe(true);
+      }),
+  );
+
   it.effect("publishes cached data before a live snapshot arrives", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_THREAD });

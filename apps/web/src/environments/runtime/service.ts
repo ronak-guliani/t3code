@@ -4,6 +4,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamEvent,
+  type OrchestrationThreadDetailSnapshot,
   type ServerConfig,
   type SidebarStateSnapshot,
   type TerminalEvent,
@@ -63,6 +64,7 @@ import {
   selectSidebarThreadSummaryByRef,
   selectThreadByRef,
   selectThreadExistsByRef,
+  selectEnvironmentState,
 } from "~/store";
 import { useTerminalStateStore } from "~/terminalStateStore";
 import { isPendingTurnActive, usePendingTurnStore } from "~/pendingTurnStore";
@@ -81,6 +83,27 @@ import {
 } from "../../logicalProject";
 import { getClientSettings } from "~/hooks/useSettings";
 import { reportClientError } from "~/lib/clientLogger";
+import { getServerConfig } from "~/rpc/serverState";
+import {
+  INITIAL_THREAD_USER_TURN_LIMIT,
+  OLDER_THREAD_PAGE_USER_TURN_LIMIT,
+  isMessageOutsideHistory,
+} from "@t3tools/shared/threadHistory";
+
+type ThreadHistoryRuntime = {
+  epoch: number;
+  sequence: number;
+  hasSnapshot: boolean;
+  request: Promise<void> | null;
+  pending: {
+    snapshot: OrchestrationThreadDetailSnapshot;
+    epoch: number;
+    resolve: () => void;
+  } | null;
+  messages: OrchestrationEvent[];
+  flush: () => void;
+  tryMerge: () => void;
+};
 
 type EnvironmentServiceState = {
   readonly queryClient: QueryClient;
@@ -97,6 +120,7 @@ type ThreadDetailSubscriptionEntry = {
   refCount: number;
   lastAccessedAt: number;
   evictionTimeoutId: ReturnType<typeof setTimeout> | null;
+  history: ThreadHistoryRuntime | null;
 };
 
 const environmentConnections = new Map<EnvironmentId, EnvironmentConnection>();
@@ -309,6 +333,91 @@ function isThreadDetailSubscriptionAttachable(entry: ThreadDetailSubscriptionEnt
   );
 }
 
+function isUnloadedHistoricalMessage(
+  entry: ThreadDetailSubscriptionEntry,
+  event: OrchestrationEvent,
+): boolean {
+  const ref = scopeThreadRef(entry.environmentId, entry.threadId);
+  const env = selectEnvironmentState(useStore.getState(), ref.environmentId);
+  if (env.threadHistoryById?.[ref.threadId] === undefined) return false;
+  const thread = selectThreadByRef(useStore.getState(), ref);
+  return isMessageOutsideHistory(thread, event);
+}
+
+export function loadOlderThreadHistory(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  turnLimit = OLDER_THREAD_PAGE_USER_TURN_LIMIT,
+): Promise<void> {
+  const entry = threadDetailSubscriptions.get(
+    getThreadDetailSubscriptionKey(environmentId, threadId),
+  );
+  const history = entry?.history;
+  const connection = readEnvironmentConnection(environmentId);
+  const ref = scopeThreadRef(environmentId, threadId);
+  const page = selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[
+    threadId
+  ];
+  if (history?.request) return history.request;
+  if (!entry || !history || !connection || !page?.hasMore || !page.beforeCursor)
+    return Promise.resolve();
+  history.flush();
+  const epoch = history.epoch;
+  history.messages = [];
+  useStore.getState().setThreadHistoryLoading(ref, true);
+  const request = (async () => {
+    try {
+      const snapshot = await connection.client.orchestration.getThreadSnapshot({
+        threadId,
+        turnLimit,
+        beforeCursor: page.beforeCursor!,
+      });
+      if (entry.history !== history || history.epoch !== epoch) return;
+      await new Promise<void>((resolve) => {
+        history.pending = { snapshot, epoch, resolve };
+        history.tryMerge();
+      });
+    } catch (error) {
+      if (entry.history === history && history.epoch === epoch) {
+        useStore
+          .getState()
+          .setThreadHistoryLoading(
+            ref,
+            false,
+            error instanceof Error ? error.message : "Could not load earlier messages.",
+          );
+      }
+      throw error;
+    }
+  })();
+  history.request = request;
+  const release = () => {
+    if (history.request === request) history.request = null;
+  };
+  void request.then(release, release);
+  return request;
+}
+
+export async function loadCompleteThreadHistory(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  shouldContinue: () => boolean = () => true,
+): Promise<void> {
+  while (shouldContinue()) {
+    const page = selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[
+      threadId
+    ];
+    if (!page?.hasMore) return;
+    const before = page.beforeCursor;
+    await loadOlderThreadHistory(environmentId, threadId, 100);
+    const after = selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[
+      threadId
+    ];
+    if (after?.error) throw new Error(after.error);
+    if (after?.hasMore && after.beforeCursor === before) return;
+  }
+}
+
 function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): boolean {
   if (entry.unsubscribe !== NOOP) {
     stopWatchingThreadDetailSubscriptionReadiness(entry);
@@ -319,6 +428,49 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
   if (!connection || !isThreadDetailSubscriptionAttachable(entry)) {
     return false;
   }
+  const ref = scopeThreadRef(entry.environmentId, entry.threadId);
+  const history: ThreadHistoryRuntime = {
+    epoch: 0,
+    sequence: 0,
+    hasSnapshot: false,
+    request: null,
+    pending: null,
+    messages: [],
+    flush: NOOP,
+    tryMerge: NOOP,
+  };
+  entry.history = history;
+  let cancelled = false;
+  history.tryMerge = () => {
+    const pending = history.pending;
+    if (!pending) return;
+    if (pending.epoch !== history.epoch) {
+      history.pending = null;
+      pending.resolve();
+      return;
+    }
+    const watermark = pending.snapshot.page?.threadSequence;
+    if (watermark !== undefined && watermark > history.sequence) return;
+    history.pending = null;
+    const buffered = history.messages;
+    history.messages = [];
+    const newer = buffered.filter(
+      (event) => event.sequence > (watermark ?? pending.snapshot.snapshotSequence),
+    );
+    useStore.getState().mergeOlderThreadSnapshot(pending.snapshot, entry.environmentId, newer);
+    reconcilePendingThreadState(ref);
+    pending.resolve();
+  };
+  const applyDetailEvents = (events: OrchestrationEvent[]) => {
+    const visible = events.filter((event) => {
+      if (!isUnloadedHistoricalMessage(entry, event)) return true;
+      if (history.request) history.messages.push(event);
+      return false;
+    });
+    applyRecoveredEventBatch(visible, entry.environmentId);
+    for (const event of events) history.sequence = Math.max(history.sequence, event.sequence);
+    history.tryMerge();
+  };
 
   // Streaming turns emit high-frequency deltas; buffer trailing events for a
   // short window so the store applies them as one batch. The first event of a
@@ -333,47 +485,114 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
     const buffered = pendingEvents;
     pendingEvents = null;
     if (buffered !== null && buffered.length > 0) {
-      applyRecoveredEventBatch(buffered, entry.environmentId);
+      applyDetailEvents(buffered);
     }
   };
+  history.flush = flushPendingEvents;
 
-  const unsubscribeTransport = connection.client.orchestration.subscribeThread(
-    { threadId: entry.threadId },
-    (item) => {
-      if (item.kind === "snapshot") {
-        flushPendingEvents();
-        useStore.getState().syncServerThreadDetail(item.snapshot.thread, entry.environmentId);
-        reconcilePendingThreadState(scopeThreadRef(entry.environmentId, entry.threadId));
-        return;
-      }
-      if (item.kind === "synchronized") {
-        return;
-      }
-      // Preserve event order while keeping queue acknowledgements and accepted
-      // starts out of the token-delta coalescing window.
-      if (
-        item.event.type.startsWith("thread.queued-turn-") ||
-        item.event.type === "thread.queue-held" ||
-        item.event.type === "thread.queue-released" ||
-        item.event.type === "thread.turn-start-requested"
-      ) {
-        flushPendingEvents();
-        applyRecoveredEventBatch([item.event], entry.environmentId);
-        return;
-      }
-      if (flushTimer === null) {
-        applyRecoveredEventBatch([item.event], entry.environmentId);
-        if (THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS <= 0) {
+  let unsubscribeTransport: () => void = NOOP;
+  const subscribe = (supportsPagination: boolean, supportsResume: boolean) => {
+    if (cancelled) return;
+    unsubscribeTransport = connection.client.orchestration.subscribeThread(
+      supportsPagination || supportsResume
+        ? () => ({
+            threadId: entry.threadId,
+            ...(supportsPagination ? { turnLimit: INITIAL_THREAD_USER_TURN_LIMIT } : {}),
+            ...(supportsResume && history.hasSnapshot
+              ? { afterSequence: history.sequence, requestCompletionMarker: true }
+              : {}),
+          })
+        : { threadId: entry.threadId },
+      (item) => {
+        if (item.kind === "snapshot") {
+          flushPendingEvents();
+          history.epoch++;
+          history.sequence = item.snapshot.snapshotSequence;
+          history.hasSnapshot = true;
+          history.messages = [];
+          history.tryMerge();
+          useStore.getState().syncServerThreadSnapshot(item.snapshot, entry.environmentId);
+          reconcilePendingThreadState(scopeThreadRef(entry.environmentId, entry.threadId));
           return;
         }
-        pendingEvents = [];
-        flushTimer = setTimeout(flushPendingEvents, THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS);
-        return;
-      }
-      pendingEvents!.push(item.event);
-    },
-  );
+        if (item.kind === "synchronized") {
+          if (item.sequence !== undefined)
+            history.sequence = Math.max(history.sequence, item.sequence);
+          history.tryMerge();
+          return;
+        }
+        if (
+          item.event.type === "thread.reverted" &&
+          selectEnvironmentState(useStore.getState(), entry.environmentId).threadHistoryById?.[
+            entry.threadId
+          ]
+        ) {
+          history.epoch++;
+          history.tryMerge();
+          applyDetailEvents([item.event]);
+          // A revert can remove the page anchor itself. A fresh snapshot attaches
+          // and buffers before reading, so neither resurrected history nor lost
+          // deltas can leak across the replacement.
+          queueMicrotask(() => {
+            if (
+              threadDetailSubscriptions.get(
+                getThreadDetailSubscriptionKey(entry.environmentId, entry.threadId),
+              ) !== entry
+            )
+              return;
+            entry.unsubscribe();
+            entry.unsubscribe = NOOP;
+            attachThreadDetailSubscription(entry);
+          });
+          return;
+        }
+        // Preserve event order while keeping queue acknowledgements and accepted
+        // starts out of the token-delta coalescing window.
+        if (
+          item.event.type.startsWith("thread.queued-turn-") ||
+          item.event.type === "thread.queue-held" ||
+          item.event.type === "thread.queue-released" ||
+          item.event.type === "thread.turn-start-requested"
+        ) {
+          flushPendingEvents();
+          applyDetailEvents([item.event]);
+          return;
+        }
+        if (flushTimer === null) {
+          applyDetailEvents([item.event]);
+          if (THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS <= 0) {
+            return;
+          }
+          pendingEvents = [];
+          flushTimer = setTimeout(flushPendingEvents, THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS);
+          return;
+        }
+        pendingEvents!.push(item.event);
+      },
+    );
+  };
+  const getConfig = connection.client.server?.getConfig;
+  const primaryConfig = connection.kind === "primary" ? getServerConfig() : null;
+  if (primaryConfig?.environment.environmentId === entry.environmentId)
+    subscribe(
+      primaryConfig.threadSnapshotPagination === true,
+      primaryConfig.threadResumeCompletionMarker === true,
+    );
+  else if (getConfig)
+    void getConfig()
+      .then((config) =>
+        subscribe(
+          config.threadSnapshotPagination === true,
+          config.threadResumeCompletionMarker === true,
+        ),
+      )
+      .catch(() => subscribe(false, false));
+  else subscribe(false, false);
   entry.unsubscribe = () => {
+    cancelled = true;
+    history.epoch++;
+    history.tryMerge();
+    entry.history = null;
     if (flushTimer !== null) {
       clearTimeout(flushTimer);
       flushTimer = null;
@@ -557,6 +776,7 @@ export function retainThreadDetailSubscription(
     refCount: 1,
     lastAccessedAt: Date.now(),
     evictionTimeoutId: null,
+    history: null,
   };
   threadDetailSubscriptions.set(key, entry);
   if (!attachThreadDetailSubscription(entry)) {

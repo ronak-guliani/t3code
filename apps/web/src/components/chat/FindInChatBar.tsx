@@ -12,6 +12,8 @@ export interface FindInChatBarProps {
   onPrevious: () => void;
   onNext: () => void;
   onClose: () => void;
+  loadingHistory?: boolean | undefined;
+  historyError?: string | null | undefined;
 }
 
 export function FindInChatBar(props: FindInChatBarProps) {
@@ -26,12 +28,15 @@ export function FindInChatBar(props: FindInChatBarProps) {
     onNext,
     onClose,
   } = props;
-  const matchLabel =
-    query.trim().length === 0
-      ? "Type to search"
-      : matchCount === 0
-        ? "No matches"
-        : `${activeMatchIndex + 1} of ${matchCount}`;
+  const matchLabel = props.loadingHistory
+    ? "Loading full history…"
+    : props.historyError
+      ? "History unavailable"
+      : query.trim().length === 0
+        ? "Type to search"
+        : matchCount === 0
+          ? "No matches"
+          : `${activeMatchIndex + 1} of ${matchCount}`;
 
   return (
     <div className="border-b border-border px-3 py-2 sm:px-5">

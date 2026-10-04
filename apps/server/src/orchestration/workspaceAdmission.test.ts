@@ -151,6 +151,8 @@ describe("admitWorkspaceCommand", () => {
     try {
       const projectId = "admission-project";
       const deps: WorkspaceAdmissionDeps = {
+        listThreads: () => [],
+        createWorkspaceSnapshotCommit: () => Effect.die("must reject before capturing a snapshot"),
         findThread: () => ({ id: threadId, projectId }) as OrchestrationThread,
         findProject: () => ({ id: projectId, workspaceRoot: projectRoot }) as OrchestrationProject,
         claimOwnership: () => Effect.die(new Error("must reject before claiming ownership")),

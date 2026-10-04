@@ -240,6 +240,177 @@ describe("retainThreadDetailSubscription", () => {
     vi.useRealTimers();
   });
 
+  // Older-page I/O may overlap current streaming text and historical deltas.
+  // The page owns its watermark, but loaded metadata/current text stay newer.
+  it("merges older turns without duplicating streamed text or replacing live metadata", async () => {
+    const service = await import("./service");
+    const { selectThreadByRef, selectEnvironmentState, useStore } = await import("~/store");
+    let resolvePage!: (page: unknown) => void;
+    const getThreadSnapshot = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolvePage = resolve;
+        }),
+    );
+    mockCreateWsRpcClient.mockReturnValue({
+      server: {
+        getConfig: async () => ({
+          threadSnapshotPagination: true,
+          threadResumeCompletionMarker: true,
+        }),
+      },
+      orchestration: { subscribeThread: mockSubscribeThread, getThreadSnapshot },
+    });
+    const stop = service.startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1"),
+      threadId = ThreadId.make("history-stream");
+    const ref = { environmentId, threadId };
+    mockCreateEnvironmentConnection.mock.calls[0]![0].syncShellSnapshot(
+      makeShellSnapshotForThreads([threadId]),
+      environmentId,
+    );
+    service.retainThreadDetailSubscription(environmentId, threadId);
+    await vi.advanceTimersByTimeAsync(0);
+    const input = mockSubscribeThread.mock.calls.at(-1)![0];
+    expect(typeof input === "function" ? input() : input).toMatchObject({
+      threadId,
+      turnLimit: 10,
+    });
+    const listener = mockSubscribeThread.mock.calls.at(-1)![1] as (
+      item: OrchestrationThreadStreamItem,
+    ) => void;
+    const current = makeOrchestrationThread(threadId, "Current");
+    const newMessage = {
+      id: MessageId.make("new-message"),
+      role: "assistant" as const,
+      text: "New",
+      turnId: TurnId.make("new-turn"),
+      streaming: true,
+      createdAt: current.createdAt,
+      updatedAt: current.updatedAt,
+    };
+    listener({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 10,
+        thread: { ...current, messages: [newMessage] },
+        page: { snapshotSequence: 10, threadSequence: 10, hasMore: true, beforeCursor: "older" },
+      },
+    });
+    const loading = service.loadOlderThreadHistory(environmentId, threadId);
+    expect(getThreadSnapshot).toHaveBeenCalledWith({
+      threadId,
+      turnLimit: 20,
+      beforeCursor: "older",
+    });
+    const delta = (
+      sequence: number,
+      messageId: string,
+      turnId: string,
+      text: string,
+    ): OrchestrationEvent => ({
+      ...metaUpdatedEvent(threadId, sequence, "Unused"),
+      type: "thread.message-sent",
+      payload: {
+        threadId,
+        messageId: MessageId.make(messageId),
+        role: "assistant",
+        text,
+        turnId: TurnId.make(turnId),
+        streaming: true,
+        createdAt: current.createdAt,
+        updatedAt: current.updatedAt,
+      },
+    });
+    listener({ kind: "event", event: delta(11, "old-message", "old-turn", " included") });
+    listener({ kind: "event", event: delta(12, "new-message", "new-turn", "!") });
+    listener({ kind: "event", event: metaUpdatedEvent(threadId, 13, "Updated while paging") });
+    listener({ kind: "event", event: delta(14, "old-message", "old-turn", " tail") });
+    await vi.advanceTimersByTimeAsync(32);
+    resolvePage({
+      snapshotSequence: 12,
+      page: { snapshotSequence: 12, threadSequence: 11, hasMore: false, beforeCursor: null },
+      thread: {
+        ...current,
+        title: "Stale metadata",
+        messages: [
+          {
+            ...newMessage,
+            id: MessageId.make("old-message"),
+            turnId: TurnId.make("old-turn"),
+            text: "Old included",
+          },
+        ],
+      },
+    });
+    await loading;
+    const loaded = selectThreadByRef(useStore.getState(), ref)!;
+    expect(loaded.messages.map((message) => message.text)).toEqual(["Old included tail", "New!"]);
+    expect(loaded.title).toBe("Updated while paging");
+    expect(
+      selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[threadId],
+    ).toMatchObject({ hasMore: false, loadingOlder: false });
+    stop();
+    await service.resetEnvironmentServiceForTests();
+  });
+
+  it("discards an older-page response when a new authoritative snapshot rewrites history", async () => {
+    const service = await import("./service");
+    const { selectThreadByRef, useStore } = await import("~/store");
+    let resolvePage!: (page: unknown) => void;
+    mockCreateWsRpcClient.mockReturnValue({
+      orchestration: {
+        subscribeThread: mockSubscribeThread,
+        getThreadSnapshot: vi.fn(
+          () =>
+            new Promise((resolve) => {
+              resolvePage = resolve;
+            }),
+        ),
+      },
+    });
+    const stop = service.startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1"),
+      threadId = ThreadId.make("rewritten-history");
+    mockCreateEnvironmentConnection.mock.calls[0]![0].syncShellSnapshot(
+      makeShellSnapshotForThreads([threadId]),
+      environmentId,
+    );
+    service.retainThreadDetailSubscription(environmentId, threadId);
+    const listener = mockSubscribeThread.mock.calls.at(-1)![1] as (
+      item: OrchestrationThreadStreamItem,
+    ) => void;
+    const thread = makeOrchestrationThread(threadId, "Before");
+    listener({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 10,
+        thread,
+        page: { snapshotSequence: 10, threadSequence: 10, hasMore: true, beforeCursor: "old" },
+      },
+    });
+    const loading = service.loadOlderThreadHistory(environmentId, threadId);
+    listener({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 20,
+        thread: { ...thread, title: "After revert" },
+        page: { snapshotSequence: 20, threadSequence: 20, hasMore: false, beforeCursor: null },
+      },
+    });
+    resolvePage({
+      snapshotSequence: 11,
+      thread: { ...thread, title: "Removed history" },
+      page: { snapshotSequence: 11, threadSequence: 11, hasMore: false, beforeCursor: null },
+    });
+    await loading;
+    expect(selectThreadByRef(useStore.getState(), { environmentId, threadId })?.title).toBe(
+      "After revert",
+    );
+    stop();
+    await service.resetEnvironmentServiceForTests();
+  });
+
   it("keeps thread detail subscriptions warm across releases until idle eviction", async () => {
     const {
       retainThreadDetailSubscription,

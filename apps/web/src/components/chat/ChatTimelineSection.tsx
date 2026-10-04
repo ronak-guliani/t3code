@@ -101,6 +101,7 @@ interface ChatTimelineSectionProps {
   hasMoreOlder: boolean;
   loadingOlder: boolean;
   onLoadOlder: () => void;
+  onEnsureCompleteHistory?: ((shouldContinue: () => boolean) => Promise<void>) | undefined;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string, scope?: TurnDiffScope) => void;
   onRevertToTurnCount: (turnCount: number) => void | Promise<void>;
   onForkAssistantMessage?: (messageId: MessageId) => void;
@@ -144,6 +145,7 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       hasMoreOlder,
       loadingOlder,
       onLoadOlder,
+      onEnsureCompleteHistory,
       onOpenTurnDiff,
       onRevertToTurnCount,
       onForkAssistantMessage,
@@ -544,12 +546,15 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       legendListRef: listRef,
       routeThreadKey,
       activeThreadId: threadId,
+      onEnsureCompleteHistory,
     });
     const routeMessageSearch = useSearch({
       strict: false,
       select: (search) => parseThreadMessageRouteSearch(search),
     });
     const [highlightedMessageId, setHighlightedMessageId] = useState<MessageId | null>(null);
+    const historyRouteRef = useRef(`${routeThreadKey}:${routeMessageSearch.message ?? ""}`);
+    historyRouteRef.current = `${routeThreadKey}:${routeMessageSearch.message ?? ""}`;
     const handledRouteMessageRef = useRef<string | null>(null);
     const highlightTimeoutRef = useRef<number | null>(null);
 
@@ -575,6 +580,11 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
         (row) => row.kind === "message" && row.message.id === messageId,
       );
       if (rowIndex < 0) {
+        void onEnsureCompleteHistory?.(
+          () =>
+            historyRouteRef.current === routeMessageKey &&
+            handledRouteMessageRef.current !== routeMessageKey,
+        ).catch(() => undefined);
         return;
       }
 
@@ -590,7 +600,13 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
         window.clearTimeout(highlightTimeoutRef.current);
       }
       highlightTimeoutRef.current = window.setTimeout(() => setHighlightedMessageId(null), 1_800);
-    }, [listRef, routeMessageSearch.message, routeThreadKey, timelineRows]);
+    }, [
+      listRef,
+      routeMessageSearch.message,
+      routeThreadKey,
+      timelineRows,
+      onEnsureCompleteHistory,
+    ]);
 
     const onRevertToTurnCountRef = useRef(onRevertToTurnCount);
     onRevertToTurnCountRef.current = onRevertToTurnCount;
@@ -673,6 +689,8 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
           <FindInChatBar
             inputId={findController.inputId}
             query={findController.query}
+            loadingHistory={findController.loadingHistory}
+            historyError={findController.historyError}
             onQueryChange={findController.setQuery}
             matchCount={findController.matches.length}
             activeMatchIndex={

@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./threadHistory": {
+      "types": "./src/threadHistory.ts",
+      "import": "./src/threadHistory.ts"
+    },
     "./desktopConnect": {
       "types": "./src/desktopConnect.ts",
       "import": "./src/desktopConnect.ts"

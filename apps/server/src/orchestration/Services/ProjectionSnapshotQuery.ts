@@ -53,6 +53,7 @@ export interface ProjectionThreadShellProjectContext {
 export interface ProjectionThreadDetailSnapshot {
   readonly snapshotSequence: number;
   readonly thread: OrchestrationThread;
+  readonly page?: import("@t3tools/contracts").OrchestrationThreadDetailPage;
 }
 
 export type ProjectionChatArchiveMessage = Pick<
@@ -186,7 +187,11 @@ export interface ProjectionSnapshotQueryShape {
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
   readonly getThreadDetailSnapshotById: (
     threadId: ThreadId,
-  ) => Effect.Effect<Option.Option<ProjectionThreadDetailSnapshot>, ProjectionRepositoryError>;
+    window?: import("@t3tools/contracts").OrchestrationThreadHistoryWindow,
+  ) => Effect.Effect<
+    Option.Option<ProjectionThreadDetailSnapshot>,
+    ProjectionRepositoryError | OrchestrationReadThreadInputError
+  >;
   readonly getThreadActivitiesPage: (
     input: OrchestrationGetThreadActivitiesInput,
   ) => Effect.Effect<OrchestrationGetThreadActivitiesResult, ProjectionRepositoryError>;

@@ -1068,7 +1068,14 @@ export const OrchestrationSubscribeShellInput = Schema.Struct({
 });
 export type OrchestrationSubscribeShellInput = typeof OrchestrationSubscribeShellInput.Type;
 
+export const OrchestrationThreadHistoryWindow = Schema.Struct({
+  turnLimit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
+  beforeCursor: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(2048))),
+});
+export type OrchestrationThreadHistoryWindow = typeof OrchestrationThreadHistoryWindow.Type;
+
 export const OrchestrationSubscribeThreadInput = Schema.Struct({
+  ...OrchestrationThreadHistoryWindow.fields,
   threadId: ThreadId,
   afterSequence: Schema.optionalKey(NonNegativeInt),
   requestCompletionMarker: Schema.optionalKey(Schema.Boolean),

@@ -138,16 +138,30 @@ export const orchestrationThreadSnapshotRouteLayer = HttpRouter.add(
     yield* authorizeClientSession(AuthOrchestrationReadScope);
     const params = yield* HttpRouter.params;
     const threadId = ThreadId.make(params.threadId ?? "");
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const queryParams = new URL(request.url, "http://localhost").searchParams;
+    const turnLimit = queryParams.get("turnLimit");
+    const beforeCursor = queryParams.get("beforeCursor");
+    const window =
+      turnLimit === null && beforeCursor === null
+        ? undefined
+        : {
+            ...(turnLimit === null ? {} : { turnLimit: Number(turnLimit) }),
+            ...(beforeCursor === null ? {} : { beforeCursor }),
+          };
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
-    const snapshot = yield* projectionSnapshotQuery.getThreadDetailSnapshotById(threadId).pipe(
-      Effect.mapError(
-        (cause) =>
-          new OrchestrationGetSnapshotError({
-            message: `Failed to load thread ${threadId}`,
-            cause,
-          }),
-      ),
-    );
+    const snapshot = yield* projectionSnapshotQuery
+      .getThreadDetailSnapshotById(threadId, window)
+      .pipe(
+        Effect.mapError((cause) =>
+          cause._tag === "OrchestrationReadThreadInputError"
+            ? cause
+            : new OrchestrationGetSnapshotError({
+                message: `Failed to load thread ${threadId}`,
+                cause,
+              }),
+        ),
+      );
     if (snapshot._tag === "None") {
       return yield* new OrchestrationGetSnapshotError({
         message: `Thread ${threadId} was not found`,
@@ -161,6 +175,7 @@ export const orchestrationThreadSnapshotRouteLayer = HttpRouter.add(
     Effect.catchTags({
       AuthError: respondToAuthError,
       OrchestrationGetSnapshotError: respondToOrchestrationHttpError,
+      OrchestrationReadThreadInputError: respondToOrchestrationHttpError,
     }),
   ),
 );

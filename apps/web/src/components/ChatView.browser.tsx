@@ -10,6 +10,7 @@ import {
   type OrchestrationEvent,
   type MessageId,
   type OrchestrationReadModel,
+  type OrchestrationThreadDetailSnapshot,
   type PreviewSessionSnapshot,
   type ProjectId,
   ProviderDriverKind,
@@ -57,7 +58,7 @@ import {
 import { isMacPlatform } from "../lib/utils";
 import { __resetLocalApiForTests } from "../localApi";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
-import { getServerConfig } from "../rpc/serverState";
+import { getServerConfig, setServerConfigSnapshot } from "../rpc/serverState";
 import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
 import {
@@ -141,6 +142,7 @@ interface TestFixture {
   snapshot: OrchestrationReadModel;
   serverConfig: ServerConfig;
   welcome: ServerLifecycleWelcomePayload;
+  threadSnapshot?: OrchestrationThreadDetailSnapshot;
 }
 
 let fixture: TestFixture;
@@ -1780,6 +1782,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
           ];
         }
         if (request._tag === ORCHESTRATION_WS_METHODS.subscribeThread) {
+          if (fixture.threadSnapshot)
+            return [{ kind: "snapshot", snapshot: fixture.threadSnapshot }];
           const thread = fixture.snapshot.threads.find((entry) => entry.id === request.threadId);
           return thread
             ? [
@@ -2830,6 +2834,107 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await mounted.cleanup();
     }
   });
+
+  it.each(["load earlier", "find"] as const)(
+    "loads recent history first and retains complete history for %s",
+    async (action) => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: "old-history-target" as MessageId,
+        targetText: "Rare phrase in the oldest turn",
+      });
+      const thread = snapshot.threads[0]!;
+      const recent = { ...thread, messages: thread.messages.slice(-20) };
+      const older = { ...thread, messages: thread.messages.slice(0, -20) };
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot,
+        configureFixture: (fixture) => {
+          fixture.serverConfig = {
+            ...fixture.serverConfig,
+            threadSnapshotPagination: true,
+            keybindings: [
+              {
+                command: "chat.find",
+                shortcut: {
+                  key: "f",
+                  modKey: true,
+                  metaKey: false,
+                  ctrlKey: false,
+                  shiftKey: false,
+                  altKey: false,
+                },
+              },
+            ],
+          };
+          setServerConfigSnapshot(fixture.serverConfig);
+          fixture.threadSnapshot = {
+            snapshotSequence: 1,
+            thread: recent,
+            page: {
+              snapshotSequence: 1,
+              threadSequence: 1,
+              beforeCursor: "older-turns",
+              hasMore: true,
+            },
+          };
+        },
+        resolveRpc: (body) =>
+          body._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot
+            ? {
+                snapshotSequence: 1,
+                thread: older,
+                page: {
+                  snapshotSequence: 1,
+                  threadSequence: 1,
+                  beforeCursor: null,
+                  hasMore: false,
+                },
+              }
+            : undefined,
+      });
+      try {
+        await vi.waitFor(() => {
+          expect(
+            wsRequests.find((request) => request._tag === ORCHESTRATION_WS_METHODS.subscribeThread),
+          ).toMatchObject({ turnLimit: 10 });
+          expect(selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.length).toBe(20);
+        });
+        expect(
+          wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+          ),
+        ).toHaveLength(0);
+        if (action === "find") {
+          dispatchChatFindShortcut();
+          await page.getByPlaceholder(/Find in chat/).fill("Rare phrase in the oldest turn");
+        } else {
+          const timeline = document.querySelector<HTMLElement>(".overscroll-y-contain")!;
+          timeline.scrollTop = 0;
+          timeline.dispatchEvent(new Event("scroll"));
+          await waitForLayout();
+          const button = findButtonByText("Load older history");
+          button?.click();
+        }
+        await vi.waitFor(() => {
+          expect(selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.length).toBe(
+            thread.messages.length,
+          );
+          expect(
+            wsRequests.filter(
+              (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+            ),
+          ).toHaveLength(1);
+        });
+        expect(
+          selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.map((message) => message.id),
+        ).toEqual(thread.messages.map((message) => message.id));
+        if (action === "find")
+          await expect.element(page.getByText("1 of 1", { exact: true })).toBeVisible();
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
   // Network delay must not hide local intent. The pending row must dedupe
   // against live delivery and a rejection must not erase newer draft edits.

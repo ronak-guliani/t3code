@@ -61,7 +61,11 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
 import { usePrimaryEnvironmentId } from "../environments/primary/context";
-import { readEnvironmentConnection } from "../environments/runtime";
+import {
+  readEnvironmentConnection,
+  loadOlderThreadHistory,
+  loadCompleteThreadHistory,
+} from "../environments/runtime";
 import { readEnvironmentApi } from "../environmentApi";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
@@ -1523,6 +1527,9 @@ function ChatViewBody(
   const hasMoreOlderActivities = activeOlderActivityState.loaded
     ? activeOlderActivityState.hasMore
     : (activeThread?.hasMoreCurrentTurnActivities ?? false);
+  const threadHistory = useStore(
+    (state) => selectEnvironmentState(state, environmentId).threadHistoryById?.[threadId],
+  );
   const loadOlderActivities = useCallback(() => {
     if (!activeThread || !activeThreadActivityHistoryKey || !hasMoreOlderActivities) return;
     const oldestActivity = threadActivities[0];
@@ -1912,6 +1919,25 @@ function ChatViewBody(
   const focusComposer = useCallback(() => {
     composerRef.current?.focusAtEnd();
   }, []);
+  const loadEarlierTurns = useCallback(() => {
+    void loadOlderThreadHistory(environmentId, threadId).catch((error) => {
+      setThreadError(
+        threadId,
+        error instanceof Error ? error.message : "Could not load earlier messages.",
+      );
+    });
+  }, [environmentId, threadId, setThreadError]);
+  const ensureCompleteHistory = useCallback(
+    (shouldContinue: () => boolean) =>
+      loadCompleteThreadHistory(environmentId, threadId, shouldContinue).catch((error) => {
+        setThreadError(
+          threadId,
+          error instanceof Error ? error.message : "Could not load full chat history.",
+        );
+        throw error;
+      }),
+    [environmentId, threadId, setThreadError],
+  );
   const scheduleComposerFocus = useCallback(() => {
     window.requestAnimationFrame(() => {
       focusComposer();
@@ -5555,9 +5581,10 @@ function ChatViewBody(
                   messagePreviewLineLimits={settings.messagePreviewLineLimits}
                   workspaceRoot={activeWorkspaceRoot}
                   chatFindShortcutLabel={chatFindShortcutLabel}
-                  hasMoreOlder={hasMoreOlderActivities}
-                  loadingOlder={activeOlderActivityState.loading}
-                  onLoadOlder={loadOlderActivities}
+                  hasMoreOlder={threadHistory?.hasMore || hasMoreOlderActivities}
+                  loadingOlder={threadHistory?.loadingOlder || activeOlderActivityState.loading}
+                  onLoadOlder={threadHistory?.hasMore ? loadEarlierTurns : loadOlderActivities}
+                  onEnsureCompleteHistory={ensureCompleteHistory}
                   onOpenTurnDiff={onOpenTurnDiff}
                   onRevertToTurnCount={onRevertToTurnCount}
                   {...(isImportedChat ? {} : { onForkAssistantMessage })}
