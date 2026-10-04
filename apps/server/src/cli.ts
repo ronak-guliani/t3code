@@ -133,6 +133,7 @@ import {
   nowIso,
   CliPayloadError,
   type CliLiveTargetFlags,
+  type WsRpcClient,
 } from "./cli/client.ts";
 import { resolveThreadWorkspaceCwd } from "./checkpointing/Utils.ts";
 import {
@@ -176,6 +177,7 @@ import { serviceCommand } from "./cli/service.ts";
 import { installationCommand } from "./cli/installation.ts";
 import { pairCommand } from "./cli/pair.ts";
 import { remoteCommand } from "./cli/remote.ts";
+import { diagnosticsThreadCommand, targetCommand } from "./cli/diagnostics.ts";
 
 const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
 const PENDING_REQUEST_DETAILS_CONCURRENCY = 4;
@@ -5320,6 +5322,131 @@ const readTerminalEnv = (envJson: Option.Option<string>) =>
       )
     : Effect.void;
 
+const readTerminalMetadataFromClient = (client: WsRpcClient) =>
+  Stream.runHead(client[WS_METHODS.subscribeTerminalMetadata]({})).pipe(
+    Effect.flatMap((event) =>
+      Option.isSome(event) && event.value.type === "snapshot"
+        ? Effect.succeed(event.value.terminals)
+        : Effect.fail(new Error("T3 did not provide an initial terminal metadata snapshot.")),
+    ),
+  );
+
+const readTerminalMetadataSnapshot = (flags: CliLiveTargetFlags) =>
+  callWsRpc(flags, readTerminalMetadataFromClient);
+
+const resolveTerminalById = (
+  flags: CliLiveTargetFlags,
+  terminalId: string,
+  threadId: Option.Option<string>,
+) =>
+  Effect.gen(function* () {
+    const terminals = yield* readTerminalMetadataSnapshot(flags);
+    const matches = terminals.filter(
+      (terminal) =>
+        terminal.terminalId === terminalId &&
+        (Option.isNone(threadId) || terminal.threadId === threadId.value),
+    );
+    if (matches.length === 0) {
+      return yield* Effect.fail(new Error(`No terminal '${terminalId}' was found.`));
+    }
+    if (matches.length > 1) {
+      return yield* Effect.fail(
+        new Error(
+          `Terminal id '${terminalId}' exists in multiple threads. Pass --thread with the owning thread id.`,
+        ),
+      );
+    }
+    return matches[0]!;
+  });
+
+const isTerminalIdNotFound = (cause: unknown): cause is Error =>
+  cause instanceof Error && cause.message.startsWith("No terminal '");
+
+const terminalListCommand = Command.make("list", {
+  ...liveTargetFlags,
+  thread: Flag.string("thread").pipe(
+    Flag.optional,
+    Flag.withDescription("Filter by exact thread id."),
+  ),
+}).pipe(
+  Command.withDescription("List owned terminals and their process status."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const terminals = yield* readTerminalMetadataSnapshot(flags);
+      const threadId = Option.getOrUndefined(flags.thread);
+      yield* printJson({
+        terminals: terminals.filter(
+          (terminal) => threadId === undefined || terminal.threadId === threadId,
+        ),
+      });
+    }),
+  ),
+);
+
+const terminalRunCommand = Command.make("run", {
+  ...liveTargetFlags,
+  chat: Flag.string("thread").pipe(Flag.withDescription("Owning thread id or title.")),
+  terminal: Flag.string("terminal").pipe(
+    Flag.optional,
+    Flag.withDescription("Terminal id; defaults to a new unique id."),
+  ),
+  command: Flag.string("command").pipe(
+    Flag.withDescription("Non-interactive shell command to run."),
+  ),
+  cwd: optionalCwdFlag,
+  worktree: Flag.string("worktree").pipe(Flag.optional),
+  cols: colsFlag,
+  rows: rowsFlag,
+  env: terminalEnvFlag,
+}).pipe(
+  Command.withDescription("Run a command in a new T3-owned terminal for a thread."),
+  Command.withHandler((flags) =>
+    withTerminalRpc(flags, flags.chat, ({ thread, project, client }) =>
+      Effect.gen(function* () {
+        const terminalId =
+          Option.getOrUndefined(flags.terminal) ?? `cli-run-${crypto.randomUUID()}`;
+        const current = yield* readTerminalMetadataFromClient(client);
+        if (
+          current.some(
+            (terminal) => terminal.threadId === thread.id && terminal.terminalId === terminalId,
+          )
+        ) {
+          return yield* Effect.fail(
+            new Error(
+              `Terminal '${terminalId}' already exists for this thread. Re-running an exited terminal is explicit; choose a new id or use terminal restart.`,
+            ),
+          );
+        }
+        const terminalEnv = yield* readTerminalEnv(flags.env);
+        const result = yield* client[WS_METHODS.terminalOpen]({
+          threadId: thread.id,
+          terminalId,
+          cwd: Option.getOrUndefined(flags.cwd) ?? thread.worktreePath ?? project.workspaceRoot,
+          worktreePath: Option.getOrUndefined(flags.worktree) ?? thread.worktreePath,
+          command: flags.command,
+          ...(Option.isSome(flags.cols) ? { cols: flags.cols.value } : {}),
+          ...(Option.isSome(flags.rows) ? { rows: flags.rows.value } : {}),
+          ...(terminalEnv !== undefined ? { env: terminalEnv } : {}),
+        });
+        yield* printJson({
+          commandAccepted: true,
+          terminal: result,
+          process: {
+            status: result.status,
+            pid: result.pid,
+            exitCode: result.exitCode,
+            exitSignal: result.exitSignal,
+          },
+          applicationReady: {
+            state: "unknown",
+            reason: "No readiness probe was requested.",
+          },
+        });
+      }),
+    ),
+  ),
+);
+
 const terminalOpenCommand = Command.make("open", {
   ...liveTargetFlags,
   chat: Flag.string("thread").pipe(Flag.withDescription("Thread id or title.")),
@@ -5354,8 +5481,14 @@ const terminalOpenCommand = Command.make("open", {
 
 const terminalAttachCommand = Command.make("attach", {
   ...liveTargetFlags,
-  chat: Argument.string("thread").pipe(Argument.withDescription("Thread id or title.")),
-  terminal: terminalIdFlag,
+  chat: Argument.string("thread-or-terminal-id").pipe(
+    Argument.withDescription("Thread id/title or owned terminal id."),
+  ),
+  terminal: Flag.string("terminal").pipe(Flag.optional),
+  thread: Flag.string("thread").pipe(
+    Flag.optional,
+    Flag.withDescription("Owning thread id when attaching by terminal id."),
+  ),
   cwd: optionalCwdFlag,
   worktree: Flag.string("worktree").pipe(Flag.optional),
   cols: colsFlag,
@@ -5365,27 +5498,55 @@ const terminalAttachCommand = Command.make("attach", {
 }).pipe(
   Command.withDescription("Stream terminal events as JSON."),
   Command.withHandler((flags) =>
-    runReconnectingStream(
-      "terminal stream",
-      withTerminalRpc(flags, flags.chat, ({ thread, client }) =>
-        Effect.gen(function* () {
-          const env = yield* readTerminalEnv(flags.env);
-          yield* client[WS_METHODS.terminalAttach]({
-            threadId: thread.id,
-            terminalId: flags.terminal,
-            ...(Option.isSome(flags.cwd) ? { cwd: flags.cwd.value } : {}),
-            ...(Option.isSome(flags.worktree) ? { worktreePath: flags.worktree.value } : {}),
-            ...(Option.isSome(flags.cols) ? { cols: flags.cols.value } : {}),
-            ...(Option.isSome(flags.rows) ? { rows: flags.rows.value } : {}),
-            ...(env !== undefined ? { env } : {}),
-            ...(flags.restartIfNotRunning ? { restartIfNotRunning: true } : {}),
-          }).pipe(
-            Stream.map((event) => JSON.stringify(event, null, 2)),
-            Stream.runForEach((line) => Console.log(line)),
-          );
-        }),
-      ),
-    ),
+    Effect.gen(function* () {
+      const requestedTerminalId = Option.getOrUndefined(flags.terminal);
+      const requestedThreadId = Option.getOrUndefined(flags.thread);
+      let threadId = flags.chat;
+      let terminalId = requestedTerminalId ?? "default";
+      if (requestedThreadId !== undefined && requestedTerminalId !== undefined) {
+        return yield* Effect.fail(
+          new Error(
+            "Choose --thread for an id lookup or --terminal for a thread lookup, not both.",
+          ),
+        );
+      }
+      if (requestedThreadId !== undefined || requestedTerminalId === undefined) {
+        const lookup = yield* Effect.result(
+          resolveTerminalById(
+            flags,
+            flags.chat,
+            requestedThreadId === undefined ? Option.none() : Option.some(requestedThreadId),
+          ),
+        );
+        if (lookup._tag === "Success") {
+          threadId = lookup.success.threadId;
+          terminalId = lookup.success.terminalId;
+        } else if (requestedThreadId !== undefined || !isTerminalIdNotFound(lookup.failure)) {
+          return yield* Effect.fail(lookup.failure);
+        }
+      }
+      return yield* runReconnectingStream(
+        "terminal stream",
+        withTerminalRpc(flags, threadId, ({ thread, client }) =>
+          Effect.gen(function* () {
+            const env = yield* readTerminalEnv(flags.env);
+            yield* client[WS_METHODS.terminalAttach]({
+              threadId: thread.id,
+              terminalId,
+              ...(Option.isSome(flags.cwd) ? { cwd: flags.cwd.value } : {}),
+              ...(Option.isSome(flags.worktree) ? { worktreePath: flags.worktree.value } : {}),
+              ...(Option.isSome(flags.cols) ? { cols: flags.cols.value } : {}),
+              ...(Option.isSome(flags.rows) ? { rows: flags.rows.value } : {}),
+              ...(env !== undefined ? { env } : {}),
+              ...(flags.restartIfNotRunning ? { restartIfNotRunning: true } : {}),
+            }).pipe(
+              Stream.map((event) => JSON.stringify(event, null, 2)),
+              Stream.runForEach((line) => Console.log(line)),
+            );
+          }),
+        ),
+      );
+    }),
   ),
 );
 
@@ -5463,8 +5624,14 @@ const terminalRestartCommand = Command.make("restart", {
 
 const terminalCloseCommand = Command.make("close", {
   ...liveTargetFlags,
-  chat: Argument.string("thread").pipe(Argument.withDescription("Thread id or title.")),
+  chat: Argument.string("thread-or-terminal-id").pipe(
+    Argument.withDescription("Thread id/title or owned terminal id."),
+  ),
   terminal: Flag.string("terminal").pipe(Flag.optional),
+  thread: Flag.string("thread").pipe(
+    Flag.optional,
+    Flag.withDescription("Owning thread id when closing by terminal id."),
+  ),
   deleteHistory: Flag.boolean("delete-history").pipe(Flag.withDefault(false)),
   yes: yesFlag,
 }).pipe(
@@ -5474,11 +5641,37 @@ const terminalCloseCommand = Command.make("close", {
       if (flags.deleteHistory) {
         yield* requireYes(flags.yes, "Deleting terminal history is irreversible.");
       }
-      yield* withTerminalRpc(flags, flags.chat, ({ thread, client }) =>
+      const requestedTerminalId = Option.getOrUndefined(flags.terminal);
+      const requestedThreadId = Option.getOrUndefined(flags.thread);
+      let threadId = flags.chat;
+      let terminalId = requestedTerminalId;
+      if (requestedThreadId !== undefined && requestedTerminalId !== undefined) {
+        return yield* Effect.fail(
+          new Error(
+            "Choose --thread for an id lookup or --terminal for a thread lookup, not both.",
+          ),
+        );
+      }
+      if (requestedThreadId !== undefined || requestedTerminalId === undefined) {
+        const lookup = yield* Effect.result(
+          resolveTerminalById(
+            flags,
+            flags.chat,
+            requestedThreadId === undefined ? Option.none() : Option.some(requestedThreadId),
+          ),
+        );
+        if (lookup._tag === "Success") {
+          threadId = lookup.success.threadId;
+          terminalId = lookup.success.terminalId;
+        } else if (requestedThreadId !== undefined || !isTerminalIdNotFound(lookup.failure)) {
+          return yield* Effect.fail(lookup.failure);
+        }
+      }
+      yield* withTerminalRpc(flags, threadId, ({ thread, client }) =>
         Effect.gen(function* () {
           const result = yield* client[WS_METHODS.terminalClose]({
             threadId: thread.id,
-            ...(Option.isSome(flags.terminal) ? { terminalId: flags.terminal.value } : {}),
+            ...(terminalId === undefined ? {} : { terminalId }),
             ...(flags.deleteHistory ? { deleteHistory: true } : {}),
           });
           yield* printJson(result ?? { closed: true });
@@ -5504,13 +5697,15 @@ const terminalMetadataCommand = Command.make("metadata", {
             ),
           ),
         )
-      : Effect.fail(new Error("Specify --watch. Snapshot-only metadata is not exposed yet.")),
+      : Effect.fail(new Error("Use 'terminal list' for a snapshot or specify --watch.")),
   ),
 );
 
 const terminalCommand = Command.make("terminal").pipe(
   Command.withDescription("Manage thread terminals."),
   Command.withSubcommands([
+    terminalRunCommand,
+    terminalListCommand,
     terminalOpenCommand,
     terminalAttachCommand,
     terminalWriteCommand,
@@ -5770,8 +5965,9 @@ const diagnosticsSignalCommand = Command.make("signal", {
 );
 
 const diagnosticsCommand = Command.make("diagnostics").pipe(
-  Command.withDescription("Inspect server diagnostics."),
+  Command.withDescription("Inspect server and thread diagnostics."),
   Command.withSubcommands([
+    diagnosticsThreadCommand,
     diagnosticsTraceCommand,
     diagnosticsProcessCommand,
     diagnosticsResourcesCommand,
@@ -6351,6 +6547,7 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
       settingsCommand,
       keybindingCommand,
       diagnosticsCommand,
+      targetCommand,
       envCommand,
       localCommand,
       skillsCommand,

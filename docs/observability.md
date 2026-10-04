@@ -97,6 +97,44 @@ their status and data, so a shell stuck before its first update remains inspecta
 Command previews use the existing audit credential redactor; do not treat diagnostic
 output as safe for public sharing without reviewing it.
 
+### Thread response diagnostics
+
+```sh
+t3 target explain --json
+t3 diagnostics thread <thread-id>
+t3 diagnostics thread <thread-id> --timeline
+t3 diagnostics thread <thread-id> --include provider --json
+```
+
+`target explain` reports the CLI build identity, target-selection reason, selected data
+directory, server build when known, and the bounded set of known local environments. A
+missing target is reported alongside the candidates rather than hiding them behind a
+generic “no server” message. Use `t3 local list` to inspect environments and
+`t3 local select --base-dir <directory>` to change the shared local default.
+
+For a thread ID, diagnostics inspect known local environments read-only. A unique match is
+selected; multiple matches require `--base-dir` or `--local-environment`. Remote targets
+can be pinned with the normal `--url`, `--token`, or `--environment` flags, but local
+provider-log evidence is unavailable for remote targets.
+
+The report keeps separate evidence for the latest turn state, provider completion, an
+observed assistant-text event, a persisted assistant message for that turn, and correlated
+server-log/trace records. It only
+marks response persistence incomplete when provider assistant text was positively
+observed and a complete message scan found no corresponding assistant message. It does
+not equate missing persistence with a client/WebSocket delivery acknowledgement. Tool-only
+turns and missing provider evidence are not flagged as missing replies.
+
+Provider logs are scanned across the current global event file and numbered rotations,
+with a 32 MiB scan cap; server and trace scans are capped at 8 MiB each. The default
+report includes no provider text or raw payloads;
+`--include provider` adds only event type, IDs, timestamps, completion metadata, and a
+text-observed boolean. `evidence.providerLogs.truncated`, `evidence.serverLogs.truncated`,
+`evidence.traces.truncated`, and `evidence.messageHistoryComplete` indicate when retention,
+malformed records, or pagination caps prevent a complete conclusion. When the server is
+stopped, local thread state is read through the read-only projection query and provider,
+server, and trace evidence is read from the same environment's rotated logs.
+
 ### Lifecycle Events
 
 Key server and provider lifecycle transitions are emitted as structured log entries (visible in `server.log` and stdout) so session boundaries are easy to find:

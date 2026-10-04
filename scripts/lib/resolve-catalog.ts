@@ -29,3 +29,20 @@ export function resolveCatalogDependencies(
     }),
   );
 }
+
+/**
+ * Resolve dependencies for the standalone CLI package. Internal T3 workspace
+ * packages are bundled into the CLI executable and must not remain as npm
+ * `workspace:` dependencies in the published manifest.
+ */
+export function resolvePackagedCliDependencies(
+  dependencies: Record<string, string>,
+  catalog: Record<string, string>,
+  label: string,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(resolveCatalogDependencies(dependencies, catalog, label)).filter(
+      ([, spec]) => !spec.startsWith("workspace:"),
+    ),
+  );
+}

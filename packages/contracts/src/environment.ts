@@ -99,6 +99,8 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
   label: TrimmedNonEmptyString,
   platform: ExecutionEnvironmentPlatform,
   serverVersion: TrimmedNonEmptyString,
+  /** Optional commit-qualified identity for distinguishing same-version server builds. */
+  buildRevision: Schema.optionalKey(TrimmedNonEmptyString),
   /** Missing metadata denotes protocol 1. Bump this for breaking wire changes. */
   orchestrationProtocolVersion: Schema.optionalKey(Schema.Int),
   capabilities: ExecutionEnvironmentCapabilities,

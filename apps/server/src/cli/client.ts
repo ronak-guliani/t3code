@@ -616,24 +616,11 @@ const isImplicitLocalReadTarget = (
   target.baseDir !== undefined &&
   (target.source === "implicit-local" || target.source === "explicit-base-dir");
 
-const withLocalProjectionSnapshotQuery = <A, E, R>(
-  baseDir: string,
-  origin: string,
+const withProjectionSnapshotQueryAtPaths = <A, E, R>(
+  paths: ServerDerivedPaths,
   run: (query: ProjectionSnapshotQueryShape) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
-    const localTarget = yield* resolveLocalRuntimeTarget(baseDir, {
-      source: "explicit-base-dir",
-      selectionReason: "--base-dir",
-    });
-    if (localTarget.target.origin !== origin) {
-      return yield* new CliLiveTargetError({
-        message:
-          `Refusing to read from '${baseDir}' because its live server origin changed from ` +
-          `'${origin}' to '${localTarget.target.origin}'.`,
-      });
-    }
-    const paths = localTarget.paths;
     const sqliteLayer = makeRuntimeSqliteLayer({
       filename: paths.dbPath,
       readonly: true,
@@ -652,6 +639,45 @@ const withLocalProjectionSnapshotQuery = <A, E, R>(
         return yield* run(yield* ProjectionSnapshotQuery);
       }).pipe(Effect.provide(queryLayer)),
     );
+  });
+
+const withLocalProjectionSnapshotQuery = <A, E, R>(
+  baseDir: string,
+  origin: string,
+  run: (query: ProjectionSnapshotQueryShape) => Effect.Effect<A, E, R>,
+) =>
+  Effect.gen(function* () {
+    const localTarget = yield* resolveLocalRuntimeTarget(baseDir, {
+      source: "explicit-base-dir",
+      selectionReason: "--base-dir",
+    });
+    if (localTarget.target.origin !== origin) {
+      return yield* new CliLiveTargetError({
+        message:
+          `Refusing to read from '${baseDir}' because its live server origin changed from ` +
+          `'${origin}' to '${localTarget.target.origin}'.`,
+      });
+    }
+    return yield* withProjectionSnapshotQueryAtPaths(localTarget.paths, run);
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodePath.layer)));
+
+const withOfflineProjectionSnapshotQuery = <A, E, R>(
+  baseDir: string,
+  stateDirectory: "userdata" | "dev",
+  run: (query: ProjectionSnapshotQueryShape) => Effect.Effect<A, E, R>,
+) =>
+  Effect.gen(function* () {
+    const paths = yield* deriveServerPaths(
+      baseDir,
+      stateDirectory === "dev" ? DEV_STATE_VARIANT_URL : undefined,
+    );
+    const fs = yield* FileSystem.FileSystem;
+    if (!(yield* fs.exists(paths.dbPath))) {
+      return yield* new CliLiveTargetError({
+        message: `No local T3 database found at '${paths.dbPath}'.`,
+      });
+    }
+    return yield* withProjectionSnapshotQueryAtPaths(paths, run);
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodePath.layer)));
 
 const mapLocalProjectionReadError = (cause: unknown, subject: string): CliRpcError =>
@@ -698,6 +724,58 @@ const readLocalThread = (baseDir: string, origin: string, input: OrchestrationRe
               : mapLocalProjectionReadError(cause, "thread history"),
         ),
       ),
+  );
+
+export interface LocalThreadDiagnosticSnapshot {
+  readonly thread: OrchestrationReadThreadResult["thread"];
+  readonly messages: ReadonlyArray<{ readonly role: string; readonly turnId: string | null }>;
+  readonly messagesComplete: boolean;
+}
+
+export const readLocalThreadForDiagnostics = (
+  baseDir: string,
+  stateDirectory: "userdata" | "dev",
+  threadId: string,
+) =>
+  withOfflineProjectionSnapshotQuery(baseDir, stateDirectory, (query) =>
+    Effect.gen(function* () {
+      const summary = yield* query.readThread({ thread: threadId, view: "summary" });
+      const messages: Array<{ readonly role: string; readonly turnId: string | null }> = [];
+      let before: string | undefined;
+      let complete = false;
+      for (let pageIndex = 0; pageIndex < 10; pageIndex += 1) {
+        const page = yield* query.readThread({
+          thread: threadId,
+          view: "messages",
+          limit: 200,
+          ...(before === undefined ? {} : { before }),
+        });
+        for (const message of page.messages ?? []) {
+          messages.push({ role: message.role, turnId: message.turnId });
+        }
+        if (!page.page.hasMore) {
+          complete = true;
+          break;
+        }
+        if (page.page.before === null) break;
+        before = page.page.before;
+      }
+      return {
+        thread: summary.thread,
+        messages,
+        messagesComplete: complete,
+      } satisfies LocalThreadDiagnosticSnapshot;
+    }).pipe(
+      Effect.mapError((cause) =>
+        isCliRpcError(cause)
+          ? cause
+          : new CliRpcError({
+              message:
+                cause instanceof Error ? cause.message : `Failed to read local thread ${threadId}.`,
+              cause,
+            }),
+      ),
+    ),
   );
 
 const dispatchCommand = (

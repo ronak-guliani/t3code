@@ -21,6 +21,7 @@ const decodeRuntime = Schema.decodeUnknownSync(Schema.fromJsonString(Runtime));
 const decodeDescriptor = Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor);
 export interface LocalEnvironment {
   readonly baseDir: string;
+  readonly stateDirectory: "userdata" | "dev";
   readonly environmentId: string;
   readonly label: string;
   readonly status: "online" | "offline" | "unavailable";
@@ -28,6 +29,7 @@ export interface LocalEnvironment {
   readonly pid: number | null;
   readonly startedAt: string | null;
   readonly serverVersion: string | null;
+  readonly serverBuildRevision: string | null;
   readonly error: string | null;
 }
 
@@ -94,6 +96,7 @@ export async function inspectLocalEnvironment(
     (await optionalText(join(canonical, stateDirectory, "environment-label"))) || canonical;
   const base: LocalEnvironment = {
     baseDir: canonical,
+    stateDirectory,
     environmentId,
     label,
     status: "offline",
@@ -101,6 +104,7 @@ export async function inspectLocalEnvironment(
     pid: null,
     startedAt: null,
     serverVersion: null,
+    serverBuildRevision: null,
     error: null,
   };
   let runtimeMetadata: Pick<LocalEnvironment, "origin" | "pid" | "startedAt"> = {
@@ -148,6 +152,7 @@ export async function inspectLocalEnvironment(
       pid: runtime.pid,
       startedAt: runtime.startedAt,
       serverVersion: descriptor.serverVersion,
+      serverBuildRevision: descriptor.buildRevision ?? null,
     };
   } catch (error) {
     return {
@@ -178,6 +183,7 @@ export async function resolveDefaultLocalBaseDir(home = homedir()): Promise<stri
 export async function discoverLocalEnvironments(
   extra: readonly string[] = [],
   home = homedir(),
+  options: { readonly includeDevState?: boolean } = {},
 ): Promise<{ environments: LocalEnvironment[]; selectionError: string | null }> {
   let selected: typeof Selection.Type | null = null;
   let selectionError: string | null = null;
@@ -194,24 +200,35 @@ export async function discoverLocalEnvironments(
       ...[".t3", ".t3-rg", ".t3-alpha", ".t3-dev"].map((name) => join(home, name)),
     ]),
   ];
+  const stateDirectories = options.includeDevState
+    ? (["userdata", "dev"] as const)
+    : (["userdata"] as const);
   // Bounded known locations only: never search project trees or arbitrary home contents.
   const found = await Promise.all(
-    candidates.map(async (baseDir) => {
-      try {
-        await stat(baseDir);
-      } catch (error) {
-        if (isMissingFile(error)) return null;
-        throw error;
-      }
-      return inspectLocalEnvironment(baseDir);
-    }),
+    candidates.flatMap((baseDir) =>
+      stateDirectories.map(async (stateDirectory) => {
+        try {
+          await stat(baseDir);
+        } catch (error) {
+          if (isMissingFile(error)) return null;
+          throw error;
+        }
+        return inspectLocalEnvironment(baseDir, stateDirectory);
+      }),
+    ),
   );
   return {
     selectionError,
     environments: found
       .filter((entry): entry is LocalEnvironment => entry !== null)
       .filter(
-        (entry, index, all) => all.findIndex((other) => other.baseDir === entry.baseDir) === index,
+        (entry, index, all) =>
+          all.findIndex(
+            (other) =>
+              other.baseDir === entry.baseDir &&
+              other.environmentId === entry.environmentId &&
+              other.stateDirectory === entry.stateDirectory,
+          ) === index,
       ),
   };
 }

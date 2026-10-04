@@ -75,6 +75,12 @@ session after updating the server. This does not replace the user's installed `t
 reports the executable and entrypoint. If snapshot decoding reports `CLI_SERVER_INCOMPATIBLE`,
 update both components or use the server-matched launcher.
 
+Before investigating an installed CLI, check its own `--help` and
+`installation identity --json`; the repository checkout and an installed executable may
+be different builds. `t3 target explain --json` shows the executable identity, target
+selection reason, data directory, and known local environments. Thread diagnostics search
+known local environments by exact thread ID and report ambiguity instead of guessing.
+
 Management-command stdout is reserved for results; diagnostics and failures go to stderr.
 Invalid-argument help also goes to stderr; requested help stays on stdout without an error.
 Failures exit nonzero and include a JSON `error` with `code` and `message`. Stream commands
@@ -102,6 +108,29 @@ The targeted HTTP API returns 400 for invalid requests, ambiguous/missing thread
 cursors; internal repository failures remain 500.
 Use `--full` instead of `--messages` in scripts that require the previous combined detail
 shape. Pending approval and question listings include requests outside the recent activity window.
+
+Use `t3 diagnostics thread <thread-id> --include provider --json` to correlate latest-turn
+state with provider completion/text evidence and persisted assistant messages. Provider
+payload text is not emitted; unavailable or truncated evidence remains explicitly unknown.
+The command can inspect local projection state and rotated provider logs when the server
+is stopped. See [Observability](observability.md#thread-response-diagnostics) for the
+evidence semantics and limits.
+
+Owned terminal recovery is available by thread or terminal id:
+
+```sh
+t3 terminal run --thread <thread-id> --command 'pnpm dev'
+t3 terminal list --thread <thread-id>
+t3 terminal attach <terminal-id>
+t3 terminal close <terminal-id>
+```
+
+`terminal run` returns a unique terminal ID by default and distinguishes command
+acceptance, terminal process status, and application readiness. Readiness is unknown unless
+an explicit probe is added; shell liveness alone does not prove an application is ready.
+Use `--thread <thread-id>` on attach/close when a terminal ID is present in more than one
+thread. For the legacy thread-scoped form, use `terminal attach <thread-id> --terminal <id>`
+or `terminal close <thread-id> --terminal <id>`.
 
 `t3 service install` installs the exact packaged CLI and its installed production dependencies as a per-user service and starts it immediately. The private snapshot includes native assets, does not depend on the original checkout's `node_modules`, and is checked before replacing a working service. Re-running install repairs the definition and replaces the runtime, so run it again from the newly installed packaged CLI after an upgrade.
 

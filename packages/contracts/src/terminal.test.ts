@@ -89,6 +89,24 @@ describe("TerminalOpenInput", () => {
     expect(parsed.worktreePath).toBe("/tmp/project/.t3/worktrees/feature-a");
   });
 
+  it("accepts a non-interactive command with a bounded shell payload", () => {
+    expect(
+      decodeSync(TerminalOpenInput, {
+        threadId: "thread-1",
+        terminalId: "preview",
+        cwd: "/tmp/project",
+        command: "pnpm dev",
+      }).command,
+    ).toBe("pnpm dev");
+    expect(
+      decodes(TerminalOpenInput, {
+        threadId: "thread-1",
+        cwd: "/tmp/project",
+        command: "x".repeat(8_193),
+      }),
+    ).toBe(false);
+  });
+
   it("rejects invalid env keys", () => {
     expect(
       decodes(TerminalOpenInput, {

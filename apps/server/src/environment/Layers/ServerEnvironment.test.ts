@@ -16,6 +16,7 @@ import {
 } from "../../cloud/config.ts";
 import { ServerEnvironment } from "../Services/ServerEnvironment.ts";
 import { ServerEnvironmentLive } from "./ServerEnvironment.ts";
+import { buildRevision } from "../../buildIdentity.ts";
 
 const makeServerEnvironmentLayer = (baseDir: string) =>
   ServerEnvironmentLive.pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), baseDir)));
@@ -69,6 +70,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
 
       expect(first.environmentId).toBe(second.environmentId);
       expect(second.orchestrationProtocolVersion).toBe(ORCHESTRATION_PROTOCOL_VERSION);
+      expect(second.buildRevision).toBe(buildRevision);
       expect(second.capabilities).toEqual({
         ownedMobileProtocolVersion: 1,
         repositoryIdentity: true,

@@ -37,6 +37,8 @@ export type TerminalSessionInput = Schema.Codec.Encoded<typeof TerminalSessionIn
 export const TerminalOpenInput = Schema.Struct({
   ...TerminalSessionInput.fields,
   cwd: TrimmedNonEmptyStringSchema,
+  /** Explicit non-interactive command launched by the owned terminal. */
+  command: Schema.optionalKey(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(8_192))),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
   cols: Schema.optional(TerminalColsSchema),
   rows: Schema.optional(TerminalRowsSchema),

@@ -11,7 +11,10 @@ import {
   PUBLISH_ICON_OVERRIDES,
 } from "../../../scripts/lib/brand-assets.ts";
 import { parsePnpmWorkspaceConfig } from "../../../scripts/lib/pnpm-workspace.ts";
-import { resolveCatalogDependencies } from "../../../scripts/lib/resolve-catalog.ts";
+import {
+  resolveCatalogDependencies,
+  resolvePackagedCliDependencies,
+} from "../../../scripts/lib/resolve-catalog.ts";
 import serverPackageJson from "../package.json" with { type: "json" };
 import { assertFreshClientBuild } from "../../../scripts/lib/client-build.ts";
 
@@ -168,6 +171,8 @@ const buildCmd = Command.make(
           cwd: serverDir,
           stdout: config.verbose ? "inherit" : "ignore",
           stderr: "inherit",
+          // Vite reads public build-time settings from the inherited environment.
+          extendEnv: true,
           // Windows needs shell mode to resolve `.cmd` shims on PATH.
           shell: process.platform === "win32",
         }),
@@ -246,7 +251,7 @@ const publishCmd = Command.make(
             version,
             engines: serverPackageJson.engines,
             files: serverPackageJson.files,
-            dependencies: resolveCatalogDependencies(
+            dependencies: resolvePackagedCliDependencies(
               serverPackageJson.dependencies,
               workspaceConfig.catalog,
               "apps/server",

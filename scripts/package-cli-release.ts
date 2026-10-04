@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parsePnpmWorkspaceConfig } from "./lib/pnpm-workspace.ts";
-import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import { resolvePackagedCliDependencies } from "./lib/resolve-catalog.ts";
 import manifest from "../apps/server/package.json" with { type: "json" };
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -31,7 +31,7 @@ try {
         bin: { "t3-rg": "./dist/bin.mjs" },
         files: ["dist"],
         engines: { node: "^24.13.1" },
-        dependencies: resolveCatalogDependencies(
+        dependencies: resolvePackagedCliDependencies(
           manifest.dependencies,
           catalog.catalog,
           "apps/server",

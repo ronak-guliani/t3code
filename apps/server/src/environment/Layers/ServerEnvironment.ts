@@ -14,6 +14,7 @@ import { readAgentActivityPublishingActive } from "../../cloud/config.ts";
 import { ServerEnvironment, type ServerEnvironmentShape } from "../Services/ServerEnvironment.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel.ts";
+import { buildRevision } from "../../buildIdentity.ts";
 
 function platformOs(): ExecutionEnvironmentDescriptor["platform"]["os"] {
   switch (process.platform) {
@@ -97,6 +98,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       arch: platformArch(),
     },
     serverVersion: packageJson.version,
+    buildRevision,
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     capabilities: {
       ownedMobileProtocolVersion: 1,

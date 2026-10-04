@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { parsePnpmWorkspaceConfig } from "./lib/pnpm-workspace.ts";
-import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import { resolvePackagedCliDependencies } from "./lib/resolve-catalog.ts";
 import { copyCliRuntime } from "@t3tools/shared/cliRuntime";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -53,7 +53,7 @@ function readJavaScriptFiles(directory: string): string {
     .map((entry) => {
       const path = resolve(directory, entry.name);
       if (entry.isDirectory()) return readJavaScriptFiles(path);
-      return entry.isFile() && entry.name.endsWith(".js") ? readFileSync(path, "utf8") : "";
+      return entry.isFile() && /\.(?:m?js)$/.test(entry.name) ? readFileSync(path, "utf8") : "";
     })
     .join("\n");
 }
@@ -78,7 +78,7 @@ try {
   }
 
   run(process.execPath, ["apps/server/scripts/cli.ts", "build"], repoRoot, embeddedPublicConfig);
-  const bundle = readFileSync(resolve(serverDir, "dist/bin.mjs"), "utf8");
+  const bundle = readJavaScriptFiles(resolve(serverDir, "dist"));
   for (const value of [
     embeddedPublicConfig.T3CODE_RELAY_URL,
     embeddedPublicConfig.T3CODE_CLERK_PUBLISHABLE_KEY,
@@ -97,7 +97,7 @@ try {
     `${JSON.stringify(
       {
         ...manifest,
-        dependencies: resolveCatalogDependencies(
+        dependencies: resolvePackagedCliDependencies(
           manifest.dependencies,
           workspace.catalog,
           "apps/server",
@@ -121,20 +121,94 @@ try {
   run("npm", ["install", "--ignore-scripts", "--no-package-lock", tarball], tempDir);
 
   for (const args of [
+    ["t3", "chat", "show", "--help"],
     ["t3", "pair", "--help"],
     ["t3", "connect", "--help"],
     ["t3", "connect", "login", "--headless", "--help"],
     ["t3", "connect", "link", "--headless", "--help"],
     ["t3", "connect", "status", "--help"],
     ["t3", "service", "install", "--help"],
+    ["t3", "target", "explain", "--help"],
+    ["t3", "diagnostics", "thread", "--help"],
+    ["t3", "terminal", "list", "--help"],
+    ["t3", "terminal", "run", "--help"],
+    ["t3", "terminal", "attach", "--help"],
+    ["t3", "terminal", "close", "--help"],
   ]) {
     const output = run("npx", ["--offline", "--no-install", ...args], tempDir);
     assertContains(output, `t3 ${args[1]}`);
   }
+  const chatShowHelp = run(
+    "npx",
+    ["--offline", "--no-install", "t3", "chat", "show", "--help"],
+    tempDir,
+  );
+  const observabilityDocs = readFileSync(resolve(repoRoot, "docs/observability.md"), "utf8");
+  for (const flag of ["--activities", "--limit"]) {
+    assertContains(chatShowHelp, flag);
+    assertContains(observabilityDocs, flag);
+  }
+  assertContains(observabilityDocs, "--limit 50");
   assertContains(
     run("npx", ["--offline", "--no-install", "t3", "connect", "--help"], tempDir),
     "logout",
   );
+  const targetOutput = JSON.parse(
+    run(
+      "npx",
+      [
+        "--offline",
+        "--no-install",
+        "t3",
+        "target",
+        "explain",
+        "--url",
+        "http://127.0.0.1:3773",
+        "--json",
+      ],
+      tempDir,
+    ),
+  ) as {
+    cli: { commit: string | null; entrypoint: string };
+    selectedTarget: { selectionReason: string };
+  };
+  if (
+    targetOutput.selectedTarget.selectionReason !== "--url" ||
+    typeof targetOutput.cli.entrypoint !== "string" ||
+    !(targetOutput.cli.commit === null || typeof targetOutput.cli.commit === "string")
+  ) {
+    throw new Error(
+      "Packaged target explanation did not return executable and selection identity.",
+    );
+  }
+  const invalidPackagedCommand = spawnSync(
+    process.execPath,
+    [join(tempDir, "node_modules/t3/dist/bin.mjs"), "chat", "show", "unused", "--invalid-cli-flag"],
+    {
+      cwd: tempDir,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        npm_config_ignore_scripts: "true",
+        npm_config_update_notifier: "false",
+      },
+    },
+  );
+  const packagedError = JSON.parse(
+    invalidPackagedCommand.stderr.trim().split("\n").at(-1) ?? "{}",
+  ) as { error?: { code?: string } };
+  if (
+    invalidPackagedCommand.status === 0 ||
+    invalidPackagedCommand.stdout !== "" ||
+    packagedError.error?.code !== "CLI_INVALID_ARGUMENT"
+  ) {
+    throw new Error(
+      `Packaged CLI violated the stdout/stderr and stable-error automation contract ` +
+        `(status=${String(invalidPackagedCommand.status)}, stdoutBytes=${invalidPackagedCommand.stdout.length}, ` +
+        `stdoutHead=${JSON.stringify(invalidPackagedCommand.stdout.slice(0, 180))}, ` +
+        `errorCode=${String(packagedError.error?.code)}, stderrTail=${JSON.stringify(invalidPackagedCommand.stderr.split("\n").slice(-4))}).`,
+    );
+  }
   runtimeTempDir = mkdtempSync(join(tmpdir(), "t3-cli-service-smoke-"));
   const isolatedRuntime = join(runtimeTempDir, "runtime");
   await copyCliRuntime(resolve(tempDir, "node_modules/t3/dist"), isolatedRuntime);

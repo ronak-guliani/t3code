@@ -82,6 +82,24 @@ describe("local environment discovery and default", () => {
       environments: [{ baseDir: dir, status: "offline", environmentId: "test-environment" }],
     });
   });
+  it("discovers development-state environments separately from installed userdata", async () => {
+    const baseDir = join(home, ".t3-dev");
+    const stateDir = join(baseDir, "dev");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(stateDir, "environment-id"), "development-environment");
+
+    expect(await discoverLocalEnvironments([], home)).toMatchObject({ environments: [] });
+    expect(await discoverLocalEnvironments([], home, { includeDevState: true })).toMatchObject({
+      environments: [
+        {
+          baseDir,
+          environmentId: "development-environment",
+          stateDirectory: "dev",
+          status: "offline",
+        },
+      ],
+    });
+  });
   it.each(["missing", "changed", "relative", "malformed"])(
     "lists repair candidates without changing a %s selection or relaxing default resolution",
     async (failure) => {

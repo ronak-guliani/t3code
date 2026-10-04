@@ -7671,11 +7671,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         exitSignal: null,
         updatedAt: new Date().toISOString(),
       };
+      let openedCommand: string | undefined;
 
       yield* buildAppUnderTest({
         layers: {
           terminalManager: {
-            open: () => Effect.succeed(snapshot),
+            open: (_input, options) => {
+              openedCommand = options?.command;
+              return Effect.succeed(snapshot);
+            },
             write: () => Effect.void,
             resize: () => Effect.void,
             clear: () => Effect.void,
@@ -7693,10 +7697,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             threadId: "thread-1",
             terminalId: "default",
             cwd: "/tmp/project",
+            command: "pnpm dev",
           }),
         ),
       );
       assert.equal(opened.terminalId, "default");
+      assert.equal(openedCommand, "pnpm dev");
 
       yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>

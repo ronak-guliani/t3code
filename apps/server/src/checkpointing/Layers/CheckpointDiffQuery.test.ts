@@ -114,6 +114,8 @@ describe("CheckpointDiffQueryLive", () => {
           }),
         diffCheckpointFiles: () => Effect.succeed([]),
         deleteCheckpointRefs: () => Effect.void,
+        createWorkspaceSnapshotCommit: () =>
+          Effect.die("CheckpointDiffQuery should not create workspace snapshots"),
       };
 
       const layer = CheckpointDiffQueryLive.pipe(

@@ -8,6 +8,7 @@ import { assertDesktopCanOwnEnvironment } from "./localEnvironmentStartup.ts";
 
 const offline: LocalEnvironment = {
   baseDir: "/test",
+  stateDirectory: "userdata",
   environmentId: "test",
   label: "Test",
   status: "offline",
@@ -15,6 +16,7 @@ const offline: LocalEnvironment = {
   pid: null,
   startedAt: null,
   serverVersion: null,
+  serverBuildRevision: null,
   error: null,
 };
 let directory: string | undefined;

@@ -1,5 +1,5 @@
 import * as NodeHttp from "node:http";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ApprovalRequestId,
   CommandId,
+  CheckpointRef,
   EventId,
   MessageId,
   ProviderInstanceId,
@@ -100,6 +101,8 @@ const makeGitWorkspace = (prefix: string) => {
 import { runProcess } from "./processRunner.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { issueCrossThreadDispatchCapability } from "./orchestration/CrossThreadDispatchCapability.ts";
+import { makeEventNdjsonLogger } from "./provider/Layers/EventNdjsonLogger.ts";
+import { makeGlobalProviderEventSink } from "./provider/Layers/GlobalProviderEventSink.ts";
 
 const runCli = (args: ReadonlyArray<string>) => Command.runWith(cli, { version: "0.0.0" })(args);
 const runCliWithRuntime = (args: ReadonlyArray<string>) =>
@@ -647,12 +650,24 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
       const error = JSON.parse(failure.stderr.trim().split("\n").at(-1)!);
       assert.equal(error.error.code, "CLI_INVALID_ARGUMENT");
       assert.include(error.error.message, "--invalid-cli-flag");
-      for (const args of [["chat"], ["chat", "show", "--help"]]) {
+      for (const args of [
+        ["chat"],
+        ["chat", "show", "--help"],
+        ["diagnostics", "thread", "--help"],
+        ["target", "explain", "--help"],
+        ["terminal", "list", "--help"],
+        ["terminal", "run", "--help"],
+        ["terminal", "attach", "--help"],
+        ["terminal", "close", "--help"],
+      ]) {
         const help = yield* Effect.promise(() =>
           runProcess(process.execPath, [entrypoint, ...args], { allowNonZeroExit: true }),
         );
         assert.equal(help.code, 0, help.stderr);
         assert.include(help.stdout, "USAGE");
+        if (args[0] === "diagnostics") assert.include(help.stdout, "provider");
+        if (args[0] === "target") assert.include(help.stdout, "base-dir");
+        if (args[0] === "terminal" && args[1] === "run") assert.include(help.stdout, "command");
         assert.equal(help.stderr, "");
       }
     }),
@@ -1044,6 +1059,154 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
           assert.equal(shown.title, "CLI Chat");
         }),
       );
+    }),
+  );
+
+  it.effect("diagnoses a completed provider response that was not persisted", () =>
+    Effect.gen(function* () {
+      const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-thread-diagnostics-test-"));
+      const workspaceRoot = makeGitWorkspace("t3-cli-thread-diagnostics-workspace-");
+      const createdAt = new Date().toISOString();
+      const threadId = ThreadId.make("cli-thread-diagnostics-thread");
+      const turnId = TurnId.make("cli-thread-diagnostics-turn");
+
+      try {
+        yield* withLiveProjectCliServer(baseDir, () =>
+          Effect.gen(function* () {
+            yield* runCliWithRuntime([
+              "project",
+              "add",
+              workspaceRoot,
+              "--title",
+              "Diagnostics Project",
+              "--base-dir",
+              baseDir,
+            ]);
+            const engine = yield* OrchestrationEngineService;
+            const model = yield* engine.getReadModel();
+            const project = model.projects.find(
+              (candidate) => candidate.workspaceRoot === workspaceRoot,
+            );
+            if (!project) assert.fail("Expected diagnostics test project.");
+            yield* engine.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("cli-diagnostics-create-thread"),
+              threadId,
+              projectId: project.id,
+              title: "Missing response incident",
+              modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              createdAt,
+            });
+            yield* engine.dispatch({
+              type: "thread.turn.diff.complete",
+              commandId: CommandId.make("cli-diagnostics-complete-turn"),
+              threadId,
+              turnId,
+              completedAt: createdAt,
+              createdAt,
+              checkpointRef: CheckpointRef.make("cli-diagnostics-checkpoint"),
+              status: "ready",
+              files: [],
+              agentTouchedPaths: [],
+              turnFiles: [],
+              transitionFiles: [],
+              checkpointTurnCount: 1,
+            });
+
+            yield* Effect.scoped(
+              Effect.gen(function* () {
+                const providerLogsDir = join(baseDir, "userdata", "logs", "provider");
+                const globalSink = yield* makeGlobalProviderEventSink({
+                  filePath: join(providerLogsDir, "provider-events.ndjson"),
+                  maxBytes: 10 * 1024 * 1024,
+                  maxFiles: 10,
+                  batchWindowMs: 1,
+                });
+                const canonical = yield* makeEventNdjsonLogger(
+                  join(providerLogsDir, "events.log"),
+                  { stream: "canonical", globalSink },
+                );
+                const native = yield* makeEventNdjsonLogger(join(providerLogsDir, "events.log"), {
+                  stream: "native",
+                  globalSink,
+                });
+                if (!canonical || !native) assert.fail("Expected provider event loggers.");
+                yield* canonical.write(
+                  {
+                    type: "turn.completed",
+                    eventId: EventId.make("provider-completion"),
+                    threadId,
+                    turnId,
+                    createdAt,
+                    payload: { state: "completed", stopReason: "end_turn" },
+                  },
+                  threadId,
+                );
+                yield* native.write(
+                  {
+                    type: "item.completed",
+                    eventId: EventId.make("provider-assistant-text"),
+                    threadId,
+                    turnId,
+                    createdAt,
+                    item: { type: "agent_message", text: "private provider response" },
+                  },
+                  threadId,
+                );
+                yield* canonical.close();
+                yield* native.close();
+                yield* globalSink.flush;
+              }),
+            );
+            writeFileSync(join(baseDir, "userdata", "environment-id"), "diagnostics-environment");
+
+            const output = yield* captureStdout(
+              runCli([
+                "diagnostics",
+                "thread",
+                threadId,
+                "--base-dir",
+                baseDir,
+                "--include",
+                "provider",
+                "--json",
+              ]),
+            );
+            const result = JSON.parse(output.output) as {
+              readonly diagnostic: {
+                readonly threadId: string;
+                readonly turn: { readonly id: string; readonly state: string };
+                readonly provider: {
+                  readonly completion: string;
+                  readonly assistantText: string;
+                  readonly evidenceAvailable: boolean;
+                };
+                readonly persistence: { readonly assistantMessage: string };
+                readonly response: string;
+              };
+            };
+            assert.deepEqual(result.diagnostic, {
+              threadId,
+              turn: { id: turnId, state: "completed" },
+              provider: {
+                completion: "end_turn",
+                assistantText: "observed",
+                evidenceAvailable: true,
+              },
+              persistence: { assistantMessage: "absent" },
+              response: "incomplete",
+            });
+            assert.isFalse(output.output.includes("private provider response"));
+          }),
+        );
+      } finally {
+        rmSync(baseDir, { recursive: true, force: true });
+        rmSync(workspaceRoot, { recursive: true, force: true });
+      }
     }),
   );
 

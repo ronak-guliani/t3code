@@ -97,22 +97,28 @@ Build CLI parity by adding a reusable RPC client first, then layer command group
     - `t3 source-control discover/lookup/clone/publish`
     - Use existing Git, VCS, and source-control RPC contracts.
 
-11. **Add terminal commands**
+11. **Terminal process recovery (initial workflow shipped)**
+    - `t3 terminal run --thread <id> --command ...` creates a uniquely identified owned terminal.
+    - `t3 terminal list [--thread <id>]` recovers terminal IDs and reports shell/process status.
+    - `t3 terminal attach <terminal-id>` and `close <terminal-id>` resolve ownership from metadata; require `--thread` when IDs are ambiguous.
     - `t3 terminal open --thread <id> [--cwd ...]`
-    - `t3 terminal attach <terminal-id|thread>`
+    - `t3 terminal attach <thread>`
     - `t3 terminal write <terminal> <input>`
     - `t3 terminal clear/restart/close`
     - `t3 terminal metadata --watch`
-    - Render attach streams safely; support raw mode later as a separate interactive milestone.
+    - Readiness remains unknown unless a future explicit readiness probe succeeds; shell liveness is not application readiness.
 
-12. **Add settings, keybindings, diagnostics**
+12. **Settings, keybindings, and diagnostics**
     - `t3 settings get/set/update --json`
     - `t3 settings observability get/set`
     - `t3 keybinding list/add/remove`
+    - `t3 target explain [--json]` reports executable identity, target selection, and known local environments.
+    - `t3 diagnostics thread <id> [--timeline] [--include provider] [--json]` correlates turn, provider, and persisted-message evidence, including offline local inspection.
     - `t3 diagnostics trace`
     - `t3 diagnostics process`
     - `t3 diagnostics resources`
     - `t3 diagnostics signal <pid|process-id> <signal>`
+    - Keep conclusions evidence-based; unknown/retention gaps are not failures, and provider payloads stay redacted by default.
     - Keep destructive ops explicit with confirmation or `--yes`.
 
 13. **Add environment/remote management**
@@ -123,18 +129,20 @@ Build CLI parity by adding a reusable RPC client first, then layer command group
     - Persist local environment registry/secrets where the desktop/web client currently does, or define server-side CLI-specific storage if local browser storage is unavailable.
 
 14. **Design command UX and compatibility rules**
-    - Every command supports `--json`.
+    - Inspection commands expose executable/server identity and target-selection provenance without leaking credentials.
     - Mutating commands print stable IDs.
     - Selectors should accept IDs first, then exact title/path fallback.
-    - Avoid ambiguous title matches unless `--first` or exact unique match.
+    - Avoid ambiguous selectors: read-only thread lookup may search known local environments but must return ambiguity rather than guess; mutations remain pinned.
     - Streaming commands should exit non-zero on failed turns.
     - Never expose bearer tokens in list commands unless explicitly using `--token-only` creation.
+    - JSON stdout is the documented result only; diagnostics/errors go to stderr with stable codes and finite deadlines for finite operations.
 
 15. **Testing strategy**
     - Unit-test command parsing and selector resolution.
     - Unit-test model option parsing: `--reasoning`, `--thinking`, `--effort`, `--fast-mode`, generic `--option key=value`.
     - Add integration tests against in-process RPC/service layers for each command group.
     - Add golden tests for `--json` output shape.
+    - Exercise key help and target/diagnostics invocations through the packaged CLI subprocess, in addition to handler and service tests.
     - Add smoke tests for: create project -> create chat -> send turn -> stream -> interrupt/stop -> export.
 
 16. **Rollout order**
@@ -144,6 +152,6 @@ Build CLI parity by adding a reusable RPC client first, then layer command group
     - Milestone 4: diffs/checkpoints/export.
     - Milestone 5: providers/settings/keybindings.
     - Milestone 6: git/vcs/source-control/terminal.
-    - Milestone 7: diagnostics + remote environments + polish.
+    - Prioritize target discovery and thread diagnostics before further command coverage; terminal convenience is a follow-on reliability workflow.
 
 Keep the CLI as a thin typed adapter over existing contracts; avoid duplicating orchestration logic in command handlers.
