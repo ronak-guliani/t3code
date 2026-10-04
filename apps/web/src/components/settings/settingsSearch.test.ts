@@ -43,6 +43,10 @@ describe("settings search", () => {
       title: "Delete merged worktrees",
       to: "/settings/storage",
     });
+    expect(searchSettings("idle terminal cleanup")[0]).toMatchObject({
+      title: "Stop idle terminals",
+      to: "/settings/general",
+    });
   });
 
   it("finds provider log cleanup settings", () => {
