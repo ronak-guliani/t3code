@@ -155,8 +155,11 @@ describe("admitWorkspaceCommand", () => {
         createWorkspaceSnapshotCommit: () => Effect.die("must reject before capturing a snapshot"),
         findThread: () => ({ id: threadId, projectId }) as OrchestrationThread,
         findProject: () => ({ id: projectId, workspaceRoot: projectRoot }) as OrchestrationProject,
+        listThreads: () => [],
         claimOwnership: () => Effect.die(new Error("must reject before claiming ownership")),
         hasCleanupReservationByPath: () => Effect.succeed(false),
+        createWorkspaceSnapshotCommit: () =>
+          Effect.die(new Error("snapshot must not run in this test")),
       };
       const commands = [
         {

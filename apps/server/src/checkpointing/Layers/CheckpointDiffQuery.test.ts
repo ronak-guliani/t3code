@@ -105,6 +105,8 @@ describe("CheckpointDiffQueryLive", () => {
           Effect.die("CheckpointDiffQuery must not capture a workspace snapshot"),
         isGitRepository: () => Effect.succeed(true),
         captureCheckpoint: () => Effect.void,
+        createWorkspaceSnapshotCommit: () =>
+          Effect.die("CheckpointDiffQuery should not snapshot worktrees"),
         hasCheckpointRef: () =>
           Effect.die("CheckpointDiffQuery should not preflight checkpoint refs"),
         checkpointRefMatchesWorkspace: () => Effect.succeed(true),

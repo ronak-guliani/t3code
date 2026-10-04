@@ -121,6 +121,7 @@ it.layer(TestLayer)("snapshot fork", (it) => {
             findThread: () => undefined,
             listThreads: () => [],
             findProject: () => project as never,
+            listThreads: () => [],
             claimOwnership: (input) =>
               Effect.succeed({
                 canonicalPath: input.worktreePath,
@@ -179,6 +180,7 @@ it.layer(TestLayer)("snapshot fork", (it) => {
             listThreads: () => [],
             findProject: () =>
               ({ id: ProjectId.make("snapshot-clean-project"), workspaceRoot: cwd }) as never,
+            listThreads: () => [],
             claimOwnership: (input) =>
               Effect.succeed({
                 canonicalPath: input.worktreePath,
@@ -230,6 +232,7 @@ it.layer(TestLayer)("snapshot fork", (it) => {
             listThreads: () => [],
             findProject: () =>
               ({ id: ProjectId.make("snapshot-failure-project"), workspaceRoot: cwd }) as never,
+            listThreads: () => [],
             claimOwnership: () =>
               Effect.die("ownership must not be claimed after snapshot failure"),
             hasCleanupReservationByPath: () => Effect.succeed(false),
