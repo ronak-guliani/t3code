@@ -416,10 +416,11 @@ async function main() {
                 const exchanged = yield* CliTokenManager.exchangeOAuthToken(
                   {
                     tokenEndpoint: "https://clerk.invalid/oauth/token",
+                    deviceAuthorizationEndpoint: "https://clerk.invalid/oauth/device_authorization",
                     clientId: "release-smoke-client",
                     loopbackPort: 34338,
                     redirectUri: "http://127.0.0.1:34338/callback",
-                    scopes: ["openid", "profile", "email"],
+                    scopes: ["openid", "profile", "email", "offline_access"],
                   },
                   {
                     grant_type: "authorization_code",

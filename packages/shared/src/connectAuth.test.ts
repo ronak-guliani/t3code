@@ -2,36 +2,13 @@ import { assert, it } from "@effect/vitest";
 
 import {
   buildConnectAuthorizeRequestUrl,
-  checkConnectAuthCode,
-  connectCallbackUrl,
+  buildConnectClerkAuthorizeUrl,
   connectLoopbackRedirectUri,
-  encodeConnectAuthCode,
   normalizeHostedAppUrl,
   readConnectAuthorizeRequest,
 } from "./connectAuth.ts";
 
-it("keeps the headless OAuth state and challenge in the browser-only URL fragment", () => {
-  const url = new URL(
-    buildConnectAuthorizeRequestUrl({
-      hostedAppUrl: "https://app.example.test",
-      state: "expected-state",
-      challenge: "pkce-challenge",
-    }),
-  );
-
-  assert.equal(url.pathname, "/connect");
-  assert.equal(url.search, "");
-  assert.deepEqual(readConnectAuthorizeRequest(url), {
-    state: "expected-state",
-    challenge: "pkce-challenge",
-  });
-  assert.equal(
-    connectCallbackUrl("https://app.example.test"),
-    "https://app.example.test/connect/callback",
-  );
-});
-
-it("round-trips a valid loopback port and rejects corrupted ports", () => {
+it("round-trips state, challenge, and loopback port through the authorize URL fragment", () => {
   const url = new URL(
     buildConnectAuthorizeRequestUrl({
       hostedAppUrl: "https://app.example.test",
@@ -41,13 +18,36 @@ it("round-trips a valid loopback port and rejects corrupted ports", () => {
     }),
   );
 
+  assert.equal(url.pathname, "/connect");
+  assert.equal(url.search, "");
   assert.deepEqual(readConnectAuthorizeRequest(url), {
     state: "expected-state",
     challenge: "pkce-challenge",
     loopbackPort: 34338,
   });
   assert.equal(connectLoopbackRedirectUri(34338), "http://127.0.0.1:34338/callback");
+});
 
+it("rejects authorize requests missing state, challenge, or port", () => {
+  assert.isNull(readConnectAuthorizeRequest(new URL("https://app.example.test/connect")));
+  assert.isNull(
+    readConnectAuthorizeRequest(
+      new URL("https://app.example.test/connect#state=expected-state&port=34338"),
+    ),
+  );
+  assert.isNull(
+    readConnectAuthorizeRequest(
+      new URL("https://app.example.test/connect#challenge=pkce-challenge&port=34338"),
+    ),
+  );
+  assert.isNull(
+    readConnectAuthorizeRequest(
+      new URL("https://app.example.test/connect#state=expected-state&challenge=pkce-challenge"),
+    ),
+  );
+});
+
+it("rejects authorize requests whose loopback port is corrupted", () => {
   for (const port of ["", "abc", "-1", "0", "65536", "34338x", "34 38"]) {
     assert.isNull(
       readConnectAuthorizeRequest(
@@ -59,22 +59,22 @@ it("round-trips a valid loopback port and rejects corrupted ports", () => {
   }
 });
 
-it("rejects malformed and cross-request authorization codes", () => {
-  assert.equal(
-    checkConnectAuthCode("not-a-code", "expected-state"),
-    "That does not look like a T3 Connect code. Copy the full code.",
+it("builds the Clerk authorize URL against the loopback redirect", () => {
+  const url = new URL(
+    buildConnectClerkAuthorizeUrl({
+      authorizationEndpoint: "https://clerk.example.test/oauth/authorize",
+      clientId: "oauth-client",
+      redirectUri: connectLoopbackRedirectUri(34338),
+      scopes: ["openid", "profile", "email", "offline_access"],
+      state: "expected-state",
+      challenge: "pkce-challenge",
+    }),
   );
-  assert.equal(
-    checkConnectAuthCode("clerk-code.other-state", "expected-state"),
-    "That code belongs to a different connect request. Open the URL above and try again.",
-  );
-  assert.deepEqual(
-    checkConnectAuthCode(
-      encodeConnectAuthCode({ code: "clerk-code", state: "expected-state" }),
-      "expected-state",
-    ),
-    { code: "clerk-code", state: "expected-state" },
-  );
+
+  assert.equal(url.searchParams.get("redirect_uri"), "http://127.0.0.1:34338/callback");
+  assert.equal(url.searchParams.get("scope"), "openid profile email offline_access");
+  assert.equal(url.searchParams.get("state"), "expected-state");
+  assert.equal(url.searchParams.get("code_challenge_method"), "S256");
 });
 
 it("normalizes hosted app origins and rejects insecure or non-origin URLs", () => {

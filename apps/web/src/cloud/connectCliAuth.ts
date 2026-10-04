@@ -1,6 +1,5 @@
 import {
   buildConnectClerkAuthorizeUrl,
-  connectCallbackUrl,
   connectLoopbackRedirectUri,
   CONNECT_OAUTH_SCOPES,
   DEFAULT_HOSTED_APP_URL,
@@ -8,11 +7,6 @@ import {
 } from "@t3tools/shared/connectAuth";
 import { clerkFrontendApiUrlFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { isSecureRelayUrl } from "@t3tools/shared/relayUrl";
-
-const stateStorageKey = "t3code-connect-cli-auth-state";
-
-export const connectCliAuthStorageError =
-  "Your browser blocked session storage. Enable it for this site, then retry the connect request.";
 
 function trimNonEmpty(value: string | undefined): string | null {
   return value?.trim() || null;
@@ -50,6 +44,13 @@ export function connectAccountManagementUrl(): string {
   return new URL("/connect/environments", configuredHostedAppUrl()).href;
 }
 
+/**
+ * Builds the Clerk authorize URL for a CLI-initiated connect request. The
+ * authorization code returns to the CLI's `127.0.0.1` listener directly, so
+ * this page never sees it. Clerk enforces its registered redirect URI
+ * allowlist either way. Headless hosts use Clerk's device authorization
+ * page instead and never involve this page.
+ */
 export function buildConnectCliAuthorizeUrl(request: ConnectAuthorizeRequest): string | null {
   const publishableKey = resolveConnectCliAuthPublishableKey();
   const clientId = trimNonEmpty(import.meta.env.VITE_CLERK_CLI_OAUTH_CLIENT_ID);
@@ -57,10 +58,7 @@ export function buildConnectCliAuthorizeUrl(request: ConnectAuthorizeRequest): s
   return buildConnectClerkAuthorizeUrl({
     authorizationEndpoint: `${clerkFrontendApiUrlFromPublishableKey(publishableKey)}/oauth/authorize`,
     clientId,
-    redirectUri:
-      request.loopbackPort === undefined
-        ? connectCallbackUrl(configuredHostedAppUrl())
-        : connectLoopbackRedirectUri(request.loopbackPort),
+    redirectUri: connectLoopbackRedirectUri(request.loopbackPort),
     scopes: CONNECT_OAUTH_SCOPES,
     state: request.state,
     challenge: request.challenge,
@@ -72,41 +70,4 @@ export function connectCliSignInRedirectUrl(
   fallbackUrl: string,
 ): string {
   return buildConnectCliAuthorizeUrl(request) ?? fallbackUrl;
-}
-
-export function prepareConnectCliSignIn(
-  request: ConnectAuthorizeRequest,
-  fallbackUrl: string,
-): {
-  readonly forceRedirectUrl: string;
-  readonly signUpForceRedirectUrl: string;
-} | null {
-  if (!storeConnectCliCallbackState(request)) return null;
-  const redirectUrl = connectCliSignInRedirectUrl(request, fallbackUrl);
-  return {
-    forceRedirectUrl: redirectUrl,
-    signUpForceRedirectUrl: redirectUrl,
-  };
-}
-
-export function storeConnectCliCallbackState(request: ConnectAuthorizeRequest): boolean {
-  const stored = rememberConnectCliAuthState(request.state);
-  return request.loopbackPort !== undefined || stored;
-}
-
-export function rememberConnectCliAuthState(state: string): boolean {
-  try {
-    window.sessionStorage.setItem(stateStorageKey, state);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function readConnectCliAuthState(): string | null {
-  try {
-    return window.sessionStorage.getItem(stateStorageKey);
-  } catch {
-    return null;
-  }
 }
