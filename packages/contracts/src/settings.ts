@@ -577,6 +577,12 @@ export const ServerSettings = Schema.Struct({
   autoArchiveReviewThreadsOnMerge: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
+  providerLogRetentionDays: Schema.NullOr(Schema.Number).pipe(
+    Schema.withDecodingDefault(Effect.succeed(14)),
+  ),
+  providerLogMaxTotalMb: Schema.NullOr(Schema.Number).pipe(
+    Schema.withDecodingDefault(Effect.succeed(5120)),
+  ),
   autoArchiveSettledAfterDays: Schema.NullOr(Schema.Number).pipe(
     Schema.withDecodingDefault(Effect.succeed(2)),
   ),
@@ -818,6 +824,8 @@ export const ServerSettingsPatch = Schema.Struct({
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
   autoArchiveReviewThreadsOnMerge: Schema.optionalKey(Schema.Boolean),
+  providerLogRetentionDays: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  providerLogMaxTotalMb: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   autoArchiveSettledAfterDays: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
   sourceControlWritingStyle: Schema.optionalKey(Schema.String),
