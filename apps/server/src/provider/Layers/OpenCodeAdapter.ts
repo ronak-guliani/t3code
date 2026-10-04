@@ -41,6 +41,15 @@ import {
   ProviderAdapterValidationError,
 } from "../Errors.ts";
 import { appendT3ExecutionContext } from "../executionContext.ts";
+import {
+  makeRetryBackoff,
+  OPENCODE_ADMISSION_ATTEMPTS,
+  OPENCODE_ADMISSION_DELAY_MS,
+  OPENCODE_INITIAL_SUBSCRIBE_ATTEMPTS,
+  OPENCODE_RECONCILE_BACKOFF,
+  OPENCODE_SUBSCRIBE_BACKOFF,
+  sleepMs,
+} from "../retryPolicy.ts";
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
   buildOpenCodePermissionRules,
@@ -58,19 +67,6 @@ import {
 
 const PROVIDER = ProviderDriverKind.make("opencode");
 const OPENCODE_CONNECTION_TIMEOUT = "5 seconds";
-const OPENCODE_INITIAL_SUBSCRIBE_ATTEMPTS = 5;
-const OPENCODE_RECOVERY_DELAY_MS = 250;
-const OPENCODE_RECOVERY_MAX_DELAY_MS = 5_000;
-const OPENCODE_ADMISSION_ATTEMPTS = 5;
-const OPENCODE_ADMISSION_DELAY_MS = 100;
-
-const sleepOpenCode = (milliseconds: number) =>
-  Effect.promise(
-    () =>
-      new Promise<void>((resolve) => {
-        setTimeout(resolve, milliseconds);
-      }),
-  );
 
 /**
  * Version tag stamped into the OpenCode resume cursor. Bump if the cursor
@@ -1307,7 +1303,7 @@ export function makeOpenCodeAdapter(
       turnId: TurnId,
       promptMessageId: string,
     ) {
-      let recoveryDelayMs = OPENCODE_RECOVERY_DELAY_MS;
+      const backoff = makeRetryBackoff(OPENCODE_RECONCILE_BACKOFF);
       while (true) {
         if (
           context.activeTurnId !== turnId ||
@@ -1330,8 +1326,7 @@ export function makeOpenCodeAdapter(
         ).pipe(Effect.result);
 
         if (result._tag === "Failure") {
-          yield* sleepOpenCode(recoveryDelayMs);
-          recoveryDelayMs = Math.min(recoveryDelayMs * 2, OPENCODE_RECOVERY_MAX_DELAY_MS);
+          yield* sleepMs(backoff.nextDelayMs());
           continue;
         }
 
@@ -1402,8 +1397,7 @@ export function makeOpenCodeAdapter(
           return;
         }
 
-        yield* sleepOpenCode(recoveryDelayMs);
-        recoveryDelayMs = Math.min(recoveryDelayMs * 2, OPENCODE_RECOVERY_MAX_DELAY_MS);
+        yield* sleepMs(backoff.nextDelayMs());
       }
     });
 
@@ -1425,12 +1419,7 @@ export function makeOpenCodeAdapter(
         ) {
           return true;
         }
-        yield* Effect.promise(
-          () =>
-            new Promise<void>((resolve) => {
-              setTimeout(resolve, OPENCODE_ADMISSION_DELAY_MS);
-            }),
-        );
+        yield* sleepMs(OPENCODE_ADMISSION_DELAY_MS);
       }
       return false;
     });
@@ -1453,7 +1442,7 @@ export function makeOpenCodeAdapter(
       let initialSubscription:
         | Awaited<ReturnType<OpencodeClient["event"]["subscribe"]>>
         | undefined;
-      let initialDelayMs = 100;
+      const initialBackoff = makeRetryBackoff(OPENCODE_SUBSCRIBE_BACKOFF);
       for (
         let attempt = 0;
         attempt < OPENCODE_INITIAL_SUBSCRIBE_ATTEMPTS && initialSubscription === undefined;
@@ -1483,8 +1472,7 @@ export function makeOpenCodeAdapter(
             cause: Cause.squash(initialExit.cause),
           });
         }
-        yield* sleepOpenCode(initialDelayMs);
-        initialDelayMs = Math.min(initialDelayMs * 2, 2_000);
+        yield* sleepMs(initialBackoff.nextDelayMs());
       }
       if (initialSubscription === undefined) {
         return yield* new OpenCodeRuntimeError({
@@ -1495,7 +1483,7 @@ export function makeOpenCodeAdapter(
       yield* Deferred.succeed(context.connectionReady, undefined);
       yield* Effect.gen(function* () {
         let subscription = initialSubscription;
-        let reconnectDelayMs = 100;
+        const reconnectBackoff = makeRetryBackoff(OPENCODE_SUBSCRIBE_BACKOFF);
         while (!(yield* Ref.get(context.stopped)) && !eventsAbortController.signal.aborted) {
           const exit = yield* Effect.exit(
             Stream.fromAsyncIterable(
@@ -1542,7 +1530,7 @@ export function makeOpenCodeAdapter(
             !(yield* Ref.get(context.stopped)) &&
             !eventsAbortController.signal.aborted
           ) {
-            yield* sleepOpenCode(reconnectDelayMs);
+            yield* sleepMs(reconnectBackoff.nextDelayMs());
             if (yield* Ref.get(context.stopped) || eventsAbortController.signal.aborted) {
               return;
             }
@@ -1555,14 +1543,13 @@ export function makeOpenCodeAdapter(
             );
             if (Exit.isSuccess(nextExit)) {
               nextSubscription = nextExit.value;
-              reconnectDelayMs = 100;
+              reconnectBackoff.reset();
               break;
             }
             yield* Effect.logWarning("OpenCode event resubscribe failed; retrying.", {
               threadId: context.session.threadId,
               detail: openCodeRuntimeErrorDetail(Cause.squash(nextExit.cause)),
             });
-            reconnectDelayMs = Math.min(reconnectDelayMs * 2, 2_000);
           }
           if (nextSubscription === undefined) {
             return;
