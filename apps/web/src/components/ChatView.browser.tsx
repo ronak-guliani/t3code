@@ -64,6 +64,7 @@ import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
 import {
   selectBootstrapCompleteForActiveEnvironment,
   selectThreadByRef,
+  selectEnvironmentState,
   type EnvironmentState,
   useStore,
 } from "../store";
@@ -2835,7 +2836,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it.each(["load earlier", "find"] as const)(
+  it.each(["load earlier", "find", "message link", "unscoped activities"] as const)(
     "loads recent history first and retains complete history for %s",
     async (action) => {
       const snapshot = createSnapshotForTargetUser({
@@ -2844,7 +2845,18 @@ describe("ChatView timeline estimator parity (full app)", () => {
       });
       const thread = snapshot.threads[0]!;
       const recent = { ...thread, messages: thread.messages.slice(-20) };
-      const older = { ...thread, messages: thread.messages.slice(0, -20) };
+      const older = {
+        ...thread,
+        messages: thread.messages.slice(0, -20),
+        ...(action === "unscoped activities" ? { hasMoreActivities: true } : {}),
+      };
+      const around = {
+        ...thread,
+        messages: thread.messages.slice(
+          thread.messages.findIndex((message) => message.id === "old-history-target"),
+          thread.messages.findIndex((message) => message.id === "old-history-target") + 2,
+        ),
+      };
       const mounted = await mountChatView({
         viewport: DEFAULT_VIEWPORT,
         snapshot,
@@ -2852,6 +2864,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           fixture.serverConfig = {
             ...fixture.serverConfig,
             threadSnapshotPagination: true,
+            threadSnapshotAroundMessage: true,
             keybindings: [
               {
                 command: "chat.find",
@@ -2879,18 +2892,33 @@ describe("ChatView timeline estimator parity (full app)", () => {
           };
         },
         resolveRpc: (body) =>
-          body._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot
+          body._tag === ORCHESTRATION_WS_METHODS.getThreadActivities
             ? {
-                snapshotSequence: 1,
-                thread: older,
-                page: {
-                  snapshotSequence: 1,
-                  threadSequence: 1,
-                  beforeCursor: null,
-                  hasMore: false,
-                },
+                activities: [
+                  {
+                    id: EventId.make("unscoped-synthetic"),
+                    kind: "runtime.info",
+                    tone: "info",
+                    summary: "Unscoped synthetic history",
+                    turnId: null,
+                    payload: {},
+                    createdAt: NOW_ISO,
+                  },
+                ],
+                hasMore: false,
               }
-            : undefined,
+            : body._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot
+              ? {
+                  snapshotSequence: 1,
+                  thread: action === "message link" ? around : older,
+                  page: {
+                    snapshotSequence: 1,
+                    threadSequence: 1,
+                    beforeCursor: null,
+                    hasMore: false,
+                  },
+                }
+              : undefined,
       });
       try {
         await vi.waitFor(() => {
@@ -2904,8 +2932,43 @@ describe("ChatView timeline estimator parity (full app)", () => {
             (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
           ),
         ).toHaveLength(0);
-        if (action === "find") {
+        if (action === "message link") {
+          await mounted.router.navigate({
+            to: "/$environmentId/$threadId",
+            params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: THREAD_ID },
+            search: { message: "old-history-target" },
+          });
+          await vi.waitFor(() => {
+            expect(selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.length).toBe(
+              20 + around.messages.length,
+            );
+            expect(
+              wsRequests.filter(
+                (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+              ),
+            ).toEqual([
+              expect.objectContaining({ aroundMessageId: "old-history-target", turnLimit: 1 }),
+            ]);
+          });
+          expect(
+            wsRequests.find(
+              (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+            ),
+          ).toMatchObject({ aroundMessageId: "old-history-target", turnLimit: 1 });
+          expect(
+            selectEnvironmentState(useStore.getState(), LOCAL_ENVIRONMENT_ID).threadHistoryById?.[
+              THREAD_ID
+            ],
+          ).toMatchObject({ beforeCursor: "older-turns", hasMore: true });
+          return;
+        } else if (action === "find") {
           dispatchChatFindShortcut();
+          await waitForLayout();
+          expect(
+            wsRequests.filter(
+              (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+            ),
+          ).toHaveLength(0);
           await page.getByPlaceholder(/Find in chat/).fill("Rare phrase in the oldest turn");
         } else {
           const timeline = document.querySelector<HTMLElement>(".overscroll-y-contain")!;
@@ -2930,6 +2993,28 @@ describe("ChatView timeline estimator parity (full app)", () => {
         ).toEqual(thread.messages.map((message) => message.id));
         if (action === "find")
           await expect.element(page.getByText("1 of 1", { exact: true })).toBeVisible();
+        if (action === "unscoped activities") {
+          await waitForLayout();
+          const timeline = document.querySelector<HTMLElement>(".overscroll-y-contain")!;
+          timeline.scrollTop = 0;
+          timeline.dispatchEvent(new Event("scroll"));
+          await waitForLayout();
+          const button = findButtonByText("Load older history");
+          expect(button).not.toBeNull();
+          button!.click();
+          await vi.waitFor(() =>
+            expect(
+              wsRequests.some(
+                (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadActivities,
+              ),
+            ).toBe(true),
+          );
+          const request = wsRequests.find(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadActivities,
+          )!;
+          expect(request).toMatchObject({ beforeCreatedAt: "9999-12-31T23:59:59.999Z" });
+          expect(request).not.toHaveProperty("turnId");
+        }
       } finally {
         await mounted.cleanup();
       }

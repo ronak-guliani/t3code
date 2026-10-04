@@ -7,6 +7,7 @@ import {
   MessageId,
   TurnId,
   ThreadId,
+  OrchestrationReadThreadInputError,
   type OrchestrationThread,
   type OrchestrationThreadStreamItem,
 } from "@t3tools/contracts";
@@ -240,6 +241,129 @@ const deleted = (): OrchestrationThreadStreamItem => ({
 });
 
 describe("EnvironmentThreads", () => {
+  it.effect("keeps an interleaved queued reply with an explicit newer message origin", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        cached: BASE_THREAD,
+        loadPage: () => Effect.succeed(Option.none()),
+      });
+      yield* Queue.offer(harness.inputs, {
+        kind: "snapshot",
+        snapshot: {
+          snapshotSequence: 1,
+          thread: BASE_THREAD,
+          page: {
+            snapshotSequence: 1,
+            threadSequence: 1,
+            hasMore: true,
+            beforeCursor: "older",
+            windowStart: { sequence: 1, rowId: 1 },
+          },
+        },
+      });
+      yield* awaitThreadState(harness.observed, (s) => Option.isSome(s.page));
+      const base = titleUpdated("Unused", 2);
+      if (base.kind !== "event") throw new Error("Missing event fixture");
+      yield* Queue.offer(harness.inputs, {
+        kind: "event",
+        messageOrigin: { sequence: 2, rowId: 2 },
+        event: {
+          ...base.event,
+          type: "thread.message-sent",
+          payload: {
+            threadId: THREAD_ID,
+            messageId: MessageId.make("queued-interleaved"),
+            role: "assistant",
+            turnId: TurnId.make("queued-other-turn"),
+            text: "Queued reply",
+            streaming: true,
+            createdAt: BASE_THREAD.createdAt,
+            updatedAt: BASE_THREAD.updatedAt,
+          },
+        },
+      });
+      yield* Queue.offer(harness.inputs, titleUpdated("After queued reply", 3));
+      const final = yield* awaitThreadState(
+        harness.observed,
+        (s) => Option.isSome(s.data) && s.data.value.title === "After queued reply",
+      );
+      expect(
+        Option.getOrThrow(final.data).messages.some((m) => m.id === "queued-interleaved"),
+      ).toBe(true);
+    }),
+  );
+
+  it.effect("releases a parked page when a completion marker reaches its detail watermark", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        cached: BASE_THREAD,
+        loadPage: () =>
+          Effect.succeed(
+            Option.some({
+              snapshotSequence: 100,
+              thread: BASE_THREAD,
+              page: {
+                snapshotSequence: 100,
+                threadSequence: 2,
+                hasMore: false,
+                beforeCursor: null,
+              },
+            }),
+          ),
+      });
+      yield* Queue.offer(harness.inputs, {
+        kind: "snapshot",
+        snapshot: {
+          snapshotSequence: 1,
+          thread: BASE_THREAD,
+          page: { snapshotSequence: 1, threadSequence: 1, hasMore: true, beforeCursor: "older" },
+        },
+      });
+      yield* awaitThreadState(harness.observed, (s) => Option.isSome(s.page));
+      requestOlderThreadTurns(TARGET.environmentId, THREAD_ID);
+      yield* awaitThreadState(
+        harness.observed,
+        (s) => Option.isSome(s.page) && s.page.value.loadingOlder,
+      );
+      yield* Queue.offer(harness.inputs, { kind: "synchronized", sequence: 2 });
+      const final = yield* awaitThreadState(
+        harness.observed,
+        (s) => Option.isSome(s.page) && !s.page.value.hasMore && !s.page.value.loadingOlder,
+      );
+      expect(Option.getOrThrow(final.page).loadingOlder).toBe(false);
+      expect(Option.getOrThrow(final.page).hasMore).toBe(false);
+    }),
+  );
+
+  it.effect("refreshes instead of parking forever after an HTTP cursor-expired failure", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        cached: BASE_THREAD,
+        loadPage: () =>
+          Effect.fail(
+            new OrchestrationReadThreadInputError({
+              message: "History changed; reload this thread before loading earlier turns.",
+              reason: "history-cursor-stale",
+            }),
+          ),
+      });
+      yield* Queue.offer(harness.inputs, {
+        kind: "snapshot",
+        snapshot: {
+          snapshotSequence: 1,
+          thread: BASE_THREAD,
+          page: { snapshotSequence: 1, threadSequence: 1, hasMore: true, beforeCursor: "removed" },
+        },
+      });
+      yield* awaitThreadState(harness.observed, (s) => Option.isSome(s.page));
+      requestOlderThreadTurns(TARGET.environmentId, THREAD_ID);
+      yield* Ref.get(harness.subscriptionCount).pipe(
+        Effect.repeat({ until: (count) => count > 1 }),
+      );
+      expect(yield* Ref.get(harness.subscriptionCount)).toBeGreaterThan(1);
+      expect(Option.getOrThrow((yield* Ref.get(harness.latest)).page).loadingOlder).toBe(false);
+    }),
+  );
   it.effect(
     "merges an older page while later live deltas continue without lost prefixes or duplicate text",
     () =>
@@ -271,6 +395,7 @@ describe("EnvironmentThreads", () => {
               threadSequence: 1,
               hasMore: true,
               beforeCursor: "earlier",
+              windowStart: { sequence: 1, rowId: 1 },
             },
           },
         });
@@ -292,6 +417,7 @@ describe("EnvironmentThreads", () => {
           text: string,
         ): OrchestrationThreadStreamItem => ({
           kind: "event",
+          ...(id === "old" ? { messageOrigin: { sequence: 0, rowId: 0 } } : {}),
           event: {
             ...base.event,
             sequence,
@@ -411,6 +537,7 @@ describe("EnvironmentThreads", () => {
               threadSequence: 1,
               hasMore: true,
               beforeCursor: "earlier",
+              windowStart: { sequence: 1, rowId: 1 },
             },
           },
         });
@@ -418,6 +545,7 @@ describe("EnvironmentThreads", () => {
         if (fields.kind !== "event") throw new Error("Event fixture missing");
         yield* Queue.offer(harness.inputs, {
           kind: "event",
+          messageOrigin: { sequence: 0, rowId: 0 },
           event: {
             ...fields.event,
             type: "thread.message-sent",

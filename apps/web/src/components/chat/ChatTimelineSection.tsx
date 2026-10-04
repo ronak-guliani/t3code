@@ -102,6 +102,7 @@ interface ChatTimelineSectionProps {
   loadingOlder: boolean;
   onLoadOlder: () => void;
   onEnsureCompleteHistory?: ((shouldContinue: () => boolean) => Promise<void>) | undefined;
+  onEnsureMessageHistory?: ((messageId: MessageId) => Promise<void>) | undefined;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string, scope?: TurnDiffScope) => void;
   onRevertToTurnCount: (turnCount: number) => void | Promise<void>;
   onForkAssistantMessage?: (messageId: MessageId) => void;
@@ -146,6 +147,7 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       loadingOlder,
       onLoadOlder,
       onEnsureCompleteHistory,
+      onEnsureMessageHistory,
       onOpenTurnDiff,
       onRevertToTurnCount,
       onForkAssistantMessage,
@@ -556,6 +558,17 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
     const historyRouteRef = useRef(`${routeThreadKey}:${routeMessageSearch.message ?? ""}`);
     historyRouteRef.current = `${routeThreadKey}:${routeMessageSearch.message ?? ""}`;
     const handledRouteMessageRef = useRef<string | null>(null);
+    const requestedRouteMessageRef = useRef<string | null>(null);
+    const routeRowIndex = useMemo(
+      () =>
+        routeMessageSearch.message === undefined
+          ? -1
+          : timelineRows.findIndex(
+              (row) => row.kind === "message" && row.message.id === routeMessageSearch.message,
+            ),
+      [timelineRows, routeMessageSearch.message],
+    );
+    const routeRowId = routeRowIndex < 0 ? null : (timelineRows[routeRowIndex]?.id ?? null);
     const highlightTimeoutRef = useRef<number | null>(null);
 
     useEffect(
@@ -573,29 +586,30 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
         return;
       }
       const routeMessageKey = `${routeThreadKey}:${messageId}`;
-      if (handledRouteMessageRef.current === routeMessageKey) {
-        return;
-      }
-      const rowIndex = timelineRows.findIndex(
-        (row) => row.kind === "message" && row.message.id === messageId,
-      );
+      const rowIndex = routeRowIndex;
       if (rowIndex < 0) {
-        void onEnsureCompleteHistory?.(
-          () =>
-            historyRouteRef.current === routeMessageKey &&
-            handledRouteMessageRef.current !== routeMessageKey,
-        ).catch(() => undefined);
+        if (requestedRouteMessageRef.current === routeMessageKey) return;
+        requestedRouteMessageRef.current = routeMessageKey;
+        const request =
+          onEnsureMessageHistory?.(messageId as MessageId) ??
+          onEnsureCompleteHistory?.(
+            () =>
+              historyRouteRef.current === routeMessageKey &&
+              handledRouteMessageRef.current !== routeMessageKey,
+          );
+        void request
+          ?.catch(() => undefined)
+          .finally(() => {
+            if (requestedRouteMessageRef.current === routeMessageKey)
+              requestedRouteMessageRef.current = null;
+          });
         return;
       }
-
-      const row = timelineRows[rowIndex];
-      if (!row) {
-        return;
-      }
+      if (handledRouteMessageRef.current === routeMessageKey || routeRowId === null) return;
       handledRouteMessageRef.current = routeMessageKey;
       const highlightedId = messageId as MessageId;
       setHighlightedMessageId(highlightedId);
-      scrollTimelineRowIntoView({ rowId: row.id, rowIndex, legendListRef: listRef });
+      scrollTimelineRowIntoView({ rowId: routeRowId, rowIndex, legendListRef: listRef });
       if (highlightTimeoutRef.current !== null) {
         window.clearTimeout(highlightTimeoutRef.current);
       }
@@ -604,8 +618,10 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       listRef,
       routeMessageSearch.message,
       routeThreadKey,
-      timelineRows,
+      routeRowIndex,
+      routeRowId,
       onEnsureCompleteHistory,
+      onEnsureMessageHistory,
     ]);
 
     const onRevertToTurnCountRef = useRef(onRevertToTurnCount);
@@ -734,6 +750,7 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
           hasMoreOlder={hasMoreOlder}
           loadingOlder={loadingOlder}
           onLoadOlder={onLoadOlder}
+          onAutoloadOlder={routeMessageSearch.message ? null : onLoadOlder}
           activeChatFindRowId={
             findController.open ? (findController.activeMatch?.rowId ?? null) : null
           }

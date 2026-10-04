@@ -32,7 +32,12 @@ import {
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationReadThreadInputError,
+  OrchestrationThreadHistoryWindow,
+  ThreadHistoryTurnLimit,
+  ThreadHistoryCursor,
 } from "./orchestration.ts";
+import { MessageId } from "./baseSchemas.ts";
 import {
   PullRequestDiffInput,
   PullRequestDiffResult,
@@ -54,6 +59,17 @@ const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
   dpop: Schema.optionalKey(Schema.String),
 });
+
+const ThreadSnapshotQueryFields = {
+  turnLimit: Schema.optionalKey(
+    Schema.FiniteFromString.pipe(Schema.decodeTo(ThreadHistoryTurnLimit)),
+  ),
+  beforeCursor: Schema.optionalKey(ThreadHistoryCursor),
+  aroundMessageId: Schema.optionalKey(MessageId),
+};
+export const OrchestrationThreadSnapshotQuery = Schema.Struct(ThreadSnapshotQueryFields).pipe(
+  Schema.decodeTo(OrchestrationThreadHistoryWindow),
+);
 
 const OptionalDpopProofHeaders = Schema.Struct({
   dpop: Schema.optionalKey(Schema.String),
@@ -494,17 +510,9 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
     HttpApiEndpoint.get("threadSnapshot", "/api/orchestration/threads/:threadId/snapshot", {
       headers: OptionalBearerHeaders,
       params: Schema.Struct({ threadId: ThreadId }),
-      payload: {
-        turnLimit: Schema.optional(
-          Schema.FiniteFromString.check(
-            Schema.isInt(),
-            Schema.isBetween({ minimum: 1, maximum: 100 }),
-          ),
-        ),
-        beforeCursor: Schema.optional(TrimmedNonEmptyString),
-      },
+      payload: ThreadSnapshotQueryFields,
       success: OrchestrationThreadDetailSnapshot,
-      error: EnvironmentOrchestrationSnapshotErrors,
+      error: [...EnvironmentOrchestrationSnapshotErrors, OrchestrationReadThreadInputError],
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(

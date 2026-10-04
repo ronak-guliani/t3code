@@ -360,6 +360,8 @@
 
 ## Projection performance and service composition
 
+- Message sequences are event-global, but provider activity sequences can be session-local. Scope turn activity reads by turn ownership, cap each seek before payload/blob decoding, and page unscoped activity history independently from the newest global boundary.
+- Keep paged retention finite: explicit loads establish collection floors, not unlimited streaming budgets. Use one shared pager for fencing/watermarks/reload depth; classify excluded deltas by first-message provenance, preserve legacy NULL origins, and refresh removed anchors rather than retrying them. Empty Find must not fetch history.
 - Turn-history windows must select user anchors and associated rows in SQL before decoding checkpoint/activity JSON. Order legacy NULL sequences by rowid ahead of sequenced rows; timestamp ties cannot define a cursor.
 - Older pages keep loaded/live overlaps authoritative and replay withheld message deltas only after the page's thread-detail watermark. A global snapshot watermark may include events the thread stream never emits; reverts must fence in-flight pages and replace removed anchor cursors with a fresh snapshot.
 - Latest-N-per-thread startup reads must use indexed bounded seeks, not global window ranking over discarded history. Check index presence on upgraded/divergent ledgers as well as fresh databases; a later migration ID can coexist with a skipped index migration.

@@ -5,6 +5,7 @@ import {
   DEFAULT_PROVIDER_DRIVER_KIND,
   defaultInstanceIdForDriver,
   type EnvironmentId,
+  EventId,
   type MessageId,
   type ModelSelection,
   type ProjectScript,
@@ -65,6 +66,7 @@ import {
   readEnvironmentConnection,
   loadOlderThreadHistory,
   loadCompleteThreadHistory,
+  loadThreadHistoryAroundMessage,
 } from "../environments/runtime";
 import { readEnvironmentApi } from "../environmentApi";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
@@ -1524,22 +1526,26 @@ function ChatViewBody(
       ),
     [activeOlderActivityState.activities, activeThread?.insightActivities, liveThreadActivities],
   );
-  const hasMoreOlderActivities = activeOlderActivityState.loaded
-    ? activeOlderActivityState.hasMore
-    : (activeThread?.hasMoreCurrentTurnActivities ?? false);
   const threadHistory = useStore(
     (state) => selectEnvironmentState(state, environmentId).threadHistoryById?.[threadId],
   );
+  const hasMoreOlderActivities = activeOlderActivityState.loaded
+    ? activeOlderActivityState.hasMore
+    : ((threadHistory
+        ? activeThread?.hasMoreActivities
+        : activeThread?.hasMoreCurrentTurnActivities) ?? false);
   const loadOlderActivities = useCallback(() => {
     if (!activeThread || !activeThreadActivityHistoryKey || !hasMoreOlderActivities) return;
-    const oldestActivity = threadActivities[0];
-    if (!oldestActivity) return;
+    const oldestActivity = threadHistory
+      ? activeOlderActivityState.activities[0]
+      : threadActivities[0];
+    if (!oldestActivity && !threadHistory) return;
     if (inFlightOlderActivitiesKeyRef.current === activeThreadActivityHistoryKey) return;
 
     const api = readEnvironmentApi(activeThread.environmentId);
     if (!api) return;
     const requestKey = activeThreadActivityHistoryKey;
-    const activeTurnId = activeLatestTurn?.turnId;
+    const activeTurnId = threadHistory ? undefined : activeLatestTurn?.turnId;
     inFlightOlderActivitiesKeyRef.current = requestKey;
     setOlderActivityState((previous) => ({
       historyKey: requestKey,
@@ -1552,8 +1558,10 @@ function ChatViewBody(
       .getThreadActivities({
         threadId: activeThread.id,
         ...(activeTurnId !== undefined ? { turnId: activeTurnId } : {}),
-        beforeCreatedAt: oldestActivity.createdAt,
-        beforeActivityId: oldestActivity.id,
+        // A turn window is not global activity coverage: independently page
+        // from the newest activity so unscoped/interleaved rows are reachable.
+        beforeCreatedAt: oldestActivity?.createdAt ?? "9999-12-31T23:59:59.999Z",
+        beforeActivityId: oldestActivity?.id ?? EventId.make("~"),
       })
       .then((page) => {
         if (activeThreadActivityHistoryKeyRef.current !== requestKey) return;
@@ -1601,6 +1609,8 @@ function ChatViewBody(
     activeThreadActivityHistoryKey,
     hasMoreOlderActivities,
     threadActivities,
+    threadHistory,
+    activeOlderActivityState.activities,
   ]);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadStateActivities),
@@ -1933,6 +1943,17 @@ function ChatViewBody(
         setThreadError(
           threadId,
           error instanceof Error ? error.message : "Could not load full chat history.",
+        );
+        throw error;
+      }),
+    [environmentId, threadId, setThreadError],
+  );
+  const ensureMessageHistory = useCallback(
+    (messageId: MessageId) =>
+      loadThreadHistoryAroundMessage(environmentId, threadId, messageId).catch((error) => {
+        setThreadError(
+          threadId,
+          error instanceof Error ? error.message : "Historical message is unavailable",
         );
         throw error;
       }),
@@ -5585,6 +5606,7 @@ function ChatViewBody(
                   loadingOlder={threadHistory?.loadingOlder || activeOlderActivityState.loading}
                   onLoadOlder={threadHistory?.hasMore ? loadEarlierTurns : loadOlderActivities}
                   onEnsureCompleteHistory={ensureCompleteHistory}
+                  onEnsureMessageHistory={ensureMessageHistory}
                   onOpenTurnDiff={onOpenTurnDiff}
                   onRevertToTurnCount={onRevertToTurnCount}
                   {...(isImportedChat ? {} : { onForkAssistantMessage })}

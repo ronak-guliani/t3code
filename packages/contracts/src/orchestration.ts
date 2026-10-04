@@ -1068,10 +1068,22 @@ export const OrchestrationSubscribeShellInput = Schema.Struct({
 });
 export type OrchestrationSubscribeShellInput = typeof OrchestrationSubscribeShellInput.Type;
 
+export const ThreadHistoryTurnLimit = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: 100 }),
+);
+export const ThreadHistoryCursor = TrimmedNonEmptyString.check(Schema.isMaxLength(2048));
 export const OrchestrationThreadHistoryWindow = Schema.Struct({
-  turnLimit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
-  beforeCursor: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(2048))),
-});
+  turnLimit: Schema.optionalKey(ThreadHistoryTurnLimit),
+  beforeCursor: Schema.optionalKey(ThreadHistoryCursor),
+  aroundMessageId: Schema.optionalKey(MessageId),
+}).check(
+  Schema.makeFilter(
+    (value) =>
+      value.beforeCursor === undefined ||
+      value.aroundMessageId === undefined ||
+      "Choose either beforeCursor or aroundMessageId.",
+  ),
+);
 export type OrchestrationThreadHistoryWindow = typeof OrchestrationThreadHistoryWindow.Type;
 
 export const OrchestrationSubscribeThreadInput = Schema.Struct({
@@ -1082,17 +1094,25 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
 });
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 
+export const OrchestrationMessageOrigin = Schema.Struct({
+  sequence: Schema.NullOr(NonNegativeInt),
+  rowId: NonNegativeInt,
+});
+export type OrchestrationMessageOrigin = typeof OrchestrationMessageOrigin.Type;
+export const OrchestrationThreadDetailPage = Schema.Struct({
+  beforeCursor: Schema.NullOr(TrimmedNonEmptyString),
+  hasMore: Schema.Boolean,
+  snapshotSequence: NonNegativeInt,
+  /** Only this thread's detail watermark is reachable through its stream. */
+  threadSequence: Schema.optionalKey(NonNegativeInt),
+  windowStart: Schema.optionalKey(Schema.NullOr(OrchestrationMessageOrigin)),
+  userOrigins: Schema.optionalKey(Schema.Record(Schema.String, OrchestrationMessageOrigin)),
+});
+export type OrchestrationThreadDetailPage = typeof OrchestrationThreadDetailPage.Type;
 export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   thread: OrchestrationThread,
-  page: Schema.optionalKey(
-    Schema.Struct({
-      beforeCursor: Schema.NullOr(TrimmedNonEmptyString),
-      hasMore: Schema.Boolean,
-      snapshotSequence: NonNegativeInt,
-      threadSequence: Schema.optionalKey(NonNegativeInt),
-    }),
-  ),
+  page: Schema.optionalKey(OrchestrationThreadDetailPage),
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;
 
@@ -3151,6 +3171,7 @@ export const OrchestrationThreadStreamItem = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("event"),
     event: OrchestrationEvent,
+    messageOrigin: Schema.optionalKey(OrchestrationMessageOrigin),
   }),
 ]);
 export type OrchestrationThreadStreamItem = typeof OrchestrationThreadStreamItem.Type;
@@ -3555,7 +3576,9 @@ export class OrchestrationReadThreadInputError extends Schema.TaggedErrorClass<O
   "OrchestrationReadThreadInputError",
   {
     message: TrimmedNonEmptyString,
+    reason: Schema.optionalKey(Schema.Literal("history-cursor-stale")),
   },
+  { httpApiStatus: 400 },
 ) {}
 
 export class OrchestrationGetSnapshotError extends Schema.TaggedErrorClass<OrchestrationGetSnapshotError>()(
@@ -3689,24 +3712,6 @@ const ProviderSendTurnSupportedImageMimeType = TrimmedNonEmptyString.check(
 export const isProviderSendTurnSupportedImageMimeType = Schema.is(
   ProviderSendTurnSupportedImageMimeType,
 );
-
-export const OrchestrationThreadDetailPage = Schema.Struct({
-  beforeCursor: Schema.NullOr(TrimmedNonEmptyString),
-  hasMore: Schema.Boolean,
-  snapshotSequence: NonNegativeInt,
-  /**
-   * Highest event sequence applied to THIS thread at page read time. The
-   * global `snapshotSequence` advances with every thread's events, so a
-   * client cannot wait for it via its per-thread subscription; this
-   * thread-scoped watermark is reachable. A client merging an older page
-   * must first have applied live events up to it — otherwise a streaming
-   * turn outside the loaded window could have deltas replayed on top of
-   * page content that already includes them, duplicating text.
-   */
-  threadSequence: Schema.optionalKey(NonNegativeInt),
-});
-
-export type OrchestrationThreadDetailPage = typeof OrchestrationThreadDetailPage.Type;
 
 export const ProviderApprovalOption = Schema.Struct({
   decision: ProviderApprovalDecision,

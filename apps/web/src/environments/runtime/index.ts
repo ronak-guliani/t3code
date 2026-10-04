@@ -24,6 +24,7 @@ export {
   readEnvironmentConnection,
   loadOlderThreadHistory,
   loadCompleteThreadHistory,
+  loadThreadHistoryAroundMessage,
   reconnectSavedEnvironment,
   repairActiveThreadDetailSubscriptionsAfterStall,
   setSavedEnvironmentEnabled,

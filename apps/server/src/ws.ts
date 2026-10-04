@@ -544,6 +544,7 @@ const makeWsRpcLayer = (
           shellResumeCompletionMarker: true,
           threadResumeCompletionMarker: true,
           threadSnapshotPagination: true,
+          threadSnapshotAroundMessage: true,
         };
       });
 
@@ -1367,13 +1368,18 @@ const makeWsRpcLayer = (
             projectionSnapshotQuery
               .getThreadDetailSnapshotById(
                 input.threadId,
-                input.turnLimit === undefined && input.beforeCursor === undefined
+                input.turnLimit === undefined &&
+                  input.beforeCursor === undefined &&
+                  input.aroundMessageId === undefined
                   ? undefined
                   : {
                       ...(input.turnLimit === undefined ? {} : { turnLimit: input.turnLimit }),
                       ...(input.beforeCursor === undefined
                         ? {}
                         : { beforeCursor: input.beforeCursor }),
+                      ...(input.aroundMessageId === undefined
+                        ? {}
+                        : { aroundMessageId: input.aroundMessageId }),
                     },
               )
               .pipe(
@@ -1392,7 +1398,13 @@ const makeWsRpcLayer = (
                   isOrchestrationGetSnapshotError(cause)
                     ? cause
                     : new OrchestrationGetSnapshotError({
-                        message: `Failed to load thread ${input.threadId}`,
+                        message:
+                          typeof cause === "object" &&
+                          cause !== null &&
+                          "_tag" in cause &&
+                          cause._tag === "OrchestrationReadThreadInputError"
+                            ? cause.message
+                            : `Failed to load thread ${input.threadId}`,
                         cause,
                       }),
                 ),
@@ -1500,6 +1512,52 @@ const makeWsRpcLayer = (
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,
             Effect.gen(function* () {
+              // First-message origin is stable across deltas. Cache only a
+              // bounded number of identities, not the thread's whole history.
+              const origins = new Map<
+                string,
+                import("@t3tools/contracts").OrchestrationMessageOrigin
+              >();
+              const projectThreadEvent = (event: import("@t3tools/contracts").OrchestrationEvent) =>
+                Effect.gen(function* () {
+                  if (event.type === "thread.reverted") origins.clear();
+                  let messageOrigin;
+                  if (
+                    event.type === "thread.message-sent" &&
+                    projectionSnapshotQuery.getThreadMessageOriginById
+                  ) {
+                    messageOrigin = origins.get(event.payload.messageId);
+                    if (messageOrigin === undefined) {
+                      messageOrigin = Option.getOrUndefined(
+                        yield* projectionSnapshotQuery.getThreadMessageOriginById(
+                          input.threadId,
+                          event.payload.messageId,
+                        ),
+                      );
+                      if (messageOrigin !== undefined) {
+                        if (origins.size >= 256) origins.delete(origins.keys().next().value!);
+                        origins.set(event.payload.messageId, messageOrigin);
+                      }
+                    }
+                  }
+                  return {
+                    kind: "event" as const,
+                    event,
+                    ...(messageOrigin === undefined ? {} : { messageOrigin }),
+                  };
+                }).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: `Failed to project thread ${input.threadId} message origin`,
+                        cause,
+                      }),
+                  ),
+                );
+              const enrichThreadItem = (
+                item: OrchestrationThreadStreamItem,
+              ): Effect.Effect<OrchestrationThreadStreamItem, OrchestrationGetSnapshotError> =>
+                item.kind === "event" ? projectThreadEvent(item.event) : Effect.succeed(item);
               const liveStream = orchestrationEngine.streamDomainEvents.pipe(
                 Stream.filter(
                   (event) =>
@@ -1562,20 +1620,25 @@ const makeWsRpcLayer = (
                           liveAfterHead,
                         )
                       : liveAfterHead,
-                  );
+                  ).pipe(Stream.mapEffect(enrichThreadItem));
                 }
               }
 
               const threadSnapshot = yield* projectionSnapshotQuery
                 .getThreadDetailSnapshotById(
                   input.threadId,
-                  input.turnLimit === undefined && input.beforeCursor === undefined
+                  input.turnLimit === undefined &&
+                    input.beforeCursor === undefined &&
+                    input.aroundMessageId === undefined
                     ? undefined
                     : {
                         ...(input.turnLimit === undefined ? {} : { turnLimit: input.turnLimit }),
                         ...(input.beforeCursor === undefined
                           ? {}
                           : { beforeCursor: input.beforeCursor }),
+                        ...(input.aroundMessageId === undefined
+                          ? {}
+                          : { aroundMessageId: input.aroundMessageId }),
                       },
                 )
                 .pipe(
@@ -1617,7 +1680,7 @@ const makeWsRpcLayer = (
                       (item.kind === "event" && item.event.sequence > snapshotSequence),
                   ),
                 ),
-              );
+              ).pipe(Stream.mapEffect(enrichThreadItem));
             }),
             { "rpc.aggregate": "orchestration" },
           ),

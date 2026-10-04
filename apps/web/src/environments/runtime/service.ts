@@ -5,6 +5,7 @@ import {
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamEvent,
   type OrchestrationThreadDetailSnapshot,
+  type OrchestrationThreadStreamItem,
   type ServerConfig,
   type SidebarStateSnapshot,
   type TerminalEvent,
@@ -87,22 +88,24 @@ import { getServerConfig } from "~/rpc/serverState";
 import {
   INITIAL_THREAD_USER_TURN_LIMIT,
   OLDER_THREAD_PAGE_USER_TURN_LIMIT,
-  isMessageOutsideHistory,
 } from "@t3tools/shared/threadHistory";
+import {
+  createHistoryPager,
+  reduceHistoryPager,
+  isHistoryCursorExpired,
+  type HistoryPagerState,
+  type HistoryPagerInput,
+} from "@t3tools/shared/threadHistoryState";
 
 type ThreadHistoryRuntime = {
-  epoch: number;
-  sequence: number;
-  hasSnapshot: boolean;
+  state: HistoryPagerState;
   request: Promise<void> | null;
-  pending: {
-    snapshot: OrchestrationThreadDetailSnapshot;
-    epoch: number;
-    resolve: () => void;
-  } | null;
-  messages: OrchestrationEvent[];
+  requestKey: string | null;
+  supportsAround: boolean;
+  waiters: Map<number, () => void>;
+  snapshotWaiters: Set<() => void>;
   flush: () => void;
-  tryMerge: () => void;
+  transition: (input: HistoryPagerInput) => void;
 };
 
 type EnvironmentServiceState = {
@@ -333,66 +336,96 @@ function isThreadDetailSubscriptionAttachable(entry: ThreadDetailSubscriptionEnt
   );
 }
 
-function isUnloadedHistoricalMessage(
-  entry: ThreadDetailSubscriptionEntry,
-  event: OrchestrationEvent,
-): boolean {
-  const ref = scopeThreadRef(entry.environmentId, entry.threadId);
-  const env = selectEnvironmentState(useStore.getState(), ref.environmentId);
-  if (env.threadHistoryById?.[ref.threadId] === undefined) return false;
-  const thread = selectThreadByRef(useStore.getState(), ref);
-  return isMessageOutsideHistory(thread, event);
-}
-
 export function loadOlderThreadHistory(
   environmentId: EnvironmentId,
   threadId: ThreadId,
   turnLimit = OLDER_THREAD_PAGE_USER_TURN_LIMIT,
+): Promise<void> {
+  return loadThreadHistoryPage(environmentId, threadId, { kind: "older", turnLimit });
+}
+
+function waitForHistorySnapshot(history: ThreadHistoryRuntime): Promise<void> {
+  if (!history.state.needsSnapshot) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      clearTimeout(timer);
+      history.snapshotWaiters.delete(finish);
+      history.state.needsSnapshot ? reject(new Error("History is unavailable")) : resolve();
+    };
+    const timer = setTimeout(() => {
+      history.snapshotWaiters.delete(finish);
+      reject(new Error("History is unavailable"));
+    }, 6000);
+    history.snapshotWaiters.add(finish);
+  });
+}
+
+function loadThreadHistoryPage(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  window:
+    | { kind: "older"; turnLimit: number }
+    | { kind: "around"; messageId: import("@t3tools/contracts").MessageId },
 ): Promise<void> {
   const entry = threadDetailSubscriptions.get(
     getThreadDetailSubscriptionKey(environmentId, threadId),
   );
   const history = entry?.history;
   const connection = readEnvironmentConnection(environmentId);
-  const ref = scopeThreadRef(environmentId, threadId);
   const page = selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[
     threadId
   ];
-  if (history?.request) return history.request;
-  if (!entry || !history || !connection || !page?.hasMore || !page.beforeCursor)
-    return Promise.resolve();
+  if (window.kind === "older" && page && !page.hasMore) return Promise.resolve();
+  if (!entry || !history || !connection || !page || (window.kind === "older" && !page.beforeCursor))
+    return Promise.reject(new Error("History is unavailable"));
+  const key = window.kind === "older" ? `older:${page.beforeCursor}` : `around:${window.messageId}`;
+  if (history.request)
+    return history.requestKey === key
+      ? history.request
+      : history.request.then(() => loadThreadHistoryPage(environmentId, threadId, window));
+  if (history.state.needsSnapshot)
+    return waitForHistorySnapshot(history).then(() =>
+      loadThreadHistoryPage(environmentId, threadId, window),
+    );
   history.flush();
-  const epoch = history.epoch;
-  history.messages = [];
-  useStore.getState().setThreadHistoryLoading(ref, true);
+  history.transition({ type: "request", kind: window.kind });
+  const requestId = history.state.pending?.id;
+  if (requestId === undefined) return Promise.reject(new Error("History is unavailable"));
   const request = (async () => {
     try {
       const snapshot = await connection.client.orchestration.getThreadSnapshot({
         threadId,
-        turnLimit,
-        beforeCursor: page.beforeCursor!,
+        ...(window.kind === "older"
+          ? { turnLimit: window.turnLimit, beforeCursor: page.beforeCursor! }
+          : { turnLimit: 1, aroundMessageId: window.messageId }),
       });
-      if (entry.history !== history || history.epoch !== epoch) return;
-      await new Promise<void>((resolve) => {
-        history.pending = { snapshot, epoch, resolve };
-        history.tryMerge();
-      });
+      if (history.state.pending?.id !== requestId) return;
+      history.transition({ type: "page", snapshot, requestId });
+      if (history.state.pending?.id === requestId)
+        await new Promise<void>((resolve) => history.waiters.set(requestId, resolve));
+      if (history.state.error) throw new Error(history.state.error);
     } catch (error) {
-      if (entry.history === history && history.epoch === epoch) {
-        useStore
-          .getState()
-          .setThreadHistoryLoading(
-            ref,
-            false,
-            error instanceof Error ? error.message : "Could not load earlier messages.",
-          );
+      const expired = isHistoryCursorExpired(error);
+      history.transition({
+        type: "failure",
+        requestId,
+        message: error instanceof Error ? error.message : "History is unavailable",
+        expired,
+      });
+      if (expired) {
+        await waitForHistorySnapshot(history);
+        return;
       }
       throw error;
     }
   })();
   history.request = request;
+  history.requestKey = key;
   const release = () => {
-    if (history.request === request) history.request = null;
+    if (history.request === request) {
+      history.request = null;
+      history.requestKey = null;
+    }
   };
   void request.then(release, release);
   return request;
@@ -409,13 +442,40 @@ export async function loadCompleteThreadHistory(
     ];
     if (!page?.hasMore) return;
     const before = page.beforeCursor;
-    await loadOlderThreadHistory(environmentId, threadId, 100);
+    await loadOlderThreadHistory(environmentId, threadId);
     const after = selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[
       threadId
     ];
     if (after?.error) throw new Error(after.error);
-    if (after?.hasMore && after.beforeCursor === before) return;
+    if (after?.hasMore && after.beforeCursor === before)
+      throw new Error("History is unavailable: the history window did not advance.");
   }
+}
+
+export async function loadThreadHistoryAroundMessage(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  messageId: import("@t3tools/contracts").MessageId,
+): Promise<void> {
+  const ref = scopeThreadRef(environmentId, threadId);
+  if (
+    selectThreadByRef(useStore.getState(), ref)?.messages.some(
+      (message) => message.id === messageId,
+    )
+  )
+    return;
+  const history = threadDetailSubscriptions.get(
+    getThreadDetailSubscriptionKey(environmentId, threadId),
+  )?.history;
+  if (history?.supportsAround)
+    await loadThreadHistoryPage(environmentId, threadId, { kind: "around", messageId });
+  else await loadCompleteThreadHistory(environmentId, threadId);
+  if (
+    !selectThreadByRef(useStore.getState(), ref)?.messages.some(
+      (message) => message.id === messageId,
+    )
+  )
+    throw new Error("Historical message is unavailable");
 }
 
 function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): boolean {
@@ -429,53 +489,165 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
     return false;
   }
   const ref = scopeThreadRef(entry.environmentId, entry.threadId);
-  const history: ThreadHistoryRuntime = {
-    epoch: 0,
-    sequence: 0,
-    hasSnapshot: false,
+  const retainedTurns =
+    selectThreadByRef(useStore.getState(), ref)?.messages.filter(
+      (message) => message.role === "user",
+    ).length ?? 0;
+  const history: ThreadHistoryRuntime = entry.history ?? {
+    state: { ...createHistoryPager(), loadedTurns: retainedTurns, requestedTurns: retainedTurns },
     request: null,
-    pending: null,
-    messages: [],
+    requestKey: null,
+    supportsAround: false,
+    waiters: new Map(),
+    snapshotWaiters: new Set(),
     flush: NOOP,
-    tryMerge: NOOP,
+    transition: NOOP,
   };
   entry.history = history;
   let cancelled = false;
-  history.tryMerge = () => {
-    const pending = history.pending;
-    if (!pending) return;
-    if (pending.epoch !== history.epoch) {
-      history.pending = null;
-      pending.resolve();
-      return;
+  let batchedEvents: OrchestrationEvent[] | null = null;
+  const flushEventBatch = () => {
+    if (batchedEvents?.length) {
+      const events = batchedEvents;
+      batchedEvents = [];
+      applyRecoveredEventBatch(events, entry.environmentId);
     }
-    const watermark = pending.snapshot.page?.threadSequence;
-    if (watermark !== undefined && watermark > history.sequence) return;
-    history.pending = null;
-    const buffered = history.messages;
-    history.messages = [];
-    const newer = buffered.filter(
-      (event) => event.sequence > (watermark ?? pending.snapshot.snapshotSequence),
-    );
-    useStore.getState().mergeOlderThreadSnapshot(pending.snapshot, entry.environmentId, newer);
-    reconcilePendingThreadState(ref);
-    pending.resolve();
   };
-  const applyDetailEvents = (events: OrchestrationEvent[]) => {
-    const visible = events.filter((event) => {
-      if (!isUnloadedHistoricalMessage(entry, event)) return true;
-      if (history.request) history.messages.push(event);
-      return false;
+  const retainWindow = () => {
+    const page = selectEnvironmentState(useStore.getState(), entry.environmentId)
+      .threadHistoryById?.[entry.threadId];
+    const thread = selectThreadByRef(useStore.getState(), ref);
+    if (page && thread && history.state.page)
+      history.transition({
+        type: "retained",
+        page: {
+          ...history.state.page,
+          beforeCursor: page.beforeCursor,
+          hasMore: page.hasMore,
+          ...(page.windowStart === undefined ? {} : { windowStart: page.windowStart }),
+          ...(page.userOrigins === undefined ? {} : { userOrigins: page.userOrigins }),
+        },
+        loadedTurns: thread.messages.filter((message) => message.role === "user").length,
+      });
+  };
+  let reloadQueued = false;
+  const reload = () => {
+    if (reloadQueued || cancelled) return;
+    reloadQueued = true;
+    queueMicrotask(() => {
+      if (
+        cancelled ||
+        threadDetailSubscriptions.get(
+          getThreadDetailSubscriptionKey(entry.environmentId, entry.threadId),
+        ) !== entry
+      )
+        return;
+      entry.unsubscribe();
+      entry.unsubscribe = NOOP;
+      attachThreadDetailSubscription(entry);
     });
-    applyRecoveredEventBatch(visible, entry.environmentId);
-    for (const event of events) history.sequence = Math.max(history.sequence, event.sequence);
-    history.tryMerge();
+  };
+  const restoreDepth = async () => {
+    while (
+      !cancelled &&
+      history.state.loadedTurns < history.state.requestedTurns &&
+      history.state.page?.hasMore
+    ) {
+      const before = history.state.page.beforeCursor;
+      await loadOlderThreadHistory(
+        entry.environmentId,
+        entry.threadId,
+        Math.min(
+          OLDER_THREAD_PAGE_USER_TURN_LIMIT,
+          history.state.requestedTurns - history.state.loadedTurns,
+        ),
+      );
+      if (before === history.state.page?.beforeCursor) break;
+    }
+  };
+  history.transition = (input) => {
+    const previous = history.state;
+    const result = reduceHistoryPager(previous, input);
+    history.state = result.state;
+    if (
+      input.type === "event" &&
+      input.event.type === "thread.message-sent" &&
+      input.event.payload.role === "user" &&
+      history.state.page?.userOrigins
+    )
+      useStore.getState().setThreadHistoryOrigins(ref, history.state.page.userOrigins);
+    for (const effect of result.effects) {
+      if (effect.type === "apply-event") {
+        if (batchedEvents) batchedEvents.push(effect.event);
+        else applyRecoveredEventBatch([effect.event], entry.environmentId);
+      } else {
+        flushEventBatch();
+        if (effect.type === "replace-snapshot")
+          useStore.getState().syncServerThreadSnapshot(effect.snapshot, entry.environmentId);
+        if (effect.type === "merge-page")
+          useStore
+            .getState()
+            .mergeOlderThreadSnapshot(
+              effect.snapshot,
+              entry.environmentId,
+              effect.events,
+              effect.advanceCursor,
+            );
+        if (effect.type === "reload") reload();
+      }
+    }
+    if (!batchedEvents && input.type !== "retained") retainWindow();
+    if (previous.pending?.id !== history.state.pending?.id && previous.pending) {
+      history.waiters.get(previous.pending.id)?.();
+      history.waiters.delete(previous.pending.id);
+    }
+    if (!!previous.pending !== !!history.state.pending || previous.error !== history.state.error)
+      useStore
+        .getState()
+        .setThreadHistoryLoading(ref, history.state.pending !== null, history.state.error);
+    if (input.type === "snapshot") {
+      for (const finish of history.snapshotWaiters) finish();
+      void restoreDepth().catch((error) =>
+        useStore
+          .getState()
+          .setThreadHistoryLoading(
+            ref,
+            false,
+            error instanceof Error ? error.message : "History is unavailable",
+          ),
+      );
+    }
+    if (
+      result.effects.some(
+        (effect) => effect.type === "replace-snapshot" || effect.type === "merge-page",
+      )
+    )
+      reconcilePendingThreadState(ref);
+  };
+  const applyDetailEvents = (
+    frames: Extract<OrchestrationThreadStreamItem, { kind: "event" }>[],
+  ) => {
+    batchedEvents = [];
+    for (const item of frames)
+      history.transition({
+        type: "event",
+        event: item.event,
+        ...(item.messageOrigin === undefined ? {} : { messageOrigin: item.messageOrigin }),
+        loadedMessageIds:
+          item.event.type === "thread.message-sent"
+            ? (selectThreadByRef(useStore.getState(), ref)?.messages.map((message) => message.id) ??
+              [])
+            : [],
+      });
+    flushEventBatch();
+    batchedEvents = null;
+    retainWindow();
   };
 
   // Streaming turns emit high-frequency deltas; buffer trailing events for a
   // short window so the store applies them as one batch. The first event of a
   // burst still applies synchronously to keep isolated events latency-free.
-  let pendingEvents: OrchestrationEvent[] | null = null;
+  let pendingEvents: Extract<OrchestrationThreadStreamItem, { kind: "event" }>[] | null = null;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   const flushPendingEvents = () => {
     if (flushTimer !== null) {
@@ -491,34 +663,45 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
   history.flush = flushPendingEvents;
 
   let unsubscribeTransport: () => void = NOOP;
-  const subscribe = (supportsPagination: boolean, supportsResume: boolean) => {
+  const subscribe = (
+    supportsPagination: boolean,
+    supportsResume: boolean,
+    supportsAround = false,
+  ) => {
     if (cancelled) return;
+    history.supportsAround = supportsAround;
     unsubscribeTransport = connection.client.orchestration.subscribeThread(
       supportsPagination || supportsResume
         ? () => ({
             threadId: entry.threadId,
-            ...(supportsPagination ? { turnLimit: INITIAL_THREAD_USER_TURN_LIMIT } : {}),
-            ...(supportsResume && history.hasSnapshot
-              ? { afterSequence: history.sequence, requestCompletionMarker: true }
+            ...(supportsPagination
+              ? {
+                  turnLimit: Math.min(
+                    100,
+                    Math.max(INITIAL_THREAD_USER_TURN_LIMIT, history.state.requestedTurns),
+                  ),
+                }
+              : {}),
+            ...(supportsResume &&
+            history.state.hasSnapshot &&
+            !history.state.needsSnapshot &&
+            (supportsPagination || history.state.page === null)
+              ? { afterSequence: history.state.sequence, requestCompletionMarker: true }
               : {}),
           })
         : { threadId: entry.threadId },
       (item) => {
+        if (cancelled) return;
         if (item.kind === "snapshot") {
           flushPendingEvents();
-          history.epoch++;
-          history.sequence = item.snapshot.snapshotSequence;
-          history.hasSnapshot = true;
-          history.messages = [];
-          history.tryMerge();
-          useStore.getState().syncServerThreadSnapshot(item.snapshot, entry.environmentId);
-          reconcilePendingThreadState(scopeThreadRef(entry.environmentId, entry.threadId));
+          history.transition({ type: "snapshot", snapshot: item.snapshot });
           return;
         }
         if (item.kind === "synchronized") {
-          if (item.sequence !== undefined)
-            history.sequence = Math.max(history.sequence, item.sequence);
-          history.tryMerge();
+          history.transition({
+            type: "synchronized",
+            ...(item.sequence === undefined ? {} : { sequence: item.sequence }),
+          });
           return;
         }
         if (
@@ -527,23 +710,8 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
             entry.threadId
           ]
         ) {
-          history.epoch++;
-          history.tryMerge();
-          applyDetailEvents([item.event]);
-          // A revert can remove the page anchor itself. A fresh snapshot attaches
-          // and buffers before reading, so neither resurrected history nor lost
-          // deltas can leak across the replacement.
-          queueMicrotask(() => {
-            if (
-              threadDetailSubscriptions.get(
-                getThreadDetailSubscriptionKey(entry.environmentId, entry.threadId),
-              ) !== entry
-            )
-              return;
-            entry.unsubscribe();
-            entry.unsubscribe = NOOP;
-            attachThreadDetailSubscription(entry);
-          });
+          flushPendingEvents();
+          applyDetailEvents([item]);
           return;
         }
         // Preserve event order while keeping queue acknowledgements and accepted
@@ -555,11 +723,11 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
           item.event.type === "thread.turn-start-requested"
         ) {
           flushPendingEvents();
-          applyDetailEvents([item.event]);
+          applyDetailEvents([item]);
           return;
         }
         if (flushTimer === null) {
-          applyDetailEvents([item.event]);
+          applyDetailEvents([item]);
           if (THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS <= 0) {
             return;
           }
@@ -567,7 +735,7 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
           flushTimer = setTimeout(flushPendingEvents, THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS);
           return;
         }
-        pendingEvents!.push(item.event);
+        pendingEvents!.push(item);
       },
     );
   };
@@ -577,6 +745,7 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
     subscribe(
       primaryConfig.threadSnapshotPagination === true,
       primaryConfig.threadResumeCompletionMarker === true,
+      primaryConfig.threadSnapshotAroundMessage === true,
     );
   else if (getConfig)
     void getConfig()
@@ -584,15 +753,24 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
         subscribe(
           config.threadSnapshotPagination === true,
           config.threadResumeCompletionMarker === true,
+          config.threadSnapshotAroundMessage === true,
         ),
       )
       .catch(() => subscribe(false, false));
   else subscribe(false, false);
   entry.unsubscribe = () => {
     cancelled = true;
-    history.epoch++;
-    history.tryMerge();
-    entry.history = null;
+    history.transition({ type: "invalidate", reload: false });
+    history.request = null;
+    history.requestKey = null;
+    useStore.getState().setThreadHistoryLoading(ref, false);
+    if (
+      threadDetailSubscriptions.get(
+        getThreadDetailSubscriptionKey(entry.environmentId, entry.threadId),
+      ) !== entry
+    ) {
+      for (const finish of history.snapshotWaiters) finish();
+    }
     if (flushTimer !== null) {
       clearTimeout(flushTimer);
       flushTimer = null;

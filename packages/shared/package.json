@@ -8,6 +8,10 @@
       "types": "./src/threadHistory.ts",
       "import": "./src/threadHistory.ts"
     },
+    "./threadHistoryState": {
+      "types": "./src/threadHistoryState.ts",
+      "import": "./src/threadHistoryState.ts"
+    },
     "./desktopConnect": {
       "types": "./src/desktopConnect.ts",
       "import": "./src/desktopConnect.ts"

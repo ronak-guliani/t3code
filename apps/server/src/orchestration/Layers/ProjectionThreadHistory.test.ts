@@ -1,4 +1,4 @@
-import { ThreadId } from "@t3tools/contracts";
+import { EventId, MessageId, ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer, Option } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -71,6 +71,85 @@ const seed = Effect.gen(function* () {
       'full-access', 'default', ${now}, ${now}, 0)
   `;
 });
+
+it.effect("bounds every visible turn before decoding a noisy turn's activity payloads", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`WITH RECURSIVE noisy(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM noisy WHERE n < 1200)
+      INSERT INTO projection_thread_activities (activity_id,thread_id,turn_id,sequence,tone,kind,summary,payload_json,created_at)
+      SELECT printf('noisy-%04d',n),${threadId},'turn-35',n,'info','runtime.info','Noisy turn','{}',${now} FROM noisy`;
+    yield* sql`INSERT INTO projection_thread_activities (activity_id,thread_id,turn_id,tone,kind,summary,payload_json,created_at)
+      VALUES ('ancient-invalid',${threadId},'turn-35','info','runtime.info','Outside per-turn cap','not-json','2020-01-01T00:00:00.000Z')`;
+    const snapshot = Option.getOrThrow(
+      yield* (yield* ProjectionSnapshotQuery).getThreadDetailSnapshotById(threadId, {
+        turnLimit: 10,
+      }),
+    );
+    assert.equal(snapshot.thread.activities.filter((a) => a.turnId === "turn-35").length, 200);
+    assert.equal(snapshot.thread.activities.length, 209);
+    assert.isTrue(snapshot.thread.hasMoreActivities);
+    assert.isTrue(snapshot.thread.hasMoreCurrentTurnActivities);
+  }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
+
+it.effect("does not assign session-sequence or legacy unscoped activities to message windows", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE projection_thread_messages SET sequence = NULL WHERE sequence < 101`;
+    for (const [id, sequence] of [
+      ["unscoped-legacy", null],
+      ["unscoped-session", 999],
+    ] as const) {
+      yield* sql`INSERT INTO projection_thread_activities (activity_id,thread_id,turn_id,sequence,tone,kind,summary,payload_json,created_at)
+        VALUES (${id},${threadId},NULL,${sequence},'info','runtime.info','Unscoped context','{}',${now})`;
+    }
+    const query = yield* ProjectionSnapshotQuery;
+    const first = Option.getOrThrow(
+      yield* query.getThreadDetailSnapshotById(threadId, { turnLimit: 10 }),
+    );
+    const second = Option.getOrThrow(
+      yield* query.getThreadDetailSnapshotById(threadId, {
+        turnLimit: 20,
+        beforeCursor: first.page!.beforeCursor!,
+      }),
+    );
+    const last = Option.getOrThrow(
+      yield* query.getThreadDetailSnapshotById(threadId, {
+        turnLimit: 20,
+        beforeCursor: second.page!.beforeCursor!,
+      }),
+    );
+    for (const page of [first, second, last]) {
+      assert.isTrue(page.thread.activities.every((activity) => activity.turnId !== null));
+      assert.isTrue(page.thread.hasMoreActivities);
+    }
+    const activities = yield* query.getThreadActivitiesPage({
+      threadId,
+      limit: 200,
+      beforeCreatedAt: "9999-01-01T00:00:00.000Z",
+      beforeActivityId: EventId.make("~"),
+    });
+    assert.isTrue(activities.activities.some((a) => a.id === "unscoped-legacy"));
+    assert.isTrue(activities.activities.some((a) => a.id === "unscoped-session"));
+  }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
+
+it.effect("loads a historical message's complete turn without fetching intervening history", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const page = Option.getOrThrow(
+      yield* (yield* ProjectionSnapshotQuery).getThreadDetailSnapshotById(threadId, {
+        turnLimit: 10,
+        aroundMessageId: MessageId.make("message-3-1"),
+      }),
+    );
+    assert.isTrue(page.thread.messages.some((m) => m.id === "message-3-1"));
+    assert.equal(page.thread.messages.length, 13);
+    assert.equal(page.thread.checkpoints.length, 4);
+  }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
 
 it.effect("pages complete user-anchored turns without gaps while retaining live context", () =>
   Effect.gen(function* () {

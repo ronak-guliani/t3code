@@ -2,7 +2,7 @@ import {
   MessageId,
   OrchestrationReadThreadInputError,
   ThreadId,
-  type OrchestrationThreadHistoryWindow,
+  OrchestrationThreadHistoryWindow,
   type TurnId,
 } from "@t3tools/contracts";
 import { Effect, Schema } from "effect";
@@ -25,6 +25,7 @@ export interface ThreadHistorySelection {
   readonly turnIds: readonly TurnId[];
   readonly beforeCursor: string | null;
   readonly hasMore: boolean;
+  readonly userOrigins: Record<string, { sequence: number | null; rowId: number }>;
 }
 
 const Cursor = Schema.Struct({
@@ -47,7 +48,7 @@ export function messageWindowPredicate(
       ? sql`1`
       : lower.sequence === null
         ? sql`(messages.sequence IS NOT NULL OR (messages.sequence IS NULL AND messages.rowid >= ${lower.rowId}))`
-        : sql`(messages.sequence > ${lower.sequence} OR (messages.sequence = ${lower.sequence} AND messages.rowid >= ${lower.rowId}))`;
+        : sql`(messages.sequence,messages.rowid) >= (${lower.sequence},${lower.rowId})`;
   const before =
     upper === null
       ? sql`1`
@@ -67,11 +68,11 @@ export const selectThreadHistoryWindow = Effect.fn("selectThreadHistoryWindow")(
     (window.beforeCursor === undefined
       ? INITIAL_THREAD_USER_TURN_LIMIT
       : OLDER_THREAD_PAGE_USER_TURN_LIMIT);
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-    return yield* new OrchestrationReadThreadInputError({
-      message: "History turnLimit must be between 1 and 100.",
-    });
-  }
+  yield* Effect.try({
+    try: () => Schema.decodeUnknownSync(OrchestrationThreadHistoryWindow)(window),
+    catch: () =>
+      new OrchestrationReadThreadInputError({ message: "Invalid thread history window." }),
+  });
   let upper: Anchor | null = null;
   if (window.beforeCursor !== undefined) {
     const parsed = yield* Effect.try({
@@ -97,7 +98,34 @@ export const selectThreadHistoryWindow = Effect.fn("selectThreadHistoryWindow")(
     if (upper === null)
       return yield* new OrchestrationReadThreadInputError({
         message: "History changed; reload this thread before loading earlier turns.",
+        reason: "history-cursor-stale",
       });
+  }
+  if (window.aroundMessageId !== undefined) {
+    const target = (yield* sql<
+      Anchor & { pendingMessageId: string | null }
+    >`SELECT messages.message_id AS "messageId",messages.sequence,messages.rowid AS "rowId",messages.created_at AS "createdAt",
+      turns.pending_message_id AS "pendingMessageId" FROM projection_thread_messages messages
+      LEFT JOIN projection_turns turns ON turns.thread_id=messages.thread_id AND turns.turn_id=messages.turn_id
+      WHERE messages.thread_id=${threadId} AND messages.message_id=${window.aroundMessageId}`)[0];
+    if (!target)
+      return yield* new OrchestrationReadThreadInputError({
+        message: "Historical message was not found in this thread.",
+      });
+    const anchor =
+      target.pendingMessageId !== null
+        ? (yield* sql<Anchor>`SELECT message_id AS "messageId",sequence,rowid AS "rowId",created_at AS "createdAt" FROM projection_thread_messages WHERE thread_id=${threadId} AND message_id=${target.pendingMessageId} AND role='user'`)[0]
+        : (yield* sql<Anchor>`SELECT messages.message_id AS "messageId",messages.sequence,messages.rowid AS "rowId",messages.created_at AS "createdAt" FROM projection_thread_messages messages
+          WHERE messages.thread_id=${threadId} AND messages.role='user' AND ${messageWindowPredicate(sql, { lower: null, upper: { ...target, rowId: target.rowId + 1 } })}
+          ORDER BY messages.sequence IS NOT NULL DESC,messages.sequence DESC,messages.rowid DESC LIMIT 1`)[0];
+    upper =
+      anchor === undefined
+        ? ((yield* sql<Anchor>`SELECT messages.message_id AS "messageId",messages.sequence,messages.rowid AS "rowId",messages.created_at AS "createdAt" FROM projection_thread_messages messages
+      WHERE messages.thread_id=${threadId} AND messages.role='user' ORDER BY messages.sequence IS NOT NULL,messages.sequence,messages.rowid LIMIT 1`)[0] ??
+          null)
+        : ((yield* sql<Anchor>`SELECT messages.message_id AS "messageId",messages.sequence,messages.rowid AS "rowId",messages.created_at AS "createdAt" FROM projection_thread_messages messages
+      WHERE messages.thread_id=${threadId} AND messages.role='user' AND messages.message_id<>${anchor.messageId} AND ${messageWindowPredicate(sql, { lower: anchor, upper: null })}
+      ORDER BY messages.sequence IS NOT NULL,messages.sequence,messages.rowid LIMIT 1`)[0] ?? null);
   }
   const sequenced =
     upper?.sequence === null
@@ -122,19 +150,24 @@ export const selectThreadHistoryWindow = Effect.fn("selectThreadHistoryWindow")(
   const lower = hasMore ? (anchors.slice(0, limit).at(-1) ?? null) : null;
   const selected = { lower, upper };
   const turns = yield* sql<{ readonly turnId: TurnId }>`
-    WITH window_messages AS (
+    WITH window_messages AS MATERIALIZED (
       SELECT messages.message_id, messages.turn_id FROM projection_thread_messages AS messages
       WHERE messages.thread_id = ${threadId} AND ${messageWindowPredicate(sql, selected)}
     )
     SELECT DISTINCT turn_id AS "turnId" FROM window_messages WHERE turn_id IS NOT NULL
     UNION
-    SELECT turns.turn_id AS "turnId" FROM projection_turns AS turns
-    WHERE turns.thread_id = ${threadId} AND turns.turn_id IS NOT NULL
-      AND turns.pending_message_id IN (SELECT message_id FROM window_messages)
+    SELECT turns.turn_id AS "turnId" FROM window_messages
+    CROSS JOIN projection_turns AS turns ON turns.thread_id=${threadId} AND turns.pending_message_id=window_messages.message_id
+    WHERE turns.turn_id IS NOT NULL
   `;
   return {
     ...selected,
     turnIds: turns.map((turn) => turn.turnId),
+    userOrigins: Object.fromEntries(
+      anchors
+        .slice(0, limit)
+        .map((anchor) => [anchor.messageId, { sequence: anchor.sequence, rowId: anchor.rowId }]),
+    ),
     hasMore,
     beforeCursor:
       hasMore && lower !== null

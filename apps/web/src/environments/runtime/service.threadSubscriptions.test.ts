@@ -241,6 +241,154 @@ describe("retainThreadDetailSubscription", () => {
   });
 
   // Older-page I/O may overlap current streaming text and historical deltas.
+  async function pagedHarness(getThreadSnapshot: ReturnType<typeof vi.fn>) {
+    mockCreateWsRpcClient.mockReturnValue({
+      server: {
+        getConfig: async () => ({
+          threadSnapshotPagination: true,
+          threadResumeCompletionMarker: true,
+        }),
+      },
+      orchestration: { subscribeThread: mockSubscribeThread, getThreadSnapshot },
+    });
+    const service = await import("./service");
+    const store = await import("~/store");
+    const stop = service.startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1"),
+      threadId = ThreadId.make("paging-review");
+    mockCreateEnvironmentConnection.mock.calls[0]![0].syncShellSnapshot(
+      makeShellSnapshotForThreads([threadId]),
+      environmentId,
+    );
+    const release = service.retainThreadDetailSubscription(environmentId, threadId);
+    await vi.advanceTimersByTimeAsync(0);
+    const thread = {
+      ...makeOrchestrationThread(threadId, "Paged"),
+      messages: Array.from({ length: 10 }, (_, i) => ({
+        id: MessageId.make(`recent-user-${i}`),
+        role: "user" as const,
+        text: "Recent user",
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-04-13T00:00:00.000Z",
+        updatedAt: "2026-04-13T00:00:00.000Z",
+      })),
+    };
+    const listener = () =>
+      mockSubscribeThread.mock.calls.at(-1)![1] as (item: OrchestrationThreadStreamItem) => void;
+    listener()({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 10,
+        thread,
+        page: {
+          snapshotSequence: 10,
+          threadSequence: 10,
+          hasMore: true,
+          beforeCursor: "old-anchor",
+        },
+      },
+    });
+    const page = () =>
+      store.selectEnvironmentState(store.useStore.getState(), environmentId).threadHistoryById?.[
+        threadId
+      ];
+    return { service, store, stop, release, environmentId, threadId, thread, listener, page };
+  }
+
+  it("recovers a removed anchor with a fresh window instead of retrying it forever", async () => {
+    const get = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error("History changed; reload this thread before loading earlier turns."),
+      );
+    const h = await pagedHarness(get);
+    const request = h.service
+      .loadOlderThreadHistory(h.environmentId, h.threadId)
+      .catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(2);
+    h.listener()({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 12,
+        thread: h.thread,
+        page: {
+          snapshotSequence: 12,
+          threadSequence: 12,
+          hasMore: true,
+          beforeCursor: "fresh-anchor",
+        },
+      },
+    });
+    await request;
+    expect(h.page()?.beforeCursor).toBe("fresh-anchor");
+    expect(h.page()?.loadingOlder).toBe(false);
+    expect(h.page()?.error).toBeNull();
+    h.stop();
+  });
+
+  it("clears a canceled request's spinner and reports unavailable full-history reads", async () => {
+    let resolve!: (snapshot: unknown) => void;
+    const h = await pagedHarness(
+      vi.fn(
+        () =>
+          new Promise((r) => {
+            resolve = r;
+          }),
+      ),
+    );
+    const request = h.service.loadOlderThreadHistory(h.environmentId, h.threadId);
+    expect(h.page()?.loadingOlder).toBe(true);
+    h.release();
+    await vi.advanceTimersByTimeAsync(16 * 60 * 1000);
+    resolve({
+      snapshotSequence: 10,
+      thread: h.thread,
+      page: { snapshotSequence: 10, threadSequence: 10, hasMore: false, beforeCursor: null },
+    });
+    await request;
+    expect(h.page()?.loadingOlder).toBe(false);
+    await expect(
+      h.service.loadCompleteThreadHistory(h.environmentId, h.threadId),
+    ).rejects.toThrow();
+    h.stop();
+  });
+
+  it("requests the previously loaded depth after a revert invalidates the cursor", async () => {
+    const h = await pagedHarness(
+      vi.fn(async () => ({
+        snapshotSequence: 10,
+        thread: {
+          ...makeOrchestrationThread(ThreadId.make("paging-review"), "Older"),
+          messages: Array.from({ length: 20 }, (_, i) => ({
+            ...h.thread.messages[0]!,
+            id: MessageId.make(`older-user-${i}`),
+          })),
+        },
+        page: {
+          snapshotSequence: 10,
+          threadSequence: 10,
+          hasMore: true,
+          beforeCursor: "previous-depth",
+        },
+      })),
+    );
+    await h.service.loadOlderThreadHistory(h.environmentId, h.threadId);
+    h.listener()({
+      kind: "event",
+      event: {
+        ...metaUpdatedEvent(h.threadId, 11, "Unused"),
+        type: "thread.reverted",
+        payload: { threadId: h.threadId, turnCount: 25 },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const input = mockSubscribeThread.mock.calls.at(-1)![0];
+    expect(typeof input === "function" ? input() : input).toMatchObject({ turnLimit: 30 });
+    h.stop();
+  });
+
   // The page owns its watermark, but loaded metadata/current text stay newer.
   it("merges older turns without duplicating streamed text or replacing live metadata", async () => {
     const service = await import("./service");
@@ -294,7 +442,13 @@ describe("retainThreadDetailSubscription", () => {
       snapshot: {
         snapshotSequence: 10,
         thread: { ...current, messages: [newMessage] },
-        page: { snapshotSequence: 10, threadSequence: 10, hasMore: true, beforeCursor: "older" },
+        page: {
+          snapshotSequence: 10,
+          threadSequence: 10,
+          hasMore: true,
+          beforeCursor: "older",
+          windowStart: { sequence: 10, rowId: 10 },
+        },
       },
     });
     const loading = service.loadOlderThreadHistory(environmentId, threadId);
@@ -322,10 +476,18 @@ describe("retainThreadDetailSubscription", () => {
         updatedAt: current.updatedAt,
       },
     });
-    listener({ kind: "event", event: delta(11, "old-message", "old-turn", " included") });
+    listener({
+      kind: "event",
+      event: delta(11, "old-message", "old-turn", " included"),
+      messageOrigin: { sequence: 1, rowId: 1 },
+    });
     listener({ kind: "event", event: delta(12, "new-message", "new-turn", "!") });
     listener({ kind: "event", event: metaUpdatedEvent(threadId, 13, "Updated while paging") });
-    listener({ kind: "event", event: delta(14, "old-message", "old-turn", " tail") });
+    listener({
+      kind: "event",
+      event: delta(14, "old-message", "old-turn", " tail"),
+      messageOrigin: { sequence: 1, rowId: 1 },
+    });
     await vi.advanceTimersByTimeAsync(32);
     resolvePage({
       snapshotSequence: 12,

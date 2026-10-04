@@ -302,6 +302,7 @@ export const ServerConfig = Schema.Struct({
   shellResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
   threadResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
   threadSnapshotPagination: Schema.optionalKey(Schema.Boolean),
+  threadSnapshotAroundMessage: Schema.optionalKey(Schema.Boolean),
   lifecycleVersion: Schema.optionalKey(NonNegativeInt),
   /**
    * Quota reported by configured usage-limit sources. Never sent in a config

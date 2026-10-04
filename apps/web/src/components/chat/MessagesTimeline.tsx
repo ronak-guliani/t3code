@@ -214,6 +214,8 @@ interface MessagesTimelineProps {
   hasMoreOlder?: boolean;
   loadingOlder?: boolean;
   onLoadOlder?: () => void;
+  /** Null pauses automatic paging while keeping the explicit history button. */
+  onAutoloadOlder?: (() => void) | null;
 }
 
 export interface AssistantResponseMeta {
@@ -292,6 +294,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   hasMoreOlder = false,
   loadingOlder = false,
   onLoadOlder,
+  onAutoloadOlder,
 }: MessagesTimelineProps) {
   const workGroupExpansion = useMemo(() => new Map<string, boolean>(), [routeThreadKey]);
   const rawRows = useMemo(
@@ -335,16 +338,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     return next;
   }, [rows, reviewResultActive]);
 
+  const autoloadOlder = onAutoloadOlder === undefined ? onLoadOlder : onAutoloadOlder;
   const tryAutoloadOlderHistory = useCallback(() => {
-    if (!hasMoreOlder || loadingOlder || !onLoadOlder) {
+    if (!hasMoreOlder || loadingOlder || !autoloadOlder) {
       return;
     }
     const state = listRef.current?.getState?.();
     if (!state || !shouldAutoloadOlderHistory(state)) {
       return;
     }
-    onLoadOlder();
-  }, [hasMoreOlder, listRef, loadingOlder, onLoadOlder]);
+    autoloadOlder();
+  }, [hasMoreOlder, listRef, loadingOlder, autoloadOlder]);
 
   const handleScroll = useCallback(() => {
     const state = listRef.current?.getState?.();

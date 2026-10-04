@@ -146,21 +146,33 @@ export function useChatFind(input: UseChatFindInput): ChatFindController {
   const openFind = useCallback(() => {
     setOpen(true);
     focusInput();
+  }, [focusInput]);
+
+  const ensureHistoryRef = useRef(input.onEnsureCompleteHistory);
+  ensureHistoryRef.current = input.onEnsureCompleteHistory;
+  const hasQuery = query.trim().length > 0;
+  useEffect(() => {
     const epoch = ++historyEpoch.current;
-    if (input.onEnsureCompleteHistory) {
-      setLoadingHistory(true);
+    if (!open || !hasQuery) {
+      setLoadingHistory(false);
       setHistoryError(null);
-      void input
-        .onEnsureCompleteHistory(() => historyEpoch.current === epoch)
-        .catch(() => {
-          if (historyEpoch.current === epoch)
-            setHistoryError("Earlier history could not be loaded");
-        })
-        .finally(() => {
-          if (historyEpoch.current === epoch) setLoadingHistory(false);
-        });
+      return;
     }
-  }, [focusInput, input.onEnsureCompleteHistory]);
+    const ensure = ensureHistoryRef.current;
+    if (!ensure) return;
+    setLoadingHistory(true);
+    setHistoryError(null);
+    void ensure(() => historyEpoch.current === epoch)
+      .catch(() => {
+        if (historyEpoch.current === epoch) setHistoryError("Earlier history could not be loaded");
+      })
+      .finally(() => {
+        if (historyEpoch.current === epoch) setLoadingHistory(false);
+      });
+    return () => {
+      if (historyEpoch.current === epoch) historyEpoch.current++;
+    };
+  }, [open, hasQuery]);
 
   const closeFind = useCallback(() => {
     historyEpoch.current++;

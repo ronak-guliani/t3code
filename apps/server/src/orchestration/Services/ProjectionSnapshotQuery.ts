@@ -23,6 +23,8 @@ import type {
   OrchestrationSearchTranscriptResult,
   ProjectId,
   ThreadId,
+  MessageId,
+  OrchestrationMessageOrigin,
   WorkspaceBinding,
 } from "@t3tools/contracts";
 import { Context } from "effect";
@@ -192,6 +194,10 @@ export interface ProjectionSnapshotQueryShape {
     Option.Option<ProjectionThreadDetailSnapshot>,
     ProjectionRepositoryError | OrchestrationReadThreadInputError
   >;
+  readonly getThreadMessageOriginById?: (
+    threadId: ThreadId,
+    messageId: MessageId,
+  ) => Effect.Effect<Option.Option<OrchestrationMessageOrigin>, ProjectionRepositoryError>;
   readonly getThreadActivitiesPage: (
     input: OrchestrationGetThreadActivitiesInput,
   ) => Effect.Effect<OrchestrationGetThreadActivitiesResult, ProjectionRepositoryError>;

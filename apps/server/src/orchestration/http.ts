@@ -6,12 +6,13 @@ import {
   OrchestrationGetSnapshotError,
   OrchestrationReadThreadInput,
   OrchestrationReadThreadInputError,
+  OrchestrationThreadSnapshotQuery,
   type OrchestrationReadModel,
   type OrchestrationShellSnapshot,
   type OrchestrationThreadDetailSnapshot,
   ThreadId,
 } from "@t3tools/contracts";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import { requireSessionScope, respondToAuthError } from "../auth/http.ts";
@@ -46,7 +47,15 @@ const respondToOrchestrationHttpError = (
 ) =>
   Effect.gen(function* () {
     if (error._tag === "OrchestrationReadThreadInputError") {
-      return HttpServerResponse.jsonUnsafe({ error: error.message }, { status: 400 });
+      return HttpServerResponse.jsonUnsafe(
+        {
+          _tag: error._tag,
+          message: error.message,
+          error: error.message,
+          ...(error.reason === undefined ? {} : { reason: error.reason }),
+        },
+        { status: 400 },
+      );
     }
     if (error._tag === "OrchestrationGetSnapshotError") {
       yield* Effect.logError("orchestration http route failed", {
@@ -139,16 +148,14 @@ export const orchestrationThreadSnapshotRouteLayer = HttpRouter.add(
     const params = yield* HttpRouter.params;
     const threadId = ThreadId.make(params.threadId ?? "");
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const queryParams = new URL(request.url, "http://localhost").searchParams;
-    const turnLimit = queryParams.get("turnLimit");
-    const beforeCursor = queryParams.get("beforeCursor");
-    const window =
-      turnLimit === null && beforeCursor === null
-        ? undefined
-        : {
-            ...(turnLimit === null ? {} : { turnLimit: Number(turnLimit) }),
-            ...(beforeCursor === null ? {} : { beforeCursor }),
-          };
+    const payload = yield* Schema.decodeUnknownEffect(OrchestrationThreadSnapshotQuery)(
+      HttpServerRequest.searchParamsFromURL(new URL(request.url, "http://localhost")),
+    ).pipe(
+      Effect.mapError(
+        () => new OrchestrationReadThreadInputError({ message: "Invalid thread snapshot query." }),
+      ),
+    );
+    const window = Object.keys(payload).length === 0 ? undefined : payload;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const snapshot = yield* projectionSnapshotQuery
       .getThreadDetailSnapshotById(threadId, window)

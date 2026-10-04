@@ -1,4 +1,9 @@
-import { type OrchestrationThreadDetailSnapshot, ThreadId } from "@t3tools/contracts";
+import {
+  type OrchestrationThreadDetailSnapshot,
+  ThreadId,
+  OrchestrationReadThreadInputError,
+} from "@t3tools/contracts";
+import { isHistoryCursorExpired } from "@t3tools/shared/threadHistoryState";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -88,7 +93,10 @@ export class ThreadSnapshotLoader extends Context.Service<
       prepared: PreparedConnection,
       threadId: ThreadId,
       window?: ThreadSnapshotWindow,
-    ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>>;
+    ) => Effect.Effect<
+      Option.Option<OrchestrationThreadDetailSnapshot>,
+      OrchestrationReadThreadInputError
+    >;
   }
 >()("@t3tools/client-runtime/state/threadSnapshotHttp/ThreadSnapshotLoader") {}
 
@@ -128,12 +136,19 @@ export const threadSnapshotLoaderLayer: Layer.Layer<
               ),
           }),
           Effect.catch((error) =>
-            Effect.logWarning(
-              "Could not load the thread snapshot over HTTP; using the socket snapshot instead.",
-            ).pipe(
-              Effect.annotateLogs({ threadId, ...safeErrorLogAttributes(error) }),
-              Effect.as(Option.none<OrchestrationThreadDetailSnapshot>()),
-            ),
+            isHistoryCursorExpired(error)
+              ? Effect.fail(
+                  new OrchestrationReadThreadInputError({
+                    message: "History changed; reload this thread before loading earlier turns.",
+                    reason: "history-cursor-stale",
+                  }),
+                )
+              : Effect.logWarning(
+                  "Could not load the thread snapshot over HTTP; using the socket snapshot instead.",
+                ).pipe(
+                  Effect.annotateLogs({ threadId, ...safeErrorLogAttributes(error) }),
+                  Effect.as(Option.none<OrchestrationThreadDetailSnapshot>()),
+                ),
           ),
         ),
     });
