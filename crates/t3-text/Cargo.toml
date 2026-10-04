@@ -1,0 +1,31 @@
+[package]
+name = "t3-text"
+description = "Analytic text measurement and line layout (prepare/layout split) for virtualized transcripts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rustybuzz = "0.20"
+icu_segmenter = { version = "~2.3", default-features = false, features = [
+  "compiled_data",
+  "unstable",
+] }
+icu_properties = "2.3"
+unicode-segmentation = "1"
+unicode-bidi = "0.3"
+hashbrown = { version = "0.15", default-features = false, features = ["inline-more"] }
+rustc-hash = "2"
+
+[dev-dependencies]
+unicode-segmentation = "1"
+
+# CoreText ground truth (tests/coretext.rs). macOS only, dev-only, and the test
+# file is `#![cfg(target_os = "macos")]` so other hosts skip it. This is the
+# authority for whether a width change or a vendored bump can shift line
+# breaks under the transcript.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+core-text = "21"
+core-foundation = "0.10"
+core-graphics = "0.24"
