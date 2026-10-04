@@ -586,6 +586,9 @@ export const ServerSettings = Schema.Struct({
   autoArchiveSettledAfterDays: Schema.NullOr(Schema.Number).pipe(
     Schema.withDecodingDefault(Effect.succeed(2)),
   ),
+  idleWorktreeReclaimDays: Schema.NullOr(Schema.Number).pipe(
+    Schema.withDecodingDefault(Effect.succeed(7)),
+  ),
   idleTerminalStopHours: Schema.NullOr(Schema.Number).pipe(
     Schema.withDecodingDefault(Effect.succeed(4)),
   ),
@@ -830,6 +833,7 @@ export const ServerSettingsPatch = Schema.Struct({
   providerLogRetentionDays: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   providerLogMaxTotalMb: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   autoArchiveSettledAfterDays: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  idleWorktreeReclaimDays: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   idleTerminalStopHours: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
   sourceControlWritingStyle: Schema.optionalKey(Schema.String),

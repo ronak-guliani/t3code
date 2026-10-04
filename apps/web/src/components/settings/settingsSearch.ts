@@ -60,6 +60,7 @@ const settingsByPage: ReadonlyArray<{
       "Stop idle terminals",
       "Archive confirmation",
       "Delete confirmation",
+      "Idle worktree reclamation",
       "Keybindings",
       "Diagnostics",
     ],
@@ -176,6 +177,7 @@ const relatedTerms: Readonly<Record<string, string>> = {
   "Auto-archive settled threads": "settled archive cleanup days",
   "Provider log retention days": "provider logs cleanup old age keep files",
   "Provider log total size cap": "provider logs cleanup disk space maximum megabytes",
+  "Idle worktree reclamation": "storage cleanup worktree disk space reclaim checkout restore",
   "Stop idle terminals": "terminal server process inactivity stop cleanup",
 };
 

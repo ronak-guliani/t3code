@@ -5,7 +5,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { createHash } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { Effect } from "effect";
 
@@ -14,7 +14,11 @@ import { runProcess } from "../processRunner.ts";
 import { WorkspaceOwnershipConflict } from "../persistence/Services/WorkspaceOwnership.ts";
 import type { WorkspaceOwnershipRepositoryShape } from "../persistence/Services/WorkspaceOwnership.ts";
 import type { WorktreeCleanupJobRepositoryShape } from "../persistence/Services/WorktreeCleanupJobs.ts";
-import { OrchestrationCommandInvariantError } from "./Errors.ts";
+import type { RestoreThreadWorktreeInput } from "./restoreThreadWorktree.ts";
+import {
+  OrchestrationCommandInvariantError,
+  OrchestrationCommandWorktreeCleanupPendingError,
+} from "./Errors.ts";
 
 export interface WorkspaceAdmissionDeps {
   readonly findThread: (threadId: string) => OrchestrationThread | undefined;
@@ -22,6 +26,9 @@ export interface WorkspaceAdmissionDeps {
   readonly listThreads: () => ReadonlyArray<OrchestrationThread>;
   readonly claimOwnership: WorkspaceOwnershipRepositoryShape["claim"];
   readonly hasCleanupReservationByPath: WorktreeCleanupJobRepositoryShape["hasReservationByPath"];
+  readonly hasCleanupReservationByThreadId: WorktreeCleanupJobRepositoryShape["hasReservationByThreadId"];
+  readonly cancelIdleByThreadId: WorktreeCleanupJobRepositoryShape["cancelIdleByThreadId"];
+  readonly restoreThreadWorktree: (input: RestoreThreadWorktreeInput) => Effect.Effect<void, Error>;
   readonly createWorkspaceSnapshotCommit: (cwd: string) => Effect.Effect<string, unknown>;
 }
 
@@ -176,7 +183,7 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
   command: OrchestrationCommand,
   projectWorkspaceRoot: string | undefined,
   thread: OrchestrationThread | undefined,
-  createWorkspaceSnapshotCommit: WorkspaceAdmissionDeps["createWorkspaceSnapshotCommit"],
+  deps: WorkspaceAdmissionDeps,
 ) {
   const isExecutionCommand =
     command.type === "thread.create" ||
@@ -200,6 +207,13 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
       : command.type === "thread.turn.start"
         ? command.bootstrap?.createThread
         : undefined;
+  const isExistingThreadTurn =
+    createThread === undefined &&
+    thread !== undefined &&
+    (command.type === "thread.turn.start" || command.type === "thread.queued-turn.dispatch");
+  if (isExistingThreadTurn) {
+    yield* deps.cancelIdleByThreadId(thread.id);
+  }
   if (
     (command.type === "thread.turn.start" || command.type === "thread.queued-turn.dispatch") &&
     thread === undefined &&
@@ -228,6 +242,86 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
       ? null
       : yield* Effect.promise(() => resolveGitWorktreeIdentity(requestedPath));
   const canonicalRequested = requestedIdentity?.canonicalPath ?? null;
+
+  if (
+    isExistingThreadTurn &&
+    canonicalRequested !== null &&
+    ((yield* deps.hasCleanupReservationByThreadId(thread.id)) ||
+      (yield* deps.hasCleanupReservationByPath(canonicalRequested)))
+  ) {
+    return yield* new OrchestrationCommandWorktreeCleanupPendingError({
+      commandType: command.type,
+      worktreePath: canonicalRequested,
+    });
+  }
+
+  if (isExistingThreadTurn) {
+    const persistedPath = thread.workspaceBinding?.worktreePath ?? thread.worktreePath;
+    if (persistedPath !== null && persistedPath !== undefined) {
+      const isDirectory = yield* Effect.tryPromise({
+        try: async () => {
+          try {
+            return (await stat(persistedPath)).isDirectory();
+          } catch (cause) {
+            if (
+              typeof cause === "object" &&
+              cause !== null &&
+              "code" in cause &&
+              cause.code === "ENOENT"
+            ) {
+              return false;
+            }
+            throw cause;
+          }
+        },
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Unable to inspect persisted worktree '${persistedPath}': ${cause instanceof Error ? cause.message : String(cause)}`,
+          }),
+      });
+
+      if (!isDirectory) {
+        if (thread.branch === null || projectWorkspaceRoot === undefined) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Persisted worktree '${persistedPath}' is missing and cannot be restored because its project or local branch is unavailable. Restore branch '${thread.branch ?? "<missing>"}' in the project repository and retry.`,
+          });
+        }
+        yield* deps
+          .restoreThreadWorktree({
+            threadId: thread.id,
+            projectId: thread.projectId,
+            projectCwd: projectWorkspaceRoot,
+            worktreePath: persistedPath,
+            branch: thread.branch,
+          })
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new OrchestrationCommandInvariantError({
+                  commandType: command.type,
+                  detail: error.message,
+                }),
+            ),
+          );
+        const restoredDirectory = yield* Effect.tryPromise({
+          try: async () => (await stat(persistedPath)).isDirectory(),
+          catch: (cause) =>
+            new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: `Restoration completed without creating worktree '${persistedPath}': ${cause instanceof Error ? cause.message : String(cause)}`,
+            }),
+        });
+        if (!restoredDirectory) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Restoration completed without creating a directory at '${persistedPath}'. Retry after repairing the local worktree.`,
+          });
+        }
+      }
+    }
+  }
   // An explicit project-checkout path in the current creation request (the
   // client sent a concrete directory instead of null) means the user chose
   // "Current checkout": honor it instead of allocating an isolated
@@ -330,17 +424,17 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
     // This capture runs on the single orchestration command worker and stalls
     // later commands. No caller may hold a source checkout lock while awaiting
     // orchestration dispatch (scar 381); capture itself holds the lock briefly.
-    sourceSnapshotRevision = yield* createWorkspaceSnapshotCommit(
-      createThread.sourceWorktreePath,
-    ).pipe(
-      Effect.mapError((cause) =>
-        allocationError(
-          new Error(
-            `could not snapshot source worktree '${createThread.sourceWorktreePath}': ${cause instanceof Error ? cause.message : String(cause)}`,
+    sourceSnapshotRevision = yield* deps
+      .createWorkspaceSnapshotCommit(createThread.sourceWorktreePath)
+      .pipe(
+        Effect.mapError((cause) =>
+          allocationError(
+            new Error(
+              `could not snapshot source worktree '${createThread.sourceWorktreePath}': ${cause instanceof Error ? cause.message : String(cause)}`,
+            ),
           ),
         ),
-      ),
-    );
+      );
   }
 
   yield* Effect.tryPromise({
@@ -462,12 +556,7 @@ export const admitWorkspaceCommand = Effect.fn("admitWorkspace")(function* (
     (command.type === "thread.create" ? command.projectId : undefined) ??
     (command.type === "thread.turn.start" ? command.bootstrap?.createThread?.projectId : undefined);
   const project = projectId === undefined ? undefined : deps.findProject(projectId);
-  const prepared = yield* prepareIsolatedWorkspace(
-    command,
-    project?.workspaceRoot,
-    thread,
-    deps.createWorkspaceSnapshotCommit,
-  );
+  const prepared = yield* prepareIsolatedWorkspace(command, project?.workspaceRoot, thread, deps);
   command = prepared.command;
   const requestedPath =
     command.type === "thread.create"

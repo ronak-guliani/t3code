@@ -129,6 +129,9 @@ it.layer(TestLayer)("snapshot fork", (it) => {
                 generation: 1,
               }),
             hasCleanupReservationByPath: () => Effect.succeed(false),
+            hasCleanupReservationByThreadId: () => Effect.succeed(false),
+            cancelIdleByThreadId: () => Effect.void,
+            restoreThreadWorktree: () => Effect.fail(new Error("restore is not expected")),
             createWorkspaceSnapshotCommit: (source) =>
               checkpointStore.createWorkspaceSnapshotCommit({ cwd: source }),
           },
@@ -187,6 +190,9 @@ it.layer(TestLayer)("snapshot fork", (it) => {
                 generation: 1,
               }),
             hasCleanupReservationByPath: () => Effect.succeed(false),
+            hasCleanupReservationByThreadId: () => Effect.succeed(false),
+            cancelIdleByThreadId: () => Effect.void,
+            restoreThreadWorktree: () => Effect.fail(new Error("restore is not expected")),
             createWorkspaceSnapshotCommit: (source) =>
               checkpointStore.createWorkspaceSnapshotCommit({ cwd: source }),
           },
@@ -233,6 +239,9 @@ it.layer(TestLayer)("snapshot fork", (it) => {
             claimOwnership: () =>
               Effect.die("ownership must not be claimed after snapshot failure"),
             hasCleanupReservationByPath: () => Effect.succeed(false),
+            hasCleanupReservationByThreadId: () => Effect.succeed(false),
+            cancelIdleByThreadId: () => Effect.void,
+            restoreThreadWorktree: () => Effect.fail(new Error("restore is not expected")),
             createWorkspaceSnapshotCommit: () => Effect.fail(new Error("snapshot failed")),
           },
           {
