@@ -15,7 +15,7 @@ import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
-import { sanitizeThreadErrorMessage } from "../rpc/transportError";
+import { sanitizeThreadErrorMessage } from "@t3tools/client-runtime";
 import type { ProviderInstanceEntry } from "../providerInstances";
 import type { SidebarThreadSummary } from "../types";
 import { usePendingTurnStore } from "../pendingTurnStore";

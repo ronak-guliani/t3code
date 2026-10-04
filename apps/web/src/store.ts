@@ -60,7 +60,7 @@ import {
   type TurnDiffSummary,
 } from "./types";
 import { resolveEnvironmentHttpUrl } from "./environments/runtime";
-import { sanitizeThreadErrorMessage } from "./rpc/transportError";
+import { sanitizeThreadErrorMessage } from "@t3tools/client-runtime";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
 import { isInsightActivity } from "./insights";
 
