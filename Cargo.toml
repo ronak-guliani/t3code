@@ -1,11 +1,19 @@
 [workspace]
 resolver = "3"
-members = ["crates/t3-text", "crates/t3-markdown"]
+members = ["crates/t3-text", "crates/t3-markdown", "crates/t3-syntax", "crates/t3-layout"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+
+[workspace.dependencies]
+t3-text = { path = "crates/t3-text" }
+t3-markdown = { path = "crates/t3-markdown" }
+t3-syntax = { path = "crates/t3-syntax" }
+t3-layout = { path = "crates/t3-layout" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # Rust core for the native iOS client (apps/zeron-ios). Vendored from
 # zeronsh/zeron at 9e1a11158b0626237c814f4bd36f5948483ed797 — see

@@ -12,12 +12,12 @@ under streaming — without forking zeron's sync substrate.
 | --------------------------- | ------------ | ------------ | -------------------------------------------------------------------------------------------------------- |
 | `crates/text`               | 4,062        | **vendored** | UAX#14 segmentation + rustybuzz measurement. No zeron deps.                                              |
 | `crates/markdown`           | 2,160        | **vendored** | Block model + incremental reparse. Deps: pulldown-cmark only.                                            |
-| `crates/syntax`             | 1,354        | Phase 1      | Tree-sitter highlighting for 28 languages. Only consumer is `layout/markdown.rs`.                        |
-| `crates/mobile/src/layout`  | ~4,300       | Phase 1      | Rows → measured display lists, prefix-sum offsets. **Engine is portable; row model is not** (see below). |
+| `crates/syntax`             | 1,354        | **vendored** | Tree-sitter highlighting for 28 languages. Only consumer is `layout/markdown.rs`.                        |
+| `crates/mobile/src/layout`  | ~4,300       | partial      | Rows → measured display lists, prefix-sum offsets. **Engine is portable; row model is not** (see below). |
 | `apps/ios/Zeron/**/*.swift` | 10,591 lines | Phase 3      | UIKit shell. Only 5 of 36 files touch Rust; the rest is domain-free UI.                                  |
 | `scripts/ios/build-core.sh` | 60           | Phase 2      | UniFFI static-lib + binding generation.                                                                  |
 
-Vendored so far: **~6.2k lines + 540 KB of Geist faces**, all MIT.
+Vendored so far: **~12.4k lines + 1.6 MB of Geist faces**, all MIT.
 
 ### Correction: `crates/mobile/src/layout` is not domain-free
 
@@ -81,15 +81,61 @@ screens, not a constraint inherited from the measurement engine.
   styled 5850, random 30240) — identical to zeron's documented result, so the vendor did not
   regress.
 
-### Phase 1 — Layout engine + row model (2 weeks, up from 1)
+### Phase 1 — Layout engine + row model — PARTIAL
 
-- Vendor the portable slice of `crates/mobile/src/layout` as `crates/t3-layout`, plus
-  `crates/syntax` as `t3-syntax` with a language set we choose.
-- **Rewrite** `rows.rs` and `tools.rs` against t3code thread contracts instead of copying them.
-- Strip `mod.rs:347-372` (`SnapshotWatch` / `CoreClient`) and define the transport-neutral
-  attachment interface Phase 5 will implement.
-- Port `layout/tests.rs` and `fixture.md`; port the layout benchmark behind the Phase 1 gate.
-- **Gate:** all ported tests pass and the ~30 ms cold-layout figure for 3,300 rows reproduces.
+Landed `crates/t3-syntax` and `crates/t3-layout`, and rewrote the row model against t3code's feed.
+Three tests failed on first run and caught real placement bugs; see the gate below.
+
+**Done**
+
+- `t3-syntax` vendored whole (28 languages, 27 grammar crates). Cost not yet measured —
+  Phase 2 should record static-lib size and build time before we accept it for a phone.
+- `t3-layout` = the portable engine (`lib.rs`, `display.rs`, `style.rs`, `markdown.rs`) plus
+  `feed.rs` and a rewritten `rows.rs`. `file_icons.rs` and `tools.rs` were **not** taken.
+- `TranscriptView::attach` and the `SnapshotWatch`/`CoreClient` binding are gone; `set_input`
+  is the only feed path, and Phase 5 owns what calls it.
+- All `#[uniffi::*]` attributes stripped — Phase 2 adds the facade crate, so the engine stays
+  plain Rust and testable without a codegen dependency.
+- Row model mirrors `buildThreadFeed()`'s output, not zeron's `MessagePart` union. See
+  `crates/t3-layout/src/feed.rs`.
+
+**Not done, and it is bigger than estimated**
+
+`tools.rs` (~1,180 lines) is not ported. zeron's version renders per-tool-type detail — file
+badges, inline diffs, subagent cards — driven by `zeron_proto::ToolCall`'s variants. t3code has
+no equivalent type to port _from_: tool semantics live in
+`OrchestrationThreadActivity.payload` (`Schema.Unknown`) and are resolved by
+`packages/client-runtime/src/work-log/presentation.ts` (934 lines) plus the grouping in
+`apps/mobile/src/lib/threadActivity.ts`.
+
+This crate does not re-derive any of that. `FeedActivity` carries an already-resolved
+`heading` / `preview` / `body` / `icon` / `failed` / `live`, and the engine paints it. That is
+deliberate: duplicating the projection in Rust would create a second source of truth that
+silently drifts from the RN app. The cost is that t3code-specific rows (file badges, per-file
+diff blocks) need Rust work later, driven by real transcripts rather than guessed at now.
+
+**Gate**
+
+| Metric                  | zeron   | here                                   |
+| ----------------------- | ------- | -------------------------------------- |
+| Cold layout, 3,300 rows | ~30 ms  | **41.4 ms** (median of 3, 12.5 µs/row) |
+| Width change            | 0.42 ms | 2.5 ms                                 |
+| Streamed token          | 0.19 ms | 1.76 ms (median of 20)                 |
+
+`cargo test --release`: **155 passed, 0 failed**, clippy clean.
+
+The streamed-token figure is a different quantity, not a regression: zeron hands the layout
+thread `Arc<SessionMessageEntry>` and detects unchanged entries by pointer equality, so its
+per-pass work is O(1) per entry. Our feed is owned, deserialized data, so a pass walks all
+3,300 rows (~1.66 ms floor for a _no-change_ pass) to find the one that moved. Measured against
+the contract's `updatedAt` so unchanged messages skip re-hashing their bodies; the remainder is
+HashMap and `Arc` traffic. At 10 tokens/sec that is under 2% of one background thread — not
+user-visible, but it is the number to beat if it ever becomes one.
+
+`paint_matches_measure_at_many_widths` earned its keep: it caught two genuine bugs where
+`place_text`'s return value (a height) was being assigned as a new `y`, so painted runs fell
+outside their row's measured height. That is exactly the class of defect the geometry assertions
+exist to find, and it is why the assertion checks run bounds rather than "row painted something".
 
 ### Phase 2 — UniFFI facade & build pipeline (3 days)
 
@@ -149,6 +195,9 @@ Retarget the vendored `SessionSource` protocol; leave `CoreSessionSource` behind
   └─────────────────────┘
   Phase 3 gate is the go/no-go for the whole project.
 ```
+
+Phase 1 is partially landed: the engine and its gate are done, tool/activity presentation is
+not. It is a self-contained increment — nothing in Phase 2 depends on it.
 
 Phases 0-3 need no server changes and no protocol decisions. If Phase 3's hitch numbers hold,
 the remaining risk is concentrated in Phase 5 and the project is worth continuing.

@@ -36,6 +36,14 @@ Not in the fork boundary, so not carried: `crates/{ui,harness,engine,voice,theme
 | `crates/ui/assets/fonts/{Geist,Geist-Bold,Geist-SemiBold,GeistMono}.ttf` | `crates/t3-text/assets/fonts/`     | Copied, with `licenses/Geist-OFL.txt`                                |
 | `crates/mobile/src/layout/fixture.md`                                    | `crates/t3-text/assets/fixture.md` | Copied (in-boundary; used as the `coretext` corpus)                  |
 
+### Landed in Phase 1
+
+| Upstream path                                              | Lands at           | Fate                               |
+| ---------------------------------------------------------- | ------------------ | ---------------------------------- |
+| `crates/syntax`                                            | `crates/t3-syntax` | Copied with `queries/`             |
+| `crates/mobile/src/layout/{mod,display,style,markdown}.rs` | `crates/t3-layout` | Copied; `mod.rs` became `lib.rs`   |
+| `crates/mobile/src/layout/{rows,tests}.rs`                 | `crates/t3-layout` | Rewritten — the data model is ours |
+
 ### Deferred
 
 | Upstream path                                                                  | Lands at                               | Fate                                                                                  |

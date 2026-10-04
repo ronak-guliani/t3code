@@ -40,16 +40,18 @@ See `assets/fonts/NOTICE.md`.
 
 `crates/t3-text/assets/fixture.md` is the markdown corpus `tests/coretext.rs` folds into its
 line-break corpus. Vendored rather than left to `unwrap_or_default()` so the parity baseline
-below stays the full one.
+below stays the full one. A copy also lives at `crates/t3-layout/src/fixture.md` for the layout
+lab and benchmark.
 
 ## Verification
 
 ```sh
 cargo build
 cargo test --release
+cargo test --release -p t3-layout --lib bench_layout -- --ignored --nocapture
 ```
 
-128 tests pass. `tests/coretext.rs` is the authority for line-break correctness: it lays corpora
+155 tests pass. `tests/coretext.rs` is the authority for line-break correctness: it lays corpora
 out with `t3-text` and with `CTFramesetter` over the _same font bytes_ and compares line starts.
 
 | Corpus | Exact                 | Line-count agreement |
@@ -67,3 +69,23 @@ still move a break opportunity.
 `tests/coretext.rs` is `#![cfg(target_os = "macos")]` and needs `core-text`, so on Linux and
 Windows it reports 0 tests rather than failing. Do not read a green non-macOS run as parity
 coverage.
+
+### Layout benchmark
+
+`bench_layout` (ignored by default) is the performance gate:
+
+```
+cold layout of 3300 rows: 41.4ms (12.53 us/row)
+width change: 2.48ms over 3300 rows
+streamed token (median of 20): 1.76ms
+no-change pass (pure cache walk): 1.66ms
+```
+
+zeron's documented figures were ~30 ms cold for the same 3,300 rows, 0.42 ms for a width change,
+and 0.19 ms for a streamed token. The token number is a different quantity rather than a
+regression: zeron detects unchanged entries by `Arc` pointer equality and does O(1) work per
+entry, while our feed is owned deserialized data, so a pass walks every row to find the one that
+moved. Unchanged messages skip body re-hashing by comparing the contract's `updatedAt`. At ten
+tokens per second the floor is under 2% of one background thread.
+
+Run it before touching `t3-layout/src/rows.rs`. A regression here is the regression users feel.
