@@ -194,6 +194,123 @@ fn streaming_converges_to_full_parse() {
     }
 }
 
+/// A pass over an unchanged multi-message transcript must reuse every core.
+///
+/// The single-message streaming tests could not catch a broken message cache:
+/// with one message there is nothing to reuse, so a cache that never hits still
+/// produces the right rows. Many messages are what make the miss visible.
+#[test]
+fn unchanged_transcript_reuses_every_core() {
+    let mut w = worker(393.0);
+    w.input = transcript(12);
+    let first = w.pass().row_cores();
+    assert!(first.len() > 50, "a real transcript: {} rows", first.len());
+
+    let second = w.pass().row_cores();
+    assert_eq!(first.len(), second.len());
+    let reused = first.iter().zip(second.iter()).filter(|(a, b)| Arc::ptr_eq(a, b)).count();
+    assert_eq!(
+        reused,
+        first.len(),
+        "an unchanged pass reused {reused} of {} cores",
+        first.len()
+    );
+
+    // One changed message must not disturb the rest.
+    w.input.feed.push(message("late", true, "appended", false));
+    let third = w.pass().row_cores();
+    let reused = first.iter().zip(third.iter()).filter(|(a, b)| Arc::ptr_eq(a, b)).count();
+    assert!(
+        reused >= first.len() - 2,
+        "an appended message reused {reused} of {} cores",
+        first.len()
+    );
+}
+
+/// A user bubble must be cached like any other row, or every streamed token
+/// re-prepares every bubble in the transcript.
+#[test]
+fn user_bubbles_survive_a_pass_unchanged() {
+    let mut w = worker(393.0);
+    w.input = TranscriptInput {
+        feed: (0..20).map(|i| message(&format!("u{i}"), true, &format!("question {i}"), false)).collect(),
+        ..Default::default()
+    };
+    let first = w.pass().row_cores();
+    let second = w.pass().row_cores();
+    assert_eq!(first.len(), 20);
+    let reused = first.iter().zip(second.iter()).filter(|(a, b)| Arc::ptr_eq(a, b)).count();
+    assert_eq!(reused, 20, "user bubbles reused {reused} of 20");
+
+    // Toggling one bubble must repaint that bubble only.
+    w.builder.expanded.insert(rows::row_key("u7#u"));
+    let third = w.pass().row_cores();
+    assert!(
+        !Arc::ptr_eq(&second[7], &third[7]),
+        "the toggled bubble is rebuilt"
+    );
+    let others = third
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| *i != 7 && !Arc::ptr_eq(&second[*i], c))
+        .count();
+    assert_eq!(others, 0, "and no other bubble is disturbed (was {others})");
+}
+
+/// Presentation is part of an activity's identity: a tone or icon change with
+/// identical text must still repaint.
+#[test]
+fn activity_tone_and_icon_changes_repaint() {
+    let base = |tone: &str, icon: &str| {
+        FeedRow::ActivityGroup(Box::new(FeedActivityGroup {
+            id: "g1".into(),
+            created_at: String::new(),
+            turn_id: None,
+            activities: vec![FeedActivity {
+                id: "a1".into(),
+                kind: "tool.row".into(),
+                tone: tone.into(),
+                heading: "Ran tests".into(),
+                preview: None,
+                body: None,
+                failed: false,
+                live: false,
+                icon: Some(icon.into()),
+                sequence: 0,
+            }],
+            summary: "1 step".into(),
+            has_failure: false,
+            live: false,
+        }))
+    };
+
+    let mut w = worker(393.0);
+    w.input = TranscriptInput { feed: vec![base("tool", "terminal")], ..Default::default() };
+    let before_frame = w.pass();
+    let before = before_frame.row_cores();
+
+    w.input.feed = vec![base("error", "exclamationmark.triangle")];
+    let after = w.pass();
+    let after_cores = after.row_cores();
+    assert!(!Arc::ptr_eq(&before[0], &after_cores[0]), "a tone+icon change rebuilds the group");
+
+    let d = after.display(0).unwrap();
+    // The row carries the group's summary as well as the activity heading; only
+    // the heading takes the tone's colour.
+    assert!(
+        d.text.contains("Ran tests") && d.runs.iter().any(|r| r.color == display::ColorRole::Danger),
+        "and repaints the heading in the error colour: {:?}",
+        d.runs.iter().map(|r| r.color).collect::<Vec<_>>()
+    );
+    assert!(
+        d.widgets.iter().any(|wid| matches!(
+            &wid.kind,
+            display::WidgetKind::Icon { name, .. } if name == "exclamationmark.triangle"
+        )),
+        "with the new icon"
+    );
+}
+
 /// The property that makes streaming cheap: a token only rebuilds the tail
 /// block. Rows before it stay pointer-identical, so their heights are reused
 /// and nothing is re-measured.
@@ -304,22 +421,49 @@ fn toggles_expand_activity_groups_and_long_user_messages() {
     assert!(still_open.contains("Ran tests"), "the opened group stays open");
 }
 
-/// A folded user message fades its last visible line instead of hard-clipping.
+/// A folded user message reserves fewer lines *and* fades its last visible one.
+/// The height assertion is the load-bearing half: a fold that only paints a
+/// fade still reserves the full height, so expanding moves nothing.
 #[test]
-fn folded_user_message_fades_its_last_line() {
+fn folding_a_user_message_changes_its_height() {
+    let long = "line of prose that will wrap several times over\n".repeat(30);
     let mut w = worker(390.0);
     w.input = TranscriptInput {
-        feed: vec![message("u0", true, &"line\n".repeat(30), false)],
+        feed: vec![message("u0", true, &long, false)],
         ..Default::default()
     };
-    let frame = w.pass();
-    let d = frame.display(0).unwrap();
+
+    let folded = w.pass();
+    let d = folded.display(0).unwrap();
     assert_eq!(d.fades.len(), 1, "one fade over the fold");
     assert_eq!(d.fades[0].edge, display::FadeEdge::Bottom);
+    let folded_height = folded.total_height();
+    let folded_lines = d.runs.len();
 
     w.builder.expanded.insert(rows::row_key("u0#u"));
     let open = w.pass();
     assert!(open.display(0).unwrap().fades.is_empty(), "expanded needs no fade");
+    assert!(
+        open.total_height() > folded_height,
+        "expanding must grow the row: {} vs {}",
+        open.total_height(),
+        folded_height
+    );
+    assert!(open.display(0).unwrap().runs.len() > folded_lines, "and paint more lines");
+
+    // The fold must also be width-sensitive: a wider viewport fits more lines,
+    // so the same message folds to a different height.
+    let mut wide = worker(900.0);
+    wide.input = TranscriptInput {
+        feed: vec![message("u0", true, &long, false)],
+        ..Default::default()
+    };
+    let wide_pass = wide.pass();
+    let wide_rows = wide_pass.display(0).unwrap().runs.len();
+    assert!(
+        wide_rows >= folded_lines,
+        "a wider viewport does not show fewer lines: {wide_rows} vs {folded_lines}"
+    );
 }
 
 /// Links become tappable hit regions with resolved URLs, one per fragment.

@@ -138,6 +138,7 @@ pub(crate) mod geom {
     pub const GAP_BLOCK: f32 = 12.0;
     pub const GAP_HEADING: f32 = 22.0;
     pub const BUBBLE_PAD_X: f32 = 15.0;
+    pub const FADE: f32 = 28.0;
     pub const BUBBLE_PAD_Y: f32 = 10.0;
     pub const BUBBLE_RADIUS: f32 = 20.0;
     pub const BUBBLE_FOLD_LINES: usize = 8;
@@ -264,8 +265,14 @@ impl RowBuilder {
             let core = match self.pending.get(&p.id) {
                 Some((cached, row)) if cached == p => row.clone(),
                 _ => {
-                    let row =
-                        Arc::new(self.user_row(ctx, &p.id, &p.text, &p.attachments, true));
+                    let row = Arc::new(self.user_row(
+                        ctx,
+                        &p.id,
+                        &p.text,
+                        &p.attachments,
+                        true,
+                        self.is_open(row_key(&format!("{}#u", p.id)), false),
+                    ));
                     self.pending.insert(p.id.clone(), (p.clone(), row.clone()));
                     row
                 }
@@ -348,27 +355,42 @@ impl RowBuilder {
         first: bool,
         prev_role: Option<Role>,
     ) -> Vec<Placed> {
-        if m.role == Role::User {
-            return vec![Placed {
-                core: Arc::new(self.user_row(ctx, &m.id, &m.text, &m.attachments, false)),
-                gap: if first { Gap::First } else { Gap::Turn },
-            }];
-        }
-
         // `updatedAt` is bumped when a message is replaced, so an unchanged
         // message is identified without reading its body. Hashing every message
         // on every pass would make a streamed token cost O(transcript bytes),
         // which is the one thing streaming must not do.
+        //
+        // A user bubble additionally depends on the reader's disclosure state, so
+        // its signature folds that in — otherwise a toggle would be masked by a
+        // cache hit.
+        let user = m.role == Role::User;
+        let bubble_key = row_key(&format!("{}#u", m.id));
+        let bubble_open = user && self.is_open(bubble_key, false);
+        let sig = message_sig(m, first, prev_role)
+            ^ ((bubble_open as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+
         if let Some(state) = self.messages.get(&m.id)
             && state.updated_at == m.updated_at
-                && state.sig == cheap_sig(m, first, prev_role)
+                && state.sig == sig
             {
                 return state.rows.clone();
-            }
-        let sig = message_sig(m, first, prev_role);
+        }
 
         let mut rows: Vec<Placed> = Vec::new();
         let mut gap = tail_gap_for(first, prev_role);
+
+        if user {
+            // A bubble is cached like any other row: rebuilding it every pass
+            // would re-prepare every user message on every streamed token.
+            rows.push(Placed {
+                core: Arc::new(
+                    self.user_row(ctx, &m.id, &m.text, &m.attachments, false, bubble_open),
+                ),
+                gap: if first { Gap::First } else { Gap::Turn },
+            });
+            self.remember(m, sig, rows.clone());
+            return rows;
+        }
 
         if let Some(origin) = &m.origin
             && let Some(chip) = self.origin_chip(ctx, m, origin) {
@@ -395,12 +417,16 @@ impl RowBuilder {
         }
 
         if !rows.is_empty() {
-            self.messages.insert(
-                m.id.clone(),
-                MessageState { sig, updated_at: m.updated_at.clone(), rows: rows.clone() },
-            );
+            self.remember(m, sig, rows.clone());
         }
         rows
+    }
+
+    fn remember(&mut self, m: &FeedMessage, sig: u64, rows: Vec<Placed>) {
+        self.messages.insert(
+            m.id.clone(),
+            MessageState { sig, updated_at: m.updated_at.clone(), rows },
+        );
     }
 
     fn origin_chip(
@@ -457,6 +483,7 @@ impl RowBuilder {
             .clone()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn user_row(
         &mut self,
         ctx: &mut Ctx,
@@ -464,6 +491,7 @@ impl RowBuilder {
         content: &str,
         attachments: &[Attachment],
         pending: bool,
+        expanded: bool,
     ) -> RowCore {
         let key = row_key(&format!("{id}#u"));
         let body = content.trim();
@@ -472,7 +500,6 @@ impl RowBuilder {
         let text = prepare_plain(ctx, body, style, ctx.typo.px(lh), ColorRole::Text, WhiteSpace::PreWrap);
         let (msize, mlh) = TYPE.small;
         let mstyle = ctx.typo.style(Family::Sans, Weight::Medium, false, msize);
-        let expanded = self.expanded.contains(&key);
         let more = prepare_plain(
             ctx,
             if expanded { "Show less" } else { "Show more" },
@@ -734,27 +761,16 @@ fn tail_gap_for(first: bool, prev_role: Option<Role>) -> Gap {
     }
 }
 
-/// Identity that does not read the message body. A pass whose cheap signature
-/// matches reuses cached rows without touching the text.
-fn cheap_sig(m: &FeedMessage, first: bool, prev_role: Option<Role>) -> u64 {
+/// Everything about a message that can change its rows, *except* its body.
+///
+/// The body is represented by `len`. Correctness rests on the contract: the
+/// server advances `OrchestrationMessage.updatedAt` when it replaces a message,
+/// and `build()` compares that before trusting this signature. Hashing the body
+/// here instead would make every streamed token cost O(transcript bytes), which
+/// is the one thing streaming must not do.
+fn message_sig(m: &FeedMessage, first: bool, prev_role: Option<Role>) -> u64 {
     let mut h = (m.text.len() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
     h = h.rotate_left(7) ^ (m.streaming as u64);
-    h = h.rotate_left(7) ^ ((first as u64) | ((prev_role.map_or(0, |r| r as u64 + 1)) << 1));
-    for a in &m.attachments {
-        h = h.rotate_left(7) ^ quick_hash(a.handle().0);
-    }
-    match &m.origin {
-        Some(o) => h = h.rotate_left(7) ^ quick_hash(&format!("{o:?}")),
-        None => h = h.rotate_left(7) ^ 0x5bf0_3635,
-    }
-    h
-}
-
-/// Full signature, including the body. Only computed when `cheap_sig` differs.
-fn message_sig(m: &FeedMessage, first: bool, prev_role: Option<Role>) -> u64 {
-    let mut h = quick_hash(&m.text);
-    h = h.rotate_left(7) ^ quick_hash(&m.id);
-    h = h.rotate_left(7) ^ (m.streaming as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
     h = h.rotate_left(7) ^ ((first as u64) | ((prev_role.map_or(0, |r| r as u64 + 1)) << 1));
     for a in &m.attachments {
         h = h.rotate_left(7) ^ quick_hash(a.handle().0);
@@ -771,12 +787,17 @@ fn detail_key(a: &FeedActivity) -> u64 {
     row_key(&format!("{}#{}#detail", a.id, a.kind))
 }
 
+/// `tone` picks the run colour and `icon` picks a widget, so both belong in the
+/// group's signature: a feed that re-resolves presentation without changing any
+/// text must still repaint.
 fn group_sig(g: &FeedActivityGroup) -> u64 {
     let mut h = quick_hash(&g.summary) ^ g.activities.len() as u64;
     for a in &g.activities {
         h = h.rotate_left(7) ^ quick_hash(&a.heading);
         h = h.rotate_left(7) ^ quick_hash(a.preview.as_deref().unwrap_or(""));
         h = h.rotate_left(7) ^ quick_hash(a.body.as_deref().unwrap_or(""));
+        h = h.rotate_left(7) ^ quick_hash(&a.tone);
+        h = h.rotate_left(7) ^ quick_hash(a.icon.as_deref().unwrap_or(""));
         h = h.rotate_left(7) ^ (a.failed as u64) ^ ((a.live as u64) << 1);
     }
     h
@@ -906,28 +927,20 @@ fn place_user(
         cy += thumb + pad_y * 2.0;
     }
 
-    // Remember where this bubble's runs start so a pending send can be dimmed
-    // without the painter tracking it.
+    // Fold a long message. The fold must change the row's *height*, not just
+    // paint a fade over the overflow — otherwise expanding it moves nothing and
+    // the toggle reads as broken. So we measure the shown line count first and
+    // place exactly that many lines.
     let run_start = out.as_ref().map_or(0, |o| o.runs.len());
-    let text_h = place_text(&u.text, x + pad_x, cy, inner, out.as_deref_mut());
-    cy += text_h;
+    let stats = u.text.p.stats(inner);
+    let folds = stats.line_count > BUBBLE_FOLD_LINES;
+    let shown = if folds && !u.expanded { BUBBLE_FOLD_SHOW } else { stats.line_count };
 
-    // Fold a long message: only the first lines are shown until expanded.
-    let line_h = u.text.lh.max(1.0);
-    let lines = (text_h / line_h).round() as usize;
-    let folded = !u.expanded && lines > BUBBLE_FOLD_LINES;
-    if folded {
-        let visible = (BUBBLE_FOLD_LINES.max(BUBBLE_FOLD_SHOW)) as f32 * line_h;
-        if let Some(o) = out.as_deref_mut() {
-            o.fade(
-                x + pad_x,
-                cy - visible,
-                inner,
-                visible - (BUBBLE_FOLD_LINES - BUBBLE_FOLD_SHOW) as f32 * line_h,
-                super::display::FadeEdge::Bottom,
-            );
-        }
-    }
+    let text_h = match out.as_deref_mut() {
+        Some(o) => place_clipped(&u.text, x + pad_x, cy, inner, shown, px.v(geom::FADE), o),
+        None => shown as f32 * u.text.lh,
+    };
+    cy += text_h;
 
     cy += px.v(6.0);
     cy += place_text(&u.more, x + pad_x, cy, inner, out.as_deref_mut());
@@ -936,6 +949,35 @@ fn place_user(
             dim_from(o, run_start, ColorRole::TextSecondary);
         }
     cy + pad_y
+}
+
+/// Place `t`, then drop runs, links and widgets that fall past `max_lines`,
+/// fading the last visible line. Returns the *clipped* height, so the row
+/// reserves only what it shows.
+fn place_clipped(
+    t: &PText,
+    x: f32,
+    y: f32,
+    width: f32,
+    max_lines: usize,
+    _fade_w: f32,
+    out: &mut DisplayBuilder,
+) -> f32 {
+    let runs_before = out.runs.len();
+    let widgets_before = out.widgets.len();
+    let h = place_text(t, x, y, width, Some(out));
+    let limit = y + max_lines as f32 * t.lh;
+    if h <= limit {
+        return h;
+    }
+    let kept = out.runs[runs_before..].iter().take_while(|r| r.baseline < limit).count();
+    out.runs.truncate(runs_before + kept);
+    out.links.retain(|l| l.y < limit);
+    out.widgets.truncate(
+        widgets_before + out.widgets[widgets_before..].iter().take_while(|w| w.y < limit).count(),
+    );
+    out.fade(x, limit - t.lh, width, t.lh, super::display::FadeEdge::Bottom);
+    max_lines as f32 * t.lh
 }
 
 /// Repaint every run from `from` onward in `color`. Used to dim an optimistic
@@ -969,19 +1011,19 @@ fn place_fold(
     if !f.expanded {
         return cy;
     }
-    // Rail segments are collected first so elbows can join them.
-    let mut segments: Vec<(f32, f32)> = Vec::with_capacity(f.children.len());
+    let top = cy;
     for child in &f.children {
         cy += place_activity(child, px, x, cy, column, out.as_deref_mut());
-        segments.push((cy, 0.0));
     }
+    // One continuous trunk down the group. Per-row elbows belong with the tool
+    // rail's own geometry, which is Phase 1's deferred presentation work.
     if let Some(o) = out
-        && !segments.is_empty() {
+        && !f.children.is_empty() {
             o.hairline(
                 x + px.v(ACTIVITY_RAIL_X),
-                y,
+                top,
                 px.v(1.0),
-                cy - y,
+                cy - top,
                 0.0,
                 ColorRole::ToolRail,
             );

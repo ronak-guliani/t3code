@@ -75,17 +75,22 @@ coverage.
 `bench_layout` (ignored by default) is the performance gate:
 
 ```
-cold layout of 3300 rows: 41.4ms (12.53 us/row)
-width change: 2.48ms over 3300 rows
-streamed token (median of 20): 1.76ms
-no-change pass (pure cache walk): 1.66ms
+cold layout of 3300 rows: 34.2ms (10.35 us/row)
+width change: 1.23ms over 3300 rows
+streamed token (median of 20): 252us
+no-change pass (pure cache walk): 248us
 ```
 
 zeron's documented figures were ~30 ms cold for the same 3,300 rows, 0.42 ms for a width change,
-and 0.19 ms for a streamed token. The token number is a different quantity rather than a
-regression: zeron detects unchanged entries by `Arc` pointer equality and does O(1) work per
-entry, while our feed is owned deserialized data, so a pass walks every row to find the one that
-moved. Unchanged messages skip body re-hashing by comparing the contract's `updatedAt`. At ten
-tokens per second the floor is under 2% of one background thread.
+and 0.19 ms for a streamed token. The residual gap on the token path is structural: zeron detects
+unchanged entries by `Arc` pointer equality and does O(1) work per entry, while our feed is owned
+deserialized data, so a pass must walk every row to find the one that moved.
+
+Two correctness bugs on this path were also large performance bugs, which is why the benchmark
+is a gate rather than a report:
+
+- The message cache compared a cheap signature against a full body hash, so it never hit and
+  every pass re-read every message body. Fixing it took the token path from 1.76 ms to 252 µs.
+- User bubbles bypassed the cache entirely, so every pass re-prepared every bubble.
 
 Run it before touching `t3-layout/src/rows.rs`. A regression here is the regression users feel.
