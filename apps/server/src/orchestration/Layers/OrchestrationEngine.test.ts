@@ -1653,7 +1653,7 @@ describe("OrchestrationEngine", () => {
       threadId,
       activity: {
         id: EventId.make(`activity-batch-${index}`),
-        tone: "info" as const,
+        tone: "tool" as const,
         kind: "tool.started",
         summary: `Tool ${index} started`,
         payload: { index },

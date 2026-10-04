@@ -841,6 +841,7 @@ describe("ProviderRuntimeIngestion", () => {
         delta: "older response",
       },
     });
+    await harness.drain();
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",

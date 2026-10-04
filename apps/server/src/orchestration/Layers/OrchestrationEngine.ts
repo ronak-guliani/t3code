@@ -93,7 +93,20 @@ interface ActivityAppendEnvelope extends CommandEnvelope {
 }
 
 const ACTIVITY_APPEND_BATCH_MAX_SIZE = 32;
-const ACTIVITY_APPEND_BATCH_WINDOW = "25 millis";
+const ACTIVITY_APPEND_BATCH_WINDOW_MS = 25;
+const BATCHABLE_TOOL_ACTIVITY_KINDS = new Set(["tool.started", "tool.updated", "tool.completed"]);
+const waitForActivityAppendBatchWindow = () =>
+  Effect.promise(
+    () => new Promise<void>((resolve) => setTimeout(resolve, ACTIVITY_APPEND_BATCH_WINDOW_MS)),
+  );
+
+function isBatchableToolActivity(command: OrchestrationCommand): command is ActivityAppendCommand {
+  return (
+    command.type === "thread.activity.append" &&
+    command.activity.tone === "tool" &&
+    BATCHABLE_TOOL_ACTIVITY_KINDS.has(command.activity.kind)
+  );
+}
 
 class ActivityAppendBatchUnavailable extends Error {}
 
@@ -1270,7 +1283,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       const pending: Array<CommandEnvelope> = [];
       while (true) {
         const envelope = pending.shift() ?? (yield* Queue.take(shardQueue));
-        if (envelope.command.type !== "thread.activity.append") {
+        if (!isBatchableToolActivity(envelope.command)) {
           yield* processEnvelope(envelope);
           continue;
         }
@@ -1281,9 +1294,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
         const firstAdditional = yield* Effect.raceFirst(
           Queue.take(shardQueue).pipe(Effect.map(Option.some)),
-          Effect.sleep(ACTIVITY_APPEND_BATCH_WINDOW).pipe(
-            Effect.as(Option.none<CommandEnvelope>()),
-          ),
+          waitForActivityAppendBatchWindow().pipe(Effect.as(Option.none<CommandEnvelope>())),
         );
         const activityEnvelope = envelope as ActivityAppendEnvelope;
         const threadId = activityEnvelope.command.threadId;
@@ -1291,7 +1302,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         if (Option.isSome(firstAdditional)) {
           const candidate = firstAdditional.value;
           if (
-            candidate.command.type !== "thread.activity.append" ||
+            !isBatchableToolActivity(candidate.command) ||
             candidate.command.threadId !== threadId
           ) {
             pending.push(candidate);
@@ -1299,7 +1310,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             continue;
           }
           batch.push(candidate as ActivityAppendEnvelope);
-          yield* Effect.sleep(ACTIVITY_APPEND_BATCH_WINDOW);
+          yield* waitForActivityAppendBatchWindow();
         }
 
         const queued: Array<CommandEnvelope> = [];
@@ -1312,7 +1323,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         while (consumed < queued.length) {
           const candidate = queued[consumed];
           if (
-            candidate?.command.type !== "thread.activity.append" ||
+            candidate === undefined ||
+            !isBatchableToolActivity(candidate.command) ||
             candidate.command.threadId !== threadId
           ) {
             break;
