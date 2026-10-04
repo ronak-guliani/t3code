@@ -5,6 +5,7 @@ import { Effect, Layer, Option } from "effect";
 import { expect } from "vitest";
 
 import { ServerConfig } from "../../config.ts";
+import { DEFAULT_SQLITE_READ_POOL_SIZE } from "../../persistence/SqlitePolicy.ts";
 import {
   ProjectionPendingApprovalRepository,
   type ProjectionPendingApprovalRepositoryShape,
@@ -132,7 +133,7 @@ projectionReconcilerLayer("ProjectionReconciler", (it) => {
       const reconciler = yield* ProjectionReconciler;
       maxConcurrentThreadReads.value = 0;
       yield* reconciler.drain;
-      expect(maxConcurrentThreadReads.value).toBe(4);
+      expect(maxConcurrentThreadReads.value).toBe(DEFAULT_SQLITE_READ_POOL_SIZE);
     }),
   );
 });
