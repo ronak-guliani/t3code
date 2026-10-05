@@ -164,14 +164,10 @@ it.live(
               issuedAt: Date.now(),
             }),
             Effect.provide(
-              ProjectionThreadMessageRepositoryLive.pipe(
-                Layer.provide(makeSqlitePersistenceLive(harness.dbPath)),
-              ),
-            ),
-            Effect.provide(
-              ProjectionQueuedTurnRepositoryLive.pipe(
-                Layer.provide(makeSqlitePersistenceLive(harness.dbPath)),
-              ),
+              Layer.mergeAll(
+                ProjectionThreadMessageRepositoryLive,
+                ProjectionQueuedTurnRepositoryLive,
+              ).pipe(Layer.provide(makeSqlitePersistenceLive(harness.dbPath))),
             ),
           );
           assert.isFalse(historyOutcome.isFailure);
