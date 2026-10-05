@@ -300,7 +300,7 @@ describe("retainThreadDetailSubscription", () => {
     const get = vi
       .fn()
       .mockRejectedValueOnce(
-        new Error("History changed; reload this thread before loading earlier turns."),
+        Object.assign(new Error("The anchor vanished"), { reason: "history-cursor-stale" }),
       );
     const h = await pagedHarness(get);
     const request = h.service
@@ -325,6 +325,73 @@ describe("retainThreadDetailSubscription", () => {
     expect(h.page()?.beforeCursor).toBe("fresh-anchor");
     expect(h.page()?.loadingOlder).toBe(false);
     expect(h.page()?.error).toBeNull();
+    h.stop();
+  });
+
+  it("bounds a parked older-page wait and leaves it retryable", async () => {
+    const h = await pagedHarness(
+      vi.fn(async () => ({
+        snapshotSequence: 100,
+        thread: makeOrchestrationThread(ThreadId.make("paging-review"), "Parked"),
+        page: { snapshotSequence: 100, threadSequence: 20, hasMore: false, beforeCursor: null },
+      })),
+    );
+    let failure: string | null = null;
+    const request = h.service.loadOlderThreadHistory(h.environmentId, h.threadId).catch((error) => {
+      failure = error.message;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.page()?.loadingOlder).toBe(true);
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(failure).toMatch(/timed out|unavailable/i);
+    expect(h.page()?.loadingOlder).toBe(false);
+    h.stop();
+    await request;
+  });
+
+  it("refreshes a modern unknown message without first-message provenance instead of constructing a partial row", async () => {
+    const h = await pagedHarness(vi.fn());
+    h.listener()({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 10,
+        thread: h.thread,
+        page: {
+          snapshotSequence: 10,
+          threadSequence: 10,
+          hasMore: true,
+          beforeCursor: "old-anchor",
+          windowStart: { sequence: 5, rowId: 5 },
+        },
+      },
+    });
+    h.listener()({
+      kind: "event",
+      event: {
+        ...metaUpdatedEvent(h.threadId, 11, "Unused"),
+        type: "thread.message-sent",
+        payload: {
+          threadId: h.threadId,
+          messageId: MessageId.make("missing-provenance"),
+          role: "assistant",
+          turnId: TurnId.make("old-turn"),
+          text: "tail",
+          streaming: true,
+          createdAt: h.thread.createdAt,
+          updatedAt: h.thread.updatedAt,
+        },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(2);
+    expect(
+      h.store
+        .selectThreadByRef(h.store.useStore.getState(), {
+          environmentId: h.environmentId,
+          threadId: h.threadId,
+        })
+        ?.messages.some((m) => m.id === "missing-provenance"),
+    ).toBe(false);
     h.stop();
   });
 

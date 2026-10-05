@@ -18,6 +18,7 @@ export const DEFAULT_HISTORY_RETENTION: Readonly<HistoryRetentionLimits> = Objec
   checkpoints: 500,
   proposedPlans: 200,
 });
+export const THREAD_HISTORY_PAGE_WAIT_TIMEOUT_MS = 5_000;
 export function historyRetentionLimits(thread: {
   messages: { length: number };
   activities: { length: number };
@@ -44,9 +45,15 @@ export function historyCursorAfterTrim<
     windowStart?: OrchestrationMessageOrigin | null | undefined;
     userOrigins?: Readonly<Record<string, OrchestrationMessageOrigin>> | undefined;
   },
->(page: P, threadId: string, messages: readonly { id: string; role: string }[]): P {
+>(
+  page: P,
+  threadId: string,
+  messages: readonly { id: string; role: string }[],
+  removedCount: number,
+): P | null {
+  if (removedCount === 0) return page;
   const first = messages.find((message) => message.role === "user");
-  if (!first) return page;
+  if (!first || !page.userOrigins?.[first.id]) return null;
   const userOrigins = Object.fromEntries(
     messages
       .filter((message) => message.role === "user" && page.userOrigins?.[message.id] !== undefined)
@@ -56,7 +63,7 @@ export function historyCursorAfterTrim<
     ...page,
     beforeCursor: encodeThreadHistoryCursor(threadId, first.id),
     hasMore: true,
-    windowStart: userOrigins[first.id] ?? null,
+    windowStart: userOrigins[first.id]!,
     userOrigins,
   };
 }
@@ -65,12 +72,6 @@ export function isHistoryCursorExpired(error: unknown): boolean {
   while (typeof error === "object" && error !== null && !seen.has(error)) {
     seen.add(error);
     if ("reason" in error && error.reason === "history-cursor-stale") return true;
-    if (
-      "message" in error &&
-      typeof error.message === "string" &&
-      error.message.includes("History changed; reload this thread")
-    )
-      return true;
     error = "cause" in error ? error.cause : undefined;
   }
   return false;
@@ -109,7 +110,11 @@ export type HistoryPagerInput =
   | { type: "synchronized"; sequence?: number }
   | { type: "invalidate"; reload: boolean }
   | { type: "failure"; requestId: number; message: string; expired?: boolean }
-  | { type: "retained"; page: OrchestrationThreadDetailPage; loadedTurns: number };
+  | {
+      type: "retained";
+      thread: { id: string; messages: readonly { id: string; role: string }[] };
+      removedCount: number;
+    };
 export type HistoryPagerEffect =
   | { type: "replace-snapshot"; snapshot: OrchestrationThreadDetailSnapshot }
   | { type: "apply-event"; event: OrchestrationEvent }
@@ -117,7 +122,6 @@ export type HistoryPagerEffect =
       type: "merge-page";
       snapshot: OrchestrationThreadDetailSnapshot;
       events: readonly OrchestrationEvent[];
-      advanceCursor: boolean;
     }
   | { type: "reload" };
 const countTurns = (snapshot: OrchestrationThreadDetailSnapshot) =>
@@ -186,12 +190,17 @@ function readyPage(state: HistoryPagerState): {
       ...state,
       pending: null,
       bufferedMessages: [],
-      page: pending.kind === "older" ? (snapshot.page ?? null) : state.page,
+      page: (pending.kind === "older" ? snapshot.page : state.page)
+        ? {
+            ...(pending.kind === "older" ? snapshot.page : state.page)!,
+            userOrigins: { ...state.page?.userOrigins, ...snapshot.page?.userOrigins },
+          }
+        : null,
       loadedTurns,
       requestedTurns: Math.max(state.requestedTurns, loadedTurns),
       error: null,
     },
-    effects: [{ type: "merge-page", snapshot, events, advanceCursor: pending.kind === "older" }],
+    effects: [{ type: "merge-page", snapshot, events }],
   };
 }
 /** Pure transitions own fencing, message membership, watermarks and reload depth.
@@ -263,6 +272,18 @@ export function reduceHistoryPager(
     case "event": {
       if (input.event.sequence <= state.sequence) return { state, effects: [] };
       const sequence = input.event.sequence;
+      // Modern windows promise stable provenance. Unknown deltas without it
+      // need a baseline, not a newly invented partial message. Legacy servers
+      // omit windowStart entirely and retain their eager/live behavior.
+      if (
+        state.page?.windowStart !== undefined &&
+        input.event.type === "thread.message-sent" &&
+        !input.messageOrigin &&
+        !input.loadedMessageIds.includes(input.event.payload.messageId)
+      )
+        return state.needsSnapshot
+          ? { state: { ...state, sequence }, effects: [] }
+          : reduceHistoryPager({ ...state, sequence }, { type: "invalidate", reload: true });
       if (input.event.type === "thread.reverted" && state.page) {
         const invalid = reduceHistoryPager(
           { ...state, sequence },
@@ -323,21 +344,34 @@ export function reduceHistoryPager(
         state: { ...state, pending: null, bufferedMessages: [], error: input.message },
         effects: [],
       };
-    case "retained":
+    case "retained": {
+      const loadedTurns = input.thread.messages.filter((message) => message.role === "user").length;
+      const page =
+        state.page && !state.needsSnapshot
+          ? historyCursorAfterTrim(
+              state.page,
+              input.thread.id,
+              input.thread.messages,
+              input.removedCount,
+            )
+          : state.page;
+      if (state.page && page === null)
+        return reduceHistoryPager({ ...state, loadedTurns }, { type: "invalidate", reload: true });
       return {
         state: {
           ...state,
-          page: input.page,
-          loadedTurns: input.loadedTurns,
-          ...(state.pending && input.page.beforeCursor !== state.page?.beforeCursor
+          page,
+          loadedTurns,
+          ...(state.pending && page?.beforeCursor !== state.page?.beforeCursor
             ? { epoch: state.epoch + 1, pending: null, bufferedMessages: [] }
             : {}),
           requestedTurns:
             state.needsSnapshot || state.requestedTurns > state.loadedTurns
               ? state.requestedTurns
-              : input.loadedTurns,
+              : loadedTurns,
         },
         effects: [],
       };
+    }
   }
 }

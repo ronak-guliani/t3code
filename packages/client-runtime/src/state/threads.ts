@@ -11,6 +11,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -21,16 +22,16 @@ import { Atom } from "effect/unstable/reactivity";
 import {
   INITIAL_THREAD_USER_TURN_LIMIT,
   OLDER_THREAD_PAGE_USER_TURN_LIMIT,
-  prependHistoryRows,
+  mergeHistoryCollections,
 } from "@t3tools/shared/threadHistory";
 import {
   createHistoryPager,
   reduceHistoryPager,
   historyRetentionLimits,
   retainHistoryRows,
-  historyCursorAfterTrim,
   isHistoryCursorExpired,
   DEFAULT_HISTORY_RETENTION,
+  THREAD_HISTORY_PAGE_WAIT_TIMEOUT_MS,
   type HistoryPagerInput,
 } from "@t3tools/shared/threadHistoryState";
 
@@ -55,17 +56,6 @@ import {
 function statusWithoutLiveData(data: Option.Option<OrchestrationThread>): EnvironmentThreadStatus {
   return Option.isSome(data) ? "cached" : "empty";
 }
-
-/**
- * Turn window sizes for paginated thread loads: the initial page covers the
- * last 10 user-anchored turns (subagent/fan-out turns ride along), each
- * "load earlier" tap fetches 20 more. Sized so first paint on the heaviest
- * observed threads stays around 100K gzipped while median threads load fully.
- */
-export {
-  INITIAL_THREAD_USER_TURN_LIMIT,
-  OLDER_THREAD_PAGE_USER_TURN_LIMIT,
-} from "@t3tools/shared/threadHistory";
 
 function pageStateFromSnapshot(
   page: OrchestrationThreadDetailPage | undefined,
@@ -193,6 +183,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   resumeCache?: ThreadResumeCache,
 ) {
   const supervisor = yield* EnvironmentSupervisor;
+  const scope = yield* Effect.scope;
   const cache = yield* EnvironmentCacheStore;
   const snapshotLoader = Option.getOrUndefined(yield* Effect.serviceOption(ThreadSnapshotLoader));
   const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
@@ -266,6 +257,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     ),
   );
   const historyReloads = yield* Queue.unbounded<void>();
+  const pageTimeouts = yield* Queue.unbounded<number>();
+  const pageTimeout = yield* Ref.make<{ id: number; fiber: Fiber.Fiber<void> } | null>(null);
   const olderTurnRequests = yield* Queue.sliding<void>(1);
   // Serializes stream-item application against older-page staleness checks +
   // merges. Without it, a revert or snapshot processed between loadOlderTurns'
@@ -397,14 +390,12 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   ) {
     const waiting = yield* Ref.get(awaitingCompletion);
     const current = yield* SubscriptionRef.get(state);
-    let nextPage = page === "keep" ? current.page : page;
+    const nextPage = page === "keep" ? current.page : page;
+    let removedCount = 0;
     if (Option.isSome(nextPage)) {
       const limits = nextPage.value.retention ?? DEFAULT_HISTORY_RETENTION;
       const messages = retainHistoryRows(thread.messages, limits.messages);
-      const currentPager = yield* Ref.get(pager);
-      let metadata = currentPager.page ?? nextPage.value.metadata;
-      if (metadata && messages !== thread.messages)
-        metadata = historyCursorAfterTrim(metadata, threadId, messages);
+      removedCount = thread.messages.length - messages.length;
       const activities = retainHistoryRows(thread.activities, limits.activities);
       const evicted = thread.activities.slice(
         0,
@@ -422,44 +413,14 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           (thread.latestTurn !== null &&
             evicted.some((activity) => activity.turnId === thread.latestTurn?.turnId)),
       };
-      nextPage = Option.some({
-        ...nextPage.value,
-        ...(metadata === undefined
-          ? {}
-          : { metadata, beforeCursor: metadata.beforeCursor, hasMore: metadata.hasMore }),
-      });
     }
-    yield* SubscriptionRef.update(state, (current) => ({
+    yield* SubscriptionRef.set(state, {
       data: Option.some(thread),
       status: waiting ? ("synchronizing" as const) : ("live" as const),
       error: Option.none(),
       page: nextPage,
-    }));
-    // Active threads can update many times per second and retain large tool
-    // payloads. The server remains the source of truth while a turn is active;
-    // persist once it settles so cache encoding stays off the streaming path.
-    if (shouldPersistThread(thread)) {
-      const snapshotSequence = yield* SubscriptionRef.get(lastSequence);
-      const currentPage = yield* SubscriptionRef.get(state).pipe(Effect.map((value) => value.page));
-      yield* Queue.offer(persistence, {
-        snapshotSequence,
-        thread,
-        // Persist the window boundary with the window's content so a cache
-        // restore can keep paging from where the loaded history ends.
-        ...Option.match(currentPage, {
-          onNone: () => ({}),
-          onSome: (value) =>
-            ({
-              page: {
-                ...value.metadata,
-                beforeCursor: value.beforeCursor,
-                hasMore: value.hasMore,
-                snapshotSequence,
-              },
-            }) as const,
-        }),
-      });
-    }
+    });
+    return removedCount;
   });
 
   const setDeleted = Effect.fn("EnvironmentThreadState.setDeleted")(function* () {
@@ -497,16 +458,17 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     const result = reduceHistoryPager(previous, input);
     yield* Ref.set(pager, result.state);
     yield* SubscriptionRef.set(lastSequence, result.state.sequence);
+    let removedCount = 0;
     for (const effect of result.effects) {
       switch (effect.type) {
         case "replace-snapshot":
-          yield* setThread(
+          removedCount += yield* setThread(
             effect.snapshot.thread,
             pageStateFromSnapshot(effect.snapshot.page, effect.snapshot.thread),
           );
           break;
         case "merge-page":
-          yield* mergeOlderPage(effect.snapshot, effect.events, effect.advanceCursor);
+          yield* mergeOlderPage(effect.snapshot, effect.events);
           break;
         case "reload":
           yield* Queue.offer(historyReloads, undefined);
@@ -518,39 +480,28 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
             break;
           }
           const update = applyThreadDetailEvent(current.data.value, effect.event);
-          if (update.kind === "updated") yield* setThread(update.thread, "keep");
+          if (update.kind === "updated") removedCount += yield* setThread(update.thread, "keep");
           if (update.kind === "deleted") yield* setDeleted();
           break;
         }
       }
     }
     const current = yield* SubscriptionRef.get(state);
-    const currentPager = yield* Ref.get(pager);
     const changedDepth =
       input.type === "snapshot" ||
       result.effects.some((effect) => effect.type === "merge-page") ||
       (input.type === "event" &&
         (input.event.type === "thread.reverted" ||
           (input.event.type === "thread.message-sent" && input.event.payload.role === "user")));
-    if (
-      Option.isSome(current.page) &&
-      current.page.value.metadata &&
-      Option.isSome(current.data) &&
-      (changedDepth || current.page.value.metadata !== currentPager.page)
-    ) {
-      const metadata = current.page.value.metadata;
-      const loadedTurns = current.data.value.messages.filter(
-        (message) => message.role === "user",
-      ).length;
-      yield* Ref.update(
-        pager,
-        (value) =>
-          reduceHistoryPager(value, {
-            type: "retained",
-            page: metadata,
-            loadedTurns,
-          }).state,
-      );
+    if (Option.isSome(current.data) && (changedDepth || removedCount > 0)) {
+      const retained = reduceHistoryPager(yield* Ref.get(pager), {
+        type: "retained",
+        thread: current.data.value,
+        removedCount,
+      });
+      yield* Ref.set(pager, retained.state);
+      for (const effect of retained.effects)
+        if (effect.type === "reload") yield* Queue.offer(historyReloads, undefined);
     }
     const final = yield* Ref.get(pager);
     yield* SubscriptionRef.update(state, (value) => {
@@ -563,16 +514,53 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           : Option.some(final.error);
       if (
         !page ||
+        !final.page ||
         (page.loadingOlder === (final.pending !== null) &&
+          page.metadata === final.page &&
           Option.getOrNull(error) === Option.getOrNull(value.error))
       )
         return value;
       return {
         ...value,
         error,
-        page: Option.some({ ...page, loadingOlder: final.pending !== null }),
+        page: Option.some({
+          ...page,
+          metadata: final.page,
+          beforeCursor: final.page.beforeCursor,
+          hasMore: final.page.hasMore,
+          loadingOlder: final.pending !== null,
+        }),
       };
     });
+    const deadline = yield* Ref.get(pageTimeout);
+    if (deadline && deadline.id !== final.pending?.id) {
+      yield* Ref.set(pageTimeout, null);
+      yield* Fiber.interrupt(deadline.fiber);
+    }
+    if (input.type === "page" && final.pending?.snapshot) {
+      const id = final.pending.id;
+      const fiber = yield* Effect.sleep(THREAD_HISTORY_PAGE_WAIT_TIMEOUT_MS).pipe(
+        Effect.andThen(Queue.offer(pageTimeouts, id)),
+        Effect.asVoid,
+        Effect.forkIn(scope),
+      );
+      yield* Ref.set(pageTimeout, { id, fiber });
+    }
+    // Persist data with the canonical boundary *after* projection, never a
+    // trimmed/merged window paired with the previous cursor. Active streaming
+    // stays off the cache encoding path; merged data uses the loaded watermark.
+    const value = yield* SubscriptionRef.get(state);
+    if (
+      result.effects.length > 0 &&
+      !final.needsSnapshot &&
+      Option.isSome(value.data) &&
+      shouldPersistThread(value.data.value)
+    )
+      yield* Queue.offer(persistence, {
+        snapshotSequence: final.sequence,
+        thread: value.data.value,
+        ...(final.page ? { page: { ...final.page, snapshotSequence: final.sequence } } : {}),
+      });
     if (
       (input.type === "snapshot" ||
         result.effects.some((effect) => effect.type === "merge-page")) &&
@@ -629,7 +617,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const mergeOlderPage = Effect.fn("EnvironmentThreadState.mergeOlderPage")(function* (
     snapshot: OrchestrationThreadDetailSnapshot,
     buffered: readonly OrchestrationEvent[],
-    advanceCursor: boolean,
   ) {
     // The merge is built inside the update callback so it composes with
     // whatever thread value is current at commit time. The applyLock already
@@ -642,12 +629,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       }
       const loaded = value.data.value;
       const older = snapshot.thread;
-      const mergeById = <T extends { readonly id: string }>(
-        olderRows: ReadonlyArray<T>,
-        loadedRows: ReadonlyArray<T>,
-      ): ReadonlyArray<T> => {
-        return prependHistoryRows(olderRows, loadedRows, (row) => row.id);
-      };
       merged = {
         // Thread metadata stays the loaded (newer) snapshot's; only the
         // windowed collections gain rows from the older page.
@@ -657,10 +638,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           loaded.hasMoreCurrentTurnActivities === true ||
           (loaded.latestTurn?.turnId === older.latestTurn?.turnId &&
             older.hasMoreCurrentTurnActivities === true),
-        messages: mergeById(older.messages, loaded.messages),
-        activities: mergeById(older.activities, loaded.activities),
-        proposedPlans: mergeById(older.proposedPlans, loaded.proposedPlans),
-        checkpoints: prependHistoryRows(older.checkpoints, loaded.checkpoints, (row) => row.turnId),
+        ...mergeHistoryCollections(older, loaded),
       };
       for (const event of buffered) {
         const update = applyThreadDetailEvent(merged, event);
@@ -669,35 +647,12 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       return {
         ...value,
         data: Option.some(merged),
-        page: Option.map(
-          advanceCursor ? pageStateFromSnapshot(snapshot.page, merged) : value.page,
-          (page) => ({
-            ...page,
-            retention: historyRetentionLimits(merged!),
-            metadata: {
-              ...(advanceCursor ? snapshot.page : page.metadata)!,
-              userOrigins: {
-                ...Option.getOrUndefined(value.page)?.metadata?.userOrigins,
-                ...snapshot.page?.userOrigins,
-              },
-            },
-          }),
-        ),
+        page: Option.map(value.page, (page) => ({
+          ...page,
+          retention: historyRetentionLimits(merged!),
+        })),
       };
     });
-    // Persist the widened window under the *loaded* watermark: the merged
-    // content is only known consistent with the state it merged into, not
-    // with the page's own (possibly newer) sequence.
-    if (merged !== null && shouldPersistThread(merged)) {
-      const snapshotSequence = yield* SubscriptionRef.get(lastSequence);
-      const metadata = Option.getOrUndefined((yield* SubscriptionRef.get(state)).page)?.metadata;
-      yield* Queue.offer(persistence, {
-        snapshotSequence,
-        thread: merged,
-        ...(metadata === undefined ? {} : { page: { ...metadata, snapshotSequence } }),
-      });
-    }
-    yield* remember;
   });
 
   const loadOlderTurns = Effect.fn("EnvironmentThreadState.loadOlderTurns")(function* () {
@@ -707,9 +662,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     if (!(yield* Ref.get(paginationSupported))) {
       return;
     }
-    const current = yield* SubscriptionRef.get(state);
-    const page = Option.getOrNull(current.page);
-    if (page === null || page.loadingOlder || !page.hasMore || page.beforeCursor === null) {
+    const current = yield* Ref.get(pager);
+    const page = current.page;
+    if (page === null || current.pending !== null || !page.hasMore || page.beforeCursor === null) {
       return;
     }
     const prepared = Option.getOrNull(yield* SubscriptionRef.get(supervisor.prepared));
@@ -753,6 +708,19 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           : transitionHistory({ type: "page", requestId, snapshot: response.success.value }),
     );
   });
+
+  yield* Stream.fromQueue(pageTimeouts).pipe(
+    Stream.runForEach((requestId) =>
+      applyLock.withPermits(1)(
+        transitionHistory({
+          type: "failure",
+          requestId,
+          message: "Earlier history timed out. Please retry.",
+        }),
+      ),
+    ),
+    Effect.forkScoped,
+  );
 
   yield* SubscriptionRef.changes(supervisor.state).pipe(
     Stream.runForEach((connectionState) => {

@@ -34,6 +34,7 @@ import {
   RpcClientId,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
+  type OrchestrationMessageOrigin,
   type OrchestrationThread,
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
@@ -143,6 +144,7 @@ import {
   toShellStreamEvent as projectShellStreamEvent,
 } from "./orchestration/shellStream.ts";
 import { isThreadDetailEvent } from "./orchestration/threadDetailEvents.ts";
+import { threadHistoryWindowOptions } from "./orchestration/threadHistoryWindow.ts";
 import { collectActiveThreadSubtree } from "./orchestration/threadHierarchy.ts";
 import {
   createChatArchiveManifest,
@@ -1366,22 +1368,7 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getThreadSnapshot,
             projectionSnapshotQuery
-              .getThreadDetailSnapshotById(
-                input.threadId,
-                input.turnLimit === undefined &&
-                  input.beforeCursor === undefined &&
-                  input.aroundMessageId === undefined
-                  ? undefined
-                  : {
-                      ...(input.turnLimit === undefined ? {} : { turnLimit: input.turnLimit }),
-                      ...(input.beforeCursor === undefined
-                        ? {}
-                        : { beforeCursor: input.beforeCursor }),
-                      ...(input.aroundMessageId === undefined
-                        ? {}
-                        : { aroundMessageId: input.aroundMessageId }),
-                    },
-              )
+              .getThreadDetailSnapshotById(input.threadId, threadHistoryWindowOptions(input))
               .pipe(
                 Effect.flatMap((snapshot) => {
                   if (Option.isNone(snapshot)) {
@@ -1514,21 +1501,40 @@ const makeWsRpcLayer = (
             Effect.gen(function* () {
               // First-message origin is stable across deltas. Cache only a
               // bounded number of identities, not the thread's whole history.
-              const origins = new Map<
-                string,
-                import("@t3tools/contracts").OrchestrationMessageOrigin
-              >();
-              const projectThreadEvent = (event: import("@t3tools/contracts").OrchestrationEvent) =>
+              const origins = new Map<string, OrchestrationMessageOrigin>();
+              const window = threadHistoryWindowOptions(input);
+              let materializedSequence = 0;
+              const loadThreadSnapshot = () =>
+                projectionSnapshotQuery.getThreadDetailSnapshotById(input.threadId, window).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: `Failed to load thread ${input.threadId}`,
+                        cause,
+                      }),
+                  ),
+                  Effect.flatMap((snapshot) =>
+                    Option.isNone(snapshot)
+                      ? Effect.fail(
+                          new OrchestrationGetSnapshotError({
+                            message: `Thread ${input.threadId} was not found`,
+                            cause: input.threadId,
+                          }),
+                        )
+                      : Effect.sync(() => {
+                          materializedSequence = Math.max(
+                            materializedSequence,
+                            snapshot.value.snapshotSequence,
+                          );
+                          return snapshot.value;
+                        }),
+                  ),
+                );
+              const projectThreadEvent = (event: OrchestrationEvent) =>
                 Effect.gen(function* () {
                   if (event.type === "thread.reverted") origins.clear();
                   let messageOrigin;
-                  if (
-                    event.type === "thread.message-sent" &&
-                    (input.turnLimit !== undefined ||
-                      input.beforeCursor !== undefined ||
-                      input.aroundMessageId !== undefined) &&
-                    projectionSnapshotQuery.getThreadMessageOriginById
-                  ) {
+                  if (event.type === "thread.message-sent" && window !== undefined) {
                     messageOrigin = origins.get(event.payload.messageId);
                     if (messageOrigin === undefined) {
                       messageOrigin = Option.getOrUndefined(
@@ -1542,6 +1548,13 @@ const makeWsRpcLayer = (
                         origins.set(event.payload.messageId, messageOrigin);
                       }
                     }
+                    // Never construct a partial historical row without stable
+                    // provenance. A replacement baseline covers this event.
+                    if (messageOrigin === undefined)
+                      return {
+                        kind: "snapshot" as const,
+                        snapshot: projectThreadDetailSnapshot(yield* loadThreadSnapshot()),
+                      };
                   }
                   return {
                     kind: "event" as const,
@@ -1623,44 +1636,16 @@ const makeWsRpcLayer = (
                           liveAfterHead,
                         )
                       : liveAfterHead,
-                  ).pipe(Stream.mapEffect(enrichThreadItem));
+                  ).pipe(
+                    Stream.filter(
+                      (item) => item.kind !== "event" || item.event.sequence > materializedSequence,
+                    ),
+                    Stream.mapEffect(enrichThreadItem),
+                  );
                 }
               }
 
-              const threadSnapshot = yield* projectionSnapshotQuery
-                .getThreadDetailSnapshotById(
-                  input.threadId,
-                  input.turnLimit === undefined &&
-                    input.beforeCursor === undefined &&
-                    input.aroundMessageId === undefined
-                    ? undefined
-                    : {
-                        ...(input.turnLimit === undefined ? {} : { turnLimit: input.turnLimit }),
-                        ...(input.beforeCursor === undefined
-                          ? {}
-                          : { beforeCursor: input.beforeCursor }),
-                        ...(input.aroundMessageId === undefined
-                          ? {}
-                          : { aroundMessageId: input.aroundMessageId }),
-                      },
-                )
-                .pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationGetSnapshotError({
-                        message: `Failed to load thread ${input.threadId}`,
-                        cause,
-                      }),
-                  ),
-                );
-
-              if (Option.isNone(threadSnapshot)) {
-                return yield* new OrchestrationGetSnapshotError({
-                  message: `Thread ${input.threadId} was not found`,
-                  cause: input.threadId,
-                });
-              }
-              const { snapshotSequence } = threadSnapshot.value;
+              const threadSnapshot = yield* loadThreadSnapshot();
               const synchronizedThenLive =
                 input.requestCompletionMarker === true
                   ? Stream.concat(
@@ -1674,13 +1659,13 @@ const makeWsRpcLayer = (
               return Stream.concat(
                 Stream.make({
                   kind: "snapshot" as const,
-                  snapshot: projectThreadDetailSnapshot(threadSnapshot.value),
+                  snapshot: projectThreadDetailSnapshot(threadSnapshot),
                 }),
                 synchronizedThenLive.pipe(
                   Stream.filter(
                     (item) =>
                       item.kind === "synchronized" ||
-                      (item.kind === "event" && item.event.sequence > snapshotSequence),
+                      (item.kind === "event" && item.event.sequence > materializedSequence),
                   ),
                 ),
               ).pipe(Stream.mapEffect(enrichThreadItem));

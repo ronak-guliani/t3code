@@ -750,7 +750,7 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
           hasMoreOlder={hasMoreOlder}
           loadingOlder={loadingOlder}
           onLoadOlder={onLoadOlder}
-          onAutoloadOlder={routeMessageSearch.message ? null : onLoadOlder}
+          allowAutoloadOlder={!routeMessageSearch.message}
           activeChatFindRowId={
             findController.open ? (findController.activeMatch?.rowId ?? null) : null
           }

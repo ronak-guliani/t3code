@@ -1072,26 +1072,32 @@ export const ThreadHistoryTurnLimit = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: 100 }),
 );
 export const ThreadHistoryCursor = TrimmedNonEmptyString.check(Schema.isMaxLength(2048));
+const exclusiveHistoryWindow = (value: { beforeCursor?: string; aroundMessageId?: string }) =>
+  value.beforeCursor === undefined ||
+  value.aroundMessageId === undefined ||
+  "Choose either beforeCursor or aroundMessageId.";
 export const OrchestrationThreadHistoryWindow = Schema.Struct({
   turnLimit: Schema.optionalKey(ThreadHistoryTurnLimit),
   beforeCursor: Schema.optionalKey(ThreadHistoryCursor),
   aroundMessageId: Schema.optionalKey(MessageId),
-}).check(
-  Schema.makeFilter(
-    (value) =>
-      value.beforeCursor === undefined ||
-      value.aroundMessageId === undefined ||
-      "Choose either beforeCursor or aroundMessageId.",
-  ),
-);
+}).check(Schema.makeFilter(exclusiveHistoryWindow));
 export type OrchestrationThreadHistoryWindow = typeof OrchestrationThreadHistoryWindow.Type;
 
 export const OrchestrationSubscribeThreadInput = Schema.Struct({
   ...OrchestrationThreadHistoryWindow.fields,
   threadId: ThreadId,
+  // Resume reuses an already loaded window; turnLimit sizes a snapshot fallback.
   afterSequence: Schema.optionalKey(NonNegativeInt),
   requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
-});
+}).check(
+  Schema.makeFilter(exclusiveHistoryWindow),
+  Schema.makeFilter(
+    (value) =>
+      value.afterSequence === undefined ||
+      (value.beforeCursor === undefined && value.aroundMessageId === undefined) ||
+      "Historical page selectors cannot be combined with afterSequence. Use getThreadSnapshot.",
+  ),
+);
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 
 export const OrchestrationMessageOrigin = Schema.Struct({
@@ -3450,10 +3456,16 @@ export type OrchestrationGetTurnDiffResult = typeof OrchestrationGetTurnDiffResu
 export const OrchestrationGetThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optionalKey(TurnId),
-  beforeCreatedAt: IsoDateTime,
-  beforeActivityId: EventId,
+  beforeCreatedAt: Schema.optionalKey(IsoDateTime),
+  beforeActivityId: Schema.optionalKey(EventId),
   limit: Schema.optionalKey(NonNegativeInt),
-});
+}).check(
+  Schema.makeFilter(
+    (value) =>
+      (value.beforeCreatedAt === undefined) === (value.beforeActivityId === undefined) ||
+      "Supply both activity cursor fields, or neither for the latest page.",
+  ),
+);
 export type OrchestrationGetThreadActivitiesInput =
   typeof OrchestrationGetThreadActivitiesInput.Type;
 

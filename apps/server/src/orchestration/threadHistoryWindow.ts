@@ -11,6 +11,21 @@ import {
   OLDER_THREAD_PAGE_USER_TURN_LIMIT,
 } from "@t3tools/shared/threadHistory";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
+import { encodeThreadHistoryCursor } from "@t3tools/shared/threadHistoryState";
+
+/** Strip subscribe-only options; absence retains the legacy eager snapshot. */
+export function threadHistoryWindowOptions(
+  input: OrchestrationThreadHistoryWindow,
+): OrchestrationThreadHistoryWindow | undefined {
+  const { turnLimit, beforeCursor, aroundMessageId } = input;
+  return turnLimit === undefined && beforeCursor === undefined && aroundMessageId === undefined
+    ? undefined
+    : {
+        ...(turnLimit === undefined ? {} : { turnLimit }),
+        ...(beforeCursor === undefined ? {} : { beforeCursor }),
+        ...(aroundMessageId === undefined ? {} : { aroundMessageId }),
+      };
+}
 
 interface Anchor {
   readonly messageId: MessageId;
@@ -34,6 +49,7 @@ const Cursor = Schema.Struct({
   messageId: MessageId,
 });
 const decodeCursor = Schema.decodeUnknownSync(Cursor);
+const decodeHistoryWindow = Schema.decodeUnknownSync(OrchestrationThreadHistoryWindow);
 
 // All message queries use the same sequence/rowid ordering as full snapshots.
 // Cursors contain stable IDs, not rowids: the current rowid is re-read so VACUUM
@@ -69,7 +85,7 @@ export const selectThreadHistoryWindow = Effect.fn("selectThreadHistoryWindow")(
       ? INITIAL_THREAD_USER_TURN_LIMIT
       : OLDER_THREAD_PAGE_USER_TURN_LIMIT);
   yield* Effect.try({
-    try: () => Schema.decodeUnknownSync(OrchestrationThreadHistoryWindow)(window),
+    try: () => decodeHistoryWindow(window),
     catch: () =>
       new OrchestrationReadThreadInputError({ message: "Invalid thread history window." }),
   });
@@ -170,10 +186,6 @@ export const selectThreadHistoryWindow = Effect.fn("selectThreadHistoryWindow")(
     ),
     hasMore,
     beforeCursor:
-      hasMore && lower !== null
-        ? Buffer.from(
-            JSON.stringify({ version: 1, threadId, messageId: lower.messageId }),
-          ).toString("base64url")
-        : null,
+      hasMore && lower !== null ? encodeThreadHistoryCursor(threadId, lower.messageId) : null,
   } satisfies ThreadHistorySelection;
 });

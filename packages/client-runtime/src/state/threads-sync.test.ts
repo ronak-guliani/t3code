@@ -241,6 +241,50 @@ const deleted = (): OrchestrationThreadStreamItem => ({
 });
 
 describe("EnvironmentThreads", () => {
+  it.effect("times out a parked page without abandoning future older-page requests", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        cached: BASE_THREAD,
+        loadPage: () =>
+          Effect.succeed(
+            Option.some({
+              snapshotSequence: 100,
+              thread: BASE_THREAD,
+              page: {
+                snapshotSequence: 100,
+                threadSequence: 20,
+                hasMore: false,
+                beforeCursor: null,
+              },
+            }),
+          ),
+      });
+      yield* Queue.offer(harness.inputs, {
+        kind: "snapshot",
+        snapshot: {
+          snapshotSequence: 1,
+          thread: BASE_THREAD,
+          page: { snapshotSequence: 1, threadSequence: 1, hasMore: true, beforeCursor: "older" },
+        },
+      });
+      yield* awaitThreadState(harness.observed, (s) => Option.isSome(s.page));
+      requestOlderThreadTurns(TARGET.environmentId, THREAD_ID);
+      yield* awaitThreadState(
+        harness.observed,
+        (s) => Option.isSome(s.page) && s.page.value.loadingOlder,
+      );
+      yield* Queue.offer(harness.inputs, titleUpdated("Page is parked", 2));
+      yield* awaitThreadState(
+        harness.observed,
+        (s) => Option.isSome(s.data) && s.data.value.title === "Page is parked",
+      );
+      yield* TestClock.adjust("6 seconds");
+      const final = yield* Ref.get(harness.latest);
+      expect(Option.getOrThrow(final.page).loadingOlder).toBe(false);
+      expect(Option.getOrThrow(final.error)).toMatch(/timed out|unavailable/i);
+      expect(requestOlderThreadTurns(TARGET.environmentId, THREAD_ID)).toBe(true);
+    }),
+  );
   it.effect("keeps an interleaved queued reply with an explicit newer message origin", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({

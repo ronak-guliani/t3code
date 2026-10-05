@@ -25,6 +25,7 @@ import type {
   ThreadId,
   MessageId,
   OrchestrationMessageOrigin,
+  OrchestrationThreadDetailPage,
   WorkspaceBinding,
 } from "@t3tools/contracts";
 import { Context } from "effect";
@@ -55,7 +56,7 @@ export interface ProjectionThreadShellProjectContext {
 export interface ProjectionThreadDetailSnapshot {
   readonly snapshotSequence: number;
   readonly thread: OrchestrationThread;
-  readonly page?: import("@t3tools/contracts").OrchestrationThreadDetailPage;
+  readonly page?: OrchestrationThreadDetailPage;
 }
 
 export type ProjectionChatArchiveMessage = Pick<
@@ -194,7 +195,7 @@ export interface ProjectionSnapshotQueryShape {
     Option.Option<ProjectionThreadDetailSnapshot>,
     ProjectionRepositoryError | OrchestrationReadThreadInputError
   >;
-  readonly getThreadMessageOriginById?: (
+  readonly getThreadMessageOriginById: (
     threadId: ThreadId,
     messageId: MessageId,
   ) => Effect.Effect<Option.Option<OrchestrationMessageOrigin>, ProjectionRepositoryError>;

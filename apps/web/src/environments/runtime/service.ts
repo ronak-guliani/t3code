@@ -4,12 +4,12 @@ import {
   type OrchestrationEvent,
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamEvent,
-  type OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadStreamItem,
   type ServerConfig,
   type SidebarStateSnapshot,
   type TerminalEvent,
   ThreadId,
+  type MessageId,
 } from "@t3tools/contracts";
 import { type QueryClient } from "@tanstack/react-query";
 import { Throttler } from "@tanstack/react-pacer";
@@ -93,6 +93,7 @@ import {
   createHistoryPager,
   reduceHistoryPager,
   isHistoryCursorExpired,
+  THREAD_HISTORY_PAGE_WAIT_TIMEOUT_MS,
   type HistoryPagerState,
   type HistoryPagerInput,
 } from "@t3tools/shared/threadHistoryState";
@@ -350,12 +351,13 @@ function waitForHistorySnapshot(history: ThreadHistoryRuntime): Promise<void> {
     const finish = () => {
       clearTimeout(timer);
       history.snapshotWaiters.delete(finish);
-      history.state.needsSnapshot ? reject(new Error("History is unavailable")) : resolve();
+      if (history.state.needsSnapshot) reject(new Error("History is unavailable"));
+      else resolve();
     };
     const timer = setTimeout(() => {
       history.snapshotWaiters.delete(finish);
       reject(new Error("History is unavailable"));
-    }, 6000);
+    }, THREAD_HISTORY_PAGE_WAIT_TIMEOUT_MS);
     history.snapshotWaiters.add(finish);
   });
 }
@@ -363,18 +365,14 @@ function waitForHistorySnapshot(history: ThreadHistoryRuntime): Promise<void> {
 function loadThreadHistoryPage(
   environmentId: EnvironmentId,
   threadId: ThreadId,
-  window:
-    | { kind: "older"; turnLimit: number }
-    | { kind: "around"; messageId: import("@t3tools/contracts").MessageId },
+  window: { kind: "older"; turnLimit: number } | { kind: "around"; messageId: MessageId },
 ): Promise<void> {
   const entry = threadDetailSubscriptions.get(
     getThreadDetailSubscriptionKey(environmentId, threadId),
   );
   const history = entry?.history;
   const connection = readEnvironmentConnection(environmentId);
-  const page = selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[
-    threadId
-  ];
+  const page = history?.state.page;
   if (window.kind === "older" && page && !page.hasMore) return Promise.resolve();
   if (!entry || !history || !connection || !page || (window.kind === "older" && !page.beforeCursor))
     return Promise.reject(new Error("History is unavailable"));
@@ -402,7 +400,21 @@ function loadThreadHistoryPage(
       if (history.state.pending?.id !== requestId) return;
       history.transition({ type: "page", snapshot, requestId });
       if (history.state.pending?.id === requestId)
-        await new Promise<void>((resolve) => history.waiters.set(requestId, resolve));
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(
+            () =>
+              history.transition({
+                type: "failure",
+                requestId,
+                message: "Earlier history timed out. Please retry.",
+              }),
+            THREAD_HISTORY_PAGE_WAIT_TIMEOUT_MS,
+          );
+          history.waiters.set(requestId, () => {
+            clearTimeout(timer);
+            resolve();
+          });
+        });
       if (history.state.error) throw new Error(history.state.error);
     } catch (error) {
       const expired = isHistoryCursorExpired(error);
@@ -437,16 +449,21 @@ export async function loadCompleteThreadHistory(
   shouldContinue: () => boolean = () => true,
 ): Promise<void> {
   while (shouldContinue()) {
-    const page = selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[
-      threadId
-    ];
+    const history = threadDetailSubscriptions.get(
+      getThreadDetailSubscriptionKey(environmentId, threadId),
+    )?.history;
+    if (
+      !history &&
+      selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[threadId]
+        ?.hasMore
+    )
+      throw new Error("History is unavailable");
+    const page = history?.state.page;
     if (!page?.hasMore) return;
     const before = page.beforeCursor;
     await loadOlderThreadHistory(environmentId, threadId);
-    const after = selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[
-      threadId
-    ];
-    if (after?.error) throw new Error(after.error);
+    const after = history?.state.page;
+    if (history?.state.error) throw new Error(history.state.error);
     if (after?.hasMore && after.beforeCursor === before)
       throw new Error("History is unavailable: the history window did not advance.");
   }
@@ -455,7 +472,7 @@ export async function loadCompleteThreadHistory(
 export async function loadThreadHistoryAroundMessage(
   environmentId: EnvironmentId,
   threadId: ThreadId,
-  messageId: import("@t3tools/contracts").MessageId,
+  messageId: MessageId,
 ): Promise<void> {
   const ref = scopeThreadRef(environmentId, threadId);
   if (
@@ -506,29 +523,44 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
   entry.history = history;
   let cancelled = false;
   let batchedEvents: OrchestrationEvent[] | null = null;
+  let removedMessages = 0;
+  let changedDepth = false;
+  const applyHistoryEvents = (events: readonly OrchestrationEvent[]) => {
+    if (
+      !events.some(
+        (event) => event.type === "thread.message-sent" || event.type === "thread.reverted",
+      )
+    ) {
+      applyRecoveredEventBatch(events, entry.environmentId);
+      return;
+    }
+    const ids = new Set(selectThreadByRef(useStore.getState(), ref)?.messages.map((m) => m.id));
+    for (const event of events)
+      if (event.type === "thread.message-sent") ids.add(event.payload.messageId);
+    applyRecoveredEventBatch(events, entry.environmentId);
+    const after = selectThreadByRef(useStore.getState(), ref);
+    if (after) removedMessages += Math.max(0, ids.size - after.messages.length);
+  };
   const flushEventBatch = () => {
     if (batchedEvents?.length) {
       const events = batchedEvents;
       batchedEvents = [];
-      applyRecoveredEventBatch(events, entry.environmentId);
+      applyHistoryEvents(events);
     }
   };
   const retainWindow = () => {
-    const page = selectEnvironmentState(useStore.getState(), entry.environmentId)
-      .threadHistoryById?.[entry.threadId];
+    if (!changedDepth && removedMessages === 0) return;
+    changedDepth = false;
     const thread = selectThreadByRef(useStore.getState(), ref);
-    if (page && thread && history.state.page)
+    if (thread && history.state.page) {
+      const removedCount = removedMessages;
+      removedMessages = 0;
       history.transition({
         type: "retained",
-        page: {
-          ...history.state.page,
-          beforeCursor: page.beforeCursor,
-          hasMore: page.hasMore,
-          ...(page.windowStart === undefined ? {} : { windowStart: page.windowStart }),
-          ...(page.userOrigins === undefined ? {} : { userOrigins: page.userOrigins }),
-        },
-        loadedTurns: thread.messages.filter((message) => message.role === "user").length,
+        thread,
+        removedCount,
       });
+    }
   };
   let reloadQueued = false;
   const reload = () => {
@@ -549,10 +581,10 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
   };
   const restoreDepth = async () => {
     while (
-      !cancelled &&
       history.state.loadedTurns < history.state.requestedTurns &&
       history.state.page?.hasMore
     ) {
+      if (cancelled) return;
       const before = history.state.page.beforeCursor;
       await loadOlderThreadHistory(
         entry.environmentId,
@@ -569,30 +601,24 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
     const previous = history.state;
     const result = reduceHistoryPager(previous, input);
     history.state = result.state;
-    if (
-      input.type === "event" &&
-      input.event.type === "thread.message-sent" &&
-      input.event.payload.role === "user" &&
-      history.state.page?.userOrigins
-    )
-      useStore.getState().setThreadHistoryOrigins(ref, history.state.page.userOrigins);
     for (const effect of result.effects) {
       if (effect.type === "apply-event") {
+        if (
+          effect.event.type === "thread.reverted" ||
+          (effect.event.type === "thread.message-sent" && effect.event.payload.role === "user")
+        )
+          changedDepth = true;
         if (batchedEvents) batchedEvents.push(effect.event);
-        else applyRecoveredEventBatch([effect.event], entry.environmentId);
+        else applyHistoryEvents([effect.event]);
       } else {
         flushEventBatch();
+        if (effect.type === "replace-snapshot" || effect.type === "merge-page") changedDepth = true;
         if (effect.type === "replace-snapshot")
           useStore.getState().syncServerThreadSnapshot(effect.snapshot, entry.environmentId);
         if (effect.type === "merge-page")
           useStore
             .getState()
-            .mergeOlderThreadSnapshot(
-              effect.snapshot,
-              entry.environmentId,
-              effect.events,
-              effect.advanceCursor,
-            );
+            .mergeOlderThreadSnapshot(effect.snapshot, entry.environmentId, effect.events);
         if (effect.type === "reload") reload();
       }
     }
@@ -601,10 +627,7 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
       history.waiters.get(previous.pending.id)?.();
       history.waiters.delete(previous.pending.id);
     }
-    if (!!previous.pending !== !!history.state.pending || previous.error !== history.state.error)
-      useStore
-        .getState()
-        .setThreadHistoryLoading(ref, history.state.pending !== null, history.state.error);
+    useStore.getState().projectThreadHistoryPager(ref, history.state);
     if (input.type === "snapshot") {
       for (const finish of history.snapshotWaiters) finish();
       void restoreDepth().catch((error) =>

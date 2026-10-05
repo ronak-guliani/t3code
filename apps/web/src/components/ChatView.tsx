@@ -5,7 +5,6 @@ import {
   DEFAULT_PROVIDER_DRIVER_KIND,
   defaultInstanceIdForDriver,
   type EnvironmentId,
-  EventId,
   type MessageId,
   type ModelSelection,
   type ProjectScript,
@@ -1534,6 +1533,13 @@ function ChatViewBody(
     : ((threadHistory
         ? activeThread?.hasMoreActivities
         : activeThread?.hasMoreCurrentTurnActivities) ?? false);
+  // Drain messages first, then independently pageable activity. One selected
+  // lane owns the button's visibility, loading feedback, and next action.
+  const olderHistorySource = threadHistory?.hasMore
+    ? "messages"
+    : hasMoreOlderActivities
+      ? "activities"
+      : null;
   const loadOlderActivities = useCallback(() => {
     if (!activeThread || !activeThreadActivityHistoryKey || !hasMoreOlderActivities) return;
     const oldestActivity = threadHistory
@@ -1560,8 +1566,9 @@ function ChatViewBody(
         ...(activeTurnId !== undefined ? { turnId: activeTurnId } : {}),
         // A turn window is not global activity coverage: independently page
         // from the newest activity so unscoped/interleaved rows are reachable.
-        beforeCreatedAt: oldestActivity?.createdAt ?? "9999-12-31T23:59:59.999Z",
-        beforeActivityId: oldestActivity?.id ?? EventId.make("~"),
+        ...(oldestActivity
+          ? { beforeCreatedAt: oldestActivity.createdAt, beforeActivityId: oldestActivity.id }
+          : {}),
       })
       .then((page) => {
         if (activeThreadActivityHistoryKeyRef.current !== requestKey) return;
@@ -5602,9 +5609,15 @@ function ChatViewBody(
                   messagePreviewLineLimits={settings.messagePreviewLineLimits}
                   workspaceRoot={activeWorkspaceRoot}
                   chatFindShortcutLabel={chatFindShortcutLabel}
-                  hasMoreOlder={threadHistory?.hasMore || hasMoreOlderActivities}
-                  loadingOlder={threadHistory?.loadingOlder || activeOlderActivityState.loading}
-                  onLoadOlder={threadHistory?.hasMore ? loadEarlierTurns : loadOlderActivities}
+                  hasMoreOlder={olderHistorySource !== null}
+                  loadingOlder={
+                    olderHistorySource === "messages"
+                      ? (threadHistory?.loadingOlder ?? false)
+                      : activeOlderActivityState.loading
+                  }
+                  onLoadOlder={
+                    olderHistorySource === "messages" ? loadEarlierTurns : loadOlderActivities
+                  }
                   onEnsureCompleteHistory={ensureCompleteHistory}
                   onEnsureMessageHistory={ensureMessageHistory}
                   onOpenTurnDiff={onOpenTurnDiff}

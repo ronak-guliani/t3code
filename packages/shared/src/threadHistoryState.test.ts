@@ -142,7 +142,8 @@ describe("shared history transitions", () => {
       event: event(11, "unknown-origin"),
       loadedMessageIds: [],
     });
-    expect(unknown.effects.some((e) => e.type === "apply-event")).toBe(true);
+    expect(unknown.effects.some((e) => e.type === "apply-event")).toBe(false);
+    expect(unknown.effects.some((e) => e.type === "reload")).toBe(true);
   });
   it("does not advance the contiguous cursor for an around-message page", () => {
     let state = createHistoryPager(snapshot());

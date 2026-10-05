@@ -17,16 +17,17 @@ import type {
   OrchestrationThreadShell,
   OrchestrationThreadActivity,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationMessageOrigin,
   ProjectId,
   ScopedProjectRef,
   ScopedThreadRef,
 } from "@t3tools/contracts";
-import { prependHistoryRows } from "@t3tools/shared/threadHistory";
+import { mergeHistoryCollections } from "@t3tools/shared/threadHistory";
 import {
   historyRetentionLimits,
-  historyCursorAfterTrim,
   DEFAULT_HISTORY_RETENTION,
   type HistoryRetentionLimits,
+  type HistoryPagerState,
 } from "@t3tools/shared/threadHistoryState";
 import {
   applyWorkflowRuntimeEvent,
@@ -80,10 +81,8 @@ export interface ThreadHistoryPageState {
   loadingOlder: boolean;
   error: string | null;
   retention?: HistoryRetentionLimits;
-  windowStart?: import("@t3tools/contracts").OrchestrationMessageOrigin | null | undefined;
-  userOrigins?:
-    | Readonly<Record<string, import("@t3tools/contracts").OrchestrationMessageOrigin>>
-    | undefined;
+  windowStart?: OrchestrationMessageOrigin | null | undefined;
+  userOrigins?: Readonly<Record<string, OrchestrationMessageOrigin>> | undefined;
 }
 
 export interface EnvironmentState {
@@ -1695,20 +1694,6 @@ function updateThreadMessageState(
 
   const nextState: EnvironmentState = {
     ...state,
-    ...(nextMessageIds.length < messageIds.length + 1 &&
-    previousMessage === undefined &&
-    state.threadHistoryById?.[threadId]
-      ? {
-          threadHistoryById: {
-            ...state.threadHistoryById,
-            [threadId]: historyCursorAfterTrim(
-              state.threadHistoryById[threadId]!,
-              threadId,
-              nextMessageIds.map((id) => nextMessagesById[id]!),
-            ),
-          },
-        }
-      : {}),
     ...(shell.updatedAt === event.occurredAt
       ? {}
       : {
@@ -1955,12 +1940,15 @@ export function mergeOlderThreadSnapshot(
   snapshot: OrchestrationThreadDetailSnapshot,
   environmentId: EnvironmentId,
   events: readonly OrchestrationEvent[] = [],
-  advanceCursor = true,
 ): AppState {
   const env = getStoredEnvironmentState(state, environmentId);
   const current = getThreadFromEnvironmentState(env, snapshot.thread.id);
   if (!current) return state;
   const older = mapThread(snapshot.thread, environmentId);
+  const collections = mergeHistoryCollections(
+    { ...older, checkpoints: older.turnDiffSummaries },
+    { ...current, checkpoints: current.turnDiffSummaries },
+  );
   let merged = writeThreadState(
     env,
     {
@@ -1970,22 +1958,10 @@ export function mergeOlderThreadSnapshot(
         current.hasMoreCurrentTurnActivities === true ||
         (current.latestTurn?.turnId === older.latestTurn?.turnId &&
           older.hasMoreCurrentTurnActivities === true),
-      messages: prependHistoryRows(older.messages, current.messages, (row) => row.id),
-      activities: prependHistoryRows(
-        older.activities,
-        current.activities,
-        (row) => row.id,
-      ).toSorted(compareActivities),
-      proposedPlans: prependHistoryRows(
-        older.proposedPlans,
-        current.proposedPlans,
-        (row) => row.id,
-      ),
-      turnDiffSummaries: prependHistoryRows(
-        older.turnDiffSummaries,
-        current.turnDiffSummaries,
-        (row) => row.turnId,
-      ).toSorted((a, b) => (a.checkpointTurnCount ?? 0) - (b.checkpointTurnCount ?? 0)),
+      messages: collections.messages,
+      activities: collections.activities,
+      proposedPlans: collections.proposedPlans,
+      turnDiffSummaries: collections.checkpoints,
     },
     current,
   );
@@ -1999,12 +1975,8 @@ export function mergeOlderThreadSnapshot(
       ...merged.threadHistoryById,
       [snapshot.thread.id]: {
         ...merged.threadHistoryById?.[snapshot.thread.id],
-        beforeCursor: advanceCursor
-          ? (snapshot.page?.beforeCursor ?? null)
-          : (merged.threadHistoryById?.[snapshot.thread.id]?.beforeCursor ?? null),
-        hasMore: advanceCursor
-          ? (snapshot.page?.hasMore ?? false)
-          : (merged.threadHistoryById?.[snapshot.thread.id]?.hasMore ?? false),
+        beforeCursor: merged.threadHistoryById?.[snapshot.thread.id]?.beforeCursor ?? null,
+        hasMore: merged.threadHistoryById?.[snapshot.thread.id]?.hasMore ?? false,
         loadingOlder: false,
         error: null,
         retention: historyRetentionLimits({
@@ -2013,11 +1985,6 @@ export function mergeOlderThreadSnapshot(
           checkpoints: mergedThread.turnDiffSummaries,
           proposedPlans: mergedThread.proposedPlans,
         }),
-        ...(advanceCursor ? { windowStart: snapshot.page?.windowStart } : {}),
-        userOrigins: {
-          ...merged.threadHistoryById?.[snapshot.thread.id]?.userOrigins,
-          ...snapshot.page?.userOrigins,
-        },
       },
     },
   });
@@ -3332,12 +3299,8 @@ interface AppStore extends AppState {
     snapshot: OrchestrationThreadDetailSnapshot,
     environmentId: EnvironmentId,
     events?: readonly OrchestrationEvent[],
-    advanceCursor?: boolean,
   ) => void;
-  setThreadHistoryOrigins: (
-    ref: ScopedThreadRef,
-    origins: Readonly<Record<string, import("@t3tools/contracts").OrchestrationMessageOrigin>>,
-  ) => void;
+  projectThreadHistoryPager: (ref: ScopedThreadRef, pager: HistoryPagerState) => void;
   setThreadHistoryLoading: (
     ref: ScopedThreadRef,
     loadingOlder: boolean,
@@ -3369,16 +3332,35 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => syncServerThreadDetail(state, thread, environmentId)),
   syncServerThreadSnapshot: (snapshot, environmentId) =>
     set((state) => syncServerThreadSnapshot(state, snapshot, environmentId)),
-  mergeOlderThreadSnapshot: (snapshot, environmentId, events, advanceCursor) =>
-    set((state) => mergeOlderThreadSnapshot(state, snapshot, environmentId, events, advanceCursor)),
-  setThreadHistoryOrigins: (ref, userOrigins) =>
+  mergeOlderThreadSnapshot: (snapshot, environmentId, events) =>
+    set((state) => mergeOlderThreadSnapshot(state, snapshot, environmentId, events)),
+  projectThreadHistoryPager: (ref, pager) =>
     set((state) => {
       const env = getStoredEnvironmentState(state, ref.environmentId),
         page = env.threadHistoryById?.[ref.threadId];
-      if (!page || page.userOrigins === userOrigins) return state;
+      if (!pager.page || !env.threadShellById[ref.threadId]) return state;
+      const next = {
+        ...page,
+        beforeCursor: pager.page.beforeCursor,
+        hasMore: pager.page.hasMore,
+        windowStart: pager.page.windowStart,
+        userOrigins: pager.page.userOrigins,
+        loadingOlder: pager.pending !== null,
+        error: pager.error,
+      };
+      if (
+        page &&
+        page.beforeCursor === next.beforeCursor &&
+        page.hasMore === next.hasMore &&
+        page.windowStart === next.windowStart &&
+        page.userOrigins === next.userOrigins &&
+        page.loadingOlder === next.loadingOlder &&
+        page.error === next.error
+      )
+        return state;
       return commitEnvironmentState(state, ref.environmentId, {
         ...env,
-        threadHistoryById: { ...env.threadHistoryById, [ref.threadId]: { ...page, userOrigins } },
+        threadHistoryById: { ...env.threadHistoryById, [ref.threadId]: next },
       });
     }),
   setThreadHistoryLoading: (ref, loadingOlder, error = null) =>

@@ -3024,7 +3024,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
         const request = wsRequests.find(
           (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadActivities,
         )!;
-        expect(request).toMatchObject({ beforeCreatedAt: "9999-12-31T23:59:59.999Z" });
+        expect(request).not.toHaveProperty("beforeCreatedAt");
+        expect(request).not.toHaveProperty("beforeActivityId");
         expect(request).not.toHaveProperty("turnId");
       }
     } finally {

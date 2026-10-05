@@ -2,6 +2,7 @@ import { EventId, MessageId, ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer, Option } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as Statement from "effect/unstable/sql/Statement";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
@@ -71,6 +72,51 @@ const seed = Effect.gen(function* () {
       'full-access', 'default', ${now}, ${now}, 0)
   `;
 });
+
+it.effect("hydrates all selected turns with one bounded activity payload statement", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const statements: string[] = [];
+    const query = yield* ProjectionSnapshotQuery;
+    const first = Option.getOrThrow(
+      yield* query.getThreadDetailSnapshotById(threadId, { turnLimit: 10 }).pipe(
+        Effect.provideService(Statement.CurrentTransformer, (self) =>
+          Effect.sync(() => {
+            statements.push(self.compile()[0]);
+            return self;
+          }),
+        ),
+      ),
+    );
+    assert.equal(first.thread.activities.length, 10);
+    const payloadReads = statements.filter(
+      (text) =>
+        text.includes("activity_payload_blobs") &&
+        text.includes('AS "activityId"') &&
+        !text.includes("approval_ranked"),
+    );
+    assert.equal(payloadReads.length, 1);
+  }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
+
+it.effect("starts independent activity paging from a real head read", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const query = yield* ProjectionSnapshotQuery;
+    const first = yield* query.getThreadActivitiesPage({ threadId, limit: 5 });
+    assert.equal(first.activities.length, 5);
+    assert.isTrue(first.hasMore);
+    const boundary = first.activities[0]!;
+    const next = yield* query.getThreadActivitiesPage({
+      threadId,
+      limit: 5,
+      beforeCreatedAt: boundary.createdAt,
+      beforeActivityId: boundary.id,
+    });
+    assert.equal(next.activities.length, 5);
+    assert.equal(new Set([...first.activities, ...next.activities].map((a) => a.id)).size, 10);
+  }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
 
 it.effect("bounds every visible turn before decoding a noisy turn's activity payloads", () =>
   Effect.gen(function* () {

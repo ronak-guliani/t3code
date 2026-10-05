@@ -15,6 +15,7 @@ import {
   OrchestrationThread,
   OrchestrationGetSnapshotError,
   OrchestrationReadThreadInputError,
+  OrchestrationGetThreadActivitiesInput,
   ProviderInteractionMode,
   ProjectScript,
   RuntimeMode,
@@ -334,19 +335,6 @@ const THREAD_DETAIL_ACTIVITY_WINDOW = 200;
 // query below instead.
 const ThreadActivitiesLimitInput = Schema.Struct({
   threadId: ThreadId,
-  limit: NonNegativeInt,
-});
-const ThreadActivitiesBeforeActivityInput = Schema.Struct({
-  threadId: ThreadId,
-  beforeCreatedAt: IsoDateTime,
-  beforeActivityId: EventId,
-  limit: NonNegativeInt,
-});
-const TurnActivitiesBeforeActivityInput = Schema.Struct({
-  threadId: ThreadId,
-  turnId: TurnId,
-  beforeCreatedAt: IsoDateTime,
-  beforeActivityId: EventId,
   limit: NonNegativeInt,
 });
 const TurnActivityExistsBeforeActivityInput = Schema.Struct({
@@ -1517,19 +1505,42 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   });
 
   const listWindowTurnActivities = SqlSchema.findAll({
-    Request: Schema.Struct({ threadId: ThreadId, turnId: TurnId }),
-    Result: ProjectionThreadActivityDbRowSchema,
-    execute: ({ threadId, turnId }) => sql`
+    Request: Schema.Struct({ threadId: ThreadId, turnIds: Schema.Array(TurnId) }),
+    Result: ProjectionThreadActivityDbRowSchema.mapFields(
+      Struct.assign({ turnRowCount: NonNegativeInt }),
+    ),
+    execute: ({ threadId, turnIds }) =>
+      turnIds.length === 0
+        ? Effect.succeed([])
+        : sql`
+        WITH candidates AS MATERIALIZED (
+          SELECT activities.activity_id,activities.turn_id,activities.created_at
+          FROM json_each(${JSON.stringify(turnIds)}) AS turns
+          CROSS JOIN json_each((
+            SELECT json_group_array(activity_id) FROM (
+              SELECT activity_id FROM projection_thread_activities
+              WHERE thread_id=${threadId} AND turn_id=turns.value
+              ORDER BY created_at DESC,activity_id DESC LIMIT ${THREAD_DETAIL_ACTIVITY_WINDOW + 1}
+            )
+          )) AS keys
+          JOIN projection_thread_activities AS activities ON activities.activity_id=keys.value
+        ), ranked AS MATERIALIZED (
+          SELECT activity_id, turn_id,
+            ROW_NUMBER() OVER (PARTITION BY turn_id ORDER BY created_at DESC, activity_id DESC) AS rank,
+            COUNT(*) OVER (PARTITION BY turn_id) AS turnRowCount
+          FROM candidates
+        ), window AS MATERIALIZED (
+          SELECT activity_id,turnRowCount FROM ranked WHERE rank<=${THREAD_DETAIL_ACTIVITY_WINDOW}
+        )
         SELECT activities.activity_id AS "activityId", activities.thread_id AS "threadId",
           activities.turn_id AS "turnId", activities.tone, activities.kind, activities.summary,
           CASE WHEN blobs.data_json IS NULL THEN activities.payload_json
             ELSE json_set(activities.payload_json, '$.data', json(blobs.data_json)) END AS "payload",
-          activities.sequence, activities.created_at AS "createdAt"
-        FROM projection_thread_activities AS activities
+          activities.sequence, activities.created_at AS "createdAt",window.turnRowCount
+        FROM window
+        JOIN projection_thread_activities AS activities ON activities.activity_id=window.activity_id
         LEFT JOIN activity_payload_blobs AS blobs ON blobs.activity_id = activities.activity_id
-        WHERE activities.thread_id = ${threadId} AND activities.turn_id=${turnId}
         ORDER BY activities.created_at DESC, activities.activity_id DESC
-        LIMIT ${THREAD_DETAIL_ACTIVITY_WINDOW}
       `,
   });
 
@@ -1538,46 +1549,34 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   // rows stay accessible through the independent activity pager/context.
   const listWindowActivityRows = (threadId: ThreadId, history: ThreadHistorySelection) =>
     Effect.gen(function* () {
-      const groups = yield* Effect.forEach(history.turnIds, (turnId) =>
-        listWindowTurnActivities({ threadId, turnId }),
+      // Seek at most 201 narrow IDs per turn in one statement; rank those
+      // bounded candidates, then hydrate 200. Never scan/rank a noisy turn's
+      // whole history or decode a 201st payload/blob just for a more flag.
+      const rows = yield* listWindowTurnActivities({ threadId, turnIds: history.turnIds });
+      const cappedTurns = new Set(
+        rows
+          .filter((row) => row.turnRowCount > THREAD_DETAIL_ACTIVITY_WINDOW && row.turnId !== null)
+          .map((row) => row.turnId!),
       );
-      const cappedTurns = new Set<TurnId>();
-      for (let i = 0; i < groups.length; i++) {
-        const rows = groups[i]!;
-        const oldest = rows.at(-1);
-        const turnId = history.turnIds[i]!;
-        if (
-          rows.length === THREAD_DETAIL_ACTIVITY_WINDOW &&
-          oldest &&
-          Option.isSome(
-            yield* findTurnActivityBeforeActivity({
-              threadId,
-              turnId,
-              beforeCreatedAt: oldest.createdAt,
-              beforeActivityId: oldest.activityId,
-            }),
-          )
-        )
-          cappedTurns.add(turnId);
-      }
       const unscoped =
         yield* sql`SELECT 1 FROM projection_thread_activities WHERE thread_id=${threadId} AND turn_id IS NULL LIMIT 1`;
       return {
-        rows: groups
-          .flat()
-          .toSorted(
-            (a, b) =>
-              b.createdAt.localeCompare(a.createdAt) || b.activityId.localeCompare(a.activityId),
-          ),
+        rows,
         cappedTurns,
         hasMore: cappedTurns.size > 0 || unscoped.length > 0,
       };
     });
 
-  const listThreadActivityRowsBeforeActivity = SqlSchema.findAll({
-    Request: ThreadActivitiesBeforeActivityInput,
+  const listThreadActivityRowsPage = SqlSchema.findAll({
+    Request: OrchestrationGetThreadActivitiesInput,
     Result: ProjectionThreadActivityDbRowSchema,
-    execute: ({ threadId, beforeCreatedAt, beforeActivityId, limit }) =>
+    execute: ({
+      threadId,
+      turnId,
+      beforeCreatedAt,
+      beforeActivityId,
+      limit = THREAD_DETAIL_ACTIVITY_WINDOW,
+    }) =>
       sql`
         SELECT
           activities.activity_id AS "activityId",
@@ -1596,50 +1595,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         LEFT JOIN activity_payload_blobs AS blobs
           ON blobs.activity_id = activities.activity_id
         WHERE activities.thread_id = ${threadId}
-          AND (
+          ${turnId === undefined ? sql`` : sql`AND activities.turn_id=${turnId}`}
+          ${
+            beforeCreatedAt === undefined || beforeActivityId === undefined
+              ? sql``
+              : sql`AND (
             activities.created_at < ${beforeCreatedAt}
             OR (
               activities.created_at = ${beforeCreatedAt}
               AND activities.activity_id < ${beforeActivityId}
             )
-          )
-        ORDER BY
-          activities.created_at DESC,
-          activities.activity_id DESC
-        LIMIT ${limit}
-      `,
-  });
-
-  const listTurnActivityRowsBeforeActivity = SqlSchema.findAll({
-    Request: TurnActivitiesBeforeActivityInput,
-    Result: ProjectionThreadActivityDbRowSchema,
-    execute: ({ threadId, turnId, beforeCreatedAt, beforeActivityId, limit }) =>
-      sql`
-        SELECT
-          activities.activity_id AS "activityId",
-          activities.thread_id AS "threadId",
-          activities.turn_id AS "turnId",
-          activities.tone,
-          activities.kind,
-          activities.summary,
-          CASE
-            WHEN blobs.data_json IS NULL THEN activities.payload_json
-            ELSE json_set(activities.payload_json, '$.data', json(blobs.data_json))
-          END AS "payload",
-          activities.sequence,
-          activities.created_at AS "createdAt"
-        FROM projection_thread_activities AS activities
-        LEFT JOIN activity_payload_blobs AS blobs
-          ON blobs.activity_id = activities.activity_id
-        WHERE activities.thread_id = ${threadId}
-          AND activities.turn_id = ${turnId}
-          AND (
-            activities.created_at < ${beforeCreatedAt}
-            OR (
-              activities.created_at = ${beforeCreatedAt}
-              AND activities.activity_id < ${beforeActivityId}
-            )
-          )
+          )`
+          }
         ORDER BY
           activities.created_at DESC,
           activities.activity_id DESC
@@ -3279,20 +3246,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         Math.max(1, input.limit ?? THREAD_DETAIL_ACTIVITY_WINDOW),
         THREAD_DETAIL_ACTIVITY_WINDOW,
       );
-      const queryInput = {
-        threadId: input.threadId,
-        beforeCreatedAt: input.beforeCreatedAt,
-        beforeActivityId: input.beforeActivityId,
-        limit: limit + 1,
-      };
-      const rows = yield* (
-        input.turnId === undefined
-          ? listThreadActivityRowsBeforeActivity(queryInput)
-          : listTurnActivityRowsBeforeActivity({
-              ...queryInput,
-              turnId: input.turnId,
-            })
-      ).pipe(
+      const rows = yield* listThreadActivityRowsPage({ ...input, limit: limit + 1 }).pipe(
         Effect.mapError(
           toPersistenceSqlOrDecodeError(
             "ProjectionSnapshotQuery.getThreadActivitiesPage:query",
@@ -3490,7 +3444,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       }
       if (input.view === "activities") {
         const rows = cursor
-          ? yield* listThreadActivityRowsBeforeActivity({
+          ? yield* listThreadActivityRowsPage({
               threadId: thread.value.id,
               beforeCreatedAt: cursor.createdAt,
               beforeActivityId: EventId.make(cursor.id),

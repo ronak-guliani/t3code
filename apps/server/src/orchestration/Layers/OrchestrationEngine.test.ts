@@ -1174,6 +1174,7 @@ describe("OrchestrationEngine", () => {
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
+          getThreadMessageOriginById: () => Effect.die("unused"),
           readThread: () => Effect.die("unused"),
         }),
       ),
