@@ -121,7 +121,9 @@ export const makeLogStorageContributor = Effect.gen(function* () {
             const files = removed.reduce((sum, value) => sum + value.files, 0);
             const bytesFreed = removed.reduce((sum, value) => sum + value.bytes, 0);
             const notes = [
-              outcome.skipped.length > 0 ? `${outcome.skipped.length} kept (now live or recent)` : null,
+              outcome.skipped.length > 0
+                ? `${outcome.skipped.length} kept (now live or recent)`
+                : null,
               outcome.failedFiles > 0 ? `${outcome.failedFiles} could not be removed` : null,
             ].filter((note) => note !== null);
             return {

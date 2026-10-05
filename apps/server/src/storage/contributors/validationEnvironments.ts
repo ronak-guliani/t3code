@@ -7,7 +7,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import type { StorageCleanupItem, StorageCleanupItemResult, ValidationTarget } from "@t3tools/contracts";
+import type {
+  StorageCleanupItem,
+  StorageCleanupItemResult,
+  ValidationTarget,
+} from "@t3tools/contracts";
 import { Effect } from "effect";
 
 import { ServerConfig } from "../../config.ts";
@@ -197,7 +201,11 @@ export const makeValidationStorageContributor = (
         ),
       );
 
-    const measure: StorageCleanupContributor["measure"] = ({ signal, report, reportManualReview }) =>
+    const measure: StorageCleanupContributor["measure"] = ({
+      signal,
+      report,
+      reportManualReview,
+    }) =>
       Effect.gen(function* () {
         const environments = yield* scan;
         const environmentSizes = yield* Effect.forEach(environments, (environment) =>
@@ -270,9 +278,7 @@ export const makeValidationStorageContributor = (
         yield* Effect.promise(() => fs.rm(payload.directory, { recursive: true, force: true }));
         return result(
           "removed",
-          payload.manual
-            ? "removed after manual confirmation"
-            : current.classification.reason,
+          payload.manual ? "removed after manual confirmation" : current.classification.reason,
         );
       });
 

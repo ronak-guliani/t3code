@@ -200,10 +200,16 @@ export const makeWorktreeStorageContributor = Effect.gen(function* () {
         (terminal) =>
           Effect.promise(() => canonicalizeWorktreePath(terminal.worktreePath ?? terminal.cwd)),
       );
-      if (terminalInPath.some((cwd) => cwd === canonicalPath || cwd.startsWith(canonicalPath + path.sep))) {
+      if (
+        terminalInPath.some(
+          (cwd) => cwd === canonicalPath || cwd.startsWith(canonicalPath + path.sep),
+        )
+      ) {
         return "a terminal subprocess is running in this worktree";
       }
-      if (Option.isSome(yield* findCanonicalActiveWorktreeOwner(readModel, threadId, canonicalPath))) {
+      if (
+        Option.isSome(yield* findCanonicalActiveWorktreeOwner(readModel, threadId, canonicalPath))
+      ) {
         return REASON_TEXT["active-worktree-owner"]!;
       }
       const clean = yield* git
@@ -239,24 +245,26 @@ export const makeWorktreeStorageContributor = Effect.gen(function* () {
               blocker !== null
                 ? Effect.succeed([])
                 : sizeOf(candidate.canonicalPath).pipe(
-                    Effect.map((bytes): Array<StoragePlanEntry<WorktreePayload>> => [
-                      {
-                        item: {
-                          id: `worktree:${candidate.threadId}`,
-                          category: "worktrees",
-                          description: `Worktree of archived chat "${candidate.title}"`,
-                          target: candidate.canonicalPath,
-                          estimatedBytes: bytes,
-                          defaultSelected: true,
-                          needsManualReview: false,
+                    Effect.map(
+                      (bytes): Array<StoragePlanEntry<WorktreePayload>> => [
+                        {
+                          item: {
+                            id: `worktree:${candidate.threadId}`,
+                            category: "worktrees",
+                            description: `Worktree of archived chat "${candidate.title}"`,
+                            target: candidate.canonicalPath,
+                            estimatedBytes: bytes,
+                            defaultSelected: true,
+                            needsManualReview: false,
+                          },
+                          payload: {
+                            kind: "worktree",
+                            threadId: candidate.threadId,
+                            path: candidate.canonicalPath,
+                          },
                         },
-                        payload: {
-                          kind: "worktree",
-                          threadId: candidate.threadId,
-                          path: candidate.canonicalPath,
-                        },
-                      },
-                    ]),
+                      ],
+                    ),
                   ),
             ),
           ),

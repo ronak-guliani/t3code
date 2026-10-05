@@ -243,18 +243,16 @@ const make = Effect.gen(function* () {
         yield* Effect.logDebug("storage.automatic: paused by master switch", { sweep: input.name });
         return policy;
       }
-      yield* input
-        .sweep(policy)
-        .pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause)
-              ? Effect.failCause(cause)
-              : Effect.logWarning("storage.automatic: sweep failed", {
-                  sweep: input.name,
-                  cause: Cause.pretty(cause),
-                }),
-          ),
-        );
+      yield* input.sweep(policy).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("storage.automatic: sweep failed", {
+                sweep: input.name,
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      );
       return policy;
     });
     const waitForNext = (policy: EffectiveStorageCleanupPolicy) =>

@@ -17,7 +17,6 @@ import type {
 import { StorageCleanupError } from "@t3tools/contracts";
 import { Cause, Context, Effect, Fiber, Ref, Semaphore } from "effect";
 
-
 import type { EffectiveStorageCleanupPolicy } from "./StorageCleanupPolicy.ts";
 import { StorageCleanupPolicy } from "./StorageCleanupPolicy.ts";
 
@@ -202,6 +201,16 @@ export const makeStorageCleanup = (
         Date.now() - Date.parse(current.completedAt) < USAGE_CACHE_TTL_MS,
     );
 
+    // A cancelled measurement stays cancelled until the user asks again.
+    const needsAutomaticMeasurement = Effect.map(
+      Ref.get(usage),
+      (current) =>
+        current.status === "idle" ||
+        (current.status === "complete" &&
+          (current.completedAt === null ||
+            Date.now() - Date.parse(current.completedAt) >= USAGE_CACHE_TTL_MS)),
+    );
+
     const snapshot = Effect.gen(function* () {
       const current = yield* Ref.get(usage);
       const policy = yield* policyService.current;
@@ -224,7 +233,7 @@ export const makeStorageCleanup = (
         if (input.cancel === true) {
           const running = yield* Ref.get(measurement);
           if (running !== null) yield* Fiber.interrupt(running);
-        } else if (input.refresh === true || !(yield* isUsageFresh)) {
+        } else if (input.refresh === true || (yield* needsAutomaticMeasurement)) {
           yield* startMeasurement;
         }
         return yield* snapshot;
@@ -372,60 +381,62 @@ export const makeStorageCleanup = (
           contributor: string;
           entry: StoragePlanEntry;
         }>;
-        return yield* executionLock.withPermits(1)(
-          Effect.gen(function* () {
-            const startedAt = new Date().toISOString();
-            yield* Ref.set(cleanupProgress, {
-              planId: input.planId,
-              status: "running",
-              completedItems: 0,
-              totalItems: entries.length,
-              bytesFreed: 0,
-              result: null,
-            });
-            const policy = yield* policyService.current;
-            const results = yield* executeEntries(entries, policy, (done) =>
-              Ref.update(cleanupProgress, (progress) =>
+        return yield* executionLock
+          .withPermits(1)(
+            Effect.gen(function* () {
+              const startedAt = new Date().toISOString();
+              yield* Ref.set(cleanupProgress, {
+                planId: input.planId,
+                status: "running",
+                completedItems: 0,
+                totalItems: entries.length,
+                bytesFreed: 0,
+                result: null,
+              });
+              const policy = yield* policyService.current;
+              const results = yield* executeEntries(entries, policy, (done) =>
+                Ref.update(cleanupProgress, (progress) =>
+                  progress === null
+                    ? progress
+                    : {
+                        ...progress,
+                        completedItems: progress.completedItems + done.length,
+                        bytesFreed:
+                          progress.bytesFreed + done.reduce((sum, r) => sum + r.bytesFreed, 0),
+                      },
+                ),
+              );
+              yield* logResults("manual", results);
+              const bytesFreed = results.reduce((sum, result) => sum + result.bytesFreed, 0);
+              const result = {
+                planId: input.planId,
+                startedAt,
+                completedAt: new Date().toISOString(),
+                results,
+                bytesFreed,
+              } satisfies StorageCleanupResult;
+              yield* Ref.update(cleanupProgress, (progress) =>
                 progress === null
                   ? progress
-                  : {
-                      ...progress,
-                      completedItems: progress.completedItems + done.length,
-                      bytesFreed:
-                        progress.bytesFreed + done.reduce((sum, r) => sum + r.bytesFreed, 0),
-                    },
-              ),
-            );
-            yield* logResults("manual", results);
-            const bytesFreed = results.reduce((sum, result) => sum + result.bytesFreed, 0);
-            const result = {
-              planId: input.planId,
-              startedAt,
-              completedAt: new Date().toISOString(),
-              results,
-              bytesFreed,
-            } satisfies StorageCleanupResult;
-            yield* Ref.update(cleanupProgress, (progress) =>
-              progress === null
-                ? progress
-                : { ...progress, status: "complete" as const, bytesFreed, result },
-            );
-            yield* Effect.logInfo("storage.cleanup: reset complete", {
-              planId: input.planId,
-              removed: results.filter((result) => result.status === "removed").length,
-              skipped: results.filter((result) => result.status === "skipped").length,
-              failed: results.filter((result) => result.status === "failed").length,
-              bytesFreed,
-            });
-            // Usage changed; the next read measures again.
-            yield* Ref.update(usage, (current) => ({ ...current, completedAt: null }));
-            return result;
-          }),
-        ).pipe(
-          // A dropped client connection must not abandon a half-run reset.
-          Effect.forkIn(scope),
-          Effect.flatMap(Fiber.join),
-        );
+                  : { ...progress, status: "complete" as const, bytesFreed, result },
+              );
+              yield* Effect.logInfo("storage.cleanup: reset complete", {
+                planId: input.planId,
+                removed: results.filter((result) => result.status === "removed").length,
+                skipped: results.filter((result) => result.status === "skipped").length,
+                failed: results.filter((result) => result.status === "failed").length,
+                bytesFreed,
+              });
+              // Usage changed; the next read measures again.
+              yield* Ref.update(usage, (current) => ({ ...current, completedAt: null }));
+              return result;
+            }),
+          )
+          .pipe(
+            // A dropped client connection must not abandon a half-run reset.
+            Effect.forkIn(scope),
+            Effect.flatMap(Fiber.join),
+          );
       });
 
     const runAutomaticSweep: StorageCleanupShape["runAutomaticSweep"] = (policy) =>
@@ -450,4 +461,3 @@ export const makeStorageCleanup = (
       runStartupVacuum,
     } satisfies StorageCleanupShape;
   });
-

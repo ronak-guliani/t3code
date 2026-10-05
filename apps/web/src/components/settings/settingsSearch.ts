@@ -55,6 +55,7 @@ const settingsByPage: ReadonlyArray<{
       "Chat export details",
       "Archive review chats on merge",
       "Auto-archive settled threads",
+      "Automatic cleanup",
       "Provider log retention days",
       "Provider log total size cap",
       "Stop idle terminals",
@@ -176,6 +177,8 @@ const relatedTerms: Readonly<Record<string, string>> = {
   "Archived threads": "archive restore delete",
   "Archive review chats on merge": "review pull request merged cleanup",
   "Auto-archive settled threads": "settled archive cleanup days",
+  "Automatic cleanup":
+    "storage disk space usage clean up now reset vacuum worktrees low disk pause master switch",
   "Provider log retention days": "provider logs cleanup old age keep files",
   "Provider log total size cap": "provider logs cleanup disk space maximum megabytes",
   "Idle worktree reclamation": "storage cleanup worktree disk space reclaim checkout restore",

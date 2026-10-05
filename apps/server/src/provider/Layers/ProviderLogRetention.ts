@@ -252,7 +252,8 @@ export async function planProviderLogCleanup(
     }
   }
   if (retentionCutoff !== null) {
-    for (const file of [...remaining.values()]) {
+    // Deleting the current entry while iterating a Map is well-defined.
+    for (const file of remaining.values()) {
       if (file.mtimeMs < retentionCutoff) take(file, "age");
     }
   }
@@ -279,9 +280,7 @@ export async function planProviderLogCleanup(
  * Remove planned files, re-checking each one first: a head that became live or
  * recent is kept, and an age removal is skipped if the file was written since.
  */
-export async function executeProviderLogCleanup(
-  input: ProviderLogExecuteInput,
-): Promise<{
+export async function executeProviderLogCleanup(input: ProviderLogExecuteInput): Promise<{
   readonly removed: Readonly<
     Record<RemovalReason, { readonly files: number; readonly bytes: number }>
   >;

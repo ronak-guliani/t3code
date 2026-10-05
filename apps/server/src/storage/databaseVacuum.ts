@@ -57,7 +57,9 @@ export function estimateVacuumDurationMs(stats: DatabaseStats): number {
   return Math.round(((stats.fileBytes - stats.reclaimableBytes) / VACUUM_BYTES_PER_SECOND) * 1000);
 }
 
-export type VacuumDecision = { readonly run: true } | { readonly run: false; readonly reason: string };
+export type VacuumDecision =
+  | { readonly run: true }
+  | { readonly run: false; readonly reason: string };
 
 /**
  * Automatic VACUUM runs only when it is worth it (free pages above max(1 GB,
@@ -107,7 +109,10 @@ export const vacuumDatabase = (dbPath: string) =>
       durationMs: Date.now() - startedAt,
       bytesBefore: before.fileBytes + before.walBytes,
       bytesAfter: after.fileBytes + after.walBytes,
-      bytesReclaimed: Math.max(0, before.fileBytes + before.walBytes - after.fileBytes - after.walBytes),
+      bytesReclaimed: Math.max(
+        0,
+        before.fileBytes + before.walBytes - after.fileBytes - after.walBytes,
+      ),
       mode: before.incrementalAutoVacuum ? "incremental" : "full",
     };
     yield* Effect.logInfo("storage.vacuum: database vacuumed", result);

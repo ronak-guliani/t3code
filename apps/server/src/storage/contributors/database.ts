@@ -18,7 +18,9 @@ import { measureDirectory } from "../measureDirectory.ts";
 import { StorageFreeSpaceProbe } from "../StorageCleanupPolicy.ts";
 import type { StorageCleanupContributor, StoragePlanEntry } from "../StorageCleanup.ts";
 
-type DatabasePayload = { readonly kind: "backup"; readonly path: string } | { readonly kind: "vacuum" };
+type DatabasePayload =
+  | { readonly kind: "backup"; readonly path: string }
+  | { readonly kind: "vacuum" };
 
 /** Running turns write constantly; VACUUM would stall them behind its rewrite. */
 export const liveWorkBlocker = (snapshots: ProjectionSnapshotQuery["Service"]) =>

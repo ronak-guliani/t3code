@@ -2429,11 +2429,9 @@ const makeWsRpcLayer = (
             "rpc.aggregate": "storage",
           }),
         [WS_METHODS.storageExecuteCleanup]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.storageExecuteCleanup,
-            storageCleanup.executeCleanup(input),
-            { "rpc.aggregate": "storage" },
-          ),
+          observeRpcEffect(WS_METHODS.storageExecuteCleanup, storageCleanup.executeCleanup(input), {
+            "rpc.aggregate": "storage",
+          }),
         [WS_METHODS.pullRequestsQuotaRefresh]: (input) =>
           observeRpcEffect(
             WS_METHODS.pullRequestsQuotaRefresh,

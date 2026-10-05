@@ -33,7 +33,18 @@ import {
   type ServerSettings,
 } from "@t3tools/contracts";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
-import { Effect, Exit, Layer, ManagedRuntime, Option, PubSub, Queue, Ref, Scope, Stream } from "effect";
+import {
+  Effect,
+  Exit,
+  Layer,
+  ManagedRuntime,
+  Option,
+  PubSub,
+  Queue,
+  Ref,
+  Scope,
+  Stream,
+} from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -200,7 +211,13 @@ async function makeFixture() {
   await git(repo, ["update-ref", "refs/t3/checkpoints/thread-clean/turn/1", "feature-clean"]);
 
   const archived = (id: string, worktreePath: string) =>
-    makeThread({ id, projectId, worktreePath, branch: `feature-${path.basename(worktreePath)}`, archived: true });
+    makeThread({
+      id,
+      projectId,
+      worktreePath,
+      branch: `feature-${path.basename(worktreePath)}`,
+      archived: true,
+    });
   const state = {
     threads: [
       archived("thread-clean", paths.clean),
@@ -209,9 +226,28 @@ async function makeFixture() {
       archived("thread-turn-later", paths.turnStarts),
       archived("thread-dirty-now", paths.alreadyDirty),
       archived("thread-pinned-now", paths.pinned),
-      makeThread({ id: "thread-root", projectId, worktreePath: repo, branch: "main", archived: true }),
-      makeThread({ id: "thread-live", projectId, worktreePath: null, branch: null, archived: false }),
-      makeThread({ id: "thread-gone", projectId, worktreePath: null, branch: null, archived: false, deleted: true }),
+      makeThread({
+        id: "thread-root",
+        projectId,
+        worktreePath: repo,
+        branch: "main",
+        archived: true,
+      }),
+      makeThread({
+        id: "thread-live",
+        projectId,
+        worktreePath: null,
+        branch: null,
+        archived: false,
+      }),
+      makeThread({
+        id: "thread-gone",
+        projectId,
+        worktreePath: null,
+        branch: null,
+        archived: false,
+        deleted: true,
+      }),
     ],
     flags: new Map<string, ThreadFlags>([["thread-pinned-now", { pinned: true }]]),
     freeBytes: 500 * 1024 ** 3,
@@ -359,189 +395,189 @@ async function makeFixture() {
 }
 
 describe("StorageCleanup reset", () => {
-  it(
-    "previews exactly the eligible items, skips items made unsafe, keeps history, and restores",
-    async () => {
-      const fixture = await makeFixture();
-      try {
-        const { config, paths, state, repo } = fixture;
-        // Seed every other category with exact byte counts.
-        const trashEntry = path.join(config.worktreesDir, "repo", ".t3-worktree-trash", "old-1");
-        await writeBytes(path.join(trashEntry, "blob"), 8192);
-        const backup = path.join(config.stateDir, "state.sqlite.before-retired-projector-fix-1");
-        await writeBytes(backup, 4096);
-        await writeBytes(path.join(config.providerLogsDir, "thread-gone.log.1"), 1000);
-        const liveOldLog = path.join(config.providerLogsDir, "thread-live.log.1");
-        await writeBytes(liveOldLog, 2000, 5 * DAY_MS);
-        const target = {
-          workspaceRoot: repo,
-          worktreePath: null,
-          branch: "main",
-          revision: "abc",
-          dirtyStateFingerprint: "clean",
-          environmentIdentity: "env-a",
-        };
-        const staleDirectory = validationEnvironmentStateDirectory(config.baseDir, target as never);
-        const ownership = "env-a:owner";
-        const deadProcess = { pid: 99_999_999, startIdentity: "gone", ownershipIdentity: ownership };
-        await writeBytes(path.join(staleDirectory, "server.log"), 300);
-        await fs.writeFile(
-          path.join(staleDirectory, "validation-environment.json"),
-          JSON.stringify({
-            version: 1,
-            target: { ...target, stateDirectory: staleDirectory },
-            ownershipIdentity: ownership,
-            backend: { origin: "http://127.0.0.1:1", port: 1, process: deadProcess },
-            web: { origin: "http://127.0.0.1:2", port: 2, process: deadProcess },
-          }),
-        );
-        const unprovenDirectory = path.join(config.baseDir, "validation", "env-b", "unknown");
-        await writeBytes(path.join(unprovenDirectory, "leftover.bin"), 500);
-        // Free pages for the optional VACUUM item.
-        await fixture.run(
-          Effect.gen(function* () {
-            yield* fixture.sql.unsafe("CREATE TABLE filler (blob BLOB)");
-            yield* fixture.sql.unsafe("INSERT INTO filler VALUES (zeroblob(4 * 1024 * 1024))");
-            yield* fixture.sql.unsafe("DROP TABLE filler");
-          }),
-        );
-        await fixture.run(
-          fixture.sql.unsafe(
-            "INSERT INTO projection_thread_messages (message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at) VALUES ('m1', 'thread-clean', NULL, 'user', 'keep me', 0, '2026-01-01', '2026-01-01')",
-          ),
-        );
+  it("previews exactly the eligible items, skips items made unsafe, keeps history, and restores", async () => {
+    const fixture = await makeFixture();
+    try {
+      const { config, paths, state, repo } = fixture;
+      // Seed every other category with exact byte counts.
+      const trashEntry = path.join(config.worktreesDir, "repo", ".t3-worktree-trash", "old-1");
+      await writeBytes(path.join(trashEntry, "blob"), 8192);
+      const backup = path.join(config.stateDir, "state.sqlite.before-retired-projector-fix-1");
+      await writeBytes(backup, 4096);
+      await writeBytes(path.join(config.providerLogsDir, "thread-gone.log.1"), 1000);
+      const liveOldLog = path.join(config.providerLogsDir, "thread-live.log.1");
+      await writeBytes(liveOldLog, 2000, 5 * DAY_MS);
+      const target = {
+        workspaceRoot: repo,
+        worktreePath: null,
+        branch: "main",
+        revision: "abc",
+        dirtyStateFingerprint: "clean",
+        environmentIdentity: "env-a",
+      };
+      const staleDirectory = validationEnvironmentStateDirectory(config.baseDir, target as never);
+      const ownership = "env-a:owner";
+      const deadProcess = { pid: 99_999_999, startIdentity: "gone", ownershipIdentity: ownership };
+      await writeBytes(path.join(staleDirectory, "server.log"), 300);
+      await fs.writeFile(
+        path.join(staleDirectory, "validation-environment.json"),
+        JSON.stringify({
+          version: 1,
+          target: { ...target, stateDirectory: staleDirectory },
+          ownershipIdentity: ownership,
+          backend: { origin: "http://127.0.0.1:1", port: 1, process: deadProcess },
+          web: { origin: "http://127.0.0.1:2", port: 2, process: deadProcess },
+        }),
+      );
+      const unprovenDirectory = path.join(config.baseDir, "validation", "env-b", "unknown");
+      await writeBytes(path.join(unprovenDirectory, "leftover.bin"), 500);
+      // Free pages for the optional VACUUM item.
+      await fixture.run(
+        Effect.gen(function* () {
+          yield* fixture.sql.unsafe("CREATE TABLE filler (blob BLOB)");
+          yield* fixture.sql.unsafe("INSERT INTO filler VALUES (zeroblob(4 * 1024 * 1024))");
+          yield* fixture.sql.unsafe("DROP TABLE filler");
+        }),
+      );
+      await fixture.run(
+        fixture.sql.unsafe(
+          "INSERT INTO projection_thread_messages (message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at) VALUES ('m1', 'thread-clean', NULL, 'user', 'keep me', 0, '2026-01-01', '2026-01-01')",
+        ),
+      );
 
-        // Master switch off: starting the reactor must not reclaim anything.
-        await fixture.startReactor();
-        for (const worktreePath of Object.values(paths)) {
-          expect(await exists(worktreePath)).toBe(true);
-        }
-
-        // Low disk tightens log retention to 3 days, exposing the 5-day-old log.
-        state.freeBytes = 50 * 1024 ** 3;
-        const lowDisk = await fixture.run(fixture.policy.measureLowDisk);
-        expect(lowDisk.active).toBe(true);
-        expect((await fixture.run(fixture.policy.current)).providerLogRetentionDays).toBe(3);
-
-        const plan = await fixture.run(fixture.storage.previewCleanup());
-        const byId = new Map(plan.items.map((item) => [item.id, item]));
-        expect(
-          plan.items
-            .filter((item) => item.category === "worktrees")
-            .map((item) => item.id)
-            .toSorted(),
-        ).toEqual([
-          "worktree:thread-clean",
-          "worktree:thread-dirty-later",
-          "worktree:thread-pinned-later",
-          "worktree:thread-turn-later",
-        ]);
-        expect(byId.get(`trash:${trashEntry}`)?.estimatedBytes).toBe(8192);
-        expect(byId.get("database-backup:state.sqlite.before-retired-projector-fix-1")?.estimatedBytes).toBe(4096);
-        expect(byId.get("provider-logs:deletedThreads")?.estimatedBytes).toBe(1000);
-        expect(byId.get("provider-logs:age")?.estimatedBytes).toBe(2000);
-        expect(byId.get("provider-logs:age")?.description).toContain("3 days");
-        expect(byId.get(`validation:${staleDirectory}`)).toMatchObject({
-          needsManualReview: false,
-          defaultSelected: true,
-        });
-        expect(byId.get(`validation:${unprovenDirectory}`)).toMatchObject({
-          needsManualReview: true,
-          defaultSelected: false,
-        });
-        expect(byId.get("database-vacuum")).toMatchObject({ defaultSelected: false });
-        expect(byId.get("worktree:thread-clean")!.estimatedBytes).toBeGreaterThanOrEqual(64 * 1024);
-        expect(plan.totalEstimatedBytes).toBe(
-          plan.items.reduce((sum, item) => sum + item.estimatedBytes, 0),
-        );
-
-        // Made unsafe after preview.
-        await writeBytes(path.join(paths.becomesDirty, "new-work.txt"), 10);
-        state.flags.set("thread-pinned-later", { pinned: true });
-        state.flags.set("thread-turn-later", { runningTurn: true });
-
-        const selected = plan.items.filter((item) => item.defaultSelected).map((item) => item.id);
-        const result = await fixture.run(
-          fixture.storage.executeCleanup({ planId: plan.planId, itemIds: selected }),
-        );
-        const status = new Map(result.results.map((entry) => [entry.itemId, entry]));
-        expect(status.get("worktree:thread-clean")?.status).toBe("removed");
-        expect(status.get("worktree:thread-dirty-later")).toMatchObject({
-          status: "skipped",
-          reason: "has uncommitted or untracked changes",
-        });
-        expect(status.get("worktree:thread-pinned-later")).toMatchObject({
-          status: "skipped",
-          reason: "chat is pinned",
-        });
-        expect(status.get("worktree:thread-turn-later")).toMatchObject({
-          status: "skipped",
-          reason: "a turn is running",
-        });
-        expect(status.get(`validation:${unprovenDirectory}`)).toBeUndefined();
-        expect(result.bytesFreed).toBe(
-          result.results.reduce((sum, entry) => sum + entry.bytesFreed, 0),
-        );
-
-        expect(await exists(paths.clean)).toBe(false);
-        for (const kept of [
-          paths.becomesDirty,
-          paths.becomesPinned,
-          paths.turnStarts,
-          paths.alreadyDirty,
-          paths.pinned,
-          repo,
-          unprovenDirectory,
-          config.dbPath,
-        ]) {
-          expect(await exists(kept)).toBe(true);
-        }
-        for (const removed of [trashEntry, backup, staleDirectory, liveOldLog]) {
-          expect(await exists(removed)).toBe(false);
-        }
-        expect(await exists(path.join(paths.becomesDirty, "new-work.txt"))).toBe(true);
-
-        // History survives: branch, checkpoint ref, and message rows.
-        expect(await git(repo, ["rev-parse", "--verify", "feature-clean"])).toMatch(/^[0-9a-f]{40}$/);
-        expect(
-          await git(repo, ["rev-parse", "--verify", "refs/t3/checkpoints/thread-clean/turn/1"]),
-        ).toMatch(/^[0-9a-f]{40}$/);
-        const rows = await fixture.run(
-          fixture.sql.unsafe<{ count: number }>(
-            "SELECT COUNT(*) AS count FROM projection_thread_messages WHERE thread_id = 'thread-clean'",
-          ),
-        );
-        expect(Number(rows[0]?.count)).toBe(1);
-
-        // A plan runs once; replaying it is rejected.
-        const replay = await fixture.run(
-          Effect.exit(fixture.storage.executeCleanup({ planId: plan.planId, itemIds: selected })),
-        );
-        expect(Exit.isFailure(replay)).toBe(true);
-
-        // Reopening the chat restores its worktree on the same branch.
-        await fixture.unarchive("thread-clean");
-        expect(await git(paths.clean, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("feature-clean");
-
-        // Manual review needs an explicit per-item selection; VACUUM runs once idle.
-        state.flags.delete("thread-turn-later");
-        const second = await fixture.run(fixture.storage.previewCleanup());
-        const manual = second.items.find((item) => item.needsManualReview)!;
-        const vacuum = second.items.find((item) => item.id === "database-vacuum")!;
-        const confirmed = await fixture.run(
-          fixture.storage.executeCleanup({
-            planId: second.planId,
-            itemIds: [manual.id, vacuum.id],
-          }),
-        );
-        expect(confirmed.results.map((entry) => entry.status)).toEqual(["removed", "removed"]);
-        expect(await exists(unprovenDirectory)).toBe(false);
-        const freelist = await fixture.run(fixture.sql.unsafe<{ freelist_count: number }>("PRAGMA freelist_count"));
-        expect(Number(freelist[0]?.freelist_count)).toBe(0);
-      } finally {
-        await fixture.dispose();
+      // Master switch off: starting the reactor must not reclaim anything.
+      await fixture.startReactor();
+      for (const worktreePath of Object.values(paths)) {
+        expect(await exists(worktreePath)).toBe(true);
       }
-    },
-    60_000,
-  );
+
+      // Low disk tightens log retention to 3 days, exposing the 5-day-old log.
+      state.freeBytes = 50 * 1024 ** 3;
+      const lowDisk = await fixture.run(fixture.policy.measureLowDisk);
+      expect(lowDisk.active).toBe(true);
+      expect((await fixture.run(fixture.policy.current)).providerLogRetentionDays).toBe(3);
+
+      const plan = await fixture.run(fixture.storage.previewCleanup());
+      const byId = new Map(plan.items.map((item) => [item.id, item]));
+      expect(
+        plan.items
+          .filter((item) => item.category === "worktrees")
+          .map((item) => item.id)
+          .toSorted(),
+      ).toEqual([
+        "worktree:thread-clean",
+        "worktree:thread-dirty-later",
+        "worktree:thread-pinned-later",
+        "worktree:thread-turn-later",
+      ]);
+      expect(byId.get(`trash:${trashEntry}`)?.estimatedBytes).toBe(8192);
+      expect(
+        byId.get("database-backup:state.sqlite.before-retired-projector-fix-1")?.estimatedBytes,
+      ).toBe(4096);
+      expect(byId.get("provider-logs:deletedThreads")?.estimatedBytes).toBe(1000);
+      expect(byId.get("provider-logs:age")?.estimatedBytes).toBe(2000);
+      expect(byId.get("provider-logs:age")?.description).toContain("3 days");
+      expect(byId.get(`validation:${staleDirectory}`)).toMatchObject({
+        needsManualReview: false,
+        defaultSelected: true,
+      });
+      expect(byId.get(`validation:${unprovenDirectory}`)).toMatchObject({
+        needsManualReview: true,
+        defaultSelected: false,
+      });
+      expect(byId.get("database-vacuum")).toMatchObject({ defaultSelected: false });
+      expect(byId.get("worktree:thread-clean")!.estimatedBytes).toBeGreaterThanOrEqual(64 * 1024);
+      expect(plan.totalEstimatedBytes).toBe(
+        plan.items.reduce((sum, item) => sum + item.estimatedBytes, 0),
+      );
+
+      // Made unsafe after preview.
+      await writeBytes(path.join(paths.becomesDirty, "new-work.txt"), 10);
+      state.flags.set("thread-pinned-later", { pinned: true });
+      state.flags.set("thread-turn-later", { runningTurn: true });
+
+      const selected = plan.items.filter((item) => item.defaultSelected).map((item) => item.id);
+      const result = await fixture.run(
+        fixture.storage.executeCleanup({ planId: plan.planId, itemIds: selected }),
+      );
+      const status = new Map(result.results.map((entry) => [entry.itemId, entry]));
+      expect(status.get("worktree:thread-clean")?.status).toBe("removed");
+      expect(status.get("worktree:thread-dirty-later")).toMatchObject({
+        status: "skipped",
+        reason: "has uncommitted or untracked changes",
+      });
+      expect(status.get("worktree:thread-pinned-later")).toMatchObject({
+        status: "skipped",
+        reason: "chat is pinned",
+      });
+      expect(status.get("worktree:thread-turn-later")).toMatchObject({
+        status: "skipped",
+        reason: "a turn is running",
+      });
+      expect(status.get(`validation:${unprovenDirectory}`)).toBeUndefined();
+      expect(result.bytesFreed).toBe(
+        result.results.reduce((sum, entry) => sum + entry.bytesFreed, 0),
+      );
+
+      expect(await exists(paths.clean)).toBe(false);
+      for (const kept of [
+        paths.becomesDirty,
+        paths.becomesPinned,
+        paths.turnStarts,
+        paths.alreadyDirty,
+        paths.pinned,
+        repo,
+        unprovenDirectory,
+        config.dbPath,
+      ]) {
+        expect(await exists(kept)).toBe(true);
+      }
+      for (const removed of [trashEntry, backup, staleDirectory, liveOldLog]) {
+        expect(await exists(removed)).toBe(false);
+      }
+      expect(await exists(path.join(paths.becomesDirty, "new-work.txt"))).toBe(true);
+
+      // History survives: branch, checkpoint ref, and message rows.
+      expect(await git(repo, ["rev-parse", "--verify", "feature-clean"])).toMatch(/^[0-9a-f]{40}$/);
+      expect(
+        await git(repo, ["rev-parse", "--verify", "refs/t3/checkpoints/thread-clean/turn/1"]),
+      ).toMatch(/^[0-9a-f]{40}$/);
+      const rows = await fixture.run(
+        fixture.sql.unsafe<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM projection_thread_messages WHERE thread_id = 'thread-clean'",
+        ),
+      );
+      expect(Number(rows[0]?.count)).toBe(1);
+
+      // A plan runs once; replaying it is rejected.
+      const replay = await fixture.run(
+        Effect.exit(fixture.storage.executeCleanup({ planId: plan.planId, itemIds: selected })),
+      );
+      expect(Exit.isFailure(replay)).toBe(true);
+
+      // Reopening the chat restores its worktree on the same branch.
+      await fixture.unarchive("thread-clean");
+      expect(await git(paths.clean, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("feature-clean");
+
+      // Manual review needs an explicit per-item selection; VACUUM runs once idle.
+      state.flags.delete("thread-turn-later");
+      const second = await fixture.run(fixture.storage.previewCleanup());
+      const manual = second.items.find((item) => item.needsManualReview)!;
+      const vacuum = second.items.find((item) => item.id === "database-vacuum")!;
+      const confirmed = await fixture.run(
+        fixture.storage.executeCleanup({
+          planId: second.planId,
+          itemIds: [manual.id, vacuum.id],
+        }),
+      );
+      expect(confirmed.results.map((entry) => entry.status)).toEqual(["removed", "removed"]);
+      expect(await exists(unprovenDirectory)).toBe(false);
+      const freelist = await fixture.run(
+        fixture.sql.unsafe<{ freelist_count: number }>("PRAGMA freelist_count"),
+      );
+      expect(Number(freelist[0]?.freelist_count)).toBe(0);
+    } finally {
+      await fixture.dispose();
+    }
+  }, 60_000);
 });
