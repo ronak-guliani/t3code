@@ -68,7 +68,14 @@ import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.
 import type { ProjectionReceipt } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
+  ACTIVITY_APPEND_BATCH_MAX_SIZE,
+  ACTIVITY_APPEND_BATCH_WINDOW_MS,
+  isBatchableToolActivity,
+} from "../activityAppendBatch.ts";
+import {
   OrchestrationEngineService,
+  type OrchestrationActivityAppendCommand,
+  type OrchestrationDispatchTicket,
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 
@@ -83,29 +90,21 @@ interface CommandEnvelope {
   startedAtMs: number;
 }
 
-type ActivityAppendCommand = Extract<
-  OrchestrationCommand,
-  { readonly type: "thread.activity.append" }
->;
+type ActivityAppendCommand = OrchestrationActivityAppendCommand;
 
 interface ActivityAppendEnvelope extends CommandEnvelope {
   readonly command: ActivityAppendCommand;
 }
 
-const ACTIVITY_APPEND_BATCH_MAX_SIZE = 32;
-const ACTIVITY_APPEND_BATCH_WINDOW_MS = 25;
-const BATCHABLE_TOOL_ACTIVITY_KINDS = new Set(["tool.started", "tool.updated", "tool.completed"]);
 const waitForActivityAppendBatchWindow = () =>
   Effect.promise(
     () => new Promise<void>((resolve) => setTimeout(resolve, ACTIVITY_APPEND_BATCH_WINDOW_MS)),
   );
 
-function isBatchableToolActivity(command: OrchestrationCommand): command is ActivityAppendCommand {
-  return (
-    command.type === "thread.activity.append" &&
-    command.activity.tone === "tool" &&
-    BATCHABLE_TOOL_ACTIVITY_KINDS.has(command.activity.kind)
-  );
+function isBatchableToolActivityCommand(
+  command: OrchestrationCommand,
+): command is ActivityAppendCommand {
+  return command.type === "thread.activity.append" && isBatchableToolActivity(command.activity);
 }
 
 class ActivityAppendBatchUnavailable extends Error {}
@@ -1278,7 +1277,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       const pending: Array<CommandEnvelope> = [];
       while (true) {
         const envelope = pending.shift() ?? (yield* Queue.take(shardQueue));
-        if (!isBatchableToolActivity(envelope.command)) {
+        if (!isBatchableToolActivityCommand(envelope.command)) {
           yield* processEnvelope(envelope);
           continue;
         }
@@ -1297,7 +1296,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         if (Option.isSome(firstAdditional)) {
           const candidate = firstAdditional.value;
           if (
-            !isBatchableToolActivity(candidate.command) ||
+            !isBatchableToolActivityCommand(candidate.command) ||
             candidate.command.threadId !== threadId
           ) {
             pending.push(candidate);
@@ -1319,7 +1318,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           const candidate = queued[consumed];
           if (
             candidate === undefined ||
-            !isBatchableToolActivity(candidate.command) ||
+            !isBatchableToolActivityCommand(candidate.command) ||
             candidate.command.threadId !== threadId
           ) {
             break;
@@ -1374,18 +1373,40 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive) =>
     eventStore.readFromSequence(fromSequenceExclusive);
 
-  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
+  const enqueueCommand = (command: OrchestrationCommand) =>
     Effect.gen(function* () {
       yield* Deferred.await(initialized);
       const result = yield* Deferred.make<DispatchResult, OrchestrationDispatchError>();
       yield* Queue.offer(commandQueue, { command, result, startedAtMs: Date.now() });
-      return yield* Deferred.await(result);
+      return Deferred.await(result);
     });
+
+  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
+    enqueueCommand(command).pipe(Effect.flatMap((awaitResult) => awaitResult));
+
+  const enqueueToolActivityAppend: OrchestrationEngineShape["enqueueToolActivityAppend"] = (
+    command,
+  ) =>
+    isBatchableToolActivity(command.activity)
+      ? enqueueCommand(command).pipe(
+          Effect.map(
+            (awaitResult): OrchestrationDispatchTicket => ({
+              awaitResult,
+            }),
+          ),
+        )
+      : Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Only tool lifecycle activities can be enqueued without awaiting dispatch.",
+          }),
+        );
 
   return {
     getReadModel,
     readEvents,
     dispatch,
+    enqueueToolActivityAppend,
     withWorktreeLock,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (wsServer, ProviderRuntimeIngestion, CheckpointReactor, etc.)

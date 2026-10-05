@@ -24,7 +24,7 @@
 - Runtime PID files published after HTTP startup are observations, not startup ownership. Hold a shared per-state-directory OS-backed claim before constructing runtime services/migrations, revalidate legacy runtime evidence under it, and never unlink the claim file to recover a crash.
 
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
-- Batch only contiguous same-thread tool lifecycle activities; persist events, projections, and receipts in one transaction, publish in order, and fall back to single-command processing on batch failure. Do not debounce provider errors, approvals, or completion boundaries.
+- Batch only contiguous same-thread tool lifecycle activities; persist events, projections, and receipts in one transaction, publish in order, and fall back to single-command processing on batch failure. Do not debounce provider errors, approvals, or turn/message completion boundaries.
 - Per-thread provider-log rotation does not bound aggregate disk use; apply age and total-byte retention across the provider log directory, and deterministically sample successful SQL spans while keeping failures.
 - Preserve command input on tool starts and normalize provider-specific nesting before compact activity projection; shell audit timing must identify native versus observed starts and never treat an unfinished provider call as OS-process liveness.
 - Runtime warning/error activities carry user-facing text in `payload.message` with optional `payload.detail`; every client's work-log derivation must surface both, or the rows render with nothing to expand.
