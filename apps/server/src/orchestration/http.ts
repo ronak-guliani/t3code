@@ -47,15 +47,7 @@ const respondToOrchestrationHttpError = (
 ) =>
   Effect.gen(function* () {
     if (error._tag === "OrchestrationReadThreadInputError") {
-      return HttpServerResponse.jsonUnsafe(
-        {
-          _tag: error._tag,
-          message: error.message,
-          error: error.message,
-          ...(error.reason === undefined ? {} : { reason: error.reason }),
-        },
-        { status: 400 },
-      );
+      return HttpServerResponse.jsonUnsafe({ error: error.message }, { status: 400 });
     }
     if (error._tag === "OrchestrationGetSnapshotError") {
       yield* Effect.logError("orchestration http route failed", {
@@ -182,7 +174,17 @@ export const orchestrationThreadSnapshotRouteLayer = HttpRouter.add(
     Effect.catchTags({
       AuthError: respondToAuthError,
       OrchestrationGetSnapshotError: respondToOrchestrationHttpError,
-      OrchestrationReadThreadInputError: respondToOrchestrationHttpError,
+      OrchestrationReadThreadInputError: (error) =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe(
+            {
+              _tag: error._tag,
+              message: error.message,
+              ...(error.reason === undefined ? {} : { reason: error.reason }),
+            },
+            { status: 400 },
+          ),
+        ),
     }),
   ),
 );

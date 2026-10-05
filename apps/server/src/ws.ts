@@ -1524,6 +1524,9 @@ const makeWsRpcLayer = (
                   let messageOrigin;
                   if (
                     event.type === "thread.message-sent" &&
+                    (input.turnLimit !== undefined ||
+                      input.beforeCursor !== undefined ||
+                      input.aroundMessageId !== undefined) &&
                     projectionSnapshotQuery.getThreadMessageOriginById
                   ) {
                     messageOrigin = origins.get(event.payload.messageId);
