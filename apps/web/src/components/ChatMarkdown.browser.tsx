@@ -312,7 +312,11 @@ describe("ChatMarkdown", () => {
     const filePath =
       "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/PermissionRule.ts";
     const screen = await render(
-      <ChatMarkdown text={`[PermissionRule.ts](file://${filePath})`} cwd="/repo/project" />,
+      <ChatMarkdown
+        text={`[PermissionRule.ts](file://${filePath})`}
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
     );
 
     try {
@@ -323,8 +327,11 @@ describe("ChatMarkdown", () => {
       await link.click();
 
       await vi.waitFor(() => {
-        expect(openInPreferredEditorMock).toHaveBeenCalledWith(expect.anything(), filePath);
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({ threadRef, cwd: "/repo/project", filePath }),
+        );
       });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
@@ -334,7 +341,11 @@ describe("ChatMarkdown", () => {
     const filePath =
       "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/PermissionRule.ts";
     const screen = await render(
-      <ChatMarkdown text={`[PermissionRule.ts:1](file://${filePath}#L1)`} cwd="/repo/project" />,
+      <ChatMarkdown
+        text={`[PermissionRule.ts:1](file://${filePath}#L1)`}
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
     );
 
     try {
@@ -345,8 +356,11 @@ describe("ChatMarkdown", () => {
       await link.click();
 
       await vi.waitFor(() => {
-        expect(openInPreferredEditorMock).toHaveBeenCalledWith(expect.anything(), `${filePath}:1`);
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({ threadRef, cwd: "/repo/project", filePath, line: 1 }),
+        );
       });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
@@ -356,7 +370,11 @@ describe("ChatMarkdown", () => {
     const filePath =
       "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/PermissionRule.ts";
     const screen = await render(
-      <ChatMarkdown text={`[PermissionRule.ts](file://${filePath}#L1C7)`} cwd="/repo/project" />,
+      <ChatMarkdown
+        text={`[PermissionRule.ts](file://${filePath}#L1C7)`}
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
     );
 
     try {
@@ -367,11 +385,17 @@ describe("ChatMarkdown", () => {
       await link.click();
 
       await vi.waitFor(() => {
-        expect(openInPreferredEditorMock).toHaveBeenCalledWith(
-          expect.anything(),
-          `${filePath}:1:7`,
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            threadRef,
+            cwd: "/repo/project",
+            filePath,
+            line: 1,
+            column: 7,
+          }),
         );
       });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
