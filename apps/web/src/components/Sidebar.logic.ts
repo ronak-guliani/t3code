@@ -26,6 +26,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-status";
 import { canSettle, effectiveSettled } from "@t3tools/client-runtime/state/thread-settled";
 import { resolveSettledThreadTimestamp } from "@t3tools/client-runtime/state/thread-sort";
+import { formatThreadContextPlainText } from "@t3tools/shared/threadContext";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -175,12 +176,18 @@ export function resolveSidebarDraftPreview(input: {
     attachments?: readonly unknown[];
   } | null;
 }): string {
-  const promptPreview = input.draftPrompt?.trim().split("\n", 1)[0] ?? "";
+  const promptPreview =
+    formatThreadContextPlainText(input.draftPrompt ?? "")
+      .trim()
+      .split("\n", 1)[0] ?? "";
   if (promptPreview) {
     return promptPreview;
   }
 
-  const optimisticPreview = input.optimisticMessage?.text.trim().split("\n", 1)[0] ?? "";
+  const optimisticPreview =
+    formatThreadContextPlainText(input.optimisticMessage?.text ?? "")
+      .trim()
+      .split("\n", 1)[0] ?? "";
   if (optimisticPreview) {
     return optimisticPreview;
   }
@@ -192,7 +199,10 @@ export function resolveSidebarDraftPreview(input: {
 export function resolveExistingThreadDraftPreview(
   prompt: string | null | undefined,
 ): string | null {
-  const preview = prompt?.trim().split("\n", 1)[0] ?? "";
+  const preview =
+    formatThreadContextPlainText(prompt ?? "")
+      .trim()
+      .split("\n", 1)[0] ?? "";
   return preview.length > 0 ? preview : null;
 }
 

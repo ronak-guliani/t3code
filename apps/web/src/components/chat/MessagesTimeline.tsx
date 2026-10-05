@@ -7,6 +7,7 @@ import {
   type MessageId,
   type ThreadContextRecord,
   ThreadId,
+  type ScopedThreadRef,
   type TurnDiffScope,
   TurnId,
 } from "@t3tools/contracts";
@@ -61,6 +62,7 @@ import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
 import { WorkLogPanel } from "./WorkLogPanel";
 import { WorkEntryTerminalButton, workEntryTerminalId } from "./WorkEntryTerminalButton";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
+import { openFileReference } from "~/browser/openFileReference";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel } from "./DiffStatLabel";
@@ -125,6 +127,8 @@ import { selectSidebarThreadSummaryByRef, useStore, type AppState } from "../../
 import { ensureEnvironmentApi, readEnvironmentApi } from "~/environmentApi";
 import { getEnvironmentHttpBaseUrl } from "~/environments/runtime";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { previewEnvironment } from "~/state/preview";
+import { useAtomCommand } from "~/state/use-atom-command";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via useContext.
@@ -555,25 +559,21 @@ type TimelineAttachment = NonNullable<TimelineMessage["attachments"]>[number];
 const TimelineAttachmentTile = memo(function TimelineAttachmentTile({
   attachment,
   images,
-  environmentId,
+  threadRef,
   onImageExpand,
 }: {
   attachment: TimelineAttachment;
   images: ReadonlyArray<TimelineAttachment>;
-  environmentId: EnvironmentId;
+  threadRef: ScopedThreadRef;
   onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
   const [opening, setOpening] = useState(false);
   const openAttachment = useCallback(async () => {
-    if (attachment.previewUrl) {
-      const preview = buildExpandedImagePreview(images, attachment.id);
-      if (preview) onImageExpand(preview);
-      return;
-    }
     if (opening) return;
+    const environmentId = threadRef.environmentId;
     const environmentApi = readEnvironmentApi(environmentId);
     const httpBaseUrl = getEnvironmentHttpBaseUrl(environmentId);
-    if (!environmentApi || !httpBaseUrl) {
+    if ((!environmentApi || !httpBaseUrl) && !attachment.previewUrl) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -585,48 +585,18 @@ const TimelineAttachmentTile = memo(function TimelineAttachmentTile({
     }
     setOpening(true);
     try {
-      const resolved = await Promise.all(
-        images.map(async (image) => {
-          if (image.previewUrl) return image;
-          try {
-            const asset = await environmentApi.assets.createUrl({
-              resource: {
-                _tag: "attachment",
-                attachmentId: image.id,
-                fileName: image.name,
-                mimeType: image.mimeType,
-                disposition: "inline",
-              },
-            });
-            return {
-              ...image,
-              previewUrl: new URL(asset.relativeUrl, httpBaseUrl).toString(),
-            };
-          } catch (error) {
-            // Sibling failures degrade gracefully, but the clicked
-            // attachment's own failure must reach the outer catch so a
-            // transient error reports its real cause instead of reading as
-            // a missing attachment.
-            if (image.id === attachment.id) throw error;
-            return null;
-          }
-        }),
-      );
-      const preview = buildExpandedImagePreview(
-        resolved.filter((image) => image !== null),
-        attachment.id,
-      );
-      if (!preview) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Unable to open attachment",
-            description: "The attachment is no longer available.",
-          }),
-        );
-        return;
-      }
-      onImageExpand(preview);
+      await openFileReference({
+        kind: "attachments",
+        threadRef,
+        attachments: images,
+        selectedAttachmentId: attachment.id,
+        ...(httpBaseUrl ? { httpBaseUrl } : {}),
+        ...(environmentApi ? { createAssetUrl: environmentApi.assets.createUrl } : {}),
+        onOpenGallery: (resolved, selectedId) => {
+          const preview = buildExpandedImagePreview(resolved, selectedId);
+          if (preview) onImageExpand(preview);
+        },
+      });
     } catch (error) {
       toastManager.add(
         stackedThreadToast({
@@ -638,7 +608,7 @@ const TimelineAttachmentTile = memo(function TimelineAttachmentTile({
     } finally {
       setOpening(false);
     }
-  }, [attachment, environmentId, images, onImageExpand, opening]);
+  }, [attachment, images, onImageExpand, opening, threadRef]);
 
   return (
     <div className="overflow-hidden rounded-lg border border-border/80 bg-background/70">
@@ -772,7 +742,7 @@ const TimelineRowContent = memo(function TimelineRowContent(props: { row: Timeli
                         key={image.id}
                         attachment={image}
                         images={regularImages}
-                        environmentId={ctx.activeThreadEnvironmentId}
+                        threadRef={ctx.threadRef}
                         onImageExpand={ctx.onImageExpand}
                       />
                     ))}
@@ -1727,9 +1697,20 @@ function AssistantChangedFilesSectionInner({
   if (summaryStat.additions === 0 && summaryStat.deletions === 0) return null;
 
   return (
-    <div data-changed-files-state={collapsed ? "collapsed" : "tree"} className="mt-4">
-      <div className="sticky top-2 z-10 flex items-center justify-between gap-2 rounded-t-xl bg-sunken px-3 py-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-foreground">
+    <div
+      data-changed-files-state={collapsed ? "collapsed" : "tree"}
+      className="mt-4"
+      /* Sized off the chat font, not the code font: this is a file summary
+         inside a message, and raising "code font size" to read diffs should not
+         inflate it. Steps below are `em` so they track whatever chat size the
+         reader has set. */
+      style={{ fontSize: "var(--app-chat-font-size)" }}
+    >
+      {/* Not sticky: the nearest scroll container is the whole message list, so a
+          sticky header pins to the viewport, detaches from its card, and covers
+          the rows scrolling underneath it. */}
+      <div className="flex items-center justify-between gap-2 rounded-t-xl bg-sunken px-3 py-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 font-medium text-foreground">
           <span>
             {visibleFiles.length} changed file{visibleFiles.length === 1 ? "" : "s"}
           </span>
@@ -2233,8 +2214,12 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
 
 const WorkEntryDetails = memo(function WorkEntryDetails({
   workEntry,
+  onOpenFile,
+  workspaceRoot,
 }: {
   workEntry: TimelineWorkEntry;
+  onOpenFile: (path: string) => void;
+  workspaceRoot: string | undefined;
 }) {
   const { activeThreadEnvironmentId, activeThreadId } = use(TimelineRowCtx);
   const output = extractCommandOutputText(workEntry.toolData);
@@ -2254,7 +2239,6 @@ const WorkEntryDetails = memo(function WorkEntryDetails({
   const detail = [
     command,
     output ?? workEntry.detail,
-    ...(output ? [] : (workEntry.changedFiles ?? [])),
     fallback === "{}" || fallback === "[]" ? undefined : fallback,
   ]
     .filter((value, index, values) => value && values.indexOf(value) === index)
@@ -2281,6 +2265,25 @@ const WorkEntryDetails = memo(function WorkEntryDetails({
         >
           {detail}
         </pre>
+      ) : null}
+      {workEntry.changedFiles?.length ? (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {workEntry.changedFiles.map((filePath) => {
+            const displayPath = formatWorkspaceRelativePath(filePath, workspaceRoot);
+            return (
+              <button
+                key={`${workEntry.id}:${filePath}`}
+                type="button"
+                className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[0.85em] text-muted-foreground/75 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Open file ${displayPath}`}
+                title={displayPath}
+                onClick={() => onOpenFile(filePath)}
+              >
+                {displayPath}
+              </button>
+            );
+          })}
+        </div>
       ) : null}
       {hasAuditEvidence ? (
         <>
@@ -2517,6 +2520,42 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const [isCommandExpanded, setIsCommandExpanded] = useState(false);
   const navigate = useNavigate();
   const { activeThreadEnvironmentId, threadRef } = use(TimelineRowCtx);
+  const openPreview = useAtomCommand(previewEnvironment.open);
+  const navigatePreview = useAtomCommand(previewEnvironment.navigate);
+  const openToolResultFile = useCallback(
+    (filePath: string) => {
+      const environmentApi = readEnvironmentApi(activeThreadEnvironmentId);
+      const httpBaseUrl = getEnvironmentHttpBaseUrl(activeThreadEnvironmentId);
+      if (!environmentApi || !httpBaseUrl) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open file",
+            description: "The tool result's owning environment is unavailable.",
+          }),
+        );
+        return;
+      }
+      void openFileReference({
+        threadRef,
+        filePath,
+        cwd: workspaceRoot,
+        httpBaseUrl,
+        createAssetUrl: environmentApi.assets.createUrl,
+        openPreview,
+        navigatePreview,
+      }).catch((error) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open file",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      });
+    },
+    [activeThreadEnvironmentId, navigatePreview, openPreview, threadRef, workspaceRoot],
+  );
   if (workEntry.agentRun) {
     return <AgentRunRow agentRun={workEntry.agentRun} workspaceRoot={workspaceRoot} />;
   }
@@ -2588,7 +2627,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           <WorkEntryTerminalButton entry={workEntry} threadRef={threadRef} />
         </div>
         <WorkLogPanel open={isCommandExpanded}>
-          <WorkEntryDetails workEntry={workEntry} />
+          <WorkEntryDetails
+            workEntry={workEntry}
+            onOpenFile={openToolResultFile}
+            workspaceRoot={workspaceRoot}
+          />
         </WorkLogPanel>
       </Collapsible>
     );
@@ -2697,13 +2740,16 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           {workEntry.changedFiles?.slice(0, 4).map((filePath) => {
             const displayPath = formatWorkspaceRelativePath(filePath, workspaceRoot);
             return (
-              <span
+              <button
+                type="button"
                 key={`${workEntry.id}:${filePath}`}
-                className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[0.85em] text-muted-foreground/75"
+                className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[0.85em] text-muted-foreground/75 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Open file ${displayPath}`}
                 title={displayPath}
+                onClick={() => openToolResultFile(filePath)}
               >
                 {displayPath}
-              </span>
+              </button>
             );
           })}
           {(workEntry.changedFiles?.length ?? 0) > 4 && (

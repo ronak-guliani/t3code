@@ -7,7 +7,6 @@ import {
   type ChildNudgeUpdate,
   type OrchestrationEvent,
   type OrchestrationThread,
-  type ThreadDelegation,
 } from "@t3tools/contracts";
 
 type PlannedEvent = {
@@ -63,7 +62,10 @@ function stringField(record: unknown, key: string): string | undefined {
  */
 export function childPendingRequestUpdate(input: {
   readonly child: Pick<OrchestrationThread, "id" | "title">;
-  readonly delegation: Pick<ThreadDelegation, "assignmentId" | "dispatchId">;
+  readonly delegation: {
+    readonly assignmentId: MessageId;
+    readonly dispatchId?: string | undefined;
+  };
   readonly lifecycle: "approval-required" | "input-required";
   readonly requestId: string;
   readonly payload: unknown;

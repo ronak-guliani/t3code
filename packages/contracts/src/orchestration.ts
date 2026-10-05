@@ -1276,7 +1276,17 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   expectedUpdatedAt: Schema.optional(IsoDateTime),
+  expectedArchivedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   expectedWorkspaceCwd: Schema.optional(TrimmedNonEmptyString),
+  expectedPendingPullRequestAssociationRequestId: Schema.optional(Schema.NullOr(CommandId)),
+  expectedPullRequestAssociationContext: Schema.optional(
+    Schema.Struct({
+      projectId: ProjectId,
+      branch: Schema.NullOr(TrimmedNonEmptyString),
+      worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+      pullRequestUrl: Schema.NullOr(TrimmedNonEmptyString),
+    }),
+  ),
   title: Schema.optional(TrimmedNonEmptyString),
   regenerateTitle: Schema.optional(Schema.Literal(true)),
   modelSelection: Schema.optional(ModelSelection),

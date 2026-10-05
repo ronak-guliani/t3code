@@ -444,6 +444,7 @@ export interface ChatComposerProps {
   activePendingDraftAnswers: Record<string, PendingUserInputDraftAnswer>;
   activePendingQuestionIndex: number;
   respondingRequestIds: ApprovalRequestId[];
+  respondingUserInputRequestIds: ApprovalRequestId[];
 
   // Plan
   showPlanFollowUpPrompt: boolean;
@@ -551,6 +552,7 @@ export const ChatComposer = memo(
       activePendingDraftAnswers,
       activePendingQuestionIndex,
       respondingRequestIds,
+      respondingUserInputRequestIds,
       showPlanFollowUpPrompt,
       activeProposedPlan,
       activePlan,
@@ -2593,7 +2595,7 @@ export const ChatComposer = memo(
               <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
                 <ComposerPendingUserInputPanel
                   pendingUserInputs={pendingUserInputs}
-                  respondingRequestIds={respondingRequestIds}
+                  respondingRequestIds={respondingUserInputRequestIds}
                   answers={activePendingDraftAnswers}
                   questionIndex={activePendingQuestionIndex}
                   onToggleOption={onSelectActivePendingUserInputOption}

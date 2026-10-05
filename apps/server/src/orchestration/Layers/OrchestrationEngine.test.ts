@@ -567,6 +567,27 @@ describe("OrchestrationEngine", () => {
       expect(await system.run(system.engine.getReadModel())).toEqual(before);
       expect(projected).toHaveLength(eventCount);
 
+      const supersededAssociationCommand = {
+        type: "thread.meta.update" as const,
+        commandId: CommandId.make("superseded-association-intent"),
+        threadId,
+        expectedPendingPullRequestAssociationRequestId: CommandId.make("newer-association-intent"),
+        pendingPullRequestAssociation: {
+          requestId: CommandId.make("superseded-association-intent"),
+          reference: "https://github.com/acme/app/pull/42",
+          requestedAt: "2026-09-08T00:00:00.000Z",
+          nextAttemptAt: "2026-09-08T00:01:00.000Z",
+          status: "blocked" as const,
+          reason: "resolve-failed" as const,
+        },
+      };
+      const supersededAssociationResult = await system.run(
+        system.engine.dispatch(supersededAssociationCommand),
+      );
+      expect(supersededAssociationResult.sequence).toBe(before.snapshotSequence);
+      expect(await system.run(system.engine.getReadModel())).toEqual(before);
+      expect(projected).toHaveLength(eventCount);
+
       // A retry whose precondition now matches must still replay the receipt.
       expect(
         await system.run(
@@ -645,6 +666,29 @@ describe("OrchestrationEngine", () => {
       expect(pruned.sequence).toBe(clearedWait.snapshotSequence);
       expect(await system.run(system.engine.getReadModel())).toEqual(clearedWait);
       expect(await system.run(system.engine.dispatch(pruneCommand))).toEqual(pruned);
+
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("archive-before-association"),
+          threadId,
+        }),
+      );
+      const archivedThread = await system.run(system.engine.getReadModel());
+      const archiveEventCount = projected.length;
+      const staleAssociationCommit = await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("association-after-archive"),
+          threadId,
+          expectedArchivedAt: null,
+          pullRequest: { ...pullRequest, title: "Association after archive" },
+          pullRequestOwnership: "transfer",
+        }),
+      );
+      expect(staleAssociationCommit.sequence).toBe(archivedThread.snapshotSequence);
+      expect(await system.run(system.engine.getReadModel())).toEqual(archivedThread);
+      expect(projected).toHaveLength(archiveEventCount);
     } finally {
       await system.dispose();
     }
@@ -1613,6 +1657,87 @@ describe("OrchestrationEngine", () => {
     ).toBe(true);
 
     await system.dispose();
+  });
+
+  it("treats deleting an already-deleted queued turn as a no-op", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+    const threadId = ThreadId.make("thread-double-delete");
+    const queuedTurnId = QueuedTurnId.make("queued-double-delete");
+    try {
+      await system.run(
+        engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-double-delete"),
+          projectId: asProjectId("project-double-delete"),
+          title: "Double Delete",
+          workspaceRoot: "/tmp/project-double-delete",
+          defaultModelSelection: null,
+          createdAt,
+        }),
+      );
+      await system.run(
+        engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-thread-double-delete"),
+          threadId,
+          projectId: asProjectId("project-double-delete"),
+          title: "Double Delete",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+      await system.run(
+        engine.dispatch({
+          type: "thread.queued-turn.create",
+          commandId: CommandId.make("cmd-queue-double-delete"),
+          threadId,
+          queuedTurnId,
+          message: {
+            messageId: MessageId.make("message-double-delete"),
+            role: "user",
+            text: "hello",
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt,
+        }),
+      );
+      const deleteCommand = (id: string) =>
+        engine.dispatch({
+          type: "thread.queued-turn.delete",
+          commandId: CommandId.make(id),
+          threadId,
+          queuedTurnId,
+          deletedAt: createdAt,
+        });
+      await system.run(deleteCommand("cmd-delete-first"));
+      await system.run(deleteCommand("cmd-delete-second"));
+
+      const thread = (await system.run(engine.getReadModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(thread?.queuedTurns ?? []).toEqual([]);
+      await expect(
+        system.run(
+          engine.dispatch({
+            type: "thread.queued-turn.delete",
+            commandId: CommandId.make("cmd-delete-missing-thread"),
+            threadId: ThreadId.make("thread-missing"),
+            queuedTurnId,
+            deletedAt: createdAt,
+          }),
+        ),
+      ).rejects.toThrow("does not exist");
+    } finally {
+      await system.dispose();
+    }
   });
 
   it("records failed command dispatches as metric failures", async () => {

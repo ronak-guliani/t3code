@@ -17,6 +17,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
+import { formatThreadContextPlainText } from "@t3tools/shared/threadContext";
 import { Cache, Cause, Duration, Effect, Equal, Layer, Option, Schema, Stream } from "effect";
 import { makeKeyedDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
@@ -912,17 +913,6 @@ const make = Effect.gen(function* () {
       );
     }
 
-    if (
-      sourceSession.status === "running" ||
-      sourceSession.activeTurnId !== null ||
-      sourceThread.latestTurn?.state === "running"
-    ) {
-      return yield* failFork(
-        "Provider fork unavailable",
-        "Source run status is 'running'; only provider-finished runs can be forked.",
-      );
-    }
-
     const capabilities = yield* providerService.getCapabilities(
       sourceSession.providerInstanceId ?? ProviderInstanceId.make(sourceSession.providerName),
     );
@@ -1137,7 +1127,7 @@ const make = Effect.gen(function* () {
       thread.messages.filter((entry) => entry.role === "user").length === 1;
     if (isFirstUserMessageTurn) {
       const generationInput = {
-        messageText: message.text,
+        messageText: formatThreadContextPlainText(message.text),
         ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       };
 

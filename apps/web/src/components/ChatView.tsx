@@ -78,7 +78,10 @@ import {
   parseDiffRouteSearch,
 } from "../diffRouteSearch";
 import { collapseExpandedComposerCursor } from "../composer-logic";
-import { collectThreadContextReferences } from "@t3tools/shared/threadContext";
+import {
+  collectThreadContextReferences,
+  formatThreadContextPlainText,
+} from "@t3tools/shared/threadContext";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -949,6 +952,9 @@ function ChatViewBody(
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
+  // Single slot: only one request can be active in the composer, and a new
+  // request id never matches the answered one.
+  const respondedUserInputRequestIdRef = useRef<ApprovalRequestId | null>(null);
   const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
     Record<string, Record<string, PendingUserInputDraftAnswer>>
   >({});
@@ -2355,9 +2361,9 @@ function ChatViewBody(
     [activeThreadRef],
   );
   const openRightPanelFile = useCallback(
-    (relativePath: string) => {
+    (relativePath: string, line?: number, column?: number) => {
       if (!activeThreadRef) return;
-      useRightPanelStore.getState().openFile(activeThreadRef, relativePath);
+      useRightPanelStore.getState().openFile(activeThreadRef, relativePath, line, column);
     },
     [activeThreadRef],
   );
@@ -3649,7 +3655,7 @@ function ChatViewBody(
           composerTerminalContextsSnapshot,
         );
         const firstComposerImageName = composerImagesSnapshot[0]?.name ?? null;
-        let titleSeed = trimmed;
+        let titleSeed = formatThreadContextPlainText(trimmed);
         if (!titleSeed) {
           if (firstComposerImageName) {
             titleSeed = `Image: ${firstComposerImageName}`;
@@ -3858,7 +3864,7 @@ function ChatViewBody(
           firstComposerImageName = firstComposerImage.name;
         }
       }
-      let titleSeed = trimmed;
+      let titleSeed = formatThreadContextPlainText(trimmed);
       if (!titleSeed) {
         if (firstComposerImageName) {
           titleSeed = `Image: ${firstComposerImageName}`;
@@ -4283,25 +4289,44 @@ function ChatViewBody(
       const api = readEnvironmentApi(environmentId);
       if (!api || !activeThreadId) return;
 
+      // A pending request accepts exactly one response. Claim it synchronously
+      // before awaiting anything: a single-select option click arms a short
+      // auto-advance timer, so a manual submit, the Enter key and the mobile
+      // send arrow can all reach this funnel for the same request. The provider
+      // consumes the request id on the first response and rejects the rest as
+      // unknown, which clears the form as if it had gone missing.
+      if (respondedUserInputRequestIdRef.current === requestId) {
+        return;
+      }
+      respondedUserInputRequestIdRef.current = requestId;
+
       setRespondingUserInputRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
-      await api.orchestration
-        .dispatchCommand({
+      let submissionFailed = false;
+      try {
+        await api.orchestration.dispatchCommand({
           type: "thread.user-input.respond",
           commandId: newCommandId(),
           threadId: activeThreadId,
           requestId,
           answers,
           createdAt: new Date().toISOString(),
-        })
-        .catch((err: unknown) => {
-          setThreadError(
-            activeThreadId,
-            err instanceof Error ? err.message : "Failed to submit user input.",
-          );
         });
+      } catch (err: unknown) {
+        submissionFailed = true;
+        setThreadError(
+          activeThreadId,
+          err instanceof Error ? err.message : "Failed to submit user input.",
+        );
+      }
       setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
+      // A rejected dispatch never reached the provider, so the question is still
+      // open. Release the claim once the responding state is cleared, otherwise
+      // every retry is discarded as a duplicate and the provider waits forever.
+      if (submissionFailed && respondedUserInputRequestIdRef.current === requestId) {
+        respondedUserInputRequestIdRef.current = null;
+      }
     },
     [activeThreadId, environmentId, setThreadError],
   );
@@ -5492,8 +5517,14 @@ function ChatViewBody(
               kind={surface.kind}
               cwd={activeWorkspaceRoot ?? activeProject?.cwd ?? ""}
               projectName={activeProject?.name}
-              relativePath={surface.kind === "file" ? surface.relativePath : null}
+              relativePath={
+                surface.kind === "file" && !surface.reference ? surface.relativePath : null
+              }
               revealLine={surface.kind === "file" ? surface.revealLine : null}
+              revealColumn={surface.kind === "file" ? (surface.revealColumn ?? null) : null}
+              {...(surface.kind === "file" && surface.reference
+                ? { fileReference: surface.reference }
+                : {})}
               threadRef={activeThreadRef}
               onOpenFile={openRightPanelFile}
               onPendingChange={handleFilePendingChange}
@@ -5700,6 +5731,7 @@ function ChatViewBody(
                     activePendingDraftAnswers={activePendingDraftAnswers}
                     activePendingQuestionIndex={activePendingQuestionIndex}
                     respondingRequestIds={respondingRequestIds}
+                    respondingUserInputRequestIds={respondingUserInputRequestIds}
                     showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                     activeProposedPlan={activeProposedPlan}
                     activePlan={activePlan}

@@ -1,5 +1,10 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, PullRequestRef, ScopedThreadRef } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  PullRequestRef,
+  ResolvedFileReference,
+  ScopedThreadRef,
+} from "@t3tools/contracts";
 import { create } from "zustand";
 
 export type RightPanelKind =
@@ -22,6 +27,15 @@ export interface DeviceTabTarget {
   serverEpoch?: string;
 }
 
+export interface ExternalFileReferenceTarget {
+  readonly kind: "external" | "workspace";
+  readonly path: string;
+  readonly line?: number;
+  readonly column?: number;
+  readonly metadata?: ResolvedFileReference;
+  readonly assetExpiresAt?: number;
+}
+
 export type RightPanelSurface =
   | { id: `browser:${string}`; kind: "preview"; resourceId: string }
   | { id: "browser:new"; kind: "preview"; resourceId: null }
@@ -30,7 +44,14 @@ export type RightPanelSurface =
   | { id: "files"; kind: "files" }
   | { id: "insights"; kind: "insights" }
   | { id: "plan"; kind: "plan" }
-  | { id: `file:${string}`; kind: "file"; relativePath: string; revealLine: number | null }
+  | {
+      id: `file:${string}` | `file-reference:${string}`;
+      kind: "file";
+      relativePath: string;
+      revealLine: number | null;
+      revealColumn?: number | null;
+      reference?: ExternalFileReferenceTarget;
+    }
   | { id: `terminal:${string}`; kind: "terminal"; resourceId: string }
   | { id: "pull-requests"; kind: "pull-requests" }
   | {
@@ -57,7 +78,13 @@ interface RightPanelStoreState {
   ) => void;
   readonly openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
   readonly openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget) => void;
-  readonly openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
+  readonly openFile: (
+    ref: ScopedThreadRef,
+    relativePath: string,
+    line?: number,
+    column?: number,
+  ) => void;
+  readonly openExternalFile: (ref: ScopedThreadRef, reference: ExternalFileReferenceTarget) => void;
   readonly openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
   readonly openPullRequest: (
     ref: ScopedThreadRef,
@@ -130,6 +157,29 @@ function upsert(current: ThreadRightPanelState, surface: RightPanelSurface): Thr
   };
 }
 
+function setFileReferenceSurface(
+  byThreadKey: Readonly<Record<string, ThreadRightPanelState>>,
+  ref: ScopedThreadRef,
+  reference: ExternalFileReferenceTarget,
+): Readonly<Record<string, ThreadRightPanelState>> {
+  return updateState(byThreadKey, ref, (current) => {
+    const id = `file-reference:${reference.path}` as const;
+    const surface: RightPanelSurface = {
+      id,
+      kind: "file",
+      relativePath: reference.path,
+      revealLine: reference.line === undefined ? null : Math.max(1, Math.trunc(reference.line)),
+      revealColumn:
+        reference.column === undefined ? null : Math.max(1, Math.trunc(reference.column)),
+      reference,
+    };
+    const surfaces = current.surfaces.some((entry) => entry.id === id)
+      ? current.surfaces.map((entry) => (entry.id === id ? surface : entry))
+      : [...current.surfaces, surface];
+    return { isOpen: true, activeSurfaceId: id, surfaces };
+  });
+}
+
 export const useRightPanelStore = create<RightPanelStoreState>()((set) => ({
   byThreadKey: {},
   open: (ref, kind) =>
@@ -164,7 +214,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set) => ({
         return upsert({ ...current, surfaces }, surface);
       }),
     })),
-  openFile: (ref, relativePath, line) =>
+  openFile: (ref, relativePath, line, column) =>
     set((state) => ({
       byThreadKey: updateState(state.byThreadKey, ref, (current) => {
         const surface: RightPanelSurface = {
@@ -172,6 +222,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set) => ({
           kind: "file",
           relativePath,
           revealLine: line === undefined ? null : Math.max(1, Math.trunc(line)),
+          ...(column === undefined ? {} : { revealColumn: Math.max(1, Math.trunc(column)) }),
         };
         // Replace the existing entry so a re-open with a new line updates it.
         const surfaces = current.surfaces.some((entry) => entry.id === surface.id)
@@ -179,6 +230,10 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set) => ({
           : [...current.surfaces, surface];
         return { isOpen: true, activeSurfaceId: surface.id, surfaces };
       }),
+    })),
+  openExternalFile: (ref, reference) =>
+    set((state) => ({
+      byThreadKey: setFileReferenceSurface(state.byThreadKey, ref, reference),
     })),
   openTerminal: (ref, terminalId) =>
     set((state) => ({

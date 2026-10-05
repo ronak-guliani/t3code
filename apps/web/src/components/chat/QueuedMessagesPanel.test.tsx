@@ -56,6 +56,16 @@ function render(
   );
 }
 
+describe("queued thread context display", () => {
+  it("renders the reference label instead of its URI", () => {
+    const html = render([
+      queuedTurn("queued-context", "Review [Auth refactor](t3-context://v1/thread/ctx_queued)"),
+    ]);
+    expect(html).toContain("Review Auth refactor");
+    expect(html).not.toContain("t3-context://");
+  });
+});
+
 function renderEditing(queuedTurn: OrchestrationQueuedTurn) {
   return renderToStaticMarkup(
     <QueuedMessagesPanel

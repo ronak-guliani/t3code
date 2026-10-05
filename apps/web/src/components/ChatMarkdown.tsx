@@ -58,14 +58,11 @@ import { githubPullRequestNavigation, openPullRequestLink } from "../lib/openPul
 import { usePrimaryEnvironmentId } from "~/environments/primary";
 import { useProjectEntriesQuery } from "./files/projectFilesQueryState";
 import { buildFileParentSuffixByPath } from "../filePathDisambiguation";
-import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
+import { openFileReference } from "~/browser/openFileReference";
 import { useOpenLink } from "~/browser/useOpenLink";
 import { readEnvironmentApi } from "~/environmentApi";
-import { isPreviewSupportedInRuntime } from "~/previewStateStore";
-import { useRightPanelStore } from "~/rightPanelStore";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { toWorkspaceRelativePath } from "../filePathDisplay";
 import {
   appendStreamingMarkdown,
   beginStreamingMarkdown,
@@ -124,6 +121,8 @@ const TRAILING_PARTIAL_WEB_CITATION_PATTERN = /\uE200cite[\s\S]*$/;
 const MemoizedReactMarkdown = memo(ReactMarkdown);
 const EMPTY_GITHUB_REFERENCES: ReadonlyMap<string, string> = new Map();
 const EMPTY_MARKDOWN_FILE_LINK_META_BY_HREF: ReadonlyMap<string, MarkdownFileLinkMeta> = new Map();
+const isAbsoluteFileReference = (path: string) =>
+  path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
 const MAX_HIGHLIGHT_CACHE_MEMORY_BYTES = 50 * 1024 * 1024;
 const highlightedCodeCache = new LRUCache<string>(
@@ -801,6 +800,7 @@ interface MarkdownFileLinkProps {
   threadRef?: ScopedThreadRef;
   cwd?: string | undefined;
   line?: number | undefined;
+  column?: number | undefined;
   className?: string | undefined;
 }
 
@@ -1050,42 +1050,51 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   threadRef,
   cwd,
   line,
+  column,
   className,
 }: MarkdownFileLinkProps) {
   const environmentApi = threadRef ? readEnvironmentApi(threadRef.environmentId) : undefined;
   const openPreview = useAtomCommand(previewEnvironment.open);
+  const navigatePreview = useAtomCommand(previewEnvironment.navigate);
   const handleOpen = useCallback(() => {
     const httpBaseUrl = threadRef ? getEnvironmentHttpBaseUrl(threadRef.environmentId) : null;
-    if (
-      threadRef &&
-      environmentApi &&
-      httpBaseUrl &&
-      isPreviewSupportedInRuntime() &&
-      isBrowserPreviewFile(filePath)
-    ) {
-      void openFileInPreview({
+    if (threadRef) {
+      if (!environmentApi || !httpBaseUrl) {
+        toastManager.add({
+          type: "error",
+          title: "Unable to open file",
+          description: "The thread's owning environment is unavailable.",
+        });
+        return;
+      }
+      void openFileReference({
         threadRef,
-        relativePath: filePath,
+        filePath,
+        cwd,
+        ...(line === undefined ? {} : { line }),
+        ...(column === undefined ? {} : { column }),
         httpBaseUrl,
         createAssetUrl: environmentApi.assets.createUrl,
         openPreview,
+        navigatePreview,
       }).catch((error) => {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Unable to open preview",
+            title: "Unable to open file",
             description: error instanceof Error ? error.message : "An error occurred.",
           }),
         );
       });
       return;
     }
-    if (threadRef) {
-      const workspaceRelativePath = toWorkspaceRelativePath(filePath, cwd);
-      if (workspaceRelativePath) {
-        useRightPanelStore.getState().openFile(threadRef, workspaceRelativePath, line);
-        return;
-      }
+    if (isAbsoluteFileReference(filePath)) {
+      toastManager.add({
+        type: "error",
+        title: "Owning environment unavailable",
+        description: "Open this host file from its thread to avoid using a local path.",
+      });
+      return;
     }
     const localApi = readLocalApi();
     if (!localApi) {
@@ -1105,7 +1114,17 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }),
       );
     });
-  }, [cwd, environmentApi, filePath, line, openPreview, targetPath, threadRef]);
+  }, [
+    column,
+    cwd,
+    environmentApi,
+    filePath,
+    line,
+    navigatePreview,
+    openPreview,
+    targetPath,
+    threadRef,
+  ]);
 
   const handleCopy = useCallback((value: string, title: string) => {
     if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
@@ -1222,6 +1241,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.threadRef?.threadId === next.threadRef?.threadId &&
     previous.cwd === next.cwd &&
     previous.line === next.line &&
+    previous.column === next.column &&
     previous.className === next.className
   );
 }
@@ -1479,6 +1499,7 @@ function ChatMarkdownView({
           {...(threadRef ? { threadRef } : {})}
           {...(cwd ? { cwd } : {})}
           {...(fileLinkMeta.line !== undefined ? { line: fileLinkMeta.line } : {})}
+          {...(fileLinkMeta.column !== undefined ? { column: fileLinkMeta.column } : {})}
           className={props.className}
         />
       );
@@ -1532,6 +1553,7 @@ function ChatMarkdownView({
               {...(threadRef ? { threadRef } : {})}
               {...(cwd ? { cwd } : {})}
               {...(fileLinkMeta.line !== undefined ? { line: fileLinkMeta.line } : {})}
+              {...(fileLinkMeta.column !== undefined ? { column: fileLinkMeta.column } : {})}
             />
           );
         }
