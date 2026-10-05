@@ -1724,7 +1724,10 @@ function AssistantChangedFilesSectionInner({
 
   return (
     <div data-changed-files-state={collapsed ? "collapsed" : "tree"} className="mt-4">
-      <div className="sticky top-2 z-10 flex items-center justify-between gap-2 rounded-t-xl bg-sunken px-3 py-2">
+      {/* Not sticky: the nearest scroll container is the whole message list, so a
+          sticky header pins to the viewport, detaches from its card, and covers
+          the rows scrolling underneath it. */}
+      <div className="flex items-center justify-between gap-2 rounded-t-xl bg-sunken px-3 py-2">
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-foreground">
           <span>
             {visibleFiles.length} changed file{visibleFiles.length === 1 ? "" : "s"}
