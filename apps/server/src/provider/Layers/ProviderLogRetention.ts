@@ -1,27 +1,12 @@
 import fs from "node:fs/promises";
-import retentionFs from "node:fs";
 import path from "node:path";
 
-import { Data, Effect, Exit, Layer, Result, Schedule } from "effect";
-
 import { toSafeThreadAttachmentSegment } from "../../attachmentStore.ts";
-import { ServerConfig } from "../../config.ts";
-import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
-import { ProviderService } from "../Services/ProviderService.ts";
 
-const INITIAL_DELAY = "15 seconds";
-const SWEEP_INTERVAL = "6 hours";
 const MAX_IO_CONCURRENCY = 4;
 const HEAD_QUIET_PERIOD_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MB = 1024 * 1024;
-const LOG_TAG = "provider.log-retention";
-
-class ProviderLogRetentionSweepError extends Data.TaggedError("ProviderLogRetentionSweepError")<{
-  readonly cause: unknown;
-}> {}
-
 type RemovalReason = "deletedThreads" | "unknownThreads" | "age" | "sizeCap";
 
 export interface ProviderLogRetentionThread {
@@ -167,41 +152,74 @@ function getValidSizeCapBytes(value: number | null): number | null {
   return value !== null && Number.isFinite(value) && value >= 0 ? value * MB : null;
 }
 
+export interface ProviderLogPlanInput {
+  readonly providerLogsDir: string;
+  readonly threads: ReadonlyArray<ProviderLogRetentionThread>;
+  readonly liveThreadIds: ReadonlySet<string>;
+  readonly retentionDays: number | null;
+  readonly maxTotalMb: number | null;
+  readonly nowMs?: number;
+}
+
+export interface PlannedProviderLogRemoval {
+  readonly filePath: string;
+  readonly name: string;
+  readonly threadSegment: string | null;
+  readonly isRotation: boolean;
+  readonly isSharedHead: boolean;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly reason: RemovalReason;
+}
+
+export interface ProviderLogCleanupPlan {
+  readonly scannedFiles: number;
+  readonly failedFiles: number;
+  readonly totalBytes: number;
+  /** Removals in execution order: identity, then age, then oldest-first size cap. */
+  readonly removals: ReadonlyArray<PlannedProviderLogRemoval>;
+}
+
+export interface ProviderLogExecuteInput {
+  readonly removals: ReadonlyArray<PlannedProviderLogRemoval>;
+  /** Fresh at execution time, so a thread that went live keeps its head. */
+  readonly threads: ReadonlyArray<ProviderLogRetentionThread>;
+  readonly liveThreadIds: ReadonlySet<string>;
+  readonly retentionDays: number | null;
+  readonly nowMs?: number;
+  /** Injectable only to exercise per-file filesystem failure handling. */
+  readonly unlink?: (filePath: string) => Promise<void>;
+}
+
 /**
- * Sweep recognized provider log files. The read model and session list are
- * snapshots taken by the caller; all filesystem work stays outside orchestration.
+ * Decide which recognized provider log files the policy would remove. Reads
+ * directory metadata only; the read model and session list are caller snapshots.
  */
-export async function sweepProviderLogs(
-  input: ProviderLogSweepInput,
-): Promise<ProviderLogSweepSummary> {
-  const removed = emptyRemovalCounts();
-  let failedFiles = 0;
-  let scannedFiles = 0;
-  const remaining = new Map<string, FileState>();
+export async function planProviderLogCleanup(
+  input: ProviderLogPlanInput,
+): Promise<ProviderLogCleanupPlan> {
   const nowMs = input.nowMs ?? Date.now();
   const retentionDays = getValidRetentionDays(input.retentionDays);
   const retentionCutoff = retentionDays === null ? null : nowMs - retentionDays * DAY_MS;
   const sizeCapBytes = getValidSizeCapBytes(input.maxTotalMb);
   const segments = buildThreadSegmentStates(input.threads, input.liveThreadIds);
-  const unlink = input.unlink ?? ((filePath: string) => fs.unlink(filePath));
-  let sizePassTotalBytes: number | null = null;
+  let scannedFiles = 0;
+  let failedFiles = 0;
 
   let entries;
   try {
     entries = await fs.readdir(input.providerLogsDir, { withFileTypes: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { scannedFiles, removed, failedFiles, remainingBytes: 0 };
-    }
-    return { scannedFiles, removed, failedFiles: 1, remainingBytes: 0 };
+    const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
+    return { scannedFiles, failedFiles: missing ? 0 : 1, totalBytes: 0, removals: [] };
   }
 
+  const remaining = new Map<string, FileState>();
   const candidates = entries.flatMap((entry) => {
     if (!entry.isFile()) return [];
     const file = classifyLogFile(entry.name, input.providerLogsDir);
     return file ? [file] : [];
   });
-
   await forEachConcurrent(candidates, async (candidate) => {
     try {
       const stat = await fs.stat(candidate.filePath);
@@ -212,298 +230,121 @@ export async function sweepProviderLogs(
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") failedFiles += 1;
     }
   });
+  const totalBytes = [...remaining.values()].reduce((total, file) => total + file.size, 0);
 
-  const failedPaths = new Set<string>();
-  const remove = async (file: FileState, reason: RemovalReason): Promise<void> => {
-    if (failedPaths.has(file.filePath) || isProtectedHead(file, nowMs, segments)) return;
+  const removals: PlannedProviderLogRemoval[] = [];
+  const take = (file: FileState, reason: RemovalReason) => {
+    if (isProtectedHead(file, nowMs, segments)) return;
+    remaining.delete(file.filePath);
+    removals.push({ ...file, reason });
+  };
+  const sorted = [...remaining.values()].toSorted((left, right) =>
+    left.name.localeCompare(right.name),
+  );
+  for (const file of sorted) {
+    if (file.threadSegment !== null && segments.get(file.threadSegment)?.allDeleted === true) {
+      take(file, "deletedThreads");
+    }
+  }
+  for (const file of sorted) {
+    if (file.threadSegment !== null && !segments.has(file.threadSegment)) {
+      take(file, "unknownThreads");
+    }
+  }
+  if (retentionCutoff !== null) {
+    for (const file of [...remaining.values()]) {
+      if (file.mtimeMs < retentionCutoff) take(file, "age");
+    }
+  }
+  if (sizeCapBytes !== null) {
+    let projectedBytes = [...remaining.values()].reduce((total, file) => total + file.size, 0);
+    const sizeCandidates = [...remaining.values()]
+      .filter((file) => !isProtectedHead(file, nowMs, segments))
+      .toSorted(
+        (left, right) =>
+          Number(left.isRotation === false) - Number(right.isRotation === false) ||
+          left.mtimeMs - right.mtimeMs ||
+          left.name.localeCompare(right.name),
+      );
+    for (const file of sizeCandidates) {
+      if (projectedBytes <= sizeCapBytes) break;
+      take(file, "sizeCap");
+      projectedBytes -= file.size;
+    }
+  }
+  return { scannedFiles, failedFiles, totalBytes, removals };
+}
+
+/**
+ * Remove planned files, re-checking each one first: a head that became live or
+ * recent is kept, and an age removal is skipped if the file was written since.
+ */
+export async function executeProviderLogCleanup(
+  input: ProviderLogExecuteInput,
+): Promise<{
+  readonly removed: Readonly<
+    Record<RemovalReason, { readonly files: number; readonly bytes: number }>
+  >;
+  readonly failedFiles: number;
+  readonly skipped: ReadonlyArray<{ readonly filePath: string; readonly reason: string }>;
+}> {
+  const removed = emptyRemovalCounts();
+  const skipped: Array<{ filePath: string; reason: string }> = [];
+  let failedFiles = 0;
+  const nowMs = input.nowMs ?? Date.now();
+  const retentionDays = getValidRetentionDays(input.retentionDays);
+  const retentionCutoff = retentionDays === null ? null : nowMs - retentionDays * DAY_MS;
+  const segments = buildThreadSegmentStates(input.threads, input.liveThreadIds);
+  const unlink = input.unlink ?? ((filePath: string) => fs.unlink(filePath));
+
+  await forEachConcurrent(input.removals, async (file) => {
     let stat: Awaited<ReturnType<typeof fs.stat>>;
     try {
       stat = await fs.stat(file.filePath);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        const previousSize = remaining.get(file.filePath)?.size ?? file.size;
-        remaining.delete(file.filePath);
-        if (sizePassTotalBytes !== null) sizePassTotalBytes -= previousSize;
-      } else {
-        failedFiles += 1;
-        failedPaths.add(file.filePath);
-      }
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") failedFiles += 1;
       return;
     }
-    const previousSize = remaining.get(file.filePath)?.size ?? file.size;
-    if (!stat.isFile()) {
-      remaining.delete(file.filePath);
-      if (sizePassTotalBytes !== null) sizePassTotalBytes -= previousSize;
-      return;
-    }
-
+    if (!stat.isFile()) return;
     const fresh = { ...file, size: stat.size, mtimeMs: stat.mtimeMs };
-    if (sizePassTotalBytes !== null) sizePassTotalBytes += stat.size - previousSize;
-    remaining.set(file.filePath, fresh);
-    if (isProtectedHead(fresh, nowMs, segments)) return;
-    if (reason === "age" && (retentionCutoff === null || stat.mtimeMs >= retentionCutoff)) return;
+    if (isProtectedHead(fresh, nowMs, segments)) {
+      skipped.push({ filePath: file.filePath, reason: "log head is live or recently written" });
+      return;
+    }
+    if (file.reason === "age" && (retentionCutoff === null || stat.mtimeMs >= retentionCutoff)) {
+      skipped.push({ filePath: file.filePath, reason: "log was written since the plan" });
+      return;
+    }
     try {
       await unlink(file.filePath);
-      remaining.delete(file.filePath);
-      if (sizePassTotalBytes !== null) sizePassTotalBytes -= stat.size;
-      removed[reason].files += 1;
-      removed[reason].bytes += stat.size;
+      removed[file.reason].files += 1;
+      removed[file.reason].bytes += stat.size;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        failedFiles += 1;
-        failedPaths.add(file.filePath);
-      } else {
-        const currentSize = remaining.get(file.filePath)?.size ?? stat.size;
-        remaining.delete(file.filePath);
-        if (sizePassTotalBytes !== null) sizePassTotalBytes -= currentSize;
-      }
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") failedFiles += 1;
     }
-  };
-
-  const threadFiles = [...remaining.values()].filter((file) => file.threadSegment !== null);
-  const deletedThreads = threadFiles.filter(
-    (file) => segments.get(file.threadSegment!)?.allDeleted === true,
-  );
-  const unknownThreads = threadFiles.filter((file) => !segments.has(file.threadSegment!));
-  await forEachConcurrent(deletedThreads, (file) => remove(file, "deletedThreads"));
-  await forEachConcurrent(unknownThreads, (file) => remove(file, "unknownThreads"));
-
-  if (retentionCutoff !== null) {
-    const oldFiles = [...remaining.values()].filter(
-      (file) => file.mtimeMs < retentionCutoff && !isProtectedHead(file, nowMs, segments),
-    );
-    await forEachConcurrent(oldFiles, (file) => remove(file, "age"));
-  }
-
-  if (sizeCapBytes !== null) {
-    await forEachConcurrent([...remaining.values()], async (file) => {
-      try {
-        const stat = await fs.stat(file.filePath);
-        if (!stat.isFile()) {
-          remaining.delete(file.filePath);
-          return;
-        }
-        remaining.set(file.filePath, { ...file, size: stat.size, mtimeMs: stat.mtimeMs });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          remaining.delete(file.filePath);
-        } else {
-          failedFiles += 1;
-          failedPaths.add(file.filePath);
-        }
-      }
-    });
-    sizePassTotalBytes = [...remaining.values()].reduce((total, file) => total + file.size, 0);
-    const sizeCandidates = [...remaining.values()].filter(
-      (file) => !isProtectedHead(file, nowMs, segments),
-    );
-    sizeCandidates.sort(
-      (left, right) =>
-        Number(left.isRotation === false) - Number(right.isRotation === false) ||
-        left.mtimeMs - right.mtimeMs ||
-        left.name.localeCompare(right.name),
-    );
-    for (const file of sizeCandidates) {
-      if (sizePassTotalBytes <= sizeCapBytes) break;
-      await remove(file, "sizeCap");
-    }
-  }
-
-  return {
-    scannedFiles,
-    removed,
-    failedFiles,
-    remainingBytes: [...remaining.values()].reduce((total, file) => total + file.size, 0),
-  };
-}
-
-function logSweepSummary(
-  providerLogsDir: string,
-  summary: ProviderLogSweepSummary,
-  failure?: unknown,
-): Effect.Effect<void> {
-  return Effect.logInfo(`${LOG_TAG}: sweep complete`, {
-    providerLogsDir,
-    scannedFiles: summary.scannedFiles,
-    removed: summary.removed,
-    removedFiles: Object.values(summary.removed).reduce((total, reason) => total + reason.files, 0),
-    removedBytes: Object.values(summary.removed).reduce((total, reason) => total + reason.bytes, 0),
-    failedFiles: summary.failedFiles,
-    remainingBytes: summary.remainingBytes,
-    ...(failure === undefined ? {} : { failure }),
   });
+  return { removed, failedFiles, skipped };
 }
 
-const sweepOnce = Effect.gen(function* () {
-  const config = yield* ServerConfig;
-  const settingsService = yield* ServerSettingsService;
-  const engine = yield* OrchestrationEngineService;
-  const providerService = yield* ProviderService;
-  const settings = yield* Effect.result(settingsService.getSettings);
-  if (Result.isFailure(settings)) {
-    yield* logSweepSummary(
-      config.providerLogsDir,
-      {
-        scannedFiles: 0,
-        removed: emptyRemovalCounts(),
-        failedFiles: 0,
-        remainingBytes: 0,
-      },
-      "settings-unavailable",
-    );
-    return;
-  }
-
-  const readModelExit = yield* Effect.exit(engine.getReadModel());
-  const sessionsExit = yield* Effect.exit(providerService.listSessions());
-  if (Exit.isFailure(readModelExit) || Exit.isFailure(sessionsExit)) {
-    yield* logSweepSummary(
-      config.providerLogsDir,
-      {
-        scannedFiles: 0,
-        removed: emptyRemovalCounts(),
-        failedFiles: 0,
-        remainingBytes: 0,
-      },
-      "runtime-state-unavailable",
-    );
-    return;
-  }
-
-  const sweepResult = yield* Effect.result(
-    Effect.tryPromise({
-      try: () =>
-        sweepProviderLogs({
-          providerLogsDir: config.providerLogsDir,
-          threads: readModelExit.value.threads.map((thread) => ({
-            id: thread.id,
-            deletedAt: thread.deletedAt,
-          })),
-          liveThreadIds: new Set(sessionsExit.value.map((session) => session.threadId)),
-          retentionDays: settings.success.providerLogRetentionDays,
-          maxTotalMb: settings.success.providerLogMaxTotalMb,
-        }),
-      catch: (cause) => new ProviderLogRetentionSweepError({ cause }),
-    }),
-  );
-  if (Result.isFailure(sweepResult)) {
-    yield* logSweepSummary(
-      config.providerLogsDir,
-      {
-        scannedFiles: 0,
-        removed: emptyRemovalCounts(),
-        failedFiles: 1,
-        remainingBytes: 0,
-      },
-      "sweep-failed",
-    );
-    return;
-  }
-  yield* logSweepSummary(config.providerLogsDir, sweepResult.success);
-});
-
-const makeReactor = Effect.gen(function* () {
-  yield* Effect.forkScoped(
-    Effect.sleep(INITIAL_DELAY).pipe(
-      Effect.andThen(sweepOnce.pipe(Effect.repeat(Schedule.spaced(SWEEP_INTERVAL)))),
-    ),
-  );
-});
-
-export const layer = Layer.effectDiscard(makeReactor);
-
-const PROVIDER_LOG_FILE = /\.(?:log|ndjson)(?:\.\d+)?$/;
-
-export interface ProviderLogRetentionOptions {
-  readonly directory: string;
-  readonly maxBytes: number;
-  readonly maxAgeMs: number;
-  readonly nowMs?: number;
-}
-
-export interface ProviderLogRetentionResult {
-  readonly filesRemoved: number;
-  readonly bytesRemoved: number;
-  readonly bytesRemaining: number;
-}
-
-interface ProviderLogFile {
-  readonly path: string;
-  readonly size: number;
-  readonly modifiedAtMs: number;
-}
-
-function listProviderLogFiles(directory: string): Array<ProviderLogFile> {
-  const files: Array<ProviderLogFile> = [];
-  const pendingDirectories = [directory];
-
-  while (pendingDirectories.length > 0) {
-    const currentDirectory = pendingDirectories.pop();
-    if (currentDirectory === undefined) continue;
-
-    let entries: Array<import("node:fs").Dirent>;
-    try {
-      entries = retentionFs.readdirSync(currentDirectory, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const entry of entries) {
-      const entryPath = path.join(currentDirectory, entry.name);
-      if (entry.isDirectory()) {
-        pendingDirectories.push(entryPath);
-        continue;
-      }
-      if (!entry.isFile() || !PROVIDER_LOG_FILE.test(entry.name)) continue;
-      try {
-        const stat = retentionFs.statSync(entryPath);
-        files.push({ path: entryPath, size: stat.size, modifiedAtMs: stat.mtimeMs });
-      } catch {
-        // A rotated file may disappear while the directory is being scanned.
-      }
-    }
-  }
-  return files;
-}
-
-/** Age and byte-quota pruning for provider logs emitted by ProviderEventLoggers. */
-export function pruneProviderLogs(
-  options: ProviderLogRetentionOptions,
-): ProviderLogRetentionResult {
-  if (!Number.isFinite(options.maxBytes) || options.maxBytes < 0) {
-    throw new RangeError("maxBytes must be a non-negative finite number");
-  }
-  if (!Number.isFinite(options.maxAgeMs) || options.maxAgeMs < 0) {
-    throw new RangeError("maxAgeMs must be a non-negative finite number");
-  }
-
-  const files = listProviderLogFiles(options.directory).toSorted(
-    (left, right) => left.modifiedAtMs - right.modifiedAtMs || left.path.localeCompare(right.path),
-  );
-  const nowMs = options.nowMs ?? Date.now();
-  let bytesRemaining = files.reduce((total, file) => total + file.size, 0);
-  let filesRemoved = 0;
-  let bytesRemoved = 0;
-  const remove = (file: ProviderLogFile) => {
-    try {
-      retentionFs.rmSync(file.path, { force: true });
-      filesRemoved += 1;
-      bytesRemoved += file.size;
-      bytesRemaining -= file.size;
-      return true;
-    } catch {
-      return false;
-    }
+/** Plan and immediately execute one sweep. */
+export async function sweepProviderLogs(
+  input: ProviderLogSweepInput,
+): Promise<ProviderLogSweepSummary> {
+  const nowMs = input.nowMs ?? Date.now();
+  const plan = await planProviderLogCleanup({ ...input, nowMs });
+  const result = await executeProviderLogCleanup({
+    removals: plan.removals,
+    threads: input.threads,
+    liveThreadIds: input.liveThreadIds,
+    retentionDays: input.retentionDays,
+    nowMs,
+    ...(input.unlink ? { unlink: input.unlink } : {}),
+  });
+  const removedBytes = Object.values(result.removed).reduce((total, r) => total + r.bytes, 0);
+  return {
+    scannedFiles: plan.scannedFiles,
+    removed: result.removed,
+    failedFiles: plan.failedFiles + result.failedFiles,
+    remainingBytes: plan.totalBytes - removedBytes,
   };
-
-  const retained: Array<ProviderLogFile> = [];
-  for (const file of files) {
-    if (nowMs - file.modifiedAtMs > options.maxAgeMs) remove(file);
-    else retained.push(file);
-  }
-  for (const file of retained) {
-    if (bytesRemaining <= options.maxBytes) break;
-    remove(file);
-  }
-  return { filesRemoved, bytesRemoved, bytesRemaining: Math.max(0, bytesRemaining) };
 }

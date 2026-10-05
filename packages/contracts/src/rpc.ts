@@ -315,6 +315,15 @@ import {
   GitHubApiUsageReport,
   GitHubApiUsageReportInput,
 } from "./gitHubUsage.ts";
+import {
+  StorageCleanupError,
+  StorageCleanupPlan,
+  StorageCleanupResult,
+  StorageExecuteCleanupInput,
+  StorageGetUsageInput,
+  StoragePreviewCleanupInput,
+  StorageUsageSnapshot,
+} from "./storage.ts";
 import { WorkflowRunError, WorkflowRunResult } from "./agentWorkflows.ts";
 import { WorkflowRunInput } from "./workflowRuntime.ts";
 
@@ -471,6 +480,9 @@ export const WS_METHODS = {
   pullRequestsRequestReviewers: "pullRequests.requestReviewers",
   pullRequestsUsageReport: "pullRequests.usageReport",
   pullRequestsQuotaRefresh: "pullRequests.quotaRefresh",
+  storageGetUsage: "storage.getUsage",
+  storagePreviewCleanup: "storage.previewCleanup",
+  storageExecuteCleanup: "storage.executeCleanup",
   pullRequestMonitorsStart: "pullRequestMonitors.start",
   pullRequestMonitorsStop: "pullRequestMonitors.stop",
   pullRequestMonitorsStatus: "pullRequestMonitors.status",
@@ -804,6 +816,24 @@ export const WsPullRequestsQuotaRefreshRpc = Rpc.make(WS_METHODS.pullRequestsQuo
   payload: GitHubApiQuotaRefreshInput,
   success: GitHubApiQuotaRefreshResult,
   error: GitHubApiUsageError,
+});
+
+export const WsStorageGetUsageRpc = Rpc.make(WS_METHODS.storageGetUsage, {
+  payload: StorageGetUsageInput,
+  success: StorageUsageSnapshot,
+  error: StorageCleanupError,
+});
+
+export const WsStoragePreviewCleanupRpc = Rpc.make(WS_METHODS.storagePreviewCleanup, {
+  payload: StoragePreviewCleanupInput,
+  success: StorageCleanupPlan,
+  error: StorageCleanupError,
+});
+
+export const WsStorageExecuteCleanupRpc = Rpc.make(WS_METHODS.storageExecuteCleanup, {
+  payload: StorageExecuteCleanupInput,
+  success: StorageCleanupResult,
+  error: StorageCleanupError,
 });
 
 export const WsPullRequestMonitorsStartRpc = Rpc.make(WS_METHODS.pullRequestMonitorsStart, {
@@ -1562,6 +1592,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsPullRequestsRequestReviewersRpc,
   WsPullRequestsUsageReportRpc,
   WsPullRequestsQuotaRefreshRpc,
+  WsStorageGetUsageRpc,
+  WsStoragePreviewCleanupRpc,
+  WsStorageExecuteCleanupRpc,
   WsPullRequestMonitorsStartRpc,
   WsPullRequestMonitorsStopRpc,
   WsPullRequestMonitorsStatusRpc,

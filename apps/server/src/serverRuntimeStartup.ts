@@ -44,6 +44,7 @@ import { readCliDesiredCloudLink } from "./cloud/CliState.ts";
 import { reconcileDesiredCloudLink } from "./cloud/http.ts";
 import { AgentAwarenessRelay } from "./relay/AgentAwarenessRelay.ts";
 import { IdleTerminalReaper } from "./terminal/Services/IdleTerminalReaper.ts";
+import { StorageCleanup } from "./storage/StorageCleanup.ts";
 import { ProjectAutoPull } from "./git/ProjectAutoPull.ts";
 import {
   formatHeadlessServeOutput,
@@ -373,6 +374,7 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const shutdownMarker = yield* ServerShutdownMarkerRepository;
   const agentAwarenessRelay = yield* AgentAwarenessRelay;
   const idleTerminalReaper = yield* IdleTerminalReaper;
+  const storageCleanup = yield* StorageCleanup;
 
   const commandGate = yield* makeCommandGate;
   const httpListening = yield* Deferred.make<void>();
@@ -445,6 +447,17 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
           }),
         ),
         Effect.forkScoped,
+      ),
+    );
+
+    // Before reactors and command readiness: an eligible VACUUM blocks no live work.
+    yield* runStartupPhase(
+      "storage.vacuum",
+      serverSettings.ready.pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("storage vacuum skipped; settings are not ready", { error }),
+        ),
+        Effect.andThen(storageCleanup.runStartupVacuum),
       ),
     );
 

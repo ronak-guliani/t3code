@@ -399,6 +399,7 @@ export const makeOrchestrationIntegrationHarness = (
         Layer.succeed(ThreadDeletionReactor, {
           start: () => Effect.void,
           drain: Effect.void,
+          reclaimWorktreeNow: () => Effect.die("unused in this harness"),
         }),
       ),
       Layer.provideMerge(

@@ -91,6 +91,7 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             drain: Effect.void,
+            reclaimWorktreeNow: () => Effect.die("unused"),
           }),
         ),
         Layer.provideMerge(
