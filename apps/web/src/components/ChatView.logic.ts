@@ -398,6 +398,7 @@ export function isComposerDraftCleared(
         imageCount: number;
         terminalContextCount: number;
         threadContextCount: number;
+        previewAnnotationCount?: number;
       }
     | null
     | undefined,
@@ -407,7 +408,8 @@ export function isComposerDraftCleared(
     draft.prompt.length === 0 &&
     draft.imageCount === 0 &&
     draft.terminalContextCount === 0 &&
-    draft.threadContextCount === 0
+    draft.threadContextCount === 0 &&
+    (draft.previewAnnotationCount ?? 0) === 0
   );
 }
 
