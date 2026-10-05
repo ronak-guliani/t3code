@@ -118,6 +118,10 @@ const PI_REQUEST_TIMEOUT_MS = 15_000;
 // language servers before Pi answers.
 const PI_SESSION_TIMEOUT_MS = 60_000;
 const PI_SKILL_DISCOVERY_TIMEOUT_MS = 4_000;
+// A materialized fork's snapshot is inert but not yet unreferenced: the
+// durable resume cursor stops naming it only once the caller persists the
+// session Pi forked from it.
+const PI_FORK_SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PI_UNSOLICITED_ACTIVITY_ERROR =
   "Pi started agent work outside an active T3 turn. The session was stopped to prevent invisible tool execution.";
 // Pi's own error text tells the user what to fix (a missing API key, an
@@ -545,6 +549,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
      * yet. It lives in the state directory so a restart between the fork and
      * the fork's first turn can still materialize it, and outside Pi's session
      * directory so Pi never lists or resumes it.
+     *
+     * The copy outlives materialization: Pi has already forked it by the time
+     * the fork's first session starts, but the durable resume cursor only
+     * stops naming the snapshot once the caller has persisted the session it
+     * got back. A crash in that window must stay retryable, so snapshots are
+     * swept by age instead of deleted at materialization.
      */
     const snapshotPiSessionFile = (sourceFile: string) =>
       Effect.gen(function* () {
@@ -552,6 +562,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         const snapshot = path.join(dir, `${yield* randomId}.jsonl`);
         yield* fileSystem.makeDirectory(dir, { recursive: true });
         yield* fileSystem.copyFile(sourceFile, snapshot);
+        yield* sweepPiForkSnapshots(dir);
         return snapshot;
       }).pipe(
         Effect.mapError(
@@ -563,6 +574,23 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             }),
         ),
       );
+
+    /** Drops fork snapshots old enough that no live fork can still claim one. */
+    const sweepPiForkSnapshots = (dir: string) =>
+      Effect.gen(function* () {
+        const names = yield* fileSystem.readDirectory(dir).pipe(Effect.orElseSucceed(() => []));
+        const cutoff = Date.now() - PI_FORK_SNAPSHOT_TTL_MS;
+        for (const entry of names) {
+          const file = path.join(dir, entry);
+          const mtime = yield* fileSystem.stat(file).pipe(
+            Effect.map((info) => Option.getOrUndefined(info.mtime)),
+            Effect.orElseSucceed(() => undefined),
+          );
+          if (mtime !== undefined && mtime.getTime() < cutoff) {
+            yield* fileSystem.remove(file).pipe(Effect.ignore);
+          }
+        }
+      }).pipe(Effect.ignore);
 
     const updateSession = (ctx: PiSessionContext, patch: Partial<ProviderSession>) =>
       Effect.gen(function* () {
@@ -936,6 +964,30 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         // so its first user entry could belong to an earlier turn.
         if (cursorWasStale) return null;
         return firstUserEntryId(recordField(data, "entries")) ?? "";
+      });
+
+    /**
+     * The user entry a turn that has not settled has already written. The scan
+     * is bounded by the previous settled turn's entry, so the window cannot
+     * reach back into an earlier turn, and its first user entry is this turn's
+     * prompt. `undefined` when that boundary cannot be trusted or Pi cannot be
+     * asked. The session's leaf cursor is left alone so the turn's own
+     * settlement still captures the same entry.
+     */
+    const readUnsettledTurnEntryId = (ctx: PiSessionContext, entryIndex: number) =>
+      Effect.gen(function* () {
+        const settledBefore = ctx.turnEntryIds
+          .slice(0, entryIndex)
+          .findLast((entryId) => typeof entryId === "string" && entryId.length > 0);
+        const since =
+          settledBefore ?? (ctx.leafCursorStale ? undefined : (ctx.lastKnownLeaf ?? undefined));
+        if (since === undefined) return undefined;
+        const data = yield* request(ctx, { type: "get_entries", since }).pipe(
+          Effect.orElseSucceed(() => undefined),
+        );
+        return data === undefined
+          ? undefined
+          : (firstUserEntryId(recordField(data, "entries")) ?? "");
       });
 
     const finalizeTurn = (ctx: PiSessionContext, readUsage = true) =>
@@ -1736,9 +1788,6 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                   detail: "Pi did not create a session file for this chat's fork.",
                 });
               }
-              yield* fileSystem
-                .remove(resumeCursor?.sessionFile ?? "")
-                .pipe(Effect.orElseSucceed(() => undefined));
             }
             if (sessionFile !== ctx.sessionFile) {
               // Turn boundaries belong to the file they were read from, except
@@ -2236,6 +2285,17 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               method: "session/fork",
               detail: "Pi fork source has no session file.",
             });
+          }
+
+          // A turn records its user entry when it settles, so a turn that is
+          // streaming right now has no boundary yet and every anchored fork
+          // would reject on it. Resolve it from the live session instead: Pi
+          // writes the entry when it accepts the prompt, long before the turn
+          // settles, and the turn's own settlement re-reads the same entry.
+          const activeTurn = source.activeTurn;
+          if (activeTurn !== null && source.turnEntryIds[activeTurn.entryIndex] === null) {
+            const entryId = yield* readUnsettledTurnEntryId(source, activeTurn.entryIndex);
+            if (entryId !== undefined) source.turnEntryIds[activeTurn.entryIndex] = entryId;
           }
 
           let forkEntryId: string | null | undefined = null;
