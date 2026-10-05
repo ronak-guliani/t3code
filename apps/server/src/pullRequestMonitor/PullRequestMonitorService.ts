@@ -24,6 +24,7 @@ import {
   type PullRequestMonitorLaunchFallbackResult,
   type PullRequestMonitorFallbackReason,
   type PullRequestRef,
+  type ReviewSnapshot,
   type ThreadId,
   type ServerSettings,
 } from "@t3tools/contracts";
@@ -119,6 +120,7 @@ export function associatedOwnerCandidates(
     readonly id: ThreadId;
     readonly projectId: PullRequestRef["projectId"];
     readonly title: string;
+    readonly reviewSnapshot?: ReviewSnapshot | null;
     readonly pullRequest?: { readonly number: number; readonly url: string } | null;
     readonly pullRequests?: ReadonlyArray<{
       readonly pullRequest: { readonly number: number; readonly url: string };
@@ -139,6 +141,7 @@ export function associatedOwnerCandidates(
         thread.projectId === reference.projectId &&
         thread.archivedAt === null &&
         thread.deletedAt === null &&
+        thread.reviewSnapshot == null &&
         associations.some((pullRequest) => {
           const repository = repositoryFromPullRequestUrl(pullRequest.url);
           return (
@@ -1000,18 +1003,25 @@ export const layer = Layer.effect(
                 )
             : null;
         const reviewedHeadSha = input.reviewedHeadSha ?? currentSnapshot?.headSha;
+        const threads = (yield* engine.getReadModel()).threads;
+        // A review snapshot links a reviewer to the PR, not to its implementation.
+        // Repair legacy reviewer ownership without replacing a legitimate selected owner.
+        const existingOwnerThreadId =
+          threads.find((thread) => thread.id === monitorRecord.ownerThreadId)?.reviewSnapshot !=
+          null
+            ? null
+            : monitorRecord.ownerThreadId;
         let recoveredOwnerThreadId: ThreadId | null = null;
-        if (input.ownerThreadId === undefined && monitorRecord.ownerThreadId === null) {
-          const ownerCandidates = associatedOwnerCandidates(
-            (yield* engine.getReadModel()).threads,
-            input.reference,
+        if (input.ownerThreadId === undefined && existingOwnerThreadId === null) {
+          const ownerCandidates = associatedOwnerCandidates(threads, input.reference).filter(
+            (candidate) => candidate.threadId !== input.reviewThreadId,
           );
           if (ownerCandidates.length === 1) {
             recoveredOwnerThreadId = ownerCandidates[0]!.threadId;
           }
         }
         const ownerThreadId =
-          input.ownerThreadId ?? monitorRecord.ownerThreadId ?? recoveredOwnerThreadId;
+          input.ownerThreadId ?? existingOwnerThreadId ?? recoveredOwnerThreadId;
         if (ownerThreadId !== null) {
           yield* requireProjectThread({
             projectId: monitorRecord.projectId,
