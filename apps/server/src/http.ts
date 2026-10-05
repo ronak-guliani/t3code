@@ -54,6 +54,26 @@ export function isLoopbackHostname(hostname: string): boolean {
   return LOOPBACK_HOSTNAMES.has(normalizedHostname);
 }
 
+export function parseAssetByteRange(
+  range: string,
+  size: number,
+): { readonly start: number; readonly end: number } | null {
+  if (!Number.isSafeInteger(size) || size <= 0) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+  if (!match) return null;
+  const [, startValue, endValue] = match;
+  if (startValue === "") {
+    const suffixLength = Number(endValue);
+    if (suffixLength <= 0) return null;
+    return { start: suffixLength >= size ? 0 : size - suffixLength, end: size - 1 };
+  }
+  const start = Number(startValue);
+  if (!Number.isSafeInteger(start) || start >= size) return null;
+  const end = endValue === "" ? size - 1 : Math.min(size - 1, Number(endValue));
+  if (!Number.isSafeInteger(end) || start > end) return null;
+  return { start, end };
+}
+
 export function resolveDevRedirectUrl(devUrl: URL, requestUrl: URL): string {
   const redirectUrl = new URL(devUrl.toString());
   redirectUrl.pathname = requestUrl.pathname;
@@ -227,30 +247,15 @@ export const assetRouteLayer = HttpRouter.add(
       : (Mime.getType(asset.path) ?? "application/octet-stream");
     const contentDisposition = `attachment; filename*=UTF-8''${encodeURIComponent((yield* Path.Path).basename(asset.path))}`;
     const range = request.headers["range"];
-    const rangeMatch = range?.match(/^bytes=(\d*)-(\d*)$/);
-    if (range && !rangeMatch) {
+    const byteRange = range ? parseAssetByteRange(range, size) : undefined;
+    if (range && !byteRange) {
       return HttpServerResponse.text("Range Not Satisfiable", {
         status: 416,
         headers: { "Content-Range": `bytes */${size}` },
       });
     }
-    const start = rangeMatch
-      ? rangeMatch[1]
-        ? Number(rangeMatch[1])
-        : Math.max(0, size - Number(rangeMatch[2] || 0))
-      : 0;
-    const end = rangeMatch
-      ? rangeMatch[2]
-        ? Math.min(size - 1, Number(rangeMatch[2]))
-        : size - 1
-      : size - 1;
-    if (rangeMatch) {
-      if (start > end || start >= size) {
-        return HttpServerResponse.text("Range Not Satisfiable", {
-          status: 416,
-          headers: { "Content-Range": `bytes */${size}` },
-        });
-      }
+    if (byteRange) {
+      const { start, end } = byteRange;
       const headers = {
         "Accept-Ranges": "bytes",
         "Content-Range": `bytes ${start}-${end}/${size}`,

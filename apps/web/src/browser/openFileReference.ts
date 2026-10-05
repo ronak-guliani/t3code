@@ -158,6 +158,14 @@ async function openAttachments(input: OpenAttachmentReferenceInput): Promise<voi
 async function openPathReference<E>(
   input: OpenPathReferenceInput<E>,
 ): Promise<AtomCommandResult<void, E>> {
+  const workspacePath = toWorkspaceRelativePath(input.filePath, input.cwd);
+  if (workspacePath && !isBrowserPreviewFile(input.filePath)) {
+    useRightPanelStore
+      .getState()
+      .openFile(input.threadRef, workspacePath, input.line, input.column);
+    return AsyncResult.success(undefined);
+  }
+
   const key = referenceKey(input);
   const now = Date.now();
   for (const [cachedKey, cachedReference] of referenceCache) {

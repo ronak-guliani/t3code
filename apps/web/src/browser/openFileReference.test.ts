@@ -58,6 +58,7 @@ function fileInput(path: string, cwd = "/repo/project") {
 describe("openFileReference", () => {
   afterEach(() => {
     vi.clearAllMocks();
+    createAssetUrl.mockReset();
     useRightPanelStore.setState({ byThreadKey: {} });
     readPreviewState.mockReturnValue({ sessions: {} });
     isPreviewAvailable.mockReturnValue(true);
@@ -118,6 +119,40 @@ describe("openFileReference", () => {
     ]);
     expect(openPreviewSessionMock).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { path: "src/index.ts", relativePath: "src/index.ts" },
+    { path: "/repo/project/README", relativePath: "README" },
+    { path: "/repo/project/Dockerfile", relativePath: "Dockerfile" },
+    { path: "/repo/project/src/component.vue", relativePath: "src/component.vue" },
+  ])(
+    "opens workspace path $path in the guarded editable viewer",
+    async ({ path, relativePath }) => {
+      createAssetUrl.mockResolvedValueOnce({
+        relativeUrl: "/api/assets/signed/workspace-file",
+        expiresAt: Date.now() + 300_000,
+        fileReference: {
+          ...textMetadata,
+          name: relativePath.split("/").at(-1) ?? relativePath,
+          viewMode: "download",
+        },
+      });
+
+      await openFileReference(fileInput(path));
+
+      expect(
+        selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, threadRef).surfaces,
+      ).toEqual([
+        {
+          id: `file:${relativePath}`,
+          kind: "file",
+          relativePath,
+          revealLine: null,
+        },
+      ]);
+      expect(createAssetUrl).not.toHaveBeenCalled();
+    },
+  );
 
   it("renews an expired external text grant without adding another panel", async () => {
     let now = 10_000;
