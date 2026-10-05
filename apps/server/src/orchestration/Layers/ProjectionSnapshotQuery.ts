@@ -3217,12 +3217,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     hasMore: history.hasMore,
                     snapshotSequence,
                     threadSequence: watermark?.[0]?.sequence ?? 0,
+                    userOrigins: history.userOrigins,
                     windowStart:
                       history.lower === null
                         ? null
                         : { sequence: history.lower.sequence, rowId: history.lower.rowId },
                   },
-                  userOrigins: history.userOrigins,
                 }),
           }));
         }),

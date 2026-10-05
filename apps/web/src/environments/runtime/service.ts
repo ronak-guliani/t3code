@@ -552,7 +552,11 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
     if (!changedDepth && removedMessages === 0) return;
     changedDepth = false;
     const thread = selectThreadByRef(useStore.getState(), ref);
-    if (thread && history.state.page) {
+    if (!thread) {
+      removedMessages = 0;
+      return;
+    }
+    if (history.state.page) {
       const removedCount = removedMessages;
       removedMessages = 0;
       history.transition({
@@ -618,7 +622,12 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
         if (effect.type === "merge-page")
           useStore
             .getState()
-            .mergeOlderThreadSnapshot(effect.snapshot, entry.environmentId, effect.events);
+            .mergeOlderThreadSnapshot(
+              effect.snapshot,
+              entry.environmentId,
+              effect.events,
+              result.state.page,
+            );
         if (effect.type === "reload") reload();
       }
     }
@@ -721,6 +730,7 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
           return;
         }
         if (item.kind === "synchronized") {
+          flushPendingEvents();
           history.transition({
             type: "synchronized",
             ...(item.sequence === undefined ? {} : { sequence: item.sequence }),

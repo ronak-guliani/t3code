@@ -6,6 +6,9 @@ import {
 } from "./orchestration.ts";
 import { ThreadId } from "./baseSchemas.ts";
 
+const decodeSubscribeThread = Schema.decodeUnknownExit(OrchestrationSubscribeThreadInput);
+const decodeThreadActivities = Schema.decodeUnknownExit(OrchestrationGetThreadActivitiesInput);
+
 // An explicit historical page cannot be silently satisfied by resume-only
 // events; turnLimit alone is a snapshot-fallback size. Activity head reads
 // should not need fabricated timestamps or IDs; cursor fields form one pair.
@@ -13,7 +16,7 @@ describe("history protocol input", () => {
   it("rejects resume combined with a historical page selector", () => {
     const threadId = ThreadId.make("thread");
     expect(
-      Schema.decodeUnknownExit(OrchestrationSubscribeThreadInput)({
+      decodeSubscribeThread({
         threadId,
         beforeCursor: "older",
         aroundMessageId: "message",
@@ -21,14 +24,14 @@ describe("history protocol input", () => {
     ).toBe("Failure");
     for (const window of [{ beforeCursor: "older" }, { aroundMessageId: "message" }])
       expect(
-        Schema.decodeUnknownExit(OrchestrationSubscribeThreadInput)({
+        decodeSubscribeThread({
           threadId,
           afterSequence: 1,
           ...window,
         })._tag,
       ).toBe("Failure");
     expect(
-      Schema.decodeUnknownExit(OrchestrationSubscribeThreadInput)({
+      decodeSubscribeThread({
         threadId,
         afterSequence: 1,
         turnLimit: 10,
@@ -37,7 +40,7 @@ describe("history protocol input", () => {
   });
   it("accepts a genuine activity-head read and rejects half a cursor", () => {
     const threadId = ThreadId.make("thread");
-    const decode = Schema.decodeUnknownExit(OrchestrationGetThreadActivitiesInput);
+    const decode = decodeThreadActivities;
     expect(decode({ threadId, limit: 200 })._tag).toBe("Success");
     expect(decode({ threadId, beforeCreatedAt: "2026-01-01T00:00:00.000Z", limit: 200 })._tag).toBe(
       "Failure",

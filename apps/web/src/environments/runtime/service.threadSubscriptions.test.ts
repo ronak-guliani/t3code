@@ -1198,4 +1198,37 @@ describe("retainThreadDetailSubscription", () => {
     stop();
     await resetEnvironmentServiceForTests();
   });
+
+  it("flushes coalesced replay events before advancing the synchronized watermark", async () => {
+    const {
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+    const { selectThreadByRef, useStore } = await import("~/store");
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-replay-marker");
+    const threadRef = { environmentId, threadId };
+    mockCreateEnvironmentConnection.mock.calls[0]?.[0].syncShellSnapshot(
+      makeShellSnapshotForThreads([threadId]),
+      environmentId,
+    );
+    retainThreadDetailSubscription(environmentId, threadId);
+    const listener = mockSubscribeThread.mock.calls.at(-1)?.[1] as
+      | ((item: OrchestrationThreadStreamItem) => void)
+      | undefined;
+    if (!listener) throw new Error("subscribeThread listener was not captured");
+    listener({
+      kind: "snapshot",
+      snapshot: { snapshotSequence: 20, thread: makeOrchestrationThread(threadId, "base") },
+    });
+    listener({ kind: "event", event: metaUpdatedEvent(threadId, 21, "immediate") });
+    listener({ kind: "event", event: metaUpdatedEvent(threadId, 22, "trailing") });
+    listener({ kind: "synchronized", sequence: 22 });
+    await vi.advanceTimersByTimeAsync(32);
+    expect(selectThreadByRef(useStore.getState(), threadRef)?.title).toBe("trailing");
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
 });

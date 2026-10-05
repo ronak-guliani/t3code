@@ -108,4 +108,47 @@ describe("history helper invariants", () => {
     expect(merged.proposedPlans.map((r) => r.id)).toEqual(["p1", "p2", "p3"]);
     expect(merged.checkpoints.map((r) => r.turnId)).toEqual(["t1", "t2", "t3"]);
   });
+
+  it("inserts an older page before an around-window without moving the live overlap", () => {
+    const merged = History.mergeHistoryCollections(
+      {
+        messages: Array.from({ length: 20 }, (_, i) => ({
+          id: `m${i + 71}`,
+          createdAt: String(i + 71).padStart(3, "0"),
+        })),
+        activities: [],
+        proposedPlans: [],
+        checkpoints: [],
+      },
+      {
+        messages: [
+          { id: "m5", createdAt: "005" },
+          ...Array.from({ length: 10 }, (_, i) => ({
+            id: `m${i + 91}`,
+            createdAt: String(i + 91).padStart(3, "0"),
+          })),
+        ],
+        activities: [],
+        proposedPlans: [],
+        checkpoints: [],
+      },
+    );
+    expect(merged.messages.map((message) => message.id)).toEqual([
+      "m5",
+      ...Array.from({ length: 30 }, (_, i) => `m${i + 71}`),
+    ]);
+  });
+
+  it("keeps unknown checkpoint turns after known turns", () => {
+    const merged = History.mergeHistoryCollections(
+      {
+        messages: [],
+        activities: [],
+        proposedPlans: [],
+        checkpoints: [{ turnId: "unknown" }, { turnId: "known", checkpointTurnCount: 2 }],
+      },
+      { messages: [], activities: [], proposedPlans: [], checkpoints: [] },
+    );
+    expect(merged.checkpoints.map((checkpoint) => checkpoint.turnId)).toEqual(["known", "unknown"]);
+  });
 });

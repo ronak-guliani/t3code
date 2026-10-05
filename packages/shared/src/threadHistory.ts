@@ -42,14 +42,33 @@ export function mergeHistoryCollections<
 ) {
   const byTimeId = (a: { id: string; createdAt: string }, b: { id: string; createdAt: string }) =>
     a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
+  const mergeOrderedMessages = (): M[] => {
+    const liveIds = new Set(loaded.messages.map((row) => row.id));
+    const incoming = older.messages.filter((row) => !liveIds.has(row.id));
+    const result: M[] = [];
+    let olderIndex = 0;
+    let loadedIndex = 0;
+    while (olderIndex < incoming.length && loadedIndex < loaded.messages.length) {
+      if (
+        incoming[olderIndex]!.createdAt.localeCompare(loaded.messages[loadedIndex]!.createdAt) <= 0
+      ) {
+        result.push(incoming[olderIndex++]!);
+      } else {
+        result.push(loaded.messages[loadedIndex++]!);
+      }
+    }
+    return result.concat(incoming.slice(olderIndex), loaded.messages.slice(loadedIndex));
+  };
   return {
-    messages: prependHistoryRows(older.messages, loaded.messages, (r) => r.id),
+    messages: mergeOrderedMessages(),
     activities: prependHistoryRows(older.activities, loaded.activities, (r) => r.id).sort(byTimeId),
     proposedPlans: prependHistoryRows(older.proposedPlans, loaded.proposedPlans, (r) => r.id).sort(
       byTimeId,
     ),
     checkpoints: prependHistoryRows(older.checkpoints, loaded.checkpoints, (r) => r.turnId).sort(
-      (a, b) => (a.checkpointTurnCount ?? 0) - (b.checkpointTurnCount ?? 0),
+      (a, b) =>
+        (a.checkpointTurnCount ?? Number.MAX_SAFE_INTEGER) -
+        (b.checkpointTurnCount ?? Number.MAX_SAFE_INTEGER),
     ),
   };
 }

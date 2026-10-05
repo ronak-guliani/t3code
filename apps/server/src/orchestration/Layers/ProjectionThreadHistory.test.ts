@@ -1,6 +1,11 @@
-import { EventId, MessageId, ThreadId } from "@t3tools/contracts";
+import {
+  EventId,
+  MessageId,
+  OrchestrationThreadDetailSnapshot,
+  ThreadId,
+} from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
-import { Effect, Layer, Option } from "effect";
+import { Effect, Layer, Option, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Statement from "effect/unstable/sql/Statement";
 
@@ -15,6 +20,8 @@ const TestLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
 );
 const threadId = ThreadId.make("history-window");
 const now = "2026-10-04T00:00:00.000Z";
+const encodeDetailSnapshot = Schema.encodeSync(OrchestrationThreadDetailSnapshot);
+const decodeDetailSnapshot = Schema.decodeUnknownSync(OrchestrationThreadDetailSnapshot);
 
 // Windowing must happen in SQL, before large or invalid historical JSON is
 // decoded. Stable message anchors must also survive legacy NULL sequences,
@@ -247,6 +254,20 @@ it.effect("pages complete user-anchored turns without gaps while retaining live 
     );
     const archive = yield* query.getActiveChatArchiveEntries();
     assert.equal(archive[0]?.thread.messages.length, 109);
+  }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
+
+it.effect("keeps persisted user origins inside the contract page through snapshot encoding", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const snapshot = Option.getOrThrow(
+      yield* (yield* ProjectionSnapshotQuery).getThreadDetailSnapshotById(threadId, {
+        turnLimit: 10,
+      }),
+    );
+    const decoded = decodeDetailSnapshot(encodeDetailSnapshot(snapshot));
+    assert.isTrue(Object.keys(decoded.page?.userOrigins ?? {}).length > 0);
+    assert.isTrue(decoded.page?.userOrigins?.["message-26-0"] !== undefined);
   }).pipe(Effect.provide(Layer.fresh(TestLayer))),
 );
 

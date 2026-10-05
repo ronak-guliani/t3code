@@ -17,6 +17,7 @@ import type {
   OrchestrationThreadShell,
   OrchestrationThreadActivity,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadDetailPage,
   OrchestrationMessageOrigin,
   ProjectId,
   ScopedProjectRef,
@@ -1940,6 +1941,7 @@ export function mergeOlderThreadSnapshot(
   snapshot: OrchestrationThreadDetailSnapshot,
   environmentId: EnvironmentId,
   events: readonly OrchestrationEvent[] = [],
+  page?: OrchestrationThreadDetailPage | null,
 ): AppState {
   const env = getStoredEnvironmentState(state, environmentId);
   const current = getThreadFromEnvironmentState(env, snapshot.thread.id);
@@ -1969,14 +1971,18 @@ export function mergeOlderThreadSnapshot(
     merged = applyEnvironmentOrchestrationEvent(merged, event, environmentId);
   }
   const mergedThread = getThreadFromEnvironmentState(merged, snapshot.thread.id)!;
+  const previousPage = merged.threadHistoryById?.[snapshot.thread.id];
+  const nextPage = page ?? previousPage;
   return commitEnvironmentState(state, environmentId, {
     ...merged,
     threadHistoryById: {
       ...merged.threadHistoryById,
       [snapshot.thread.id]: {
-        ...merged.threadHistoryById?.[snapshot.thread.id],
-        beforeCursor: merged.threadHistoryById?.[snapshot.thread.id]?.beforeCursor ?? null,
-        hasMore: merged.threadHistoryById?.[snapshot.thread.id]?.hasMore ?? false,
+        ...previousPage,
+        beforeCursor: nextPage?.beforeCursor ?? null,
+        hasMore: nextPage?.hasMore ?? false,
+        windowStart: nextPage?.windowStart,
+        userOrigins: nextPage?.userOrigins,
         loadingOlder: false,
         error: null,
         retention: historyRetentionLimits({
@@ -3299,6 +3305,7 @@ interface AppStore extends AppState {
     snapshot: OrchestrationThreadDetailSnapshot,
     environmentId: EnvironmentId,
     events?: readonly OrchestrationEvent[],
+    page?: OrchestrationThreadDetailPage | null,
   ) => void;
   projectThreadHistoryPager: (ref: ScopedThreadRef, pager: HistoryPagerState) => void;
   setThreadHistoryLoading: (
@@ -3332,8 +3339,8 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => syncServerThreadDetail(state, thread, environmentId)),
   syncServerThreadSnapshot: (snapshot, environmentId) =>
     set((state) => syncServerThreadSnapshot(state, snapshot, environmentId)),
-  mergeOlderThreadSnapshot: (snapshot, environmentId, events) =>
-    set((state) => mergeOlderThreadSnapshot(state, snapshot, environmentId, events)),
+  mergeOlderThreadSnapshot: (snapshot, environmentId, events, page) =>
+    set((state) => mergeOlderThreadSnapshot(state, snapshot, environmentId, events, page)),
   projectThreadHistoryPager: (ref, pager) =>
     set((state) => {
       const env = getStoredEnvironmentState(state, ref.environmentId),

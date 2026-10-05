@@ -29,6 +29,8 @@ import { normalizeDispatchCommand } from "./Normalizer.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 
+const decodeThreadSnapshotQuery = Schema.decodeUnknownEffect(OrchestrationThreadSnapshotQuery);
+
 const isDefinitiveCommandRejection = (error: OrchestrationDispatchCommandError): boolean => {
   const cause = error.cause;
   if (typeof cause !== "object" || cause === null || !("_tag" in cause)) {
@@ -140,7 +142,7 @@ export const orchestrationThreadSnapshotRouteLayer = HttpRouter.add(
     const params = yield* HttpRouter.params;
     const threadId = ThreadId.make(params.threadId ?? "");
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const payload = yield* Schema.decodeUnknownEffect(OrchestrationThreadSnapshotQuery)(
+    const payload = yield* decodeThreadSnapshotQuery(
       HttpServerRequest.searchParamsFromURL(new URL(request.url, "http://localhost")),
     ).pipe(
       Effect.mapError(
