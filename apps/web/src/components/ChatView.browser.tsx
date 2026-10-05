@@ -1491,20 +1491,10 @@ async function waitForButtonContainingText(text: string): Promise<HTMLButtonElem
   );
 }
 
-// The pending-question footer action is compact ("Next" / "Submit") at narrow
-// widths and spelled out ("Next question" / "Submit answers") at wide ones.
-const PENDING_FOOTER_ACTION_LABELS = new Set([
-  "Next",
-  "Next question",
-  "Submit",
-  "Submit answer",
-  "Submit answers",
-]);
-
+// Spelled "Next" / "Submit" when the footer is compact and "Next question" /
+// "Submit answers" when it is not, so select the action by its stable hook.
 function findPendingFooterActionButton(): HTMLButtonElement | null {
-  return (Array.from(document.querySelectorAll("button")).find((button) =>
-    PENDING_FOOTER_ACTION_LABELS.has(button.textContent?.trim() ?? ""),
-  ) ?? null) as HTMLButtonElement | null;
+  return document.querySelector<HTMLButtonElement>('[data-pending-user-input-action="true"]');
 }
 
 async function waitForEnabledPendingFooterActionButton(): Promise<void> {
