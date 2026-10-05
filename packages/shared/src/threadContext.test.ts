@@ -9,6 +9,7 @@ import {
 import {
   bindThreadContext,
   collectThreadContextReferences,
+  formatThreadContextPlainText,
   formatThreadContextHref,
   formatThreadContextReference,
   parseThreadContextHref,
@@ -35,6 +36,17 @@ describe("formatThreadContextHref", () => {
   it("formats the canonical inline reference", () => {
     expect(formatThreadContextHref(ThreadContextId.make("ctx_1"))).toBe(
       "t3-context://v1/thread/ctx_1",
+    );
+  });
+});
+
+describe("formatThreadContextPlainText", () => {
+  it("replaces valid inline references with labels and preserves other text", () => {
+    expect(
+      formatThreadContextPlainText("See [Auth refactor](t3-context://v1/thread/ctx_1) now"),
+    ).toBe("See Auth refactor now");
+    expect(formatThreadContextPlainText("[ordinary](https://example.com)")).toBe(
+      "[ordinary](https://example.com)",
     );
   });
 });

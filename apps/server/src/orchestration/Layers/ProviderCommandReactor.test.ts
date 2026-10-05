@@ -1309,7 +1309,7 @@ describe("ProviderCommandReactor", () => {
         message: {
           messageId: asMessageId("user-message-title"),
           role: "user",
-          text: "Please investigate reconnect failures after restarting the session.",
+          text: "Please investigate [Auth refactor](t3-context://v1/thread/ctx_title).",
           attachments: [],
         },
         titleSeed: seededTitle,
@@ -1321,7 +1321,7 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.generateThreadTitle.mock.calls.length === 1);
     expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
-      message: "Please investigate reconnect failures after restarting the session.",
+      message: "Please investigate Auth refactor.",
     });
 
     await waitFor(async () => {
@@ -1610,7 +1610,7 @@ describe("ProviderCommandReactor", () => {
         message: {
           messageId: asMessageId("user-message-branch-model"),
           role: "user",
-          text: "Add a safer reconnect backoff.",
+          text: "Add a safer reconnect backoff [Auth refactor](t3-context://v1/thread/ctx_branch).",
           attachments: [],
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -1622,7 +1622,7 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.generateBranchName.mock.calls.length === 1);
     await waitFor(() => harness.refreshStatus.mock.calls.length === 1);
     expect(harness.generateBranchName.mock.calls[0]?.[0]).toMatchObject({
-      message: "Add a safer reconnect backoff.",
+      message: "Add a safer reconnect backoff Auth refactor.",
     });
     expect(harness.refreshStatus.mock.calls[0]?.[0]).toBe("/tmp/provider-project-worktree");
   });

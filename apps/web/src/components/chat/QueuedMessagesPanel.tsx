@@ -2,6 +2,7 @@ import type { OrchestrationQueuedTurn, QueuedTurnId } from "@t3tools/contracts";
 import { ArrowDown, ArrowUp, Check, Pause, Pencil, Play, Trash2, X } from "lucide-react";
 import { memo } from "react";
 import { cn } from "../../lib/utils";
+import { formatThreadContextPlainText } from "@t3tools/shared/threadContext";
 import { Button } from "../ui/button";
 
 interface QueuedMessagesPanelProps {
@@ -39,7 +40,7 @@ function isHiddenQueuedTurn(queuedTurn: OrchestrationQueuedTurn): boolean {
 function queuedTurnLabel(queuedTurn: OrchestrationQueuedTurn): string | null {
   return queuedTurn.origin?.kind === "workspace-handoff"
     ? `Continue in ${queuedTurn.origin.branch}`
-    : queuedTurn.message.text;
+    : formatThreadContextPlainText(queuedTurn.message.text);
 }
 
 function attachmentLabel(queuedTurn: OrchestrationQueuedTurn): string | null {

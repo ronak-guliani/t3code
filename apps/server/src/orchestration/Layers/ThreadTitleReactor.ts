@@ -5,6 +5,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { formatThreadContextPlainText } from "@t3tools/shared/threadContext";
 import { Cause, Effect, Layer, Option, PubSub, Semaphore, Stream, SynchronizedRef } from "effect";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
@@ -51,7 +52,7 @@ function formatThreadTitleContext(
     if (message.role === "system") {
       continue;
     }
-    const text = message.text.trim();
+    const text = formatThreadContextPlainText(message.text).trim();
     const attachmentSummary = (message.attachments ?? [])
       .map((attachment) => attachment.name)
       .join(", ");
@@ -225,7 +226,7 @@ export const makeThreadTitleReactor = Effect.gen(function* () {
     const attachments = message.attachments ?? [];
     const generated = yield* textGeneration.generateThreadTitle({
       cwd,
-      message: message.text,
+      message: formatThreadContextPlainText(message.text),
       ...(attachments.length > 0 ? { attachments } : {}),
       modelSelection,
     });
