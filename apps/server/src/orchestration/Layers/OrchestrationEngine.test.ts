@@ -664,6 +664,29 @@ describe("OrchestrationEngine", () => {
       expect(pruned.sequence).toBe(clearedWait.snapshotSequence);
       expect(await system.run(system.engine.getReadModel())).toEqual(clearedWait);
       expect(await system.run(system.engine.dispatch(pruneCommand))).toEqual(pruned);
+
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("archive-before-association"),
+          threadId,
+        }),
+      );
+      const archivedThread = await system.run(system.engine.getReadModel());
+      const archiveEventCount = projected.length;
+      const staleAssociationCommit = await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("association-after-archive"),
+          threadId,
+          expectedArchivedAt: null,
+          pullRequest: { ...pullRequest, title: "Association after archive" },
+          pullRequestOwnership: "transfer",
+        }),
+      );
+      expect(staleAssociationCommit.sequence).toBe(archivedThread.snapshotSequence);
+      expect(await system.run(system.engine.getReadModel())).toEqual(archivedThread);
+      expect(projected).toHaveLength(archiveEventCount);
     } finally {
       await system.dispose();
     }

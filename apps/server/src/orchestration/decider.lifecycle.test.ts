@@ -700,6 +700,56 @@ describe("decider thread lifecycle", () => {
     expect(updated).toEqual([]);
   });
 
+  it("rejects an association commit when the thread has been archived", async () => {
+    const readModel = await lifecycleReadModel();
+    const requestId = CommandId.make("associate-pr-current");
+    const pendingPullRequestAssociation = {
+      requestId,
+      reference: "https://github.com/acme/app/pull/42",
+      requestedAt: "2026-09-08T00:00:00.000Z",
+      nextAttemptAt: "2026-09-08T00:01:00.000Z",
+      status: "pending" as const,
+    };
+    const archivedReadModel = {
+      ...readModel,
+      threads: readModel.threads.map((thread) => ({
+        ...thread,
+        archivedAt: "2026-09-08T00:02:00.000Z",
+        pendingPullRequestAssociation,
+      })),
+    };
+
+    const updated = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.meta.update",
+          commandId,
+          threadId,
+          expectedArchivedAt: null,
+          expectedPendingPullRequestAssociationRequestId: requestId,
+          expectedPullRequestAssociationContext: {
+            projectId,
+            branch: null,
+            worktreePath: null,
+            pullRequestUrl: null,
+          },
+          pullRequest: {
+            number: 42,
+            title: "Explicit association",
+            url: "https://github.com/acme/app/pull/42",
+            baseBranch: "main",
+            headBranch: "feature",
+            state: "open",
+          },
+          pendingPullRequestAssociation: null,
+        } satisfies OrchestrationCommand,
+        readModel: archivedReadModel,
+      }),
+    );
+
+    expect(updated).toEqual([]);
+  });
+
   it("emits an unlink when it is needed to cancel pending association intent", async () => {
     const readModel = await lifecycleReadModel();
     const pendingPullRequestAssociation = {

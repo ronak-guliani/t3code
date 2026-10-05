@@ -2695,6 +2695,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         (command.expectedUpdatedAt !== undefined &&
           command.expectedUpdatedAt !== thread.updatedAt) ||
+        (command.expectedArchivedAt !== undefined &&
+          command.expectedArchivedAt !== (thread.archivedAt ?? null)) ||
         (command.expectedWorkspaceCwd !== undefined &&
           command.expectedWorkspaceCwd !==
             resolveThreadWorkspaceCwd({ thread, projects: readModel.projects })) ||

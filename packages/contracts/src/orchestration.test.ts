@@ -848,6 +848,7 @@ it.effect("accepts an association request ID precondition in thread.meta.update"
       type: "thread.meta.update",
       commandId: "cmd-association-cas",
       threadId: "thread-1",
+      expectedArchivedAt: null,
       expectedPendingPullRequestAssociationRequestId: "association-request-1",
       expectedPullRequestAssociationContext: {
         projectId: "project-1",
@@ -862,6 +863,7 @@ it.effect("accepts an association request ID precondition in thread.meta.update"
         parsed.expectedPendingPullRequestAssociationRequestId,
         "association-request-1",
       );
+      assert.strictEqual(parsed.expectedArchivedAt, null);
       assert.deepStrictEqual(parsed.expectedPullRequestAssociationContext, {
         projectId: "project-1",
         branch: "feature",
