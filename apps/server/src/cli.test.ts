@@ -2706,7 +2706,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             const cleanupJobs = yield* WorktreeCleanupJobRepository;
             const now = new Date(yield* Clock.currentTimeMillis).toISOString();
             const persistedJobs = yield* cleanupJobs.list();
-            const dueJobs = yield* cleanupJobs.listDue({ now });
+            const dueJobs = yield* cleanupJobs.listDue({ now, limit: 16 });
             assert.equal(dueJobs.length, 5, JSON.stringify({ now, persistedJobs }, null, 2));
             const reactor = yield* ThreadDeletionReactor;
             yield* reactor.start();

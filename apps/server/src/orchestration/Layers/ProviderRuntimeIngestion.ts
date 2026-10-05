@@ -47,7 +47,11 @@ import {
 } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import {
+  OrchestrationEngineService,
+  type OrchestrationActivityAppendCommand,
+  type OrchestrationDispatchTicket,
+} from "../Services/OrchestrationEngine.ts";
 import {
   ProviderRuntimeIngestionService,
   type ProviderRuntimeIngestionShape,
@@ -55,6 +59,16 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { parseReviewResult } from "../reviewResult.ts";
 import { ReviewSnapshotVerifier } from "../Services/ReviewSnapshotVerifier.ts";
+import {
+  ACTIVITY_APPEND_BATCH_MAX_SIZE,
+  ACTIVITY_APPEND_BATCH_WINDOW_MS,
+  isBatchableToolActivity,
+} from "../activityAppendBatch.ts";
+
+const waitForProviderToolActivityBatchWindow = () =>
+  Effect.promise(
+    () => new Promise<void>((resolve) => setTimeout(resolve, ACTIVITY_APPEND_BATCH_WINDOW_MS)),
+  );
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerCommandIdFromEventId = (eventId: string, tag: string): CommandId =>
@@ -91,6 +105,17 @@ interface PendingStreamingDelta {
   text: string;
   /** UTF-8 byte length of `text`, tracked incrementally per appended delta. */
   textBytes: number;
+}
+
+interface PendingToolActivityDispatch {
+  readonly event: ProviderRuntimeEvent;
+  readonly ticket: OrchestrationDispatchTicket;
+  readonly enqueueCheckpointEvent: (event: ProviderRuntimeEvent) => Effect.Effect<void>;
+}
+
+interface PendingToolActivityBatchState {
+  readonly entries: ReadonlyArray<PendingToolActivityDispatch>;
+  readonly timerScheduled: boolean;
 }
 
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
@@ -858,6 +883,144 @@ const make = Effect.gen(function* () {
             yield* Deferred.succeed(waiter, undefined);
           }
         });
+
+  const pendingToolActivityBatch = yield* SynchronizedRef.make<PendingToolActivityBatchState>({
+    entries: [],
+    timerScheduled: false,
+  });
+  const deferredToolActivityEventIds = yield* SynchronizedRef.make<ReadonlySet<string>>(new Set());
+  const toolActivityBatchFlushLock = yield* Semaphore.make(1);
+
+  const flushPendingToolActivityBatch = () =>
+    toolActivityBatchFlushLock.withPermits(1)(
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          const entries = yield* SynchronizedRef.modify(
+            pendingToolActivityBatch,
+            (
+              state,
+            ): readonly [
+              ReadonlyArray<PendingToolActivityDispatch>,
+              PendingToolActivityBatchState,
+            ] => [state.entries, { entries: [], timerScheduled: false }],
+          );
+          if (entries.length === 0) return;
+
+          const outcomes = yield* Effect.forEach(
+            entries,
+            (entry) => Effect.exit(entry.ticket.awaitResult),
+            { concurrency: "unbounded" },
+          );
+          const groupedEntries = new Map<
+            string,
+            { readonly entry: PendingToolActivityDispatch; readonly failed: boolean }
+          >();
+          for (const [index, entry] of entries.entries()) {
+            const eventKey = String(entry.event.eventId);
+            const existing = groupedEntries.get(eventKey);
+            const failed = Exit.isFailure(outcomes[index]!);
+            groupedEntries.set(eventKey, {
+              entry: existing?.entry ?? entry,
+              failed: (existing?.failed ?? false) || failed,
+            });
+          }
+
+          for (const { entry, failed } of groupedEntries.values()) {
+            if (failed) {
+              yield* Effect.logWarning("provider runtime tool activity batch dispatch failed", {
+                eventId: entry.event.eventId,
+                eventType: entry.event.type,
+              });
+            }
+            yield* markProcessed(entry.event);
+            const checkpointExit = yield* Effect.exit(entry.enqueueCheckpointEvent(entry.event));
+            if (Exit.isFailure(checkpointExit)) {
+              yield* coordinator.endFinalization(entry.event.eventId);
+              yield* Effect.logWarning(
+                "provider runtime checkpoint enqueue failed after tool activity",
+                {
+                  eventId: entry.event.eventId,
+                  cause: Cause.pretty(checkpointExit.cause),
+                },
+              );
+            }
+          }
+        }),
+      ),
+    );
+
+  const enqueueToolActivityAppend = Effect.fn("enqueueProviderToolActivityAppend")(
+    function* (input: {
+      readonly event: ProviderRuntimeEvent;
+      readonly activity: OrchestrationThreadActivity;
+      readonly enqueueCheckpointEvent: (event: ProviderRuntimeEvent) => Effect.Effect<void>;
+    }) {
+      const command: OrchestrationActivityAppendCommand = {
+        type: "thread.activity.append",
+        commandId: providerCommandId(input.event, "thread-activity-append"),
+        threadId: input.event.threadId,
+        activity: input.activity,
+        createdAt: input.activity.createdAt,
+      };
+      if (orchestrationEngine.enqueueToolActivityAppend === undefined) {
+        yield* orchestrationEngine.dispatch(command);
+        return;
+      }
+      const ticket = yield* orchestrationEngine.enqueueToolActivityAppend(command);
+      yield* SynchronizedRef.update(
+        deferredToolActivityEventIds,
+        (eventIds) => new Set([...eventIds, String(input.event.eventId)]),
+      );
+      const flush = yield* SynchronizedRef.modify(
+        pendingToolActivityBatch,
+        (
+          state,
+        ): readonly [
+          { readonly now: boolean; readonly schedule: boolean },
+          PendingToolActivityBatchState,
+        ] => {
+          const entries = [
+            ...state.entries,
+            {
+              event: input.event,
+              ticket,
+              enqueueCheckpointEvent: input.enqueueCheckpointEvent,
+            },
+          ];
+          const now = entries.length >= ACTIVITY_APPEND_BATCH_MAX_SIZE;
+          const schedule = !now && !state.timerScheduled;
+          return [
+            { now, schedule },
+            { entries, timerScheduled: now ? false : state.timerScheduled || schedule },
+          ];
+        },
+      );
+      if (flush.now) {
+        yield* flushPendingToolActivityBatch();
+      } else if (flush.schedule) {
+        yield* Effect.forkScoped(
+          waitForProviderToolActivityBatchWindow().pipe(
+            Effect.andThen(flushPendingToolActivityBatch()),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("provider tool activity batch flush failed", {
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          ),
+        );
+      }
+    },
+  );
+
+  const takeDeferredToolActivityEvent = (eventId: ProviderRuntimeEvent["eventId"]) =>
+    SynchronizedRef.modify(deferredToolActivityEventIds, (eventIds) => {
+      const key = String(eventId);
+      if (!eventIds.has(key)) return [false, eventIds] as const;
+      const next = new Set(eventIds);
+      next.delete(key);
+      return [true, next] as const;
+    });
+
   const reviewSnapshotVerifier = yield* ReviewSnapshotVerifier;
 
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
@@ -1698,7 +1861,10 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
+  const processRuntimeEvent = (
+    event: ProviderRuntimeEvent,
+    enqueueCheckpointEvent: (event: ProviderRuntimeEvent) => Effect.Effect<void>,
+  ) =>
     Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
       const thread = readModel.threads.find((entry) => entry.id === event.threadId);
@@ -2355,19 +2521,26 @@ const make = Effect.gen(function* () {
                   : event,
               );
       yield* Effect.forEach(activities, (activity) =>
-        orchestrationEngine.dispatch({
-          type: "thread.activity.append",
-          commandId: providerCommandId(event, "thread-activity-append"),
-          threadId: thread.id,
-          activity,
-          createdAt: activity.createdAt,
-        }),
+        isBatchableToolActivity(activity)
+          ? enqueueToolActivityAppend({ event, activity, enqueueCheckpointEvent })
+          : orchestrationEngine
+              .dispatch({
+                type: "thread.activity.append",
+                commandId: providerCommandId(event, "thread-activity-append"),
+                threadId: thread.id,
+                activity,
+                createdAt: activity.createdAt,
+              })
+              .pipe(Effect.asVoid),
       ).pipe(Effect.asVoid);
       clearProjectedToolUpdate(event, lifecycleTurnId);
     });
 
-  const processRuntimeEventSafely = (event: ProviderRuntimeEvent) =>
-    processRuntimeEvent(event).pipe(
+  const processRuntimeEventSafely = (
+    event: ProviderRuntimeEvent,
+    enqueueCheckpointEvent: (event: ProviderRuntimeEvent) => Effect.Effect<void>,
+  ) =>
+    processRuntimeEvent(event, enqueueCheckpointEvent).pipe(
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) {
           return Effect.failCause(cause);
@@ -2383,6 +2556,12 @@ const make = Effect.gen(function* () {
   const isAssistantTextDeltaEvent = (event: ProviderRuntimeEvent): boolean =>
     assistantTextDeltaFromEvent(event) !== undefined;
 
+  const mayEmitToolActivity = (event: ProviderRuntimeEvent): boolean =>
+    (event.type === "item.started" ||
+      event.type === "item.updated" ||
+      event.type === "item.completed") &&
+    isToolLifecycleItemType(event.payload.itemType);
+
   const worker = yield* makeDrainableWorker(
     ({
       event,
@@ -2393,25 +2572,40 @@ const make = Effect.gen(function* () {
     }) =>
       Effect.gen(function* () {
         let handedOff = false;
-        yield* Effect.andThen(
+        const work = Effect.gen(function* () {
+          if (!mayEmitToolActivity(event)) {
+            yield* flushPendingToolActivityBatch();
+          }
           // Non-delta events may finalize or complete a message, so any buffered
           // deltas must reach the engine first to preserve ordering. The strict
           // variant retries through transient dispatch failures instead of
           // letting a completion overtake undelivered text.
-          isAssistantTextDeltaEvent(event) ? Effect.void : flushAllStreamingDeltasStrictly,
-          processRuntimeEventSafely(event),
-        ).pipe(
-          Effect.andThen(markProcessed(event)),
-          Effect.andThen(
-            enqueueCheckpointEvent(event).pipe(
-              Effect.andThen(
-                Effect.sync(() => {
-                  handedOff = true;
-                }),
-              ),
-              Effect.uninterruptible,
+          if (!isAssistantTextDeltaEvent(event)) {
+            yield* flushAllStreamingDeltasStrictly;
+          }
+          yield* processRuntimeEventSafely(event, enqueueCheckpointEvent);
+
+          if (yield* takeDeferredToolActivityEvent(event.eventId)) {
+            // The batch flusher owns both durable event processing and checkpoint
+            // handoff for this provider event.
+            handedOff = true;
+            return;
+          }
+
+          // A candidate item event may be coalesced away. Flush preceding tool
+          // activities before acknowledging that later source event.
+          yield* flushPendingToolActivityBatch();
+          yield* markProcessed(event);
+          yield* enqueueCheckpointEvent(event).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                handedOff = true;
+              }),
             ),
-          ),
+            Effect.uninterruptible,
+          );
+        });
+        yield* work.pipe(
           Effect.onExit((exit) =>
             Exit.isFailure(exit) && !handedOff
               ? coordinator.endFinalization(event.eventId)
@@ -2443,7 +2637,10 @@ const make = Effect.gen(function* () {
   );
 
   yield* Effect.addFinalizer(() =>
-    flushAllStreamingDeltas().pipe(
+    Effect.all([flushPendingToolActivityBatch(), flushAllStreamingDeltas()], {
+      concurrency: 1,
+      discard: true,
+    }).pipe(
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.void
@@ -2466,7 +2663,7 @@ const make = Effect.gen(function* () {
 
   return {
     start,
-    drain: worker.drain,
+    drain: worker.drain.pipe(Effect.andThen(flushPendingToolActivityBatch())),
     awaitTurnCompletionProcessed,
   } satisfies ProviderRuntimeIngestionShape;
 });

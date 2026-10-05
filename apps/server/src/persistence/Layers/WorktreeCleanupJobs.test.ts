@@ -48,7 +48,7 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
       assert.equal(second.status, "waiting");
       assert.isFalse(yield* jobs.hasReservationByPath("/tmp/shared"));
       assert.deepEqual(
-        (yield* jobs.listDue({ now: at(0) })).map((job) => job.threadId),
+        (yield* jobs.listDue({ now: at(0), limit: 10 })).map((job) => job.threadId),
         [first.threadId, second.threadId],
       );
 
@@ -92,6 +92,36 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
     }),
   );
 
+  it.effect("bounds each due cleanup sweep while preserving oldest-first ordering", () =>
+    Effect.gen(function* () {
+      const jobs = yield* WorktreeCleanupJobRepository;
+      const enqueued = [];
+      for (let index = 0; index < 3; index += 1) {
+        enqueued.push(
+          yield* jobs.enqueue(
+            intent({
+              id: `cleanup-batch-${index}`,
+              path: `/tmp/cleanup-batch-${index}`,
+              requestedAt: at(0),
+            }),
+          ),
+        );
+      }
+
+      const due = yield* jobs.listDue({ now: at(0), limit: 2 });
+      assert.deepEqual(
+        due.map((job) => job.threadId),
+        enqueued.slice(0, 2).map((job) => job.threadId),
+      );
+      for (const job of enqueued) {
+        yield* jobs.markNeedsAttention({
+          threadId: job.threadId,
+          reason: "dirty-worktree",
+        });
+      }
+    }),
+  );
+
   it.effect(
     "persists backoff and escalates repeated failures without retaining a reservation",
     () =>
@@ -125,8 +155,8 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
           }),
         );
         assert.isFalse(yield* jobs.hasReservationByPath("/tmp/retry"));
-        assert.deepEqual(yield* jobs.listDue({ now: at(9) }), []);
-        assert.equal((yield* jobs.listDue({ now: at(10) })).length, 1);
+        assert.deepEqual(yield* jobs.listDue({ now: at(9), limit: 10 }), []);
+        assert.equal((yield* jobs.listDue({ now: at(10), limit: 10 })).length, 1);
 
         yield* jobs.tryReserveForRemoval({
           threadId: cleanup.threadId,
@@ -144,7 +174,9 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
         assert.equal(secondFailure.pipe(Option.getOrThrow).status, "needs-attention");
         assert.isFalse(yield* jobs.hasReservationByPath("/tmp/retry"));
         assert.isFalse(
-          (yield* jobs.listDue({ now: at(100) })).some((job) => job.threadId === cleanup.threadId),
+          (yield* jobs.listDue({ now: at(100), limit: 10 })).some(
+            (job) => job.threadId === cleanup.threadId,
+          ),
         );
       }),
   );
@@ -363,10 +395,14 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
       assert.equal(deferred.pipe(Option.getOrThrow).nextAttemptAt, at(10));
       assert.isFalse(yield* jobs.hasReservationByPath("/tmp/deferred"));
       assert.isFalse(
-        (yield* jobs.listDue({ now: at(9) })).some((job) => job.threadId === cleanup.threadId),
+        (yield* jobs.listDue({ now: at(9), limit: 10 })).some(
+          (job) => job.threadId === cleanup.threadId,
+        ),
       );
       assert.isTrue(
-        (yield* jobs.listDue({ now: at(10) })).some((job) => job.threadId === cleanup.threadId),
+        (yield* jobs.listDue({ now: at(10), limit: 10 })).some(
+          (job) => job.threadId === cleanup.threadId,
+        ),
       );
     }),
   );
@@ -410,7 +446,9 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
         "worktree-already-absent",
       );
       assert.isFalse(
-        (yield* jobs.listDue({ now: at(100) })).some((job) => job.threadId === cleanup.threadId),
+        (yield* jobs.listDue({ now: at(100), limit: 10 })).some(
+          (job) => job.threadId === cleanup.threadId,
+        ),
       );
     }),
   );

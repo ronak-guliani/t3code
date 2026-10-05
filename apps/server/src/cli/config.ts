@@ -42,7 +42,7 @@ export const resolveCliAuthConfig = (
     return {
       logLevel: Option.getOrElse(cliLogLevel, () => "Info"),
       traceMinLevel: "Info",
-      traceTimingEnabled: true,
+      traceTimingEnabled: false,
       traceBatchWindowMs: 200,
       traceMaxBytes: 10 * 1024 * 1024,
       traceMaxFiles: 10,
