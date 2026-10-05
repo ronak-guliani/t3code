@@ -1,6 +1,7 @@
 import { type WorkLogEntry } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan } from "../../types";
 import { type MessagesTimelineRow } from "./MessagesTimeline.logic";
+import { formatThreadContextPlainText } from "@t3tools/shared/threadContext";
 
 export interface ChatFindRow {
   id: string;
@@ -22,7 +23,7 @@ function normalizeSearchText(value: string): string {
 }
 
 function collectMessageSearchText(message: ChatMessage): string {
-  const parts = [message.text ?? ""];
+  const parts = [formatThreadContextPlainText(message.text ?? "")];
 
   for (const attachment of message.attachments ?? []) {
     parts.push(attachment.name);

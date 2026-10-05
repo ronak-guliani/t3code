@@ -73,7 +73,10 @@ import {
   parseDiffRouteSearch,
 } from "../diffRouteSearch";
 import { collapseExpandedComposerCursor } from "../composer-logic";
-import { collectThreadContextReferences } from "@t3tools/shared/threadContext";
+import {
+  collectThreadContextReferences,
+  formatThreadContextPlainText,
+} from "@t3tools/shared/threadContext";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -3598,7 +3601,7 @@ function ChatViewBody(
           composerTerminalContextsSnapshot,
         );
         const firstComposerImageName = composerImagesSnapshot[0]?.name ?? null;
-        let titleSeed = trimmed;
+        let titleSeed = formatThreadContextPlainText(trimmed);
         if (!titleSeed) {
           if (firstComposerImageName) {
             titleSeed = `Image: ${firstComposerImageName}`;
@@ -3807,7 +3810,7 @@ function ChatViewBody(
           firstComposerImageName = firstComposerImage.name;
         }
       }
-      let titleSeed = trimmed;
+      let titleSeed = formatThreadContextPlainText(trimmed);
       if (!titleSeed) {
         if (firstComposerImageName) {
           titleSeed = `Image: ${firstComposerImageName}`;

@@ -244,6 +244,15 @@ describe("shouldRenderSidebarDraft", () => {
 });
 
 describe("resolveSidebarDraftPreview", () => {
+  it("shows thread context labels in draft previews", () => {
+    expect(
+      resolveSidebarDraftPreview({
+        draftPrompt: "Review [Auth refactor](t3-context://v1/thread/ctx_preview)",
+        draftAttachmentCount: 0,
+        optimisticMessage: null,
+      }),
+    ).toBe("Review Auth refactor");
+  });
   it("keeps the submitted message visible after composer cleanup", () => {
     expect(
       resolveSidebarDraftPreview({
@@ -256,6 +265,13 @@ describe("resolveSidebarDraftPreview", () => {
 });
 
 describe("resolveExistingThreadDraftPreview", () => {
+  it("shows thread context labels in existing-thread draft previews", () => {
+    expect(
+      resolveExistingThreadDraftPreview(
+        "Review [Auth refactor](t3-context://v1/thread/ctx_preview)",
+      ),
+    ).toBe("Review Auth refactor");
+  });
   it("returns the first non-empty line", () => {
     expect(resolveExistingThreadDraftPreview("  follow up on this\nwith details ")).toBe(
       "follow up on this",

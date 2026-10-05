@@ -105,6 +105,11 @@ export function replaceThreadContextReferences(
   return result + text.slice(cursor);
 }
 
+/** Plain-text display/prose projection that preserves labels and removes URI markup. */
+export function formatThreadContextPlainText(text: string): string {
+  return replaceThreadContextReferences(text, (occurrence) => occurrence.label);
+}
+
 export interface ThreadContextBindingEntry {
   record: ThreadContextRecord;
   occurrences: ThreadContextReferenceOccurrence[];
