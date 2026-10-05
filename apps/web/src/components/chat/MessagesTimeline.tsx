@@ -76,7 +76,6 @@ import {
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveExternalActionUrl,
-  selectTimelineThreadContextChips,
   shouldHandleInternalActionClick,
   stabilizeReadonlyStringSet,
   type StableMessagesTimelineRowsState,
@@ -84,6 +83,7 @@ import {
 } from "./MessagesTimeline.logic";
 import { collectThreadContextReferences } from "@t3tools/shared/threadContext";
 import { ThreadContextChip } from "./ThreadContextChip";
+import { COMPOSER_INLINE_CHIP_UNRESOLVED_CLASS_NAME } from "../composerInlineChip";
 
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -1996,11 +1996,6 @@ const InlineThreadContextText = memo(function InlineThreadContextText(props: {
 }) {
   const occurrences = collectThreadContextReferences(props.text);
   if (occurrences.length === 0) return props.text;
-  const chips = new Map(
-    selectTimelineThreadContextChips({ text: props.text, context: { records: props.records } }).map(
-      (chip) => [chip.key, chip],
-    ),
-  );
   const records = new Map(props.records.map((record) => [record.contextId, record]));
   const nodes: ReactNode[] = [];
   let cursor = 0;
@@ -2010,14 +2005,14 @@ const InlineThreadContextText = memo(function InlineThreadContextText(props: {
     const key = `${occurrence.contextId}:${occurrence.start}`;
     nodes.push(
       record ? (
-        <ThreadContextChip key={key} record={record} />
+        <ThreadContextChip key={key} record={record} navigateOnClick />
       ) : (
         <span
           key={key}
-          className="inline-flex rounded border border-dashed border-border px-1 text-secondary-label"
+          className={COMPOSER_INLINE_CHIP_UNRESOLVED_CLASS_NAME}
           title="Thread context is unavailable"
         >
-          {chips.get(occurrence.contextId)?.title ?? occurrence.label}
+          {occurrence.label}
         </span>
       ),
     );

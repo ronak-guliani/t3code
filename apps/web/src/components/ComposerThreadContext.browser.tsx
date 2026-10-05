@@ -70,6 +70,35 @@ it("renders an atomic thread chip and restores it with native undo", async () =>
   }
 });
 
+it("does not navigate when clicking a thread chip inside the composer", async () => {
+  const screen = await render(
+    <ComposerPromptEditor
+      value={`${reference} `}
+      cursor={2}
+      terminalContexts={[]}
+      threadContexts={[record]}
+      skills={[]}
+      disabled={false}
+      placeholder="Prompt"
+      onRemoveTerminalContext={vi.fn()}
+      onPaste={vi.fn()}
+      onChange={vi.fn()}
+    />,
+  );
+  const locationBefore = window.location.href;
+  try {
+    await userEvent.click(
+      document.querySelector(`[data-thread-context-chip="${record.contextId}"]`)!,
+    );
+    expect(window.location.href).toBe(locationBefore);
+    expect(
+      document.querySelector(`[data-thread-context-chip="${record.contextId}"]`),
+    ).not.toBeNull();
+  } finally {
+    await screen.unmount();
+  }
+});
+
 it("copies selected thread context as structured clipboard data", async () => {
   const ref = createRef<ComposerPromptEditorHandle>();
   const screen = await render(
