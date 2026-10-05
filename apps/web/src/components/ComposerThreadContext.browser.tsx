@@ -127,10 +127,52 @@ it("copies selected thread context as structured clipboard data", async () => {
     });
     page.getByTestId("composer-editor").element().dispatchEvent(event);
     expect(event.defaultPrevented).toBe(true);
-    expect(clipboard.getData("text/plain")).toContain(reference);
+    expect(clipboard.getData("text/plain")).toContain(record.label);
+    expect(clipboard.getData("text/plain")).not.toContain("t3-context://");
+    expect(clipboard.getData("text/html")).not.toContain("#" + record.title);
     expect(
       parseThreadContextClipboardPayload(clipboard.getData(THREAD_CONTEXT_CLIPBOARD_MIME)),
     ).toEqual([record]);
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("pastes the exact private prompt text in preference to readable plain text", async () => {
+  const ref = createRef<ComposerPromptEditorHandle>();
+  const onThreadContextPaste = vi.fn();
+  const screen = await render(
+    <ComposerPromptEditor
+      ref={ref}
+      value=""
+      cursor={0}
+      terminalContexts={[]}
+      threadContexts={[record]}
+      skills={[]}
+      disabled={false}
+      placeholder="Prompt"
+      onRemoveTerminalContext={vi.fn()}
+      onPaste={vi.fn()}
+      onChange={vi.fn()}
+      onThreadContextPaste={onThreadContextPaste}
+    />,
+  );
+  try {
+    ref.current!.focusAtEnd();
+    const clipboard = new DataTransfer();
+    clipboard.setData("text/plain", record.label);
+    clipboard.setData(
+      THREAD_CONTEXT_CLIPBOARD_MIME,
+      JSON.stringify({ version: 1, records: [record], text: reference }),
+    );
+    const event = new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: clipboard,
+    });
+    page.getByTestId("composer-editor").element().dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(onThreadContextPaste).toHaveBeenCalledWith(reference, [record], expect.any(Object));
   } finally {
     await screen.unmount();
   }

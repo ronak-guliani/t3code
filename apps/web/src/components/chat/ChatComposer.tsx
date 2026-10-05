@@ -145,6 +145,7 @@ import {
   attachThreadContexts,
   isThreadContextSupported,
   mergeThreadContextClipboard,
+  threadContextTextAsLabels,
   selectThreadContextDescriptor,
   queryThreadContextCandidates,
   type ThreadContextCandidate,
@@ -1000,7 +1001,16 @@ export const ChatComposer = memo(
     );
     const draftThreadIds = useComposerDraftStore((state) => state.draftThreadsByThreadKey);
     const threadCandidates = useMemo<ThreadContextCandidate[]>(() => {
-      if (!isPathTrigger || pathTriggerQuery.trim().length === 0 || !threadContextSupported) {
+      if (
+        !isPathTrigger ||
+        pathTriggerQuery.trim().length === 0 ||
+        !threadContextSupported ||
+        isSendBusy ||
+        isConnecting ||
+        activePendingApproval !== null ||
+        pendingUserInputs.length > 0 ||
+        editingQueuedTurn !== null
+      ) {
         return [];
       }
       const draftIds = new Set(
@@ -1042,6 +1052,11 @@ export const ChatComposer = memo(
       projectById,
       routeThreadRef.threadId,
       threadContextSupported,
+      isSendBusy,
+      isConnecting,
+      activePendingApproval,
+      pendingUserInputs.length,
+      editingQueuedTurn,
     ]);
     const skillCatalogQuery = useQuery({
       queryKey: ["server", "skills"],
@@ -1865,6 +1880,15 @@ export const ChatComposer = memo(
           );
           return null;
         }
+        if (outcome.insertedIds.length === 0 && input.refs.length > 0) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "info",
+              title: "Thread already attached",
+              description: "That thread is already available in this draft.",
+            }),
+          );
+        }
         const nextRecords = outcome.records.filter(
           (record) =>
             !existingRecords.some(
@@ -2229,14 +2253,16 @@ export const ChatComposer = memo(
       range: { start: number; end: number },
     ): boolean => {
       if (threadDropDisabled) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "warning",
-            title: "Could not paste thread context",
-            description: "The composer is unavailable, or this server needs an update.",
-          }),
-        );
-        return false;
+        const prompt = readComposerSnapshot().value;
+        const plainText = threadContextTextAsLabels(pastedText);
+        const before = prompt.slice(0, range.start);
+        const after = prompt.slice(range.end);
+        const spacer = before.length > 0 && !/\s$/.test(before) && plainText.length > 0 ? " " : "";
+        const next = `${before}${spacer}${plainText}${after}`;
+        promptRef.current = next;
+        setComposerDraftPrompt(composerDraftTarget, next);
+        setComposerCursor(before.length + spacer.length + plainText.length);
+        return true;
       }
       const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
       const snapshot = readComposerSnapshot();
