@@ -23,6 +23,7 @@ export type ComposerPromptSegment =
       type: "thread-context";
       contextId: ThreadContextId;
       label: string;
+      sourceLength: number;
     }
   | {
       type: "terminal-context";
@@ -63,6 +64,7 @@ type InlineTokenMatch =
       type: "thread-context";
       contextId: ThreadContextId;
       label: string;
+      sourceLength: number;
       start: number;
       end: number;
     };
@@ -101,6 +103,7 @@ function collectInlineTokenMatches(text: string): InlineTokenMatch[] {
       type: "thread-context",
       contextId: occurrence.contextId,
       label: occurrence.label,
+      sourceLength: occurrence.end - occurrence.start,
       start: occurrence.start,
       end: occurrence.end,
     });
@@ -231,6 +234,7 @@ function splitPromptTextIntoComposerSegments(text: string): ComposerPromptSegmen
         type: "thread-context",
         contextId: match.contextId,
         label: match.label,
+        sourceLength: match.sourceLength,
       });
     } else {
       segments.push({ type: "skill", name: match.value });

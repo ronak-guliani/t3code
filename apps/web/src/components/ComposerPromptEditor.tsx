@@ -92,6 +92,7 @@ import {
   parseThreadContextClipboardPayload,
   selectedThreadContextRecords,
   serializeThreadContextClipboard,
+  threadContextClipboardText,
 } from "~/threadContextAttach";
 import { formatProviderSkillDisplayName } from "~/providerSkillPresentation";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
@@ -1064,7 +1065,7 @@ function ComposerThreadClipboardPlugin(
       if (records.length === 0) return false;
       const payload = serializeThreadContextClipboard(text, records);
       event.preventDefault();
-      event.clipboardData.setData("text/plain", text);
+      event.clipboardData.setData("text/plain", payload.text);
       event.clipboardData.setData(THREAD_CONTEXT_CLIPBOARD_MIME, payload.json);
       event.clipboardData.setData("text/html", payload.html);
       if (cut && editor.isEditable()) selection.removeText();
@@ -1078,14 +1079,15 @@ function ComposerThreadClipboardPlugin(
         (event) => {
           if (!editor.isEditable()) return false;
           if (!(event instanceof ClipboardEvent) || !event.clipboardData) return false;
-          const text = event.clipboardData.getData("text/plain");
+          const json = event.clipboardData.getData(THREAD_CONTEXT_CLIPBOARD_MIME);
+          const text =
+            (json && threadContextClipboardText(json)) || event.clipboardData.getData("text/plain");
           if (!text.includes("t3-context://v1/thread/") || !propsRef.current.onThreadContextPaste)
             return false;
           const selection = $getSelection();
           if (!$isRangeSelection(selection)) return false;
           const range = getSelectionRangeForExpandedComposerOffsets(selection);
           if (!range) return false;
-          const json = event.clipboardData.getData(THREAD_CONTEXT_CLIPBOARD_MIME);
           const records = json
             ? (parseThreadContextClipboardPayload(json) ?? [])
             : (propsRef.current.threadContexts ?? EMPTY_THREAD_CONTEXTS);

@@ -9,6 +9,7 @@ import {
   selectedThreadContextRecords,
   selectThreadContextDescriptor,
   serializeThreadContextClipboard,
+  threadContextClipboardText,
   THREAD_CONTEXT_CLIPBOARD_MIME,
   queryThreadContextCandidates,
   attachThreadContexts,
@@ -259,10 +260,12 @@ describe("thread context clipboard", () => {
     });
     expect(attached.ok).toBe(true);
     const serialized = serializeThreadContextClipboard(attached.prompt, attached.records);
-    expect(serialized.text).toContain("t3-context://v1/thread/");
+    expect(serialized.text).toContain("Clipboard thread");
+    expect(serialized.text).not.toContain("t3-context://v1/thread/");
+    expect(serialized.html).not.toContain("#Clipboard thread");
     const pastedRecords = parseThreadContextClipboardPayload(serialized.json);
     const merged = mergeThreadContextClipboard({
-      pastedText: serialized.text,
+      pastedText: threadContextClipboardText(serialized.json) ?? serialized.text,
       pastedRecords: pastedRecords ?? [],
       existingPrompt: "",
       existingRecords: [],
@@ -434,8 +437,9 @@ describe("thread context structured clipboard", () => {
     expect(attached.ok).toBe(true);
     const serialized = serializeThreadContextClipboard(attached.prompt, attached.records);
     expect(serialized.mimeType).toBe(THREAD_CONTEXT_CLIPBOARD_MIME);
-    expect(serialized.text).toContain("t3-context://v1/thread/");
-    expect(serialized.html).toContain("t3-context://v1/thread/");
+    expect(serialized.text).toContain("Clip thread");
+    expect(serialized.text).not.toContain("t3-context://v1/thread/");
+    expect(serialized.html).not.toContain("t3-context://v1/thread/");
     const parsed = parseThreadContextClipboardPayload(serialized.json);
     expect(parsed?.length).toBe(1);
     expect(String(parsed![0]!.threadId)).toBe("t-clip");
@@ -501,7 +505,7 @@ describe("thread context structured clipboard", () => {
     const pastedRecords = parseThreadContextClipboardPayload(serialized.json);
     expect(pastedRecords?.length).toBe(1);
     const merged = mergeThreadContextClipboard({
-      pastedText: serialized.text,
+      pastedText: threadContextClipboardText(serialized.json) ?? serialized.text,
       pastedRecords: pastedRecords ?? [],
       existingPrompt: "hello world",
       existingRecords: [],
@@ -540,8 +544,8 @@ describe("thread context structured clipboard", () => {
       capabilities: { threadContext: true },
       resolveThread: () => ({ title: "X" }),
     });
-    expect(foreign.ok).toBe(false);
-    expect(foreign.prompt).toBe("draft");
+    expect(foreign.ok).toBe(true);
+    expect(foreign.prompt).toContain("X");
     expect(foreign.records).toEqual([]);
 
     const dangling = mergeThreadContextClipboard({
@@ -564,7 +568,22 @@ describe("thread context structured clipboard", () => {
       capabilities: { threadContext: true },
       resolveThread: () => null,
     });
-    expect(dangling.ok).toBe(false);
-    expect(dangling.prompt).toBe("draft");
+    expect(dangling.ok).toBe(true);
+    expect(dangling.prompt).toContain("Y");
+  });
+
+  it("keeps unknown reference labels as ordinary pasted text", () => {
+    const outcome = mergeThreadContextClipboard({
+      pastedText: "see [Old thread](t3-context://v1/thread/thread-deadbeef) for details",
+      pastedRecords: [],
+      existingPrompt: "",
+      existingRecords: [],
+      environmentId: ENV_A,
+      selfThreadId: selfThreadId("self"),
+      capabilities: { threadContext: true },
+      resolveThread: () => null,
+    });
+    expect(outcome.ok).toBe(true);
+    expect(outcome.prompt).toBe("see Old thread for details");
   });
 });
