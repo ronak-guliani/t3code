@@ -162,6 +162,9 @@ If completion is uncertain, keep the environment alive and mention that it is re
 - The pairing input accepts a raw token or a complete same-origin pairing URL. Use the "Pairing token" label, not a textbox role (the input is masked). Never paste a token for another environment. Clear failed credentials before capturing evidence.
 - If the pairing URL is no longer visible, rerun `pair --base-dir <absolute-base-dir>`; do not pass `--dev-url` or `--base-url` to `pair`.
 - If the replacement token is rejected, verify that the CLI and server use the identical absolute base directory and web URL.
+- After editing Pierre's `unsafeCSS`, assert `--diffs-bg` on `diffs-container` in the live DOM. If it still reads `#0a0a0a`, HMR silently failed to re-inject the string; fully reload the browser, then get a fresh token via the `pair --base-dir` recovery path (reload drops the pairing session).
+- If `preview_resize` times out, use `document.documentElement.style.zoom` for magnification; **MUST reset zoom before capturing any evidence** because a zoomed frame misrepresents the UI.
+- For computed-style probes, inspect the inner element (for example, the inner header), never the outer wrapper. A `transparent` reading means you measured the wrong node, not that the token is broken.
 - If seeded data is missing or unexpected, verify the resolved database path and application flavor used by both the seed command and running server, not merely the supplied home directory or ports. Follow [database selection](references/sqlite-fixtures.md#select-the-correct-database), then confirm a known seeded entity through the target server's API before browser interaction. Do not mutate shared state or copy a live database to repair a mismatch.
 - If the backend and Vite are started separately, run `dev:server` and `dev:web` with the same
   `T3CODE_DEV_INSTANCE` (or explicit port offset) and keep the browser on the Vite origin.
