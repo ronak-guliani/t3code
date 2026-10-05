@@ -17,6 +17,7 @@ import { Effect, Layer, Schema, Sink, Stream } from "effect";
 import { makeOrchestrationIntegrationHarness } from "./OrchestrationEngineHarness.integration.ts";
 import { ProjectionSnapshotQuery } from "../src/orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadMessageRepositoryLive } from "../src/persistence/Layers/ProjectionThreadMessages.ts";
+import { ProjectionQueuedTurnRepositoryLive } from "../src/persistence/Layers/ProjectionQueuedTurns.ts";
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
 import { McpInvocationContext, type McpCapability } from "../src/mcp/McpInvocationContext.ts";
 import { ThreadContextToolkitHandlersLive } from "../src/mcp/toolkits/threadContext/handlers.ts";
@@ -164,6 +165,11 @@ it.live(
             }),
             Effect.provide(
               ProjectionThreadMessageRepositoryLive.pipe(
+                Layer.provide(makeSqlitePersistenceLive(harness.dbPath)),
+              ),
+            ),
+            Effect.provide(
+              ProjectionQueuedTurnRepositoryLive.pipe(
                 Layer.provide(makeSqlitePersistenceLive(harness.dbPath)),
               ),
             ),
