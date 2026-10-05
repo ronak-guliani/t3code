@@ -126,11 +126,11 @@ export const ChangedFilesTree = memo(function ChangedFilesTree(props: {
             ) : (
               <FolderClosedIcon className="size-3.5 shrink-0 text-muted-foreground/75" />
             )}
-            <span className="truncate font-mono text-2xs text-muted-foreground group-hover:text-foreground">
+            <span className="truncate font-mono text-[0.8125em] text-muted-foreground group-hover:text-foreground">
               {node.name}
             </span>
             {hasNonZeroStat(node.stat) && (
-              <span className="ml-auto shrink-0 font-mono text-3xs tabular-nums">
+              <span className="ml-auto shrink-0 font-mono text-[0.75em] tabular-nums">
                 <DiffStatLabel additions={node.stat.additions} deletions={node.stat.deletions} />
               </span>
             )}
@@ -160,11 +160,11 @@ export const ChangedFilesTree = memo(function ChangedFilesTree(props: {
           theme={resolvedTheme}
           className="size-3.5 text-muted-foreground/70"
         />
-        <span className="truncate font-mono text-xs text-foreground/90 group-hover:text-foreground">
+        <span className="truncate font-mono text-foreground/90 group-hover:text-foreground">
           {node.name}
         </span>
         {node.stat && (
-          <span className="ml-auto shrink-0 font-mono text-3xs tabular-nums">
+          <span className="ml-auto shrink-0 font-mono text-[0.75em] tabular-nums">
             <DiffStatLabel additions={node.stat.additions} deletions={node.stat.deletions} />
           </span>
         )}
@@ -172,11 +172,7 @@ export const ChangedFilesTree = memo(function ChangedFilesTree(props: {
     );
   };
 
-  return (
-    <div className="pb-2 pr-2" style={{ fontSize: "var(--app-code-font-size)" }}>
-      {treeNodes.map((node) => renderTreeNode(node, 0))}
-    </div>
-  );
+  return <div className="pb-2 pr-2">{treeNodes.map((node) => renderTreeNode(node, 0))}</div>;
 });
 
 function joinWorkspacePath(workspaceRoot: string, pathValue: string): string {

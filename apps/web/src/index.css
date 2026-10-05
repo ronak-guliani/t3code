@@ -51,12 +51,6 @@
   --color-diff-addition: var(--diff-addition);
   --color-diff-deletion: var(--diff-deletion);
   --color-sunken: var(--sunken);
-  /* Sub-12px steps. Diff stats and tree folder names have to sit below the UI
-     type scale without resorting to arbitrary rem values at each call site. */
-  --text-2xs: 0.6875rem;
-  --text-2xs--line-height: calc(1 / 0.6875);
-  --text-3xs: 0.625rem;
-  --text-3xs--line-height: calc(0.875 / 0.625);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -269,7 +263,10 @@
     --secondary: --alpha(var(--color-white) / 4%);
     --secondary-foreground: var(--color-neutral-100);
     --muted: --alpha(var(--color-white) / 4%);
-    --sunken: color-mix(in srgb, var(--color-black) 32%, var(--chat-background));
+    /* On a near-black canvas there is no room below the page to sink into, so in
+       dark the well is the chat background itself and only light mode gets a
+       visible step. */
+    --sunken: var(--chat-background);
     --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
     --accent: --alpha(var(--color-white) / 4%);
     --accent-foreground: var(--color-neutral-100);
