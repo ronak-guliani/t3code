@@ -1,20 +1,20 @@
 import "../../index.css";
 
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, type AssetCreateUrlResult } from "@t3tools/contracts";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 const {
-  openFileInPreviewMock,
+  openFileReferenceMock,
   openPreviewMock,
   listEntriesMock,
   readFileMock,
   writeFileMock,
   createAssetUrlMock,
 } = vi.hoisted(() => ({
-  openFileInPreviewMock: vi.fn(async () => ({ _tag: "Success", value: undefined })),
+  openFileReferenceMock: vi.fn(async () => ({ _tag: "Success", value: undefined })),
   openPreviewMock: vi.fn(),
   listEntriesMock: vi.fn(async () => ({
     entries: [
@@ -30,7 +30,9 @@ const {
     }),
   ),
   writeFileMock: vi.fn(async () => ({ relativePath: "src/index.ts" })),
-  createAssetUrlMock: vi.fn(async () => ({ relativeUrl: "/assets/signed" })),
+  createAssetUrlMock: vi.fn(
+    async (): Promise<AssetCreateUrlResult> => ({ relativeUrl: "/assets/signed", expiresAt: 0 }),
+  ),
 }));
 
 vi.mock("~/environmentApi", () => ({
@@ -112,9 +114,9 @@ vi.mock("~/state/preview", () => ({
   previewEnvironment: { open: {} },
 }));
 
-vi.mock("~/browser/openFileInPreview", () => ({
+vi.mock("~/browser/openFileReference", () => ({
   isBrowserPreviewFile: (path: string) => /\.(?:html?|pdf)$/i.test(path),
-  openFileInPreview: openFileInPreviewMock,
+  openFileReference: openFileReferenceMock,
 }));
 
 import { FilePreviewPanel } from "./FilePreviewPanel";
@@ -540,15 +542,269 @@ describe("FilePreviewPanel", () => {
         />,
       );
       await page.getByRole("button", { name: "Open in browser" }).click();
-      expect(openFileInPreviewMock).toHaveBeenCalledWith(
+      expect(openFileReferenceMock).toHaveBeenCalledWith(
         expect.objectContaining({
           threadRef,
-          relativePath: "reports/result.pdf",
+          filePath: "reports/result.pdf",
+          cwd: "/repo/project",
           httpBaseUrl: "http://localhost:3773",
           createAssetUrl: createAssetUrlMock,
           openPreview: openPreviewMock,
+          navigatePreview: openPreviewMock,
         }),
       );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("renders external text references read-only and reveals the requested line and column", async () => {
+    const contents = "first line\nsecond line\nthird line";
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(contents, {
+          status: 200,
+          headers: { "Content-Length": String(new TextEncoder().encode(contents).byteLength) },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    let resolveAsset!: (asset: AssetCreateUrlResult) => void;
+    const assetPromise = new Promise<AssetCreateUrlResult>((resolve) => {
+      resolveAsset = resolve;
+    });
+    createAssetUrlMock.mockImplementationOnce(() => assetPromise);
+    const asset: AssetCreateUrlResult = {
+      relativeUrl: "/api/assets/signed/External%20notes.txt",
+      expiresAt: Date.now() + 300_000,
+      fileReference: {
+        name: "External notes.txt",
+        mimeType: "text/plain",
+        sizeBytes: new TextEncoder().encode(contents).byteLength,
+        viewMode: "text",
+      },
+    };
+    if (!asset.fileReference) throw new Error("The test reference needs resolved metadata.");
+    const captureDirectory = import.meta.env.VITE_FILE_REFERENCE_CAPTURE_DIR;
+    if (captureDirectory) await page.viewport(1280, 800);
+    const screen = await render(
+      <FilePreviewPanel
+        cwd="/repo/project"
+        relativePath={null}
+        fileReference={{
+          path: "/tmp/External notes.txt",
+          line: 2,
+          column: 4,
+          kind: "external",
+          metadata: asset.fileReference,
+        }}
+        threadRef={threadRef}
+        onOpenFile={vi.fn()}
+      />,
+    );
+    try {
+      await expect.element(page.getByText("External notes.txt")).toBeInTheDocument();
+      resolveAsset(asset);
+      const source = page.getByRole("textbox", { name: "External file contents" });
+      await expect.element(source).toHaveValue(contents);
+      await expect.element(source).toHaveAttribute("readonly", "");
+      await vi.waitFor(() => {
+        expect(
+          (
+            document.querySelector(
+              "textarea[aria-label='External file contents']",
+            ) as HTMLTextAreaElement
+          ).selectionStart,
+        ).toBe(14);
+        expect(
+          (
+            document.querySelector(
+              "textarea[aria-label='External file contents']",
+            ) as HTMLTextAreaElement
+          ).selectionEnd,
+        ).toBe(15);
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://localhost:3773/api/assets/signed/External%20notes.txt",
+        expect.objectContaining({ credentials: "omit" }),
+      );
+      expect(writeFileMock).not.toHaveBeenCalled();
+      expect(readFileMock).not.toHaveBeenCalled();
+      if (captureDirectory) {
+        await page.screenshot({ path: `${captureDirectory}/external-file-after.png` });
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      await screen.unmount();
+    }
+  });
+
+  it("does not fetch external text larger than the bounded preview limit", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    createAssetUrlMock.mockResolvedValueOnce({
+      relativeUrl: "/api/assets/signed/large.txt",
+      expiresAt: Date.now() + 300_000,
+      fileReference: {
+        name: "large.txt",
+        mimeType: "text/plain",
+        sizeBytes: 1_000_001,
+        viewMode: "text",
+      },
+    });
+    const screen = await render(
+      <FilePreviewPanel
+        cwd="/repo/project"
+        relativePath={null}
+        fileReference={{ path: "/tmp/large.txt", kind: "external" }}
+        threadRef={threadRef}
+        onOpenFile={vi.fn()}
+      />,
+    );
+    try {
+      await expect
+        .element(page.getByText(/exceeds the 1 MB read-only preview limit/i))
+        .toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(writeFileMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      await screen.unmount();
+    }
+  });
+
+  it("stops streaming external text when the body exceeds the read bound", async () => {
+    const oversizedChunk = new Uint8Array(1_000_001).fill(0x61);
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(oversizedChunk);
+              controller.close();
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    createAssetUrlMock.mockResolvedValueOnce({
+      relativeUrl: "/api/assets/signed/changing.txt",
+      expiresAt: Date.now() + 300_000,
+      fileReference: {
+        name: "changing.txt",
+        mimeType: "text/plain",
+        sizeBytes: 1,
+        viewMode: "text",
+      },
+    });
+    const screen = await render(
+      <FilePreviewPanel
+        cwd="/repo/project"
+        relativePath={null}
+        fileReference={{ kind: "external", path: "/tmp/changing.txt" }}
+        threadRef={threadRef}
+        onOpenFile={vi.fn()}
+      />,
+    );
+    try {
+      await expect
+        .element(page.getByText(/exceeds the 1 MB read-only preview limit/i))
+        .toBeInTheDocument();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(writeFileMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      await screen.unmount();
+    }
+  });
+
+  it.each([
+    {
+      mode: "sandboxed HTML",
+      path: "/tmp/report.html",
+      metadata: {
+        name: "report.html",
+        mimeType: "text/html",
+        sizeBytes: 80,
+        viewMode: "html" as const,
+      },
+    },
+    {
+      mode: "PDF",
+      path: "/tmp/report.pdf",
+      metadata: {
+        name: "report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 80,
+        viewMode: "document" as const,
+      },
+    },
+    {
+      mode: "image",
+      path: "/tmp/chart.png",
+      metadata: {
+        name: "chart.png",
+        mimeType: "image/png",
+        sizeBytes: 80,
+        viewMode: "media" as const,
+      },
+    },
+    {
+      mode: "video",
+      path: "/tmp/demo.mp4",
+      metadata: {
+        name: "demo.mp4",
+        mimeType: "video/mp4",
+        sizeBytes: 80,
+        viewMode: "media" as const,
+      },
+    },
+    {
+      mode: "unsupported binary download",
+      path: "/tmp/archive.bin",
+      metadata: {
+        name: "archive.bin",
+        mimeType: "application/octet-stream",
+        sizeBytes: 80,
+        viewMode: "download" as const,
+      },
+    },
+  ])("opens external references in the $mode viewer", async ({ path, metadata, mode }) => {
+    createAssetUrlMock.mockResolvedValueOnce({
+      relativeUrl: `/api/assets/signed/${metadata.name}`,
+      expiresAt: Date.now() + 300_000,
+      fileReference: metadata,
+    });
+    const screen = await render(
+      <FilePreviewPanel
+        cwd="/repo/project"
+        relativePath={null}
+        fileReference={{ kind: "external", path, metadata }}
+        threadRef={threadRef}
+        onOpenFile={vi.fn()}
+      />,
+    );
+    try {
+      if (mode === "sandboxed HTML") {
+        const frame = document.querySelector('iframe[title="report.html"]');
+        expect(frame).not.toBeNull();
+        expect(frame?.getAttribute("sandbox")).toBe("allow-scripts");
+        expect(frame?.getAttribute("sandbox")).not.toContain("allow-same-origin");
+      } else if (mode === "PDF") {
+        expect(document.querySelector('iframe[title="report.pdf"]')).not.toBeNull();
+      } else if (mode === "image") {
+        await expect.element(page.getByRole("img", { name: "chart.png" })).toBeInTheDocument();
+      } else if (mode === "video") {
+        const video = document.querySelector("video") as HTMLVideoElement | null;
+        expect(video).not.toBeNull();
+        expect(video?.controls).toBe(true);
+      } else {
+        await expect
+          .element(page.getByRole("link", { name: "Download archive.bin" }))
+          .toHaveAttribute("href", "http://localhost:3773/api/assets/signed/archive.bin");
+      }
+      expect(readFileMock).not.toHaveBeenCalled();
+      expect(writeFileMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }

@@ -2304,9 +2304,9 @@ function ChatViewBody(
     [activeThreadRef],
   );
   const openRightPanelFile = useCallback(
-    (relativePath: string) => {
+    (relativePath: string, line?: number, column?: number) => {
       if (!activeThreadRef) return;
-      useRightPanelStore.getState().openFile(activeThreadRef, relativePath);
+      useRightPanelStore.getState().openFile(activeThreadRef, relativePath, line, column);
     },
     [activeThreadRef],
   );
@@ -5460,8 +5460,14 @@ function ChatViewBody(
               kind={surface.kind}
               cwd={activeWorkspaceRoot ?? activeProject?.cwd ?? ""}
               projectName={activeProject?.name}
-              relativePath={surface.kind === "file" ? surface.relativePath : null}
+              relativePath={
+                surface.kind === "file" && !surface.reference ? surface.relativePath : null
+              }
               revealLine={surface.kind === "file" ? surface.revealLine : null}
+              revealColumn={surface.kind === "file" ? (surface.revealColumn ?? null) : null}
+              {...(surface.kind === "file" && surface.reference
+                ? { fileReference: surface.reference }
+                : {})}
               threadRef={activeThreadRef}
               onOpenFile={openRightPanelFile}
               onPendingChange={handleFilePendingChange}
