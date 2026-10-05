@@ -1709,6 +1709,7 @@ const VisibleSidebarProjectThreadList = memo(function VisibleSidebarProjectThrea
             render={<button type="button" />}
             size="sm"
             className="h-[var(--app-sidebar-legacy-row-height)] font-medium text-muted-foreground/80"
+            style={{ fontSize: "var(--app-sidebar-font-size)" }}
             aria-controls={settledShelfOpen ? settledShelfContentId : undefined}
             aria-expanded={settledShelfOpen}
             onClick={() => setSettledShelfOpen((open) => !open)}
@@ -1744,6 +1745,7 @@ const VisibleSidebarProjectThreadList = memo(function VisibleSidebarProjectThrea
                   render={<button type="button" />}
                   size="sm"
                   className="h-[var(--app-sidebar-legacy-row-height)] text-muted-foreground/80"
+                  style={{ fontSize: "var(--app-sidebar-font-size)" }}
                   onClick={() => setShowAllSettled(true)}
                 >
                   <span>Show {settledVisibility.remainingCount} more</span>
