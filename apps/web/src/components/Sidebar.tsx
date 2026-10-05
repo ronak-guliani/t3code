@@ -270,6 +270,11 @@ const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
 const SIDEBAR_MENU_ITEM_CLASS =
   "min-h-7 gap-2 text-[length:var(--app-sidebar-font-size)] sm:min-h-7 sm:text-[length:var(--app-sidebar-font-size)]";
 const SIDEBAR_MENU_ICON_CLASS = "size-[length:var(--app-sidebar-icon-size)]";
+const SIDEBAR_THREAD_DISCLOSURE_BUTTON_STYLE = {
+  fontSize: "var(--app-sidebar-font-size)",
+  paddingInlineStart:
+    "calc(var(--app-sidebar-legacy-row-padding-x) + var(--app-sidebar-icon-size) + var(--app-sidebar-row-inline-gap))",
+};
 
 /** Root threads mounted per project before the tail sentinel grows the window. */
 const SIDEBAR_THREAD_WINDOW_SIZE = 30;
@@ -1739,16 +1744,18 @@ const VisibleSidebarProjectThreadList = memo(function VisibleSidebarProjectThrea
                 onReveal={revealMoreThreadRows}
               />
             ) : null}
-            {settledVisibility.remainingCount > 0 ? (
+            {showAllSettled || settledVisibility.remainingCount > 0 ? (
               <SidebarMenuSubItem className="w-full" data-thread-selection-safe>
                 <SidebarMenuSubButton
                   render={<button type="button" />}
                   size="sm"
                   className="h-[var(--app-sidebar-legacy-row-height)] text-muted-foreground/80"
-                  style={{ fontSize: "var(--app-sidebar-font-size)" }}
-                  onClick={() => setShowAllSettled(true)}
+                  style={SIDEBAR_THREAD_DISCLOSURE_BUTTON_STYLE}
+                  onClick={() => setShowAllSettled((showAll) => !showAll)}
                 >
-                  <span>Show {settledVisibility.remainingCount} more</span>
+                  <span>
+                    {showAllSettled ? "Show less" : `Show ${settledVisibility.remainingCount} more`}
+                  </span>
                 </SidebarMenuSubButton>
               </SidebarMenuSubItem>
             ) : null}
