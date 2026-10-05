@@ -295,7 +295,7 @@ export function composerDraftHasUserContent(
       draft.persistedAttachments.length > 0 ||
       draft.terminalContexts.length > 0 ||
       draft.previewAnnotations.length > 0 ||
-      draft.threadContexts.length > 0),
+      countReferencedThreadContexts(draft.prompt, draft.threadContexts) > 0),
   );
 }
 
@@ -698,7 +698,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.persistedAttachments.length === 0 &&
     draft.terminalContexts.length === 0 &&
     draft.previewAnnotations.length === 0 &&
-    draft.threadContexts.length === 0 &&
+    countReferencedThreadContexts(draft.prompt, draft.threadContexts) === 0 &&
     Object.keys(draft.modelSelectionByProvider).length === 0 &&
     draft.activeProvider === null &&
     draft.runtimeMode === null &&
@@ -2191,6 +2191,9 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
   persist(
     (setBase, get) => {
       const set = setBase;
+      // Keep removed bindings only in memory so Lexical undo can rebind a
+      // restored reference without making an otherwise-empty draft durable.
+      const threadContextUndoByThreadKey = new Map<string, ThreadContextRecord[]>();
 
       return {
         draftsByThreadKey: {},
@@ -2616,11 +2619,36 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           if (threadKey.length === 0) {
             return;
           }
+          const existingBeforeUpdate = get().draftsByThreadKey[threadKey];
+          if (
+            existingBeforeUpdate &&
+            countReferencedThreadContexts(prompt, existingBeforeUpdate.threadContexts) === 0 &&
+            existingBeforeUpdate.threadContexts.length > 0
+          ) {
+            threadContextUndoByThreadKey.set(threadKey, existingBeforeUpdate.threadContexts);
+          }
           set((state) => {
             const existing = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            const undoRecords = threadContextUndoByThreadKey.get(threadKey) ?? [];
+            const threadContexts =
+              countReferencedThreadContexts(prompt, undoRecords) > 0
+                ? [
+                    ...existing.threadContexts,
+                    ...undoRecords.filter(
+                      (record) =>
+                        !existing.threadContexts.some(
+                          (current) => current.contextId === record.contextId,
+                        ),
+                    ),
+                  ]
+                : existing.threadContexts;
+            if (countReferencedThreadContexts(prompt, undoRecords) > 0) {
+              threadContextUndoByThreadKey.delete(threadKey);
+            }
             const nextDraft: ComposerThreadDraftState = {
               ...existing,
               prompt,
+              threadContexts,
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
@@ -3207,7 +3235,16 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               accepted.push(entry);
             }
             // Keep unreferenced payloads for native undo, but budget only visible references.
+            const undoRecords = threadContextUndoByThreadKey.get(threadKey) ?? [];
             const threadContexts = [...existing.threadContexts, ...accepted];
+            for (const record of undoRecords) {
+              if (!threadContexts.some((entry) => entry.contextId === record.contextId)) {
+                threadContexts.push(record);
+              }
+            }
+            if (countReferencedThreadContexts(prompt, undoRecords) > 0) {
+              threadContextUndoByThreadKey.delete(threadKey);
+            }
             if (countReferencedThreadContexts(prompt, threadContexts) > THREAD_CONTEXT_MAX_RECORDS)
               return state;
             if (accepted.length === 0) {
@@ -3331,6 +3368,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           if (threadKey.length === 0) {
             return;
           }
+          threadContextUndoByThreadKey.delete(threadKey);
           set((state) => {
             const current = state.draftsByThreadKey[threadKey];
             if (!current) {

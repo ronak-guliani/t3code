@@ -3537,9 +3537,16 @@ function ChatViewBody(
       if (
         !sent &&
         (!currentDraft ||
-          (!currentDraft.prompt &&
-            currentDraft.images.length === 0 &&
-            currentDraft.threadContexts.length === 0))
+          isComposerDraftCleared({
+            prompt: currentDraft.prompt,
+            imageCount: currentDraft.images.length,
+            terminalContextCount: currentDraft.terminalContexts.length,
+            threadContextCount: countReferencedThreadContexts(
+              currentDraft.prompt,
+              currentDraft.threadContexts,
+            ),
+            previewAnnotationCount: currentDraft.previewAnnotations.length,
+          }))
       ) {
         setComposerDraftPrompt(composerDraftTarget, draftPromptForSend);
         setComposerDraftThreadContexts(composerDraftTarget, draftThreadContextsForSend);
@@ -3926,11 +3933,14 @@ function ChatViewBody(
                 prompt: currentDraft.prompt,
                 imageCount: currentDraft.images.length,
                 terminalContextCount: currentDraft.terminalContexts.length,
-                threadContextCount: currentDraft.threadContexts.length,
+                threadContextCount: countReferencedThreadContexts(
+                  currentDraft.prompt,
+                  currentDraft.threadContexts,
+                ),
+                previewAnnotationCount: currentDraft.previewAnnotations.length,
               }
             : undefined,
-        ) &&
-        (currentDraft?.previewAnnotations.length ?? 0) === 0
+        )
       ) {
         usePendingTurnStore
           .getState()

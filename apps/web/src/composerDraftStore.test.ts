@@ -20,7 +20,7 @@ import {
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
-import { formatThreadContextReference } from "@t3tools/shared/threadContext";
+import { bindThreadContext, formatThreadContextReference } from "@t3tools/shared/threadContext";
 
 // The composer draft's `modelSelectionByProvider` and
 // `stickyModelSelectionByProvider` maps are keyed by `ProviderInstanceId`
@@ -55,6 +55,18 @@ it("re-inserts a retained thread reference even when no new context record is ad
   store.addThreadContexts(target, `Compare ${formatThreadContextReference(record)}`, []);
   expect(store.getComposerDraft(target)?.prompt).toContain("t3-context://");
   expect(store.getComposerDraft(target)?.threadContexts).toEqual([record]);
+  store.setPrompt(target, "");
+  expect(store.getComposerDraft(target)).toBeNull();
+  store.setPrompt(target, formatThreadContextReference(record));
+  const restoredDraft = store.getComposerDraft(target);
+  expect(restoredDraft?.threadContexts).toEqual([record]);
+  const binding = bindThreadContext({
+    text: restoredDraft!.prompt,
+    records: restoredDraft!.threadContexts,
+    environmentId: TEST_ENVIRONMENT_ID,
+  });
+  expect(binding.bound.map(({ record: boundRecord }) => boundRecord)).toEqual([record]);
+  expect(binding.dangling).toEqual([]);
 });
 type ProviderOptionSelectionsByProvider = Partial<Record<string, ProviderOptionSelectionBag>>;
 
