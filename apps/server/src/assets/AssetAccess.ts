@@ -365,9 +365,11 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
             (cause) => new AssetWorkspacePathValidationError({ resource: input.resource, cause }),
           ),
         );
+      const extension = path.extname(resolved.relativePath).toLowerCase();
       const download =
         !isWorkspacePreviewEntryPath(resolved.relativePath) &&
-        !TEXT_REFERENCE_EXTENSIONS.has(path.extname(resolved.relativePath).toLowerCase());
+        !PREVIEW_ASSET_EXTENSIONS.has(extension) &&
+        !TEXT_REFERENCE_EXTENSIONS.has(extension);
       if (download && input.resource._tag !== "referenced-file") {
         return yield* new AssetPreviewTypeValidationError({ resource: input.resource });
       }
@@ -404,31 +406,38 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
             (cause) => new AssetWorkspaceResolutionError({ resource: input.resource, cause }),
           ),
         );
-      claims = isWorkspaceImagePreviewPath(resolved.relativePath)
-        ? {
-            version: 1,
-            kind: "workspace-file-exact",
-            workspaceRoot: canonicalWorkspaceRoot,
-            relativePath: resolved.relativePath,
-            ...(download ? { download: true } : {}),
-            expiresAt,
-          }
-        : download
+      const isReferencedFile = input.resource._tag === "referenced-file";
+      const referenceExpiry = isReferencedFile
+        ? (yield* Clock.currentTimeMillis) + EXTERNAL_FILE_TOKEN_TTL_MS
+        : expiresAt;
+      if (isReferencedFile) effectiveExpiresAt = referenceExpiry;
+      const isHtmlReference = isReferencedFile && /\.html?$/i.test(resolved.relativePath);
+      claims =
+        isWorkspaceImagePreviewPath(resolved.relativePath) || (isReferencedFile && !isHtmlReference)
           ? {
               version: 1,
               kind: "workspace-file-exact",
               workspaceRoot: canonicalWorkspaceRoot,
               relativePath: resolved.relativePath,
-              download: true,
-              expiresAt,
+              ...(download ? { download: true } : {}),
+              expiresAt: referenceExpiry,
             }
-          : {
-              version: 1,
-              kind: "workspace-file",
-              workspaceRoot: canonicalWorkspaceRoot,
-              baseRelativePath: path.dirname(resolved.relativePath),
-              expiresAt,
-            };
+          : download
+            ? {
+                version: 1,
+                kind: "workspace-file-exact",
+                workspaceRoot: canonicalWorkspaceRoot,
+                relativePath: resolved.relativePath,
+                download: true,
+                expiresAt: referenceExpiry,
+              }
+            : {
+                version: 1,
+                kind: "workspace-file",
+                workspaceRoot: canonicalWorkspaceRoot,
+                baseRelativePath: path.dirname(resolved.relativePath),
+                expiresAt: referenceExpiry,
+              };
       fileName = path.basename(resolved.relativePath);
       break;
     }

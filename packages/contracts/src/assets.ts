@@ -1,6 +1,12 @@
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  EnvironmentId,
+  NonNegativeInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
@@ -12,12 +18,20 @@ import { ToolActivityNativeAppReference } from "./providerRuntime.ts";
 const ASSET_PATH_MAX_LENGTH = 1024;
 
 /** Authored reference carried by messages; it is not an asset URL or a local editor path. */
-export const FileReference = Schema.Struct({
-  threadId: ThreadId,
-  path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
-  line: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
-  column: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
-});
+export const FileReference = Schema.Union([
+  Schema.TaggedStruct("path", {
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
+    line: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+    column: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+  }),
+  Schema.TaggedStruct("attachment", {
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    attachmentId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+  }),
+]);
 export type FileReference = typeof FileReference.Type;
 
 export const ResolvedFileReference = Schema.Struct({

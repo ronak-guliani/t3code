@@ -83,7 +83,11 @@ function titleFor(
     case "insights":
       return "Insights";
     case "file":
-      return surface.relativePath.split("/").at(-1) ?? surface.relativePath;
+      return (
+        surface.reference?.metadata?.name ??
+        surface.relativePath.split(/[\\/]/).at(-1) ??
+        surface.relativePath
+      );
     case "terminal":
       return terminalLabels[surface.resourceId] ?? "Terminal";
     case "pull-request":

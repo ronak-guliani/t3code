@@ -3,11 +3,12 @@ import { randomUUID } from "node:crypto";
 import { symlink } from "node:fs/promises";
 import { ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Path } from "effect";
+import { Clock, Effect, FileSystem, Layer, Path } from "effect";
 
 import { ServerConfig, type ServerConfigShape } from "../config.ts";
 import { ProjectFaviconResolver } from "../project/Services/ProjectFaviconResolver.ts";
 import { ServerSecretStore } from "../auth/Services/ServerSecretStore.ts";
+import { base64UrlEncode, signPayload } from "../auth/utils.ts";
 import { WorkspacePathsLive } from "../workspace/Layers/WorkspacePaths.ts";
 import { ASSET_ROUTE_PREFIX, issueAssetUrl, resolveAsset } from "./AssetAccess.ts";
 
@@ -112,7 +113,7 @@ describe("AssetAccess", () => {
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const externalPath = path.join(outsideRoot, "a report.png");
+        const externalPath = path.join(outsideRoot, "a report café.png");
         yield* fileSystem.writeFile(externalPath, new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
 
         const result = yield* Effect.exit(
@@ -127,25 +128,59 @@ describe("AssetAccess", () => {
         );
         expect(result._tag).toBe("Success");
         if (result._tag === "Success") {
+          expect(result.value.expiresAt).toBeLessThanOrEqual(Date.now() + 5 * 60_000);
           expect(result.value.fileReference).toEqual({
-            name: "a report.png",
+            name: "a report café.png",
             mimeType: "image/png",
             sizeBytes: 4,
             viewMode: "media",
           });
           const token = tokenFromRelativeUrl(result.value.relativeUrl);
-          expect(yield* resolveAsset(token, "a report.png")).toEqual({
+          expect(yield* resolveAsset(token, "a%20report%20caf%C3%A9.png")).toEqual({
             kind: "file",
             path: yield* fileSystem.realPath(externalPath),
           });
+          expect(yield* resolveAsset(token, "sibling.png")).toBeNull();
           const [payload, signature] = token.split(".");
           expect(
             yield* resolveAsset(
               `${payload}.${signature?.startsWith("a") ? "b" : "a"}${signature?.slice(1)}`,
-              "a report.png",
+              "a%20report%20caf%C3%A9.png",
             ),
           ).toBeNull();
         }
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("issues exact short-lived grants for clicked workspace text references", () =>
+    withWorkspace((workspaceRoot) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const target = path.join(workspaceRoot, "src", "index.ts");
+        const sibling = path.join(workspaceRoot, "src", "sibling.ts");
+        yield* fileSystem.makeDirectory(path.dirname(target), { recursive: true });
+        yield* fileSystem.writeFileString(target, "export const value = 1;");
+        yield* fileSystem.writeFileString(sibling, "export const other = 2;");
+
+        const url = yield* issueAssetUrl({
+          resource: {
+            _tag: "referenced-file",
+            threadId: ThreadId.make("thread-1"),
+            path: "src/index.ts",
+            line: 2,
+            column: 5,
+          },
+          workspaceRoot,
+        });
+        const token = tokenFromRelativeUrl(url.relativeUrl);
+        expect(yield* resolveAsset(token, "index.ts")).toEqual({
+          kind: "file",
+          path: yield* fileSystem.realPath(target),
+        });
+        expect(yield* resolveAsset(token, "sibling.ts")).toBeNull();
+        expect(url.expiresAt).toBeLessThanOrEqual(Date.now() + 5 * 60_000);
       }),
     ).pipe(Effect.provide(testLayer)),
   );
@@ -189,6 +224,30 @@ describe("AssetAccess", () => {
           path: yield* fileSystem.realPath(archive),
           forceDownload: true,
         });
+      }),
+    ).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects an expired exact external-file grant", () =>
+    withWorkspace((_workspaceRoot, outsideRoot) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const target = path.join(outsideRoot, "expired.txt");
+        yield* fileSystem.writeFileString(target, "not available");
+        const now = yield* Clock.currentTimeMillis;
+        const payload = base64UrlEncode(
+          JSON.stringify({
+            version: 1,
+            kind: "external-file-exact",
+            absolutePath: target,
+            download: false,
+            expiresAt: now - 1,
+          }),
+        );
+        const token = `${payload}.${signPayload(payload, new Uint8Array(32).fill(1))}`;
+
+        expect(yield* resolveAsset(token, "expired.txt")).toBeNull();
       }),
     ).pipe(Effect.provide(testLayer)),
   );

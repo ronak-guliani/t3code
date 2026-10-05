@@ -58,18 +58,11 @@ import { githubPullRequestNavigation, openPullRequestLink } from "../lib/openPul
 import { usePrimaryEnvironmentId } from "~/environments/primary";
 import { useProjectEntriesQuery } from "./files/projectFilesQueryState";
 import { buildFileParentSuffixByPath } from "../filePathDisambiguation";
-import {
-  isBrowserPreviewFile,
-  isMediaReferenceFile,
-  openFileInPreview,
-} from "~/browser/openFileInPreview";
+import { openFileReference } from "~/browser/openFileReference";
 import { useOpenLink } from "~/browser/useOpenLink";
 import { readEnvironmentApi } from "~/environmentApi";
-import { isPreviewSupportedInRuntime } from "~/previewStateStore";
-import { useRightPanelStore } from "~/rightPanelStore";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { toWorkspaceRelativePath } from "../filePathDisplay";
 import {
   appendStreamingMarkdown,
   beginStreamingMarkdown,
@@ -129,7 +122,7 @@ const MemoizedReactMarkdown = memo(ReactMarkdown);
 const EMPTY_GITHUB_REFERENCES: ReadonlyMap<string, string> = new Map();
 const EMPTY_MARKDOWN_FILE_LINK_META_BY_HREF: ReadonlyMap<string, MarkdownFileLinkMeta> = new Map();
 const isAbsoluteFileReference = (path: string) =>
-  path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || /^\\\\/.test(path);
+  path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
 const MAX_HIGHLIGHT_CACHE_MEMORY_BYTES = 50 * 1024 * 1024;
 const highlightedCodeCache = new LRUCache<string>(
@@ -1062,42 +1055,46 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
 }: MarkdownFileLinkProps) {
   const environmentApi = threadRef ? readEnvironmentApi(threadRef.environmentId) : undefined;
   const openPreview = useAtomCommand(previewEnvironment.open);
+  const navigatePreview = useAtomCommand(previewEnvironment.navigate);
   const handleOpen = useCallback(() => {
     const httpBaseUrl = threadRef ? getEnvironmentHttpBaseUrl(threadRef.environmentId) : null;
-    if (
-      threadRef &&
-      environmentApi &&
-      httpBaseUrl &&
-      isPreviewSupportedInRuntime() &&
-      (isBrowserPreviewFile(filePath) ||
-        (!toWorkspaceRelativePath(filePath, cwd) &&
-          (isMediaReferenceFile(filePath) || isAbsoluteFileReference(filePath))))
-    ) {
-      void openFileInPreview({
+    if (threadRef) {
+      if (!environmentApi || !httpBaseUrl) {
+        toastManager.add({
+          type: "error",
+          title: "Unable to open file",
+          description: "The thread's owning environment is unavailable.",
+        });
+        return;
+      }
+      void openFileReference({
         threadRef,
         filePath,
+        cwd,
         ...(line === undefined ? {} : { line }),
         ...(column === undefined ? {} : { column }),
         httpBaseUrl,
         createAssetUrl: environmentApi.assets.createUrl,
         openPreview,
+        navigatePreview,
       }).catch((error) => {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Unable to open preview",
+            title: "Unable to open file",
             description: error instanceof Error ? error.message : "An error occurred.",
           }),
         );
       });
       return;
     }
-    if (threadRef) {
-      const workspaceRelativePath = toWorkspaceRelativePath(filePath, cwd);
-      if (workspaceRelativePath) {
-        useRightPanelStore.getState().openFile(threadRef, workspaceRelativePath, line);
-        return;
-      }
+    if (isAbsoluteFileReference(filePath)) {
+      toastManager.add({
+        type: "error",
+        title: "Owning environment unavailable",
+        description: "Open this host file from its thread to avoid using a local path.",
+      });
+      return;
     }
     const localApi = readLocalApi();
     if (!localApi) {
@@ -1117,7 +1114,17 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }),
       );
     });
-  }, [cwd, environmentApi, filePath, line, openPreview, targetPath, threadRef]);
+  }, [
+    column,
+    cwd,
+    environmentApi,
+    filePath,
+    line,
+    navigatePreview,
+    openPreview,
+    targetPath,
+    threadRef,
+  ]);
 
   const handleCopy = useCallback((value: string, title: string) => {
     if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
