@@ -53,6 +53,14 @@ describe("toWorkspaceRelativePath", () => {
     );
   });
 
+  it("normalizes workspace-relative references without allowing traversal above the root", () => {
+    expect(toWorkspaceRelativePath("./src/../src/index.ts", "/repo/project")).toBe("src/index.ts");
+    expect(toWorkspaceRelativePath("../outside.ts", "/repo/project")).toBeNull();
+    expect(toWorkspaceRelativePath("src/index.ts", undefined)).toBe("src/index.ts");
+    expect(toWorkspaceRelativePath("src\\index.ts", "C:\\repo\\project")).toBe("src/index.ts");
+    expect(toWorkspaceRelativePath("C:notes.txt", "C:\\repo\\project")).toBeNull();
+  });
+
   it("returns null for files outside the workspace", () => {
     expect(toWorkspaceRelativePath("/Users/other/project/outside.ts", "/repo/project")).toBeNull();
   });

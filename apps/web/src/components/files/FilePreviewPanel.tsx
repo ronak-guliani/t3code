@@ -10,9 +10,17 @@ import {
   LoaderCircle,
   TextWrapIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
-import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
+import { isBrowserPreviewFile, openFileReference } from "~/browser/openFileReference";
 import { ensureEnvironmentApi } from "~/environmentApi";
 import { getEnvironmentHttpBaseUrl } from "~/environments/runtime";
 import { useTheme } from "~/hooks/useTheme";
@@ -38,13 +46,16 @@ import { FileBreadcrumbMenu } from "./FileBreadcrumbMenu";
 import { setMarkdownTaskChecked } from "./filePreviewMode";
 import { getProjectFileSaveSession } from "./projectFileSaveSession";
 import { resolveProjectFileQueryData, useProjectFileQuery } from "./projectFilesQueryState";
+import type { ExternalFileReferenceTarget } from "~/rightPanelStore";
 
 interface FilePreviewPanelProps {
   cwd: string;
   projectName?: string | undefined;
   relativePath: string | null;
+  fileReference?: ExternalFileReferenceTarget;
   threadRef: ScopedThreadRef;
   revealLine?: number | null;
+  revealColumn?: number | null;
   onOpenFile: (relativePath: string) => void;
   onPendingChange?: (relativePath: string, pending: boolean) => void;
   editorPicker?: {
@@ -55,7 +66,217 @@ interface FilePreviewPanelProps {
 
 const FILE_EXPLORER_STORAGE_KEY = "t3code.fileExplorerOpen";
 const FILE_WORD_WRAP_STORAGE_KEY = "t3code.filePreviewWordWrap";
+const MAX_EXTERNAL_TEXT_REFERENCE_BYTES = 1_000_000;
 const NOOP_PENDING_CHANGE = () => {};
+
+async function readBoundedTextResponse(response: Response): Promise<string> {
+  if (!response.ok) throw new Error(`Unable to read this file (HTTP ${response.status}).`);
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_EXTERNAL_TEXT_REFERENCE_BYTES) {
+    throw new Error("This file exceeds the 1 MB read-only preview limit.");
+  }
+  if (!response.body) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > MAX_EXTERNAL_TEXT_REFERENCE_BYTES) {
+      throw new Error("This file exceeds the 1 MB read-only preview limit.");
+    }
+    return text;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_EXTERNAL_TEXT_REFERENCE_BYTES) {
+        await reader.cancel();
+        throw new Error("This file exceeds the 1 MB read-only preview limit.");
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+    chunks.push(decoder.decode());
+    return chunks.join("");
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function FileReferencePanel({
+  threadRef,
+  fileReference,
+  httpBaseUrl,
+  createAssetUrl,
+}: {
+  readonly threadRef: ScopedThreadRef;
+  readonly fileReference: ExternalFileReferenceTarget;
+  readonly httpBaseUrl: string | null;
+  readonly createAssetUrl: ReturnType<typeof ensureEnvironmentApi>["assets"]["createUrl"];
+}) {
+  const [contents, setContents] = useState<string | null>(null);
+  const [name, setName] = useState(fileReference.metadata?.name ?? fileReference.path);
+  const [metadata, setMetadata] = useState(fileReference.metadata);
+  const [assetUrl, setAssetUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setContents(null);
+    try {
+      if (!httpBaseUrl) throw new Error("The owning environment is unavailable.");
+      const asset = await createAssetUrl({
+        resource: {
+          _tag: "referenced-file",
+          threadId: threadRef.threadId,
+          path: fileReference.path,
+        },
+      });
+      const metadata = asset.fileReference;
+      if (!metadata) throw new Error("The environment did not resolve this file reference.");
+      setName(metadata.name);
+      const url = new URL(asset.relativeUrl, httpBaseUrl).toString();
+      setMetadata(metadata);
+      setAssetUrl(url);
+      if (metadata.viewMode === "text") {
+        if (metadata.sizeBytes > MAX_EXTERNAL_TEXT_REFERENCE_BYTES) {
+          throw new Error("This file exceeds the 1 MB read-only preview limit.");
+        }
+        setContents(await readBoundedTextResponse(await fetch(url, { credentials: "omit" })));
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to read this file.");
+    } finally {
+      setLoading(false);
+    }
+  }, [
+    createAssetUrl,
+    fileReference.assetExpiresAt,
+    fileReference.path,
+    httpBaseUrl,
+    threadRef.threadId,
+  ]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea || contents === null || fileReference.line === undefined) return;
+    const lines = contents.split("\n");
+    const lineIndex = Math.max(0, Math.min(lines.length - 1, fileReference.line - 1));
+    const start = lines.slice(0, lineIndex).reduce((offset, line) => offset + line.length + 1, 0);
+    const columnOffset = Math.max(
+      0,
+      Math.min(lines[lineIndex]?.length ?? 0, (fileReference.column ?? 1) - 1),
+    );
+    const position = start + columnOffset;
+    textarea.setSelectionRange(position, Math.min(contents.length, position + 1));
+    textarea.focus({ preventScroll: true });
+    const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 20;
+    textarea.scrollTop = lineIndex * lineHeight;
+  }, [contents, fileReference.column, fileReference.line]);
+
+  return (
+    <section
+      className="flex min-h-0 flex-1 flex-col bg-chat-background"
+      data-external-file-reference
+    >
+      <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border/60 px-3">
+        <span className="truncate text-xs font-medium" title={fileReference.path}>
+          {name}
+        </span>
+        {fileReference.line !== undefined ? (
+          <span className="shrink-0 text-[11px] text-muted-foreground">
+            L{fileReference.line}
+            {fileReference.column === undefined ? "" : `:C${fileReference.column}`}
+          </span>
+        ) : null}
+        <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">Read only</span>
+        <button
+          type="button"
+          className="shrink-0 rounded px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          onClick={() => void load()}
+          aria-label="Refresh file reference"
+        >
+          Refresh
+        </button>
+      </header>
+      {error ? (
+        <div
+          className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-xs text-destructive"
+          role="alert"
+        >
+          <span>{error}</span>
+          <button
+            type="button"
+            className="rounded border border-border px-3 py-1.5 text-foreground"
+            onClick={() => void load()}
+          >
+            Retry
+          </button>
+          {assetUrl ? (
+            <a className="underline" href={assetUrl} download={name}>
+              Download file
+            </a>
+          ) : null}
+        </div>
+      ) : loading ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground">
+          <LoaderCircle className="size-5 animate-spin" />
+        </div>
+      ) : metadata?.viewMode === "text" ? (
+        <textarea
+          ref={textareaRef}
+          aria-label="External file contents"
+          className="min-h-0 flex-1 resize-none overflow-auto bg-transparent p-4 font-mono text-xs leading-5 text-foreground outline-none"
+          readOnly
+          spellCheck={false}
+          value={contents ?? ""}
+        />
+      ) : metadata?.viewMode === "html" && assetUrl ? (
+        <iframe
+          src={assetUrl}
+          title={name}
+          sandbox="allow-scripts"
+          referrerPolicy="no-referrer"
+          className="min-h-0 flex-1 border-0 bg-white"
+        />
+      ) : metadata?.viewMode === "document" && assetUrl ? (
+        <iframe src={assetUrl} title={name} className="min-h-0 flex-1 border-0 bg-white" />
+      ) : metadata?.viewMode === "media" && assetUrl ? (
+        metadata.mimeType.startsWith("image/") ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
+            <img src={assetUrl} alt={name} className="max-h-full max-w-full object-contain" />
+          </div>
+        ) : metadata.mimeType.startsWith("video/") ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-4">
+            <video src={assetUrl} controls className="max-h-full max-w-full" />
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-4">
+            <audio src={assetUrl} controls />
+          </div>
+        )
+      ) : metadata?.viewMode === "download" && assetUrl ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center">
+          <a
+            className="rounded border border-border px-4 py-2 text-sm hover:bg-accent"
+            href={assetUrl}
+            download={name}
+          >
+            Download {name}
+          </a>
+        </div>
+      ) : null}
+    </section>
+  );
+}
 
 function stripQueryAndFragment(path: string): string {
   return path.split(/[?#]/, 1)[0] ?? "";
@@ -81,6 +302,7 @@ interface EditableFileSurfaceProps {
   resolvedTheme: "light" | "dark";
   onPendingChange: (relativePath: string, pending: boolean) => void;
   revealLine?: number | null;
+  revealColumn?: number | null;
   wordWrap: boolean;
 }
 
@@ -92,6 +314,7 @@ function EditableFileSurface({
   resolvedTheme,
   onPendingChange,
   revealLine = null,
+  revealColumn = null,
   wordWrap,
 }: EditableFileSurfaceProps) {
   const saveSession = useMemo(
@@ -137,8 +360,8 @@ function EditableFileSurface({
       try {
         editor.setSelections([
           {
-            start: { line, character: 0 },
-            end: { line, character: 0 },
+            start: { line, character: Math.max(0, (revealColumn ?? 1) - 1) },
+            end: { line, character: Math.max(0, (revealColumn ?? 1) - 1) },
             direction: "none",
           },
         ]);
@@ -157,7 +380,7 @@ function EditableFileSurface({
       window.clearTimeout(retryTimer);
       window.clearTimeout(timeout);
     };
-  }, [editor, revealLine]);
+  }, [editor, revealColumn, revealLine]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -392,7 +615,9 @@ export function FilePreviewPanel({
   cwd,
   projectName: projectNameProp,
   relativePath,
+  fileReference,
   revealLine = null,
+  revealColumn = null,
   onOpenFile,
   onPendingChange = NOOP_PENDING_CHANGE,
   editorPicker,
@@ -403,6 +628,7 @@ export function FilePreviewPanel({
   const { copyToClipboard } = useCopyToClipboard();
   const file = useProjectFileQuery(environmentId, cwd, relativePath);
   const openPreview = useAtomCommand(previewEnvironment.open);
+  const navigatePreview = useAtomCommand(previewEnvironment.navigate);
   const environmentApi = ensureEnvironmentApi(environmentId);
   const [explorerOpen, setExplorerOpen] = useState(initialExplorerOpen);
   const [renderMarkdown, setRenderMarkdown] = useState(true);
@@ -455,14 +681,27 @@ export function FilePreviewPanel({
     isBrowserPreviewFile(relativePath) &&
     httpBaseUrl
       ? () =>
-          void openFileInPreview({
+          void openFileReference({
             threadRef,
-            relativePath,
+            cwd,
+            filePath: relativePath,
             httpBaseUrl,
             createAssetUrl: environmentApi.assets.createUrl,
             openPreview,
+            navigatePreview,
           })
       : null;
+
+  if (fileReference) {
+    return (
+      <FileReferencePanel
+        threadRef={threadRef}
+        fileReference={fileReference}
+        httpBaseUrl={httpBaseUrl}
+        createAssetUrl={environmentApi.assets.createUrl}
+      />
+    );
+  }
 
   return (
     <div
@@ -683,6 +922,7 @@ export function FilePreviewPanel({
                 resolvedTheme={resolvedTheme}
                 onPendingChange={onPendingChange}
                 revealLine={revealLine}
+                revealColumn={revealColumn}
                 wordWrap={wordWrap}
               />
             )

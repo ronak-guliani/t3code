@@ -539,10 +539,14 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               (admittedCommand.type === "thread.delegation.settle" ||
                 admittedCommand.type === "thread.queue.hold" ||
                 admittedCommand.type === "thread.queue.release" ||
+                admittedCommand.type === "thread.queued-turn.delete" ||
                 admittedCommand.type === "thread.child.wait.prune" ||
                 (admittedCommand.type === "thread.meta.update" &&
                   (admittedCommand.expectedUpdatedAt !== undefined ||
-                    admittedCommand.expectedWorkspaceCwd !== undefined)))
+                    admittedCommand.expectedArchivedAt !== undefined ||
+                    admittedCommand.expectedWorkspaceCwd !== undefined ||
+                    admittedCommand.expectedPendingPullRequestAssociationRequestId !== undefined ||
+                    admittedCommand.expectedPullRequestAssociationContext !== undefined)))
             ) {
               yield* commandReceiptRepository.upsert({
                 commandId: command.commandId,

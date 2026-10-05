@@ -15,13 +15,17 @@ import type { LegendListRef } from "@legendapp/list/react";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
+import type { OpenAttachmentReferenceInput } from "~/browser/openFileReference";
 
 const scrollToEndSpy = vi.fn();
 const getStateSpy = vi.fn(() => ({ isAtEnd: true }));
 const createAssetUrlMock = vi.hoisted(() =>
   vi.fn(async () => ({ relativeUrl: "/assets/signed/abc123" })),
 );
+const openFileReferenceMock = vi.hoisted(() => vi.fn());
 const toastAddMock = vi.hoisted(() => vi.fn());
+
+vi.mock("~/browser/openFileReference", () => ({ openFileReference: openFileReferenceMock }));
 
 vi.mock("../ui/toast", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../ui/toast")>()),
@@ -1401,6 +1405,16 @@ describe("MessagesTimeline", () => {
 
   it("opens message attachments staged outside the workspace", async () => {
     const props = buildProps();
+    const threadRef = scopeThreadRef(props.activeThreadEnvironmentId, props.activeThreadId);
+    openFileReferenceMock.mockImplementationOnce(async (input: OpenAttachmentReferenceInput) => {
+      input.onOpenGallery(
+        input.attachments.map((image, index) => ({
+          ...image,
+          previewUrl: `http://localhost:3773/assets/signed/${index ? "def456" : "abc123"}`,
+        })),
+        input.selectedAttachmentId,
+      );
+    });
     const screen = await render(
       <MessagesTimeline
         {...props}
@@ -1432,15 +1446,17 @@ describe("MessagesTimeline", () => {
     try {
       await page.getByRole("button", { name: "Open shot.png" }).click();
       await vi.waitFor(() => {
-        expect(createAssetUrlMock).toHaveBeenCalledWith({
-          resource: {
-            _tag: "attachment",
-            attachmentId: "thread-1-abc123",
-            fileName: "shot.png",
-            mimeType: "image/png",
-            disposition: "inline",
-          },
-        });
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: "attachments",
+            threadRef,
+            selectedAttachmentId: "thread-1-abc123",
+            attachments: [expect.objectContaining({ id: "thread-1-abc123", name: "shot.png" })],
+            createAssetUrl: expect.any(Function),
+            httpBaseUrl: "http://localhost:3773",
+            onOpenGallery: expect.any(Function),
+          }),
+        );
       });
       expect(props.onImageExpand).toHaveBeenCalledWith({
         images: [{ src: "http://localhost:3773/assets/signed/abc123", name: "shot.png" }],
@@ -1451,8 +1467,64 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("opens tool-result file cards through the owning-thread file-reference boundary", async () => {
+    const props = buildProps();
+    const threadRef = scopeThreadRef(props.activeThreadEnvironmentId, props.activeThreadId);
+    openFileReferenceMock.mockResolvedValueOnce({ _tag: "Success", value: undefined });
+    const createdAt = "2026-09-08T10:00:00.000Z";
+    const turnId = TurnId.make("file-change-turn");
+    const filePath = "/tmp/tool-output notes.ts";
+    const screen = await render(
+      <MessagesTimeline
+        {...props}
+        activeTurnId={turnId}
+        activeTurnInProgress
+        isWorking
+        activeTurnStartedAt={createdAt}
+        timelineEntries={[
+          {
+            id: "file-change-1",
+            kind: "work",
+            createdAt,
+            entry: {
+              id: "file-change-1",
+              createdAt,
+              turnId,
+              sourceActivityKind: "tool.completed",
+              label: "Edit file",
+              tone: "tool",
+              detail: "Updated source file",
+              changedFiles: [filePath],
+              toolLifecycleStatus: "completed",
+              isComplete: true,
+            },
+          },
+        ]}
+      />,
+    );
+    try {
+      await page.getByRole("button", { name: /Expand details:/ }).click();
+      await page.getByRole("button", { name: `Open file ${filePath}` }).click();
+      await vi.waitFor(() => {
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            threadRef,
+            filePath,
+            cwd: props.workspaceRoot,
+            httpBaseUrl: "http://localhost:3773",
+            createAssetUrl: expect.any(Function),
+            openPreview: expect.any(Function),
+            navigatePreview: expect.any(Function),
+          }),
+        );
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("reports the real error when the clicked attachment fails to load", async () => {
-    createAssetUrlMock.mockRejectedValueOnce(new Error("boom"));
+    openFileReferenceMock.mockRejectedValueOnce(new Error("boom"));
     const props = buildProps();
     const screen = await render(
       <MessagesTimeline
