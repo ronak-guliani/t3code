@@ -994,7 +994,11 @@ function createSnapshotWithSecondaryProject(options?: {
   };
 }
 
-function createSnapshotWithPendingUserInput(): OrchestrationReadModel {
+function createSnapshotWithPendingUserInput(
+  options: {
+    readonly multiSelect?: boolean;
+  } = {},
+): OrchestrationReadModel {
   const snapshot = createSnapshotForTargetUser({
     targetMessageId: "msg-user-pending-input-target" as MessageId,
     targetText: "question thread",
@@ -1046,6 +1050,7 @@ function createSnapshotWithPendingUserInput(): OrchestrationReadModel {
                       ],
                     },
                   ],
+                  ...(options.multiSelect ? { multiSelect: true } : {}),
                 },
                 turnId: null,
                 sequence: 1,
@@ -1520,6 +1525,21 @@ async function waitForButtonContainingText(text: string): Promise<HTMLButtonElem
   return waitForElement(
     () => findButtonContainingText(text),
     `Unable to find button containing "${text}".`,
+  );
+}
+
+// Spelled "Next" / "Submit" when the footer is compact and "Next question" /
+// "Submit answers" when it is not, so select the action by its stable hook.
+function findPendingFooterActionButton(): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>('[data-pending-user-input-action="true"]');
+}
+
+async function waitForEnabledPendingFooterActionButton(): Promise<void> {
+  await vi.waitFor(
+    () => {
+      expect(findPendingFooterActionButton()?.disabled).toBe(false);
+    },
+    { timeout: 8_000, interval: 16 },
   );
 }
 
@@ -7668,6 +7688,158 @@ describe("ChatView timeline estimator parity (full app)", () => {
           });
         },
         { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("responds once when a footer submit races the single-select auto-advance", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput(),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return {
+            sequence: fixture.snapshot.snapshotSequence + 1,
+          };
+        }
+        return undefined;
+      },
+    });
+
+    const respondRequests = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          request.type === "thread.user-input.respond",
+      );
+
+    try {
+      (await waitForButtonContainingText("Tight")).click();
+
+      // Land on the final question, answer it, then submit by hand inside the
+      // 200ms auto-advance window instead of waiting for it.
+      (await waitForButtonContainingText("Conservative")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(respondRequests()).toMatchObject([
+            {
+              requestId: "req-browser-user-input",
+              answers: { scope: "Tight", risk: "Conservative" },
+            },
+          ]);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // The trailing auto-advance must not dispatch a second response for the
+      // same request; the server rejects that as an unknown request id.
+      await new Promise((resolve) => window.setTimeout(resolve, 600));
+      expect(respondRequests()).toHaveLength(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("locks the pending user input options while a response is in flight", async () => {
+    const releaseDispatches: Array<() => void> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({ multiSelect: true }),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return new Promise((resolve) => {
+            releaseDispatches.push(() =>
+              resolve({ sequence: fixture.snapshot.snapshotSequence + 1 }),
+            );
+          });
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      // Multi-select never auto-advances, so both questions are answered by
+      // hand before the response is submitted.
+      (await waitForButtonContainingText("Tight")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      (await waitForButtonContainingText("Conservative")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(findButtonContainingText("Balanced")?.disabled).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      for (const release of releaseDispatches) {
+        release();
+      }
+      await mounted.cleanup();
+    }
+  });
+
+  it("lets a failed user input response be retried", async () => {
+    let respondAttempts = 0;
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({ multiSelect: true }),
+      resolveRpc: (body) => {
+        if (
+          body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          body.type === "thread.user-input.respond"
+        ) {
+          respondAttempts += 1;
+          return respondAttempts === 1
+            ? Promise.reject(new Error("socket closed"))
+            : { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        return undefined;
+      },
+    });
+
+    const respondRequests = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          request.type === "thread.user-input.respond",
+      );
+
+    try {
+      (await waitForButtonContainingText("Tight")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      (await waitForButtonContainingText("Conservative")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(respondRequests()).toHaveLength(1);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // A rejected dispatch never reached the provider, so the question is
+      // still open and Submitting again has to actually reach the provider
+      // rather than being swallowed as a duplicate response.
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(respondRequests()).toHaveLength(2);
+        },
+        { timeout: 4_000, interval: 16 },
       );
     } finally {
       await mounted.cleanup();

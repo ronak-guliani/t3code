@@ -944,6 +944,9 @@ function ChatViewBody(
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
+  // Single slot: only one request can be active in the composer, and a new
+  // request id never matches the answered one.
+  const respondedUserInputRequestIdRef = useRef<ApprovalRequestId | null>(null);
   const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
     Record<string, Record<string, PendingUserInputDraftAnswer>>
   >({});
@@ -4229,25 +4232,44 @@ function ChatViewBody(
       const api = readEnvironmentApi(environmentId);
       if (!api || !activeThreadId) return;
 
+      // A pending request accepts exactly one response. Claim it synchronously
+      // before awaiting anything: a single-select option click arms a short
+      // auto-advance timer, so a manual submit, the Enter key and the mobile
+      // send arrow can all reach this funnel for the same request. The provider
+      // consumes the request id on the first response and rejects the rest as
+      // unknown, which clears the form as if it had gone missing.
+      if (respondedUserInputRequestIdRef.current === requestId) {
+        return;
+      }
+      respondedUserInputRequestIdRef.current = requestId;
+
       setRespondingUserInputRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
-      await api.orchestration
-        .dispatchCommand({
+      let submissionFailed = false;
+      try {
+        await api.orchestration.dispatchCommand({
           type: "thread.user-input.respond",
           commandId: newCommandId(),
           threadId: activeThreadId,
           requestId,
           answers,
           createdAt: new Date().toISOString(),
-        })
-        .catch((err: unknown) => {
-          setThreadError(
-            activeThreadId,
-            err instanceof Error ? err.message : "Failed to submit user input.",
-          );
         });
+      } catch (err: unknown) {
+        submissionFailed = true;
+        setThreadError(
+          activeThreadId,
+          err instanceof Error ? err.message : "Failed to submit user input.",
+        );
+      }
       setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
+      // A rejected dispatch never reached the provider, so the question is still
+      // open. Release the claim once the responding state is cleared, otherwise
+      // every retry is discarded as a duplicate and the provider waits forever.
+      if (submissionFailed && respondedUserInputRequestIdRef.current === requestId) {
+        respondedUserInputRequestIdRef.current = null;
+      }
     },
     [activeThreadId, environmentId, setThreadError],
   );
@@ -5638,6 +5660,7 @@ function ChatViewBody(
                     activePendingDraftAnswers={activePendingDraftAnswers}
                     activePendingQuestionIndex={activePendingQuestionIndex}
                     respondingRequestIds={respondingRequestIds}
+                    respondingUserInputRequestIds={respondingUserInputRequestIds}
                     showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                     activeProposedPlan={activeProposedPlan}
                     activePlan={activePlan}
