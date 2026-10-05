@@ -1,6 +1,7 @@
 import {
   DEFAULT_LOCATOR_CANDIDATE_LIMIT,
   DEFAULT_SNAPSHOT_MAX_CONSOLE_ENTRIES,
+  DEFAULT_SNAPSHOT_MAX_ACTION_TIMELINE_ENTRIES,
   DEFAULT_SNAPSHOT_MAX_INTERACTIVE_ELEMENTS,
   DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES,
   DEFAULT_SNAPSHOT_MAX_SCREENSHOT_EDGE,
@@ -169,6 +170,10 @@ export function applySnapshotBudgets(
     accessibilityTree: budgets.includeAccessibilityTree ? snapshot.accessibilityTree : null,
     consoleEntries,
     networkEntries,
+    actionTimeline:
+      snapshot.actionTimeline.length > DEFAULT_SNAPSHOT_MAX_ACTION_TIMELINE_ENTRIES
+        ? snapshot.actionTimeline.slice(-DEFAULT_SNAPSHOT_MAX_ACTION_TIMELINE_ENTRIES)
+        : snapshot.actionTimeline,
     diagnosticsSummary,
   };
 }

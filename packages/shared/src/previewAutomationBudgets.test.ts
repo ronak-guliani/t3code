@@ -109,6 +109,37 @@ describe("previewAutomationBudgets", () => {
     expect(snapshot.diagnosticsSummary).toContain("latestError: boom");
   });
 
+  it("keeps small action timelines unchanged and retains only the newest entries", () => {
+    const action = (id: number) => ({
+      id: String(id),
+      action: "click",
+      status: "succeeded" as const,
+      startedAt: `t${id}`,
+    });
+    const smallTimeline = [action(0), action(1)];
+    const snapshot = (actionTimeline: ReturnType<typeof action>[]) =>
+      applySnapshotBudgets(
+        {
+          url: "https://example.com",
+          title: "Example",
+          loading: false,
+          visibleText: "",
+          interactiveElements: [],
+          accessibilityTree: null,
+          consoleEntries: [],
+          networkEntries: [],
+          actionTimeline,
+          screenshot: { mimeType: "image/png" as const, data: "", width: 0, height: 0 },
+        },
+        resolveSnapshotBudgets({}),
+      );
+
+    expect(snapshot(smallTimeline).actionTimeline).toBe(smallTimeline);
+
+    const timeline = Array.from({ length: 80 }, (_, id) => action(id));
+    expect(snapshot(timeline).actionTimeline).toEqual(timeline.slice(-40));
+  });
+
   it("returns small metadata unchanged by the final text budget", () => {
     const metadata = { url: "https://example.com", visibleText: "hello" };
     expect(enforceFinalSnapshotTextBudget(metadata, 60_000)).toBe(metadata);
