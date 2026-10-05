@@ -118,6 +118,10 @@ const PI_REQUEST_TIMEOUT_MS = 15_000;
 // language servers before Pi answers.
 const PI_SESSION_TIMEOUT_MS = 60_000;
 const PI_SKILL_DISCOVERY_TIMEOUT_MS = 4_000;
+// A materialized fork's snapshot is inert but not yet unreferenced: the
+// durable resume cursor stops naming it only once the caller persists the
+// session Pi forked from it.
+const PI_FORK_SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PI_UNSOLICITED_ACTIVITY_ERROR =
   "Pi started agent work outside an active T3 turn. The session was stopped to prevent invisible tool execution.";
 // Pi's own error text tells the user what to fix (a missing API key, an
@@ -132,11 +136,21 @@ const PI_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "
  * in this session file, the session-tree id of the turn's first user message:
  * `""` when the turn added none (a `/compact` or a rejected prompt) and `null`
  * when it could not be read.
+ *
+ * `pendingFork` marks `sessionFile` as a T3-owned snapshot of a source thread's
+ * session file rather than a live Pi session: the fork is materialized by the
+ * first `startSession`, which launches Pi with `--fork` instead of `--session`
+ * and re-roots at `entryId` when the fork dropped turns.
  */
 const PiResumeCursor = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   sessionFile: TrimmedNonEmptyString,
   turnEntryIds: Schema.Array(Schema.NullOr(Schema.String)),
+  pendingFork: Schema.optional(
+    Schema.Struct({
+      entryId: Schema.NullOr(Schema.String),
+    }),
+  ),
 });
 type PiResumeCursor = typeof PiResumeCursor.Type;
 const decodePiResumeCursor = Schema.decodeUnknownOption(PiResumeCursor);
@@ -530,6 +544,54 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       turnEntryIds: [...ctx.turnEntryIds],
     });
 
+    /**
+     * T3-owned copy of a Pi session file for a fork that has not materialized
+     * yet. It lives in the state directory so a restart between the fork and
+     * the fork's first turn can still materialize it, and outside Pi's session
+     * directory so Pi never lists or resumes it.
+     *
+     * The copy outlives materialization: Pi has already forked it by the time
+     * the fork's first session starts, but the durable resume cursor only
+     * stops naming the snapshot once the caller has persisted the session it
+     * got back. A crash in that window must stay retryable, so snapshots are
+     * swept by age instead of deleted at materialization.
+     */
+    const snapshotPiSessionFile = (sourceFile: string) =>
+      Effect.gen(function* () {
+        const dir = path.join(serverConfig.stateDir, "pi-fork-snapshots");
+        const snapshot = path.join(dir, `${yield* randomId}.jsonl`);
+        yield* fileSystem.makeDirectory(dir, { recursive: true });
+        yield* fileSystem.copyFile(sourceFile, snapshot);
+        yield* sweepPiForkSnapshots(dir);
+        return snapshot;
+      }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session/fork",
+              detail: `Failed to snapshot Pi's session file: ${cause.message}`,
+            }),
+        ),
+      );
+
+    /** Drops fork snapshots old enough that no live fork can still claim one. */
+    const sweepPiForkSnapshots = (dir: string) =>
+      Effect.gen(function* () {
+        const names = yield* fileSystem.readDirectory(dir).pipe(Effect.orElseSucceed(() => []));
+        const cutoff = Date.now() - PI_FORK_SNAPSHOT_TTL_MS;
+        for (const entry of names) {
+          const file = path.join(dir, entry);
+          const mtime = yield* fileSystem.stat(file).pipe(
+            Effect.map((info) => Option.getOrUndefined(info.mtime)),
+            Effect.orElseSucceed(() => undefined),
+          );
+          if (mtime !== undefined && mtime.getTime() < cutoff) {
+            yield* fileSystem.remove(file).pipe(Effect.ignore);
+          }
+        }
+      }).pipe(Effect.ignore);
+
     const updateSession = (ctx: PiSessionContext, patch: Partial<ProviderSession>) =>
       Effect.gen(function* () {
         ctx.session = {
@@ -902,6 +964,30 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         // so its first user entry could belong to an earlier turn.
         if (cursorWasStale) return null;
         return firstUserEntryId(recordField(data, "entries")) ?? "";
+      });
+
+    /**
+     * The user entry a turn that has not settled has already written. The scan
+     * is bounded by the previous settled turn's entry, so the window cannot
+     * reach back into an earlier turn, and its first user entry is this turn's
+     * prompt. `undefined` when that boundary cannot be trusted or Pi cannot be
+     * asked. The session's leaf cursor is left alone so the turn's own
+     * settlement still captures the same entry.
+     */
+    const readUnsettledTurnEntryId = (ctx: PiSessionContext, entryIndex: number) =>
+      Effect.gen(function* () {
+        const settledBefore = ctx.turnEntryIds
+          .slice(0, entryIndex)
+          .findLast((entryId) => typeof entryId === "string" && entryId.length > 0);
+        const since =
+          settledBefore ?? (ctx.leafCursorStale ? undefined : (ctx.lastKnownLeaf ?? undefined));
+        if (since === undefined) return undefined;
+        const data = yield* request(ctx, { type: "get_entries", since }).pipe(
+          Effect.orElseSucceed(() => undefined),
+        );
+        return data === undefined
+          ? undefined
+          : (firstUserEntryId(recordField(data, "entries")) ?? "");
       });
 
     const finalizeTurn = (ctx: PiSessionContext, readUsage = true) =>
@@ -1552,6 +1638,19 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               ? requestedCursor
               : undefined;
 
+          // A pending fork's snapshot is the whole point of this thread's
+          // context, so a lost snapshot must not silently start an empty
+          // session under a transcript that claims otherwise.
+          if (requestedCursor?.pendingFork !== undefined && resumeCursor === undefined) {
+            return yield* new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: input.threadId,
+              detail:
+                "This chat's Pi fork snapshot is missing, so its earlier context cannot be restored. Fork the source chat again.",
+            });
+          }
+          const pendingFork = resumeCursor?.pendingFork;
+
           const mcpSession = yield* McpSessionRegistry.readActiveMcpProviderSession(
             input.threadId,
             boundInstanceId,
@@ -1568,7 +1667,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             command: piSettings.binaryPath || "pi",
             args: [
               ...launch.args,
-              ...(resumeCursor === undefined ? [] : ["--session", resumeCursor.sessionFile]),
+              // `--fork` makes Pi copy the snapshot into its own session
+              // directory and continue in the copy, so this start doubles as
+              // the fork's materialization.
+              ...(resumeCursor === undefined
+                ? []
+                : [pendingFork === undefined ? "--session" : "--fork", resumeCursor.sessionFile]),
             ],
             cwd,
             env: launch.env,
@@ -1643,12 +1747,31 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           yield* Effect.gen(function* () {
             // The first request is the startup handshake, so its failure is a
             // failed start. The PiRpcError cause keeps the `get_state` operation.
-            const stateData = yield* request(
-              ctx,
-              { type: "get_state" },
-              PI_SESSION_TIMEOUT_MS,
-            ).pipe(Effect.mapError(processError("Pi did not finish starting.")));
-            // --session takes a file path, not Pi's display session UUID.
+            let stateData = yield* request(ctx, { type: "get_state" }, PI_SESSION_TIMEOUT_MS).pipe(
+              Effect.mapError(processError("Pi did not finish starting.")),
+            );
+            if (pendingFork !== undefined && pendingFork.entryId !== null) {
+              // Re-root the materialized fork at the first turn it drops. Pi
+              // answers with a new session file, so the state is read again
+              // before it is used: the fork carries the branch's own model.
+              const forked = yield* request(
+                ctx,
+                { type: "fork", entryId: pendingFork.entryId },
+                PI_SESSION_TIMEOUT_MS,
+              ).pipe(Effect.mapError(processError("Pi could not fork this chat's session.")));
+              if (recordField(forked, "cancelled") === true) {
+                return yield* new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: "A Pi extension cancelled this chat's session fork.",
+                });
+              }
+              stateData = yield* request(ctx, { type: "get_state" }).pipe(
+                Effect.mapError(processError("Pi did not report the forked session file.")),
+              );
+            }
+            // --session and --fork both take a file path, not Pi's display
+            // session UUID.
             const sessionFile = recordString(stateData, "sessionFile");
             if (sessionFile === undefined) {
               return yield* new ProviderAdapterProcessError({
@@ -1657,10 +1780,20 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                 detail: "Pi did not report a persisted session file.",
               });
             }
+            if (pendingFork !== undefined) {
+              if (sessionFile === resumeCursor?.sessionFile) {
+                return yield* new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: "Pi did not create a session file for this chat's fork.",
+                });
+              }
+            }
             if (sessionFile !== ctx.sessionFile) {
-              // Turn boundaries belong to the file they were read from.
+              // Turn boundaries belong to the file they were read from, except
+              // a pending fork's: they describe the same turns in Pi's copy.
               ctx.sessionFile = sessionFile;
-              ctx.turnEntryIds = [];
+              if (pendingFork === undefined) ctx.turnEntryIds = [];
             }
             const stateModel = recordField(stateData, "model");
             rememberContextWindow(ctx, stateModel);
@@ -2145,13 +2278,6 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           }
 
           const source = yield* requireSession(input.sourceThreadId);
-          if (source.activeTurn !== null) {
-            return yield* new ProviderAdapterValidationError({
-              provider: PROVIDER,
-              operation: "forkSession",
-              issue: "Cannot fork while a Pi turn is active.",
-            });
-          }
           const sourceFile = source.sessionFile.trim();
           if (sourceFile.length === 0) {
             return yield* new ProviderAdapterRequestError({
@@ -2159,6 +2285,17 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               method: "session/fork",
               detail: "Pi fork source has no session file.",
             });
+          }
+
+          // A turn records its user entry when it settles, so a turn that is
+          // streaming right now has no boundary yet and every anchored fork
+          // would reject on it. Resolve it from the live session instead: Pi
+          // writes the entry when it accepts the prompt, long before the turn
+          // settles, and the turn's own settlement re-reads the same entry.
+          const activeTurn = source.activeTurn;
+          if (activeTurn !== null && source.turnEntryIds[activeTurn.entryIndex] === null) {
+            const entryId = yield* readUnsettledTurnEntryId(source, activeTurn.entryIndex);
+            if (entryId !== undefined) source.turnEntryIds[activeTurn.entryIndex] = entryId;
           }
 
           let forkEntryId: string | null | undefined = null;
@@ -2192,61 +2329,16 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             forkedTurnEntryIds = source.turnEntryIds.slice(0, turnIndex + 1);
           }
 
-          const resolvedLaunchArgs = resolvePiLaunchArgs(piSettings.launchArgs);
-          if (!resolvedLaunchArgs.ok) {
-            return yield* new ProviderAdapterValidationError({
-              provider: PROVIDER,
-              operation: "forkSession",
-              issue: resolvedLaunchArgs.message,
-            });
-          }
           const cwd = path.resolve(input.cwd?.trim() || source.session.cwd || serverConfig.cwd);
-          const launch = buildPiRpcLaunch({
-            launchArgs: resolvedLaunchArgs.args,
-            environment: baseEnvironment,
-            mcpSession: undefined,
-            extensionPath: undefined,
-            disableExtensions: true,
-            disableTools: true,
-          });
-          const forked = yield* Effect.scoped(
-            Effect.gen(function* () {
-              const connection = yield* makePiRpcConnection({
-                command: piSettings.binaryPath || "pi",
-                args: [...launch.args, "--fork", sourceFile],
-                cwd,
-                env: launch.env,
-              }).pipe(Effect.mapError(requestError("session/fork")));
-              if (forkEntryId !== null && forkEntryId !== undefined) {
-                const result = yield* connection
-                  .request({ type: "fork", entryId: forkEntryId }, PI_SESSION_TIMEOUT_MS)
-                  .pipe(Effect.mapError(requestError("session/fork")));
-                if (recordField(result, "cancelled") === true) {
-                  return yield* new ProviderAdapterRequestError({
-                    provider: PROVIDER,
-                    method: "session/fork",
-                    detail: "A Pi extension cancelled the session fork.",
-                  });
-                }
-              }
-              const state = yield* connection
-                .request({ type: "get_state" }, PI_SESSION_TIMEOUT_MS)
-                .pipe(Effect.mapError(requestError("session/fork")));
-              const sessionFile = recordString(state, "sessionFile");
-              if (sessionFile === undefined || sessionFile === sourceFile) {
-                return yield* new ProviderAdapterRequestError({
-                  provider: PROVIDER,
-                  method: "session/fork",
-                  detail: "Pi fork did not create a distinct session file.",
-                });
-              }
-              // The forked state is reopened as a fresh adapter session. Its
-              // model and thinking caches start unset and are re-read/applied
-              // by startSession rather than inherited from the source process.
-              return sessionFile;
-            }),
-          ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
-
+          // Forking does not run Pi. The source file is copied so the fork stays
+          // pinned to this moment even as the source keeps streaming, and so no
+          // Pi process has to load the whole session twice: `startSession`
+          // materializes the fork with the spawn it already performs. A copy
+          // taken mid-append can end in a partial line, which Pi's session
+          // loader drops, so the snapshot is always parseable.
+          // ponytail: snapshots of forks that are never sent to are left in
+          // stateDir; sweep them by age if that ever accumulates.
+          const snapshot = yield* snapshotPiSessionFile(sourceFile);
           const now = yield* nowIso;
           const modelSelection = input.modelSelection;
           const model =
@@ -2263,8 +2355,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             threadId: input.threadId,
             resumeCursor: {
               schemaVersion: 1,
-              sessionFile: forked,
+              sessionFile: snapshot,
               turnEntryIds: forkedTurnEntryIds,
+              pendingFork: { entryId: forkEntryId ?? null },
             },
             createdAt: now,
             updatedAt: now,

@@ -912,17 +912,6 @@ const make = Effect.gen(function* () {
       );
     }
 
-    if (
-      sourceSession.status === "running" ||
-      sourceSession.activeTurnId !== null ||
-      sourceThread.latestTurn?.state === "running"
-    ) {
-      return yield* failFork(
-        "Provider fork unavailable",
-        "Source run status is 'running'; only provider-finished runs can be forked.",
-      );
-    }
-
     const capabilities = yield* providerService.getCapabilities(
       sourceSession.providerInstanceId ?? ProviderInstanceId.make(sourceSession.providerName),
     );
