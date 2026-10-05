@@ -178,7 +178,12 @@ function ComposerThreadDecorator(props: {
       onRemove={() => {
         if (!editor.isEditable()) return;
         editor.update(() => {
-          $getNodeByKey(props.nodeKey)?.remove();
+          const node = $getNodeByKey(props.nodeKey);
+          const next = node?.getNextSibling();
+          if ($isTextNode(next) && /^\s/.test(next.getTextContent())) {
+            next.spliceText(0, 1, "");
+          }
+          node?.remove();
         });
       }}
     />
