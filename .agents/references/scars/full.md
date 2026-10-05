@@ -56,6 +56,8 @@
 
 ## Desktop packaging and React state
 
+- Vite real-client probes must import the app's already-loaded module URL, including its HMR query, and use production selectors; an unversioned import can create a second empty store. Increase the resource-timing buffer before deriving module URLs from its entries.
+
 - Gate Windows caption-button clearance on an open inline panel, not on the permanent toggle rail; the rail alone is narrower than the caption controls.
 
 - Agent-managed terminal starts/restarts must register without opening the drawer or stealing selection. Worklog shortcuts must resolve explicit IDs against live metadata scoped to the environment and thread, not persisted UI IDs; retained foreground commands can run as the PTY root with no child subprocess, so use session status rather than child activity to determine whether their terminal is live.
