@@ -269,7 +269,10 @@
     --secondary: --alpha(var(--color-white) / 4%);
     --secondary-foreground: var(--color-neutral-100);
     --muted: --alpha(var(--color-white) / 4%);
-    --sunken: color-mix(in srgb, var(--color-black) 32%, var(--chat-background));
+    /* On a near-black canvas there is no room below the page to sink into, so in
+       dark the well is the chat background itself and only light mode gets a
+       visible step. */
+    --sunken: var(--chat-background);
     --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
     --accent: --alpha(var(--color-white) / 4%);
     --accent-foreground: var(--color-neutral-100);

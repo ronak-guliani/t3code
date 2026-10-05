@@ -45,7 +45,11 @@ import { useTheme } from "../hooks/useTheme";
 import { buildPatchCacheKey } from "../lib/diffRendering";
 import { reportClientWarning } from "../lib/clientLogger";
 import { resolveDiffThemeName } from "../lib/diffRendering";
-import { areAllDiffFilesCollapsed, toggleAllDiffFiles } from "../lib/diffCollapse";
+import {
+  areAllDiffFilesCollapsed,
+  mergeCollapsedFileKeys,
+  toggleAllDiffFiles,
+} from "../lib/diffCollapse";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { selectProjectByRef, useStore } from "../store";
 import { createThreadSelectorByRef } from "../storeSelectors";
@@ -187,8 +191,8 @@ const DIFF_PANEL_UNSAFE_CSS = `
   position: sticky !important;
   top: 0;
   z-index: 4;
-  background-color: color-mix(in srgb, var(--card) 94%, var(--foreground)) !important;
-  border-bottom: 1px solid var(--border) !important;
+  /* Shares the well. Opaque, so it still occludes rows scrolling underneath. */
+  background-color: var(--sunken) !important;
 }
 
 [data-title] {
@@ -310,7 +314,7 @@ function getDiffCollapseIconClassName(fileDiff: FileDiffMetadata): string {
   }
 }
 
-function diffFileSafetyLabel(diffFile: DiffFile | undefined): string | null {
+function diffFileSafetyLabel(diffFile: DiffFile | undefined, collapsed: boolean): string | null {
   if (!diffFile) {
     return null;
   }
@@ -321,7 +325,7 @@ function diffFileSafetyLabel(diffFile: DiffFile | undefined): string | null {
     return "Hidden bidirectional Unicode characters detected.";
   }
   if (diffFile.size === "large") {
-    return "Large diff collapsed by default.";
+    return collapsed ? "Large diff collapsed by default." : "Large diff — expand to review.";
   }
   if (diffFile.size === "unrenderable") {
     return "Diff is too large to render safely.";
@@ -351,9 +355,9 @@ export default function DiffPanel({
   const [diffRenderMode, setDiffRenderMode] = useState<DiffRenderMode>("stacked");
   const [diffWordWrap, setDiffWordWrap] = useState(settings.diffWordWrap);
   const [diffZoom, setDiffZoom] = useState(DIFF_ZOOM_DEFAULT);
-  const [collapsedDiffFileKeys, setCollapsedDiffFileKeys] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
+  const [collapsedFileOverrides, setCollapsedFileOverrides] = useState<
+    ReadonlyMap<string, boolean>
+  >(() => new Map());
   const patchViewportRef = useRef<HTMLDivElement>(null);
   const turnStripRef = useRef<HTMLDivElement>(null);
   const previousDiffOpenRef = useRef(false);
@@ -640,6 +644,24 @@ export default function DiffPanel({
     () => renderableFiles.map(buildFileDiffRenderKey),
     [renderableFiles],
   );
+  const defaultCollapsedDiffFileKeys = useMemo(
+    () =>
+      new Set(
+        renderableFiles
+          .filter((fileDiff) => {
+            const path = resolveFileDiffPath(fileDiff);
+            // The file the user navigated to stays open even when it is large;
+            // folding the thing someone just asked to see hides the answer.
+            return path !== selectedFilePath && diffSafetyByPath.get(path)?.size === "large";
+          })
+          .map(buildFileDiffRenderKey),
+      ),
+    [diffSafetyByPath, renderableFiles, selectedFilePath],
+  );
+  const collapsedDiffFileKeys = useMemo(
+    () => mergeCollapsedFileKeys(defaultCollapsedDiffFileKeys, collapsedFileOverrides),
+    [collapsedFileOverrides, defaultCollapsedDiffFileKeys],
+  );
   const allDiffFilesCollapsed = areAllDiffFilesCollapsed(diffFileKeys, collapsedDiffFileKeys);
   const diffUnsafeCss = useMemo(
     () => buildDiffPanelUnsafeCss(diffZoom, settings.codeFontSize),
@@ -652,33 +674,6 @@ export default function DiffPanel({
     }),
     [diffZoom, settings.codeFontSize],
   );
-
-  useEffect(() => {
-    if (renderableFiles.length === 0) {
-      setCollapsedDiffFileKeys((current) => (current.size === 0 ? current : new Set()));
-      return;
-    }
-
-    const visibleFileKeys = new Set(renderableFiles.map(buildFileDiffRenderKey));
-    setCollapsedDiffFileKeys((current) => {
-      const next = new Set([...current].filter((fileKey) => visibleFileKeys.has(fileKey)));
-      for (const fileDiff of renderableFiles) {
-        const filePath = resolveFileDiffPath(fileDiff);
-        const safety = diffSafetyByPath.get(filePath);
-        if (safety?.size === "large") {
-          const fileKey = buildFileDiffRenderKey(fileDiff);
-          if (filePath === selectedFilePath) {
-            next.delete(fileKey);
-          } else {
-            next.add(fileKey);
-          }
-        }
-      }
-      const unchanged =
-        next.size === current.size && [...next].every((fileKey) => current.has(fileKey));
-      return unchanged ? current : next;
-    });
-  }, [diffSafetyByPath, renderableFiles, selectedFilePath]);
 
   useEffect(() => {
     if (diffOpen && !previousDiffOpenRef.current) {
@@ -806,20 +801,19 @@ export default function DiffPanel({
     },
     [activeCwd],
   );
-  const toggleDiffFileCollapsed = useCallback((fileKey: string) => {
-    setCollapsedDiffFileKeys((current) => {
-      const next = new Set(current);
-      if (next.has(fileKey)) {
-        next.delete(fileKey);
-      } else {
-        next.add(fileKey);
-      }
-      return next;
-    });
-  }, []);
+  const toggleDiffFileCollapsed = useCallback(
+    (fileKey: string) => {
+      setCollapsedFileOverrides((current) => {
+        const next = new Map(current);
+        next.set(fileKey, !(current.get(fileKey) ?? collapsedDiffFileKeys.has(fileKey)));
+        return next;
+      });
+    },
+    [collapsedDiffFileKeys],
+  );
   const toggleAllDiffFilesCollapsed = useCallback(() => {
-    setCollapsedDiffFileKeys((current) => toggleAllDiffFiles(diffFileKeys, current));
-  }, [diffFileKeys]);
+    setCollapsedFileOverrides(toggleAllDiffFiles(diffFileKeys, !allDiffFilesCollapsed));
+  }, [allDiffFilesCollapsed, diffFileKeys]);
 
   const updateDiffSelection = useCallback(
     (nextSearch: DiffRouteSearch) => {
@@ -1171,7 +1165,7 @@ export default function DiffPanel({
                   const themedFileKey = `${fileKey}:${resolvedTheme}`;
                   const collapsed = collapsedDiffFileKeys.has(fileKey);
                   const safety = diffSafetyByPath.get(filePath);
-                  const safetyLabel = diffFileSafetyLabel(safety);
+                  const safetyLabel = diffFileSafetyLabel(safety, collapsed);
                   const lineAnnotations = showReviewSnapshot
                     ? (reviewAnnotationsByPath.get(filePath) ?? EMPTY_REVIEW_ANNOTATIONS)
                     : EMPTY_REVIEW_ANNOTATIONS;
