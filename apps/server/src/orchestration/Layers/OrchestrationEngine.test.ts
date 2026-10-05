@@ -1614,6 +1614,87 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
+  it("treats deleting an already-deleted queued turn as a no-op", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+    const threadId = ThreadId.make("thread-double-delete");
+    const queuedTurnId = QueuedTurnId.make("queued-double-delete");
+    try {
+      await system.run(
+        engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-double-delete"),
+          projectId: asProjectId("project-double-delete"),
+          title: "Double Delete",
+          workspaceRoot: "/tmp/project-double-delete",
+          defaultModelSelection: null,
+          createdAt,
+        }),
+      );
+      await system.run(
+        engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-thread-double-delete"),
+          threadId,
+          projectId: asProjectId("project-double-delete"),
+          title: "Double Delete",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+      await system.run(
+        engine.dispatch({
+          type: "thread.queued-turn.create",
+          commandId: CommandId.make("cmd-queue-double-delete"),
+          threadId,
+          queuedTurnId,
+          message: {
+            messageId: MessageId.make("message-double-delete"),
+            role: "user",
+            text: "hello",
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt,
+        }),
+      );
+      const deleteCommand = (id: string) =>
+        engine.dispatch({
+          type: "thread.queued-turn.delete",
+          commandId: CommandId.make(id),
+          threadId,
+          queuedTurnId,
+          deletedAt: createdAt,
+        });
+      await system.run(deleteCommand("cmd-delete-first"));
+      await system.run(deleteCommand("cmd-delete-second"));
+
+      const thread = (await system.run(engine.getReadModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(thread?.queuedTurns ?? []).toEqual([]);
+      await expect(
+        system.run(
+          engine.dispatch({
+            type: "thread.queued-turn.delete",
+            commandId: CommandId.make("cmd-delete-missing-thread"),
+            threadId: ThreadId.make("thread-missing"),
+            queuedTurnId,
+            deletedAt: createdAt,
+          }),
+        ),
+      ).rejects.toThrow("does not exist");
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("records failed command dispatches as metric failures", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;

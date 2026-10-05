@@ -3717,12 +3717,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.queued-turn.delete": {
-      const { thread, queuedTurn } = yield* requireQueuedTurn({
-        readModel,
-        command,
-        threadId: command.threadId,
-        queuedTurnId: command.queuedTurnId,
-      });
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const queuedTurn = thread.queuedTurns?.find((entry) => entry.id === command.queuedTurnId);
+      // Idempotent: a repeated click or a client still showing a turn the
+      // reactor already removed should not surface as a failure.
+      if (!queuedTurn) return [];
       const deleted: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
