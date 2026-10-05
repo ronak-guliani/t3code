@@ -7690,6 +7690,65 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("lets a failed user input response be retried", async () => {
+    let respondAttempts = 0;
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({ multiSelect: true }),
+      resolveRpc: (body) => {
+        if (
+          body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          body.type === "thread.user-input.respond"
+        ) {
+          respondAttempts += 1;
+          return respondAttempts === 1
+            ? Promise.reject(new Error("socket closed"))
+            : { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        return undefined;
+      },
+    });
+
+    const respondRequests = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          request.type === "thread.user-input.respond",
+      );
+
+    try {
+      (await waitForButtonContainingText("Tight")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      (await waitForButtonContainingText("Conservative")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(respondRequests()).toHaveLength(1);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // A rejected dispatch never reached the provider, so the question is
+      // still open and Submitting again has to actually reach the provider
+      // rather than being swallowed as a duplicate response.
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(respondRequests()).toHaveLength(2);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps plan follow-up footer actions fused and aligned after a real resize", async () => {
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,

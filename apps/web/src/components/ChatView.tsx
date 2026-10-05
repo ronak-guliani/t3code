@@ -4246,22 +4246,30 @@ function ChatViewBody(
       setRespondingUserInputRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
-      await api.orchestration
-        .dispatchCommand({
+      let submissionFailed = false;
+      try {
+        await api.orchestration.dispatchCommand({
           type: "thread.user-input.respond",
           commandId: newCommandId(),
           threadId: activeThreadId,
           requestId,
           answers,
           createdAt: new Date().toISOString(),
-        })
-        .catch((err: unknown) => {
-          setThreadError(
-            activeThreadId,
-            err instanceof Error ? err.message : "Failed to submit user input.",
-          );
         });
+      } catch (err: unknown) {
+        submissionFailed = true;
+        setThreadError(
+          activeThreadId,
+          err instanceof Error ? err.message : "Failed to submit user input.",
+        );
+      }
       setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
+      // A rejected dispatch never reached the provider, so the question is still
+      // open. Release the claim once the responding state is cleared, otherwise
+      // every retry is discarded as a duplicate and the provider waits forever.
+      if (submissionFailed && respondedUserInputRequestIdRef.current === requestId) {
+        respondedUserInputRequestIdRef.current = null;
+      }
     },
     [activeThreadId, environmentId, setThreadError],
   );
