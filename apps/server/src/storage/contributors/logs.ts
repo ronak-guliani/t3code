@@ -73,6 +73,7 @@ export const makeLogStorageContributor = Effect.gen(function* () {
       for (const removal of logPlan.removals) {
         groups.set(removal.reason, [...(groups.get(removal.reason) ?? []), removal]);
       }
+      const files = (count: number) => `${count} file${count === 1 ? "" : "s"}`;
       return [...groups].map(
         ([reason, removals]): StoragePlanEntry<ReadonlyArray<PlannedProviderLogRemoval>> => ({
           item: {
@@ -80,8 +81,8 @@ export const makeLogStorageContributor = Effect.gen(function* () {
             category: "providerLogs",
             description:
               reason === "age" && policy.providerLogRetentionDays !== null
-                ? `Provider logs older than ${policy.providerLogRetentionDays} days (${removals.length} files)`
-                : `${REASON_DESCRIPTIONS[reason]} (${removals.length} files)`,
+                ? `Provider logs older than ${policy.providerLogRetentionDays} days (${files(removals.length)})`
+                : `${REASON_DESCRIPTIONS[reason]} (${files(removals.length)})`,
             target: config.providerLogsDir,
             estimatedBytes: removals.reduce((sum, removal) => sum + removal.size, 0),
             defaultSelected: true,

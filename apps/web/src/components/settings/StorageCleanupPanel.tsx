@@ -147,8 +147,8 @@ export function StorageUsagePanel() {
           className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300"
         >
           <AlertTriangleIcon className="size-3.5 shrink-0" />
-          Low disk mode active ({formatPercent(usage.lowDisk.freePercent)} free): idle worktrees and
-          logs are cleaned up sooner.
+          Low disk mode active ({formatPercent(usage.lowDisk.freePercent)} free): retention windows
+          are shortened and automatic cleanup runs sooner.
         </div>
       ) : null}
       {usage && !usage.automaticCleanupEnabled ? (
@@ -306,7 +306,7 @@ export function StorageCleanupDialog({
           ) : plan ? (
             <>
               {groups.map(([category, items]) => {
-                const total = plan.totals.find((entry) => entry.category === category);
+                const categoryBytes = items.reduce((sum, item) => sum + item.estimatedBytes, 0);
                 const checked = items.every((item) => selected.has(item.id));
                 return (
                   <section key={category} className="space-y-1">
@@ -323,7 +323,7 @@ export function StorageCleanupDialog({
                       />
                       {STORAGE_CATEGORY_LABELS[category]}
                       <span className="ml-auto font-mono text-muted-foreground">
-                        ~{formatBytes(total?.estimatedBytes ?? 0)}
+                        ~{formatBytes(categoryBytes)}
                       </span>
                     </label>
                     <ul className="space-y-0.5 pl-6 text-muted-foreground">
