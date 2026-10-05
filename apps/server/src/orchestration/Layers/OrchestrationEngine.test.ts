@@ -567,6 +567,27 @@ describe("OrchestrationEngine", () => {
       expect(await system.run(system.engine.getReadModel())).toEqual(before);
       expect(projected).toHaveLength(eventCount);
 
+      const supersededAssociationCommand = {
+        type: "thread.meta.update" as const,
+        commandId: CommandId.make("superseded-association-intent"),
+        threadId,
+        expectedPendingPullRequestAssociationRequestId: CommandId.make("newer-association-intent"),
+        pendingPullRequestAssociation: {
+          requestId: CommandId.make("superseded-association-intent"),
+          reference: "https://github.com/acme/app/pull/42",
+          requestedAt: "2026-09-08T00:00:00.000Z",
+          nextAttemptAt: "2026-09-08T00:01:00.000Z",
+          status: "blocked" as const,
+          reason: "resolve-failed" as const,
+        },
+      };
+      const supersededAssociationResult = await system.run(
+        system.engine.dispatch(supersededAssociationCommand),
+      );
+      expect(supersededAssociationResult.sequence).toBe(before.snapshotSequence);
+      expect(await system.run(system.engine.getReadModel())).toEqual(before);
+      expect(projected).toHaveLength(eventCount);
+
       // A retry whose precondition now matches must still replay the receipt.
       expect(
         await system.run(
@@ -645,6 +666,29 @@ describe("OrchestrationEngine", () => {
       expect(pruned.sequence).toBe(clearedWait.snapshotSequence);
       expect(await system.run(system.engine.getReadModel())).toEqual(clearedWait);
       expect(await system.run(system.engine.dispatch(pruneCommand))).toEqual(pruned);
+
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("archive-before-association"),
+          threadId,
+        }),
+      );
+      const archivedThread = await system.run(system.engine.getReadModel());
+      const archiveEventCount = projected.length;
+      const staleAssociationCommit = await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("association-after-archive"),
+          threadId,
+          expectedArchivedAt: null,
+          pullRequest: { ...pullRequest, title: "Association after archive" },
+          pullRequestOwnership: "transfer",
+        }),
+      );
+      expect(staleAssociationCommit.sequence).toBe(archivedThread.snapshotSequence);
+      expect(await system.run(system.engine.getReadModel())).toEqual(archivedThread);
+      expect(projected).toHaveLength(archiveEventCount);
     } finally {
       await system.dispose();
     }
