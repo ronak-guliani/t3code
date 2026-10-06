@@ -7,6 +7,22 @@ export interface DirectorySize {
 }
 
 const DEFAULT_CONCURRENCY = 8;
+const MAX_DESCRIPTOR_RETRIES = 20;
+
+/** Retry when the process is out of file descriptors instead of undercounting. */
+async function retryOnDescriptorExhaustion<A>(operation: () => Promise<A>): Promise<A> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code !== "EMFILE" && code !== "ENFILE") || attempt >= MAX_DESCRIPTOR_RETRIES) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
+    }
+  }
+}
 const PROGRESS_EVERY_FILES = 2_000;
 
 /**
@@ -45,7 +61,7 @@ export async function measureDirectory(
   const walkDirectory = async (directory: string) => {
     let handle;
     try {
-      handle = await fs.opendir(directory);
+      handle = await retryOnDescriptorExhaustion(() => fs.opendir(directory));
     } catch {
       return;
     }
@@ -58,7 +74,7 @@ export async function measureDirectory(
         continue;
       }
       try {
-        bytes += (await fs.lstat(entryPath)).size;
+        bytes += (await retryOnDescriptorExhaustion(() => fs.lstat(entryPath))).size;
         files += 1;
         if (files % PROGRESS_EVERY_FILES === 0) options.onProgress?.({ bytes, files });
       } catch {
