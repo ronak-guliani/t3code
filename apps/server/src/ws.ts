@@ -34,6 +34,7 @@ import {
   RpcClientId,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
+  type OrchestrationMessageOrigin,
   type OrchestrationThread,
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
@@ -143,6 +144,7 @@ import {
   toShellStreamEvent as projectShellStreamEvent,
 } from "./orchestration/shellStream.ts";
 import { isThreadDetailEvent } from "./orchestration/threadDetailEvents.ts";
+import { threadHistoryWindowOptions } from "./orchestration/threadHistoryWindow.ts";
 import { collectActiveThreadSubtree } from "./orchestration/threadHierarchy.ts";
 import {
   createChatArchiveManifest,
@@ -545,6 +547,8 @@ const makeWsRpcLayer = (
           settings,
           shellResumeCompletionMarker: true,
           threadResumeCompletionMarker: true,
+          threadSnapshotPagination: true,
+          threadSnapshotAroundMessage: true,
         };
       });
 
@@ -1365,25 +1369,35 @@ const makeWsRpcLayer = (
         [ORCHESTRATION_WS_METHODS.getThreadSnapshot]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getThreadSnapshot,
-            projectionSnapshotQuery.getThreadDetailSnapshotById(input.threadId).pipe(
-              Effect.flatMap((snapshot) => {
-                if (Option.isNone(snapshot)) {
-                  return new OrchestrationGetSnapshotError({
-                    message: `Thread ${input.threadId} was not found`,
-                    cause: input.threadId,
-                  });
-                }
-                return Effect.succeed(snapshot.value).pipe(Effect.map(projectThreadDetailSnapshot));
-              }),
-              Effect.mapError((cause) =>
-                isOrchestrationGetSnapshotError(cause)
-                  ? cause
-                  : new OrchestrationGetSnapshotError({
-                      message: `Failed to load thread ${input.threadId}`,
-                      cause,
-                    }),
+            projectionSnapshotQuery
+              .getThreadDetailSnapshotById(input.threadId, threadHistoryWindowOptions(input))
+              .pipe(
+                Effect.flatMap((snapshot) => {
+                  if (Option.isNone(snapshot)) {
+                    return new OrchestrationGetSnapshotError({
+                      message: `Thread ${input.threadId} was not found`,
+                      cause: input.threadId,
+                    });
+                  }
+                  return Effect.succeed(snapshot.value).pipe(
+                    Effect.map(projectThreadDetailSnapshot),
+                  );
+                }),
+                Effect.mapError((cause) =>
+                  isOrchestrationGetSnapshotError(cause)
+                    ? cause
+                    : new OrchestrationGetSnapshotError({
+                        message:
+                          typeof cause === "object" &&
+                          cause !== null &&
+                          "_tag" in cause &&
+                          cause._tag === "OrchestrationReadThreadInputError"
+                            ? cause.message
+                            : `Failed to load thread ${input.threadId}`,
+                        cause,
+                      }),
+                ),
               ),
-            ),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.subscribeShell]: (input) =>
@@ -1487,6 +1501,81 @@ const makeWsRpcLayer = (
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,
             Effect.gen(function* () {
+              // First-message origin is stable across deltas. Cache only a
+              // bounded number of identities, not the thread's whole history.
+              const origins = new Map<string, OrchestrationMessageOrigin>();
+              const window = threadHistoryWindowOptions(input);
+              let materializedSequence = 0;
+              const loadThreadSnapshot = () =>
+                projectionSnapshotQuery.getThreadDetailSnapshotById(input.threadId, window).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: `Failed to load thread ${input.threadId}`,
+                        cause,
+                      }),
+                  ),
+                  Effect.flatMap((snapshot) =>
+                    Option.isNone(snapshot)
+                      ? Effect.fail(
+                          new OrchestrationGetSnapshotError({
+                            message: `Thread ${input.threadId} was not found`,
+                            cause: input.threadId,
+                          }),
+                        )
+                      : Effect.sync(() => {
+                          materializedSequence = Math.max(
+                            materializedSequence,
+                            snapshot.value.snapshotSequence,
+                          );
+                          return snapshot.value;
+                        }),
+                  ),
+                );
+              const projectThreadEvent = (event: OrchestrationEvent) =>
+                Effect.gen(function* () {
+                  if (event.type === "thread.reverted") origins.clear();
+                  let messageOrigin;
+                  if (event.type === "thread.message-sent" && window !== undefined) {
+                    messageOrigin = origins.get(event.payload.messageId);
+                    if (messageOrigin === undefined) {
+                      messageOrigin = Option.getOrUndefined(
+                        yield* projectionSnapshotQuery.getThreadMessageOriginById(
+                          input.threadId,
+                          event.payload.messageId,
+                        ),
+                      );
+                      if (messageOrigin !== undefined) {
+                        if (origins.size >= 256) origins.delete(origins.keys().next().value!);
+                        origins.set(event.payload.messageId, messageOrigin);
+                      }
+                    }
+                    // Never construct a partial historical row without stable
+                    // provenance. A replacement baseline covers this event.
+                    if (messageOrigin === undefined)
+                      return {
+                        kind: "snapshot" as const,
+                        snapshot: projectThreadDetailSnapshot(yield* loadThreadSnapshot()),
+                      };
+                  }
+                  return {
+                    kind: "event" as const,
+                    event,
+                    ...(messageOrigin === undefined ? {} : { messageOrigin }),
+                  };
+                }).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: `Failed to project thread ${input.threadId} message origin`,
+                        cause,
+                      }),
+                  ),
+                );
+              const enrichThreadItem = (
+                item: OrchestrationThreadStreamItem,
+              ): Effect.Effect<OrchestrationThreadStreamItem, OrchestrationGetSnapshotError> =>
+                item.kind === "event" ? projectThreadEvent(item.event) : Effect.succeed(item);
               const liveStream = orchestrationEngine.streamDomainEvents.pipe(
                 Stream.filter(
                   (event) =>
@@ -1549,29 +1638,16 @@ const makeWsRpcLayer = (
                           liveAfterHead,
                         )
                       : liveAfterHead,
+                  ).pipe(
+                    Stream.filter(
+                      (item) => item.kind !== "event" || item.event.sequence > materializedSequence,
+                    ),
+                    Stream.mapEffect(enrichThreadItem),
                   );
                 }
               }
 
-              const threadSnapshot = yield* projectionSnapshotQuery
-                .getThreadDetailSnapshotById(input.threadId)
-                .pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationGetSnapshotError({
-                        message: `Failed to load thread ${input.threadId}`,
-                        cause,
-                      }),
-                  ),
-                );
-
-              if (Option.isNone(threadSnapshot)) {
-                return yield* new OrchestrationGetSnapshotError({
-                  message: `Thread ${input.threadId} was not found`,
-                  cause: input.threadId,
-                });
-              }
-              const { snapshotSequence, thread } = threadSnapshot.value;
+              const threadSnapshot = yield* loadThreadSnapshot();
               const synchronizedThenLive =
                 input.requestCompletionMarker === true
                   ? Stream.concat(
@@ -1585,19 +1661,16 @@ const makeWsRpcLayer = (
               return Stream.concat(
                 Stream.make({
                   kind: "snapshot" as const,
-                  snapshot: projectThreadDetailSnapshot({
-                    snapshotSequence,
-                    thread,
-                  }),
+                  snapshot: projectThreadDetailSnapshot(threadSnapshot),
                 }),
                 synchronizedThenLive.pipe(
                   Stream.filter(
                     (item) =>
                       item.kind === "synchronized" ||
-                      (item.kind === "event" && item.event.sequence > snapshotSequence),
+                      (item.kind === "event" && item.event.sequence > materializedSequence),
                   ),
                 ),
-              );
+              ).pipe(Stream.mapEffect(enrichThreadItem));
             }),
             { "rpc.aggregate": "orchestration" },
           ),

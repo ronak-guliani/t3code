@@ -57,6 +57,49 @@ const WorkspaceBindingClearTestLayer = makeProjectionPipelinePrefixedTestLayer(
   "t3-projection-binding-clear-test-",
 );
 
+it.effect("keeps a legacy message's origin order when a late delta arrives", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const pipeline = yield* OrchestrationProjectionPipeline;
+    const now = "2026-10-04T00:00:00.000Z",
+      threadId = ThreadId.make("legacy-origin-thread");
+    yield* pipeline.bootstrap;
+    yield* sql`INSERT INTO projection_projects (project_id,title,workspace_root,scripts_json,created_at,updated_at) VALUES ('legacy-origin-project','Origin','/tmp/legacy-origin','[]',${now},${now})`;
+    yield* sql`INSERT INTO projection_threads (thread_id,project_id,title,model_selection_json,runtime_mode,interaction_mode,created_at,updated_at) VALUES (${threadId},'legacy-origin-project','Origin','{"instanceId":"codex","model":"gpt-5.4"}','full-access','default',${now},${now})`;
+    yield* sql`INSERT INTO projection_thread_messages (message_id,thread_id,sequence,role,text,attachments_json,is_streaming,created_at,updated_at) VALUES ('legacy-origin-message',${threadId},NULL,'assistant','Legacy prefix','[]',1,${now},${now})`;
+    yield* pipeline.projectEvent({
+      eventId: EventId.make("legacy-origin-delta"),
+      sequence: 1000,
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      type: "thread.message-sent",
+      occurredAt: now,
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      payload: {
+        threadId,
+        messageId: MessageId.make("legacy-origin-message"),
+        role: "assistant",
+        turnId: null,
+        text: " tail",
+        streaming: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    const rows = yield* sql<{
+      sequence: number | null;
+      text: string;
+    }>`SELECT sequence,text FROM projection_thread_messages WHERE message_id='legacy-origin-message'`;
+    assert.isNull(rows[0]?.sequence);
+    assert.equal(rows[0]?.text, "Legacy prefix tail");
+  }).pipe(
+    Effect.provide(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-legacy-origin-test-"))),
+  ),
+);
+
 it.layer(WorkspaceBindingClearTestLayer)("Workspace binding recovery", (it) => {
   it.effect("clears persisted workspace bindings with missing worktree paths", () =>
     Effect.gen(function* () {

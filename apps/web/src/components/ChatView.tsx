@@ -61,7 +61,12 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
 import { usePrimaryEnvironmentId } from "../environments/primary/context";
-import { readEnvironmentConnection } from "../environments/runtime";
+import {
+  readEnvironmentConnection,
+  loadOlderThreadHistory,
+  loadCompleteThreadHistory,
+  loadThreadHistoryAroundMessage,
+} from "../environments/runtime";
 import { readEnvironmentApi } from "../environmentApi";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
@@ -1526,19 +1531,33 @@ function ChatViewBody(
       ),
     [activeOlderActivityState.activities, activeThread?.insightActivities, liveThreadActivities],
   );
+  const threadHistory = useStore(
+    (state) => selectEnvironmentState(state, environmentId).threadHistoryById?.[threadId],
+  );
   const hasMoreOlderActivities = activeOlderActivityState.loaded
     ? activeOlderActivityState.hasMore
-    : (activeThread?.hasMoreCurrentTurnActivities ?? false);
+    : ((threadHistory
+        ? activeThread?.hasMoreActivities
+        : activeThread?.hasMoreCurrentTurnActivities) ?? false);
+  // Drain messages first, then independently pageable activity. One selected
+  // lane owns the button's visibility, loading feedback, and next action.
+  const olderHistorySource = threadHistory?.hasMore
+    ? "messages"
+    : hasMoreOlderActivities
+      ? "activities"
+      : null;
   const loadOlderActivities = useCallback(() => {
     if (!activeThread || !activeThreadActivityHistoryKey || !hasMoreOlderActivities) return;
-    const oldestActivity = threadActivities[0];
-    if (!oldestActivity) return;
+    const oldestActivity = threadHistory
+      ? activeOlderActivityState.activities[0]
+      : threadActivities[0];
+    if (!oldestActivity && !threadHistory) return;
     if (inFlightOlderActivitiesKeyRef.current === activeThreadActivityHistoryKey) return;
 
     const api = readEnvironmentApi(activeThread.environmentId);
     if (!api) return;
     const requestKey = activeThreadActivityHistoryKey;
-    const activeTurnId = activeLatestTurn?.turnId;
+    const activeTurnId = threadHistory ? undefined : activeLatestTurn?.turnId;
     inFlightOlderActivitiesKeyRef.current = requestKey;
     setOlderActivityState((previous) => ({
       historyKey: requestKey,
@@ -1551,8 +1570,11 @@ function ChatViewBody(
       .getThreadActivities({
         threadId: activeThread.id,
         ...(activeTurnId !== undefined ? { turnId: activeTurnId } : {}),
-        beforeCreatedAt: oldestActivity.createdAt,
-        beforeActivityId: oldestActivity.id,
+        // A turn window is not global activity coverage: independently page
+        // from the newest activity so unscoped/interleaved rows are reachable.
+        ...(oldestActivity
+          ? { beforeCreatedAt: oldestActivity.createdAt, beforeActivityId: oldestActivity.id }
+          : {}),
       })
       .then((page) => {
         if (activeThreadActivityHistoryKeyRef.current !== requestKey) return;
@@ -1600,6 +1622,8 @@ function ChatViewBody(
     activeThreadActivityHistoryKey,
     hasMoreOlderActivities,
     threadActivities,
+    threadHistory,
+    activeOlderActivityState.activities,
   ]);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadStateActivities),
@@ -1918,6 +1942,36 @@ function ChatViewBody(
   const focusComposer = useCallback(() => {
     composerRef.current?.focusAtEnd();
   }, []);
+  const loadEarlierTurns = useCallback(() => {
+    void loadOlderThreadHistory(environmentId, threadId).catch((error) => {
+      setThreadError(
+        threadId,
+        error instanceof Error ? error.message : "Could not load earlier messages.",
+      );
+    });
+  }, [environmentId, threadId, setThreadError]);
+  const ensureCompleteHistory = useCallback(
+    (shouldContinue: () => boolean) =>
+      loadCompleteThreadHistory(environmentId, threadId, shouldContinue).catch((error) => {
+        setThreadError(
+          threadId,
+          error instanceof Error ? error.message : "Could not load full chat history.",
+        );
+        throw error;
+      }),
+    [environmentId, threadId, setThreadError],
+  );
+  const ensureMessageHistory = useCallback(
+    (messageId: MessageId) =>
+      loadThreadHistoryAroundMessage(environmentId, threadId, messageId).catch((error) => {
+        setThreadError(
+          threadId,
+          error instanceof Error ? error.message : "Historical message is unavailable",
+        );
+        throw error;
+      }),
+    [environmentId, threadId, setThreadError],
+  );
   const scheduleComposerFocus = useCallback(() => {
     window.requestAnimationFrame(() => {
       focusComposer();
@@ -5596,9 +5650,17 @@ function ChatViewBody(
                   messagePreviewLineLimits={settings.messagePreviewLineLimits}
                   workspaceRoot={activeWorkspaceRoot}
                   chatFindShortcutLabel={chatFindShortcutLabel}
-                  hasMoreOlder={hasMoreOlderActivities}
-                  loadingOlder={activeOlderActivityState.loading}
-                  onLoadOlder={loadOlderActivities}
+                  hasMoreOlder={olderHistorySource !== null}
+                  loadingOlder={
+                    olderHistorySource === "messages"
+                      ? (threadHistory?.loadingOlder ?? false)
+                      : activeOlderActivityState.loading
+                  }
+                  onLoadOlder={
+                    olderHistorySource === "messages" ? loadEarlierTurns : loadOlderActivities
+                  }
+                  onEnsureCompleteHistory={ensureCompleteHistory}
+                  onEnsureMessageHistory={ensureMessageHistory}
                   onOpenTurnDiff={onOpenTurnDiff}
                   onRevertToTurnCount={onRevertToTurnCount}
                   {...(isImportedChat ? {} : { onForkAssistantMessage })}

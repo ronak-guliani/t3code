@@ -153,7 +153,13 @@ it.live(
               .handle("t3_thread_read", { threadId: sourceId, limit: 1 })
               .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption));
           }).pipe(
-            Effect.provide(ThreadContextToolkitHandlersLive),
+            Effect.provide(
+              Layer.mergeAll(
+                ThreadContextToolkitHandlersLive,
+                ProjectionThreadMessageRepositoryLive,
+                ProjectionQueuedTurnRepositoryLive,
+              ).pipe(Layer.provide(makeSqlitePersistenceLive(harness.dbPath))),
+            ),
             Effect.provideService(ProjectionSnapshotQuery, harness.snapshotQuery),
             Effect.provideService(McpInvocationContext, {
               environmentId,
@@ -163,12 +169,6 @@ it.live(
               capabilities: new Set<McpCapability>(),
               issuedAt: Date.now(),
             }),
-            Effect.provide(
-              Layer.mergeAll(
-                ProjectionThreadMessageRepositoryLive,
-                ProjectionQueuedTurnRepositoryLive,
-              ).pipe(Layer.provide(makeSqlitePersistenceLive(harness.dbPath))),
-            ),
           );
           assert.isFalse(historyOutcome.isFailure);
           const history = decodeHistory(historyOutcome.result);

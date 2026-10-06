@@ -39,6 +39,38 @@ const THREAD_ID = ThreadId.make("thread/with space");
 const LOADERS = Layer.merge(shellSnapshotLoaderLayer, threadSnapshotLoaderLayer);
 
 describe("fork snapshot HTTP compatibility", () => {
+  // An expired page is not an unavailable endpoint: swallowing its reason
+  // leaves every retry on the same removed anchor.
+  it.effect("preserves a removed history anchor as a recoverable read failure", () =>
+    Effect.gen(function* () {
+      const loader = yield* ThreadSnapshotLoader;
+      const result = yield* loader
+        .load(PREPARED, THREAD_ID, { turnLimit: 20, beforeCursor: "removed-anchor" })
+        .pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure")
+        expect(result.failure).toMatchObject({ reason: "history-cursor-stale" });
+    }).pipe(
+      Effect.provide(
+        LOADERS.pipe(
+          Layer.provide(
+            remoteHttpClientLayer(() =>
+              Promise.resolve(
+                Response.json(
+                  {
+                    _tag: "OrchestrationReadThreadInputError",
+                    message: "History changed; reload this thread before loading earlier turns.",
+                    reason: "history-cursor-stale",
+                  },
+                  { status: 400 },
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
   it.effect("retains cookie authentication for the existing shell endpoint", () =>
     Effect.gen(function* () {
       const calls: Array<readonly [RequestInfo | URL, RequestInit]> = [];

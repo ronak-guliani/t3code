@@ -2399,6 +2399,33 @@ describe("activity append ordering", () => {
 });
 
 describe("activity pagination state", () => {
+  it("keeps the live activity cap on an initially paged thread", () => {
+    const thread = makeThread();
+    const base = makeState(thread);
+    const env = selectEnvironmentState(base, localEnvironmentId);
+    const state = withActiveEnvironmentState({
+      ...env,
+      threadHistoryById: {
+        [thread.id]: {
+          beforeCursor: "older",
+          hasMore: true,
+          loadingOlder: false,
+          error: null,
+        },
+      },
+    });
+    const events = Array.from({ length: 1500 }, (_, n) =>
+      activityAppendedEvent({
+        sequence: n + 1,
+        id: `paged-live-${n}`,
+        kind: "step",
+        turnId: "turn-1",
+      }),
+    );
+    const next = applyOrchestrationEvents(state, events, localEnvironmentId);
+    expect(threadsOf(next)[0]?.activities).toHaveLength(500);
+    expect(threadsOf(next)[0]?.hasMoreActivities).toBe(true);
+  });
   it("does not offer older current-turn history when live updates only evict prior turns", () => {
     const olderActivities = Array.from(
       { length: 500 },

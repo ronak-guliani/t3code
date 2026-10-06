@@ -1,5 +1,13 @@
 import { type LegendListRef } from "@legendapp/list/react";
-import { type RefObject, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import {
+  type RefObject,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useState,
+  useRef,
+} from "react";
 import { type ThreadId } from "@t3tools/contracts";
 import {
   buildChatFindRows,
@@ -61,6 +69,8 @@ export interface ChatFindController {
   openFind: () => void;
   closeFind: () => void;
   cycleMatch: (direction: -1 | 1) => void;
+  loadingHistory: boolean;
+  historyError: string | null;
 }
 
 interface UseChatFindInput {
@@ -70,6 +80,7 @@ interface UseChatFindInput {
   routeThreadKey: string;
   /** Resets find state whenever the active thread changes. */
   activeThreadId: ThreadId | null;
+  onEnsureCompleteHistory?: ((shouldContinue: () => boolean) => Promise<void>) | undefined;
 }
 
 /**
@@ -83,6 +94,15 @@ export function useChatFind(input: UseChatFindInput): ChatFindController {
     input;
 
   const [open, setOpen] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const historyEpoch = useRef(0);
+  useEffect(
+    () => () => {
+      historyEpoch.current++;
+    },
+    [],
+  );
   const [query, setQuery] = useState("");
   const [activeMatchId, setActiveMatchId] = useState<string | null>(null);
   const deferredQuery = useDeferredValue(query);
@@ -128,7 +148,34 @@ export function useChatFind(input: UseChatFindInput): ChatFindController {
     focusInput();
   }, [focusInput]);
 
+  const ensureHistoryRef = useRef(input.onEnsureCompleteHistory);
+  ensureHistoryRef.current = input.onEnsureCompleteHistory;
+  useEffect(() => {
+    const epoch = ++historyEpoch.current;
+    if (!open || query.trim().length === 0) {
+      setLoadingHistory(false);
+      setHistoryError(null);
+      return;
+    }
+    const ensure = ensureHistoryRef.current;
+    if (!ensure) return;
+    setLoadingHistory(true);
+    setHistoryError(null);
+    void ensure(() => historyEpoch.current === epoch)
+      .catch(() => {
+        if (historyEpoch.current === epoch) setHistoryError("Earlier history could not be loaded");
+      })
+      .finally(() => {
+        if (historyEpoch.current === epoch) setLoadingHistory(false);
+      });
+    return () => {
+      if (historyEpoch.current === epoch) historyEpoch.current++;
+    };
+  }, [open, query]);
+
   const closeFind = useCallback(() => {
+    historyEpoch.current++;
+    setLoadingHistory(false);
     setOpen(false);
   }, []);
 
@@ -201,6 +248,9 @@ export function useChatFind(input: UseChatFindInput): ChatFindController {
 
   // Reset whenever the active thread changes.
   useEffect(() => {
+    historyEpoch.current++;
+    setLoadingHistory(false);
+    setHistoryError(null);
     setOpen(false);
     setQuery("");
     setActiveMatchId(null);
@@ -217,5 +267,7 @@ export function useChatFind(input: UseChatFindInput): ChatFindController {
     openFind,
     closeFind,
     cycleMatch,
+    loadingHistory,
+    historyError,
   };
 }

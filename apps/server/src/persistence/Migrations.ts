@@ -122,6 +122,9 @@ import Migration0117 from "./Migrations/117_PendingPullRequestFeedbackIndex.ts";
 import Migration0118 from "./Migrations/118_QueueHoldAndShutdownMarker.ts";
 import Migration0119 from "./Migrations/119_WorktreeCleanupDueIndex.ts";
 import Migration0120 from "./Migrations/120_WorktreeCleanupIdleSource.ts";
+import Migration0121 from "./Migrations/121_ThreadHistoryWindowIndexes.ts";
+import Migration0122 from "./Migrations/122_ThreadHistoryPlanIndexes.ts";
+import Migration0123 from "./Migrations/123_ThreadHistoryMessageOwnershipIndex.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -243,6 +246,9 @@ export const migrationEntries = [
   [118, "QueueHoldAndShutdownMarker", Migration0118],
   [119, "WorktreeCleanupDueIndex", Migration0119],
   [120, "WorktreeCleanupIdleSource", Migration0120],
+  [121, "ThreadHistoryWindowIndexes", Migration0121],
+  [122, "ThreadHistoryPlanIndexes", Migration0122],
+  [123, "ThreadHistoryMessageOwnershipIndex", Migration0123],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

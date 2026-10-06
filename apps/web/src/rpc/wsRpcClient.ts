@@ -58,10 +58,10 @@ type RpcStreamMethod<TTag extends RpcTag> =
     ? (listener: (event: TEvent) => void, options?: StreamSubscriptionOptions) => () => void
     : never;
 
-type RpcInputStreamMethod<TTag extends RpcTag> =
+type RpcInputStreamMethod<TTag extends RpcTag, Dynamic extends boolean = false> =
   RpcMethod<TTag> extends (input: any, options?: any) => Stream.Stream<infer TEvent, any, any>
     ? (
-        input: RpcInput<TTag>,
+        input: Dynamic extends true ? RpcInput<TTag> | (() => RpcInput<TTag>) : RpcInput<TTag>,
         listener: (event: TEvent) => void,
         options?: StreamSubscriptionOptions,
       ) => () => void
@@ -275,7 +275,10 @@ export interface WsRpcClient {
     >;
     readonly searchTranscript: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.searchTranscript>;
     readonly subscribeShell: RpcStreamMethod<typeof ORCHESTRATION_WS_METHODS.subscribeShell>;
-    readonly subscribeThread: RpcInputStreamMethod<typeof ORCHESTRATION_WS_METHODS.subscribeThread>;
+    readonly subscribeThread: RpcInputStreamMethod<
+      typeof ORCHESTRATION_WS_METHODS.subscribeThread,
+      true
+    >;
   };
 }
 
@@ -628,7 +631,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         ),
       subscribeThread: (input, listener, options) =>
         transport.subscribe(
-          (client) => client[ORCHESTRATION_WS_METHODS.subscribeThread](input),
+          (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeThread](
+              typeof input === "function" ? input() : input,
+            ),
           listener,
           options,
         ),

@@ -10,6 +10,7 @@ import {
   type OrchestrationEvent,
   type MessageId,
   type OrchestrationReadModel,
+  type OrchestrationThreadDetailSnapshot,
   type PreviewSessionSnapshot,
   type ProjectId,
   ProviderDriverKind,
@@ -57,12 +58,13 @@ import {
 import { isMacPlatform } from "../lib/utils";
 import { __resetLocalApiForTests } from "../localApi";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
-import { getServerConfig } from "../rpc/serverState";
+import { getServerConfig, setServerConfigSnapshot } from "../rpc/serverState";
 import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
 import {
   selectBootstrapCompleteForActiveEnvironment,
   selectThreadByRef,
+  selectEnvironmentState,
   type EnvironmentState,
   useStore,
 } from "../store";
@@ -141,6 +143,7 @@ interface TestFixture {
   snapshot: OrchestrationReadModel;
   serverConfig: ServerConfig;
   welcome: ServerLifecycleWelcomePayload;
+  threadSnapshot?: OrchestrationThreadDetailSnapshot;
 }
 
 let fixture: TestFixture;
@@ -1838,6 +1841,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
           ];
         }
         if (request._tag === ORCHESTRATION_WS_METHODS.subscribeThread) {
+          if (fixture.threadSnapshot)
+            return [{ kind: "snapshot", snapshot: fixture.threadSnapshot }];
           const thread = fixture.snapshot.threads.find((entry) => entry.id === request.threadId);
           return thread
             ? [
@@ -2884,6 +2889,281 @@ describe("ChatView timeline estimator parity (full app)", () => {
             request._tag === WS_METHODS.terminalWrite && request.data === "bun install\r",
         ),
       ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each([
+    "load earlier",
+    "find",
+    "message link",
+    "cold message link",
+    "around older find",
+    "unscoped activities",
+  ] as const)("loads recent history first and retains complete history for %s", async (action) => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "old-history-target" as MessageId,
+      targetText: "Rare phrase in the oldest turn",
+    });
+    const thread = snapshot.threads[0]!;
+    const historyThread =
+      action === "around older find"
+        ? {
+            ...thread,
+            messages: thread.messages.map((message) => ({
+              ...message,
+              createdAt: "2026-10-04T00:00:00.000Z",
+            })),
+          }
+        : thread;
+    const originByMessageId = new Map(
+      historyThread.messages.map((message, index) => [
+        message.id,
+        { sequence: index + 1, rowId: index + 1 },
+      ]),
+    );
+    const userOriginsFor = (messages: typeof historyThread.messages) =>
+      Object.fromEntries(
+        messages
+          .filter((message) => message.role === "user")
+          .map((message) => [message.id, originByMessageId.get(message.id)!]),
+      );
+    const isMessageLink = action.endsWith("message link");
+    const isAroundHistory = isMessageLink || action === "around older find";
+    const recent = { ...historyThread, messages: historyThread.messages.slice(-20) };
+    const older = {
+      ...historyThread,
+      messages: historyThread.messages.slice(0, -20),
+      ...(action === "unscoped activities" ? { hasMoreActivities: true } : {}),
+    };
+    const around = {
+      ...historyThread,
+      messages: historyThread.messages.slice(
+        historyThread.messages.findIndex((message) => message.id === "old-history-target"),
+        historyThread.messages.findIndex((message) => message.id === "old-history-target") + 2,
+      ),
+    };
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+      ...(action === "cold message link"
+        ? { initialPath: `${serverThreadPath(THREAD_ID)}?message=old-history-target` }
+        : {}),
+      configureFixture: (fixture) => {
+        fixture.serverConfig = {
+          ...fixture.serverConfig,
+          threadSnapshotPagination: true,
+          threadSnapshotAroundMessage: true,
+          keybindings: [
+            {
+              command: "chat.find",
+              shortcut: {
+                key: "f",
+                modKey: true,
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+              },
+            },
+          ],
+        };
+        setServerConfigSnapshot(fixture.serverConfig);
+        fixture.threadSnapshot = {
+          snapshotSequence: 1,
+          thread: recent,
+          page: {
+            snapshotSequence: 1,
+            threadSequence: 1,
+            beforeCursor: "older-turns",
+            hasMore: true,
+            userOrigins: userOriginsFor(recent.messages),
+          },
+        };
+      },
+      resolveRpc: (body) =>
+        body._tag === ORCHESTRATION_WS_METHODS.getThreadActivities
+          ? {
+              activities: [
+                {
+                  id: EventId.make("unscoped-synthetic"),
+                  kind: "runtime.info",
+                  tone: "info",
+                  summary: "Unscoped synthetic history",
+                  turnId: null,
+                  payload: {},
+                  createdAt: NOW_ISO,
+                },
+              ],
+              hasMore: false,
+            }
+          : body._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot
+            ? {
+                snapshotSequence: 1,
+                thread: body.aroundMessageId === undefined ? older : around,
+                page: {
+                  snapshotSequence: 1,
+                  threadSequence: 1,
+                  beforeCursor: body.aroundMessageId === undefined ? null : "older-turns",
+                  hasMore: body.aroundMessageId !== undefined,
+                  userOrigins: userOriginsFor(
+                    body.aroundMessageId === undefined ? older.messages : around.messages,
+                  ),
+                },
+              }
+            : undefined,
+    });
+    try {
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.find((request) => request._tag === ORCHESTRATION_WS_METHODS.subscribeThread),
+        ).toMatchObject({ turnLimit: 10 });
+        if (action === "cold message link")
+          expect(
+            selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.length,
+          ).toBeGreaterThanOrEqual(20);
+        else expect(selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.length).toBe(20);
+      });
+      if (action !== "cold message link")
+        expect(
+          wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+          ),
+        ).toHaveLength(0);
+      if (isAroundHistory) {
+        if (action !== "cold message link")
+          await mounted.router.navigate({
+            to: "/$environmentId/$threadId",
+            params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: THREAD_ID },
+            search: { message: "old-history-target" },
+          });
+        await vi.waitFor(() => {
+          expect(selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.length).toBe(
+            20 + around.messages.length,
+          );
+          expect(
+            wsRequests.filter(
+              (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+            ),
+          ).toEqual([
+            expect.objectContaining({ aroundMessageId: "old-history-target", turnLimit: 1 }),
+          ]);
+        });
+        expect(
+          wsRequests.find((request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot),
+        ).toMatchObject({ aroundMessageId: "old-history-target", turnLimit: 1 });
+        expect(
+          selectEnvironmentState(useStore.getState(), LOCAL_ENVIRONMENT_ID).threadHistoryById?.[
+            THREAD_ID
+          ],
+        ).toMatchObject({ beforeCursor: "older-turns", hasMore: true });
+        if (isMessageLink) return;
+      }
+      if (action === "around older find") {
+        const timeline = document.querySelector<HTMLElement>(".overscroll-y-contain")!;
+        timeline.scrollTop = 0;
+        timeline.dispatchEvent(new Event("scroll"));
+        await waitForLayout();
+        const button = findButtonByText("Load older history");
+        expect(button).not.toBeNull();
+        button!.click();
+      } else if (action === "find") {
+        dispatchChatFindShortcut();
+        await waitForLayout();
+        expect(
+          wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+          ),
+        ).toHaveLength(0);
+        await page.getByPlaceholder(/Find in chat/).fill("Rare phrase in the oldest turn");
+      } else {
+        const timeline = document.querySelector<HTMLElement>(".overscroll-y-contain")!;
+        timeline.scrollTop = 0;
+        timeline.dispatchEvent(new Event("scroll"));
+        await waitForLayout();
+        const button = findButtonByText("Load older history");
+        button?.click();
+      }
+      await vi.waitFor(() => {
+        expect(selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.length).toBe(
+          historyThread.messages.length,
+        );
+        expect(
+          wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+          ),
+        ).toHaveLength(action === "around older find" ? 2 : 1);
+      });
+      expect(
+        selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.map((message) => message.id),
+      ).toEqual(historyThread.messages.map((message) => message.id));
+      if (action === "around older find") {
+        expect(
+          wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+          ),
+        ).toEqual([
+          expect.objectContaining({ aroundMessageId: "old-history-target", turnLimit: 1 }),
+          expect.objectContaining({ beforeCursor: "older-turns", turnLimit: 20 }),
+        ]);
+        expect(
+          selectEnvironmentState(useStore.getState(), LOCAL_ENVIRONMENT_ID).threadHistoryById?.[
+            THREAD_ID
+          ],
+        ).toMatchObject({ beforeCursor: null, hasMore: false, loadingOlder: false });
+        const renderedRows = Array.from(
+          document.querySelectorAll<HTMLElement>('[data-timeline-root="true"] [data-message-id]'),
+          (element) => ({
+            id: element.dataset.messageId,
+            top: element.getBoundingClientRect().top,
+          }),
+        ).filter((row): row is { id: string; top: number } => row.id !== undefined);
+        const fullOrder = new Map(
+          historyThread.messages.map((message, index) => [String(message.id), index]),
+        );
+        const renderedOrder = renderedRows
+          .toSorted((left, right) => left.top - right.top)
+          .map((row) => fullOrder.get(row.id));
+        const knownOrder = renderedOrder.filter((index): index is number => index !== undefined);
+        expect(knownOrder).toHaveLength(renderedOrder.length);
+        expect(knownOrder).toEqual([...knownOrder].sort((left, right) => left - right));
+        dispatchChatFindShortcut();
+        await waitForLayout();
+        await page.getByPlaceholder(/Find in chat/).fill("Rare phrase in the oldest turn");
+      } else if (action === "find")
+        await expect.element(page.getByText("1 of 1", { exact: true })).toBeVisible();
+      if (action === "around older find") {
+        await expect.element(page.getByText("1 of 1", { exact: true })).toBeVisible();
+        expect(
+          wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+          ),
+        ).toHaveLength(2);
+      }
+      if (action === "unscoped activities") {
+        await waitForLayout();
+        const timeline = document.querySelector<HTMLElement>(".overscroll-y-contain")!;
+        timeline.scrollTop = 0;
+        timeline.dispatchEvent(new Event("scroll"));
+        await waitForLayout();
+        const button = findButtonByText("Load older history");
+        expect(button).not.toBeNull();
+        button!.click();
+        await vi.waitFor(() =>
+          expect(
+            wsRequests.some(
+              (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadActivities,
+            ),
+          ).toBe(true),
+        );
+        const request = wsRequests.find(
+          (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadActivities,
+        )!;
+        expect(request).not.toHaveProperty("beforeCreatedAt");
+        expect(request).not.toHaveProperty("beforeActivityId");
+        expect(request).not.toHaveProperty("turnId");
+      }
     } finally {
       await mounted.cleanup();
     }

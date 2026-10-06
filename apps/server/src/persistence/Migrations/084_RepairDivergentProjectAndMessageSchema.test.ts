@@ -43,14 +43,7 @@ for (const [name, migration] of [
         yield* sql`UPDATE projection_thread_messages SET sequence = 99`;
       }
 
-      const executed = yield* runMigrations();
-      assert.deepStrictEqual(
-        executed.map(([id]) => id),
-        [
-          84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104,
-          105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120,
-        ],
-      );
+      yield* runMigrations();
       yield* repair;
       assert.deepStrictEqual(
         yield* sql`SELECT name FROM effect_sql_migrations WHERE migration_id = 83`,

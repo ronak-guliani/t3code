@@ -4,10 +4,12 @@ import {
   type OrchestrationEvent,
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamEvent,
+  type OrchestrationThreadStreamItem,
   type ServerConfig,
   type SidebarStateSnapshot,
   type TerminalEvent,
   ThreadId,
+  type MessageId,
 } from "@t3tools/contracts";
 import { type QueryClient } from "@tanstack/react-query";
 import { Throttler } from "@tanstack/react-pacer";
@@ -63,6 +65,7 @@ import {
   selectSidebarThreadSummaryByRef,
   selectThreadByRef,
   selectThreadExistsByRef,
+  selectEnvironmentState,
 } from "~/store";
 import { useTerminalStateStore } from "~/terminalStateStore";
 import { isPendingTurnActive, usePendingTurnStore } from "~/pendingTurnStore";
@@ -81,6 +84,30 @@ import {
 } from "../../logicalProject";
 import { getClientSettings } from "~/hooks/useSettings";
 import { reportClientError } from "~/lib/clientLogger";
+import { getServerConfig } from "~/rpc/serverState";
+import {
+  INITIAL_THREAD_USER_TURN_LIMIT,
+  OLDER_THREAD_PAGE_USER_TURN_LIMIT,
+} from "@t3tools/shared/threadHistory";
+import {
+  createHistoryPager,
+  reduceHistoryPager,
+  isHistoryCursorExpired,
+  THREAD_HISTORY_PAGE_WAIT_TIMEOUT_MS,
+  type HistoryPagerState,
+  type HistoryPagerInput,
+} from "@t3tools/shared/threadHistoryState";
+
+type ThreadHistoryRuntime = {
+  state: HistoryPagerState;
+  request: Promise<void> | null;
+  requestKey: string | null;
+  supportsAround: boolean;
+  waiters: Map<number, () => void>;
+  snapshotWaiters: Set<() => void>;
+  flush: () => void;
+  transition: (input: HistoryPagerInput) => void;
+};
 
 type EnvironmentServiceState = {
   readonly queryClient: QueryClient;
@@ -97,6 +124,7 @@ type ThreadDetailSubscriptionEntry = {
   refCount: number;
   lastAccessedAt: number;
   evictionTimeoutId: ReturnType<typeof setTimeout> | null;
+  history: ThreadHistoryRuntime | null;
 };
 
 const environmentConnections = new Map<EnvironmentId, EnvironmentConnection>();
@@ -309,6 +337,179 @@ function isThreadDetailSubscriptionAttachable(entry: ThreadDetailSubscriptionEnt
   );
 }
 
+export function loadOlderThreadHistory(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  turnLimit = OLDER_THREAD_PAGE_USER_TURN_LIMIT,
+): Promise<void> {
+  return loadThreadHistoryPage(environmentId, threadId, { kind: "older", turnLimit });
+}
+
+function waitForHistorySnapshot(history: ThreadHistoryRuntime): Promise<void> {
+  if (!history.state.needsSnapshot) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      clearTimeout(timer);
+      history.snapshotWaiters.delete(finish);
+      if (history.state.needsSnapshot) reject(new Error("History is unavailable"));
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      history.snapshotWaiters.delete(finish);
+      reject(new Error("History is unavailable"));
+    }, THREAD_HISTORY_PAGE_WAIT_TIMEOUT_MS);
+    history.snapshotWaiters.add(finish);
+  });
+}
+
+function loadThreadHistoryPage(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  window: { kind: "older"; turnLimit: number } | { kind: "around"; messageId: MessageId },
+): Promise<void> {
+  const entry = threadDetailSubscriptions.get(
+    getThreadDetailSubscriptionKey(environmentId, threadId),
+  );
+  const history = entry?.history;
+  const connection = readEnvironmentConnection(environmentId);
+  if (!entry || !history || !connection) return Promise.reject(new Error("History is unavailable"));
+  history.flush();
+  if (history.state.needsSnapshot)
+    return waitForHistorySnapshot(history).then(() =>
+      loadThreadHistoryPage(environmentId, threadId, window),
+    );
+  const page = history.state.page;
+  if (window.kind === "older" && page && !page.hasMore) return Promise.resolve();
+  if (!page || (window.kind === "older" && !page.beforeCursor))
+    return Promise.reject(new Error("History is unavailable"));
+  const key = window.kind === "older" ? `older:${page.beforeCursor}` : `around:${window.messageId}`;
+  if (history.request)
+    return history.requestKey === key
+      ? history.request
+      : history.request.then(() => loadThreadHistoryPage(environmentId, threadId, window));
+  history.transition({ type: "request", kind: window.kind });
+  const requestId = history.state.pending?.id;
+  if (requestId === undefined) return Promise.reject(new Error("History is unavailable"));
+  const request = (async () => {
+    try {
+      const invalidated = new Promise<undefined>((resolve) => {
+        history.waiters.set(requestId, () => resolve(undefined));
+      });
+      const snapshot = await Promise.race([
+        connection.client.orchestration.getThreadSnapshot({
+          threadId,
+          ...(window.kind === "older"
+            ? { turnLimit: window.turnLimit, beforeCursor: page.beforeCursor! }
+            : { turnLimit: 1, aroundMessageId: window.messageId }),
+        }),
+        invalidated,
+      ]);
+      history.waiters.delete(requestId);
+      if (snapshot === undefined || history.state.pending?.id !== requestId) return;
+      history.transition({ type: "page", snapshot, requestId });
+      if (history.state.pending?.id === requestId)
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(
+            () =>
+              history.transition({
+                type: "failure",
+                requestId,
+                message: "Earlier history timed out. Please retry.",
+              }),
+            THREAD_HISTORY_PAGE_WAIT_TIMEOUT_MS,
+          );
+          history.waiters.set(requestId, () => {
+            clearTimeout(timer);
+            resolve();
+          });
+        });
+      if (history.state.error) throw new Error(history.state.error);
+    } catch (error) {
+      const expired = isHistoryCursorExpired(error);
+      history.transition({
+        type: "failure",
+        requestId,
+        message: error instanceof Error ? error.message : "History is unavailable",
+        expired,
+      });
+      if (expired) {
+        await waitForHistorySnapshot(history);
+        return;
+      }
+      throw error;
+    }
+  })();
+  history.request = request;
+  history.requestKey = key;
+  const release = () => {
+    if (history.request === request) {
+      history.request = null;
+      history.requestKey = null;
+    }
+  };
+  void request.then(release, release);
+  return request;
+}
+
+export async function loadCompleteThreadHistory(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  shouldContinue: () => boolean = () => true,
+): Promise<void> {
+  while (shouldContinue()) {
+    const history = threadDetailSubscriptions.get(
+      getThreadDetailSubscriptionKey(environmentId, threadId),
+    )?.history;
+    if (
+      !history &&
+      selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[threadId]
+        ?.hasMore
+    )
+      throw new Error("History is unavailable");
+    history?.flush();
+    if (history?.state.needsSnapshot) {
+      await waitForHistorySnapshot(history);
+      continue;
+    }
+    const page = history?.state.page;
+    if (!page?.hasMore) return;
+    const before = page.beforeCursor;
+    const epoch = history?.state.epoch;
+    await loadOlderThreadHistory(environmentId, threadId);
+    if (history?.state.epoch !== epoch) continue;
+    const after = history?.state.page;
+    if (history?.state.error) throw new Error(history.state.error);
+    if (after?.hasMore && after.beforeCursor === before)
+      throw new Error("History is unavailable: the history window did not advance.");
+  }
+}
+
+export async function loadThreadHistoryAroundMessage(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  messageId: MessageId,
+): Promise<void> {
+  const ref = scopeThreadRef(environmentId, threadId);
+  if (
+    selectThreadByRef(useStore.getState(), ref)?.messages.some(
+      (message) => message.id === messageId,
+    )
+  )
+    return;
+  const history = threadDetailSubscriptions.get(
+    getThreadDetailSubscriptionKey(environmentId, threadId),
+  )?.history;
+  if (history?.supportsAround)
+    await loadThreadHistoryPage(environmentId, threadId, { kind: "around", messageId });
+  else await loadCompleteThreadHistory(environmentId, threadId);
+  if (
+    !selectThreadByRef(useStore.getState(), ref)?.messages.some(
+      (message) => message.id === messageId,
+    )
+  )
+    throw new Error("Historical message is unavailable");
+}
+
 function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): boolean {
   if (entry.unsubscribe !== NOOP) {
     stopWatchingThreadDetailSubscriptionReadiness(entry);
@@ -319,11 +520,183 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
   if (!connection || !isThreadDetailSubscriptionAttachable(entry)) {
     return false;
   }
+  const ref = scopeThreadRef(entry.environmentId, entry.threadId);
+  const retainedTurns =
+    selectThreadByRef(useStore.getState(), ref)?.messages.filter(
+      (message) => message.role === "user",
+    ).length ?? 0;
+  const history: ThreadHistoryRuntime = entry.history ?? {
+    state: { ...createHistoryPager(), loadedTurns: retainedTurns, requestedTurns: retainedTurns },
+    request: null,
+    requestKey: null,
+    supportsAround: false,
+    waiters: new Map(),
+    snapshotWaiters: new Set(),
+    flush: NOOP,
+    transition: NOOP,
+  };
+  entry.history = history;
+  let cancelled = false;
+  let batchedEvents: OrchestrationEvent[] | null = null;
+  let removedMessages = 0;
+  let changedDepth = false;
+  const applyHistoryEvents = (events: readonly OrchestrationEvent[]) => {
+    if (
+      !events.some(
+        (event) => event.type === "thread.message-sent" || event.type === "thread.reverted",
+      )
+    ) {
+      applyRecoveredEventBatch(events, entry.environmentId);
+      return;
+    }
+    const ids = new Set(selectThreadByRef(useStore.getState(), ref)?.messages.map((m) => m.id));
+    for (const event of events)
+      if (event.type === "thread.message-sent") ids.add(event.payload.messageId);
+    applyRecoveredEventBatch(events, entry.environmentId);
+    const after = selectThreadByRef(useStore.getState(), ref);
+    if (after) removedMessages += Math.max(0, ids.size - after.messages.length);
+  };
+  const flushEventBatch = () => {
+    if (batchedEvents?.length) {
+      const events = batchedEvents;
+      batchedEvents = [];
+      applyHistoryEvents(events);
+    }
+  };
+  const retainWindow = () => {
+    if (!changedDepth && removedMessages === 0) return;
+    changedDepth = false;
+    const thread = selectThreadByRef(useStore.getState(), ref);
+    if (!thread) {
+      removedMessages = 0;
+      return;
+    }
+    if (!history.state.page) {
+      removedMessages = 0;
+      return;
+    }
+    const removedCount = removedMessages;
+    removedMessages = 0;
+    history.transition({
+      type: "retained",
+      thread,
+      removedCount,
+    });
+  };
+  let reloadQueued = false;
+  const reload = () => {
+    if (reloadQueued || cancelled) return;
+    reloadQueued = true;
+    queueMicrotask(() => {
+      if (
+        cancelled ||
+        threadDetailSubscriptions.get(
+          getThreadDetailSubscriptionKey(entry.environmentId, entry.threadId),
+        ) !== entry
+      )
+        return;
+      entry.unsubscribe();
+      entry.unsubscribe = NOOP;
+      attachThreadDetailSubscription(entry);
+    });
+  };
+  const restoreDepth = async () => {
+    while (
+      history.state.loadedTurns < history.state.requestedTurns &&
+      history.state.page?.hasMore
+    ) {
+      if (cancelled) return;
+      const before = history.state.page.beforeCursor;
+      await loadOlderThreadHistory(
+        entry.environmentId,
+        entry.threadId,
+        Math.min(
+          OLDER_THREAD_PAGE_USER_TURN_LIMIT,
+          history.state.requestedTurns - history.state.loadedTurns,
+        ),
+      );
+      if (before === history.state.page?.beforeCursor) break;
+    }
+  };
+  history.transition = (input) => {
+    const previous = history.state;
+    const result = reduceHistoryPager(previous, input);
+    history.state = result.state;
+    for (const effect of result.effects) {
+      if (effect.type === "apply-event") {
+        if (
+          effect.event.type === "thread.reverted" ||
+          (effect.event.type === "thread.message-sent" && effect.event.payload.role === "user")
+        )
+          changedDepth = true;
+        if (batchedEvents) batchedEvents.push(effect.event);
+        else applyHistoryEvents([effect.event]);
+      } else {
+        flushEventBatch();
+        if (effect.type === "replace-snapshot" || effect.type === "merge-page") changedDepth = true;
+        if (effect.type === "replace-snapshot")
+          useStore.getState().syncServerThreadSnapshot(effect.snapshot, entry.environmentId);
+        if (effect.type === "merge-page")
+          useStore
+            .getState()
+            .mergeOlderThreadSnapshot(
+              effect.snapshot,
+              entry.environmentId,
+              effect.events,
+              result.state.page,
+            );
+        if (effect.type === "reload") reload();
+      }
+    }
+    if (!batchedEvents && input.type !== "retained") retainWindow();
+    if (previous.pending?.id !== history.state.pending?.id && previous.pending) {
+      history.waiters.get(previous.pending.id)?.();
+      history.waiters.delete(previous.pending.id);
+    }
+    useStore.getState().projectThreadHistoryPager(ref, history.state);
+    if (input.type === "snapshot") {
+      for (const finish of history.snapshotWaiters) finish();
+      void restoreDepth().catch((error) =>
+        useStore
+          .getState()
+          .setThreadHistoryLoading(
+            ref,
+            false,
+            error instanceof Error ? error.message : "History is unavailable",
+          ),
+      );
+    }
+    if (
+      result.effects.some(
+        (effect) => effect.type === "replace-snapshot" || effect.type === "merge-page",
+      )
+    )
+      reconcilePendingThreadState(ref);
+  };
+  const applyDetailEvents = (
+    frames: Extract<OrchestrationThreadStreamItem, { kind: "event" }>[],
+  ) => {
+    batchedEvents = [];
+    for (const item of frames)
+      history.transition({
+        type: "event",
+        event: item.event,
+        ...(item.messageOrigin === undefined ? {} : { messageOrigin: item.messageOrigin }),
+        loadedMessageIds:
+          item.event.type === "thread.message-sent"
+            ? (selectThreadByRef(useStore.getState(), ref)?.messages.map((message) => message.id) ??
+              [])
+            : [],
+      });
+    flushEventBatch();
+    batchedEvents = null;
+    retainWindow();
+  };
 
   // Streaming turns emit high-frequency deltas; buffer trailing events for a
   // short window so the store applies them as one batch. The first event of a
   // burst still applies synchronously to keep isolated events latency-free.
-  let pendingEvents: OrchestrationEvent[] | null = null;
+  let pendingEvents: Extract<OrchestrationThreadStreamItem, { kind: "event" }>[] | null = null;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   const flushPendingEvents = () => {
     if (flushTimer !== null) {
@@ -333,47 +706,121 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
     const buffered = pendingEvents;
     pendingEvents = null;
     if (buffered !== null && buffered.length > 0) {
-      applyRecoveredEventBatch(buffered, entry.environmentId);
+      applyDetailEvents(buffered);
     }
   };
+  history.flush = flushPendingEvents;
 
-  const unsubscribeTransport = connection.client.orchestration.subscribeThread(
-    { threadId: entry.threadId },
-    (item) => {
-      if (item.kind === "snapshot") {
-        flushPendingEvents();
-        useStore.getState().syncServerThreadDetail(item.snapshot.thread, entry.environmentId);
-        reconcilePendingThreadState(scopeThreadRef(entry.environmentId, entry.threadId));
-        return;
-      }
-      if (item.kind === "synchronized") {
-        return;
-      }
-      // Preserve event order while keeping queue acknowledgements and accepted
-      // starts out of the token-delta coalescing window.
-      if (
-        item.event.type.startsWith("thread.queued-turn-") ||
-        item.event.type === "thread.queue-held" ||
-        item.event.type === "thread.queue-released" ||
-        item.event.type === "thread.turn-start-requested"
-      ) {
-        flushPendingEvents();
-        applyRecoveredEventBatch([item.event], entry.environmentId);
-        return;
-      }
-      if (flushTimer === null) {
-        applyRecoveredEventBatch([item.event], entry.environmentId);
-        if (THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS <= 0) {
+  let unsubscribeTransport: () => void = NOOP;
+  const subscribe = (
+    supportsPagination: boolean,
+    supportsResume: boolean,
+    supportsAround = false,
+  ) => {
+    if (cancelled) return;
+    history.supportsAround = supportsAround;
+    unsubscribeTransport = connection.client.orchestration.subscribeThread(
+      supportsPagination || supportsResume
+        ? () => ({
+            threadId: entry.threadId,
+            ...(supportsPagination
+              ? {
+                  turnLimit: Math.min(
+                    100,
+                    Math.max(INITIAL_THREAD_USER_TURN_LIMIT, history.state.requestedTurns),
+                  ),
+                }
+              : {}),
+            ...(supportsResume &&
+            history.state.hasSnapshot &&
+            !history.state.needsSnapshot &&
+            (supportsPagination || history.state.page === null)
+              ? { afterSequence: history.state.sequence, requestCompletionMarker: true }
+              : {}),
+          })
+        : { threadId: entry.threadId },
+      (item) => {
+        if (cancelled) return;
+        if (item.kind === "snapshot") {
+          flushPendingEvents();
+          history.transition({ type: "snapshot", snapshot: item.snapshot });
           return;
         }
-        pendingEvents = [];
-        flushTimer = setTimeout(flushPendingEvents, THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS);
-        return;
-      }
-      pendingEvents!.push(item.event);
-    },
-  );
+        if (item.kind === "synchronized") {
+          flushPendingEvents();
+          history.transition({
+            type: "synchronized",
+            ...(item.sequence === undefined ? {} : { sequence: item.sequence }),
+          });
+          return;
+        }
+        if (
+          item.event.type === "thread.reverted" &&
+          selectEnvironmentState(useStore.getState(), entry.environmentId).threadHistoryById?.[
+            entry.threadId
+          ]
+        ) {
+          flushPendingEvents();
+          applyDetailEvents([item]);
+          return;
+        }
+        // Preserve event order while keeping queue acknowledgements and accepted
+        // starts out of the token-delta coalescing window.
+        if (
+          item.event.type.startsWith("thread.queued-turn-") ||
+          item.event.type === "thread.queue-held" ||
+          item.event.type === "thread.queue-released" ||
+          item.event.type === "thread.turn-start-requested"
+        ) {
+          flushPendingEvents();
+          applyDetailEvents([item]);
+          return;
+        }
+        if (flushTimer === null) {
+          applyDetailEvents([item]);
+          if (THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS <= 0) {
+            return;
+          }
+          pendingEvents = [];
+          flushTimer = setTimeout(flushPendingEvents, THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS);
+          return;
+        }
+        pendingEvents!.push(item);
+      },
+    );
+  };
+  const getConfig = connection.client.server?.getConfig;
+  const primaryConfig = connection.kind === "primary" ? getServerConfig() : null;
+  if (primaryConfig?.environment.environmentId === entry.environmentId)
+    subscribe(
+      primaryConfig.threadSnapshotPagination === true,
+      primaryConfig.threadResumeCompletionMarker === true,
+      primaryConfig.threadSnapshotAroundMessage === true,
+    );
+  else if (getConfig)
+    void getConfig()
+      .then((config) =>
+        subscribe(
+          config.threadSnapshotPagination === true,
+          config.threadResumeCompletionMarker === true,
+          config.threadSnapshotAroundMessage === true,
+        ),
+      )
+      .catch(() => subscribe(false, false));
+  else subscribe(false, false);
   entry.unsubscribe = () => {
+    cancelled = true;
+    history.transition({ type: "invalidate", reload: false });
+    history.request = null;
+    history.requestKey = null;
+    useStore.getState().setThreadHistoryLoading(ref, false);
+    if (
+      threadDetailSubscriptions.get(
+        getThreadDetailSubscriptionKey(entry.environmentId, entry.threadId),
+      ) !== entry
+    ) {
+      for (const finish of history.snapshotWaiters) finish();
+    }
     if (flushTimer !== null) {
       clearTimeout(flushTimer);
       flushTimer = null;
@@ -557,6 +1004,7 @@ export function retainThreadDetailSubscription(
     refCount: 1,
     lastAccessedAt: Date.now(),
     evictionTimeoutId: null,
+    history: null,
   };
   threadDetailSubscriptions.set(key, entry);
   if (!attachThreadDetailSubscription(entry)) {

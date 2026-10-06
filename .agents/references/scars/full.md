@@ -59,6 +59,8 @@
 
 ## Desktop packaging and React state
 
+- Vite real-client probes must import the app's already-loaded module URL, including its HMR query, and use production selectors; an unversioned import can create a second empty store. Increase the resource-timing buffer before deriving module URLs from its entries.
+
 - Gate Windows caption-button clearance on an open inline panel, not on the permanent toggle rail; the rail alone is narrower than the caption controls.
 
 - Agent-managed terminal starts/restarts must register without opening the drawer or stealing selection. Worklog shortcuts must resolve explicit IDs against live metadata scoped to the environment and thread, not persisted UI IDs; retained foreground commands can run as the PTY root with no child subprocess, so use session status rather than child activity to determine whether their terminal is live.
@@ -344,6 +346,7 @@
 - Generated columns are hidden from `PRAGMA table_info` (use `table_xinfo`): a `table_info` idempotency guard re-runs `ADD COLUMN` and fails with a duplicate column error, and migration tests asserting via `table_info` pass vacuously. Guard and assert generated columns with `table_xinfo`.
 - Generated column expressions must be total over real rows: `json_extract` throws `malformed JSON` on invalid payloads, which fails the INSERT (snapshot capping happens before decode, so invalid rows legitimately exist). Guard extractions with `json_valid`.
 - `NodeSqliteClient` decides reader vs writer via `statement.columns().length`: preparing `ALTER ... ADD COLUMN ... STORED` reports a `raise(ABORT, 'cannot add a STORED column')` pseudo-column, so a pure-write DDL takes the `.all()` reader path. It still applies today, but DDL behavior depends on statement-shape sniffing rather than intent — prefer metadata-only changes such as VIRTUAL generated columns, and assert the resulting schema in the migration test, not just a clean run.
+- Concurrent branch migrations must keep globally unique migration IDs: preserve IDs already merged to main, renumber only unpublished migrations, and update the registry plus historical-upgrade fixtures together. Verify the resulting ID/name ledger and index definitions on an upgraded database.
 
 ## Client state and completion
 
@@ -376,6 +379,10 @@
 
 ## Projection performance and service composition
 
+- Message sequences are event-global, but provider activity sequences can be session-local. Scope turn activity reads by turn ownership, cap each seek before payload/blob decoding, and page unscoped activity history independently from the newest global boundary.
+- Keep paged retention finite: explicit loads establish collection floors, not unlimited streaming budgets. Use one shared pager for fencing/watermarks/reload depth; classify excluded deltas by first-message provenance, preserve legacy NULL origins, and refresh removed anchors rather than retrying them. Empty Find must not fetch history.
+- Turn-history windows must select user anchors and associated rows in SQL before decoding checkpoint/activity JSON. Order legacy NULL sequences by rowid ahead of sequenced rows; timestamp ties cannot define a cursor.
+- Older pages keep loaded/live overlaps authoritative and replay withheld message deltas only after the page's thread-detail watermark. A global snapshot watermark may include events the thread stream never emits; reverts must fence in-flight pages and replace removed anchor cursors with a fresh snapshot.
 - Latest-N-per-thread startup reads must use indexed bounded seeks, not global window ranking over discarded history. Check index presence on upgraded/divergent ledgers as well as fresh databases; a later migration ID can coexist with a skipped index migration.
 - Shell-summary refreshes must only run for events that can change shell fields. The shell stream and reconciler must share the same activity predicate, plus `task.completed` always (it can settle a run) and `task.started` only when the payload carries taskType background-agent.
 - Shell stream mapping must skip `thread.activity-appended` events whose kind cannot change shell fields; otherwise every streaming activity costs a five-query shell re-read plus a WS upsert, consuming bounded read-pool capacity and spamming subscribers.

@@ -16,10 +16,20 @@ import type {
   OrchestrationThread,
   OrchestrationThreadShell,
   OrchestrationThreadActivity,
+  OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadDetailPage,
+  OrchestrationMessageOrigin,
   ProjectId,
   ScopedProjectRef,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import { mergeHistoryCollections } from "@t3tools/shared/threadHistory";
+import {
+  historyRetentionLimits,
+  DEFAULT_HISTORY_RETENTION,
+  type HistoryRetentionLimits,
+  type HistoryPagerState,
+} from "@t3tools/shared/threadHistoryState";
 import {
   applyWorkflowRuntimeEvent,
   createWorkflowRuntimeState,
@@ -66,7 +76,18 @@ import { isInsightActivity } from "./insights";
 
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
+export interface ThreadHistoryPageState {
+  beforeCursor: string | null;
+  hasMore: boolean;
+  loadingOlder: boolean;
+  error: string | null;
+  retention?: HistoryRetentionLimits;
+  windowStart?: OrchestrationMessageOrigin | null | undefined;
+  userOrigins?: Readonly<Record<string, OrchestrationMessageOrigin>> | undefined;
+}
+
 export interface EnvironmentState {
+  threadHistoryById?: Record<ThreadId, ThreadHistoryPageState>;
   projectIds: ProjectId[];
   projectById: Record<ProjectId, Project>;
 
@@ -170,10 +191,10 @@ const initialState: AppState = {
   environmentStateById: {},
 };
 
-const MAX_THREAD_MESSAGES = 2_000;
-const MAX_THREAD_CHECKPOINTS = 500;
-const MAX_THREAD_PROPOSED_PLANS = 200;
-const MAX_THREAD_ACTIVITIES = 500;
+const MAX_THREAD_MESSAGES = DEFAULT_HISTORY_RETENTION.messages;
+const MAX_THREAD_CHECKPOINTS = DEFAULT_HISTORY_RETENTION.checkpoints;
+const MAX_THREAD_PROPOSED_PLANS = DEFAULT_HISTORY_RETENTION.proposedPlans;
+const MAX_THREAD_ACTIVITIES = DEFAULT_HISTORY_RETENTION.activities;
 const MAX_THREAD_INSIGHT_TURNS = 500;
 const EMPTY_ACTIVITY_CONTEXT: readonly OrchestrationThreadActivity[] = [];
 const EMPTY_INSIGHT_ACTIVITIES: readonly OrchestrationThreadActivity[] = [];
@@ -1240,6 +1261,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedTurnDiffs, ...turnDiffSummaryByThreadId } =
     state.turnDiffSummaryByThreadId;
   const { [threadId]: _removedQueuedTurns, ...queuedTurnsByThreadId } = state.queuedTurnsByThreadId;
+  const { [threadId]: _removedHistory, ...threadHistoryById } = state.threadHistoryById ?? {};
   const { [threadId]: _removedReviewState, ...reviewStateByThreadId } =
     state.reviewStateByThreadId ?? {};
   const { [threadId]: _removedSidebarSummary, ...sidebarThreadSummaryById } =
@@ -1266,6 +1288,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     turnDiffIdsByThreadId,
     turnDiffSummaryByThreadId,
     queuedTurnsByThreadId,
+    ...(state.threadHistoryById ? { threadHistoryById } : {}),
     reviewStateByThreadId,
     sidebarThreadSummaryById,
   };
@@ -1600,8 +1623,13 @@ function updateThreadMessageState(
   };
   if (previousMessage === undefined) {
     nextMessageIds = [...messageIds, message.id];
-    if (nextMessageIds.length > MAX_THREAD_MESSAGES) {
-      const overflow = nextMessageIds.length - MAX_THREAD_MESSAGES;
+    if (
+      nextMessageIds.length >
+      (state.threadHistoryById?.[threadId]?.retention?.messages ?? MAX_THREAD_MESSAGES)
+    ) {
+      const overflow =
+        nextMessageIds.length -
+        (state.threadHistoryById?.[threadId]?.retention?.messages ?? MAX_THREAD_MESSAGES);
       for (const messageId of nextMessageIds.slice(0, overflow)) {
         delete nextMessagesById[messageId];
       }
@@ -1832,6 +1860,9 @@ function syncEnvironmentShellSnapshot(
       nextThreadIds,
     ),
     proposedPlanByThreadId: retainThreadScopedRecord(state.proposedPlanByThreadId, nextThreadIds),
+    ...(state.threadHistoryById
+      ? { threadHistoryById: retainThreadScopedRecord(state.threadHistoryById, nextThreadIds) }
+      : {}),
     turnDiffIdsByThreadId: retainThreadScopedRecord(state.turnDiffIdsByThreadId, nextThreadIds),
     turnDiffSummaryByThreadId: retainThreadScopedRecord(
       state.turnDiffSummaryByThreadId,
@@ -1879,6 +1910,92 @@ export function syncServerThreadDetail(
     threadDetailHydratedById: {
       ...nextEnvironmentState.threadDetailHydratedById,
       [thread.id]: true,
+    },
+  });
+}
+
+export function syncServerThreadSnapshot(
+  state: AppState,
+  snapshot: OrchestrationThreadDetailSnapshot,
+  environmentId: EnvironmentId,
+): AppState {
+  const synced = syncServerThreadDetail(state, snapshot.thread, environmentId);
+  const env = getStoredEnvironmentState(synced, environmentId);
+  const threadHistoryById = { ...env.threadHistoryById };
+  if (snapshot.page === undefined) delete threadHistoryById[snapshot.thread.id];
+  else
+    threadHistoryById[snapshot.thread.id] = {
+      beforeCursor: snapshot.page.beforeCursor,
+      hasMore: snapshot.page.hasMore,
+      loadingOlder: false,
+      error: null,
+      retention: historyRetentionLimits(snapshot.thread),
+      windowStart: snapshot.page.windowStart,
+      userOrigins: snapshot.page.userOrigins,
+    };
+  return commitEnvironmentState(synced, environmentId, { ...env, threadHistoryById });
+}
+
+export function mergeOlderThreadSnapshot(
+  state: AppState,
+  snapshot: OrchestrationThreadDetailSnapshot,
+  environmentId: EnvironmentId,
+  events: readonly OrchestrationEvent[] = [],
+  page?: OrchestrationThreadDetailPage | null,
+): AppState {
+  const env = getStoredEnvironmentState(state, environmentId);
+  const current = getThreadFromEnvironmentState(env, snapshot.thread.id);
+  if (!current) return state;
+  const older = mapThread(snapshot.thread, environmentId);
+  const collections = mergeHistoryCollections(
+    { ...older, checkpoints: older.turnDiffSummaries },
+    { ...current, checkpoints: current.turnDiffSummaries },
+    {
+      older: snapshot.page?.userOrigins ?? {},
+      loaded: env.threadHistoryById?.[snapshot.thread.id]?.userOrigins ?? {},
+    },
+  );
+  let merged = writeThreadState(
+    env,
+    {
+      ...current,
+      hasMoreActivities: current.hasMoreActivities === true || older.hasMoreActivities === true,
+      hasMoreCurrentTurnActivities:
+        current.hasMoreCurrentTurnActivities === true ||
+        (current.latestTurn?.turnId === older.latestTurn?.turnId &&
+          older.hasMoreCurrentTurnActivities === true),
+      messages: collections.messages,
+      activities: collections.activities,
+      proposedPlans: collections.proposedPlans,
+      turnDiffSummaries: collections.checkpoints,
+    },
+    current,
+  );
+  for (const event of events) {
+    merged = applyEnvironmentOrchestrationEvent(merged, event, environmentId);
+  }
+  const mergedThread = getThreadFromEnvironmentState(merged, snapshot.thread.id)!;
+  const previousPage = merged.threadHistoryById?.[snapshot.thread.id];
+  const nextPage = page ?? previousPage;
+  return commitEnvironmentState(state, environmentId, {
+    ...merged,
+    threadHistoryById: {
+      ...merged.threadHistoryById,
+      [snapshot.thread.id]: {
+        ...previousPage,
+        beforeCursor: nextPage?.beforeCursor ?? null,
+        hasMore: nextPage?.hasMore ?? false,
+        windowStart: nextPage?.windowStart,
+        userOrigins: nextPage?.userOrigins,
+        loadingOlder: false,
+        error: null,
+        retention: historyRetentionLimits({
+          messages: mergedThread.messages,
+          activities: mergedThread.activities,
+          checkpoints: mergedThread.turnDiffSummaries,
+          proposedPlans: mergedThread.proposedPlans,
+        }),
+      },
     },
   });
 }
@@ -2370,7 +2487,12 @@ function applyEnvironmentOrchestrationEvent(
             (left, right) =>
               left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
           )
-          .slice(-MAX_THREAD_PROPOSED_PLANS);
+          .slice(
+            -(
+              state.threadHistoryById?.[thread.id]?.retention?.proposedPlans ??
+              MAX_THREAD_PROPOSED_PLANS
+            ),
+          );
         return {
           ...thread,
           proposedPlans,
@@ -2411,7 +2533,11 @@ function applyEnvironmentOrchestrationEvent(
               (left.checkpointTurnCount ?? Number.MAX_SAFE_INTEGER) -
               (right.checkpointTurnCount ?? Number.MAX_SAFE_INTEGER),
           )
-          .slice(-MAX_THREAD_CHECKPOINTS);
+          .slice(
+            -(
+              state.threadHistoryById?.[thread.id]?.retention?.checkpoints ?? MAX_THREAD_CHECKPOINTS
+            ),
+          );
         const latestTurn =
           thread.latestTurn === null || thread.latestTurn.turnId === event.payload.turnId
             ? buildLatestTurn({
@@ -2446,17 +2572,28 @@ function applyEnvironmentOrchestrationEvent(
               (left.checkpointTurnCount ?? Number.MAX_SAFE_INTEGER) -
               (right.checkpointTurnCount ?? Number.MAX_SAFE_INTEGER),
           )
-          .slice(-MAX_THREAD_CHECKPOINTS);
+          .slice(
+            -(
+              state.threadHistoryById?.[thread.id]?.retention?.checkpoints ?? MAX_THREAD_CHECKPOINTS
+            ),
+          );
         const retainedTurnIds = new Set(turnDiffSummaries.map((entry) => entry.turnId));
         const messages = retainThreadMessagesAfterRevert(
           thread.messages,
           retainedTurnIds,
           event.payload.turnCount,
-        ).slice(-MAX_THREAD_MESSAGES);
+        ).slice(
+          -(state.threadHistoryById?.[thread.id]?.retention?.messages ?? MAX_THREAD_MESSAGES),
+        );
         const proposedPlans = retainThreadProposedPlansAfterRevert(
           thread.proposedPlans,
           retainedTurnIds,
-        ).slice(-MAX_THREAD_PROPOSED_PLANS);
+        ).slice(
+          -(
+            state.threadHistoryById?.[thread.id]?.retention?.proposedPlans ??
+            MAX_THREAD_PROPOSED_PLANS
+          ),
+        );
         const activities = retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds);
         const latestCheckpoint = turnDiffSummaries.at(-1) ?? null;
         // The sticky live-eviction flag described the discarded turn. Clear it
@@ -2537,14 +2674,13 @@ function applyEnvironmentOrchestrationEvent(
           }
 
           let activities: Thread["activities"];
+          const activityLimit =
+            state.threadHistoryById?.[thread.id]?.retention?.activities ?? MAX_THREAD_ACTIVITIES;
           let evictedCurrentTurnActivity = false;
           const activeTurnId = thread.latestTurn?.turnId;
           let exceededActivityLimit: boolean;
           if (canAppendInOrder) {
-            const retainedActivityStart = Math.max(
-              0,
-              thread.activities.length + 1 - MAX_THREAD_ACTIVITIES,
-            );
+            const retainedActivityStart = Math.max(0, thread.activities.length + 1 - activityLimit);
             if (activeTurnId !== undefined) {
               for (let index = 0; index < retainedActivityStart; index += 1) {
                 if (thread.activities[index]?.turnId === activeTurnId) {
@@ -2555,20 +2691,20 @@ function applyEnvironmentOrchestrationEvent(
             }
             activities = thread.activities.slice(retainedActivityStart);
             activities.push(nextActivity);
-            exceededActivityLimit = thread.activities.length + 1 > MAX_THREAD_ACTIVITIES;
+            exceededActivityLimit = thread.activities.length + 1 > activityLimit;
           } else {
             const allActivities = [
               ...thread.activities.filter((activity) => activity.id !== nextActivity.id),
               nextActivity,
             ].toSorted(compareActivities);
-            const retainedActivityStart = Math.max(0, allActivities.length - MAX_THREAD_ACTIVITIES);
+            const retainedActivityStart = Math.max(0, allActivities.length - activityLimit);
             evictedCurrentTurnActivity =
               activeTurnId !== undefined &&
               allActivities
                 .slice(0, retainedActivityStart)
                 .some((activity) => activity.turnId === activeTurnId);
             activities = allActivities.slice(retainedActivityStart);
-            exceededActivityLimit = allActivities.length > MAX_THREAD_ACTIVITIES;
+            exceededActivityLimit = allActivities.length > activityLimit;
           }
 
           const failureMessageId =
@@ -3165,6 +3301,22 @@ interface AppStore extends AppState {
     environmentId: EnvironmentId,
   ) => void;
   syncServerThreadDetail: (thread: OrchestrationThread, environmentId: EnvironmentId) => void;
+  syncServerThreadSnapshot: (
+    snapshot: OrchestrationThreadDetailSnapshot,
+    environmentId: EnvironmentId,
+  ) => void;
+  mergeOlderThreadSnapshot: (
+    snapshot: OrchestrationThreadDetailSnapshot,
+    environmentId: EnvironmentId,
+    events?: readonly OrchestrationEvent[],
+    page?: OrchestrationThreadDetailPage | null,
+  ) => void;
+  projectThreadHistoryPager: (ref: ScopedThreadRef, pager: HistoryPagerState) => void;
+  setThreadHistoryLoading: (
+    ref: ScopedThreadRef,
+    loadingOlder: boolean,
+    error?: string | null,
+  ) => void;
   clearThreadDetailHydration: (threadId: ThreadId, environmentId: EnvironmentId) => void;
   applyOrchestrationEvent: (event: OrchestrationEvent, environmentId: EnvironmentId) => void;
   applyOrchestrationEvents: (
@@ -3189,6 +3341,52 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => syncServerShellSnapshot(state, snapshot, environmentId)),
   syncServerThreadDetail: (thread, environmentId) =>
     set((state) => syncServerThreadDetail(state, thread, environmentId)),
+  syncServerThreadSnapshot: (snapshot, environmentId) =>
+    set((state) => syncServerThreadSnapshot(state, snapshot, environmentId)),
+  mergeOlderThreadSnapshot: (snapshot, environmentId, events, page) =>
+    set((state) => mergeOlderThreadSnapshot(state, snapshot, environmentId, events, page)),
+  projectThreadHistoryPager: (ref, pager) =>
+    set((state) => {
+      const env = getStoredEnvironmentState(state, ref.environmentId),
+        page = env.threadHistoryById?.[ref.threadId];
+      if (!pager.page || !env.threadShellById[ref.threadId]) return state;
+      const next = {
+        ...page,
+        beforeCursor: pager.page.beforeCursor,
+        hasMore: pager.page.hasMore,
+        windowStart: pager.page.windowStart,
+        userOrigins: pager.page.userOrigins,
+        loadingOlder: pager.pending !== null,
+        error: pager.error,
+      };
+      if (
+        page &&
+        page.beforeCursor === next.beforeCursor &&
+        page.hasMore === next.hasMore &&
+        page.windowStart === next.windowStart &&
+        page.userOrigins === next.userOrigins &&
+        page.loadingOlder === next.loadingOlder &&
+        page.error === next.error
+      )
+        return state;
+      return commitEnvironmentState(state, ref.environmentId, {
+        ...env,
+        threadHistoryById: { ...env.threadHistoryById, [ref.threadId]: next },
+      });
+    }),
+  setThreadHistoryLoading: (ref, loadingOlder, error = null) =>
+    set((state) => {
+      const env = getStoredEnvironmentState(state, ref.environmentId);
+      const page = env.threadHistoryById?.[ref.threadId];
+      if (!page) return state;
+      return commitEnvironmentState(state, ref.environmentId, {
+        ...env,
+        threadHistoryById: {
+          ...env.threadHistoryById,
+          [ref.threadId]: { ...page, loadingOlder, error },
+        },
+      });
+    }),
   clearThreadDetailHydration: (threadId, environmentId) =>
     set((state) => clearThreadDetailHydration(state, threadId, environmentId)),
   applyOrchestrationEvent: (event, environmentId) =>

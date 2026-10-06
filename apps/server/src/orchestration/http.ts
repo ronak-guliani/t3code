@@ -6,12 +6,13 @@ import {
   OrchestrationGetSnapshotError,
   OrchestrationReadThreadInput,
   OrchestrationReadThreadInputError,
+  OrchestrationThreadSnapshotQuery,
   type OrchestrationReadModel,
   type OrchestrationShellSnapshot,
   type OrchestrationThreadDetailSnapshot,
   ThreadId,
 } from "@t3tools/contracts";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import { requireSessionScope, respondToAuthError } from "../auth/http.ts";
@@ -27,6 +28,8 @@ import { makeClientCommandDispatcher } from "./clientCommandDispatcher.ts";
 import { normalizeDispatchCommand } from "./Normalizer.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
+
+const decodeThreadSnapshotQuery = Schema.decodeUnknownEffect(OrchestrationThreadSnapshotQuery);
 
 const isDefinitiveCommandRejection = (error: OrchestrationDispatchCommandError): boolean => {
   const cause = error.cause;
@@ -138,16 +141,28 @@ export const orchestrationThreadSnapshotRouteLayer = HttpRouter.add(
     yield* authorizeClientSession(AuthOrchestrationReadScope);
     const params = yield* HttpRouter.params;
     const threadId = ThreadId.make(params.threadId ?? "");
-    const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
-    const snapshot = yield* projectionSnapshotQuery.getThreadDetailSnapshotById(threadId).pipe(
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const payload = yield* decodeThreadSnapshotQuery(
+      HttpServerRequest.searchParamsFromURL(new URL(request.url, "http://localhost")),
+    ).pipe(
       Effect.mapError(
-        (cause) =>
-          new OrchestrationGetSnapshotError({
-            message: `Failed to load thread ${threadId}`,
-            cause,
-          }),
+        () => new OrchestrationReadThreadInputError({ message: "Invalid thread snapshot query." }),
       ),
     );
+    const window = Object.keys(payload).length === 0 ? undefined : payload;
+    const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+    const snapshot = yield* projectionSnapshotQuery
+      .getThreadDetailSnapshotById(threadId, window)
+      .pipe(
+        Effect.mapError((cause) =>
+          cause._tag === "OrchestrationReadThreadInputError"
+            ? cause
+            : new OrchestrationGetSnapshotError({
+                message: `Failed to load thread ${threadId}`,
+                cause,
+              }),
+        ),
+      );
     if (snapshot._tag === "None") {
       return yield* new OrchestrationGetSnapshotError({
         message: `Thread ${threadId} was not found`,
@@ -161,6 +176,17 @@ export const orchestrationThreadSnapshotRouteLayer = HttpRouter.add(
     Effect.catchTags({
       AuthError: respondToAuthError,
       OrchestrationGetSnapshotError: respondToOrchestrationHttpError,
+      OrchestrationReadThreadInputError: (error) =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe(
+            {
+              _tag: error._tag,
+              message: error.message,
+              ...(error.reason === undefined ? {} : { reason: error.reason }),
+            },
+            { status: 400 },
+          ),
+        ),
     }),
   ),
 );
