@@ -79,6 +79,24 @@ describe("history helper invariants", () => {
     expect(older).toHaveLength(3);
     expect(loaded).toHaveLength(1);
   });
+  it("keeps same-timestamp lifecycle siblings in canonical order across a merge", () => {
+    // The live reducer orders same-timestamp activities by lifecycle rank, so
+    // task.started precedes task.completed even though "completed" sorts first
+    // lexicographically. A merge must not invert that.
+    const at = "2026-10-04T00:00:00.000Z";
+    const older = { messages: [], activities: [], proposedPlans: [], checkpoints: [] };
+    const loaded = {
+      messages: [],
+      activities: [
+        { id: "task-completed", kind: "task.completed", createdAt: at },
+        { id: "task-started", kind: "task.started", createdAt: at },
+      ],
+      proposedPlans: [],
+      checkpoints: [],
+    };
+    const merged = History.mergeHistoryCollections(older, loaded);
+    expect(merged.activities.map((row) => row.id)).toEqual(["task-started", "task-completed"]);
+  });
   it("shares deterministic collection ordering and live-overlap precedence", () => {
     const older = {
       messages: [{ id: "old", createdAt: "2020" }],
