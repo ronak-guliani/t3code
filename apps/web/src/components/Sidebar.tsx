@@ -53,7 +53,6 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   type ContextMenuItem,
   type DesktopUpdateState,
-  type OrchestrationThreadActivity,
   ProjectId,
   type ScopedThreadRef,
   type SidebarProjectGroupingMode,
@@ -231,8 +230,8 @@ import {
 } from "../sidebarProjectGrouping";
 import {
   agentRunDismissKey,
-  deriveSidebarThreadsWithAgentRuns,
   buildSidebarThreadRows,
+  expandSidebarThreadsWithAgentRuns,
   selectVisibleSidebarThreads,
   selectVisibleThreadRows,
   type SidebarThreadRowView,
@@ -642,7 +641,6 @@ const SidebarThreadWindowSentinel = memo(function SidebarThreadWindowSentinel({
     />
   );
 });
-const EMPTY_THREAD_ACTIVITIES: readonly OrchestrationThreadActivity[] = [];
 type ContextMenuPosition = { x: number; y: number };
 
 function resolveContextMenuPosition(event: React.MouseEvent): ContextMenuPosition | undefined {
@@ -2108,29 +2106,15 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   useLayoutEffect(() => {
     sidebarThreadByKeyRef.current = sidebarThreadByKey;
   }, [sidebarThreadByKey]);
-  const sidebarThreadActivities = useStore(
-    useShallow(
-      useMemo(
-        () => (state: import("../store").AppState) =>
-          sidebarThreads.map(
-            (thread) =>
-              selectThreadByRef(state, scopeThreadRef(thread.environmentId, thread.id))
-                ?.activities ?? EMPTY_THREAD_ACTIVITIES,
-          ),
-        [sidebarThreads],
-      ),
-    ),
-  );
   const dismissedAgentRunKeys = useUiStateStore((state) => state.dismissedAgentRunKeys);
   const setAgentRunDismissed = useUiStateStore((state) => state.setAgentRunDismissed);
   const projectThreads = useMemo(
     () =>
-      deriveSidebarThreadsWithAgentRuns({
+      expandSidebarThreadsWithAgentRuns({
         threads: sidebarThreads,
-        threadActivities: sidebarThreadActivities,
         dismissedAgentRunKeys,
       }),
-    [dismissedAgentRunKeys, sidebarThreadActivities, sidebarThreads],
+    [dismissedAgentRunKeys, sidebarThreads],
   );
   const storedProjectExpanded = useUiStateStore(
     (state) => state.projectExpandedById[project.projectKey] ?? true,

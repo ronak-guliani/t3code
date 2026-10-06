@@ -1,25 +1,19 @@
-import {
-  EnvironmentId,
-  EventId,
-  type OrchestrationThreadActivity,
-  ProjectId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
 import { resolveThreadStatusPill, type ThreadStatusPill } from "./components/Sidebar.logic";
 import {
   agentRunDismissKey,
   buildSidebarThreadRows,
-  deriveSidebarThreadsWithAgentRuns,
   expandSidebarThreadsWithAgentRuns,
   isThreadInSubtree,
   selectAncestorThreadKeys,
   selectVisibleSidebarThreads,
   selectVisibleThreadRows,
 } from "./sidebarThreadTree";
-import type { AgentRun } from "./session-logic";
 import type { SidebarThreadSummary } from "./types";
+
+type SidebarAgentRunShell = NonNullable<SidebarThreadSummary["backgroundAgentRuns"]>[number];
 
 const environmentId = EnvironmentId.make("env-a");
 const projectId = ProjectId.make("project-a");
@@ -61,19 +55,6 @@ const workingStatus: ThreadStatusPill = {
   presentation: "corner-badge",
 };
 
-function activity(
-  overrides: Omit<
-    Pick<OrchestrationThreadActivity, "id" | "createdAt" | "kind" | "summary" | "tone">,
-    "id"
-  > & { id: string; payload: Record<string, unknown> },
-): OrchestrationThreadActivity {
-  return {
-    ...overrides,
-    id: EventId.make(overrides.id),
-    turnId: null,
-  };
-}
-
 describe("buildSidebarThreadRows", () => {
   it("clears ancestor indicators when a nested agent finishes", () => {
     const root = thread("thread-1", {
@@ -83,18 +64,16 @@ describe("buildSidebarThreadRows", () => {
       parentThreadId: root.id,
       latestChildNotificationAt: "2026-01-01T00:00:05.000Z",
     });
-    const run: AgentRun = {
+    const run: SidebarAgentRunShell = {
       taskId: "agent-1",
       name: "Nested agent",
       startedAt: "2026-01-01T00:00:03.000Z",
       status: "running",
-      entries: [],
     };
-    const build = (agentRun: AgentRun) =>
+    const build = (agentRun: SidebarAgentRunShell) =>
       buildSidebarThreadRows({
         threads: expandSidebarThreadsWithAgentRuns({
-          threads: [root, parent],
-          agentRunsByThreadKey: new Map([[key(parent.id), [agentRun]]]),
+          threads: [root, { ...parent, backgroundAgentRuns: [agentRun] }],
         }),
         pinnedThreadKeys: [],
         expandedOverrideByThreadKey: new Map([
@@ -119,20 +98,17 @@ describe("buildSidebarThreadRows", () => {
     expect(finished.rowViews.every((row) => row.status === null)).toBe(true);
     expect(finished.projectStatus).toBeNull();
   });
-
+});
+describe("expandSidebarThreadsWithAgentRuns", () => {
   it("renders inactive background agents through the normal nested-chat tree", () => {
-    const parent = thread("thread-1");
-    const agentRun: AgentRun = {
+    const agentRun: SidebarAgentRunShell = {
       taskId: "agent-1",
       name: "Repository explorer",
       startedAt: "2026-01-01T00:00:02.000Z",
       status: "completed",
-      entries: [],
     };
-    const threads = expandSidebarThreadsWithAgentRuns({
-      threads: [parent],
-      agentRunsByThreadKey: new Map([[key(parent.id), [agentRun]]]),
-    });
+    const parent = thread("thread-1", { backgroundAgentRuns: [agentRun] });
+    const threads = expandSidebarThreadsWithAgentRuns({ threads: [parent] });
 
     const result = buildSidebarThreadRows({
       threads,
@@ -155,23 +131,21 @@ describe("buildSidebarThreadRows", () => {
   });
 
   it("omits dismissed background-agent runs", () => {
-    const parent = thread("thread-1");
-    const dismissedRun: AgentRun = {
+    const dismissedRun: SidebarAgentRunShell = {
       taskId: "agent-dismissed",
       name: "Dismissed run",
       startedAt: "2026-01-01T00:00:02.000Z",
       status: "completed",
-      entries: [],
     };
-    const visibleRun: AgentRun = {
+    const visibleRun: SidebarAgentRunShell = {
       ...dismissedRun,
       taskId: "agent-visible",
       name: "Visible run",
     };
+    const parent = thread("thread-1", { backgroundAgentRuns: [dismissedRun, visibleRun] });
 
     const threads = expandSidebarThreadsWithAgentRuns({
       threads: [parent],
-      agentRunsByThreadKey: new Map([[key(parent.id), [dismissedRun, visibleRun]]]),
       dismissedAgentRunKeys: {
         [agentRunDismissKey(parent.id, dismissedRun.taskId)]: true,
       },
@@ -179,61 +153,27 @@ describe("buildSidebarThreadRows", () => {
 
     expect(threads.map((candidate) => candidate.title)).toEqual([parent.title, visibleRun.name]);
   });
-
-  it("derives and dismisses background-agent runs from sidebar activities", () => {
-    const parent = thread("thread-1");
-    const start = activity({
-      id: "agent-start",
-      createdAt: "2026-01-01T00:00:02.000Z",
-      kind: "task.started",
-      summary: "Repository explorer",
-      tone: "info",
-      payload: {
-        taskId: "agent-1",
-        taskType: "background-agent",
-        name: "Repository explorer",
-      },
-    });
-
-    const visible = deriveSidebarThreadsWithAgentRuns({
-      threads: [parent],
-      threadActivities: [[start]],
-    });
-    const dismissed = deriveSidebarThreadsWithAgentRuns({
-      threads: [parent],
-      threadActivities: [[start]],
-      dismissedAgentRunKeys: {
-        [agentRunDismissKey(parent.id, "agent-1")]: true,
-      },
-    });
-
-    expect(visible.map((candidate) => candidate.title)).toEqual([
-      parent.title,
-      "Repository explorer",
-    ]);
-    expect(dismissed).toEqual([parent]);
-  });
-
   it("does not resurrect agent runs from archived parent threads", () => {
-    const archivedParent = thread("thread-1", {
-      archivedAt: "2026-01-01T00:00:03.000Z",
-    });
-    const agentRun: AgentRun = {
+    const agentRun: SidebarAgentRunShell = {
       taskId: "agent-archived",
       name: "Archived nested run",
       startedAt: "2026-01-01T00:00:02.000Z",
       status: "completed",
-      entries: [],
     };
+    const archivedParent = thread("thread-1", {
+      archivedAt: "2026-01-01T00:00:03.000Z",
+      backgroundAgentRuns: [agentRun],
+    });
 
     const visibleThreads = expandSidebarThreadsWithAgentRuns({
       threads: [archivedParent],
-      agentRunsByThreadKey: new Map([[key(archivedParent.id), [agentRun]]]),
     }).filter((candidate) => candidate.archivedAt === null);
 
     expect(visibleThreads).toEqual([]);
   });
+});
 
+describe("buildSidebarThreadRows", () => {
   it("does not promote historical descendants of archived threads to roots", () => {
     const archivedParent = thread("thread-1", {
       archivedAt: "2026-01-01T00:00:04.000Z",
