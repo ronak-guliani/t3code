@@ -487,6 +487,11 @@ function useLocalDispatchState(input: {
 
   const activeSession = input.activeThread?.session ?? null;
   const activeThreadActivities = input.activeThread?.activities;
+  const activeThreadMessages = input.activeThread?.messages;
+  const latestUserMessageId = useMemo(
+    () => activeThreadMessages?.findLast((message) => message.role === "user")?.id ?? null,
+    [activeThreadMessages],
+  );
 
   const serverAcknowledgedLocalDispatch = useMemo(
     () =>
@@ -498,10 +503,10 @@ function useLocalDispatchState(input: {
         hasPendingApproval: input.activePendingApproval !== null,
         hasPendingUserInput: input.activePendingUserInput !== null,
         threadError: input.threadError,
-        turnStartFailed: turnStartFailedForPendingTurn(
-          activeThreadActivities,
-          localDispatch?.startedAt,
-        ),
+        turnStartFailed: turnStartFailedForPendingTurn({
+          activities: activeThreadActivities,
+          latestUserMessageId,
+        }),
       }),
     [
       input.activeLatestTurn,
@@ -509,6 +514,7 @@ function useLocalDispatchState(input: {
       input.activePendingUserInput,
       activeSession,
       activeThreadActivities,
+      latestUserMessageId,
       input.phase,
       input.threadError,
       localDispatch,

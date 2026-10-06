@@ -78,35 +78,80 @@ describe("deriveTimelineWorkState", () => {
 });
 
 describe("turnStartFailedForPendingTurn", () => {
-  const startedAt = "2026-01-01T00:00:05.000Z";
+  const MESSAGE_ID = "message-1";
+  const RETRY_MESSAGE_ID = "message-2";
 
-  function failureActivity(createdAt: string): OrchestrationThreadActivity {
+  function failureActivity(input: {
+    messageId?: string | null;
+    createdAt?: string;
+  }): OrchestrationThreadActivity {
     return {
-      id: EventId.make(`activity-${createdAt}`),
+      id: EventId.make(`activity-${input.messageId ?? "unattributed"}`),
       tone: "error",
       kind: "provider.turn.start.failed",
       summary: "Provider turn start failed",
-      payload: { detail: "fetch failed" },
+      payload: {
+        detail: "fetch failed",
+        ...(input.messageId ? { messageId: input.messageId } : {}),
+      },
       turnId: null,
-      createdAt,
+      createdAt: input.createdAt ?? "2026-01-01T00:00:01.000Z",
     };
   }
 
-  it("reports a failure raised by the pending send itself", () => {
-    expect(turnStartFailedForPendingTurn([failureActivity(startedAt)], startedAt)).toBe(true);
+  it("reports a failure attributed to the message being sent", () => {
+    expect(
+      turnStartFailedForPendingTurn({
+        activities: [failureActivity({ messageId: MESSAGE_ID })],
+        latestUserMessageId: MESSAGE_ID,
+      }),
+    ).toBe(true);
+  });
+
+  // The activity is stamped by the server and the dispatch by the browser, so a
+  // skewed clock must not be able to hide the failure that releases this send.
+  it("reports a failure whose server timestamp precedes any client dispatch time", () => {
+    expect(
+      turnStartFailedForPendingTurn({
+        activities: [failureActivity({ messageId: MESSAGE_ID, createdAt: "2020-01-01T00:00:00Z" })],
+        latestUserMessageId: MESSAGE_ID,
+      }),
+    ).toBe(true);
   });
 
   // A thread keeps its activities, so a retry must not be released by the
   // failure that already ended the previous send.
-  it("ignores a failure that predates the pending send", () => {
+  it("ignores a failure attributed to an earlier message", () => {
     expect(
-      turnStartFailedForPendingTurn([failureActivity("2026-01-01T00:00:01.000Z")], startedAt),
+      turnStartFailedForPendingTurn({
+        activities: [failureActivity({ messageId: MESSAGE_ID })],
+        latestUserMessageId: RETRY_MESSAGE_ID,
+      }),
     ).toBe(false);
   });
 
-  it("is inert without activities or a pending dispatch", () => {
-    expect(turnStartFailedForPendingTurn(undefined, startedAt)).toBe(false);
-    expect(turnStartFailedForPendingTurn([failureActivity(startedAt)], undefined)).toBe(false);
+  it("attributes a failure that names no message to the newest user message", () => {
+    expect(
+      turnStartFailedForPendingTurn({
+        activities: [failureActivity({})],
+        latestUserMessageId: RETRY_MESSAGE_ID,
+      }),
+    ).toBe(true);
+  });
+
+  it("is inert without activities or without a user message", () => {
+    expect(
+      turnStartFailedForPendingTurn({
+        activities: undefined,
+        latestUserMessageId: MESSAGE_ID,
+      }),
+    ).toBe(false);
+    expect(
+      turnStartFailedForPendingTurn({
+        activities: [failureActivity({ messageId: MESSAGE_ID })],
+        latestUserMessageId: null,
+      }),
+    ).toBe(false);
   });
 });
 
