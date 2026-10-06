@@ -496,11 +496,15 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         `;
         sequence += 1;
       }
+      yield* sql`
+        INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+        VALUES ('retired-projector', 0, '2026-02-24T00:00:10.000Z')
+      `;
 
       const snapshot = yield* snapshotQuery.getSnapshot();
 
       assert.equal(snapshot.snapshotSequence, 5);
-      assert.equal(snapshot.updatedAt, "2026-02-24T00:00:09.000Z");
+      assert.equal(snapshot.updatedAt, "2026-02-24T00:00:10.000Z");
       assert.deepEqual(snapshot.projects, [
         {
           autoPull: false,
@@ -637,6 +641,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
       assert.equal(shellSnapshot.snapshotSequence, 5);
       assert.equal(yield* snapshotQuery.getSnapshotSequence(), 5);
+      assert.equal(shellSnapshot.updatedAt, "2026-02-24T00:00:10.000Z");
       assert.deepEqual(shellSnapshot.projects, [
         {
           autoPull: false,
@@ -3256,6 +3261,26 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         [...projectIds],
         [[asThreadId("search-live"), asProjectId("search-project")]],
       );
+    }),
+  );
+  it.effect("returns zero snapshot sequence when a required projector cursor is missing", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_state`;
+      yield* sql`
+        INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+        VALUES (
+          ${ORCHESTRATION_PROJECTOR_NAMES.projects},
+          7,
+          '2026-09-16T00:00:00.000Z'
+        )
+      `;
+
+      const snapshot = yield* snapshotQuery.getShellSnapshot();
+      assert.equal(snapshot.snapshotSequence, 0);
+      assert.equal(yield* snapshotQuery.getSnapshotSequence(), 0);
     }),
   );
 });
