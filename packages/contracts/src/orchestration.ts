@@ -1038,8 +1038,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
-  // True while a non-failed queued turn remains (handoff continuation or user
-  // follow-up). Defaults false so older snapshots/clients decode cleanly.
+  // True while the queue will dispatch another turn on its own (handoff
+  // continuation or user follow-up): not held, and not stopped behind a paused
+  // turn. See queueAwaitsDispatch. Defaults false so older snapshots decode.
   hasPendingQueuedTurn: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   backgroundAgentRuns: Schema.optionalKey(Schema.Array(OrchestrationBackgroundAgentRunShell)),
 });

@@ -48,3 +48,28 @@ export function nextQueuePosition(queuedTurns: ReadonlyArray<QueueOrderable>): n
     0,
   );
 }
+
+/** The subset of a queued turn {@link queueAwaitsDispatch} needs. */
+export interface QueueDispatchCandidate extends QueueOrderable {
+  readonly failedAt: string | null;
+  readonly origin?: { readonly kind: string } | undefined;
+}
+
+/**
+ * Whether the queue will start another turn without user action, i.e. whether
+ * the thread is still working through it. A held queue waits for Resume, and
+ * the reactor never dispatches past a paused (failed) head. Child nudges are
+ * parent plumbing, not the parent's execution status.
+ */
+export function queueAwaitsDispatch(
+  queueHeldAt: string | null | undefined,
+  queuedTurns: ReadonlyArray<QueueDispatchCandidate>,
+): boolean {
+  if (queueHeldAt != null) return false;
+  let head: QueueDispatchCandidate | undefined;
+  for (const turn of queuedTurns) {
+    if (turn.origin?.kind === "child-nudge") continue;
+    if (head === undefined || compareQueuedTurns(turn, head) < 0) head = turn;
+  }
+  return head !== undefined && head.failedAt === null;
+}

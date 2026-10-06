@@ -508,6 +508,117 @@ describe("OrchestrationEngine", () => {
     }
   });
 
+  it("projects queue presence only while the queue will dispatch on its own", async () => {
+    const system = await createOrchestrationSystem();
+    const projectId = ProjectId.make("queue-presence-project");
+    const threadId = ThreadId.make("queue-presence-thread");
+    const createdAt = now();
+    const [firstId, secondId] = [
+      QueuedTurnId.make("queued-first"),
+      QueuedTurnId.make("queued-second"),
+    ];
+    const hasPendingQueuedTurn = async () => {
+      const snapshot = await system.run(system.snapshots.getShellSnapshot());
+      const shell = await system.run(system.snapshots.getThreadShellById(threadId));
+      const fromSnapshot = snapshot.threads.find(
+        (entry) => entry.id === threadId,
+      )?.hasPendingQueuedTurn;
+      expect(Option.getOrThrow(shell).hasPendingQueuedTurn).toBe(fromSnapshot);
+      return fromSnapshot;
+    };
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("queue-presence-project"),
+          projectId,
+          title: "Queue presence",
+          workspaceRoot: "/tmp/queue-presence-project",
+          createdAt,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("queue-presence-thread"),
+          threadId,
+          projectId,
+          title: "Queue presence",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+      for (const queuedTurnId of [firstId, secondId]) {
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.queued-turn.create",
+            commandId: CommandId.make(`create-${queuedTurnId}`),
+            threadId,
+            queuedTurnId,
+            message: {
+              messageId: asMessageId(`message-${queuedTurnId}`),
+              role: "user",
+              text: queuedTurnId,
+              attachments: [],
+            },
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            createdAt,
+          }),
+        );
+      }
+      expect(await hasPendingQueuedTurn()).toBe(true);
+
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.queue.hold",
+          commandId: CommandId.make("queue-presence-hold"),
+          threadId,
+          heldAt: now(),
+        }),
+      );
+      expect(await hasPendingQueuedTurn()).toBe(false);
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.queue.release",
+          commandId: CommandId.make("queue-presence-release"),
+          threadId,
+          releasedAt: now(),
+        }),
+      );
+      expect(await hasPendingQueuedTurn()).toBe(true);
+
+      // The reactor never dispatches past a paused head, so nothing behind it runs.
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.queued-turn.fail",
+          commandId: CommandId.make("queue-presence-fail"),
+          threadId,
+          queuedTurnId: firstId,
+          failureMessage: "Provider rejected the turn.",
+          failedAt: now(),
+        }),
+      );
+      expect(await hasPendingQueuedTurn()).toBe(false);
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.queued-turn.reorder",
+          commandId: CommandId.make("queue-presence-reorder"),
+          threadId,
+          orderedQueuedTurnIds: [secondId, firstId],
+          reorderedAt: now(),
+        }),
+      );
+      expect(await hasPendingQueuedTurn()).toBe(true);
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("accepts stale conditional metadata as a durable no-op through real dispatch", async () => {
     const projected: OrchestrationEvent[] = [];
     const system = await createOrchestrationSystem((event) =>
