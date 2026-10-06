@@ -372,32 +372,40 @@ function loadThreadHistoryPage(
   );
   const history = entry?.history;
   const connection = readEnvironmentConnection(environmentId);
-  const page = history?.state.page;
+  if (!entry || !history || !connection) return Promise.reject(new Error("History is unavailable"));
+  history.flush();
+  if (history.state.needsSnapshot)
+    return waitForHistorySnapshot(history).then(() =>
+      loadThreadHistoryPage(environmentId, threadId, window),
+    );
+  const page = history.state.page;
   if (window.kind === "older" && page && !page.hasMore) return Promise.resolve();
-  if (!entry || !history || !connection || !page || (window.kind === "older" && !page.beforeCursor))
+  if (!page || (window.kind === "older" && !page.beforeCursor))
     return Promise.reject(new Error("History is unavailable"));
   const key = window.kind === "older" ? `older:${page.beforeCursor}` : `around:${window.messageId}`;
   if (history.request)
     return history.requestKey === key
       ? history.request
       : history.request.then(() => loadThreadHistoryPage(environmentId, threadId, window));
-  if (history.state.needsSnapshot)
-    return waitForHistorySnapshot(history).then(() =>
-      loadThreadHistoryPage(environmentId, threadId, window),
-    );
-  history.flush();
   history.transition({ type: "request", kind: window.kind });
   const requestId = history.state.pending?.id;
   if (requestId === undefined) return Promise.reject(new Error("History is unavailable"));
   const request = (async () => {
     try {
-      const snapshot = await connection.client.orchestration.getThreadSnapshot({
-        threadId,
-        ...(window.kind === "older"
-          ? { turnLimit: window.turnLimit, beforeCursor: page.beforeCursor! }
-          : { turnLimit: 1, aroundMessageId: window.messageId }),
+      const invalidated = new Promise<undefined>((resolve) => {
+        history.waiters.set(requestId, () => resolve(undefined));
       });
-      if (history.state.pending?.id !== requestId) return;
+      const snapshot = await Promise.race([
+        connection.client.orchestration.getThreadSnapshot({
+          threadId,
+          ...(window.kind === "older"
+            ? { turnLimit: window.turnLimit, beforeCursor: page.beforeCursor! }
+            : { turnLimit: 1, aroundMessageId: window.messageId }),
+        }),
+        invalidated,
+      ]);
+      history.waiters.delete(requestId);
+      if (snapshot === undefined || history.state.pending?.id !== requestId) return;
       history.transition({ type: "page", snapshot, requestId });
       if (history.state.pending?.id === requestId)
         await new Promise<void>((resolve) => {
@@ -458,10 +466,17 @@ export async function loadCompleteThreadHistory(
         ?.hasMore
     )
       throw new Error("History is unavailable");
+    history?.flush();
+    if (history?.state.needsSnapshot) {
+      await waitForHistorySnapshot(history);
+      continue;
+    }
     const page = history?.state.page;
     if (!page?.hasMore) return;
     const before = page.beforeCursor;
+    const epoch = history?.state.epoch;
     await loadOlderThreadHistory(environmentId, threadId);
+    if (history?.state.epoch !== epoch) continue;
     const after = history?.state.page;
     if (history?.state.error) throw new Error(history.state.error);
     if (after?.hasMore && after.beforeCursor === before)

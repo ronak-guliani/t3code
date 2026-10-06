@@ -150,10 +150,9 @@ export function useChatFind(input: UseChatFindInput): ChatFindController {
 
   const ensureHistoryRef = useRef(input.onEnsureCompleteHistory);
   ensureHistoryRef.current = input.onEnsureCompleteHistory;
-  const hasQuery = query.trim().length > 0;
   useEffect(() => {
     const epoch = ++historyEpoch.current;
-    if (!open || !hasQuery) {
+    if (!open || query.trim().length === 0) {
       setLoadingHistory(false);
       setHistoryError(null);
       return;
@@ -172,7 +171,7 @@ export function useChatFind(input: UseChatFindInput): ChatFindController {
     return () => {
       if (historyEpoch.current === epoch) historyEpoch.current++;
     };
-  }, [open, hasQuery]);
+  }, [open, query]);
 
   const closeFind = useCallback(() => {
     historyEpoch.current++;

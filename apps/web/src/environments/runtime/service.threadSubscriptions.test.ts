@@ -407,10 +407,14 @@ describe("retainThreadDetailSubscription", () => {
           }),
       ),
     );
-    const request = h.service.loadOlderThreadHistory(h.environmentId, h.threadId);
+    let settled = false;
+    const request = h.service.loadOlderThreadHistory(h.environmentId, h.threadId).then(() => {
+      settled = true;
+    });
     expect(h.page()?.loadingOlder).toBe(true);
     h.release();
     await vi.advanceTimersByTimeAsync(16 * 60 * 1000);
+    expect(settled).toBe(true);
     resolve({
       snapshotSequence: 10,
       thread: h.thread,
@@ -423,6 +427,42 @@ describe("retainThreadDetailSubscription", () => {
     ).rejects.toThrow();
     h.stop();
   });
+
+  it.each(["revert", "replacement"] as const)(
+    "settles complete-history loading after %s without an obsolete RPC response",
+    async (reason) => {
+      const h = await pagedHarness(vi.fn(() => new Promise(() => undefined)));
+      let settled = false;
+      const request = h.service.loadCompleteThreadHistory(h.environmentId, h.threadId).then(() => {
+        settled = true;
+      });
+      if (reason === "revert") {
+        h.listener()({
+          kind: "event",
+          event: {
+            ...metaUpdatedEvent(h.threadId, 11, "Unused"),
+            type: "thread.reverted",
+            payload: { threadId: h.threadId, turnCount: 10 },
+          },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      h.listener()({
+        kind: "snapshot",
+        snapshot: {
+          snapshotSequence: 12,
+          thread: h.thread,
+          page: { snapshotSequence: 12, threadSequence: 12, hasMore: false, beforeCursor: null },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(true);
+      await request;
+      expect(h.page()?.loadingOlder).toBe(false);
+      expect(h.page()?.hasMore).toBe(false);
+      h.stop();
+    },
+  );
 
   it("requests the previously loaded depth after a revert invalidates the cursor", async () => {
     const h = await pagedHarness(
@@ -458,85 +498,153 @@ describe("retainThreadDetailSubscription", () => {
     h.stop();
   });
 
-  it("reopens a widened message-floor cursor after eviction without a snapshot storm", async () => {
-    const getThreadSnapshot = vi.fn();
-    const h = await pagedHarness(getThreadSnapshot);
-    const messages: Array<OrchestrationThread["messages"][number]> = [];
-    const userOrigins: Record<string, { sequence: number; rowId: number }> = {};
-    const turnCount = 20;
-    const messagesPerTurn = 105;
-    for (let turn = 0; turn < turnCount; turn++) {
-      const turnId = TurnId.make(`wide-turn-${turn}`);
-      const userId = MessageId.make(`wide-user-${turn}`);
-      const firstSequence = turn * messagesPerTurn + 1;
-      userOrigins[userId] = { sequence: firstSequence, rowId: firstSequence };
-      messages.push({
-        id: userId,
-        role: "user",
-        text: `Prompt ${turn}`,
-        turnId,
-        streaming: false,
-        createdAt: "2026-10-04T00:00:00.000Z",
-        updatedAt: "2026-10-04T00:00:00.000Z",
-      });
-      for (let segment = 1; segment < messagesPerTurn; segment++) {
+  it.each(["stream", "buffered page"] as const)(
+    "recovers an evicted turn during %s",
+    async (mode) => {
+      const getThreadSnapshot = vi.fn();
+      const h = await pagedHarness(getThreadSnapshot);
+      const messages: Array<OrchestrationThread["messages"][number]> = [];
+      const userOrigins: Record<string, { sequence: number; rowId: number }> = {};
+      const turnCount = 20;
+      const messagesPerTurn = 105;
+      for (let turn = 0; turn < turnCount; turn++) {
+        const turnId = TurnId.make(`wide-turn-${turn}`);
+        const userId = MessageId.make(`wide-user-${turn}`);
+        const firstSequence = turn * messagesPerTurn + 1;
+        userOrigins[userId] = { sequence: firstSequence, rowId: firstSequence };
         messages.push({
-          id: MessageId.make(`wide-assistant-${turn}-${segment}`),
-          role: "assistant",
-          text: `Response ${turn}.${segment}`,
+          id: userId,
+          role: "user",
+          text: `Prompt ${turn}`,
           turnId,
           streaming: false,
           createdAt: "2026-10-04T00:00:00.000Z",
           updatedAt: "2026-10-04T00:00:00.000Z",
         });
+        for (let segment = 1; segment < messagesPerTurn; segment++) {
+          messages.push({
+            id: MessageId.make(`wide-assistant-${turn}-${segment}`),
+            role: "assistant",
+            text: `Response ${turn}.${segment}`,
+            turnId,
+            streaming: false,
+            createdAt: "2026-10-04T00:00:00.000Z",
+            updatedAt: "2026-10-04T00:00:00.000Z",
+          });
+        }
       }
-    }
-    h.listener()({
-      kind: "snapshot",
-      snapshot: {
-        snapshotSequence: 20,
-        thread: { ...h.thread, messages },
-        page: {
-          snapshotSequence: 20,
-          threadSequence: 20,
-          beforeCursor: "wide-history-cursor",
-          hasMore: true,
-          windowStart: { sequence: 1, rowId: 1 },
-          userOrigins,
+      const initialCursor = encodeThreadHistoryCursor(h.threadId, "wide-user-0");
+      let resolvePage: (() => void) | undefined;
+      let request: Promise<void> | undefined;
+      if (mode === "buffered page") {
+        getThreadSnapshot.mockImplementation(
+          (input: { beforeCursor: string }) =>
+            new Promise((resolve) => {
+              resolvePage = () =>
+                resolve({
+                  snapshotSequence: 5002,
+                  thread: {
+                    ...h.thread,
+                    messages:
+                      input.beforeCursor === encodeThreadHistoryCursor(h.threadId, "wide-user-1")
+                        ? messages.slice(0, messagesPerTurn)
+                        : [],
+                  },
+                  page: {
+                    snapshotSequence: 5002,
+                    threadSequence: 5002,
+                    beforeCursor: null,
+                    hasMore: false,
+                    windowStart: null,
+                    userOrigins: { "wide-user-0": userOrigins["wide-user-0"] },
+                  },
+                });
+            }),
+        );
+      }
+      h.listener()({
+        kind: "snapshot",
+        snapshot: {
+          snapshotSequence: 5000,
+          thread: { ...h.thread, messages },
+          page: {
+            snapshotSequence: 5000,
+            threadSequence: 5000,
+            beforeCursor: initialCursor,
+            hasMore: true,
+            windowStart: { sequence: 1, rowId: 1 },
+            userOrigins,
+          },
         },
-      },
-    });
-    const mergedPager = h.page();
-    expect(mergedPager?.retention?.messages).toBe(messages.length);
-    expect(mergedPager?.beforeCursor).toBe("wide-history-cursor");
+      });
+      const mergedPager = h.page();
+      expect(mergedPager?.retention?.messages).toBe(messages.length);
+      expect(mergedPager?.beforeCursor).toBe(initialCursor);
+      if (mode === "buffered page") {
+        const lastMessage = messages.at(-1)!;
+        h.listener()({
+          kind: "event",
+          messageOrigin: { sequence: messages.length, rowId: messages.length },
+          event: {
+            ...metaUpdatedEvent(h.threadId, 5001, "Unused"),
+            type: "thread.message-sent",
+            payload: {
+              threadId: h.threadId,
+              messageId: lastMessage.id,
+              role: "assistant",
+              text: "Live delta",
+              turnId: lastMessage.turnId,
+              streaming: true,
+              createdAt: lastMessage.createdAt,
+              updatedAt: lastMessage.updatedAt,
+            },
+          },
+        });
+      }
 
-    h.listener()({
-      kind: "event",
-      messageOrigin: { sequence: messages.length + 1, rowId: messages.length + 1 },
-      event: {
-        ...metaUpdatedEvent(h.threadId, 21, "Unused"),
-        type: "thread.message-sent",
-        payload: {
-          threadId: h.threadId,
-          messageId: MessageId.make("wide-user-next"),
-          role: "user",
-          text: "Next prompt",
-          turnId: TurnId.make("wide-turn-next"),
-          streaming: false,
-          createdAt: "2026-10-04T00:00:00.000Z",
-          updatedAt: "2026-10-04T00:00:00.000Z",
+      h.listener()({
+        kind: "event",
+        messageOrigin: { sequence: 5002, rowId: messages.length + 1 },
+        event: {
+          ...metaUpdatedEvent(h.threadId, 5002, "Unused"),
+          type: "thread.message-sent",
+          payload: {
+            threadId: h.threadId,
+            messageId: MessageId.make("wide-user-next"),
+            role: "user",
+            text: "Next prompt",
+            turnId: TurnId.make("wide-turn-next"),
+            streaming: false,
+            createdAt: "2026-10-04T00:00:00.000Z",
+            updatedAt: "2026-10-04T00:00:00.000Z",
+          },
         },
-      },
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    const page = h.page();
-    expect(page?.beforeCursor).toBe(encodeThreadHistoryCursor(h.threadId, "wide-user-1"));
-    expect(page?.hasMore).toBe(true);
-    expect(page?.userOrigins?.["wide-user-0"]).toBeUndefined();
-    expect(page?.userOrigins?.["wide-user-1"]).toEqual({ sequence: 106, rowId: 106 });
-    expect(getThreadSnapshot).not.toHaveBeenCalled();
-    h.stop();
-  });
+      });
+      if (mode === "buffered page")
+        request = h.service.loadOlderThreadHistory(h.environmentId, h.threadId);
+      await vi.advanceTimersByTimeAsync(0);
+      const page = h.page();
+      expect(page?.beforeCursor).toBe(encodeThreadHistoryCursor(h.threadId, "wide-user-1"));
+      expect(page?.hasMore).toBe(true);
+      expect(page?.userOrigins?.["wide-user-0"]).toBeUndefined();
+      expect(page?.userOrigins?.["wide-user-1"]).toEqual({ sequence: 106, rowId: 106 });
+      if (mode === "stream") expect(getThreadSnapshot).not.toHaveBeenCalled();
+      else {
+        resolvePage?.();
+        await request;
+        expect(
+          h.store
+            .selectThreadByRef(h.store.useStore.getState(), {
+              environmentId: h.environmentId,
+              threadId: h.threadId,
+            })
+            ?.messages.some((message) => message.id === "wide-user-0"),
+        ).toBe(true);
+        expect(h.page()?.hasMore).toBe(false);
+      }
+      h.stop();
+    },
+  );
 
   // The page owns its watermark, but loaded metadata/current text stay newer.
   it("merges older turns without duplicating streamed text or replacing live metadata", async () => {

@@ -209,6 +209,91 @@ it.effect("loads a historical message's complete turn without fetching interveni
   }).pipe(Effect.provide(Layer.fresh(TestLayer))),
 );
 
+for (const { name, legacyPrefix, nullMessages, expectedIds } of [
+  {
+    name: "a legacy requested segment",
+    legacyPrefix: 0,
+    nullMessages: ["message-3-1"],
+    expectedIds: ["message-3-1", "message-3-0", "message-3-2"],
+  },
+  {
+    name: "multiple legacy owned segments",
+    legacyPrefix: 0,
+    nullMessages: ["message-3-1", "message-3-2"],
+    expectedIds: ["message-3-1", "message-3-2", "message-3-0"],
+  },
+  {
+    name: "a legacy user with sequenced segments",
+    legacyPrefix: 32,
+    nullMessages: ["message-4-1"],
+    expectedIds: ["message-3-0", "message-3-1", "message-3-2"],
+  },
+]) {
+  it.effect(`loads only the complete owned target turn with ${name}`, () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE projection_thread_messages SET sequence = NULL
+        WHERE thread_id = ${threadId} AND (sequence < ${legacyPrefix} OR ${sql.in("message_id", nullMessages)})`;
+      // An adjacent legacy segment must not bring its blobs or turn context
+      // into the target window, even when its origin falls inside the range.
+      yield* sql`UPDATE projection_thread_messages SET attachments_json = 'not-json'
+        WHERE thread_id = ${threadId} AND message_id = 'message-4-1'`;
+      yield* sql`UPDATE projection_turns SET checkpoint_files_json = 'not-json'
+        WHERE thread_id = ${threadId} AND turn_id = 'turn-4'`;
+      yield* sql`UPDATE projection_thread_activities SET payload_json = 'not-json'
+        WHERE thread_id = ${threadId} AND activity_id = 'activity-4'`;
+      const query = yield* ProjectionSnapshotQuery;
+      const page = Option.getOrThrow(
+        yield* query.getThreadDetailSnapshotById(threadId, {
+          turnLimit: 1,
+          aroundMessageId: MessageId.make("message-3-1"),
+        }),
+      );
+      assert.deepEqual(
+        page.thread.messages.map((message) => message.id),
+        expectedIds,
+      );
+      assert.deepEqual(
+        page.thread.activities.map((activity) => activity.id),
+        ["activity-3"],
+      );
+      assert.deepEqual(
+        page.thread.checkpoints.map((checkpoint) => checkpoint.turnId),
+        ["turn-3"],
+      );
+      assert.deepEqual(Object.keys(page.page?.userOrigins ?? {}), ["message-3-0"]);
+      assert.isTrue(page.page?.hasMore);
+      assert.equal(page.page?.beforeCursor, encodeThreadHistoryCursor(threadId, "message-3-0"));
+
+      const older = Option.getOrThrow(
+        yield* query.getThreadDetailSnapshotById(threadId, {
+          turnLimit: 1,
+          beforeCursor: page.page!.beforeCursor!,
+        }),
+      );
+      assert.deepEqual(
+        older.thread.messages.map((message) => message.id),
+        ["message-2-0", "message-2-1", "message-2-2"],
+      );
+      assert.equal(older.page?.beforeCursor, encodeThreadHistoryCursor(threadId, "message-2-0"));
+
+      const oldest = Option.getOrThrow(
+        yield* query.getThreadDetailSnapshotById(threadId, {
+          turnLimit: 1,
+          beforeCursor: encodeThreadHistoryCursor(threadId, "message-1-0"),
+        }),
+      );
+      assert.deepEqual(
+        oldest.thread.messages.map((message) => message.id),
+        ["history-intro", "message-0-0", "message-0-1", "message-0-2"],
+      );
+      assert.isFalse(oldest.page?.hasMore);
+      assert.isNull(oldest.page?.beforeCursor);
+    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+  );
+}
+
 it.effect("pages complete user-anchored turns without gaps while retaining live context", () =>
   Effect.gen(function* () {
     yield* seed;

@@ -163,26 +163,44 @@ export const selectThreadHistoryWindow = Effect.fn("selectThreadHistoryWindow")(
     ORDER BY messages.rowid DESC LIMIT ${limit + 1 - sequenced.length}`;
   const anchors = [...sequenced, ...legacy];
   const hasMore = anchors.length > limit;
-  const lower = hasMore ? (anchors.slice(0, limit).at(-1) ?? null) : null;
+  const selectedAnchors = anchors.slice(0, limit);
+  const lower = hasMore ? (selectedAnchors.at(-1) ?? null) : null;
   const selected = { lower, upper };
+  // An owned segment can have a legacy NULL origin while its user is sequenced
+  // (or vice versa). Select its turn by the user, never by a sibling's origin.
   const turns = yield* sql<{ readonly turnId: TurnId }>`
-    WITH window_messages AS MATERIALIZED (
+    WITH window_users AS MATERIALIZED (
       SELECT messages.message_id, messages.turn_id FROM projection_thread_messages AS messages
-      WHERE messages.thread_id = ${threadId} AND ${messageWindowPredicate(sql, selected)}
+      WHERE messages.thread_id = ${threadId}
+        AND ${sql.in(
+          "messages.message_id",
+          selectedAnchors.map((anchor) => anchor.messageId),
+        )}
     )
-    SELECT DISTINCT turn_id AS "turnId" FROM window_messages WHERE turn_id IS NOT NULL
+    SELECT DISTINCT turn_id AS "turnId" FROM window_users WHERE turn_id IS NOT NULL
     UNION
-    SELECT turns.turn_id AS "turnId" FROM window_messages
-    CROSS JOIN projection_turns AS turns ON turns.thread_id=${threadId} AND turns.pending_message_id=window_messages.message_id
+    SELECT turns.turn_id AS "turnId" FROM window_users
+    CROSS JOIN projection_turns AS turns ON turns.thread_id=${threadId} AND turns.pending_message_id=window_users.message_id
     WHERE turns.turn_id IS NOT NULL
+    UNION
+    SELECT DISTINCT messages.turn_id AS "turnId" FROM projection_thread_messages AS messages
+    WHERE messages.thread_id = ${threadId} AND messages.role <> 'user' AND messages.turn_id IS NOT NULL
+      AND ${messageWindowPredicate(sql, selected)} AND NOT EXISTS (
+        SELECT 1 FROM projection_turns AS owner
+        JOIN projection_thread_messages AS user_message
+          ON user_message.thread_id = owner.thread_id
+            AND user_message.message_id = owner.pending_message_id AND user_message.role = 'user'
+        WHERE owner.thread_id = messages.thread_id AND owner.turn_id = messages.turn_id
+      )
   `;
   return {
     ...selected,
     turnIds: turns.map((turn) => turn.turnId),
     userOrigins: Object.fromEntries(
-      anchors
-        .slice(0, limit)
-        .map((anchor) => [anchor.messageId, { sequence: anchor.sequence, rowId: anchor.rowId }]),
+      selectedAnchors.map((anchor) => [
+        anchor.messageId,
+        { sequence: anchor.sequence, rowId: anchor.rowId },
+      ]),
     ),
     hasMore,
     beforeCursor:

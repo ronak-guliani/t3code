@@ -33,6 +33,7 @@ import {
   DEFAULT_HISTORY_RETENTION,
   THREAD_HISTORY_PAGE_WAIT_TIMEOUT_MS,
   type HistoryPagerInput,
+  type HistoryPagerState,
 } from "@t3tools/shared/threadHistoryState";
 
 import { EnvironmentRegistry } from "../connection/registry.ts";
@@ -146,6 +147,7 @@ interface ThreadResumeSnapshot {
   readonly state: EnvironmentThreadState;
   readonly sequence: number;
   readonly persisted: boolean;
+  readonly history: Pick<HistoryPagerState, "needsSnapshot" | "requestedTurns">;
 }
 
 interface ThreadResumeCache {
@@ -226,36 +228,43 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     retained?.sequence ??
     Option.match(cached, { onNone: () => 0, onSome: (snapshot) => snapshot.snapshotSequence });
   const lastSequence = yield* SubscriptionRef.make(initialSequence);
-  let committed: ThreadResumeSnapshot = {
-    state: initialState,
-    sequence: initialSequence,
-    persisted: retained?.persisted ?? Option.isSome(cached),
-  };
-  if (resumeCache?.owner === owner) resumeCache.snapshot = committed;
   const awaitingCompletion = yield* Ref.make(false);
   // Bumped whenever loaded history may have been rewritten out from under an
   // in-flight older-page fetch (snapshot replacement, revert, deletion). A
   // page response captured under an older epoch is discarded, not merged.
   const initialPage = Option.getOrUndefined(initialState.page);
-  const pager = yield* Ref.make(
-    createHistoryPager(
-      Option.isNone(initialState.data)
-        ? undefined
-        : {
-            snapshotSequence: initialSequence,
-            thread: initialState.data.value,
-            ...(initialPage === undefined
-              ? {}
-              : {
-                  page: initialPage.metadata ?? {
-                    beforeCursor: initialPage.beforeCursor,
-                    hasMore: initialPage.hasMore,
-                    snapshotSequence: initialSequence,
-                  },
-                }),
-          },
-    ),
+  const initialHistory = createHistoryPager(
+    Option.isNone(initialState.data)
+      ? undefined
+      : {
+          snapshotSequence: initialSequence,
+          thread: initialState.data.value,
+          ...(initialPage === undefined
+            ? {}
+            : {
+                page: initialPage.metadata ?? {
+                  beforeCursor: initialPage.beforeCursor,
+                  hasMore: initialPage.hasMore,
+                  snapshotSequence: initialSequence,
+                },
+              }),
+        },
   );
+  if (retained) {
+    initialHistory.needsSnapshot = retained.history.needsSnapshot;
+    initialHistory.requestedTurns = retained.history.requestedTurns;
+  }
+  const pager = yield* Ref.make(initialHistory);
+  let committed: ThreadResumeSnapshot = {
+    state: initialState,
+    sequence: initialSequence,
+    persisted: retained?.persisted ?? Option.isSome(cached),
+    history: {
+      needsSnapshot: initialHistory.needsSnapshot,
+      requestedTurns: initialHistory.requestedTurns,
+    },
+  };
+  if (resumeCache?.owner === owner) resumeCache.snapshot = committed;
   const historyReloads = yield* Queue.unbounded<void>();
   const pageTimeouts = yield* Queue.unbounded<number>();
   const pageTimeout = yield* Ref.make<{ id: number; fiber: Fiber.Fiber<void> } | null>(null);
@@ -269,10 +278,13 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const remember = Effect.gen(function* () {
     const current = yield* SubscriptionRef.get(state);
     const sequence = yield* SubscriptionRef.get(lastSequence);
+    const { needsSnapshot, requestedTurns } = yield* Ref.get(pager);
     committed = {
       state: current,
       sequence,
+      history: { needsSnapshot, requestedTurns },
       persisted:
+        !needsSnapshot &&
         committed.persisted &&
         matchesThreadSnapshot(
           committed,
@@ -296,6 +308,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     snapshot: OrchestrationThreadDetailSnapshot,
   ) {
     if (resumeCache !== undefined && resumeCache.owner !== owner) return;
+    // Recovery-required rows may render, but are not an authoritative cache baseline.
+    if (committed.history.needsSnapshot) return;
     if (
       committed.persisted &&
       matchesThreadSnapshot(committed, snapshot.thread, snapshot.snapshotSequence, snapshot.page)

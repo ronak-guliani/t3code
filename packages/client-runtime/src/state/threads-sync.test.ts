@@ -9,6 +9,8 @@ import {
   ThreadId,
   OrchestrationReadThreadInputError,
   type OrchestrationThread,
+  type OrchestrationThreadDetailSnapshot,
+  type OrchestrationSubscribeThreadInput,
   type OrchestrationThreadStreamItem,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
@@ -99,12 +101,14 @@ function awaitThreadState(
 const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (options?: {
   readonly cached?: OrchestrationThread;
   readonly loadPage?: ThreadSnapshotLoader["Service"]["load"];
+  readonly resumeCache?: Parameters<typeof makeEnvironmentThreadState>[1];
 }) {
   const inputs = yield* Queue.unbounded<TestThreadInput>();
   const observed = yield* Queue.unbounded<EnvironmentThreadState>();
   const latest = yield* Ref.make<EnvironmentThreadState>(EMPTY_ENVIRONMENT_THREAD_STATE);
   const retryCount = yield* Ref.make(0);
   const subscriptionCount = yield* Ref.make(0);
+  const subscribeInputs = yield* Ref.make<ReadonlyArray<OrchestrationSubscribeThreadInput>>([]);
   const savedThreads = yield* Ref.make<ReadonlyArray<OrchestrationThread>>([]);
   const removedThreads = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const supervisorState = yield* SubscriptionRef.make<SupervisorConnectionState>(
@@ -117,9 +121,10 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
       ),
     );
   const client = {
-    [ORCHESTRATION_WS_METHODS.subscribeThread]: () =>
+    [ORCHESTRATION_WS_METHODS.subscribeThread]: (input: OrchestrationSubscribeThreadInput) =>
       Stream.unwrap(
-        Ref.updateAndGet(subscriptionCount, (count) => count + 1).pipe(
+        Ref.update(subscribeInputs, (current) => [...current, input]).pipe(
+          Effect.andThen(Ref.updateAndGet(subscriptionCount, (count) => count + 1)),
           Effect.map(() => streamFrom(inputs)),
         ),
       ),
@@ -160,7 +165,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
       Ref.update(removedThreads, (current) => [...current, threadId]),
     clear: () => Effect.void,
   });
-  const buildState = makeEnvironmentThreadState(THREAD_ID).pipe(
+  const buildState = makeEnvironmentThreadState(THREAD_ID, options?.resumeCache).pipe(
     Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
     Effect.provideService(Persistence.EnvironmentCacheStore, cache),
   );
@@ -180,6 +185,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     latest,
     retryCount,
     subscriptionCount,
+    subscribeInputs,
     supervisorState,
     supervisorSession,
     savedThreads,
@@ -564,6 +570,172 @@ describe("EnvironmentThreads", () => {
       );
       expect(Option.getOrThrow(state.data).messages.length).toBe(601);
     }),
+  );
+
+  it.effect(
+    "recovers interrupted warm history without persisting an incomplete baseline, then resumes normally",
+    () =>
+      Effect.gen(function* () {
+        const resumeCache = { snapshot: undefined, owner: undefined };
+        const recoveryStarted = yield* Deferred.make<void>();
+        const remountedRecoveryStarted = yield* Deferred.make<void>();
+        const response = yield* Deferred.make<Option.Option<OrchestrationThreadDetailSnapshot>>();
+        const user = {
+          id: MessageId.make("retained-user"),
+          role: "user" as const,
+          text: "Required turn anchor",
+          turnId: null,
+          streaming: false,
+          createdAt: BASE_THREAD.createdAt,
+          updatedAt: BASE_THREAD.updatedAt,
+        };
+        const messages = [
+          user,
+          ...Array.from({ length: 1999 }, (_, i) => ({
+            ...user,
+            id: MessageId.make(`retained-reply-${i}`),
+            role: "assistant" as const,
+            text: `Reply ${i}`,
+          })),
+        ];
+        const baselinePage = {
+          snapshotSequence: 1,
+          threadSequence: 1,
+          hasMore: false,
+          beforeCursor: null,
+          windowStart: { sequence: 1, rowId: 1 },
+          userOrigins: { [user.id]: { sequence: 1, rowId: 1 } },
+        };
+        const baseline: OrchestrationThreadDetailSnapshot = {
+          snapshotSequence: 1,
+          thread: { ...BASE_THREAD, messages },
+          page: baselinePage,
+        };
+        const reply = {
+          ...user,
+          id: MessageId.make("late-reply"),
+          role: "assistant" as const,
+          text: "Late reply",
+        };
+        const initialWrites = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const harness = yield* makeHarness({
+              cached: BASE_THREAD,
+              resumeCache,
+              loadPage: () =>
+                Deferred.succeed(recoveryStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(response)),
+                ),
+            });
+            yield* Queue.offer(harness.inputs, { kind: "snapshot", snapshot: baseline });
+            yield* awaitThreadState(
+              harness.observed,
+              (state) => Option.isSome(state.data) && state.data.value.messages.length === 2000,
+            );
+            yield* TestClock.adjust("500 millis");
+            yield* Effect.yieldNow;
+            expect((yield* Ref.get(harness.savedThreads)).at(-1)?.messages[0]?.id).toBe(user.id);
+            const fields = titleUpdated("Unused", 2);
+            if (fields.kind !== "event") throw new Error("Event fixture missing");
+            yield* Queue.offer(harness.inputs, {
+              kind: "event",
+              messageOrigin: { sequence: 2, rowId: 2001 },
+              event: {
+                ...fields.event,
+                type: "thread.message-sent",
+                payload: {
+                  threadId: THREAD_ID,
+                  messageId: reply.id,
+                  role: reply.role,
+                  text: reply.text,
+                  turnId: reply.turnId,
+                  streaming: reply.streaming,
+                  createdAt: reply.createdAt,
+                  updatedAt: reply.updatedAt,
+                },
+              },
+            });
+            yield* awaitThreadState(
+              harness.observed,
+              (state) =>
+                Option.isSome(state.data) &&
+                state.data.value.messages.every((message) => message.role !== "user"),
+            );
+            yield* Deferred.await(recoveryStarted);
+            yield* TestClock.adjust("500 millis");
+            return harness.savedThreads;
+          }),
+        );
+        const interruptedWrites = yield* Ref.get(initialWrites);
+        expect(interruptedWrites.length).toBeGreaterThan(0);
+        expect(
+          interruptedWrites.every((thread) =>
+            thread.messages.some((message) => message.id === user.id),
+          ),
+        ).toBe(true);
+
+        const recoveredWrites = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const harness = yield* makeHarness({
+              resumeCache,
+              loadPage: () =>
+                Deferred.succeed(remountedRecoveryStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(response)),
+                ),
+            });
+            yield* Deferred.await(remountedRecoveryStarted);
+            expect(yield* Ref.get(harness.subscribeInputs)).toEqual([]);
+            yield* TestClock.adjust("500 millis");
+            expect(yield* Ref.get(harness.savedThreads)).toEqual([]);
+            yield* Deferred.succeed(
+              response,
+              Option.some({
+                ...baseline,
+                snapshotSequence: 2,
+                thread: { ...BASE_THREAD, messages: [...messages, reply] },
+                page: { ...baselinePage, snapshotSequence: 2, threadSequence: 2 },
+              }),
+            );
+            yield* Queue.offer(harness.inputs, { kind: "synchronized", sequence: 2 });
+            const recovered = yield* awaitThreadState(
+              harness.observed,
+              (state) => state.status === "live" && Option.isSome(state.data),
+            );
+            expect(Option.getOrThrow(recovered.data).messages[0]?.id).toBe(user.id);
+            expect(Option.getOrThrow(recovered.data).messages).toHaveLength(2001);
+            expect((yield* Ref.get(harness.subscribeInputs)).at(-1)?.afterSequence).toBe(2);
+            return harness.savedThreads;
+          }),
+        );
+        const completedWrites = yield* Ref.get(recoveredWrites);
+        expect(completedWrites.length).toBeGreaterThan(0);
+        expect(
+          completedWrites.every((thread) =>
+            thread.messages.some((message) => message.id === user.id),
+          ),
+        ).toBe(true);
+
+        const redundantLoads = yield* Ref.make(0);
+        const resumedWrites = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const harness = yield* makeHarness({
+              resumeCache,
+              loadPage: () =>
+                Ref.update(redundantLoads, (count) => count + 1).pipe(Effect.as(Option.none())),
+            });
+            yield* Queue.offer(harness.inputs, { kind: "synchronized", sequence: 2 });
+            const resumed = yield* awaitThreadState(
+              harness.observed,
+              (state) => state.status === "live",
+            );
+            expect(yield* Ref.get(redundantLoads)).toBe(0);
+            expect((yield* Ref.get(harness.subscribeInputs)).at(-1)?.afterSequence).toBe(2);
+            expect(Option.getOrThrow(resumed.data).messages[0]?.id).toBe(user.id);
+            return harness.savedThreads;
+          }),
+        );
+        expect(yield* Ref.get(resumedWrites)).toEqual([]);
+      }),
   );
 
   it.effect(

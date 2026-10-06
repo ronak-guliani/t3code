@@ -1418,21 +1418,43 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
-  const listWindowMessageRows = (threadId: ThreadId, history: ThreadHistorySelection) =>
-    SqlSchema.findAll({
+  const listWindowMessageRows = (threadId: ThreadId, history: ThreadHistorySelection) => {
+    const userIds = Object.keys(history.userOrigins);
+    return SqlSchema.findAll({
       Request: Schema.Void,
       Result: ProjectionThreadMessageDbRowSchema,
       execute: () => sql`
+      WITH window_messages AS MATERIALIZED (
+        SELECT messages.message_id FROM projection_thread_messages AS messages
+        WHERE messages.thread_id = ${threadId} AND ${sql.in("messages.message_id", userIds)}
+        UNION
+        SELECT messages.message_id FROM projection_thread_messages AS messages
+        WHERE messages.thread_id = ${threadId} AND ${messageWindowPredicate(sql, history)}
+          AND messages.role <> 'user' AND NOT EXISTS (
+            SELECT 1 FROM projection_turns AS owner
+            JOIN projection_thread_messages AS user_message
+              ON user_message.thread_id = owner.thread_id
+                AND user_message.message_id = owner.pending_message_id AND user_message.role = 'user'
+            WHERE owner.thread_id = messages.thread_id AND owner.turn_id = messages.turn_id
+          )
+        UNION
+        SELECT messages.message_id FROM projection_turns AS turns
+        CROSS JOIN projection_thread_messages AS messages
+        WHERE turns.thread_id = ${threadId} AND ${sql.in("turns.pending_message_id", userIds)}
+          AND messages.thread_id = turns.thread_id AND messages.turn_id = turns.turn_id
+          AND messages.role <> 'user'
+      )
       SELECT messages.message_id AS "messageId", messages.thread_id AS "threadId",
         messages.turn_id AS "turnId", messages.sequence, messages.role, messages.text,
         messages.attachments_json AS "attachments", messages.origin_json AS "origin",
         messages.context_json AS "context", messages.is_streaming AS "isStreaming",
         messages.created_at AS "createdAt", messages.updated_at AS "updatedAt"
-      FROM projection_thread_messages AS messages
-      WHERE messages.thread_id = ${threadId} AND ${messageWindowPredicate(sql, history)}
+      FROM window_messages
+      CROSS JOIN projection_thread_messages AS messages ON messages.message_id = window_messages.message_id
       ORDER BY messages.sequence ASC, messages.rowid ASC
     `,
     })(undefined);
+  };
 
   const listThreadProposedPlanRowsByThread = SqlSchema.findAll({
     Request: Schema.Struct({
