@@ -342,6 +342,7 @@
 - Generated columns are hidden from `PRAGMA table_info` (use `table_xinfo`): a `table_info` idempotency guard re-runs `ADD COLUMN` and fails with a duplicate column error, and migration tests asserting via `table_info` pass vacuously. Guard and assert generated columns with `table_xinfo`.
 - Generated column expressions must be total over real rows: `json_extract` throws `malformed JSON` on invalid payloads, which fails the INSERT (snapshot capping happens before decode, so invalid rows legitimately exist). Guard extractions with `json_valid`.
 - `NodeSqliteClient` decides reader vs writer via `statement.columns().length`: preparing `ALTER ... ADD COLUMN ... STORED` reports a `raise(ABORT, 'cannot add a STORED column')` pseudo-column, so a pure-write DDL takes the `.all()` reader path. It still applies today, but DDL behavior depends on statement-shape sniffing rather than intent — prefer metadata-only changes such as VIRTUAL generated columns, and assert the resulting schema in the migration test, not just a clean run.
+- Concurrent branch migrations must keep globally unique migration IDs: preserve IDs already merged to main, renumber only unpublished migrations, and update the registry plus historical-upgrade fixtures together. Verify the resulting ID/name ledger and index definitions on an upgraded database.
 
 ## Client state and completion
 

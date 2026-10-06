@@ -1950,6 +1950,10 @@ export function mergeOlderThreadSnapshot(
   const collections = mergeHistoryCollections(
     { ...older, checkpoints: older.turnDiffSummaries },
     { ...current, checkpoints: current.turnDiffSummaries },
+    {
+      older: snapshot.page?.userOrigins ?? {},
+      loaded: env.threadHistoryById?.[snapshot.thread.id]?.userOrigins ?? {},
+    },
   );
   let merged = writeThreadState(
     env,

@@ -2,6 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import {
   EnvironmentId,
   EventId,
+  CheckpointRef,
   MessageId,
   ProjectId,
   ProviderInstanceId,
@@ -13,6 +14,7 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadStreamItem,
 } from "@t3tools/contracts";
+import { encodeThreadHistoryCursor } from "@t3tools/shared/threadHistoryState";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockSubscribeThread = vi.fn();
@@ -456,6 +458,86 @@ describe("retainThreadDetailSubscription", () => {
     h.stop();
   });
 
+  it("reopens a widened message-floor cursor after eviction without a snapshot storm", async () => {
+    const getThreadSnapshot = vi.fn();
+    const h = await pagedHarness(getThreadSnapshot);
+    const messages: Array<OrchestrationThread["messages"][number]> = [];
+    const userOrigins: Record<string, { sequence: number; rowId: number }> = {};
+    const turnCount = 20;
+    const messagesPerTurn = 105;
+    for (let turn = 0; turn < turnCount; turn++) {
+      const turnId = TurnId.make(`wide-turn-${turn}`);
+      const userId = MessageId.make(`wide-user-${turn}`);
+      const firstSequence = turn * messagesPerTurn + 1;
+      userOrigins[userId] = { sequence: firstSequence, rowId: firstSequence };
+      messages.push({
+        id: userId,
+        role: "user",
+        text: `Prompt ${turn}`,
+        turnId,
+        streaming: false,
+        createdAt: "2026-10-04T00:00:00.000Z",
+        updatedAt: "2026-10-04T00:00:00.000Z",
+      });
+      for (let segment = 1; segment < messagesPerTurn; segment++) {
+        messages.push({
+          id: MessageId.make(`wide-assistant-${turn}-${segment}`),
+          role: "assistant",
+          text: `Response ${turn}.${segment}`,
+          turnId,
+          streaming: false,
+          createdAt: "2026-10-04T00:00:00.000Z",
+          updatedAt: "2026-10-04T00:00:00.000Z",
+        });
+      }
+    }
+    h.listener()({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 20,
+        thread: { ...h.thread, messages },
+        page: {
+          snapshotSequence: 20,
+          threadSequence: 20,
+          beforeCursor: "wide-history-cursor",
+          hasMore: true,
+          windowStart: { sequence: 1, rowId: 1 },
+          userOrigins,
+        },
+      },
+    });
+    const mergedPager = h.page();
+    expect(mergedPager?.retention?.messages).toBe(messages.length);
+    expect(mergedPager?.beforeCursor).toBe("wide-history-cursor");
+
+    h.listener()({
+      kind: "event",
+      messageOrigin: { sequence: messages.length + 1, rowId: messages.length + 1 },
+      event: {
+        ...metaUpdatedEvent(h.threadId, 21, "Unused"),
+        type: "thread.message-sent",
+        payload: {
+          threadId: h.threadId,
+          messageId: MessageId.make("wide-user-next"),
+          role: "user",
+          text: "Next prompt",
+          turnId: TurnId.make("wide-turn-next"),
+          streaming: false,
+          createdAt: "2026-10-04T00:00:00.000Z",
+          updatedAt: "2026-10-04T00:00:00.000Z",
+        },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const page = h.page();
+    expect(page?.beforeCursor).toBe(encodeThreadHistoryCursor(h.threadId, "wide-user-1"));
+    expect(page?.hasMore).toBe(true);
+    expect(page?.userOrigins?.["wide-user-0"]).toBeUndefined();
+    expect(page?.userOrigins?.["wide-user-1"]).toEqual({ sequence: 106, rowId: 106 });
+    expect(getThreadSnapshot).not.toHaveBeenCalled();
+    h.stop();
+  });
+
   // The page owns its watermark, but loaded metadata/current text stay newer.
   it("merges older turns without duplicating streamed text or replacing live metadata", async () => {
     const service = await import("./service");
@@ -519,6 +601,24 @@ describe("retainThreadDetailSubscription", () => {
       },
     });
     const loading = service.loadOlderThreadHistory(environmentId, threadId);
+    const pageCoherence: Array<{
+      messageCount: number;
+      beforeCursor: string | null;
+      hasMore: boolean;
+      loadingOlder: boolean;
+    }> = [];
+    const unsubscribeCoherence = useStore.subscribe((state) => {
+      const thread = selectThreadByRef(state, ref);
+      if (!thread?.messages.some((message) => message.id === "page-only-message")) return;
+      const page = selectEnvironmentState(state, environmentId).threadHistoryById?.[threadId];
+      if (page)
+        pageCoherence.push({
+          messageCount: thread.messages.length,
+          beforeCursor: page.beforeCursor,
+          hasMore: page.hasMore,
+          loadingOlder: page.loadingOlder,
+        });
+    });
     expect(getThreadSnapshot).toHaveBeenCalledWith({
       threadId,
       turnLimit: 20,
@@ -565,6 +665,13 @@ describe("retainThreadDetailSubscription", () => {
         messages: [
           {
             ...newMessage,
+            id: MessageId.make("page-only-message"),
+            role: "user",
+            turnId: TurnId.make("old-turn"),
+            text: "Older page row",
+          },
+          {
+            ...newMessage,
             id: MessageId.make("old-message"),
             turnId: TurnId.make("old-turn"),
             text: "Old included",
@@ -573,12 +680,20 @@ describe("retainThreadDetailSubscription", () => {
       },
     });
     await loading;
+    unsubscribeCoherence();
     const loaded = selectThreadByRef(useStore.getState(), ref)!;
-    expect(loaded.messages.map((message) => message.text)).toEqual(["Old included tail", "New!"]);
+    expect(loaded.messages.map((message) => message.text)).toEqual([
+      "Older page row",
+      "Old included tail",
+      "New!",
+    ]);
     expect(loaded.title).toBe("Updated while paging");
     expect(
       selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[threadId],
     ).toMatchObject({ hasMore: false, loadingOlder: false });
+    expect(pageCoherence).toEqual([
+      { messageCount: 3, beforeCursor: null, hasMore: false, loadingOlder: false },
+    ]);
     stop();
     await service.resetEnvironmentServiceForTests();
   });
@@ -1206,6 +1321,15 @@ describe("retainThreadDetailSubscription", () => {
       resetEnvironmentServiceForTests,
     } = await import("./service");
     const { selectThreadByRef, useStore } = await import("~/store");
+    mockCreateWsRpcClient.mockReturnValue({
+      server: {
+        getConfig: async () => ({
+          threadSnapshotPagination: true,
+          threadResumeCompletionMarker: true,
+        }),
+      },
+      orchestration: { subscribeThread: mockSubscribeThread },
+    });
     const stop = startEnvironmentConnectionService(new QueryClient());
     const environmentId = EnvironmentId.make("env-1");
     const threadId = ThreadId.make("thread-replay-marker");
@@ -1215,6 +1339,7 @@ describe("retainThreadDetailSubscription", () => {
       environmentId,
     );
     retainThreadDetailSubscription(environmentId, threadId);
+    await vi.advanceTimersByTimeAsync(0);
     const listener = mockSubscribeThread.mock.calls.at(-1)?.[1] as
       | ((item: OrchestrationThreadStreamItem) => void)
       | undefined;
@@ -1223,11 +1348,196 @@ describe("retainThreadDetailSubscription", () => {
       kind: "snapshot",
       snapshot: { snapshotSequence: 20, thread: makeOrchestrationThread(threadId, "base") },
     });
-    listener({ kind: "event", event: metaUpdatedEvent(threadId, 21, "immediate") });
-    listener({ kind: "event", event: metaUpdatedEvent(threadId, 22, "trailing") });
-    listener({ kind: "synchronized", sequence: 22 });
+    const messageEvent = (
+      sequence: number,
+      messageId: string,
+      role: "user" | "assistant",
+      text: string,
+    ) =>
+      ({
+        ...metaUpdatedEvent(threadId, sequence, "Unused"),
+        type: "thread.message-sent",
+        payload: {
+          threadId,
+          messageId: MessageId.make(messageId),
+          role,
+          text,
+          turnId: TurnId.make("turn-replay"),
+          streaming: role === "assistant",
+          createdAt: "2026-10-04T00:00:00.000Z",
+          updatedAt: "2026-10-04T00:00:00.000Z",
+        },
+      }) as Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
+    listener({ kind: "event", event: messageEvent(21, "replay-user", "user", "Prompt") });
+    listener({ kind: "event", event: messageEvent(22, "replay-assistant", "assistant", "Answer") });
+    listener({
+      kind: "event",
+      event: messageEvent(23, "replay-assistant", "assistant", " continued"),
+    });
+    listener({
+      kind: "event",
+      event: {
+        ...metaUpdatedEvent(threadId, 24, "Unused"),
+        type: "thread.activity-appended",
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("replay-activity"),
+            tone: "info",
+            kind: "runtime.info",
+            summary: "Replayed activity",
+            payload: {},
+            turnId: TurnId.make("turn-replay"),
+            sequence: 24,
+            createdAt: "2026-10-04T00:00:00.000Z",
+          },
+        },
+      } as Extract<OrchestrationEvent, { type: "thread.activity-appended" }>,
+    });
+    listener({
+      kind: "event",
+      event: {
+        ...metaUpdatedEvent(threadId, 25, "Unused"),
+        type: "thread.turn-diff-completed",
+        payload: {
+          threadId,
+          turnId: TurnId.make("turn-replay"),
+          checkpointTurnCount: 1,
+          checkpointRef: CheckpointRef.make("refs/t3/replay"),
+          status: "ready",
+          files: [],
+          transitionFiles: [],
+          agentTouchedPaths: [],
+          turnFiles: [],
+          assistantMessageId: MessageId.make("replay-assistant"),
+          completedAt: "2026-10-04T00:00:00.000Z",
+        },
+      } as Extract<OrchestrationEvent, { type: "thread.turn-diff-completed" }>,
+    });
+    listener({ kind: "synchronized", sequence: 25 });
+    const replayed = selectThreadByRef(useStore.getState(), threadRef)!;
+    expect(replayed.messages.map((message) => message.text)).toEqual([
+      "Prompt",
+      "Answer continued",
+    ]);
+    expect(
+      replayed.activities.filter((activity) => activity.id === "replay-activity"),
+    ).toHaveLength(1);
+    expect(replayed.turnDiffSummaries.filter((turn) => turn.turnId === "turn-replay")).toHaveLength(
+      1,
+    );
     await vi.advanceTimersByTimeAsync(32);
-    expect(selectThreadByRef(useStore.getState(), threadRef)?.title).toBe("trailing");
+    const afterTimer = selectThreadByRef(useStore.getState(), threadRef)!;
+    expect(afterTimer.messages.map((message) => message.text)).toEqual([
+      "Prompt",
+      "Answer continued",
+    ]);
+    expect(
+      afterTimer.activities.filter((activity) => activity.id === "replay-activity"),
+    ).toHaveLength(1);
+    expect(
+      afterTimer.turnDiffSummaries.filter((turn) => turn.turnId === "turn-replay"),
+    ).toHaveLength(1);
+    const subscribeInput = mockSubscribeThread.mock.calls.at(-1)?.[0];
+    const nextResume = typeof subscribeInput === "function" ? subscribeInput() : subscribeInput;
+    expect(nextResume).toMatchObject({ afterSequence: 25 });
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("clears message eviction accounting when a live thread has no pager page", async () => {
+    const {
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+    const { selectEnvironmentState, selectThreadByRef, useStore } = await import("~/store");
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-without-page");
+    const ref = { environmentId, threadId };
+    mockCreateEnvironmentConnection.mock.calls[0]?.[0].syncShellSnapshot(
+      makeShellSnapshotForThreads([threadId]),
+      environmentId,
+    );
+    retainThreadDetailSubscription(environmentId, threadId);
+    const listener = mockSubscribeThread.mock.calls.at(-1)?.[1] as
+      | ((item: OrchestrationThreadStreamItem) => void)
+      | undefined;
+    if (!listener) throw new Error("subscribeThread listener was not captured");
+    const timestamp = "2026-10-04T00:00:00.000Z";
+    const thread = {
+      ...makeOrchestrationThread(threadId, "Unpaged thread"),
+      messages: Array.from({ length: 2000 }, (_, index) => ({
+        id: MessageId.make(`floor-user-${index}`),
+        role: "user" as const,
+        text: `Message ${index}`,
+        turnId: null,
+        streaming: false,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      })),
+    };
+    listener({
+      kind: "snapshot",
+      snapshot: { snapshotSequence: 100, thread },
+    });
+    expect(
+      selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[threadId],
+    ).toBe(undefined);
+
+    listener({
+      kind: "event",
+      event: {
+        ...metaUpdatedEvent(threadId, 101, "Unused"),
+        type: "thread.message-sent",
+        payload: {
+          threadId,
+          messageId: MessageId.make("floor-user-new"),
+          role: "user",
+          text: "New message",
+          turnId: null,
+          streaming: false,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      },
+    });
+    expect(selectThreadByRef(useStore.getState(), ref)?.messages).toHaveLength(2000);
+
+    const retained = selectThreadByRef(useStore.getState(), ref)!;
+    const userOrigins = Object.fromEntries(
+      retained.messages.map((message, index) => [
+        message.id,
+        { sequence: index + 1, rowId: index + 1 },
+      ]),
+    );
+    listener({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 102,
+        thread: {
+          ...thread,
+          messages: thread.messages.filter((message) =>
+            retained.messages.some((retainedMessage) => retainedMessage.id === message.id),
+          ),
+        },
+        page: {
+          snapshotSequence: 102,
+          threadSequence: 102,
+          beforeCursor: null,
+          hasMore: false,
+          windowStart: { sequence: 1, rowId: 1 },
+          userOrigins,
+        },
+      },
+    });
+    expect(
+      selectEnvironmentState(useStore.getState(), environmentId).threadHistoryById?.[threadId],
+    ).toMatchObject({
+      beforeCursor: null,
+      hasMore: false,
+    });
     stop();
     await resetEnvironmentServiceForTests();
   });

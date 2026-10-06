@@ -8,6 +8,11 @@ import { assert, it } from "@effect/vitest";
 import { Effect, Layer, Option, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Statement from "effect/unstable/sql/Statement";
+import { mergeHistoryCollections } from "@t3tools/shared/threadHistory";
+import {
+  encodeThreadHistoryCursor,
+  historyCursorAfterTrim,
+} from "@t3tools/shared/threadHistoryState";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
@@ -260,14 +265,55 @@ it.effect("pages complete user-anchored turns without gaps while retaining live 
 it.effect("keeps persisted user origins inside the contract page through snapshot encoding", () =>
   Effect.gen(function* () {
     yield* seed;
-    const snapshot = Option.getOrThrow(
-      yield* (yield* ProjectionSnapshotQuery).getThreadDetailSnapshotById(threadId, {
-        turnLimit: 10,
+    const query = yield* ProjectionSnapshotQuery;
+    const firstSnapshot = Option.getOrThrow(
+      yield* query.getThreadDetailSnapshotById(threadId, { turnLimit: 10 }),
+    );
+    const first = decodeDetailSnapshot(encodeDetailSnapshot(firstSnapshot));
+    const olderSnapshot = Option.getOrThrow(
+      yield* query.getThreadDetailSnapshotById(threadId, {
+        turnLimit: 20,
+        beforeCursor: first.page!.beforeCursor!,
       }),
     );
-    const decoded = decodeDetailSnapshot(encodeDetailSnapshot(snapshot));
-    assert.isTrue(Object.keys(decoded.page?.userOrigins ?? {}).length > 0);
-    assert.isTrue(decoded.page?.userOrigins?.["message-26-0"] !== undefined);
+    const older = decodeDetailSnapshot(encodeDetailSnapshot(olderSnapshot));
+    assert.equal(Object.keys(first.page?.userOrigins ?? {}).length, 10);
+    assert.equal(Object.keys(older.page?.userOrigins ?? {}).length, 20);
+    assert.isTrue(first.page?.userOrigins?.["message-26-0"] !== undefined);
+
+    const widened = mergeHistoryCollections(
+      {
+        messages: older.thread.messages,
+        activities: older.thread.activities,
+        proposedPlans: older.thread.proposedPlans,
+        checkpoints: older.thread.checkpoints,
+      },
+      {
+        messages: first.thread.messages,
+        activities: first.thread.activities,
+        proposedPlans: first.thread.proposedPlans,
+        checkpoints: first.thread.checkpoints,
+      },
+      {
+        older: older.page?.userOrigins ?? {},
+        loaded: first.page?.userOrigins ?? {},
+      },
+    );
+    const widenedPage = {
+      ...older.page!,
+      userOrigins: { ...older.page?.userOrigins, ...first.page?.userOrigins },
+    };
+    const afterEviction = historyCursorAfterTrim(
+      widenedPage,
+      threadId,
+      widened.messages.slice(3),
+      3,
+    );
+    assert.isNotNull(afterEviction);
+    assert.equal(afterEviction.beforeCursor, encodeThreadHistoryCursor(threadId, "message-7-0"));
+    assert.isTrue(afterEviction.hasMore);
+    assert.isTrue(afterEviction.userOrigins["message-7-0"] !== undefined);
+    assert.isFalse(afterEviction.userOrigins["message-6-0"] !== undefined);
   }).pipe(Effect.provide(Layer.fresh(TestLayer))),
 );
 

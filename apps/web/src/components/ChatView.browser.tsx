@@ -2898,6 +2898,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     "find",
     "message link",
     "cold message link",
+    "around older find",
     "unscoped activities",
   ] as const)("loads recent history first and retains complete history for %s", async (action) => {
     const snapshot = createSnapshotForTargetUser({
@@ -2905,18 +2906,41 @@ describe("ChatView timeline estimator parity (full app)", () => {
       targetText: "Rare phrase in the oldest turn",
     });
     const thread = snapshot.threads[0]!;
+    const historyThread =
+      action === "around older find"
+        ? {
+            ...thread,
+            messages: thread.messages.map((message) => ({
+              ...message,
+              createdAt: "2026-10-04T00:00:00.000Z",
+            })),
+          }
+        : thread;
+    const originByMessageId = new Map(
+      historyThread.messages.map((message, index) => [
+        message.id,
+        { sequence: index + 1, rowId: index + 1 },
+      ]),
+    );
+    const userOriginsFor = (messages: typeof historyThread.messages) =>
+      Object.fromEntries(
+        messages
+          .filter((message) => message.role === "user")
+          .map((message) => [message.id, originByMessageId.get(message.id)!]),
+      );
     const isMessageLink = action.endsWith("message link");
-    const recent = { ...thread, messages: thread.messages.slice(-20) };
+    const isAroundHistory = isMessageLink || action === "around older find";
+    const recent = { ...historyThread, messages: historyThread.messages.slice(-20) };
     const older = {
-      ...thread,
-      messages: thread.messages.slice(0, -20),
+      ...historyThread,
+      messages: historyThread.messages.slice(0, -20),
       ...(action === "unscoped activities" ? { hasMoreActivities: true } : {}),
     };
     const around = {
-      ...thread,
-      messages: thread.messages.slice(
-        thread.messages.findIndex((message) => message.id === "old-history-target"),
-        thread.messages.findIndex((message) => message.id === "old-history-target") + 2,
+      ...historyThread,
+      messages: historyThread.messages.slice(
+        historyThread.messages.findIndex((message) => message.id === "old-history-target"),
+        historyThread.messages.findIndex((message) => message.id === "old-history-target") + 2,
       ),
     };
     const mounted = await mountChatView({
@@ -2953,6 +2977,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
             threadSequence: 1,
             beforeCursor: "older-turns",
             hasMore: true,
+            userOrigins: userOriginsFor(recent.messages),
           },
         };
       },
@@ -2975,12 +3000,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
           : body._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot
             ? {
                 snapshotSequence: 1,
-                thread: isMessageLink ? around : older,
+                thread: body.aroundMessageId === undefined ? older : around,
                 page: {
                   snapshotSequence: 1,
                   threadSequence: 1,
-                  beforeCursor: null,
-                  hasMore: false,
+                  beforeCursor: body.aroundMessageId === undefined ? null : "older-turns",
+                  hasMore: body.aroundMessageId !== undefined,
+                  userOrigins: userOriginsFor(
+                    body.aroundMessageId === undefined ? older.messages : around.messages,
+                  ),
                 },
               }
             : undefined,
@@ -3002,7 +3030,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
             (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
           ),
         ).toHaveLength(0);
-      if (isMessageLink) {
+      if (isAroundHistory) {
         if (action !== "cold message link")
           await mounted.router.navigate({
             to: "/$environmentId/$threadId",
@@ -3029,7 +3057,16 @@ describe("ChatView timeline estimator parity (full app)", () => {
             THREAD_ID
           ],
         ).toMatchObject({ beforeCursor: "older-turns", hasMore: true });
-        return;
+        if (isMessageLink) return;
+      }
+      if (action === "around older find") {
+        const timeline = document.querySelector<HTMLElement>(".overscroll-y-contain")!;
+        timeline.scrollTop = 0;
+        timeline.dispatchEvent(new Event("scroll"));
+        await waitForLayout();
+        const button = findButtonByText("Load older history");
+        expect(button).not.toBeNull();
+        button!.click();
       } else if (action === "find") {
         dispatchChatFindShortcut();
         await waitForLayout();
@@ -3049,19 +3086,60 @@ describe("ChatView timeline estimator parity (full app)", () => {
       }
       await vi.waitFor(() => {
         expect(selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.length).toBe(
-          thread.messages.length,
+          historyThread.messages.length,
         );
         expect(
           wsRequests.filter(
             (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
           ),
-        ).toHaveLength(1);
+        ).toHaveLength(action === "around older find" ? 2 : 1);
       });
       expect(
         selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.map((message) => message.id),
-      ).toEqual(thread.messages.map((message) => message.id));
-      if (action === "find")
+      ).toEqual(historyThread.messages.map((message) => message.id));
+      if (action === "around older find") {
+        expect(
+          wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+          ),
+        ).toEqual([
+          expect.objectContaining({ aroundMessageId: "old-history-target", turnLimit: 1 }),
+          expect.objectContaining({ beforeCursor: "older-turns", turnLimit: 20 }),
+        ]);
+        expect(
+          selectEnvironmentState(useStore.getState(), LOCAL_ENVIRONMENT_ID).threadHistoryById?.[
+            THREAD_ID
+          ],
+        ).toMatchObject({ beforeCursor: null, hasMore: false, loadingOlder: false });
+        const renderedRows = Array.from(
+          document.querySelectorAll<HTMLElement>('[data-timeline-root="true"] [data-message-id]'),
+          (element) => ({
+            id: element.dataset.messageId,
+            top: element.getBoundingClientRect().top,
+          }),
+        ).filter((row): row is { id: string; top: number } => row.id !== undefined);
+        const fullOrder = new Map(
+          historyThread.messages.map((message, index) => [String(message.id), index]),
+        );
+        const renderedOrder = renderedRows
+          .toSorted((left, right) => left.top - right.top)
+          .map((row) => fullOrder.get(row.id));
+        const knownOrder = renderedOrder.filter((index): index is number => index !== undefined);
+        expect(knownOrder).toHaveLength(renderedOrder.length);
+        expect(knownOrder).toEqual([...knownOrder].sort((left, right) => left - right));
+        dispatchChatFindShortcut();
+        await waitForLayout();
+        await page.getByPlaceholder(/Find in chat/).fill("Rare phrase in the oldest turn");
+      } else if (action === "find")
         await expect.element(page.getByText("1 of 1", { exact: true })).toBeVisible();
+      if (action === "around older find") {
+        await expect.element(page.getByText("1 of 1", { exact: true })).toBeVisible();
+        expect(
+          wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+          ),
+        ).toHaveLength(2);
+      }
       if (action === "unscoped activities") {
         await waitForLayout();
         const timeline = document.querySelector<HTMLElement>(".overscroll-y-contain")!;

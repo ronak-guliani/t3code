@@ -110,33 +110,89 @@ describe("history helper invariants", () => {
   });
 
   it("inserts an older page before an around-window without moving the live overlap", () => {
-    const merged = History.mergeHistoryCollections(
-      {
-        messages: Array.from({ length: 20 }, (_, i) => ({
-          id: `m${i + 71}`,
-          createdAt: String(i + 71).padStart(3, "0"),
+    const tiedAt = "2026-10-04T00:00:00.000Z";
+    const older = {
+      messages: Array.from({ length: 20 }, (_, i) => ({
+        id: `m${i + 71}`,
+        role: "user",
+        createdAt: tiedAt,
+      })),
+      activities: [],
+      proposedPlans: [],
+      checkpoints: [],
+    };
+    const loaded = {
+      messages: [
+        { id: "m5", role: "user", createdAt: tiedAt },
+        ...Array.from({ length: 10 }, (_, i) => ({
+          id: `m${i + 91}`,
+          role: "user",
+          createdAt: tiedAt,
         })),
-        activities: [],
-        proposedPlans: [],
-        checkpoints: [],
-      },
-      {
-        messages: [
-          { id: "m5", createdAt: "005" },
-          ...Array.from({ length: 10 }, (_, i) => ({
-            id: `m${i + 91}`,
-            createdAt: String(i + 91).padStart(3, "0"),
-          })),
-        ],
-        activities: [],
-        proposedPlans: [],
-        checkpoints: [],
-      },
-    );
+      ],
+      activities: [],
+      proposedPlans: [],
+      checkpoints: [],
+    };
+    const merged = History.mergeHistoryCollections(older, loaded, {
+      older: Object.fromEntries(
+        Array.from({ length: 20 }, (_, i) => [`m${i + 71}`, { sequence: i + 71, rowId: i + 71 }]),
+      ),
+      loaded: Object.fromEntries([
+        ["m5", { sequence: 5, rowId: 5 }],
+        ...Array.from({ length: 10 }, (_, i) => [
+          `m${i + 91}`,
+          { sequence: i + 91, rowId: i + 91 },
+        ]),
+      ]),
+    });
     expect(merged.messages.map((message) => message.id)).toEqual([
       "m5",
       ...Array.from({ length: 30 }, (_, i) => `m${i + 71}`),
     ]);
+  });
+
+  it("merges clock-skewed and legacy-null message origins by sequence and rowid", () => {
+    const older = {
+      messages: [
+        { id: "legacy-5", role: "user", createdAt: "2099-01-01T00:00:00.000Z", text: "old" },
+        { id: "seq-10", role: "user", createdAt: "2098-01-01T00:00:00.000Z" },
+        { id: "seq-20", role: "user", createdAt: "2097-01-01T00:00:00.000Z", text: "stale" },
+        { id: "seq-30", role: "user", createdAt: "2096-01-01T00:00:00.000Z" },
+      ],
+      activities: [],
+      proposedPlans: [],
+      checkpoints: [],
+    };
+    const loaded = {
+      messages: [
+        { id: "legacy-2", role: "user", createdAt: "1900-01-01T00:00:00.000Z" },
+        { id: "seq-20", role: "user", createdAt: "1800-01-01T00:00:00.000Z", text: "live" },
+      ],
+      activities: [],
+      proposedPlans: [],
+      checkpoints: [],
+    };
+    const merged = History.mergeHistoryCollections(older, loaded, {
+      older: {
+        "legacy-5": { sequence: null, rowId: 5 },
+        "seq-10": { sequence: 10, rowId: 10 },
+        "seq-20": { sequence: 20, rowId: 20 },
+        "seq-30": { sequence: 30, rowId: 30 },
+      },
+      loaded: {
+        "legacy-2": { sequence: null, rowId: 2 },
+        "seq-20": { sequence: 20, rowId: 20 },
+      },
+    });
+    expect(merged.messages.map((message) => message.id)).toEqual([
+      "legacy-2",
+      "legacy-5",
+      "seq-10",
+      "seq-20",
+      "seq-30",
+    ]);
+    expect(merged.messages.find((message) => message.id === "seq-20")?.text).toBe("live");
   });
 
   it("keeps unknown checkpoint turns after known turns", () => {

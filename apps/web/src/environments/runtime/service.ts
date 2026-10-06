@@ -556,15 +556,17 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
       removedMessages = 0;
       return;
     }
-    if (history.state.page) {
-      const removedCount = removedMessages;
+    if (!history.state.page) {
       removedMessages = 0;
-      history.transition({
-        type: "retained",
-        thread,
-        removedCount,
-      });
+      return;
     }
+    const removedCount = removedMessages;
+    removedMessages = 0;
+    history.transition({
+      type: "retained",
+      thread,
+      removedCount,
+    });
   };
   let reloadQueued = false;
   const reload = () => {
