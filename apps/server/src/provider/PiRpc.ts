@@ -234,7 +234,10 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
         shell ? sanitizeShellModeArgsForPlatform([...options.args], platform) : [...options.args],
         {
           ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-          env: options.env,
+          env: {
+            ...options.env,
+            ...(options.cwd === undefined ? {} : { PWD: options.cwd }),
+          },
           extendEnv: false,
           shell,
           detached: platform !== "win32",

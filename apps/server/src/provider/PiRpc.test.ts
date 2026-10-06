@@ -1,6 +1,8 @@
 import { assert, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -11,6 +13,39 @@ import { makePiRpcConnection } from "./PiRpc.ts";
 
 /** Deliberately outside the valid pid range so a real group-kill can never land. */
 const FAKE_PID = 999_999_999;
+
+it.live("binds extension workspace discovery to the requested process directory", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "pi-workspace-" });
+    const canonicalCwd = yield* fs.realPath(cwd);
+    const env = { ...process.env, PWD: process.cwd() };
+    const connection = yield* makePiRpcConnection({
+      command: process.execPath,
+      args: [
+        "-e",
+        `
+          require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
+            const request = JSON.parse(line);
+            console.log(JSON.stringify({
+              type: "response",
+              id: request.id,
+              success: true,
+              data: { cwd: process.cwd(), workspace: process.env.PWD },
+            }));
+          });
+        `,
+      ],
+      cwd: canonicalCwd,
+      env,
+    });
+    assert.deepEqual(yield* connection.request({ type: "get_state" }), {
+      cwd: canonicalCwd,
+      workspace: canonicalCwd,
+    });
+    assert.equal(env.PWD, process.cwd());
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 /** A pi process that exits with code 0 right after spawning. */
 const exitedPiSpawner = ChildProcessSpawner.make(() =>
