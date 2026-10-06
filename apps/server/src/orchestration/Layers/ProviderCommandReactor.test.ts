@@ -1575,6 +1575,11 @@ describe("ProviderCommandReactor", () => {
 
   it("generates a worktree branch name for the first turn", async () => {
     const harness = await createHarness();
+    // Turn admission restores missing worktrees, so model a real checkout directory.
+    const worktreePath = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "provider-project-worktree-")),
+    );
+    createdBaseDirs.add(worktreePath);
     const now = new Date().toISOString();
 
     await Effect.runPromise(
@@ -1583,7 +1588,7 @@ describe("ProviderCommandReactor", () => {
         commandId: CommandId.make("cmd-thread-branch"),
         threadId: ThreadId.make("thread-1"),
         branch: "t3code/1234abcd",
-        worktreePath: "/tmp/provider-project-worktree",
+        worktreePath: worktreePath,
       }),
     );
 
@@ -1624,7 +1629,7 @@ describe("ProviderCommandReactor", () => {
     expect(harness.generateBranchName.mock.calls[0]?.[0]).toMatchObject({
       message: "Add a safer reconnect backoff Auth refactor.",
     });
-    expect(harness.refreshStatus.mock.calls[0]?.[0]).toBe("/tmp/provider-project-worktree");
+    expect(harness.refreshStatus.mock.calls[0]?.[0]).toBe(worktreePath);
   });
 
   it("forwards codex model options through session start and turn send", async () => {

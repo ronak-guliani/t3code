@@ -281,13 +281,10 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
           }),
       });
 
-      if (!isDirectory) {
-        if (thread.branch === null || projectWorkspaceRoot === undefined) {
-          return yield* new OrchestrationCommandInvariantError({
-            commandType: command.type,
-            detail: `Persisted worktree '${persistedPath}' is missing and cannot be restored because its project or local branch is unavailable. Restore branch '${thread.branch ?? "<missing>"}' in the project repository and retry.`,
-          });
-        }
+      // Only reclaimed worktrees are restored: idle/archive reclaim requires the
+      // registered branch to match `thread.branch`, so a branch-less thread was
+      // never reclaimed here and keeps its pre-restore admission behavior.
+      if (!isDirectory && thread.branch !== null && projectWorkspaceRoot !== undefined) {
         yield* deps
           .restoreThreadWorktree({
             threadId: thread.id,
