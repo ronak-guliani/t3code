@@ -279,7 +279,7 @@ export function StorageCleanupDialog({
           <DialogTitle>Clean up now</DialogTitle>
           <DialogDescription>
             Removes reclaimable files while keeping every chat, message, checkpoint, branch and pull
-            request link. Reclaimed worktrees come back when their chat is reopened.
+            request link. A reclaimed worktree comes back on its chat's next message.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="max-h-[60vh] space-y-3 overflow-y-auto text-xs">

@@ -589,14 +589,14 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provideMerge(gitStatusBroadcasterLayer),
       Layer.provide(
-        Layer.mock(TerminalManager)({
-          ...options?.layers?.terminalManager,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(StorageCleanup)({
-          getUsage: () => Effect.die("Not implemented in server test."),
-        }),
+        Layer.merge(
+          Layer.mock(TerminalManager)({
+            ...options?.layers?.terminalManager,
+          }),
+          Layer.mock(StorageCleanup)({
+            getUsage: () => Effect.die("Not implemented in server test."),
+          }),
+        ),
       ),
       Layer.provide(
         Layer.merge(

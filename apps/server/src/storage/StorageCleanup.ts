@@ -110,20 +110,20 @@ export const makeStorageCleanup = (
     // against state the other may be changing.
     const executionLock = yield* Semaphore.make(1);
 
+    const markMeasuring = Ref.update(usage, (current) => ({
+      ...current,
+      status: "measuring" as const,
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      categories: new Map(
+        [...current.categories].map(([category, value]) => [
+          category,
+          { ...value, status: "measuring" as const },
+        ]),
+      ),
+    }));
+
     const measureAll = Effect.gen(function* () {
-      const startedAt = new Date().toISOString();
-      yield* Ref.update(usage, (current) => ({
-        ...current,
-        status: "measuring" as const,
-        startedAt,
-        completedAt: null,
-        categories: new Map(
-          [...current.categories].map(([category, value]) => [
-            category,
-            { ...value, status: "measuring" as const },
-          ]),
-        ),
-      }));
       const controller = new AbortController();
       yield* Effect.forEach(
         contributors,
@@ -185,6 +185,8 @@ export const makeStorageCleanup = (
     const startMeasurement = Effect.gen(function* () {
       const running = yield* Ref.get(measurement);
       if (running !== null) return running;
+      // Before forking: the caller's snapshot must already say "measuring".
+      yield* markMeasuring;
       const fiber = yield* measureAll.pipe(
         Effect.ensuring(Ref.set(measurement, null)),
         Effect.forkIn(scope),

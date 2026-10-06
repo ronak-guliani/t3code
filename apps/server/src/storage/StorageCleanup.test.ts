@@ -570,6 +570,11 @@ describe("StorageCleanup reset", () => {
       }
       expect(fixture.spawned.map((pty) => pty.killSignals)).toEqual([[], []]);
 
+      // A refresh answers "measuring" at once, so clients know to poll.
+      expect((await fixture.run(fixture.storage.getUsage({ refresh: true }))).status).toBe(
+        "measuring",
+      );
+
       // Low disk tightens log retention to 3 days, exposing the 5-day-old log.
       state.freeBytes = 50 * 1024 ** 3;
       const lowDisk = await fixture.run(fixture.policy.measureLowDisk);
