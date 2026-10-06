@@ -7,9 +7,13 @@ import {
   ThreadId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { Deferred, Effect, Layer, ManagedRuntime, Option } from "effect";
 import { describe, expect, it, vi } from "vitest";
 import { CheckoutCoordinator } from "../../git/CheckoutCoordinator.ts";
+import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
 
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
@@ -87,8 +91,13 @@ describe("OrchestrationEngine dispatch latency", () => {
     const projectId = ProjectId.make("latency-project");
     const threadA = ThreadId.make("latency-thread-a");
     const threadB = ThreadId.make("latency-thread-b");
-    const cwdA = "/tmp/dispatch-latency-worktree-a";
-    const cwdB = "/tmp/dispatch-latency-worktree-b";
+    const fixtureRoot = await mkdtemp(path.join(tmpdir(), "t3-dispatch-latency-"));
+    const projectRoot = path.join(fixtureRoot, "project");
+    const cwdARaw = path.join(fixtureRoot, "worktree-a");
+    const cwdBRaw = path.join(fixtureRoot, "worktree-b");
+    await Promise.all([projectRoot, cwdARaw, cwdBRaw].map((directory) => mkdir(directory)));
+    const cwdA = await canonicalizeWorktreePath(cwdARaw);
+    const cwdB = await canonicalizeWorktreePath(cwdBRaw);
     const createdAt = now();
     const modelSelection = {
       instanceId: ProviderInstanceId.make("codex"),
@@ -108,7 +117,7 @@ describe("OrchestrationEngine dispatch latency", () => {
           commandId: CommandId.make("latency-project-create"),
           projectId,
           title: "Latency",
-          workspaceRoot: "/tmp/dispatch-latency-project",
+          workspaceRoot: projectRoot,
           defaultModelSelection: null,
           createdAt,
         }),
@@ -206,6 +215,7 @@ describe("OrchestrationEngine dispatch latency", () => {
       await Promise.allSettled([slow]);
       vi.restoreAllMocks();
       await system.dispose();
+      await rm(fixtureRoot, { recursive: true, force: true });
     }
   });
 });

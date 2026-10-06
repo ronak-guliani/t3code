@@ -291,6 +291,18 @@ const make = Effect.gen(function* () {
       `,
   });
 
+  const threadHasReservation = SqlSchema.findOne({
+    Request: ThreadRequest,
+    Result: Schema.Struct({ found: Schema.Number }),
+    execute: ({ threadId }) => sql`
+      SELECT EXISTS(
+        SELECT 1
+        FROM worktree_cleanup_reservations
+        WHERE thread_id = ${threadId}
+      ) AS found
+    `,
+  });
+
   const tryReserveForRemoval = (input: {
     readonly threadId: WorktreeCleanupJob["threadId"];
     readonly canonicalWorktreePath: string;
@@ -642,10 +654,18 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const cancelJob = (threadId: WorktreeCleanupJob["threadId"]) =>
+  const cancelJob = (
+    threadId: WorktreeCleanupJob["threadId"],
+    source?: WorktreeCleanupJob["source"],
+  ) =>
     sql.withTransaction(
       Effect.gen(function* () {
         const current = yield* getJobRow({ threadId });
+        const sourceCondition = source === undefined ? sql`1 = 1` : sql`source = ${source}`;
+        const cancellableStatuses =
+          source === "idle"
+            ? sql`status = 'waiting'`
+            : sql`status IN ('waiting', 'needs-attention')`;
         yield* sql`
           DELETE FROM worktree_cleanup_reservations
           WHERE thread_id = ${threadId}
@@ -653,7 +673,8 @@ const make = Effect.gen(function* () {
               SELECT 1
               FROM worktree_cleanup_jobs
               WHERE thread_id = ${threadId}
-                AND status IN ('waiting', 'needs-attention')
+                AND ${sourceCondition}
+                AND ${cancellableStatuses}
             )
         `;
         yield* sql`
@@ -663,11 +684,14 @@ const make = Effect.gen(function* () {
             next_attempt_at = NULL,
             last_reason = COALESCE(last_reason, 'explicitly-cancelled')
           WHERE thread_id = ${threadId}
-            AND status IN ('waiting', 'needs-attention')
+            AND ${sourceCondition}
+            AND ${cancellableStatuses}
         `;
         if (
           Option.isSome(current) &&
-          (current.value.status === "waiting" || current.value.status === "needs-attention")
+          (current.value.status === "waiting" ||
+            (source !== "idle" && current.value.status === "needs-attention")) &&
+          (source === undefined || current.value.source === source)
         ) {
           const occurredAt = new Date(yield* Clock.currentTimeMillis).toISOString();
           yield* recordAuditTransition({
@@ -835,6 +859,13 @@ const make = Effect.gen(function* () {
           toPersistenceSqlError("WorktreeCleanupJobRepository.hasReservationByPath:query"),
         ),
       ),
+    hasReservationByThreadId: (threadId) =>
+      threadHasReservation({ threadId }).pipe(
+        Effect.map((row) => row.found === 1),
+        Effect.mapError(
+          toPersistenceSqlError("WorktreeCleanupJobRepository.hasReservationByThreadId:query"),
+        ),
+      ),
     tryReserveForRemoval: (input) =>
       tryReserveForRemoval(input).pipe(
         Effect.mapError(
@@ -875,6 +906,12 @@ const make = Effect.gen(function* () {
       cancelJob(threadId).pipe(
         Effect.mapError(
           toPersistenceSqlError("WorktreeCleanupJobRepository.cancelByThreadId:query"),
+        ),
+      ),
+    cancelIdleByThreadId: (threadId) =>
+      cancelJob(threadId, "idle").pipe(
+        Effect.mapError(
+          toPersistenceSqlError("WorktreeCleanupJobRepository.cancelIdleByThreadId:query"),
         ),
       ),
     recordFailure: (input) =>

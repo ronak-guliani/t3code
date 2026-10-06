@@ -183,6 +183,18 @@ describe("ServerSettings.pullRequestMonitoring", () => {
   });
 });
 
+describe("ServerSettings.idleWorktreeReclaimDays", () => {
+  it("defaults idle worktree reclamation to seven days and accepts null to disable it", () => {
+    expect(DEFAULT_SERVER_SETTINGS.idleWorktreeReclaimDays).toBe(7);
+    expect(
+      decodeServerSettingsPatch({ idleWorktreeReclaimDays: null }).idleWorktreeReclaimDays,
+    ).toBe(null);
+    expect(decodeServerSettingsPatch({ idleWorktreeReclaimDays: 14 }).idleWorktreeReclaimDays).toBe(
+      14,
+    );
+  });
+});
+
 describe("ClientSettings.codeFont", () => {
   it("defaults to the existing monospace stack selection", () => {
     expect(DEFAULT_CLIENT_SETTINGS.codeFont).toBe(DEFAULT_CODE_FONT);

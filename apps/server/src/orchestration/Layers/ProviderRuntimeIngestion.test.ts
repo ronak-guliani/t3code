@@ -2483,6 +2483,7 @@ index 0000000..3333333
     const sourceTurnId = asTurnId("turn-plan-source");
     const targetTurnId = asTurnId("turn-plan-implement");
     const createdAt = new Date().toISOString();
+    fs.mkdirSync(path.join(harness.workspaceRoot, String(targetThreadId)), { recursive: true });
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -2824,6 +2825,7 @@ index 0000000..3333333
     const expectedTurnId = asTurnId("turn-plan-implement");
     const replayedTurnId = asTurnId("turn-replayed");
     const createdAt = new Date().toISOString();
+    fs.mkdirSync(path.join(harness.workspaceRoot, String(targetThreadId)), { recursive: true });
 
     await Effect.runPromise(
       harness.engine.dispatch({

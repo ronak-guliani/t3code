@@ -9,10 +9,10 @@ import {
 } from "@t3tools/contracts";
 import { Effect } from "effect";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
@@ -24,6 +24,7 @@ import {
   type WorkspaceAdmissionDeps,
 } from "./workspaceAdmission.ts";
 import { WorkspaceOwnershipConflict } from "../persistence/Services/WorkspaceOwnership.ts";
+import { canonicalizeWorktreePath } from "../git/worktreePaths.ts";
 
 const threadId = ThreadId.make("admission-thread");
 const commandId = CommandId.make("admission-command");
@@ -38,6 +39,9 @@ const depsWithoutOwnership: WorkspaceAdmissionDeps = {
   listThreads: () => [],
   claimOwnership: () => Effect.die(new Error("claim must not run without a path")),
   hasCleanupReservationByPath: () => Effect.succeed(false),
+  hasCleanupReservationByThreadId: () => Effect.succeed(false),
+  cancelIdleByThreadId: () => Effect.void,
+  restoreThreadWorktree: () => Effect.fail(new Error("restore callback is not configured")),
   createWorkspaceSnapshotCommit: () => Effect.die(new Error("snapshot must not run in this test")),
 };
 
@@ -142,6 +146,36 @@ describe("admitWorkspaceCommand", () => {
     expect(admitted.workspaceBinding).toEqual(binding);
   });
 
+  it("rejects an existing thread whose persisted worktree is missing instead of admitting a dead cwd", async () => {
+    const missingPath = `/tmp/t3-missing-admission-${crypto.randomUUID()}`;
+    const thread = {
+      id: threadId,
+      projectId: "project-admission",
+      branch: "feature/admission",
+      worktreePath: missingPath,
+      workspaceBinding: null,
+    } as unknown as OrchestrationThread;
+    const project = {
+      id: thread.projectId,
+      workspaceRoot: "/tmp",
+    } as OrchestrationProject;
+    const deps: WorkspaceAdmissionDeps = {
+      ...depsWithoutOwnership,
+      findThread: () => thread,
+      findProject: () => project,
+    };
+    const failure = await Effect.runPromise(
+      admitWorkspaceCommand(deps, {
+        type: "thread.turn.start",
+        commandId,
+        threadId,
+      } as OrchestrationCommand).pipe(Effect.flip),
+    );
+
+    expect(failure).toBeInstanceOf(OrchestrationCommandInvariantError);
+    expect((failure as Error).message).toMatch(/restore|missing|worktree/i);
+  });
+
   it("rejects handoff and meta.update targeting the project checkout", async () => {
     // The project checkout is reserved for the human: these commands must
     // fail before claiming ownership, never admit the main checkout as the
@@ -156,6 +190,9 @@ describe("admitWorkspaceCommand", () => {
         listThreads: () => [],
         claimOwnership: () => Effect.die(new Error("must reject before claiming ownership")),
         hasCleanupReservationByPath: () => Effect.succeed(false),
+        hasCleanupReservationByThreadId: () => Effect.succeed(false),
+        cancelIdleByThreadId: () => Effect.void,
+        restoreThreadWorktree: () => Effect.fail(new Error("restore must not run in this test")),
         createWorkspaceSnapshotCommit: () =>
           Effect.die(new Error("snapshot must not run in this test")),
       };
@@ -187,7 +224,33 @@ describe("admitWorkspaceCommand fork lineage sharing", () => {
   const forkThreadId = ThreadId.make("fork-family-fork");
   const siblingThreadId = ThreadId.make("fork-family-sibling");
   const outsiderThreadId = ThreadId.make("fork-family-outsider");
-  const worktreePath = "/tmp/fork-family-wt";
+  let fixtureRoot = "";
+  let worktreePath = "";
+  let childWorktree = "";
+  let separateWorktree = "";
+  let lineage: ReadonlyArray<OrchestrationThread> = [];
+
+  beforeAll(async () => {
+    fixtureRoot = await mkdtemp(join(tmpdir(), "t3-workspace-lineage-"));
+    worktreePath = join(fixtureRoot, "shared");
+    childWorktree = join(fixtureRoot, "child");
+    separateWorktree = join(fixtureRoot, "separate");
+    await Promise.all(
+      [worktreePath, childWorktree, separateWorktree].map((path) =>
+        mkdir(path, { recursive: true }),
+      ),
+    );
+    lineage = [
+      thread(sourceThreadId, null),
+      thread(forkThreadId, sourceThreadId),
+      thread(siblingThreadId, sourceThreadId),
+      thread(outsiderThreadId, null),
+    ];
+  });
+
+  afterAll(async () => {
+    if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true });
+  });
 
   const thread = (
     id: ThreadId,
@@ -220,12 +283,6 @@ describe("admitWorkspaceCommand fork lineage sharing", () => {
 
   // The outsider shares the same worktree path but has no fork lineage: it is
   // the conflict case the family allowance must not loosen.
-  const lineage = [
-    thread(sourceThreadId, null),
-    thread(forkThreadId, sourceThreadId),
-    thread(siblingThreadId, sourceThreadId),
-    thread(outsiderThreadId, null),
-  ];
   const depsWith = (overrides: Partial<WorkspaceAdmissionDeps> = {}): WorkspaceAdmissionDeps => ({
     ...depsWithoutOwnership,
     findThread: (id) => lineage.find((entry) => entry.id === id),
@@ -311,7 +368,6 @@ describe("admitWorkspaceCommand fork lineage sharing", () => {
     // `thread.create` for `t3 chat new --parent`), and a child is allocated its
     // own isolated worktree while the parent's session is still running.
     const childThreadId = ThreadId.make("delegated-child");
-    const childWorktree = "/tmp/fork-family-child-wt";
     const withChild = [
       ...lineage,
       thread(childThreadId, sourceThreadId, { worktreePath: childWorktree }),
@@ -343,7 +399,9 @@ describe("admitWorkspaceCommand fork lineage sharing", () => {
     );
 
     expect(claimOwnership).toHaveBeenCalledTimes(1);
-    expect(claimOwnership.mock.calls[0]![0].worktreePath).toBe(childWorktree);
+    expect(claimOwnership.mock.calls[0]![0].worktreePath).toBe(
+      await canonicalizeWorktreePath(childWorktree),
+    );
     expect(claimOwnership.mock.calls[0]![0].coOwnerThreadIds ?? []).not.toContain(sourceThreadId);
   });
 
@@ -352,7 +410,7 @@ describe("admitWorkspaceCommand fork lineage sharing", () => {
     // running source elsewhere must not block it.
     const handedOff = lineage.map((entry) =>
       entry.id === forkThreadId
-        ? thread(forkThreadId, sourceThreadId, { worktreePath: "/tmp/fork-wt" })
+        ? thread(forkThreadId, sourceThreadId, { worktreePath: separateWorktree })
         : entry,
     );
     const running = handedOff.map((entry) =>

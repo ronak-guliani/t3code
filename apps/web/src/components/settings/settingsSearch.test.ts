@@ -97,4 +97,13 @@ describe("settings search", () => {
     expect(searchSettings("sidebar icon size")[0]?.title).toBe("Sidebar icon size");
     expect(searchSettings("normal message preview")[0]?.title).toBe("Normal message preview");
   });
+
+  it("finds idle worktree reclamation by its cleanup terminology", () => {
+    expect(searchSettings("worktree reclaim")[0]).toMatchObject({
+      title: "Idle worktree reclamation",
+      id: "setting-idle-worktree-reclamation",
+      to: "/settings/general",
+    });
+    expect(searchSettings("storage cleanup")[0]?.title).toBe("Idle worktree reclamation");
+  });
 });

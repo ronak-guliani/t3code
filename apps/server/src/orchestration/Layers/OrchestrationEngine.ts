@@ -54,6 +54,10 @@ import {
   AutomaticArchiveGuardRegistry,
   layer as AutomaticArchiveGuardRegistryLayer,
 } from "../Services/AutomaticArchiveGuardRegistry.ts";
+import {
+  ThreadWorktreeRestorerRegistry,
+  layer as ThreadWorktreeRestorerRegistryLayer,
+} from "../Services/ThreadWorktreeRestorerRegistry.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
 import { childReportIdentity, legacyChildReportKey } from "../dispatchAuthority.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
@@ -151,6 +155,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const checkpointStore = yield* CheckpointStore;
   const workspaceOwnership = yield* WorkspaceOwnershipRepository;
   const automaticArchiveGuards = yield* AutomaticArchiveGuardRegistry;
+  const threadWorktreeRestorer = yield* ThreadWorktreeRestorerRegistry;
 
   let readModel = createEmptyReadModel(new Date().toISOString());
 
@@ -372,6 +377,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     claimOwnership: (input) => workspaceOwnership.claim(input),
     hasCleanupReservationByPath: (canonicalPath) =>
       worktreeCleanupJobs.hasReservationByPath(canonicalPath),
+    hasCleanupReservationByThreadId: (threadId) =>
+      worktreeCleanupJobs.hasReservationByThreadId(threadId),
+    cancelIdleByThreadId: (threadId) => worktreeCleanupJobs.cancelIdleByThreadId(threadId),
+    restoreThreadWorktree: threadWorktreeRestorer.restore,
     createWorkspaceSnapshotCommit: (cwd) => checkpointStore.createWorkspaceSnapshotCommit({ cwd }),
   };
 
@@ -1431,6 +1440,7 @@ export const OrchestrationEngineLive = Layer.effect(
   Layer.provideMerge(WorktreeCleanupJobRepositoryLive),
   Layer.provideMerge(CheckoutCoordinatorLive),
   Layer.provideMerge(WorkspaceOwnershipRepositoryLive),
+  Layer.provideMerge(ThreadWorktreeRestorerRegistryLayer),
   // Private: the engine reads the guards but does not export the registry.
   Layer.provide(AutomaticArchiveGuardRegistryLayer),
 );
