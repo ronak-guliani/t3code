@@ -24,6 +24,7 @@ import {
 } from "../../persistence/Layers/Sqlite.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
+import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
 import { CheckpointStoreDieStubLive } from "../../checkpointing/Layers/CheckpointStore.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
@@ -4669,13 +4670,26 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       Effect.gen(function* () {
         const engine = yield* OrchestrationEngineService;
         const snapshotQuery = yield* ProjectionSnapshotQuery;
+        const fileSystem = yield* FileSystem.FileSystem;
         const createdAt = new Date().toISOString();
         const threadId = ThreadId.make("thread-handoff-origin");
+        const projectRoot = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-handoff-origin-project-",
+        });
+        const threadWorktreePath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-handoff-origin-thread-",
+        });
+        const handoffWorktreePath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-handoff-origin-target-",
+        });
+        const canonicalHandoffWorktreePath = yield* Effect.promise(() =>
+          canonicalizeWorktreePath(handoffWorktreePath),
+        );
         const origin = {
           kind: "workspace-handoff",
           role: "continuation",
           branch: "feature/handoff",
-          worktreePath: "/tmp/handoff-origin",
+          worktreePath: canonicalHandoffWorktreePath,
         } as const;
 
         yield* engine.dispatch({
@@ -4683,7 +4697,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           commandId: CommandId.make("cmd-handoff-origin-project"),
           projectId: ProjectId.make("project-handoff-origin"),
           title: "Handoff Origin",
-          workspaceRoot: "/tmp/project-handoff-origin",
+          workspaceRoot: projectRoot,
           defaultModelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
@@ -4704,7 +4718,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           interactionMode: "default",
           runtimeMode: "full-access",
           branch: null,
-          worktreePath: "/tmp/handoff-origin-thread-worktree",
+          worktreePath: threadWorktreePath,
           createdAt,
         });
 
@@ -4713,7 +4727,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           commandId: CommandId.make("cmd-handoff-origin"),
           threadId,
           branch: "feature/handoff",
-          worktreePath: "/tmp/handoff-origin",
+          worktreePath: canonicalHandoffWorktreePath,
           markerMessageId: MessageId.make("message-handoff-origin-marker"),
           continuation: {
             id: QueuedTurnId.make("queued-turn-handoff-origin"),

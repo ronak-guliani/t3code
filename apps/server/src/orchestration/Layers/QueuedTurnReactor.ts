@@ -9,7 +9,18 @@ import {
   type OrchestrationThread,
   type ServerSettings,
 } from "@t3tools/contracts";
-import { Cause, Duration, Effect, Layer, Option, PubSub, Result, Schema, Stream } from "effect";
+import {
+  Cause,
+  Duration,
+  Effect,
+  Layer,
+  Option,
+  PubSub,
+  Queue,
+  Result,
+  Schema,
+  Stream,
+} from "effect";
 
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
@@ -77,6 +88,17 @@ function canChangeQueuedTurnReadiness(event: OrchestrationEvent): boolean {
     case "thread.child-lifecycle-notified":
     case "thread.turn-diff-completed":
       return false;
+    case "thread.activity-appended":
+      // Streaming turns append dozens of activities each; only these can clear
+      // a readiness blocker (a pending interaction or an unacknowledged start).
+      switch (event.payload.activity.kind) {
+        case "approval.resolved":
+        case "user-input.resolved":
+        case "provider.turn.start.failed":
+          return true;
+        default:
+          return false;
+      }
     default:
       return event.aggregateKind === "thread";
   }
@@ -213,414 +235,425 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
       failedAt: new Date().toISOString(),
     });
 
-  const drainThread = Effect.fn("QueuedTurnReactor.drainThread")(function* (threadId: ThreadId) {
-    if (!recoveryBarrierOpen || awaitingHold.has(threadId)) return;
-    if (drainingThreadIds.has(threadId)) {
-      pendingThreadIds.add(threadId);
+  const drainThreadOnce = Effect.fn("QueuedTurnReactor.drainThread")(function* (
+    threadId: ThreadId,
+  ) {
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    if (!thread) return;
+    const wait = thread.nudging?.wait;
+    if (
+      wait?.deadlineAt &&
+      thread.archivedAt === null &&
+      thread.deletedAt === null &&
+      !wait.satisfiedAt &&
+      !childWaitIsSatisfied(wait) &&
+      wait.assignments.some((assignment) => assignment.outcome === undefined)
+    ) {
+      if (Date.parse(wait.deadlineAt) <= Date.now()) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.child-wait.deadline-expire",
+          commandId: serverCommandId("child-wait.deadline-expire"),
+          threadId,
+          expectedDeadlineAt: wait.deadlineAt,
+          ...(wait.generationId !== undefined ? { expectedGenerationId: wait.generationId } : {}),
+          expiredAt: new Date().toISOString(),
+        });
+        return;
+      }
+      yield* scheduleChildWake(threadId, wait.deadlineAt, "wait-deadline", wait.generationId);
+    }
+    const queuedTurns = thread?.queuedTurns ?? [];
+    // isThreadReadyForQueuedDispatch already refuses a held queue, so a
+    // crash-recovered queue waits here until an explicit release.
+    if (queuedTurns.length === 0 || !isThreadReadyForQueuedDispatch(thread)) {
       return;
     }
-    drainingThreadIds.add(threadId);
-    try {
-      const readModel = yield* orchestrationEngine.getReadModel();
-      const thread = readModel.threads.find((entry) => entry.id === threadId);
-      if (!thread) return;
-      const wait = thread.nudging?.wait;
-      if (
-        wait?.deadlineAt &&
-        thread.archivedAt === null &&
-        thread.deletedAt === null &&
-        !wait.satisfiedAt &&
-        !childWaitIsSatisfied(wait) &&
-        wait.assignments.some((assignment) => assignment.outcome === undefined)
-      ) {
-        if (Date.parse(wait.deadlineAt) <= Date.now()) {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.child-wait.deadline-expire",
-            commandId: serverCommandId("child-wait.deadline-expire"),
-            threadId,
-            expectedDeadlineAt: wait.deadlineAt,
-            ...(wait.generationId !== undefined ? { expectedGenerationId: wait.generationId } : {}),
-            expiredAt: new Date().toISOString(),
-          });
-          return;
-        }
-        yield* scheduleChildWake(threadId, wait.deadlineAt, "wait-deadline", wait.generationId);
+
+    const threadsById = new Map(
+      queuedTurns.some((turn) => turn.origin?.kind === "child-nudge")
+        ? readModel.threads.map((entry) => [entry.id, entry] as const)
+        : [],
+    );
+    const nowIso = new Date().toISOString();
+    const eligibleTurns = [];
+    for (const turn of queuedTurns) {
+      if (turn.origin?.kind !== "child-nudge") {
+        eligibleTurns.push(turn);
+        continue;
       }
-      const queuedTurns = thread?.queuedTurns ?? [];
-      // isThreadReadyForQueuedDispatch already refuses a held queue, so a
-      // crash-recovered queue waits here until an explicit release.
-      if (queuedTurns.length === 0 || !isThreadReadyForQueuedDispatch(thread)) {
-        return;
+      if (turn.failedAt !== null) continue;
+      const followUp = evaluateChildFollowUp(thread, turn, threadsById, nowIso);
+      if (followUp.dueAt) {
+        yield* scheduleChildWake(threadId, followUp.dueAt, "collection");
       }
-
-      const threadsById = new Map(
-        queuedTurns.some((turn) => turn.origin?.kind === "child-nudge")
-          ? readModel.threads.map((entry) => [entry.id, entry] as const)
-          : [],
-      );
-      const nowIso = new Date().toISOString();
-      const eligibleTurns = [];
-      for (const turn of queuedTurns) {
-        if (turn.origin?.kind !== "child-nudge") {
-          eligibleTurns.push(turn);
-          continue;
-        }
-        if (turn.failedAt !== null) continue;
-        const followUp = evaluateChildFollowUp(thread, turn, threadsById, nowIso);
-        if (followUp.dueAt) {
-          yield* scheduleChildWake(threadId, followUp.dueAt, "collection");
-        }
-        if (!followUp.reason) eligibleTurns.push(turn);
-      }
-      // Explicit positions win outright. This used to prioritise origin-less
-      // (user) turns ahead of every automated one, which meant a user could move
-      // a monitor message above a user message, see the new order in the queue
-      // panel, and still have the reactor dispatch them the other way round. The
-      // position is assigned at every creation path, so it is always present and
-      // compareQueuedTurns is the single authority on order.
-      eligibleTurns.sort(compareQueuedTurns);
-      const dispatchableTurns = [];
-      const deliveryStates = new Map<string, PullRequestMonitorAutomationDeliveryState>();
-      const requeuedDeliveryIds = new Set<string>();
-      let settings: ServerSettings | undefined;
-      for (const turn of eligibleTurns) {
-        const origin = turn.origin;
-        if (origin?.kind !== "pull-request-monitor") {
-          dispatchableTurns.push(turn);
-          continue;
-        }
-
-        const referenceKey = `${origin.repository}\u0000${origin.number}`;
-        let deliveryState = deliveryStates.get(referenceKey);
-        if (deliveryState === undefined) {
-          const stateResult = yield* Effect.result(
-            pullRequestMonitors.automationDeliveryState({
-              reference: {
-                projectId: thread.projectId,
-                repository: origin.repository,
-                number: origin.number,
-              },
-              threadId,
-            }),
-          );
-          if (Result.isFailure(stateResult)) {
-            yield* Effect.logWarning("could not verify queued PR monitor delivery state", {
-              threadId,
-              queuedTurnId: turn.id,
-              repository: origin.repository,
-              pullRequestNumber: origin.number,
-              cause: stateResult.failure,
-            });
-            deliveryState = "blocked";
-          } else {
-            deliveryState = stateResult.success;
-          }
-          deliveryStates.set(referenceKey, deliveryState);
-        }
-
-        if (deliveryState === "terminal") {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.queued-turn.delete",
-            commandId: serverCommandId("queued-turn.delete-stale-monitor"),
-            threadId,
-            queuedTurnId: turn.id,
-            deletedAt: new Date().toISOString(),
-          });
-          continue;
-        }
-        if (deliveryState === "owner-changed") {
-          if (origin.deliveryId === undefined) {
-            yield* Effect.logWarning("queued PR monitor turn has no durable delivery to requeue", {
-              threadId,
-              queuedTurnId: turn.id,
-              repository: origin.repository,
-              pullRequestNumber: origin.number,
-            });
-            continue;
-          }
-          if (!requeuedDeliveryIds.has(origin.deliveryId)) {
-            yield* monitorFeedback.retryQueuedDelivery({
-              deliveryId: PullRequestMonitorFeedbackDeliveryId.make(origin.deliveryId),
-              reason: "Queued PR feedback owner changed before dispatch.",
-            });
-            requeuedDeliveryIds.add(origin.deliveryId);
-          }
-          yield* orchestrationEngine.dispatch({
-            type: "thread.queued-turn.delete",
-            commandId: serverCommandId("queued-turn.delete-owner-changed-monitor"),
-            threadId,
-            queuedTurnId: turn.id,
-            deletedAt: new Date().toISOString(),
-          });
-          continue;
-        }
-        // Parent pause covers automatic PR remediation as well as child nudges;
-        // keep the durable feedback queued without letting it start a turn.
-        if (thread.nudging?.paused) continue;
-        if (turn.failedAt !== null) {
-          dispatchableTurns.push(turn);
-          continue;
-        }
-        if (deliveryState !== "eligible") continue;
-
-        settings ??= yield* serverSettings.getSettings;
-        if (
-          automaticPrFeedbackBlockReason(
-            settings,
-            turn.modelSelection?.instanceId ?? thread.modelSelection.instanceId,
-            thread.session,
-          ) !== null
-        ) {
-          continue;
-        }
+      if (!followUp.reason) eligibleTurns.push(turn);
+    }
+    // Explicit positions win outright. This used to prioritise origin-less
+    // (user) turns ahead of every automated one, which meant a user could move
+    // a monitor message above a user message, see the new order in the queue
+    // panel, and still have the reactor dispatch them the other way round. The
+    // position is assigned at every creation path, so it is always present and
+    // compareQueuedTurns is the single authority on order.
+    eligibleTurns.sort(compareQueuedTurns);
+    const dispatchableTurns = [];
+    const deliveryStates = new Map<string, PullRequestMonitorAutomationDeliveryState>();
+    const requeuedDeliveryIds = new Set<string>();
+    let settings: ServerSettings | undefined;
+    for (const turn of eligibleTurns) {
+      const origin = turn.origin;
+      if (origin?.kind !== "pull-request-monitor") {
         dispatchableTurns.push(turn);
+        continue;
       }
 
-      let nextQueuedTurn = dispatchableTurns[0];
-      if (!nextQueuedTurn || nextQueuedTurn.failedAt !== null) return;
-
-      // While a child decision is pending, only its correlated decision
-      // response may dispatch. Anything else stays queued (waiting) so the
-      // user can resolve the decision first; failing it here would turn a
-      // transient ordering conflict into a permanent Paused error. A queued
-      // response still jumps ahead of unrelated waiting turns.
-      // Note the decider clears `decision` atomically when it creates
-      // `pendingResponse`, so gate the fast-path on the response itself: a
-      // real answer exists as `decision: null` plus `pendingResponse` set.
-      const activeDelegation =
-        thread.nudging?.delegation?.completedAt === null ? thread.nudging.delegation : undefined;
-      const pendingResponseId = activeDelegation?.pendingResponse?.queuedTurnId ?? null;
-      if (pendingResponseId !== null) {
-        const responseTurn = dispatchableTurns.find(
-          (turn) => turn.id === pendingResponseId && turn.failedAt === null,
-        );
-        if (!responseTurn) return;
-        nextQueuedTurn = responseTurn;
-      } else if (activeDelegation?.decision) {
-        return;
-      }
-
-      const blockedByCollaborationWait = (thread.collaborationRequests ?? []).some(
-        (request) =>
-          request.senderThreadId === thread.id && request.blocking && request.status === "waiting",
-      );
-      if (
-        blockedByCollaborationWait &&
-        nextQueuedTurn.origin?.kind !== "collaboration-response" &&
-        nextQueuedTurn.origin !== undefined
-      ) {
-        return;
-      }
-
-      const origin = nextQueuedTurn.origin;
-      if (origin?.kind === "pull-request-monitor" && origin.headSha !== undefined) {
-        const observedHeadSha = origin.headSha;
-        const now = new Date();
-        if (
-          origin.nextRevalidationAt !== undefined &&
-          origin.nextRevalidationAt > now.toISOString()
-        ) {
-          return;
-        }
-        const snapshotResult = yield* Effect.result(
-          pullRequests.monitorSnapshot({
-            projectId: thread.projectId,
-            repository: origin.repository,
-            number: origin.number,
+      const referenceKey = `${origin.repository}\u0000${origin.number}`;
+      let deliveryState = deliveryStates.get(referenceKey);
+      if (deliveryState === undefined) {
+        const stateResult = yield* Effect.result(
+          pullRequestMonitors.automationDeliveryState({
+            reference: {
+              projectId: thread.projectId,
+              repository: origin.repository,
+              number: origin.number,
+            },
+            threadId,
           }),
         );
-        if (Result.isFailure(snapshotResult)) {
-          const attemptCount = (origin.revalidationAttemptCount ?? 0) + 1;
-          yield* Effect.logWarning("could not revalidate queued PR monitor turn", {
+        if (Result.isFailure(stateResult)) {
+          yield* Effect.logWarning("could not verify queued PR monitor delivery state", {
             threadId,
-            queuedTurnId: nextQueuedTurn.id,
+            queuedTurnId: turn.id,
             repository: origin.repository,
             pullRequestNumber: origin.number,
-            attemptCount,
-            cause: snapshotResult.failure,
+            cause: stateResult.failure,
           });
-          if (attemptCount >= MAX_MONITOR_REVALIDATION_ATTEMPTS) {
-            if (origin.deliveryId === undefined) {
-              yield* Effect.logWarning("queued PR monitor turn has no durable delivery to retry", {
-                threadId,
-                queuedTurnId: nextQueuedTurn.id,
-                repository: origin.repository,
-                pullRequestNumber: origin.number,
-              });
-              return;
-            }
-            yield* monitorFeedback.retryQueuedDelivery({
-              deliveryId: PullRequestMonitorFeedbackDeliveryId.make(origin.deliveryId),
-              reason: "Queued dispatch revalidation failed repeatedly.",
-            });
-            yield* orchestrationEngine.dispatch({
-              type: "thread.queued-turn.delete",
-              commandId: serverCommandId("queued-turn.delete-monitor-revalidation-failed"),
+          deliveryState = "blocked";
+        } else {
+          deliveryState = stateResult.success;
+        }
+        deliveryStates.set(referenceKey, deliveryState);
+      }
+
+      if (deliveryState === "terminal") {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.queued-turn.delete",
+          commandId: serverCommandId("queued-turn.delete-stale-monitor"),
+          threadId,
+          queuedTurnId: turn.id,
+          deletedAt: new Date().toISOString(),
+        });
+        continue;
+      }
+      if (deliveryState === "owner-changed") {
+        if (origin.deliveryId === undefined) {
+          yield* Effect.logWarning("queued PR monitor turn has no durable delivery to requeue", {
+            threadId,
+            queuedTurnId: turn.id,
+            repository: origin.repository,
+            pullRequestNumber: origin.number,
+          });
+          continue;
+        }
+        if (!requeuedDeliveryIds.has(origin.deliveryId)) {
+          yield* monitorFeedback.retryQueuedDelivery({
+            deliveryId: PullRequestMonitorFeedbackDeliveryId.make(origin.deliveryId),
+            reason: "Queued PR feedback owner changed before dispatch.",
+          });
+          requeuedDeliveryIds.add(origin.deliveryId);
+        }
+        yield* orchestrationEngine.dispatch({
+          type: "thread.queued-turn.delete",
+          commandId: serverCommandId("queued-turn.delete-owner-changed-monitor"),
+          threadId,
+          queuedTurnId: turn.id,
+          deletedAt: new Date().toISOString(),
+        });
+        continue;
+      }
+      // Parent pause covers automatic PR remediation as well as child nudges;
+      // keep the durable feedback queued without letting it start a turn.
+      if (thread.nudging?.paused) continue;
+      if (turn.failedAt !== null) {
+        dispatchableTurns.push(turn);
+        continue;
+      }
+      if (deliveryState !== "eligible") continue;
+
+      settings ??= yield* serverSettings.getSettings;
+      if (
+        automaticPrFeedbackBlockReason(
+          settings,
+          turn.modelSelection?.instanceId ?? thread.modelSelection.instanceId,
+          thread.session,
+        ) !== null
+      ) {
+        continue;
+      }
+      dispatchableTurns.push(turn);
+    }
+
+    let nextQueuedTurn = dispatchableTurns[0];
+    if (!nextQueuedTurn || nextQueuedTurn.failedAt !== null) return;
+
+    // While a child decision is pending, only its correlated decision
+    // response may dispatch. Anything else stays queued (waiting) so the
+    // user can resolve the decision first; failing it here would turn a
+    // transient ordering conflict into a permanent Paused error. A queued
+    // response still jumps ahead of unrelated waiting turns.
+    // Note the decider clears `decision` atomically when it creates
+    // `pendingResponse`, so gate the fast-path on the response itself: a
+    // real answer exists as `decision: null` plus `pendingResponse` set.
+    const activeDelegation =
+      thread.nudging?.delegation?.completedAt === null ? thread.nudging.delegation : undefined;
+    const pendingResponseId = activeDelegation?.pendingResponse?.queuedTurnId ?? null;
+    if (pendingResponseId !== null) {
+      const responseTurn = dispatchableTurns.find(
+        (turn) => turn.id === pendingResponseId && turn.failedAt === null,
+      );
+      if (!responseTurn) return;
+      nextQueuedTurn = responseTurn;
+    } else if (activeDelegation?.decision) {
+      return;
+    }
+
+    const blockedByCollaborationWait = (thread.collaborationRequests ?? []).some(
+      (request) =>
+        request.senderThreadId === thread.id && request.blocking && request.status === "waiting",
+    );
+    if (
+      blockedByCollaborationWait &&
+      nextQueuedTurn.origin?.kind !== "collaboration-response" &&
+      nextQueuedTurn.origin !== undefined
+    ) {
+      return;
+    }
+
+    const origin = nextQueuedTurn.origin;
+    if (origin?.kind === "pull-request-monitor" && origin.headSha !== undefined) {
+      const observedHeadSha = origin.headSha;
+      const now = new Date();
+      if (
+        origin.nextRevalidationAt !== undefined &&
+        origin.nextRevalidationAt > now.toISOString()
+      ) {
+        return;
+      }
+      const snapshotResult = yield* Effect.result(
+        pullRequests.monitorSnapshot({
+          projectId: thread.projectId,
+          repository: origin.repository,
+          number: origin.number,
+        }),
+      );
+      if (Result.isFailure(snapshotResult)) {
+        const attemptCount = (origin.revalidationAttemptCount ?? 0) + 1;
+        yield* Effect.logWarning("could not revalidate queued PR monitor turn", {
+          threadId,
+          queuedTurnId: nextQueuedTurn.id,
+          repository: origin.repository,
+          pullRequestNumber: origin.number,
+          attemptCount,
+          cause: snapshotResult.failure,
+        });
+        if (attemptCount >= MAX_MONITOR_REVALIDATION_ATTEMPTS) {
+          if (origin.deliveryId === undefined) {
+            yield* Effect.logWarning("queued PR monitor turn has no durable delivery to retry", {
               threadId,
               queuedTurnId: nextQueuedTurn.id,
-              deletedAt: now.toISOString(),
+              repository: origin.repository,
+              pullRequestNumber: origin.number,
             });
             return;
           }
-          const retryDelayMs =
-            MONITOR_REVALIDATION_RETRY_BASE_MS * 2 ** Math.max(0, attemptCount - 1);
-          yield* orchestrationEngine.dispatch({
-            type: "thread.queued-turn.update",
-            commandId: serverCommandId("queued-turn.defer-monitor-revalidation"),
-            threadId,
-            queuedTurnId: nextQueuedTurn.id,
-            text: nextQueuedTurn.message.text,
-            origin: {
-              ...origin,
-              revalidationAttemptCount: attemptCount,
-              nextRevalidationAt: new Date(now.getTime() + retryDelayMs).toISOString(),
-            },
-            updatedAt: now.toISOString(),
+          yield* monitorFeedback.retryQueuedDelivery({
+            deliveryId: PullRequestMonitorFeedbackDeliveryId.make(origin.deliveryId),
+            reason: "Queued dispatch revalidation failed repeatedly.",
           });
-          return;
-        }
-        const snapshot = snapshotResult.success;
-        const sourceRevisionChanged =
-          origin.sourceRevision !== undefined && snapshot.sourceRevision !== origin.sourceRevision;
-        const providerStateChanged = snapshot.headSha !== origin.headSha || sourceRevisionChanged;
-        const actionableEvents =
-          origin.events?.filter(
-            (event) =>
-              reconcileFeedbackItem(
-                { kind: event.kind, stableKey: feedbackStableKeyOf(event) },
-                snapshot,
-                {
-                  checkName: event.kind === "check-failed" ? (event.detail ?? null) : null,
-                  observedHeadSha,
-                },
-              ).kind === "actionable",
-          ) ?? [];
-        if (
-          snapshot.state !== "open" ||
-          (providerStateChanged &&
-            origin.events !== undefined &&
-            origin.events.length > 0 &&
-            actionableEvents.length === 0)
-        ) {
           yield* orchestrationEngine.dispatch({
             type: "thread.queued-turn.delete",
-            commandId: serverCommandId("queued-turn.delete-stale-monitor"),
+            commandId: serverCommandId("queued-turn.delete-monitor-revalidation-failed"),
             threadId,
             queuedTurnId: nextQueuedTurn.id,
-            deletedAt: new Date().toISOString(),
+            deletedAt: now.toISOString(),
           });
           return;
         }
-
-        const hadRevalidationFailure =
-          origin.revalidationAttemptCount !== undefined || origin.nextRevalidationAt !== undefined;
-        if (providerStateChanged || hadRevalidationFailure) {
-          const {
-            revalidationAttemptCount: _revalidationAttemptCount,
-            nextRevalidationAt: _nextRevalidationAt,
-            ...stableOrigin
-          } = origin;
-          const refreshedOrigin = {
-            ...stableOrigin,
-            headSha: snapshot.headSha,
-            sourceRevision: snapshot.sourceRevision,
-            ...(origin.events === undefined ? {} : { events: actionableEvents }),
-          };
-          const refreshedText =
-            providerStateChanged && origin.deliveryId !== undefined
-              ? buildWakePrompt({
-                  prNumber: origin.number,
-                  repository: origin.repository,
-                  deliveryId: origin.deliveryId,
-                  ...(origin.findingContext === undefined
-                    ? {}
-                    : { findingContext: origin.findingContext }),
-                  events: actionableEvents,
-                  ...((origin.events === undefined || origin.events.length === 0) &&
-                  origin.revisionSummaries !== undefined
-                    ? { revisionSummaries: origin.revisionSummaries }
-                    : {}),
-                  snapshot,
-                  readiness: computeReadiness(snapshot),
-                  ...(origin.availableTools === undefined
-                    ? {}
-                    : { availableTools: origin.availableTools }),
-                })
-              : nextQueuedTurn.message.text;
-          yield* orchestrationEngine.dispatch({
-            type: "thread.queued-turn.update",
-            commandId: serverCommandId("queued-turn.refresh-monitor"),
-            threadId,
-            queuedTurnId: nextQueuedTurn.id,
-            text: refreshedText,
-            origin: refreshedOrigin,
-            updatedAt: now.toISOString(),
-          });
-        }
-      }
-
-      const dispatchedAt = new Date().toISOString();
-      yield* orchestrationEngine
-        .dispatch({
-          type: "thread.queued-turn.dispatch",
-          commandId: serverCommandId("queued-turn.dispatch"),
+        const retryDelayMs =
+          MONITOR_REVALIDATION_RETRY_BASE_MS * 2 ** Math.max(0, attemptCount - 1);
+        yield* orchestrationEngine.dispatch({
+          type: "thread.queued-turn.update",
+          commandId: serverCommandId("queued-turn.defer-monitor-revalidation"),
           threadId,
           queuedTurnId: nextQueuedTurn.id,
-          dispatchedAt,
-        })
-        .pipe(
-          Effect.catchCause((cause) =>
-            Effect.gen(function* () {
-              if (isChildDecisionBlockedCause(cause)) {
-                // Race: a child decision landed between the read model snapshot
-                // and dispatch. Leave the turn queued; the meta-updated event
-                // for the delegation change (or the next drain) retries it
-                // after the decision is resolved.
-                yield* Effect.logWarning("queued turn dispatch waiting on child decision", {
-                  threadId,
-                  queuedTurnId: nextQueuedTurn.id,
-                });
-                return;
-              }
-              const latestReadModel = yield* orchestrationEngine.getReadModel();
-              const latestThread = latestReadModel.threads.find((entry) => entry.id === threadId);
-              if (
-                !latestThread ||
-                !isThreadReadyForQueuedDispatch(latestThread) ||
-                (nextQueuedTurn.origin?.kind === "child-nudge" &&
-                  (isAutomaticChildNudgeBlocked(latestThread) ||
-                    evaluateChildFollowUp(
-                      latestThread,
-                      nextQueuedTurn,
-                      new Map(latestReadModel.threads.map((entry) => [entry.id, entry])),
-                      new Date().toISOString(),
-                    ).reason !== null))
-              ) {
-                return;
-              }
-              yield* failQueuedTurn({
-                threadId,
-                queuedTurnId: nextQueuedTurn.id,
-                detail: Cause.pretty(cause),
-              }).pipe(
-                Effect.catchCause((failCause) =>
-                  Effect.logWarning("failed to mark queued turn as failed", {
-                    threadId,
-                    queuedTurnId: nextQueuedTurn.id,
-                    cause: Cause.pretty(failCause),
-                  }),
-                ),
-              );
-            }),
-          ),
-        );
-    } finally {
-      drainingThreadIds.delete(threadId);
-      if (pendingThreadIds.delete(threadId)) {
-        yield* drainThreadSafely(threadId).pipe(Effect.forkIn(wakeScope));
+          text: nextQueuedTurn.message.text,
+          origin: {
+            ...origin,
+            revalidationAttemptCount: attemptCount,
+            nextRevalidationAt: new Date(now.getTime() + retryDelayMs).toISOString(),
+          },
+          updatedAt: now.toISOString(),
+        });
+        return;
+      }
+      const snapshot = snapshotResult.success;
+      const sourceRevisionChanged =
+        origin.sourceRevision !== undefined && snapshot.sourceRevision !== origin.sourceRevision;
+      const providerStateChanged = snapshot.headSha !== origin.headSha || sourceRevisionChanged;
+      const actionableEvents =
+        origin.events?.filter(
+          (event) =>
+            reconcileFeedbackItem(
+              { kind: event.kind, stableKey: feedbackStableKeyOf(event) },
+              snapshot,
+              {
+                checkName: event.kind === "check-failed" ? (event.detail ?? null) : null,
+                observedHeadSha,
+              },
+            ).kind === "actionable",
+        ) ?? [];
+      if (
+        snapshot.state !== "open" ||
+        (providerStateChanged &&
+          origin.events !== undefined &&
+          origin.events.length > 0 &&
+          actionableEvents.length === 0)
+      ) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.queued-turn.delete",
+          commandId: serverCommandId("queued-turn.delete-stale-monitor"),
+          threadId,
+          queuedTurnId: nextQueuedTurn.id,
+          deletedAt: new Date().toISOString(),
+        });
+        return;
+      }
+
+      const hadRevalidationFailure =
+        origin.revalidationAttemptCount !== undefined || origin.nextRevalidationAt !== undefined;
+      if (providerStateChanged || hadRevalidationFailure) {
+        const {
+          revalidationAttemptCount: _revalidationAttemptCount,
+          nextRevalidationAt: _nextRevalidationAt,
+          ...stableOrigin
+        } = origin;
+        const refreshedOrigin = {
+          ...stableOrigin,
+          headSha: snapshot.headSha,
+          sourceRevision: snapshot.sourceRevision,
+          ...(origin.events === undefined ? {} : { events: actionableEvents }),
+        };
+        const refreshedText =
+          providerStateChanged && origin.deliveryId !== undefined
+            ? buildWakePrompt({
+                prNumber: origin.number,
+                repository: origin.repository,
+                deliveryId: origin.deliveryId,
+                ...(origin.findingContext === undefined
+                  ? {}
+                  : { findingContext: origin.findingContext }),
+                events: actionableEvents,
+                ...((origin.events === undefined || origin.events.length === 0) &&
+                origin.revisionSummaries !== undefined
+                  ? { revisionSummaries: origin.revisionSummaries }
+                  : {}),
+                snapshot,
+                readiness: computeReadiness(snapshot),
+                ...(origin.availableTools === undefined
+                  ? {}
+                  : { availableTools: origin.availableTools }),
+              })
+            : nextQueuedTurn.message.text;
+        yield* orchestrationEngine.dispatch({
+          type: "thread.queued-turn.update",
+          commandId: serverCommandId("queued-turn.refresh-monitor"),
+          threadId,
+          queuedTurnId: nextQueuedTurn.id,
+          text: refreshedText,
+          origin: refreshedOrigin,
+          updatedAt: now.toISOString(),
+        });
       }
     }
+
+    const dispatchedAt = new Date().toISOString();
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.queued-turn.dispatch",
+        commandId: serverCommandId("queued-turn.dispatch"),
+        threadId,
+        queuedTurnId: nextQueuedTurn.id,
+        dispatchedAt,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.gen(function* () {
+            if (isChildDecisionBlockedCause(cause)) {
+              // Race: a child decision landed between the read model snapshot
+              // and dispatch. Leave the turn queued; the meta-updated event
+              // for the delegation change (or the next drain) retries it
+              // after the decision is resolved.
+              yield* Effect.logWarning("queued turn dispatch waiting on child decision", {
+                threadId,
+                queuedTurnId: nextQueuedTurn.id,
+              });
+              return;
+            }
+            const latestReadModel = yield* orchestrationEngine.getReadModel();
+            const latestThread = latestReadModel.threads.find((entry) => entry.id === threadId);
+            if (
+              !latestThread ||
+              !isThreadReadyForQueuedDispatch(latestThread) ||
+              (nextQueuedTurn.origin?.kind === "child-nudge" &&
+                (isAutomaticChildNudgeBlocked(latestThread) ||
+                  evaluateChildFollowUp(
+                    latestThread,
+                    nextQueuedTurn,
+                    new Map(latestReadModel.threads.map((entry) => [entry.id, entry])),
+                    new Date().toISOString(),
+                  ).reason !== null))
+            ) {
+              return;
+            }
+            yield* failQueuedTurn({
+              threadId,
+              queuedTurnId: nextQueuedTurn.id,
+              detail: Cause.pretty(cause),
+            }).pipe(
+              Effect.catchCause((failCause) =>
+                Effect.logWarning("failed to mark queued turn as failed", {
+                  threadId,
+                  queuedTurnId: nextQueuedTurn.id,
+                  cause: Cause.pretty(failCause),
+                }),
+              ),
+            );
+          }),
+        ),
+      );
   });
+
+  // Coalesces concurrent drains per thread. The release must be an `ensuring`,
+  // not a generator `finally`: Effect.gen skips `finally` when a yielded effect
+  // fails or is interrupted, which left the thread marked draining forever and
+  // silently refused every later drain, so its queue never dispatched again.
+  const drainThread = (threadId: ThreadId) =>
+    Effect.suspend(() => {
+      if (!recoveryBarrierOpen || awaitingHold.has(threadId)) return Effect.void;
+      if (drainingThreadIds.has(threadId)) {
+        pendingThreadIds.add(threadId);
+        return Effect.void;
+      }
+      drainingThreadIds.add(threadId);
+      return drainThreadOnce(threadId).pipe(
+        Effect.ensuring(
+          Effect.suspend(() => {
+            drainingThreadIds.delete(threadId);
+            return pendingThreadIds.delete(threadId) ? requestDrain(threadId) : Effect.void;
+          }),
+        ),
+      );
+    });
 
   const drainThreadSafely = (threadId: ThreadId): Effect.Effect<void> =>
     drainThread(threadId).pipe(
@@ -873,8 +906,53 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     );
   });
 
+  const reconcileSettlementForEvent = (event: OrchestrationEvent, threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const thread = readModel.threads.find((entry) => entry.id === threadId);
+      const shouldReconcileAssignment = canInvalidateChildAssignment(event);
+      const hasOpenDelegation = thread?.nudging?.delegation?.completedAt === null;
+      if (!hasOpenDelegation && thread?.parentThreadId == null && !shouldReconcileAssignment) {
+        return;
+      }
+      const index = indexReadModel(readModel);
+      if (thread) {
+        yield* settleThreadIfReady(index, thread);
+      }
+      const parent =
+        thread?.parentThreadId == null ? undefined : index.threadsById.get(thread.parentThreadId);
+      if (parent) yield* settleThreadIfReady(index, parent);
+      if (
+        event.type === "thread.meta-updated" ||
+        event.type === "thread.archived" ||
+        event.type === "thread.deleted" ||
+        event.type === "thread.decoupled" ||
+        event.type === "thread.queued-turn-created" ||
+        event.type === "thread.queued-turn-updated"
+      ) {
+        if (parent) yield* requestDrain(parent.id);
+      }
+      if (shouldReconcileAssignment) {
+        yield* reconcileUnavailableChildAssignments(index, threadId);
+      }
+    });
+
   const start: QueuedTurnReactorShape["start"] = Effect.fn("start")(function* () {
     const subscription = yield* orchestrationEngine.acquireDomainEventSubscription;
+    // Settlement awaits engine commits, which can queue behind unrelated
+    // commands. Serialize it on its own worker so the event loop below only
+    // forks drains and a slow settlement never delays a queued dispatch.
+    const settlementEvents = yield* Queue.unbounded<{
+      readonly event: OrchestrationEvent;
+      readonly threadId: ThreadId;
+    }>();
+    yield* Effect.forkScoped(
+      Effect.forever(
+        Queue.take(settlementEvents).pipe(
+          Effect.flatMap(({ event, threadId }) => reconcileSettlementForEvent(event, threadId)),
+        ),
+      ),
+    );
     yield* Effect.forkScoped(
       Stream.forever(Stream.fromEffect(PubSub.take(subscription))).pipe(
         Stream.runForEach((event) => {
@@ -885,39 +963,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
               yield* requestDrain(threadId);
             }
             if (canChangeDelegationSettlement(event)) {
-              const readModel = yield* orchestrationEngine.getReadModel();
-              const thread = readModel.threads.find((entry) => entry.id === threadId);
-              const shouldReconcileAssignment = canInvalidateChildAssignment(event);
-              const hasOpenDelegation = thread?.nudging?.delegation?.completedAt === null;
-              if (
-                !hasOpenDelegation &&
-                thread?.parentThreadId == null &&
-                !shouldReconcileAssignment
-              ) {
-                return;
-              }
-              const index = indexReadModel(readModel);
-              if (thread) {
-                yield* settleThreadIfReady(index, thread);
-              }
-              const parent =
-                thread?.parentThreadId == null
-                  ? undefined
-                  : index.threadsById.get(thread.parentThreadId);
-              if (parent) yield* settleThreadIfReady(index, parent);
-              if (
-                event.type === "thread.meta-updated" ||
-                event.type === "thread.archived" ||
-                event.type === "thread.deleted" ||
-                event.type === "thread.decoupled" ||
-                event.type === "thread.queued-turn-created" ||
-                event.type === "thread.queued-turn-updated"
-              ) {
-                if (parent) yield* requestDrain(parent.id);
-              }
-              if (shouldReconcileAssignment) {
-                yield* reconcileUnavailableChildAssignments(index, threadId);
-              }
+              yield* Queue.offer(settlementEvents, { event, threadId });
             }
           });
         }),

@@ -153,6 +153,17 @@ describe("provider log retention settings", () => {
   });
 });
 
+describe("ServerSettings.idleTerminalStopHours", () => {
+  it("defaults to four hours and preserves null as disabled", () => {
+    expect(DEFAULT_SERVER_SETTINGS.idleTerminalStopHours).toBe(4);
+    expect(decodeServerSettings({}).idleTerminalStopHours).toBe(4);
+    expect(decodeServerSettings({ idleTerminalStopHours: null }).idleTerminalStopHours).toBeNull();
+    expect(
+      decodeServerSettingsPatch({ idleTerminalStopHours: null }).idleTerminalStopHours,
+    ).toBeNull();
+  });
+});
+
 describe("ServerSettings.pullRequestMonitoring", () => {
   it("defaults automatic monitoring and maintenance chats on", () => {
     expect(DEFAULT_SERVER_SETTINGS.autoMonitorPullRequestsOnCreate).toBe(true);
@@ -169,6 +180,18 @@ describe("ServerSettings.pullRequestMonitoring", () => {
       autoMonitorPullRequestsOnCreate: false,
       autoLaunchPrMonitorFallback: false,
     });
+  });
+});
+
+describe("ServerSettings.idleWorktreeReclaimDays", () => {
+  it("defaults idle worktree reclamation to seven days and accepts null to disable it", () => {
+    expect(DEFAULT_SERVER_SETTINGS.idleWorktreeReclaimDays).toBe(7);
+    expect(
+      decodeServerSettingsPatch({ idleWorktreeReclaimDays: null }).idleWorktreeReclaimDays,
+    ).toBe(null);
+    expect(decodeServerSettingsPatch({ idleWorktreeReclaimDays: 14 }).idleWorktreeReclaimDays).toBe(
+      14,
+    );
   });
 });
 

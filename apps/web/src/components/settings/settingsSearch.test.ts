@@ -43,6 +43,10 @@ describe("settings search", () => {
       title: "Delete merged worktrees",
       to: "/settings/storage",
     });
+    expect(searchSettings("idle terminal cleanup")[0]).toMatchObject({
+      title: "Stop idle terminals",
+      to: "/settings/general",
+    });
   });
 
   it("finds provider log cleanup settings", () => {
@@ -92,5 +96,14 @@ describe("settings search", () => {
     expect(searchSettings("local source")).toEqual([]);
     expect(searchSettings("sidebar icon size")[0]?.title).toBe("Sidebar icon size");
     expect(searchSettings("normal message preview")[0]?.title).toBe("Normal message preview");
+  });
+
+  it("finds idle worktree reclamation by its cleanup terminology", () => {
+    expect(searchSettings("worktree reclaim")[0]).toMatchObject({
+      title: "Idle worktree reclamation",
+      id: "setting-idle-worktree-reclamation",
+      to: "/settings/general",
+    });
+    expect(searchSettings("storage cleanup")[0]?.title).toBe("Idle worktree reclamation");
   });
 });

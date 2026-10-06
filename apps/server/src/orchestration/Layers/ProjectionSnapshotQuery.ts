@@ -90,6 +90,7 @@ import {
   type ThreadHistorySelection,
 } from "../threadHistoryWindow.ts";
 import { THREAD_DETAIL_EVENT_TYPES } from "../threadDetailEvents.ts";
+import { queueAwaitsDispatch } from "@t3tools/shared/queuedTurnOrder";
 
 const decodeReadModel = Schema.decodeUnknownEffect(OrchestrationReadModel);
 const decodeShellSnapshot = Schema.decodeUnknownEffect(OrchestrationShellSnapshot);
@@ -322,6 +323,27 @@ const WorkspaceRootLookupInput = Schema.Struct({
 const ProjectIdLookupInput = Schema.Struct({
   projectId: ProjectId,
 });
+const QueueDispatchRow = Schema.Struct({
+  threadId: ThreadId,
+  id: Schema.String,
+  createdAt: Schema.String,
+  queuePosition: Schema.NullOr(Schema.Number),
+  failedAt: Schema.NullOr(Schema.String),
+});
+type QueueDispatchRow = typeof QueueDispatchRow.Type;
+
+function queueAwaitsDispatchFromRows(
+  queueHeldAt: string | null,
+  rows: ReadonlyArray<QueueDispatchRow> | undefined,
+): boolean {
+  return queueAwaitsDispatch(
+    queueHeldAt,
+    (rows ?? []).map(({ queuePosition, ...row }) =>
+      queuePosition === null ? row : { ...row, queuePosition },
+    ),
+  );
+}
+
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -805,36 +827,36 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
-  // Shell sidebar status needs queue presence without hydrating full queued-turn
-  // payloads for every thread on every snapshot.
-  const listThreadIdsWithPendingQueuedTurns = SqlSchema.findAll({
+  // Shell status needs to know whether the queue will dispatch on its own
+  // (queueAwaitsDispatch) without hydrating full queued-turn payloads for every
+  // thread on every snapshot, so read only the ordering and failure columns.
+  const queueDispatchColumns = sql`
+    thread_id AS "threadId",
+    queued_turn_id AS "id",
+    created_at AS "createdAt",
+    queue_position AS "queuePosition",
+    failed_at AS "failedAt"
+  `;
+  const listQueueDispatchRows = SqlSchema.findAll({
     Request: Schema.Void,
-    Result: Schema.Struct({
-      threadId: ThreadId,
-    }),
+    Result: QueueDispatchRow,
     execute: () =>
       sql`
-        SELECT DISTINCT thread_id AS "threadId"
+        SELECT ${queueDispatchColumns}
         FROM projection_queued_turns
-        WHERE failed_at IS NULL
-          AND COALESCE(json_extract(origin_json, '$.kind'), '') != 'child-nudge'
-        ORDER BY thread_id ASC
+        WHERE COALESCE(json_extract(origin_json, '$.kind'), '') != 'child-nudge'
       `,
   });
 
-  const hasPendingQueuedTurnForThread = SqlSchema.findOneOption({
+  const listQueueDispatchRowsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
-    Result: Schema.Struct({
-      threadId: ThreadId,
-    }),
+    Result: QueueDispatchRow,
     execute: ({ threadId }) =>
       sql`
-        SELECT thread_id AS "threadId"
+        SELECT ${queueDispatchColumns}
         FROM projection_queued_turns
         WHERE thread_id = ${threadId}
-          AND failed_at IS NULL
           AND COALESCE(json_extract(origin_json, '$.kind'), '') != 'child-nudge'
-        LIMIT 1
       `,
   });
 
@@ -2363,11 +2385,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          listThreadIdsWithPendingQueuedTurns(undefined).pipe(
+          listQueueDispatchRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getShellSnapshot:listPendingQueuedTurnThreads:query",
-                "ProjectionSnapshotQuery.getShellSnapshot:listPendingQueuedTurnThreads:decodeRows",
+                "ProjectionSnapshotQuery.getShellSnapshot:listQueueDispatchRows:query",
+                "ProjectionSnapshotQuery.getShellSnapshot:listQueueDispatchRows:decodeRows",
               ),
             ),
           ),
@@ -2404,16 +2426,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             pendingTurnStartRows,
             turnSnapshotBounds,
             backgroundAgentActivityRows,
-            pendingQueuedTurnThreadRows,
+            queueDispatchRows,
             stateRows,
             workflowSnapshot,
             updatedAtBounds,
           ]) =>
             Effect.gen(function* () {
               const { artifacts: workflowArtifacts, runs: workflowRuns } = workflowSnapshot;
-              const pendingQueuedTurnThreadIds = new Set(
-                pendingQueuedTurnThreadRows.map((row) => row.threadId),
-              );
+              const queueDispatchRowsByThread = new Map<string, QueueDispatchRow[]>();
+              for (const row of queueDispatchRows) {
+                const rows = queueDispatchRowsByThread.get(row.threadId);
+                if (rows) rows.push(row);
+                else queueDispatchRowsByThread.set(row.threadId, [row]);
+              }
               let updatedAt: string | null = null;
               // Aggregates rather than row folds: the row queries above exclude
               // soft-deleted rows, but a delete bumps `updated_at` and must
@@ -2522,7 +2547,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     hasPendingApprovals: row.pendingApprovalCount > 0,
                     hasPendingUserInput: row.pendingUserInputCount > 0,
                     hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
-                    hasPendingQueuedTurn: pendingQueuedTurnThreadIds.has(row.threadId),
+                    hasPendingQueuedTurn: queueAwaitsDispatchFromRows(
+                      row.queueHeldAt,
+                      queueDispatchRowsByThread.get(row.threadId),
+                    ),
                     ...(backgroundAgentRunsByThread.get(row.threadId)?.length
                       ? { backgroundAgentRuns: backgroundAgentRunsByThread.get(row.threadId)! }
                       : {}),
@@ -2770,7 +2798,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pendingTurnStartRow,
           sessionRow,
           backgroundAgentActivityRows,
-          pendingQueuedTurnRow,
+          queueDispatchRows,
         ] = yield* Effect.all([
           getActiveThreadRowById({ threadId }).pipe(
             Effect.mapError(
@@ -2812,11 +2840,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          hasPendingQueuedTurnForThread({ threadId }).pipe(
+          listQueueDispatchRowsByThread({ threadId }).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getThreadShellById:hasPendingQueuedTurn:query",
-                "ProjectionSnapshotQuery.getThreadShellById:hasPendingQueuedTurn:decodeRow",
+                "ProjectionSnapshotQuery.getThreadShellById:listQueueDispatchRows:query",
+                "ProjectionSnapshotQuery.getThreadShellById:listQueueDispatchRows:decodeRows",
               ),
             ),
           ),
@@ -2885,7 +2913,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
             hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
             hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
-            hasPendingQueuedTurn: Option.isSome(pendingQueuedTurnRow),
+            hasPendingQueuedTurn: queueAwaitsDispatchFromRows(
+              threadRow.value.queueHeldAt,
+              queueDispatchRows,
+            ),
             ...(backgroundAgentRuns.length > 0 ? { backgroundAgentRuns } : {}),
           },
           project:

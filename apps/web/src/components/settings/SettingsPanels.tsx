@@ -2618,6 +2618,113 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+        <SettingsRow
+          title="Idle worktree reclamation"
+          description="After this many inactive days, clean worktrees can be reclaimed; committed work stays on its branch and the same worktree is restored on your next message. Uncommitted changes are never removed. Turn off to keep all worktrees."
+          resetAction={
+            settings.idleWorktreeReclaimDays !==
+            DEFAULT_UNIFIED_SETTINGS.idleWorktreeReclaimDays ? (
+              <SettingResetButton
+                label="idle worktree reclamation"
+                onClick={() =>
+                  updateSettings({
+                    idleWorktreeReclaimDays: DEFAULT_UNIFIED_SETTINGS.idleWorktreeReclaimDays,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="flex items-center gap-2">
+              <DraftInput
+                className="w-20"
+                value={String(settings.idleWorktreeReclaimDays ?? 7)}
+                inputMode="numeric"
+                disabled={settings.idleWorktreeReclaimDays === null}
+                onCommit={(value) => {
+                  const days = Number.parseInt(value.trim(), 10);
+                  if (!Number.isFinite(days) || days < 1 || days > 3650) {
+                    toastManager.add({
+                      type: "warning",
+                      title: "Idle worktree reclamation must be between 1 and 3650 days",
+                    });
+                    return;
+                  }
+                  updateSettings({ idleWorktreeReclaimDays: days });
+                }}
+                aria-label="Idle worktree reclamation interval in days"
+              />
+              <span className="text-xs text-muted-foreground">days</span>
+              <Switch
+                checked={settings.idleWorktreeReclaimDays !== null}
+                onCheckedChange={(checked) =>
+                  updateSettings({
+                    idleWorktreeReclaimDays: checked
+                      ? (DEFAULT_UNIFIED_SETTINGS.idleWorktreeReclaimDays ?? 7)
+                      : null,
+                  })
+                }
+                aria-label="Enable idle worktree reclamation"
+              />
+            </div>
+          }
+        />
+        <SettingsRow
+          title="Stop idle terminals"
+          description="Close unattached terminal sessions after the chat and terminal have both been inactive. Pinned, active, queued, and previewed chats are kept."
+          resetAction={
+            settings.idleTerminalStopHours !== DEFAULT_UNIFIED_SETTINGS.idleTerminalStopHours ? (
+              <SettingResetButton
+                label="idle terminal timeout"
+                onClick={() =>
+                  updateSettings({
+                    idleTerminalStopHours: DEFAULT_UNIFIED_SETTINGS.idleTerminalStopHours,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.idleTerminalStopHours !== null}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  idleTerminalStopHours: checked
+                    ? DEFAULT_UNIFIED_SETTINGS.idleTerminalStopHours
+                    : null,
+                })
+              }
+              aria-label="Stop idle terminals"
+            />
+          }
+        />
+        {settings.idleTerminalStopHours !== null ? (
+          <SettingsRow
+            title="Terminal inactivity timeout"
+            description="Hours without chat activity or terminal output before an unattached terminal is stopped."
+            control={
+              <DraftInput
+                className="w-24"
+                value={String(settings.idleTerminalStopHours)}
+                inputMode="decimal"
+                onCommit={(value) => {
+                  const hours = Number(value);
+                  if (!Number.isFinite(hours) || hours < 0.25) {
+                    toastManager.add({
+                      type: "warning",
+                      title: "Enter a terminal timeout of at least 0.25 hours",
+                    });
+                    return;
+                  }
+                  if (hours !== settings.idleTerminalStopHours) {
+                    updateSettings({ idleTerminalStopHours: hours });
+                  }
+                }}
+                aria-label="Terminal inactivity timeout in hours"
+              />
+            }
+          />
+        ) : null}
       </SettingsSection>
 
       <SettingsSection title="Advanced">

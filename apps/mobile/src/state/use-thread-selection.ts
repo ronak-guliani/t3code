@@ -8,6 +8,7 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { queueAwaitsDispatch } from "@t3tools/shared/queuedTurnOrder";
 import * as Option from "effect/Option";
 
 import { useProject, useThreadShell } from "../state/entities";
@@ -62,7 +63,7 @@ function threadDetailToShell(
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
-    hasPendingQueuedTurn: (thread.queuedTurns ?? []).some((turn) => turn.failedAt === null),
+    hasPendingQueuedTurn: queueAwaitsDispatch(thread.queueHeldAt, thread.queuedTurns ?? []),
   };
 }
 
