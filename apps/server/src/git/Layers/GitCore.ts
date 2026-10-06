@@ -127,6 +127,9 @@ const STATUS_UPSTREAM_REFRESH_FAILURE_COOLDOWN = Duration.seconds(5);
 const STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY = 2_048;
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
 const GIT_LIST_BRANCHES_DEFAULT_LIMIT = 100;
+// Concurrent branch-list reads collapse per cwd, so only the number of
+// distinct repositories in flight matters here.
+const LIST_BRANCHES_CACHE_CAPACITY = 256;
 const NON_REPOSITORY_STATUS_DETAILS = Object.freeze<GitStatusDetails>({
   isRepo: false,
   hasOriginRemote: false,
@@ -2416,13 +2419,13 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       return relativePaths.filter((relativePath) => !ignoredPaths.has(relativePath));
     });
 
-  const listBranches: GitCoreShape["listBranches"] = Effect.fn("listBranches")(function* (input) {
-    const branchRecencyPromise = readBranchRecency(input.cwd).pipe(
+  const readBranchSnapshot = Effect.fn("readBranchSnapshot")(function* (cwd: string) {
+    const branchRecencyPromise = readBranchRecency(cwd).pipe(
       Effect.catch(() => Effect.succeed(new Map<string, number>())),
     );
     const localBranchResult = yield* executeGit(
       "GitCore.listBranches.branchNoColor",
-      input.cwd,
+      cwd,
       ["branch", "--no-color", "--no-column"],
       {
         timeoutMs: 10_000,
@@ -2444,16 +2447,14 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       const stderr = localBranchResult.stderr.trim();
       if (stderr.toLowerCase().includes("not a git repository")) {
         return {
-          branches: [],
+          branches: [] as ReadonlyArray<GitBranch>,
           isRepo: false,
           hasOriginRemote: false,
-          nextCursor: null,
-          totalCount: 0,
         };
       }
       return yield* createGitCommandError(
         "GitCore.listBranches",
-        input.cwd,
+        cwd,
         ["branch", "--no-color", "--no-column"],
         stderr || "git branch failed",
       );
@@ -2461,7 +2462,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
 
     const remoteBranchResultEffect = executeGit(
       "GitCore.listBranches.remoteBranches",
-      input.cwd,
+      cwd,
       ["branch", "--no-color", "--no-column", "--remotes"],
       {
         timeoutMs: 10_000,
@@ -2470,14 +2471,14 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     ).pipe(
       Effect.catch((error) =>
         Effect.logWarning(
-          `GitCore.listBranches: remote branch lookup failed for ${input.cwd}: ${error.message}. Falling back to an empty remote branch list.`,
+          `GitCore.listBranches: remote branch lookup failed for ${cwd}: ${error.message}. Falling back to an empty remote branch list.`,
         ).pipe(Effect.as({ code: 1, stdout: "", stderr: "" })),
       ),
     );
 
     const remoteNamesResultEffect = executeGit(
       "GitCore.listBranches.remoteNames",
-      input.cwd,
+      cwd,
       ["remote"],
       {
         timeoutMs: 5_000,
@@ -2486,7 +2487,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     ).pipe(
       Effect.catch((error) =>
         Effect.logWarning(
-          `GitCore.listBranches: remote name lookup failed for ${input.cwd}: ${error.message}. Falling back to an empty remote name list.`,
+          `GitCore.listBranches: remote name lookup failed for ${cwd}: ${error.message}. Falling back to an empty remote name list.`,
         ).pipe(Effect.as({ code: 1, stdout: "", stderr: "" })),
       ),
     );
@@ -2496,7 +2497,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
         [
           executeGit(
             "GitCore.listBranches.defaultRef",
-            input.cwd,
+            cwd,
             ["symbolic-ref", "refs/remotes/origin/HEAD"],
             {
               timeoutMs: 5_000,
@@ -2505,7 +2506,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
           ),
           executeGit(
             "GitCore.listBranches.worktreeList",
-            input.cwd,
+            cwd,
             ["worktree", "list", "--porcelain"],
             {
               timeoutMs: 5_000,
@@ -2523,12 +2524,12 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       remoteNamesResult.code === 0 ? parseRemoteNames(remoteNamesResult.stdout) : [];
     if (remoteBranchResult.code !== 0 && remoteBranchResult.stderr.trim().length > 0) {
       yield* Effect.logWarning(
-        `GitCore.listBranches: remote branch lookup returned code ${remoteBranchResult.code} for ${input.cwd}: ${remoteBranchResult.stderr.trim()}. Falling back to an empty remote branch list.`,
+        `GitCore.listBranches: remote branch lookup returned code ${remoteBranchResult.code} for ${cwd}: ${remoteBranchResult.stderr.trim()}. Falling back to an empty remote branch list.`,
       );
     }
     if (remoteNamesResult.code !== 0 && remoteNamesResult.stderr.trim().length > 0) {
       yield* Effect.logWarning(
-        `GitCore.listBranches: remote name lookup returned code ${remoteNamesResult.code} for ${input.cwd}: ${remoteNamesResult.stderr.trim()}. Falling back to an empty remote name list.`,
+        `GitCore.listBranches: remote name lookup returned code ${remoteNamesResult.code} for ${cwd}: ${remoteNamesResult.stderr.trim()}. Falling back to an empty remote name list.`,
       );
     }
 
@@ -2613,11 +2614,37 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
             })
         : [];
 
+    return {
+      branches: dedupeRemoteBranchesWithLocalMatches([...localBranches, ...remoteBranches]),
+      isRepo: true,
+      hasOriginRemote: remoteNames.includes("origin"),
+    };
+  });
+
+  // The unpaginated branch set is one six-command Git fan-out per cwd. Every
+  // client listing branches for the same repository asks the same question, so
+  // concurrent callers share one fan-out. A zero TTL drops the entry as soon as
+  // it resolves: this coalesces in-flight work and never serves a stale list,
+  // because `query`/`cursor`/`limit` are applied after the shared read.
+  const listBranchesCache = yield* Cache.makeWith((cwd: string) => readBranchSnapshot(cwd), {
+    capacity: LIST_BRANCHES_CACHE_CAPACITY,
+    timeToLive: () => Duration.zero,
+  });
+
+  const listBranches: GitCoreShape["listBranches"] = Effect.fn("listBranches")(function* (input) {
+    const snapshot = yield* Cache.get(listBranchesCache, input.cwd);
+    if (!snapshot.isRepo) {
+      return {
+        branches: [],
+        isRepo: false,
+        hasOriginRemote: false,
+        nextCursor: null,
+        totalCount: 0,
+      };
+    }
+
     const branches = paginateBranches({
-      branches: filterBranchesForListQuery(
-        dedupeRemoteBranchesWithLocalMatches([...localBranches, ...remoteBranches]),
-        input.query,
-      ),
+      branches: filterBranchesForListQuery(snapshot.branches, input.query),
       cursor: input.cursor,
       limit: input.limit,
     });
@@ -2625,7 +2652,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     return {
       branches: [...branches.branches],
       isRepo: true,
-      hasOriginRemote: remoteNames.includes("origin"),
+      hasOriginRemote: snapshot.hasOriginRemote,
       nextCursor: branches.nextCursor,
       totalCount: branches.totalCount,
     };

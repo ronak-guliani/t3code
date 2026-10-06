@@ -17,11 +17,17 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { applyGitStatusStreamEvent } from "@t3tools/shared/git";
-import { Effect, Stream } from "effect";
+import { Duration, Effect, Stream } from "effect";
 
 import { type WsRpcProtocolClient } from "./protocol";
 import { resetWsReconnectBackoff } from "./wsConnectionState";
 import { WsTransport } from "./wsTransport";
+
+// Every Git command inside the server-side branch fan-out is individually capped
+// at 10s, so a healthy read finishes far inside this. A request still pending
+// past it is stuck, not slow, and should surface as an error instead of sitting
+// in the slow-RPC toast indefinitely.
+const GIT_LIST_BRANCHES_TIMEOUT = Duration.seconds(30);
 
 type RpcTag = keyof WsRpcProtocolClient & string;
 type RpcMethod<TTag extends RpcTag> = WsRpcProtocolClient[TTag];
@@ -409,7 +415,9 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         throw new Error("Git action stream completed without a final result.");
       },
       listBranches: (input) =>
-        transport.request((client) => client[WS_METHODS.gitListBranches](input)),
+        transport.request((client) => client[WS_METHODS.gitListBranches](input), {
+          timeout: GIT_LIST_BRANCHES_TIMEOUT,
+        }),
       createWorktree: (input) =>
         transport.request((client) => client[WS_METHODS.gitCreateWorktree](input)),
       removeWorktree: (input) =>
