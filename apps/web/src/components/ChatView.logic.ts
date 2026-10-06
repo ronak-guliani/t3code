@@ -451,6 +451,25 @@ export function canStartThreadTurn(input: {
   );
 }
 
+/**
+ * A turn that failed before reaching the provider will never be acknowledged by
+ * session or turn state, so its failure activity is the only signal that retires
+ * the send's busy latch. Scoped to this dispatch: an older failure on the same
+ * thread belongs to a send that already settled.
+ */
+export function turnStartFailedForPendingTurn(
+  activities: ReadonlyArray<OrchestrationThreadActivity> | undefined,
+  pendingTurnStartedAt: string | undefined,
+): boolean {
+  if (!activities || pendingTurnStartedAt === undefined) {
+    return false;
+  }
+  return activities.some(
+    (activity) =>
+      activity.kind === "provider.turn.start.failed" && activity.createdAt >= pendingTurnStartedAt,
+  );
+}
+
 export function deriveTimelineWorkState(input: {
   isServerThread: boolean;
   threadDetailHydrated: boolean;

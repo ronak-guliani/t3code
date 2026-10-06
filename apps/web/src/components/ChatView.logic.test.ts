@@ -36,6 +36,7 @@ import {
   resolveSendEnvMode,
   shouldWriteThreadErrorToCurrentServerThread,
   threadHasStarted,
+  turnStartFailedForPendingTurn,
   waitForRoutableServerThread,
 } from "./ChatView.logic";
 
@@ -73,6 +74,39 @@ describe("deriveTimelineWorkState", () => {
         latestTurnSettled: false,
       }),
     ).toEqual({ isWorking: true, latestTurnSettled: false, timelineActiveWork: true });
+  });
+});
+
+describe("turnStartFailedForPendingTurn", () => {
+  const startedAt = "2026-01-01T00:00:05.000Z";
+
+  function failureActivity(createdAt: string): OrchestrationThreadActivity {
+    return {
+      id: EventId.make(`activity-${createdAt}`),
+      tone: "error",
+      kind: "provider.turn.start.failed",
+      summary: "Provider turn start failed",
+      payload: { detail: "fetch failed" },
+      turnId: null,
+      createdAt,
+    };
+  }
+
+  it("reports a failure raised by the pending send itself", () => {
+    expect(turnStartFailedForPendingTurn([failureActivity(startedAt)], startedAt)).toBe(true);
+  });
+
+  // A thread keeps its activities, so a retry must not be released by the
+  // failure that already ended the previous send.
+  it("ignores a failure that predates the pending send", () => {
+    expect(
+      turnStartFailedForPendingTurn([failureActivity("2026-01-01T00:00:01.000Z")], startedAt),
+    ).toBe(false);
+  });
+
+  it("is inert without activities or a pending dispatch", () => {
+    expect(turnStartFailedForPendingTurn(undefined, startedAt)).toBe(false);
+    expect(turnStartFailedForPendingTurn([failureActivity(startedAt)], undefined)).toBe(false);
   });
 });
 
