@@ -23,6 +23,8 @@ import { type MouseEvent, type ReactNode, useEffect, useRef, useState } from "re
 import type { RightPanelSurface } from "~/rightPanelStore";
 import { isElectron } from "~/env";
 import { cn } from "~/lib/utils";
+import { CHAT_HEADER_WEB_ROW_CLASS } from "~/lib/chatHeaderLayout";
+import { TITLEBAR_ROW_CLASS } from "~/lib/titlebar";
 import { useBrowserDefaults } from "~/browser/browserDefaults";
 import { useTheme } from "~/hooks/useTheme";
 import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanelShell";
@@ -262,7 +264,8 @@ export function RightPanelTabs({
     <PreviewPanelShell mode={mode} maximized={maximized}>
       <div
         className={cn(
-          "flex h-11 shrink-0 items-center gap-1 border-b border-border/70 bg-chat-background px-2",
+          "flex shrink-0 items-center gap-1 border-b border-border/70 bg-chat-background px-2",
+          isElectron ? TITLEBAR_ROW_CLASS : CHAT_HEADER_WEB_ROW_CLASS,
           isElectron && mode === "inline" && "drag-region",
         )}
         data-right-panel-tabbar

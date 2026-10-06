@@ -182,6 +182,7 @@ import { FilePreviewPanel } from "./files/FilePreviewPanel";
 import { ChevronDownIcon } from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
 import { TITLEBAR_CONTROL_INSET_CLASS, TITLEBAR_ROW_CLASS } from "~/lib/titlebar";
+import { CHAT_HEADER_WEB_ROW_CLASS } from "~/lib/chatHeaderLayout";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { isRateLimitQueryError } from "../lib/rateLimitQuery";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -5576,7 +5577,10 @@ function ChatViewBody(
                   (shouldUseRightPanelSheet || !browserPanel.isOpen) &&
                     TITLEBAR_CONTROL_INSET_CLASS,
                 )
-              : "py-2 ps-[calc(env(safe-area-inset-left)+--spacing(3))] pe-[calc(env(safe-area-inset-right)+--spacing(3))] sm:py-3 sm:ps-[calc(env(safe-area-inset-left)+--spacing(5))] sm:pe-[calc(env(safe-area-inset-right)+--spacing(5))]",
+              : cn(
+                  CHAT_HEADER_WEB_ROW_CLASS,
+                  "ps-[calc(env(safe-area-inset-left)+--spacing(3))] pe-[calc(env(safe-area-inset-right)+--spacing(3))] sm:ps-[calc(env(safe-area-inset-left)+--spacing(5))] sm:pe-[calc(env(safe-area-inset-right)+--spacing(5))]",
+                ),
           )}
         >
           <ChatHeader
