@@ -339,7 +339,9 @@ export const makeWorktreeStorageContributor = Effect.gen(function* () {
         if (!(yield* Effect.promise(() => pathExists(payload.path)))) {
           return result("skipped", "already deleted");
         }
-        yield* Effect.promise(() => fs.rm(payload.path, { recursive: true, force: true }));
+        yield* Effect.promise(() =>
+          fs.rm(payload.path, { recursive: true, force: true, maxRetries: 3 }),
+        );
         sizeCache.delete(payload.path);
         return result("removed", "detached worktree in trash");
       }

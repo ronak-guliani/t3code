@@ -43,7 +43,7 @@ export interface StorageCleanupContributor {
     policy: EffectiveStorageCleanupPolicy,
     mode: StorageCleanupMode,
   ) => Effect.Effect<ReadonlyArray<StoragePlanEntry>, unknown>;
-  /** Re-check every item's safety now; skip, never force, items that became unsafe. */
+  /** Called per plan item to isolate failures. Re-check safety; skip anything now unsafe. */
   readonly execute: (
     entries: ReadonlyArray<StoragePlanEntry>,
     policy: EffectiveStorageCleanupPolicy,
@@ -321,25 +321,28 @@ export const makeStorageCleanup = (
             .filter((candidate) => candidate.contributor === contributor.id)
             .map((candidate) => candidate.entry);
           if (entries.length === 0) return Effect.succeed([]);
-          return contributor.execute(entries, policy).pipe(
-            Effect.tap(onProgress),
-            Effect.catchCause((cause) =>
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.interrupt
-                : Effect.succeed(
-                    entries.map(
-                      (entry): StorageCleanupItemResult => ({
-                        itemId: entry.item.id,
-                        category: entry.item.category,
-                        description: entry.item.description,
-                        status: "failed",
-                        bytesFreed: 0,
-                        reason: Cause.pretty(cause).split("\n")[0] ?? "cleanup failed",
-                      }),
-                    ),
-                  ),
-            ),
-          );
+          return Effect.forEach(
+            entries,
+            (entry) =>
+              contributor.execute([entry], policy).pipe(
+                Effect.catchCause((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.interrupt
+                    : Effect.succeed<ReadonlyArray<StorageCleanupItemResult>>([
+                        {
+                          itemId: entry.item.id,
+                          category: entry.item.category,
+                          description: entry.item.description,
+                          status: "failed",
+                          bytesFreed: 0,
+                          reason: Cause.pretty(cause).split("\n")[0] ?? "cleanup failed",
+                        },
+                      ]),
+                ),
+                Effect.tap(onProgress),
+              ),
+            { concurrency: 1 },
+          ).pipe(Effect.map((groups) => groups.flat()));
         },
         // Sequential: contributors share the disk and some take checkout locks.
         { concurrency: 1 },

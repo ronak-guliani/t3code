@@ -15,6 +15,8 @@
  *   blocks the manual reset;
  * - low disk mode does not tighten log retention;
  * - an unproven validation environment is removed without explicit confirm.
+ * - one failed trash removal overwrites successful results or prevents later
+ *   items from running, and progress omits the failed item.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -48,7 +50,7 @@ import {
   Stream,
 } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ServerConfig } from "../config.ts";
 import { GitCoreLive } from "../git/Layers/GitCore.ts";
@@ -503,6 +505,64 @@ async function makeFixture(options: FixtureOptions = {}) {
 }
 
 describe("StorageCleanup reset", () => {
+  it("isolates a failed trash removal and preserves successful cleanup results and progress", async () => {
+    const fixture = await makeFixture();
+    const remove = fs.rm.bind(fs);
+    const failedTrash = path.join(
+      fixture.config.worktreesDir,
+      "repo",
+      ".t3-worktree-trash",
+      "failed",
+    );
+    const laterTrash = path.join(path.dirname(failedTrash), "later");
+    let removal: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await writeBytes(path.join(failedTrash, "blob"), 8192);
+      await writeBytes(path.join(laterTrash, "blob"), 4096);
+      await fixture.startReactor();
+      const plan = await fixture.run(fixture.storage.previewCleanup());
+      const itemIds = ["worktree:thread-idle", `trash:${failedTrash}`, `trash:${laterTrash}`];
+      removal = vi
+        .spyOn(fs, "rm")
+        .mockImplementation((target, options) =>
+          target === failedTrash
+            ? Promise.reject(
+                Object.assign(new Error("ENOTEMPTY: directory not empty"), { code: "ENOTEMPTY" }),
+              )
+            : remove(target, options),
+        );
+      const result = await fixture.run(
+        fixture.storage.executeCleanup({ planId: plan.planId, itemIds }),
+      );
+      expect(result.results.map(({ itemId, status }) => ({ itemId, status }))).toEqual([
+        { itemId: itemIds[0], status: "removed" },
+        { itemId: itemIds[1], status: "failed" },
+        { itemId: itemIds[2], status: "removed" },
+      ]);
+      expect(result.results[1]).toMatchObject({
+        bytesFreed: 0,
+        reason: expect.stringContaining("ENOTEMPTY"),
+      });
+      expect(result.bytesFreed).toBe(
+        plan.items
+          .filter((item) => item.id === itemIds[0] || item.id === itemIds[2])
+          .reduce((sum, item) => sum + item.estimatedBytes, 0),
+      );
+      expect(await exists(fixture.paths.idle)).toBe(false);
+      expect(await exists(failedTrash)).toBe(true);
+      expect(await exists(laterTrash)).toBe(false);
+      expect((await fixture.run(fixture.storage.getUsage({}))).cleanup).toMatchObject({
+        status: "complete",
+        totalItems: 3,
+        completedItems: 3,
+        bytesFreed: result.bytesFreed,
+      });
+    } finally {
+      removal?.mockRestore();
+      await fixture.dispose();
+    }
+  });
+
   it("previews exactly the eligible items, skips items made unsafe, keeps history, and restores", async () => {
     const fixture = await makeFixture();
     try {
