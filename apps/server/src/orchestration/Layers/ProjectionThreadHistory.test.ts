@@ -294,6 +294,84 @@ for (const { name, legacyPrefix, nullMessages, expectedIds } of [
   );
 }
 
+for (const legacy of [false, true]) {
+  it.effect(
+    `keeps ${legacy ? "legacy" : "sequenced"} steering and late replies in contiguous pages`,
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        // A steering user and a later unowned follow-up receive replies from the
+        // provider's original turn, whose pending user is outside both windows.
+        for (const turn of [36, 37]) {
+          for (const role of ["user", "assistant"] as const) {
+            const id = `${role === "user" ? "steering-user" : "late-reply"}-${turn}`;
+            yield* sql`INSERT INTO projection_thread_messages
+            (message_id, thread_id, turn_id, sequence, role, text, attachments_json,
+              is_streaming, created_at, updated_at)
+            VALUES (${id}, ${threadId}, ${role === "user" && turn === 37 ? null : "turn-35"},
+              ${turn * 10 + (role === "user" ? 1 : 2)},
+              ${role}, ${id}, '[]', 0, ${now}, ${now})`;
+          }
+        }
+        if (legacy) {
+          yield* sql`UPDATE projection_thread_messages SET sequence = NULL WHERE thread_id = ${threadId}`;
+        }
+        const query = yield* ProjectionSnapshotQuery;
+        const recent = Option.getOrThrow(
+          yield* query.getThreadDetailSnapshotById(threadId, { turnLimit: 1 }),
+        );
+        assert.deepEqual(
+          recent.thread.messages.map((message) => message.id),
+          ["steering-user-37", "late-reply-37"],
+        );
+        assert.equal(
+          recent.page?.beforeCursor,
+          encodeThreadHistoryCursor(threadId, "steering-user-37"),
+        );
+        const older = Option.getOrThrow(
+          yield* query.getThreadDetailSnapshotById(threadId, {
+            turnLimit: 1,
+            beforeCursor: recent.page!.beforeCursor!,
+          }),
+        );
+        assert.deepEqual(
+          older.thread.messages.map((message) => message.id),
+          ["steering-user-36", "late-reply-36"],
+        );
+        assert.equal(
+          older.page?.beforeCursor,
+          encodeThreadHistoryCursor(threadId, "steering-user-36"),
+        );
+        const original = Option.getOrThrow(
+          yield* query.getThreadDetailSnapshotById(threadId, {
+            turnLimit: 1,
+            beforeCursor: older.page!.beforeCursor!,
+          }),
+        );
+        assert.deepEqual(
+          original.thread.messages.map((message) => message.id),
+          ["message-35-0", "message-35-1", "message-35-2"],
+        );
+        for (const page of [recent, older, original]) {
+          assert.deepEqual(
+            page.thread.activities.map((activity) => activity.id),
+            ["activity-35"],
+          );
+          assert.deepEqual(
+            page.thread.checkpoints.map((checkpoint) => checkpoint.turnId),
+            ["turn-35"],
+          );
+          assert.isTrue(page.page?.hasMore);
+        }
+        assert.equal(
+          original.page?.beforeCursor,
+          encodeThreadHistoryCursor(threadId, "message-35-0"),
+        );
+      }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+  );
+}
+
 it.effect("pages complete user-anchored turns without gaps while retaining live context", () =>
   Effect.gen(function* () {
     yield* seed;

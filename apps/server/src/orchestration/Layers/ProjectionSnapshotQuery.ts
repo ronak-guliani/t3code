@@ -1420,6 +1420,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
   const listWindowMessageRows = (threadId: ThreadId, history: ThreadHistorySelection) => {
     const userIds = Object.keys(history.userOrigins);
+    const sequencedUserIds = userIds.filter((id) => history.userOrigins[id]?.sequence !== null);
+    const legacyUserIds = userIds.filter((id) => history.userOrigins[id]?.sequence === null);
     return SqlSchema.findAll({
       Request: Schema.Void,
       Result: ProjectionThreadMessageDbRowSchema,
@@ -1430,19 +1432,28 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         UNION
         SELECT messages.message_id FROM projection_thread_messages AS messages
         WHERE messages.thread_id = ${threadId} AND ${messageWindowPredicate(sql, history)}
-          AND messages.role <> 'user' AND NOT EXISTS (
+          AND messages.role <> 'user' AND (messages.sequence IS NOT NULL OR NOT EXISTS (
             SELECT 1 FROM projection_turns AS owner
             JOIN projection_thread_messages AS user_message
               ON user_message.thread_id = owner.thread_id
                 AND user_message.message_id = owner.pending_message_id AND user_message.role = 'user'
+                AND user_message.sequence IS NOT NULL
             WHERE owner.thread_id = messages.thread_id AND owner.turn_id = messages.turn_id
-          )
+          ))
         UNION
         SELECT messages.message_id FROM projection_turns AS turns
         CROSS JOIN projection_thread_messages AS messages
         WHERE turns.thread_id = ${threadId} AND ${sql.in("turns.pending_message_id", userIds)}
           AND messages.thread_id = turns.thread_id AND messages.turn_id = turns.turn_id
           AND messages.role <> 'user'
+          AND ${
+            legacyUserIds.length === 0
+              ? sql`messages.sequence IS NULL`
+              : sequencedUserIds.length === 0
+                ? sql`messages.sequence IS NOT NULL`
+                : sql`((messages.sequence IS NULL AND ${sql.in("turns.pending_message_id", sequencedUserIds)})
+                  OR (messages.sequence IS NOT NULL AND ${sql.in("turns.pending_message_id", legacyUserIds)}))`
+          }
       )
       SELECT messages.message_id AS "messageId", messages.thread_id AS "threadId",
         messages.turn_id AS "turnId", messages.sequence, messages.role, messages.text,

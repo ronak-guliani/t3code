@@ -166,8 +166,8 @@ export const selectThreadHistoryWindow = Effect.fn("selectThreadHistoryWindow")(
   const selectedAnchors = anchors.slice(0, limit);
   const lower = hasMore ? (selectedAnchors.at(-1) ?? null) : null;
   const selected = { lower, upper };
-  // An owned segment can have a legacy NULL origin while its user is sequenced
-  // (or vice versa). Select its turn by the user, never by a sibling's origin.
+  // NULL segments of sequenced users need ownership, but ordinary sequenced
+  // and all-NULL legacy replies keep their provenance range (including steering).
   const turns = yield* sql<{ readonly turnId: TurnId }>`
     WITH window_users AS MATERIALIZED (
       SELECT messages.message_id, messages.turn_id FROM projection_thread_messages AS messages
@@ -185,13 +185,14 @@ export const selectThreadHistoryWindow = Effect.fn("selectThreadHistoryWindow")(
     UNION
     SELECT DISTINCT messages.turn_id AS "turnId" FROM projection_thread_messages AS messages
     WHERE messages.thread_id = ${threadId} AND messages.role <> 'user' AND messages.turn_id IS NOT NULL
-      AND ${messageWindowPredicate(sql, selected)} AND NOT EXISTS (
+      AND ${messageWindowPredicate(sql, selected)} AND (messages.sequence IS NOT NULL OR NOT EXISTS (
         SELECT 1 FROM projection_turns AS owner
         JOIN projection_thread_messages AS user_message
           ON user_message.thread_id = owner.thread_id
             AND user_message.message_id = owner.pending_message_id AND user_message.role = 'user'
+            AND user_message.sequence IS NOT NULL
         WHERE owner.thread_id = messages.thread_id AND owner.turn_id = messages.turn_id
-      )
+      ))
   `;
   return {
     ...selected,
