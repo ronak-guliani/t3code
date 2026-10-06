@@ -133,6 +133,7 @@ import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { DelegationAuditRepositoryLive } from "./persistence/Layers/DelegationAudit.ts";
 import { ProjectionThreadActivityRepositoryLive } from "./persistence/Layers/ProjectionThreadActivities.ts";
 import { WorktreeCleanupJobRepositoryLive } from "./persistence/Layers/WorktreeCleanupJobs.ts";
+import { StorageCleanup } from "./storage/StorageCleanup.ts";
 import {
   ProviderRegistry,
   type ProviderRegistryShape,
@@ -590,6 +591,11 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(TerminalManager)({
           ...options?.layers?.terminalManager,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(StorageCleanup)({
+          getUsage: () => Effect.die("Not implemented in server test."),
         }),
       ),
       Layer.provide(
