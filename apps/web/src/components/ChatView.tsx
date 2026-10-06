@@ -270,6 +270,7 @@ import {
   shouldRenderPreviewMiniPlayer,
   shouldWriteThreadErrorToCurrentServerThread,
   type ThreadPlanCatalogEntry,
+  turnStartFailedForPendingTurn,
   waitForRoutableServerThread,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
@@ -484,22 +485,36 @@ function useLocalDispatchState(input: {
     usePendingTurnStore.getState().clearPendingTurn(threadRef);
   }, [threadRef]);
 
+  const activeSession = input.activeThread?.session ?? null;
+  const activeThreadActivities = input.activeThread?.activities;
+  const activeThreadMessages = input.activeThread?.messages;
+  const latestUserMessageId = useMemo(
+    () => activeThreadMessages?.findLast((message) => message.role === "user")?.id ?? null,
+    [activeThreadMessages],
+  );
+
   const serverAcknowledgedLocalDispatch = useMemo(
     () =>
       hasServerAcknowledgedPendingTurn({
         pendingTurn: localDispatch,
         phase: input.phase,
         latestTurn: input.activeLatestTurn,
-        session: input.activeThread?.session ?? null,
+        session: activeSession,
         hasPendingApproval: input.activePendingApproval !== null,
         hasPendingUserInput: input.activePendingUserInput !== null,
         threadError: input.threadError,
+        turnStartFailed: turnStartFailedForPendingTurn({
+          activities: activeThreadActivities,
+          latestUserMessageId,
+        }),
       }),
     [
       input.activeLatestTurn,
       input.activePendingApproval,
       input.activePendingUserInput,
-      input.activeThread?.session,
+      activeSession,
+      activeThreadActivities,
+      latestUserMessageId,
       input.phase,
       input.threadError,
       localDispatch,
