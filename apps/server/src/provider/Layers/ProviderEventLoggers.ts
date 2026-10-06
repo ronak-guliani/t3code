@@ -32,7 +32,7 @@ import { Context, Effect, Layer } from "effect";
 import { ServerConfig } from "../../config.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { makeGlobalProviderEventSink } from "./GlobalProviderEventSink.ts";
-import { pruneProviderLogs } from "./providerLogRetention.ts";
+import { pruneProviderLogs } from "./ProviderLogRetention.ts";
 
 const GLOBAL_SINK_MAX_BYTES = 10 * 1024 * 1024;
 const GLOBAL_SINK_MAX_FILES = 10;

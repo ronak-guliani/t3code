@@ -26,6 +26,7 @@
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
 - Batch only contiguous same-thread tool lifecycle activities; persist events, projections, and receipts in one transaction, publish in order, and fall back to single-command processing on batch failure. Do not debounce provider errors, approvals, or turn/message completion boundaries.
 - Per-thread provider-log rotation does not bound aggregate disk use; apply age and total-byte retention across the provider log directory, and deterministically sample successful SQL spans while keeping failures.
+- Never add source paths that differ only by case: macOS checkouts can collapse them, so audit `git ls-tree -r --name-only HEAD | sort -f | uniq -di` and use a distinct canonical filename.
 - Preserve command input on tool starts and normalize provider-specific nesting before compact activity projection; shell audit timing must identify native versus observed starts and never treat an unfinished provider call as OS-process liveness.
 - Runtime warning/error activities carry user-facing text in `payload.message` with optional `payload.detail`; every client's work-log derivation must surface both, or the rows render with nothing to expand.
 - Session startup/resume and turn lifecycle require predictable recovery: terminal reconciliation must settle the matching projected turn and clear `session.activeTurnId`; preserve a pre-acknowledgement start failure's `messageId`; and preserve terminal provider-event ordering during normal adapter shutdown.
