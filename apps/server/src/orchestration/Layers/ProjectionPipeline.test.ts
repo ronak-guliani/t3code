@@ -336,7 +336,6 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         eventStore
           .append(event)
           .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
-
       yield* appendAndProject({
         type: "thread.created",
         eventId: EventId.make("evt-pr-refresh-created"),
@@ -595,6 +594,35 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         eventStore
           .append(event)
           .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+      const appendUserInputActivity = (input: {
+        readonly suffix: string;
+        readonly kind: "user-input.requested" | "user-input.resolved";
+        readonly requestId: string;
+        readonly createdAt: string;
+      }) =>
+        appendAndProject({
+          type: "thread.activity-appended",
+          eventId: EventId.make(`evt-deferred-user-input-${input.suffix}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: input.createdAt,
+          commandId: CommandId.make(`cmd-deferred-user-input-${input.suffix}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-deferred-user-input-${input.suffix}`),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make(`activity-deferred-user-input-${input.suffix}`),
+              tone: "info",
+              kind: input.kind,
+              summary: input.kind === "user-input.requested" ? "Input required" : "Input submitted",
+              payload: { requestId: input.requestId },
+              turnId: null,
+              createdAt: input.createdAt,
+            },
+          },
+        });
 
       yield* appendAndProject({
         type: "project.created",
@@ -641,28 +669,11 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           updatedAt: now,
         },
       });
-      const receipt = yield* appendAndProject({
-        type: "thread.activity-appended",
-        eventId: EventId.make("evt-deferred-reconciliation-3"),
-        aggregateKind: "thread",
-        aggregateId: threadId,
-        occurredAt: now,
-        commandId: CommandId.make("cmd-deferred-reconciliation-3"),
-        causationEventId: null,
-        correlationId: CorrelationId.make("cmd-deferred-reconciliation-3"),
-        metadata: {},
-        payload: {
-          threadId,
-          activity: {
-            id: EventId.make("activity-deferred-user-input"),
-            tone: "approval",
-            kind: "user-input.requested",
-            summary: "Input required",
-            payload: { requestId: "request-deferred-user-input" },
-            turnId: null,
-            createdAt: now,
-          },
-        },
+      const receipt = yield* appendUserInputActivity({
+        suffix: "request-1",
+        kind: "user-input.requested",
+        requestId: "request-deferred-user-input",
+        createdAt: now,
       });
 
       const before = yield* sql<{
@@ -678,7 +689,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         FROM projection_threads
         WHERE thread_id = ${threadId}
       `;
-      assert.deepEqual(before, [{ pendingUserInputCount: 0, pendingJobs: 1 }]);
+      assert.deepEqual(before, [{ pendingUserInputCount: 1, pendingJobs: 1 }]);
 
       yield* sql`
         CREATE TRIGGER fail_deferred_shell_reconciliation
@@ -704,7 +715,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         FROM projection_threads
         WHERE thread_id = ${threadId}
       `;
-      assert.deepEqual(afterFailure, [{ pendingUserInputCount: 0, pendingJobs: 1 }]);
+      assert.deepEqual(afterFailure, [{ pendingUserInputCount: 1, pendingJobs: 1 }]);
 
       yield* sql`DROP TRIGGER fail_deferred_shell_reconciliation`;
       yield* projectionPipeline.bootstrap;
@@ -723,6 +734,67 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         WHERE thread_id = ${threadId}
       `;
       assert.deepEqual(after, [{ pendingUserInputCount: 1, pendingJobs: 0 }]);
+
+      const secondRequestReceipt = yield* appendUserInputActivity({
+        suffix: "request-2",
+        kind: "user-input.requested",
+        requestId: "request-deferred-user-input-2",
+        createdAt: "2026-03-01T12:00:03.000Z",
+      });
+      const afterSecondRequest = yield* sql<{ readonly pendingUserInputCount: number }>`
+        SELECT pending_user_input_count AS "pendingUserInputCount"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(afterSecondRequest, [{ pendingUserInputCount: 2 }]);
+      yield* secondRequestReceipt.reconcile;
+
+      const resolvedReceipt = yield* appendUserInputActivity({
+        suffix: "resolved-1",
+        kind: "user-input.resolved",
+        requestId: "request-deferred-user-input",
+        createdAt: "2026-03-01T12:00:04.000Z",
+      });
+
+      const afterResolutionBeforeReconcile = yield* sql<{
+        readonly pendingUserInputCount: number;
+        readonly pendingJobs: number;
+      }>`
+        SELECT
+          pending_user_input_count AS "pendingUserInputCount",
+          (
+            SELECT COUNT(*)
+            FROM projection_reconciliation_jobs
+          ) AS "pendingJobs"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(afterResolutionBeforeReconcile, [
+        { pendingUserInputCount: 1, pendingJobs: 1 },
+      ]);
+      yield* resolvedReceipt.reconcile;
+
+      const secondResolvedReceipt = yield* appendUserInputActivity({
+        suffix: "resolved-2",
+        kind: "user-input.resolved",
+        requestId: "request-deferred-user-input-2",
+        createdAt: "2026-03-01T12:00:05.000Z",
+      });
+      const afterAllInputsResolved = yield* sql<{
+        readonly pendingUserInputCount: number;
+        readonly pendingJobs: number;
+      }>`
+        SELECT
+          pending_user_input_count AS "pendingUserInputCount",
+          (
+            SELECT COUNT(*)
+            FROM projection_reconciliation_jobs
+          ) AS "pendingJobs"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(afterAllInputsResolved, [{ pendingUserInputCount: 0, pendingJobs: 1 }]);
+      yield* secondResolvedReceipt.reconcile;
 
       const proposedPlanReceipt = yield* appendAndProject({
         type: "thread.proposed-plan-upserted",
@@ -761,7 +833,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       `;
       assert.deepEqual(derivedShell, [
         {
-          pendingUserInputCount: 1,
+          pendingUserInputCount: 0,
           hasActionableProposedPlan: 1,
         },
       ]);
