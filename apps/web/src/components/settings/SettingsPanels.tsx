@@ -2618,6 +2618,62 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+        <SettingsRow
+          title="Stop idle terminals"
+          description="Close unattached terminal sessions after the chat and terminal have both been inactive. Pinned, active, queued, and previewed chats are kept."
+          resetAction={
+            settings.idleTerminalStopHours !== DEFAULT_UNIFIED_SETTINGS.idleTerminalStopHours ? (
+              <SettingResetButton
+                label="idle terminal timeout"
+                onClick={() =>
+                  updateSettings({
+                    idleTerminalStopHours: DEFAULT_UNIFIED_SETTINGS.idleTerminalStopHours,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.idleTerminalStopHours !== null}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  idleTerminalStopHours: checked
+                    ? DEFAULT_UNIFIED_SETTINGS.idleTerminalStopHours
+                    : null,
+                })
+              }
+              aria-label="Stop idle terminals"
+            />
+          }
+        />
+        {settings.idleTerminalStopHours !== null ? (
+          <SettingsRow
+            title="Terminal inactivity timeout"
+            description="Hours without chat activity or terminal output before an unattached terminal is stopped."
+            control={
+              <DraftInput
+                className="w-24"
+                value={String(settings.idleTerminalStopHours)}
+                inputMode="decimal"
+                onCommit={(value) => {
+                  const hours = Number(value);
+                  if (!Number.isFinite(hours) || hours < 0.25) {
+                    toastManager.add({
+                      type: "warning",
+                      title: "Enter a terminal timeout of at least 0.25 hours",
+                    });
+                    return;
+                  }
+                  if (hours !== settings.idleTerminalStopHours) {
+                    updateSettings({ idleTerminalStopHours: hours });
+                  }
+                }}
+                aria-label="Terminal inactivity timeout in hours"
+              />
+            }
+          />
+        ) : null}
       </SettingsSection>
 
       <SettingsSection title="Advanced">
