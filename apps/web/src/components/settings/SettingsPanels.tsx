@@ -102,6 +102,7 @@ import { isElectronRuntime } from "../../env";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { DeviceSettings } from "./DeviceSettings";
 import { GitHubApiUsagePanel } from "./GitHubApiUsagePanel";
+import { StorageUsagePanel } from "./StorageCleanupPanel";
 import { useTheme } from "../../hooks/useTheme";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useLocalRebuildState, useRequestLocalRebuild } from "../../hooks/useLocalRebuild";
@@ -2567,6 +2568,33 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection title="Storage & cleanup">
+        <StorageUsagePanel />
+        <SettingsRow
+          title="Automatic cleanup"
+          description="Reclaim archived and idle worktrees, old logs, idle terminals, leftover validation environments and database free space in the background. Turning this off pauses every automatic sweep; removals already in progress still finish, and Clean up now keeps working."
+          resetAction={
+            settings.automaticCleanupEnabled !==
+            DEFAULT_UNIFIED_SETTINGS.automaticCleanupEnabled ? (
+              <SettingResetButton
+                label="automatic cleanup"
+                onClick={() =>
+                  updateSettings({
+                    automaticCleanupEnabled: DEFAULT_UNIFIED_SETTINGS.automaticCleanupEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.automaticCleanupEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ automaticCleanupEnabled: Boolean(checked) })
+              }
+              aria-label="Automatic cleanup"
+            />
+          }
+        />
         <SettingsRow
           title="Provider log retention days"
           description="Remove provider logs older than this. Leave blank to disable age-based cleanup; recent and active thread heads are protected."

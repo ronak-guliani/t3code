@@ -197,6 +197,7 @@ import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as GitHubApiUsage from "./gitHubUsage/GitHubApiUsage.ts";
+import { StorageCleanup } from "./storage/StorageCleanup.ts";
 import { repositoryFromPullRequestUrl } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
 import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorService.ts";
 import { CollaborativeAcceptanceCoordinator } from "./collaborativeAcceptance/Coordinator.ts";
@@ -339,6 +340,7 @@ const makeWsRpcLayer = (
       const previewAutomationBroker = yield* PreviewAutomationBroker;
       const pullRequests = yield* Effect.serviceOption(PullRequestService.PullRequestService);
       const gitHubApiUsage = yield* Effect.serviceOption(GitHubApiUsage.GitHubApiUsage);
+      const storageCleanup = yield* StorageCleanup;
       const pullRequestMonitors = yield* Effect.serviceOption(
         PullRequestMonitors.PullRequestMonitorService,
       );
@@ -2418,6 +2420,18 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "pull-requests",
             },
           ),
+        [WS_METHODS.storageGetUsage]: (input) =>
+          observeRpcEffect(WS_METHODS.storageGetUsage, storageCleanup.getUsage(input), {
+            "rpc.aggregate": "storage",
+          }),
+        [WS_METHODS.storagePreviewCleanup]: () =>
+          observeRpcEffect(WS_METHODS.storagePreviewCleanup, storageCleanup.previewCleanup(), {
+            "rpc.aggregate": "storage",
+          }),
+        [WS_METHODS.storageExecuteCleanup]: (input) =>
+          observeRpcEffect(WS_METHODS.storageExecuteCleanup, storageCleanup.executeCleanup(input), {
+            "rpc.aggregate": "storage",
+          }),
         [WS_METHODS.pullRequestsQuotaRefresh]: (input) =>
           observeRpcEffect(
             WS_METHODS.pullRequestsQuotaRefresh,

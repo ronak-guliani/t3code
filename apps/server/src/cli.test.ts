@@ -85,6 +85,7 @@ import { WorktreeCleanupJobRepositoryLive } from "./persistence/Layers/WorktreeC
 import { __testing as mcpTesting } from "./mcpServer.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
+import { makeStorageCleanupPolicyTest } from "./storage/StorageCleanupPolicy.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { WorkspaceOwnershipRepository } from "./persistence/Services/WorkspaceOwnership.ts";
@@ -500,11 +501,14 @@ const withLiveProjectCliServer = <A, E, R>(
             }),
           ),
           Layer.provide(GitCoreLive),
+          Layer.provide(makeStorageCleanupPolicyTest()),
           Layer.provideMerge(projectPersistenceLayer),
         )
       : Layer.succeed(ThreadDeletionReactor, {
           start: () => Effect.void,
           drain: Effect.void,
+          reclaimWorktreeNow: () => Effect.die("unused in cli tests"),
+          isIdleReclaimEligibleIgnoringAge: () => Effect.succeed(false),
         });
     const appLayer = HttpRouter.serve(routesLayer, {
       disableListenLog: true,

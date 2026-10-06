@@ -2267,6 +2267,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
                 terminalId: session.terminalId,
                 title: terminalTitle(session.terminalId),
                 lastOutputAt: session.lastOutputAt,
+                attachedStreams:
+                  attachedStreamCounts.get(toSessionKey(session.threadId, session.terminalId)) ?? 0,
               }),
             ),
         ),

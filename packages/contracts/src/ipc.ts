@@ -156,6 +156,14 @@ import type {
   GitHubApiUsageReportInput,
 } from "./gitHubUsage.ts";
 import type {
+  StorageCleanupPlan,
+  StorageCleanupResult,
+  StorageExecuteCleanupInput,
+  StorageGetUsageInput,
+  StoragePreviewCleanupInput,
+  StorageUsageSnapshot,
+} from "./storage.ts";
+import type {
   PullRequestMonitorContextInput,
   PullRequestMonitorContextResult,
   PullRequestMonitorLaunchFallbackInput,
@@ -1250,6 +1258,11 @@ export interface EnvironmentApi {
     requestReviewers: (input: PullRequestReviewerRequestInput) => Promise<void>;
     usageReport: (input: GitHubApiUsageReportInput) => Promise<GitHubApiUsageReport>;
     quotaRefresh: (input: GitHubApiQuotaRefreshInput) => Promise<GitHubApiQuotaRefreshResult>;
+  };
+  storage: {
+    getUsage: (input: StorageGetUsageInput) => Promise<StorageUsageSnapshot>;
+    previewCleanup: (input: StoragePreviewCleanupInput) => Promise<StorageCleanupPlan>;
+    executeCleanup: (input: StorageExecuteCleanupInput) => Promise<StorageCleanupResult>;
   };
   pullRequestMonitors: {
     start: (input: PullRequestMonitorStartInput) => Promise<PullRequestMonitorMutationResult>;

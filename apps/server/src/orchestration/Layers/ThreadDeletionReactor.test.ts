@@ -33,6 +33,7 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { describe, expect, it } from "vitest";
 
 import { ServerConfig } from "../../config.ts";
+import { makeStorageCleanupPolicyTest } from "../../storage/StorageCleanupPolicy.ts";
 import { GitCoreLive } from "../../git/Layers/GitCore.ts";
 import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
 import { GitManager } from "../../git/Services/GitManager.ts";
@@ -334,6 +335,12 @@ async function withCleanupFixture(
       ),
       Layer.provide(GitCoreLive),
       Layer.provideMerge(ProjectionThreadRepositoryLive),
+      Layer.provide(
+        makeStorageCleanupPolicyTest({
+          idleWorktreeReclaimDays:
+            options.idleWorktreeReclaimDays === undefined ? 7 : options.idleWorktreeReclaimDays,
+        }),
+      ),
       Layer.provide(SqlitePersistenceMemory),
       Layer.provide(
         ServerSettingsService.layerTest({

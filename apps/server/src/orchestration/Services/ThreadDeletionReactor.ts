@@ -7,8 +7,13 @@
  *
  * @module ThreadDeletionReactor
  */
+import type { ThreadId } from "@t3tools/contracts";
 import { Context } from "effect";
 import type { Effect, Scope } from "effect";
+
+export type ManualWorktreeReclaimOutcome =
+  | { readonly status: "removed" }
+  | { readonly status: "skipped"; readonly reason: string };
 
 /**
  * ThreadDeletionReactorShape - Service API for thread deletion cleanup.
@@ -27,6 +32,21 @@ export interface ThreadDeletionReactorShape {
    * Intended for test use to replace timing-sensitive sleeps.
    */
   readonly drain: Effect.Effect<void>;
+
+  /**
+   * Reclaim a chat's worktree now ("Clean up now") through the durable cleanup
+   * job and its reservation path: archive cleanup for archived chats, idle
+   * reclaim with the age threshold ignored for active ones. Retry backoff and
+   * the automatic-cleanup master switch are bypassed; every safety rule of the
+   * automatic path still applies, and the checkout restores on the next turn.
+   */
+  /**
+   * Whether an active (non-archived) chat's worktree passes every idle-reclaim
+   * rule except age, including a clean checkout. Read-only.
+   */
+  readonly isIdleReclaimEligibleIgnoringAge: (threadId: ThreadId) => Effect.Effect<boolean>;
+
+  readonly reclaimWorktreeNow: (threadId: ThreadId) => Effect.Effect<ManualWorktreeReclaimOutcome>;
 }
 
 /**

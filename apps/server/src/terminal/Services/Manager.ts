@@ -72,6 +72,8 @@ export interface TerminalReaperSession {
   readonly terminalId: string;
   readonly title: string;
   readonly lastOutputAt: string;
+  /** Open attach streams (viewers); `closeIfIdle` refuses while any are open. */
+  readonly attachedStreams: number;
 }
 
 export interface OwnedTerminalProcessRecord {

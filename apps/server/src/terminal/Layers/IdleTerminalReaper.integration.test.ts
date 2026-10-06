@@ -18,6 +18,7 @@ import {
   type ProjectionSnapshotQueryShape,
 } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { StorageCleanupPolicyFromSettingsTest } from "../../storage/StorageCleanupPolicy.ts";
 import { PreviewManager } from "../../preview/Manager.ts";
 import { TerminalManager } from "../Services/Manager.ts";
 import {
@@ -159,6 +160,7 @@ describe("IdleTerminalReaper integration", () => {
     );
     runtime = ManagedRuntime.make(
       makeIdleTerminalReaperLive({ sweepIntervalMs: 60_000 })
+        .pipe(Layer.provideMerge(StorageCleanupPolicyFromSettingsTest))
         .pipe(Layer.provideMerge(dependencies))
         .pipe(Layer.provide(NodeServices.layer)),
     );

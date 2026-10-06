@@ -3,7 +3,7 @@ import { Duration, Effect, Layer, Option, Schedule } from "effect";
 
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
+import { StorageCleanupPolicy } from "../../storage/StorageCleanupPolicy.ts";
 import { PreviewManager } from "../../preview/Manager.ts";
 import { TerminalManager } from "../Services/Manager.ts";
 import {
@@ -16,6 +16,19 @@ const MAX_TERMINALS_PER_SWEEP = 25;
 const MAX_OLD_PROCESSES_PER_SWEEP = 5;
 const HOUR_MS = 60 * 60 * 1_000;
 
+/** Every non-age rule that keeps a chat's terminals running; a reset keeps these. */
+export function isThreadBusyForTerminalReaper(thread: OrchestrationThreadShell): boolean {
+  return (
+    thread.pinnedAt != null ||
+    thread.session?.activeTurnId != null ||
+    thread.pendingTurnStart != null ||
+    thread.latestTurn?.state === "running" ||
+    thread.hasPendingQueuedTurn ||
+    thread.hasPendingApprovals ||
+    thread.hasPendingUserInput
+  );
+}
+
 export function isThreadIdleForTerminalReaper(
   thread: OrchestrationThreadShell,
   nowMs: number,
@@ -24,13 +37,7 @@ export function isThreadIdleForTerminalReaper(
   if (
     !Number.isFinite(inactivityThresholdMs) ||
     inactivityThresholdMs <= 0 ||
-    thread.pinnedAt != null ||
-    thread.session?.activeTurnId != null ||
-    thread.pendingTurnStart != null ||
-    thread.latestTurn?.state === "running" ||
-    thread.hasPendingQueuedTurn ||
-    thread.hasPendingApprovals ||
-    thread.hasPendingUserInput
+    isThreadBusyForTerminalReaper(thread)
   ) {
     return false;
   }
@@ -62,13 +69,18 @@ const makeIdleTerminalReaper = (options?: IdleTerminalReaperLiveOptions) =>
     const projection = yield* ProjectionSnapshotQuery;
     const previews = yield* PreviewManager;
     const orchestration = yield* OrchestrationEngineService;
-    const settings = yield* ServerSettingsService;
+    const storagePolicy = yield* StorageCleanupPolicy;
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
     let priorProcessCursor = 0;
     let terminalCursor = 0;
 
+    // Idle stopping is automatic cleanup: paused by the master switch. Stopping
+    // proven-owned processes of archived/deleted chats left by a previous
+    // server instance is leak correction and keeps running (stopPriorProcesses
+    // with a null threshold).
     const readThresholdMs = Effect.gen(function* () {
-      const current = yield* settings.getSettings;
+      const current = yield* storagePolicy.current;
+      if (!current.automaticCleanupEnabled) return null;
       const hours = current.idleTerminalStopHours;
       if (hours === null) return null;
       if (!Number.isFinite(hours) || hours <= 0) {
@@ -78,13 +90,7 @@ const makeIdleTerminalReaper = (options?: IdleTerminalReaperLiveOptions) =>
         return null;
       }
       return hours * HOUR_MS;
-    }).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("idle terminal reaper could not read settings", { error }).pipe(
-          Effect.as(null),
-        ),
-      ),
-    );
+    });
 
     const getThread = (threadId: string) =>
       projection.getThreadShellById(ThreadId.make(threadId)).pipe(
