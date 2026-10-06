@@ -1,5 +1,5 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
-import { type EnvironmentId, type OrchestrationThreadActivity, ThreadId } from "@t3tools/contracts";
+import { type EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import { getThreadSortTimestamp, sortThreads } from "./lib/threadSort";
 import {
@@ -7,7 +7,6 @@ import {
   isActiveThreadStatus,
   type ThreadStatusPill,
 } from "./components/Sidebar.logic";
-import { deriveAgentRuns, type AgentRun } from "./session-logic";
 import type { SidebarThreadSummary } from "./types";
 export {
   normalizeParentThreadKeys,
@@ -30,15 +29,13 @@ export function agentRunDismissKey(
 
 export function expandSidebarThreadsWithAgentRuns(input: {
   threads: readonly SidebarThreadSummary[];
-  agentRunsByThreadKey: ReadonlyMap<string, readonly AgentRun[]>;
   dismissedAgentRunKeys?: Record<string, true>;
 }): SidebarThreadSummary[] {
   const dismissedAgentRunKeys = input.dismissedAgentRunKeys ?? {};
   return input.threads.flatMap((thread) => {
     if (thread.archivedAt !== null) return [thread];
 
-    const threadKey = getThreadKey(thread);
-    const agentRuns = input.agentRunsByThreadKey.get(threadKey) ?? thread.backgroundAgentRuns;
+    const agentRuns = thread.backgroundAgentRuns;
     if (!agentRuns?.length) return [thread];
 
     const visibleAgentRuns = agentRuns.filter(
@@ -76,25 +73,6 @@ export function expandSidebarThreadsWithAgentRuns(input: {
         }),
       ),
     ];
-  });
-}
-
-export function deriveSidebarThreadsWithAgentRuns(input: {
-  threads: readonly SidebarThreadSummary[];
-  threadActivities: ReadonlyArray<readonly OrchestrationThreadActivity[]>;
-  dismissedAgentRunKeys?: Record<string, true>;
-}): SidebarThreadSummary[] {
-  const agentRunsByThreadKey = new Map<string, ReturnType<typeof deriveAgentRuns>>();
-  for (const [index, thread] of input.threads.entries()) {
-    const agentRuns = deriveAgentRuns(input.threadActivities[index] ?? [], undefined);
-    if (agentRuns.length > 0) {
-      agentRunsByThreadKey.set(getThreadKey(thread), agentRuns);
-    }
-  }
-  return expandSidebarThreadsWithAgentRuns({
-    threads: input.threads,
-    agentRunsByThreadKey,
-    ...(input.dismissedAgentRunKeys ? { dismissedAgentRunKeys: input.dismissedAgentRunKeys } : {}),
   });
 }
 
