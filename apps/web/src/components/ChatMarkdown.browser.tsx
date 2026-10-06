@@ -718,6 +718,65 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("reports a streaming Markdown performance baseline", async () => {
+    const samples: number[] = [];
+    let text = "";
+    const paragraphCount = 16;
+    const screen = await render(
+      <ChatMarkdown text={text} cwd="/repo/project" isStreaming threadRef={threadRef} />,
+    );
+
+    try {
+      for (let index = 0; index < paragraphCount; index += 1) {
+        const paragraph = `Streaming paragraph ${index} with ordinary prose.`;
+        const nextText = `${text}${text.length > 0 ? "\n\n" : ""}${paragraph}`;
+        const startedAt = performance.now();
+        await screen.rerender(
+          <ChatMarkdown
+            text={nextText}
+            cwd="/repo/project"
+            isStreaming
+            threadRef={threadRef}
+          />,
+        );
+        await new Promise<void>((resolve, reject) => {
+          const timeout = window.setTimeout(
+            () => reject(new Error(`Streaming paragraph ${index} did not render.`)),
+            5_000,
+          );
+          const check = () => {
+            if (document.body.textContent?.includes(paragraph)) {
+              window.clearTimeout(timeout);
+              resolve();
+              return;
+            }
+            window.requestAnimationFrame(check);
+          };
+          check();
+        });
+        if (index >= 2) {
+          samples.push(performance.now() - startedAt);
+        }
+        text = nextText;
+      }
+
+      const sortedSamples = samples.toSorted((left, right) => left - right);
+      const medianMs = sortedSamples[Math.floor(sortedSamples.length / 2)] ?? 0;
+      const p95Ms = sortedSamples[Math.ceil(sortedSamples.length * 0.95) - 1] ?? 0;
+      console.warn(
+        JSON.stringify({
+          benchmark: "streaming-markdown",
+          appendedParagraphs: paragraphCount,
+          measuredChunks: samples.length,
+          medianMs: Number(medianMs.toFixed(2)),
+          p95Ms: Number(p95Ms.toFixed(2)),
+        }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps table headers from inheriting emergency word breaks", async () => {
     const screen = await render(
       <ChatMarkdown

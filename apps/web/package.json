@@ -10,6 +10,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vp test run --passWithNoTests",
     "test:browser": "vp test run --config vitest.browser.config.ts",
+    "bench:timeline": "vp test run --disableConsoleIntercept src/components/chat/MessagesTimeline.perf.bench.test.ts",
+    "bench:journeys": "vp test run --config vitest.browser.config.ts src/components/ChatView.browser.tsx -t full.ChatView.journey.performance.baseline --disableConsoleIntercept",
+    "bench:streaming": "vp test run --config vitest.browser.config.ts src/components/ChatMarkdown.browser.tsx -t streaming.Markdown.performance.baseline --disableConsoleIntercept",
+    "bench:tool-output": "vp test run --config vitest.browser.config.ts src/components/chat/MessagesTimeline.browser.tsx -t tool.group.expansion.latency.for.a.300-entry.history --disableConsoleIntercept",
     "test:browser:install": "playwright install --with-deps chromium"
   },
   "dependencies": {
