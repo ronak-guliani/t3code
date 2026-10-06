@@ -302,16 +302,16 @@ function mapPendingTurnStart(
   };
 }
 
-const ProjectionTurnSnapshotBoundsRowSchema = Schema.Struct({
-  snapshotMaxRequestedAt: Schema.NullOr(IsoDateTime),
-  snapshotMaxStartedAt: Schema.NullOr(IsoDateTime),
-  snapshotMaxCompletedAt: Schema.NullOr(IsoDateTime),
-});
 const ProjectionStateDbRowSchema = ProjectionState;
-const ProjectionUpdatedAtBoundsRowSchema = Schema.Struct({
+const ProjectionSnapshotMetadataRowSchema = Schema.Struct({
+  snapshotSequence: NonNegativeInt,
+  maxProjectionStateUpdatedAt: Schema.NullOr(IsoDateTime),
   maxProjectUpdatedAt: Schema.NullOr(IsoDateTime),
   maxThreadUpdatedAt: Schema.NullOr(IsoDateTime),
   maxThreadSessionUpdatedAt: Schema.NullOr(IsoDateTime),
+  snapshotMaxRequestedAt: Schema.NullOr(IsoDateTime),
+  snapshotMaxStartedAt: Schema.NullOr(IsoDateTime),
+  snapshotMaxCompletedAt: Schema.NullOr(IsoDateTime),
 });
 const ProjectionCountsRowSchema = Schema.Struct({
   projectCount: Schema.Number,
@@ -1144,35 +1144,39 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     `,
   });
 
-  /**
-   * Snapshot freshness must keep reflecting soft-deleted rows: deleting a
-   * project or thread bumps its `updated_at`, and clients rely on
-   * `updatedAt` moving so they re-read. The shell snapshot no longer loads
-   * those rows, so read their bounds as aggregates instead.
-   */
-  const readProjectionUpdatedAtBounds = SqlSchema.findOne({
+  // Cursor and freshness metadata share one read, preserving the snapshot
+  // transaction while removing worker round-trips from both snapshot paths.
+  const readSnapshotMetadata = SqlSchema.findOne({
     Request: Schema.Void,
-    Result: ProjectionUpdatedAtBoundsRowSchema,
+    Result: ProjectionSnapshotMetadataRowSchema,
     execute: () =>
       sql`
+        WITH required_projector_state AS (
+          SELECT last_applied_sequence
+          FROM projection_state
+          WHERE projector IN ${sql.in(REQUIRED_SNAPSHOT_PROJECTORS)}
+        ), snapshot_cursor AS (
+          SELECT
+            CASE
+              WHEN COUNT(*) = ${REQUIRED_SNAPSHOT_PROJECTORS.length}
+                THEN COALESCE(MIN(last_applied_sequence), 0)
+              ELSE 0
+            END AS "snapshotSequence"
+          FROM required_projector_state
+        )
         SELECT
+          snapshot_cursor."snapshotSequence",
+          (SELECT MAX(updated_at) FROM projection_state) AS "maxProjectionStateUpdatedAt",
           (SELECT MAX(updated_at) FROM projection_projects) AS "maxProjectUpdatedAt",
           (SELECT MAX(updated_at) FROM projection_threads) AS "maxThreadUpdatedAt",
-          (SELECT MAX(updated_at) FROM projection_thread_sessions) AS "maxThreadSessionUpdatedAt"
-      `,
-  });
-
-  const readTurnSnapshotBounds = SqlSchema.findOne({
-    Request: Schema.Void,
-    Result: ProjectionTurnSnapshotBoundsRowSchema,
-    execute: () =>
-      sql`
-        SELECT
-          MAX(requested_at) AS "snapshotMaxRequestedAt",
-          MAX(started_at) AS "snapshotMaxStartedAt",
-          MAX(completed_at) AS "snapshotMaxCompletedAt"
-        FROM projection_turns
-        WHERE turn_id IS NOT NULL
+          (SELECT MAX(updated_at) FROM projection_thread_sessions) AS "maxThreadSessionUpdatedAt",
+          (SELECT MAX(requested_at) FROM projection_turns WHERE turn_id IS NOT NULL)
+            AS "snapshotMaxRequestedAt",
+          (SELECT MAX(started_at) FROM projection_turns WHERE turn_id IS NOT NULL)
+            AS "snapshotMaxStartedAt",
+          (SELECT MAX(completed_at) FROM projection_turns WHERE turn_id IS NOT NULL)
+            AS "snapshotMaxCompletedAt"
+        FROM snapshot_cursor
       `,
   });
 
@@ -2076,19 +2080,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 ),
               ),
             ),
-            readTurnSnapshotBounds(undefined).pipe(
+            readSnapshotMetadata(undefined).pipe(
               Effect.mapError(
                 toPersistenceSqlOrDecodeError(
-                  "ProjectionSnapshotQuery.getSnapshot:readTurnSnapshotBounds:query",
-                  "ProjectionSnapshotQuery.getSnapshot:readTurnSnapshotBounds:decodeRow",
-                ),
-              ),
-            ),
-            listProjectionStateRows(undefined).pipe(
-              Effect.mapError(
-                toPersistenceSqlOrDecodeError(
-                  "ProjectionSnapshotQuery.getSnapshot:listProjectionState:query",
-                  "ProjectionSnapshotQuery.getSnapshot:listProjectionState:decodeRows",
+                  "ProjectionSnapshotQuery.getSnapshot:readSnapshotMetadata:query",
+                  "ProjectionSnapshotQuery.getSnapshot:readSnapshotMetadata:decodeRow",
                 ),
               ),
             ),
@@ -2109,8 +2105,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             checkpointRows,
             latestTurnRows,
             pendingTurnStartRows,
-            turnSnapshotBounds,
-            stateRows,
+            snapshotMetadata,
             workflowRuns,
           ]) =>
             Effect.gen(function* () {
@@ -2128,14 +2123,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
               let updatedAt: string | null = null;
 
-              for (const row of projectRows) {
-                updatedAt = maxIso(updatedAt, row.updatedAt);
+              if (snapshotMetadata.maxProjectUpdatedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.maxProjectUpdatedAt);
               }
-              for (const row of threadRows) {
-                updatedAt = maxIso(updatedAt, row.updatedAt);
+              if (snapshotMetadata.maxThreadUpdatedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.maxThreadUpdatedAt);
               }
-              for (const row of stateRows) {
-                updatedAt = maxIso(updatedAt, row.updatedAt);
+              if (snapshotMetadata.maxThreadSessionUpdatedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.maxThreadSessionUpdatedAt);
+              }
+              if (snapshotMetadata.maxProjectionStateUpdatedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.maxProjectionStateUpdatedAt);
               }
               for (const run of workflowRuns) {
                 updatedAt = maxIso(updatedAt, run.updatedAt);
@@ -2208,14 +2206,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 checkpointsByThread.set(row.threadId, threadCheckpoints);
               }
 
-              if (turnSnapshotBounds.snapshotMaxRequestedAt !== null) {
-                updatedAt = maxIso(updatedAt, turnSnapshotBounds.snapshotMaxRequestedAt);
+              if (snapshotMetadata.snapshotMaxRequestedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.snapshotMaxRequestedAt);
               }
-              if (turnSnapshotBounds.snapshotMaxStartedAt !== null) {
-                updatedAt = maxIso(updatedAt, turnSnapshotBounds.snapshotMaxStartedAt);
+              if (snapshotMetadata.snapshotMaxStartedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.snapshotMaxStartedAt);
               }
-              if (turnSnapshotBounds.snapshotMaxCompletedAt !== null) {
-                updatedAt = maxIso(updatedAt, turnSnapshotBounds.snapshotMaxCompletedAt);
+              if (snapshotMetadata.snapshotMaxCompletedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.snapshotMaxCompletedAt);
               }
               for (const row of latestTurnRows) {
                 latestTurnByThread.set(row.threadId, {
@@ -2244,7 +2242,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               }
 
               for (const row of sessionRows) {
-                updatedAt = maxIso(updatedAt, row.updatedAt);
                 sessionsByThread.set(row.threadId, mapSessionRow(row));
               }
 
@@ -2336,7 +2333,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               });
 
               const snapshot = {
-                snapshotSequence: computeSnapshotSequence(stateRows),
+                snapshotSequence: snapshotMetadata.snapshotSequence,
                 projects,
                 threads,
                 workflowRuns,
@@ -2402,14 +2399,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          readTurnSnapshotBounds(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getShellSnapshot:readTurnSnapshotBounds:query",
-                "ProjectionSnapshotQuery.getShellSnapshot:readTurnSnapshotBounds:decodeRow",
-              ),
-            ),
-          ),
           listBackgroundAgentActivityRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -2428,25 +2417,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ),
           beforeShellSnapshotCursorRead.pipe(
             Effect.andThen(
-              listProjectionStateRows(undefined).pipe(
+              readSnapshotMetadata(undefined).pipe(
                 Effect.mapError(
                   toPersistenceSqlOrDecodeError(
-                    "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:query",
-                    "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:decodeRows",
+                    "ProjectionSnapshotQuery.getShellSnapshot:readSnapshotMetadata:query",
+                    "ProjectionSnapshotQuery.getShellSnapshot:readSnapshotMetadata:decodeRow",
                   ),
                 ),
               ),
             ),
           ),
           projectionWorkflowRepository.listShellSnapshot(),
-          readProjectionUpdatedAtBounds(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getShellSnapshot:readProjectionUpdatedAtBounds:query",
-                "ProjectionSnapshotQuery.getShellSnapshot:readProjectionUpdatedAtBounds:decodeRow",
-              ),
-            ),
-          ),
         ]),
       )
       .pipe(
@@ -2457,12 +2438,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             sessionRows,
             latestTurnRows,
             pendingTurnStartRows,
-            turnSnapshotBounds,
             backgroundAgentActivityRows,
             queueDispatchRows,
-            stateRows,
+            snapshotMetadata,
             workflowSnapshot,
-            updatedAtBounds,
           ]) =>
             Effect.gen(function* () {
               const { artifacts: workflowArtifacts, runs: workflowRuns } = workflowSnapshot;
@@ -2473,29 +2452,27 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 else queueDispatchRowsByThread.set(row.threadId, [row]);
               }
               let updatedAt: string | null = null;
-              // Aggregates rather than row folds: the row queries above exclude
-              // soft-deleted rows, but a delete bumps `updated_at` and must
-              // still move snapshot freshness.
-              if (updatedAtBounds.maxProjectUpdatedAt !== null) {
-                updatedAt = maxIso(updatedAt, updatedAtBounds.maxProjectUpdatedAt);
+              // Aggregates preserve freshness for soft-deleted rows omitted from the shell.
+              if (snapshotMetadata.maxProjectUpdatedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.maxProjectUpdatedAt);
               }
-              if (updatedAtBounds.maxThreadUpdatedAt !== null) {
-                updatedAt = maxIso(updatedAt, updatedAtBounds.maxThreadUpdatedAt);
+              if (snapshotMetadata.maxThreadUpdatedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.maxThreadUpdatedAt);
               }
-              if (updatedAtBounds.maxThreadSessionUpdatedAt !== null) {
-                updatedAt = maxIso(updatedAt, updatedAtBounds.maxThreadSessionUpdatedAt);
+              if (snapshotMetadata.maxThreadSessionUpdatedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.maxThreadSessionUpdatedAt);
               }
-              if (turnSnapshotBounds.snapshotMaxRequestedAt !== null) {
-                updatedAt = maxIso(updatedAt, turnSnapshotBounds.snapshotMaxRequestedAt);
+              if (snapshotMetadata.snapshotMaxRequestedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.snapshotMaxRequestedAt);
               }
-              if (turnSnapshotBounds.snapshotMaxStartedAt !== null) {
-                updatedAt = maxIso(updatedAt, turnSnapshotBounds.snapshotMaxStartedAt);
+              if (snapshotMetadata.snapshotMaxStartedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.snapshotMaxStartedAt);
               }
-              if (turnSnapshotBounds.snapshotMaxCompletedAt !== null) {
-                updatedAt = maxIso(updatedAt, turnSnapshotBounds.snapshotMaxCompletedAt);
+              if (snapshotMetadata.snapshotMaxCompletedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.snapshotMaxCompletedAt);
               }
-              for (const row of stateRows) {
-                updatedAt = maxIso(updatedAt, row.updatedAt);
+              if (snapshotMetadata.maxProjectionStateUpdatedAt !== null) {
+                updatedAt = maxIso(updatedAt, snapshotMetadata.maxProjectionStateUpdatedAt);
               }
               for (const run of workflowRuns) {
                 updatedAt = maxIso(updatedAt, run.run.updatedAt);
@@ -2530,7 +2507,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               );
 
               const snapshot = {
-                snapshotSequence: computeSnapshotSequence(stateRows),
+                snapshotSequence: snapshotMetadata.snapshotSequence,
                 projects: projectRows.map((row) =>
                   mapProjectShellRow(row, repositoryIdentities.get(row.projectId) ?? null),
                 ),
