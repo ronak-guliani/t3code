@@ -337,6 +337,7 @@
 
 ## Client state and completion
 
+- Every client font-size setting needs a `--app-*-font-size` declaration in `index.css` `:root`, not only a `setProperty` in `applyFontSizes`. That applier runs from a module-load bootstrap and a React effect, so a var without a `:root` default inherits `initial` for pre-hydration and non-JS renders. `--app-status-line-font-size` is missing this today. Add a `FontSize` default, a `DensityFontSizes` entry, the `ClientSettingsSchema`/`ClientSettingsPatch` keys, the `applyFontSizes` param plus bootstrap normalize, the `useAppFont` selector/deps/return, the Appearance row, the restore-defaults label and its dep, and the settings-search title.
 - Settings controls that persist a whole nested object must merge each edit against a synchronously updated latest-value ref. Consecutive blur commits can run before React rerenders, so render-captured objects silently overwrite earlier sibling edits.
 - Activity strips must use tool lifecycle plus the owning turn, not the newest successful row, to decide liveness. Preserve lifecycle/output fields in timeline equality checks, and keep attention receipts and explicit disclosures visible across completion folding.
 - Carry inferred activity lifecycle into expanded detail entries before grouping; a live header must not hide its running call among completed history. Shimmer overlays enhance a persistent base icon, never replace it when reduced motion or focus disables the overlay.
