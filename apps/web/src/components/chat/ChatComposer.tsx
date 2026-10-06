@@ -503,6 +503,7 @@ export interface ChatComposerProps {
   onReleaseQueue: () => void;
   onSelectActivePendingUserInputOption: (questionId: string, optionLabel: string) => void;
   onAdvanceActivePendingUserInput: () => void;
+  onDismissActivePendingUserInput: (requestId: ApprovalRequestId) => void;
   onPreviousActivePendingUserInputQuestion: () => void;
   onChangeActivePendingUserInputCustomAnswer: (
     questionId: string,
@@ -590,6 +591,7 @@ export const ChatComposer = memo(
       queueHeldAt,
       onSelectActivePendingUserInputOption,
       onAdvanceActivePendingUserInput,
+      onDismissActivePendingUserInput,
       onPreviousActivePendingUserInputQuestion,
       onChangeActivePendingUserInputCustomAnswer,
       onProviderModelSelect,
@@ -2626,6 +2628,7 @@ export const ChatComposer = memo(
                   questionIndex={activePendingQuestionIndex}
                   onToggleOption={onSelectActivePendingUserInputOption}
                   onAdvance={onAdvanceActivePendingUserInput}
+                  onDismiss={onDismissActivePendingUserInput}
                 />
               </div>
             ) : showPlanFollowUpPrompt && activeProposedPlan ? (

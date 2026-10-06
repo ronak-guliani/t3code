@@ -261,6 +261,7 @@ describe("derivePendingUserInputs", () => {
         tone: "info",
         payload: {
           requestId: "req-user-input-1",
+          dismissible: true,
           questions: [
             {
               id: "sandbox_mode",
@@ -320,6 +321,7 @@ describe("derivePendingUserInputs", () => {
       {
         requestId: "req-user-input-1",
         createdAt: "2026-02-23T00:00:01.000Z",
+        dismissible: true,
         questions: [
           {
             id: "sandbox_mode",
@@ -1973,6 +1975,31 @@ describe("deriveTimelineEntries", () => {
       "previous-assistant",
       "optimistic-user",
     ]);
+  });
+
+  it("defaults pending requests to not dismissible", () => {
+    const pending = derivePendingUserInputs([
+      makeActivity({
+        id: "user-input-not-dismissible",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: {
+          requestId: "req-user-input-not-dismissible",
+          questions: [
+            {
+              id: "sandbox_mode",
+              header: "Sandbox",
+              question: "Which mode should be used?",
+              options: [{ label: "workspace-write", description: "Allow workspace writes only" }],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(pending[0]?.dismissible).toBe(false);
   });
 });
 

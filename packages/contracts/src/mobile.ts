@@ -180,6 +180,7 @@ export const MobileClientOrchestrationCommand = ClientOrchestrationCommand.check
       command.type === "thread.turn.steer" ||
       command.type === "thread.approval.respond" ||
       command.type === "thread.user-input.respond" ||
+      command.type === "thread.user-input.dismiss" ||
       command.type === "thread.checkpoint.revert" ||
       command.type === "thread.session.stop" ||
       command.type === "thread.pin" ||
@@ -203,6 +204,7 @@ export type MobileClientOrchestrationCommand =
           | "thread.turn.steer"
           | "thread.approval.respond"
           | "thread.user-input.respond"
+          | "thread.user-input.dismiss"
           | "thread.checkpoint.revert"
           | "thread.session.stop"
           | "thread.pin"

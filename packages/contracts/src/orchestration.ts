@@ -1783,6 +1783,14 @@ const ThreadUserInputRespondCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadUserInputDismissCommand = Schema.Struct({
+  type: Schema.Literal("thread.user-input.dismiss"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  createdAt: IsoDateTime,
+});
+
 const ThreadCheckpointRevertCommand = Schema.Struct({
   type: Schema.Literal("thread.checkpoint.revert"),
   commandId: CommandId,
@@ -2038,6 +2046,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadTurnSteerCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
+  ThreadUserInputDismissCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadValidationRequestCommand,
@@ -2090,6 +2099,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ClientThreadTurnSteerCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
+  ThreadUserInputDismissCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadValidationRequestCommand,
@@ -2306,6 +2316,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.turn-interrupt-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
+  "thread.user-input-dismiss-requested",
   "thread.checkpoint-revert-requested",
   "thread.reverted",
   "thread.session-stop-requested",
@@ -2671,6 +2682,12 @@ const ThreadUserInputResponseRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadUserInputDismissRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  createdAt: IsoDateTime,
+});
+
 export const ThreadCheckpointRevertRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnCount: NonNegativeInt,
@@ -3020,6 +3037,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.user-input-response-requested"),
     payload: ThreadUserInputResponseRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.user-input-dismiss-requested"),
+    payload: ThreadUserInputDismissRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

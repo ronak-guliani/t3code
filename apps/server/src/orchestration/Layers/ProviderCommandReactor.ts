@@ -66,6 +66,7 @@ type ProviderIntentEvent = Extract<
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
+      | "thread.user-input-dismiss-requested"
       | "thread.session-stop-requested";
   }
 >;
@@ -252,6 +253,7 @@ const make = Effect.gen(function* () {
     readonly createdAt: string;
     readonly requestId?: string;
     readonly messageId?: string;
+    readonly originCommandId?: string | undefined;
   }) =>
     orchestrationEngine.dispatch({
       type: "thread.activity.append",
@@ -266,6 +268,7 @@ const make = Effect.gen(function* () {
           detail: input.detail,
           ...(input.requestId ? { requestId: input.requestId } : {}),
           ...(input.messageId ? { messageId: input.messageId } : {}),
+          ...(input.originCommandId ? { originCommandId: input.originCommandId } : {}),
         },
         turnId: input.turnId,
         createdAt: input.createdAt,
@@ -1426,6 +1429,7 @@ const make = Effect.gen(function* () {
           turnId: null,
           createdAt: event.payload.createdAt,
           requestId: event.payload.requestId,
+          originCommandId: event.commandId ?? undefined,
         });
       }
 
@@ -1447,11 +1451,56 @@ const make = Effect.gen(function* () {
               turnId: null,
               createdAt: event.payload.createdAt,
               requestId: event.payload.requestId,
+              originCommandId: event.commandId ?? undefined,
             }),
           ),
         );
     },
   );
+
+  const processUserInputDismissRequested = Effect.fn("processUserInputDismissRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.user-input-dismiss-requested" }>,
+  ) {
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread) {
+      return;
+    }
+    const hasSession = thread.session && thread.session.status !== "stopped";
+    if (!hasSession) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.user-input.respond.failed",
+        summary: "Provider user-input dismissal failed",
+        detail: "No active provider session is bound to this thread.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+        requestId: event.payload.requestId,
+        originCommandId: event.commandId ?? undefined,
+      });
+    }
+
+    yield* providerService
+      .dismissUserInput({
+        threadId: event.payload.threadId,
+        requestId: event.payload.requestId,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.user-input.respond.failed",
+            summary: "Provider user-input dismissal failed",
+            detail: isUnknownPendingUserInputRequestError(cause)
+              ? stalePendingRequestDetail("user-input", event.payload.requestId)
+              : Cause.pretty(cause),
+            turnId: null,
+            createdAt: event.payload.createdAt,
+            requestId: event.payload.requestId,
+            originCommandId: event.commandId ?? undefined,
+          }),
+        ),
+      );
+  });
 
   const processSessionStopRequested = Effect.fn("processSessionStopRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
@@ -1543,6 +1592,9 @@ const make = Effect.gen(function* () {
       case "thread.user-input-response-requested":
         yield* processUserInputResponseRequested(event);
         return;
+      case "thread.user-input-dismiss-requested":
+        yield* processUserInputDismissRequested(event);
+        return;
       case "thread.session-stop-requested":
         yield* processSessionStopRequested(event);
         return;
@@ -1598,6 +1650,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
+        event.type === "thread.user-input-dismiss-requested" ||
         event.type === "thread.session-stop-requested"
       ) {
         return yield* worker.enqueue(event);

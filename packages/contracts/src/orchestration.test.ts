@@ -1249,3 +1249,17 @@ it.effect("ModelSelection rejects malformed instance ids", () =>
     assert.strictEqual(result._tag, "Failure");
   }),
 );
+
+it.effect("decodes pending user-input dismissal commands", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeClientOrchestrationCommand({
+      type: "thread.user-input.dismiss",
+      commandId: "cmd-dismiss-user-input",
+      threadId: "thread-1",
+      requestId: "request-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.type, "thread.user-input.dismiss");
+    assert.strictEqual(parsed.requestId, "request-1");
+  }),
+);

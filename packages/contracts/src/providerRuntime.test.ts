@@ -121,6 +121,7 @@ describe("ProviderRuntimeEvent", () => {
       threadId: "thread-2",
       requestId: "request-1",
       payload: {
+        dismissible: true,
         questions: [
           {
             id: "sandbox_mode",
@@ -147,6 +148,7 @@ describe("ProviderRuntimeEvent", () => {
     }
     expect(parsed.payload.questions[0]?.id).toBe("sandbox_mode");
     expect(parsed.payload.questions[0]?.options).toHaveLength(2);
+    expect(parsed.payload.dismissible).toBe(true);
   });
 
   it("decodes user-input.resolved with answer map", () => {

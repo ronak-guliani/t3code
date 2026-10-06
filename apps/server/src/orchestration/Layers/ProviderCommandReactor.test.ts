@@ -285,6 +285,7 @@ describe("ProviderCommandReactor", () => {
     );
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
+    const dismissUserInput = vi.fn<ProviderServiceShape["dismissUserInput"]>(() => Effect.void);
     const stopSession = vi.fn<ProviderServiceShape["stopSession"]>((input) =>
       Effect.sync(() => {
         const threadId =
@@ -378,6 +379,7 @@ describe("ProviderCommandReactor", () => {
       steerTurn: steerTurn as ProviderServiceShape["steerTurn"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
+      dismissUserInput: dismissUserInput as ProviderServiceShape["dismissUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       sessionCommand: unsupported as ProviderServiceShape["sessionCommand"],
       listSessions: () => Effect.succeed(runtimeSessions),
@@ -546,6 +548,7 @@ describe("ProviderCommandReactor", () => {
       steerTurn,
       respondToRequest,
       respondToUserInput,
+      dismissUserInput,
       stopSession,
       renameBranch,
       refreshStatus,
@@ -3116,6 +3119,45 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("reacts to thread.user-input.dismiss by forwarding the request to the provider", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-for-user-input-dismiss"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "opencode",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.user-input.dismiss",
+        commandId: CommandId.make("cmd-user-input-dismiss"),
+        threadId: ThreadId.make("thread-1"),
+        requestId: asApprovalRequestId("user-input-request-1"),
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.dismissUserInput.mock.calls.length === 1);
+    expect(harness.dismissUserInput.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-1",
+      requestId: "user-input-request-1",
+    });
+  });
+
   it("surfaces stale provider approval request failures without faking approval resolution", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -3209,6 +3251,57 @@ describe("ProviderCommandReactor", () => {
         (activity.payload as Record<string, unknown>).requestId === "approval-request-1",
     );
     expect(resolvedActivity).toBeUndefined();
+
+    harness.dismissUserInput.mockImplementation(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: ProviderDriverKind.make("opencode"),
+          method: "question.reject",
+          detail: "Unknown pending user-input request: user-input-request-1",
+        }),
+      ),
+    );
+    const dismissCommandId = CommandId.make("cmd-user-input-dismiss-stale");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.user-input.dismiss",
+        commandId: dismissCommandId,
+        threadId: ThreadId.make("thread-1"),
+        requestId: asApprovalRequestId("user-input-request-1"),
+        createdAt: now,
+      }),
+    );
+    await waitFor(async () => {
+      const currentReadModel = await Effect.runPromise(harness.engine.getReadModel());
+      const currentThread = currentReadModel.threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      return currentThread?.activities.some(
+        (activity) =>
+          activity.kind === "provider.user-input.respond.failed" &&
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          "originCommandId" in activity.payload &&
+          activity.payload.originCommandId === dismissCommandId,
+      ) ?? false;
+    });
+
+    const afterDismissReadModel = await Effect.runPromise(harness.engine.getReadModel());
+    const afterDismissThread = afterDismissReadModel.threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    const dismissFailureActivity = afterDismissThread?.activities.find(
+      (activity) =>
+        activity.kind === "provider.user-input.respond.failed" &&
+        typeof activity.payload === "object" &&
+        activity.payload !== null &&
+        "originCommandId" in activity.payload &&
+        activity.payload.originCommandId === dismissCommandId,
+    );
+    expect(dismissFailureActivity?.payload).toMatchObject({
+      requestId: "user-input-request-1",
+      originCommandId: dismissCommandId,
+    });
   });
 
   it("surfaces stale provider user-input failures without faking user-input resolution", async () => {
@@ -3307,6 +3400,7 @@ describe("ProviderCommandReactor", () => {
     expect(failureActivity).toBeDefined();
     expect(failureActivity?.payload).toMatchObject({
       requestId: "user-input-request-1",
+      originCommandId: "cmd-user-input-respond-stale",
       detail: expect.stringContaining("Stale pending user-input request: user-input-request-1"),
     });
 

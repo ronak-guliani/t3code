@@ -164,6 +164,7 @@ function isMobileClientOrchestrationCommand(
     case "thread.turn.interrupt":
     case "thread.approval.respond":
     case "thread.user-input.respond":
+    case "thread.user-input.dismiss":
     case "thread.checkpoint.revert":
     case "thread.session.stop":
     case "thread.pin":
