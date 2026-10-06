@@ -44,8 +44,18 @@ export function mergeHistoryCollections<
     loaded: Readonly<Record<string, { sequence: number | null; rowId: number }>>;
   },
 ) {
-  const byTimeId = (a: { id: string; createdAt: string }, b: { id: string; createdAt: string }) =>
-    a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
+  // Terminal lifecycle kinds sort after same-timestamp siblings, matching the
+  // live reducer's activity order. Sorting on id alone would invert a
+  // task.started/task.completed pair that shares a timestamp.
+  const lifecycleRank = (kind: string) =>
+    kind.endsWith(".completed") || kind.endsWith(".resolved") || kind.endsWith(".failed") ? 2 : 1;
+  const byTimeId = (
+    a: { id: string; createdAt: string; kind?: string | undefined },
+    b: { id: string; createdAt: string; kind?: string | undefined },
+  ) =>
+    a.createdAt.localeCompare(b.createdAt) ||
+    lifecycleRank(a.kind ?? "") - lifecycleRank(b.kind ?? "") ||
+    a.id.localeCompare(b.id);
   const mergeOrderedMessages = (): M[] => {
     if (!messageOrigins)
       return prependHistoryRows(older.messages, loaded.messages, (row) => row.id);

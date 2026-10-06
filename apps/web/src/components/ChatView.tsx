@@ -1961,16 +1961,12 @@ function ChatViewBody(
       }),
     [environmentId, threadId, setThreadError],
   );
+  // A dead ?message= link is a dead link, not a thread transport failure. The
+  // timeline swallows this rejection, so reporting it here would raise a
+  // thread-wide banner for a condition with no thread-level remedy.
   const ensureMessageHistory = useCallback(
-    (messageId: MessageId) =>
-      loadThreadHistoryAroundMessage(environmentId, threadId, messageId).catch((error) => {
-        setThreadError(
-          threadId,
-          error instanceof Error ? error.message : "Historical message is unavailable",
-        );
-        throw error;
-      }),
-    [environmentId, threadId, setThreadError],
+    (messageId: MessageId) => loadThreadHistoryAroundMessage(environmentId, threadId, messageId),
+    [environmentId, threadId],
   );
   const scheduleComposerFocus = useCallback(() => {
     window.requestAnimationFrame(() => {

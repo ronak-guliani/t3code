@@ -3169,6 +3169,61 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  // A deep link to a message the thread no longer contains is a dead link, not
+  // a transport failure. It must not raise the thread-wide error banner.
+  it("does not raise a thread error for a stale historical message link", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "old-history-target" as MessageId,
+      targetText: "Rare phrase in the oldest turn",
+    });
+    const wsRequests: { _tag: string }[] = [];
+    const recent = { ...snapshot.threads[0]!, messages: snapshot.threads[0]!.messages.slice(-20) };
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+      initialPath: `${serverThreadPath(THREAD_ID)}?message=deleted-message`,
+      configureFixture: (fixture) => {
+        fixture.serverConfig = {
+          ...fixture.serverConfig,
+          threadSnapshotPagination: true,
+          threadSnapshotAroundMessage: true,
+        };
+        setServerConfigSnapshot(fixture.serverConfig);
+        fixture.threadSnapshot = {
+          snapshotSequence: 1,
+          thread: recent,
+          page: {
+            snapshotSequence: 1,
+            threadSequence: 1,
+            beforeCursor: "older-turns",
+            hasMore: true,
+          },
+        };
+      },
+      resolveRpc: (body) => {
+        wsRequests.push(body as { _tag: string });
+        return body._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot
+          ? { _tag: "OrchestrationReadThreadInputError", message: "Historical message was not found in this thread." }
+          : undefined;
+      },
+    });
+    try {
+      await vi.waitFor(() =>
+        expect(
+          wsRequests.some(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot &&
+              "aroundMessageId" in (request as object),
+          ),
+        ).toBe(true),
+      );
+      await waitForLayout();
+      expect(selectThreadByRef(useStore.getState(), THREAD_REF)?.error ?? null).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   // Network delay must not hide local intent. The pending row must dedupe
   // against live delivery and a rejection must not erase newer draft edits.
   it.each([
