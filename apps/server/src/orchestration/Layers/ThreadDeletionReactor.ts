@@ -6,6 +6,7 @@ import {
   type OrchestrationReadModel,
   type ThreadId,
 } from "@t3tools/contracts";
+import fs from "node:fs/promises";
 import path from "node:path";
 
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
@@ -271,11 +272,13 @@ const make = Effect.gen(function* () {
   // Runs outside every lock: the checkout is already detached from Git, so a
   // failure only leaves bytes for the startup trash sweep to reclaim.
   const deleteDetachedWorktree = (detachedPath: string) =>
-    fileSystem.remove(detachedPath, { recursive: true, force: true }).pipe(
+    Effect.tryPromise(() =>
+      fs.rm(detachedPath, { recursive: true, force: true, maxRetries: 3 }),
+    ).pipe(
       Effect.catch((error) =>
         Effect.logWarning("failed to delete detached worktree; startup sweep will retry", {
           detachedPath,
-          error: error.message,
+          error: String(error.cause),
         }),
       ),
     );
