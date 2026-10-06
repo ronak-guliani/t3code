@@ -329,6 +329,30 @@ for (const legacy of [false, true]) {
           recent.page?.beforeCursor,
           encodeThreadHistoryCursor(threadId, "steering-user-37"),
         );
+        const around = Option.getOrThrow(
+          yield* query.getThreadDetailSnapshotById(threadId, {
+            turnLimit: 1,
+            aroundMessageId: MessageId.make("late-reply-37"),
+          }),
+        );
+        assert.deepEqual(
+          around.thread.messages.map((message) => message.id),
+          ["steering-user-37", "late-reply-37"],
+        );
+        assert.equal(
+          around.page?.beforeCursor,
+          encodeThreadHistoryCursor(threadId, "steering-user-37"),
+        );
+        const steeringTarget = Option.getOrThrow(
+          yield* query.getThreadDetailSnapshotById(threadId, {
+            turnLimit: 1,
+            aroundMessageId: MessageId.make("steering-user-36"),
+          }),
+        );
+        assert.deepEqual(
+          steeringTarget.thread.messages.map((message) => message.id),
+          ["steering-user-36", "late-reply-36"],
+        );
         const older = Option.getOrThrow(
           yield* query.getThreadDetailSnapshotById(threadId, {
             turnLimit: 1,
@@ -353,7 +377,7 @@ for (const legacy of [false, true]) {
           original.thread.messages.map((message) => message.id),
           ["message-35-0", "message-35-1", "message-35-2"],
         );
-        for (const page of [recent, older, original]) {
+        for (const page of [recent, around, steeringTarget, older, original]) {
           assert.deepEqual(
             page.thread.activities.map((activity) => activity.id),
             ["activity-35"],

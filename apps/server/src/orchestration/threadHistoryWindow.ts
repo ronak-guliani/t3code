@@ -119,17 +119,24 @@ export const selectThreadHistoryWindow = Effect.fn("selectThreadHistoryWindow")(
   }
   if (window.aroundMessageId !== undefined) {
     const target = (yield* sql<
-      Anchor & { pendingMessageId: string | null }
+      Anchor & { pendingMessageId: string | null; pendingSequence: number | null }
     >`SELECT messages.message_id AS "messageId",messages.sequence,messages.rowid AS "rowId",messages.created_at AS "createdAt",
-      turns.pending_message_id AS "pendingMessageId" FROM projection_thread_messages messages
+      pending_user.message_id AS "pendingMessageId",pending_user.sequence AS "pendingSequence"
+      FROM projection_thread_messages messages
       LEFT JOIN projection_turns turns ON turns.thread_id=messages.thread_id AND turns.turn_id=messages.turn_id
+      LEFT JOIN projection_thread_messages pending_user
+        ON pending_user.thread_id=messages.thread_id AND pending_user.message_id=turns.pending_message_id
+          AND pending_user.role='user' AND messages.role<>'user'
       WHERE messages.thread_id=${threadId} AND messages.message_id=${window.aroundMessageId}`)[0];
     if (!target)
       return yield* new OrchestrationReadThreadInputError({
         message: "Historical message was not found in this thread.",
       });
+    // Ownership repairs mixed-origin segments; same-origin steering/late replies
+    // belong to the nearest preceding user in their sequence/rowid order.
     const anchor =
-      target.pendingMessageId !== null
+      target.pendingMessageId !== null &&
+      (target.sequence === null) !== (target.pendingSequence === null)
         ? (yield* sql<Anchor>`SELECT message_id AS "messageId",sequence,rowid AS "rowId",created_at AS "createdAt" FROM projection_thread_messages WHERE thread_id=${threadId} AND message_id=${target.pendingMessageId} AND role='user'`)[0]
         : (yield* sql<Anchor>`SELECT messages.message_id AS "messageId",messages.sequence,messages.rowid AS "rowId",messages.created_at AS "createdAt" FROM projection_thread_messages messages
           WHERE messages.thread_id=${threadId} AND messages.role='user' AND ${messageWindowPredicate(sql, { lower: null, upper: { ...target, rowId: target.rowId + 1 } })}
