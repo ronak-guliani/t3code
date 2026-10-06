@@ -40,9 +40,13 @@ export interface ThreadDeletionReactorShape {
    * the automatic-cleanup master switch are bypassed; every safety rule of the
    * automatic path still applies, and the checkout restores on the next turn.
    */
-  readonly reclaimWorktreeNow: (
-    threadId: ThreadId,
-  ) => Effect.Effect<ManualWorktreeReclaimOutcome>;
+  /**
+   * Whether an active (non-archived) chat's worktree passes every idle-reclaim
+   * rule except age, including a clean checkout. Read-only.
+   */
+  readonly isIdleReclaimEligibleIgnoringAge: (threadId: ThreadId) => Effect.Effect<boolean>;
+
+  readonly reclaimWorktreeNow: (threadId: ThreadId) => Effect.Effect<ManualWorktreeReclaimOutcome>;
 }
 
 /**

@@ -6,6 +6,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { makeDatabaseStorageContributor, liveWorkBlocker } from "./contributors/database.ts";
 import { makeLogStorageContributor } from "./contributors/logs.ts";
 import { makeRuntimeFilesStorageContributor } from "./contributors/runtimeFiles.ts";
+import { makeTerminalStorageContributor } from "./contributors/terminals.ts";
 import { makeValidationStorageContributor } from "./contributors/validationEnvironments.ts";
 import { makeWorktreeStorageContributor } from "./contributors/worktrees.ts";
 import { evaluateAutomaticVacuum, readDatabaseStats, vacuumDatabase } from "./databaseVacuum.ts";
@@ -56,6 +57,7 @@ export const StorageCleanupLive = Layer.effect(
       yield* makeLogStorageContributor,
       yield* makeDatabaseStorageContributor,
       yield* makeRuntimeFilesStorageContributor,
+      yield* makeTerminalStorageContributor,
       yield* makeValidationStorageContributor(),
     ];
     const service = yield* makeStorageCleanup(contributors, yield* makeStartupVacuum);

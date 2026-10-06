@@ -2571,7 +2571,7 @@ export function GeneralSettingsPanel() {
         <StorageUsagePanel />
         <SettingsRow
           title="Automatic cleanup"
-          description="Reclaim archived worktrees, old logs, leftover validation environments and database free space in the background. Turning this off pauses every automatic sweep; removals already in progress still finish, and Clean up now keeps working."
+          description="Reclaim archived and idle worktrees, old logs, idle terminals, leftover validation environments and database free space in the background. Turning this off pauses every automatic sweep; removals already in progress still finish, and Clean up now keeps working."
           resetAction={
             settings.automaticCleanupEnabled !==
             DEFAULT_UNIFIED_SETTINGS.automaticCleanupEnabled ? (

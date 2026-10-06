@@ -1665,11 +1665,31 @@ const make = Effect.gen(function* () {
     return { job: job.value, requestedAt: yield* cleanupNow() };
   });
 
+  const isIdleReclaimEligibleIgnoringAge: ThreadDeletionReactorShape["isIdleReclaimEligibleIgnoringAge"] =
+    (threadId) =>
+      Effect.gen(function* () {
+        const readModel = yield* orchestrationEngine.getReadModel();
+        const thread = readModel.threads.find((entry) => entry.id === threadId);
+        const project =
+          thread === undefined
+            ? undefined
+            : readModel.projects.find((entry) => entry.id === thread.projectId);
+        if (thread === undefined || project === undefined) return false;
+        return yield* isIdleWorktreeEligible({
+          thread,
+          project,
+          readModel,
+          idleDays: 0,
+          nowMs: yield* Clock.currentTimeMillis,
+          runtime: yield* runtimeSafetySnapshot,
+          checkClean: true,
+        });
+      }).pipe(Effect.orElseSucceed(() => false));
+
   const reclaimWorktreeNow: ThreadDeletionReactorShape["reclaimWorktreeNow"] = (threadId) =>
     Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
-      const archived =
-        readModel.threads.find((entry) => entry.id === threadId)?.archivedAt != null;
+      const archived = readModel.threads.find((entry) => entry.id === threadId)?.archivedAt != null;
       if (!archived) manualIdleReclaims.add(threadId);
       const persisted = archived
         ? yield* persistArchiveCleanupIntent(threadId, true)
@@ -1799,6 +1819,7 @@ const make = Effect.gen(function* () {
       yield* worktreeCleanupWorker.drain;
     }),
     reclaimWorktreeNow,
+    isIdleReclaimEligibleIgnoringAge,
   } satisfies ThreadDeletionReactorShape;
 });
 

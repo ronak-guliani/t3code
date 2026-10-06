@@ -508,6 +508,7 @@ const withLiveProjectCliServer = <A, E, R>(
           start: () => Effect.void,
           drain: Effect.void,
           reclaimWorktreeNow: () => Effect.die("unused in cli tests"),
+          isIdleReclaimEligibleIgnoringAge: () => Effect.succeed(false),
         });
     const appLayer = HttpRouter.serve(routesLayer, {
       disableListenLog: true,

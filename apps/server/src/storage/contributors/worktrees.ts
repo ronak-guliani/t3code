@@ -1,7 +1,9 @@
 /**
- * Agent worktrees and the worktree trash. Archived chats' worktrees are
- * reclaimed through the #604 cleanup job (reservation, detach-by-rename,
- * background delete); the trash holds already-detached checkouts.
+ * Agent worktrees and the worktree trash. Archived chats' worktrees (#604)
+ * and idle active chats' worktrees (#684, age ignored by a reset) are
+ * reclaimed through the durable cleanup job (reservation, detach-by-rename,
+ * background delete) and restore on unarchive / the next turn. The trash holds
+ * already-detached checkouts.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -163,13 +165,12 @@ export const makeWorktreeStorageContributor = Effect.gen(function* () {
       return bytes;
     });
 
-  /** Every safety rule for one archived chat's worktree; null when eligible. */
+  /** Every safety rule for one chat's worktree (age ignored); null when eligible. */
   const worktreeBlocker = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const readModel = yield* engine.getReadModel();
       const thread = readModel.threads.find((entry) => entry.id === threadId);
       if (thread === undefined || thread.deletedAt !== null) return "chat no longer exists";
-      if (thread.archivedAt === null) return "chat is not archived";
       if (thread.worktreePath === null || thread.branch === null) return "chat has no worktree";
       const project = readModel.projects.find((entry) => entry.id === thread.projectId);
       if (project === undefined || project.deletedAt !== null) return "project is unavailable";
@@ -216,6 +217,12 @@ export const makeWorktreeStorageContributor = Effect.gen(function* () {
         .isWorktreeCleanForRemoval(canonicalPath)
         .pipe(Effect.orElseSucceed(() => false));
       if (!clean) return REASON_TEXT["dirty-worktree"]!;
+      if (
+        thread.archivedAt === null &&
+        !(yield* reactor.isIdleReclaimEligibleIgnoringAge(threadId))
+      ) {
+        return "chat is still in use (provider session, collaboration request or workspace owner)";
+      }
       return null;
     });
 
@@ -225,9 +232,14 @@ export const makeWorktreeStorageContributor = Effect.gen(function* () {
       if (mode !== "reset") return [];
       const readModel = yield* engine.getReadModel();
       const seenPaths = new Set<string>();
-      const candidates: Array<{ threadId: ThreadId; title: string; canonicalPath: string }> = [];
+      const candidates: Array<{
+        threadId: ThreadId;
+        title: string;
+        archived: boolean;
+        canonicalPath: string;
+      }> = [];
       for (const thread of readModel.threads) {
-        if (thread.deletedAt !== null || thread.archivedAt === null || !thread.worktreePath) {
+        if (thread.deletedAt !== null || !thread.worktreePath || !thread.branch) {
           continue;
         }
         const canonicalPath = yield* Effect.promise(() =>
@@ -235,7 +247,12 @@ export const makeWorktreeStorageContributor = Effect.gen(function* () {
         );
         if (seenPaths.has(canonicalPath)) continue;
         seenPaths.add(canonicalPath);
-        candidates.push({ threadId: thread.id, title: thread.title, canonicalPath });
+        candidates.push({
+          threadId: thread.id,
+          title: thread.title,
+          archived: thread.archivedAt !== null,
+          canonicalPath,
+        });
       }
       const worktreeEntries = yield* Effect.forEach(
         candidates,
@@ -251,7 +268,9 @@ export const makeWorktreeStorageContributor = Effect.gen(function* () {
                           item: {
                             id: `worktree:${candidate.threadId}`,
                             category: "worktrees",
-                            description: `Worktree of archived chat "${candidate.title}"`,
+                            description: candidate.archived
+                              ? `Worktree of archived chat "${candidate.title}"`
+                              : `Worktree of idle chat "${candidate.title}"`,
                             target: candidate.canonicalPath,
                             estimatedBytes: bytes,
                             defaultSelected: true,
@@ -331,7 +350,7 @@ export const makeWorktreeStorageContributor = Effect.gen(function* () {
         return result("skipped", REASON_TEXT[outcome.reason] ?? outcome.reason);
       }
       sizeCache.delete(payload.path);
-      return result("removed", "archived chat worktree; restores when the chat is reopened");
+      return result("removed", "worktree reclaimed; restores on the chat's next message");
     });
 
   return {

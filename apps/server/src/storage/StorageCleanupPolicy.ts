@@ -314,6 +314,36 @@ export const makeStorageCleanupPolicyTest = (
       ).pipe(Effect.asVoid),
   });
 
+/** Live settings without disk probing, for tests that change settings mid-test. */
+export const StorageCleanupPolicyFromSettingsTest = Layer.effect(
+  StorageCleanupPolicy,
+  Effect.gen(function* () {
+    const settings = yield* ServerSettingsService;
+    const current = Effect.map(settings.getSettings, (value) =>
+      resolveEffectiveStorageCleanupPolicy(value, UNMEASURED),
+    ).pipe(Effect.orDie);
+    return {
+      current,
+      measureLowDisk: Effect.succeed(UNMEASURED),
+      runAutomatic: (input) =>
+        Effect.forkScoped(
+          Effect.sleep(input.initialDelay).pipe(
+            Effect.andThen(
+              Effect.forever(
+                current.pipe(
+                  Effect.flatMap((policy) =>
+                    policy.automaticCleanupEnabled ? input.sweep(policy) : Effect.void,
+                  ),
+                  Effect.andThen(Effect.sleep(input.interval)),
+                ),
+              ),
+            ),
+          ),
+        ).pipe(Effect.asVoid),
+    } satisfies StorageCleanupPolicyShape;
+  }),
+);
+
 /** Requires a {@link StorageFreeSpaceProbe}, so tests can inject free space. */
 export const StorageCleanupPolicyLayer = Layer.effect(StorageCleanupPolicy, make);
 

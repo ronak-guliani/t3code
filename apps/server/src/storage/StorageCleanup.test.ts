@@ -27,9 +27,11 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type OrchestrationThreadShell,
+  type WorkspaceBinding,
   type ServerSettings,
 } from "@t3tools/contracts";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
@@ -62,6 +64,15 @@ import { runProcess } from "../processRunner.ts";
 import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads.ts";
+import { WorktreeCleanupJobRepository } from "../persistence/Services/WorktreeCleanupJobs.ts";
+import { PreviewManager } from "../preview/Manager.ts";
+import { ThreadWorktreeRestorerRegistry } from "../orchestration/Services/ThreadWorktreeRestorerRegistry.ts";
+import { admitWorkspaceCommand } from "../orchestration/workspaceAdmission.ts";
+import { makeIdleTerminalReaperLive } from "../terminal/Layers/IdleTerminalReaper.ts";
+import { makeTerminalManagerWithOptions } from "../terminal/Layers/Manager.ts";
+import { IdleTerminalReaper } from "../terminal/Services/IdleTerminalReaper.ts";
+import type { PtyExitEvent, PtyProcess } from "../terminal/Services/PTY.ts";
 import { TerminalManager } from "../terminal/Services/Manager.ts";
 import { validationEnvironmentStateDirectory } from "../validation/ValidationEnvironmentService.ts";
 import { StorageCleanup } from "./StorageCleanup.ts";
@@ -175,7 +186,33 @@ function makeSettingsLayer(initial: Partial<ServerSettings>) {
   );
 }
 
-async function makeFixture() {
+class TestPty implements PtyProcess {
+  readonly killSignals: string[] = [];
+  readonly pid: number;
+  constructor(pid: number) {
+    this.pid = pid;
+  }
+  write(): void {}
+  resize(): void {}
+  kill(signal?: string): void {
+    this.killSignals.push(signal ?? "SIGTERM");
+  }
+  onData(): () => void {
+    return () => undefined;
+  }
+  onExit(_callback: (event: PtyExitEvent) => void): () => void {
+    return () => undefined;
+  }
+}
+
+interface FixtureOptions {
+  readonly automaticCleanupEnabled?: boolean;
+  readonly freeBytes?: number;
+  /** Last activity of the idle (non-archived) chat that owns a worktree. */
+  readonly idleUpdatedAt?: string;
+}
+
+async function makeFixture(options: FixtureOptions = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "t3-storage-cleanup-")));
   roots.push(root);
   const repo = path.join(root, "repo");
@@ -205,6 +242,7 @@ async function makeFixture() {
     turnStarts: await worktree("turn-later"),
     alreadyDirty: await worktree("dirty-now"),
     pinned: await worktree("pinned-now"),
+    idle: await worktree("idle"),
   };
   await writeBytes(path.join(paths.alreadyDirty, "notes.txt"), 10);
   // History that a reset must keep: a checkpoint ref on the reclaimed chat.
@@ -240,6 +278,16 @@ async function makeFixture() {
         branch: null,
         archived: false,
       }),
+      {
+        ...makeThread({
+          id: "thread-idle",
+          projectId,
+          worktreePath: paths.idle,
+          branch: "feature-idle",
+          archived: false,
+        }),
+        updatedAt: options.idleUpdatedAt ?? "2026-01-01T00:00:00.000Z",
+      },
       makeThread({
         id: "thread-gone",
         projectId,
@@ -250,8 +298,9 @@ async function makeFixture() {
       }),
     ],
     flags: new Map<string, ThreadFlags>([["thread-pinned-now", { pinned: true }]]),
-    freeBytes: 500 * 1024 ** 3,
+    freeBytes: options.freeBytes ?? 500 * 1024 ** 3,
   };
+  const spawned: TestPty[] = [];
   const project = {
     id: projectId,
     title: "Storage fixture",
@@ -285,6 +334,7 @@ async function makeFixture() {
   const domainEvents = await Effect.runPromise(Queue.unbounded<OrchestrationEvent>());
 
   const layer = StorageCleanupLive.pipe(
+    Layer.provideMerge(makeIdleTerminalReaperLive({ sweepIntervalMs: 60 * 60 * 1000 })),
     Layer.provideMerge(ThreadDeletionReactorLive),
     Layer.provideMerge(StorageCleanupPolicyLayer),
     Layer.provideMerge(GitCoreLive),
@@ -319,10 +369,31 @@ async function makeFixture() {
           listSessions: () => Effect.succeed([]),
           stopSession: () => Effect.void,
         }),
-        Layer.mock(TerminalManager)({
-          close: () => Effect.void,
-          subscribeMetadata: (listener) =>
-            listener({ type: "snapshot", terminals: [] }).pipe(Effect.as(() => undefined)),
+        Layer.effect(
+          TerminalManager,
+          makeTerminalManagerWithOptions({
+            logsDir: path.join(root, "terminal-logs"),
+            processKillGraceMs: 0,
+            ptyAdapter: {
+              spawn: () =>
+                Effect.sync(() => {
+                  const pty = new TestPty(90_000 + spawned.length);
+                  spawned.push(pty);
+                  return pty;
+                }),
+            },
+          }),
+        ),
+        Layer.mock(PreviewManager)({ list: () => Effect.succeed({ sessions: [] }) as never }),
+        Layer.mock(ProjectionThreadRepository)({
+          getById: () =>
+            Effect.succeed(
+              Option.some({
+                pendingApprovalCount: 0,
+                pendingUserInputCount: 0,
+                latestUserMessageAt: null,
+              } as never),
+            ),
         }),
         Layer.mock(WorkspaceOwnershipRepository)({
           getByThreadId: () => Effect.succeed([]),
@@ -336,7 +407,11 @@ async function makeFixture() {
         Layer.succeed(StorageFreeSpaceProbe, {
           probe: async () => ({ freeBytes: state.freeBytes, totalBytes: 1000 * 1024 ** 3 }),
         }),
-        makeSettingsLayer({ automaticCleanupEnabled: false }),
+        makeSettingsLayer({
+          automaticCleanupEnabled: options.automaticCleanupEnabled ?? false,
+          idleWorktreeReclaimDays: 7,
+          idleTerminalStopHours: 0.000001,
+        }),
       ),
     ),
     Layer.provideMerge(SqlitePersistenceLayer),
@@ -352,6 +427,10 @@ async function makeFixture() {
     reactor: await runtime.runPromise(Effect.service(ThreadDeletionReactor)),
     policy: await runtime.runPromise(Effect.service(StorageCleanupPolicy)),
     sql: await runtime.runPromise(Effect.service(SqlClient.SqlClient)),
+    terminals: await runtime.runPromise(Effect.service(TerminalManager)),
+    reaper: await runtime.runPromise(Effect.service(IdleTerminalReaper)),
+    jobs: await runtime.runPromise(Effect.service(WorktreeCleanupJobRepository)),
+    restorer: await runtime.runPromise(Effect.service(ThreadWorktreeRestorerRegistry)),
   };
   return {
     root,
@@ -360,7 +439,36 @@ async function makeFixture() {
     state,
     config,
     run,
+    spawned,
     ...services,
+    /** Production turn admission, as the engine runs it for `thread.turn.start`. */
+    turnStart: (threadId: string) =>
+      Effect.runPromise(
+        admitWorkspaceCommand(
+          {
+            findThread: (id) => readModel().threads.find((thread) => thread.id === id),
+            findProject: (id) => readModel().projects.find((entry) => entry.id === id),
+            listThreads: () => readModel().threads,
+            claimOwnership: (input) =>
+              Effect.succeed<WorkspaceBinding>({
+                canonicalPath: path.resolve(input.worktreePath),
+                worktreePath: input.worktreePath,
+                branch: input.branch,
+                generation: 1,
+              }),
+            hasCleanupReservationByPath: services.jobs.hasReservationByPath,
+            hasCleanupReservationByThreadId: services.jobs.hasReservationByThreadId,
+            cancelIdleByThreadId: services.jobs.cancelIdleByThreadId,
+            restoreThreadWorktree: services.restorer.restore,
+            createWorkspaceSnapshotCommit: () => Effect.die("unused for an existing thread"),
+          },
+          {
+            type: "thread.turn.start",
+            commandId: CommandId.make(`turn-${crypto.randomUUID()}`),
+            threadId: ThreadId.make(threadId),
+          } as OrchestrationCommand,
+        ),
+      ),
     startReactor: async () => {
       await run(services.reactor.start().pipe(Scope.provide(scope)));
       await run(services.reactor.drain);
@@ -445,11 +553,22 @@ describe("StorageCleanup reset", () => {
         ),
       );
 
-      // Master switch off: starting the reactor must not reclaim anything.
+      // Two idle terminals on an idle chat; one gets a viewer after preview.
+      for (const terminalId of ["term-free", "term-viewed"]) {
+        await fixture.run(
+          fixture.terminals.open({ threadId: "thread-live", terminalId, cwd: repo }),
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      // Master switch off: neither the archive/idle worktree sweeps (#604,
+      // #684) nor the idle terminal reaper (#686) may reclaim anything.
       await fixture.startReactor();
+      await fixture.run(fixture.reaper.reconcileStartup);
       for (const worktreePath of Object.values(paths)) {
         expect(await exists(worktreePath)).toBe(true);
       }
+      expect(fixture.spawned.map((pty) => pty.killSignals)).toEqual([[], []]);
 
       // Low disk tightens log retention to 3 days, exposing the 5-day-old log.
       state.freeBytes = 50 * 1024 ** 3;
@@ -467,9 +586,14 @@ describe("StorageCleanup reset", () => {
       ).toEqual([
         "worktree:thread-clean",
         "worktree:thread-dirty-later",
+        "worktree:thread-idle",
         "worktree:thread-pinned-later",
         "worktree:thread-turn-later",
       ]);
+      expect(byId.get("worktree:thread-idle")?.description).toContain("idle chat");
+      expect(
+        plan.items.filter((item) => item.category === "terminals").map((item) => item.id),
+      ).toEqual(["terminal:thread-live:term-free", "terminal:thread-live:term-viewed"]);
       expect(byId.get(`trash:${trashEntry}`)?.estimatedBytes).toBe(8192);
       expect(
         byId.get("database-backup:state.sqlite.before-retired-projector-fix-1")?.estimatedBytes,
@@ -495,6 +619,12 @@ describe("StorageCleanup reset", () => {
       await writeBytes(path.join(paths.becomesDirty, "new-work.txt"), 10);
       state.flags.set("thread-pinned-later", { pinned: true });
       state.flags.set("thread-turn-later", { runningTurn: true });
+      const detachViewer = await fixture.run(
+        fixture.terminals.attachStream(
+          { threadId: "thread-live", terminalId: "term-viewed" },
+          () => Effect.void,
+        ),
+      );
 
       const selected = plan.items.filter((item) => item.defaultSelected).map((item) => item.id);
       const result = await fixture.run(
@@ -515,11 +645,21 @@ describe("StorageCleanup reset", () => {
         reason: "a turn is running",
       });
       expect(status.get(`validation:${unprovenDirectory}`)).toBeUndefined();
+      expect(status.get("worktree:thread-idle")?.status).toBe("removed");
+      expect(status.get("terminal:thread-live:term-free")?.status).toBe("removed");
+      expect(status.get("terminal:thread-live:term-viewed")).toMatchObject({
+        status: "skipped",
+        reason: "a terminal viewer is attached or it already stopped",
+      });
+      expect(fixture.spawned[0]?.killSignals).toContain("SIGTERM");
+      expect(fixture.spawned[1]?.killSignals).toEqual([]);
+      detachViewer();
       expect(result.bytesFreed).toBe(
         result.results.reduce((sum, entry) => sum + entry.bytesFreed, 0),
       );
 
       expect(await exists(paths.clean)).toBe(false);
+      expect(await exists(paths.idle)).toBe(false);
       for (const kept of [
         paths.becomesDirty,
         paths.becomesPinned,
@@ -555,7 +695,11 @@ describe("StorageCleanup reset", () => {
       );
       expect(Exit.isFailure(replay)).toBe(true);
 
-      // Reopening the chat restores its worktree on the same branch.
+      // The idle chat's next turn restores its worktree on the same branch.
+      await fixture.turnStart("thread-idle");
+      expect(await git(paths.idle, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("feature-idle");
+
+      // Reopening the archived chat restores its worktree on the same branch.
       await fixture.unarchive("thread-clean");
       expect(await git(paths.clean, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("feature-clean");
 
@@ -578,6 +722,36 @@ describe("StorageCleanup reset", () => {
       expect(Number(freelist[0]?.freelist_count)).toBe(0);
     } finally {
       await fixture.dispose();
+    }
+  }, 60_000);
+
+  it("automatic sweeps run when enabled, and low disk tightens idle reclaim to one day", async () => {
+    const twoDaysAgo = new Date(Date.now() - 2 * DAY_MS).toISOString();
+    for (const lowDisk of [false, true]) {
+      const fixture = await makeFixture({
+        automaticCleanupEnabled: true,
+        freeBytes: (lowDisk ? 50 : 500) * 1024 ** 3,
+        idleUpdatedAt: twoDaysAgo,
+      });
+      try {
+        await fixture.run(fixture.policy.measureLowDisk);
+        expect((await fixture.run(fixture.policy.current)).idleWorktreeReclaimDays).toBe(
+          lowDisk ? 1 : 7,
+        );
+        await fixture.run(fixture.terminals.open({ threadId: "thread-live", cwd: fixture.repo }));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        await fixture.startReactor();
+        await fixture.run(fixture.reaper.reconcileStartup);
+
+        // Idle for 2 days: reclaimed only under the 1-day low-disk window.
+        expect(await exists(fixture.paths.idle)).toBe(!lowDisk);
+        // Archive cleanup (#604) and the idle terminal reaper (#686) resume.
+        expect(await exists(fixture.paths.clean)).toBe(false);
+        expect(fixture.spawned[0]?.killSignals).toContain("SIGTERM");
+      } finally {
+        await fixture.dispose();
+      }
     }
   }, 60_000);
 });

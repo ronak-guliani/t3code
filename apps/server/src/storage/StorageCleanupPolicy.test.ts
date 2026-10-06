@@ -72,7 +72,10 @@ describe("StorageCleanupPolicy", () => {
     await run(
       Effect.gen(function* () {
         const free = { current: 500 };
-        const handles = yield* makePolicy({ providerLogRetentionDays: 14 }, free);
+        const handles = yield* makePolicy(
+          { providerLogRetentionDays: 14, idleWorktreeReclaimDays: 7 },
+          free,
+        );
         const policy = yield* handles.policy;
         expect((yield* policy.current).providerLogRetentionDays).toBe(14);
 
@@ -80,10 +83,13 @@ describe("StorageCleanupPolicy", () => {
         const status = yield* policy.measureLowDisk;
         expect(status).toMatchObject({ active: true, freePercent: 9.9 });
         expect((yield* policy.current).providerLogRetentionDays).toBe(3);
+        expect((yield* policy.current).idleWorktreeReclaimDays).toBe(1);
 
         const settings = yield* handles.settings;
         yield* settings.updateSettings({ providerLogRetentionDays: null });
+        yield* settings.updateSettings({ idleWorktreeReclaimDays: null });
         expect((yield* policy.current).providerLogRetentionDays).toBeNull();
+        expect((yield* policy.current).idleWorktreeReclaimDays).toBeNull();
         yield* settings.updateSettings({ providerLogRetentionDays: 2 });
         expect((yield* policy.current).providerLogRetentionDays).toBe(2);
       }),

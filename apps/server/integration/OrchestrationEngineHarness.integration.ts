@@ -400,6 +400,7 @@ export const makeOrchestrationIntegrationHarness = (
           start: () => Effect.void,
           drain: Effect.void,
           reclaimWorktreeNow: () => Effect.die("unused in this harness"),
+          isIdleReclaimEligibleIgnoringAge: () => Effect.succeed(false),
         }),
       ),
       Layer.provideMerge(
