@@ -9234,4 +9234,183 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await mounted.cleanup();
     }
   });
+
+  it("reports a full ChatView journey performance baseline with 300 tool activities", async () => {
+    const toolCount = 300;
+    const activities = Array.from({ length: toolCount }, (_, index) => ({
+      id: EventId.make(`perf-tool-${index}`),
+      tone: "tool" as const,
+      kind: "tool.completed",
+      summary: `Read file ${index}`,
+      payload: {
+        title: `Read file ${index}`,
+        detail: `Tool output ${index}`,
+        data: {
+          toolCallId: `perf-call-${index}`,
+          toolName: "read_file",
+          rawInput: { path: `src/file-${index}.ts` },
+          rawOutput: { content: `Tool output ${index}` },
+        },
+      },
+      turnId: null,
+      sequence: index + 1,
+      createdAt: isoAt(2_000_000 + index),
+    })) as OrchestrationReadModel["threads"][number]["activities"];
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-perf-seed" as MessageId,
+      targetText: "performance seed",
+    });
+    const snapshot: OrchestrationReadModel = {
+      ...baseSnapshot,
+      threads: baseSnapshot.threads.map((thread) =>
+        thread.id === THREAD_ID ? { ...thread, activities } : thread,
+      ),
+    };
+    const secondThreadId = ThreadId.make("thread-performance-navigation");
+    const navigationSnapshot = addThreadToSnapshot(snapshot, secondThreadId);
+    const longTaskEntries: Array<{ startTime: number; duration: number }> = [];
+    const longTaskObserver =
+      typeof PerformanceObserver === "undefined"
+        ? null
+        : new PerformanceObserver((entries) => {
+            for (const entry of entries.getEntries()) {
+              longTaskEntries.push({ startTime: entry.startTime, duration: entry.duration });
+            }
+          });
+    try {
+      longTaskObserver?.observe({ entryTypes: ["longtask"] });
+    } catch {
+      longTaskObserver?.disconnect();
+    }
+    let mounted: MountedChatView | undefined;
+
+    try {
+      const startupStartedAt = performance.now();
+      mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot: navigationSnapshot });
+      await waitForComposerEditor();
+      const mountFinishedAt = performance.now();
+      const mountToComposerReadyMs = mountFinishedAt - startupStartedAt;
+      let toolGroupExpandMs: number | null = null;
+      let toolGroupExpandWindow = {
+        phase: "toolExpansion",
+        start: mountFinishedAt,
+        end: mountFinishedAt,
+      };
+      if (toolCount > 0) {
+        const expandToolCalls = page.getByRole("button", {
+          name: `Expand Tool Calls (${toolCount})`,
+          exact: true,
+        });
+        await expect.element(expandToolCalls).toBeVisible();
+        const toolGroupExpandStartedAt = performance.now();
+        await expandToolCalls.click();
+        await vi.waitFor(() => {
+          expect(document.body.textContent).toContain(`Read file-${toolCount - 1}.ts`);
+        });
+        const toolGroupExpandFinishedAt = performance.now();
+        toolGroupExpandMs = toolGroupExpandFinishedAt - toolGroupExpandStartedAt;
+        toolGroupExpandWindow = {
+          phase: "toolExpansion",
+          start: toolGroupExpandStartedAt,
+          end: toolGroupExpandFinishedAt,
+        };
+      }
+      const composer = await waitForComposerEditor();
+      const composerInputStartedAt = performance.now();
+      await userEvent.type(composer, "x");
+      await waitForComposerText("x");
+      const composerInputFinishedAt = performance.now();
+      const composerInputToStoreMs = composerInputFinishedAt - composerInputStartedAt;
+
+      const navigationStartedAt = performance.now();
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: secondThreadId },
+      });
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === serverThreadPath(secondThreadId),
+        "The benchmark navigation did not reach its thread route.",
+      );
+      await expect.element(page.getByText("Send a message to start the conversation.")).toBeVisible();
+      const navigationFinishedAt = performance.now();
+      const threadNavigationMs = navigationFinishedAt - navigationStartedAt;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const phaseWindows = [
+        { phase: "mount", start: startupStartedAt, end: mountFinishedAt },
+        toolGroupExpandWindow,
+        { phase: "composerInput", start: composerInputStartedAt, end: composerInputFinishedAt },
+        { phase: "navigation", start: navigationStartedAt, end: navigationFinishedAt },
+      ];
+      const longTasks = longTaskEntries.map(({ startTime, duration }) => ({
+        phase:
+          phaseWindows.find((window) => startTime < window.end && startTime + duration > window.start)
+            ?.phase ?? "outside",
+        durationMs: Number(duration.toFixed(2)),
+      }));
+      console.warn(
+        JSON.stringify({
+          benchmark: "full-chat-journeys",
+          visibleMessages: snapshot.threads[0]?.messages.length ?? 0,
+          toolActivities: toolCount,
+          mountToComposerReadyMs: Number(mountToComposerReadyMs.toFixed(2)),
+          toolGroupExpandMs:
+            toolGroupExpandMs === null ? null : Number(toolGroupExpandMs.toFixed(2)),
+          composerInputToStoreMs: Number(composerInputToStoreMs.toFixed(2)),
+          threadNavigationMs: Number(threadNavigationMs.toFixed(2)),
+          longTasks,
+        }),
+      );
+    } finally {
+      longTaskObserver?.disconnect();
+      await mounted?.cleanup();
+    }
+  });
+
+  it("reports a full ChatView journey performance baseline control without tool history", async () => {
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-perf-control-seed" as MessageId,
+      targetText: "performance control seed",
+    });
+    const snapshot = addThreadToSnapshot(
+      baseSnapshot,
+      ThreadId.make("thread-performance-control-navigation"),
+    );
+    const longTaskEntries: Array<{ startTime: number; duration: number }> = [];
+    const longTaskObserver =
+      typeof PerformanceObserver === "undefined"
+        ? null
+        : new PerformanceObserver((entries) => {
+            for (const entry of entries.getEntries()) {
+              longTaskEntries.push({ startTime: entry.startTime, duration: entry.duration });
+            }
+          });
+    try {
+      longTaskObserver?.observe({ entryTypes: ["longtask"] });
+    } catch {
+      longTaskObserver?.disconnect();
+    }
+    let mounted: MountedChatView | undefined;
+
+    try {
+      const mountStartedAt = performance.now();
+      mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+      await waitForComposerEditor();
+      const mountReadyAt = performance.now();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      console.warn(
+        JSON.stringify({
+          benchmark: "full-chat-mount-control",
+          visibleMessages: snapshot.threads[0]?.messages.length ?? 0,
+          toolActivities: 0,
+          mountToComposerReadyMs: Number((mountReadyAt - mountStartedAt).toFixed(2)),
+          longTasksMs: longTaskEntries.map((entry) => Number(entry.duration.toFixed(2))),
+        }),
+      );
+    } finally {
+      longTaskObserver?.disconnect();
+      await mounted?.cleanup();
+    }
+  });
+
 });

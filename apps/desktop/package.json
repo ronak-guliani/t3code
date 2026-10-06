@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vp test run --passWithNoTests",
     "smoke-test": "node scripts/smoke-test.mjs",
+    "bench:startup": "node scripts/bench-packaged-startup.mjs",
     "build:preview-annotation-css": "node scripts/build-preview-annotation-css.mjs"
   },
   "dependencies": {
