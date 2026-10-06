@@ -1058,5 +1058,14 @@ describe("thread context send builders", () => {
     expect(isComposerDraftCleared(null)).toBe(true);
     // Clearing the last content can remove the draft entirely; it is still safe to restore.
     expect(isComposerDraftCleared(undefined)).toBe(true);
+    expect(
+      isComposerDraftCleared({
+        prompt: "",
+        imageCount: 0,
+        terminalContextCount: 0,
+        threadContextCount: 0,
+        previewAnnotationCount: 1,
+      }),
+    ).toBe(false);
   });
 });

@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
+import syncFs from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { sweepProviderLogs } from "./ProviderLogRetention.ts";
+import { pruneProviderLogs } from "./ProviderLogRetention.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -234,5 +236,48 @@ describe("sweepProviderLogs", () => {
     expect(await exists(removable)).toBe(false);
     expect(summary.failedFiles).toBe(1);
     expect(summary.removed.age.files).toBe(1);
+  });
+});
+
+describe("pruneProviderLogs", () => {
+  it("removes expired provider logs, then oldest files until the global byte quota is met", () => {
+    const directory = syncFs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-retention-"));
+    const oldLogPath = path.join(directory, "thread-old.log.1");
+    const middleLogPath = path.join(directory, "thread-middle.log");
+    const latestLogPath = path.join(directory, "provider-events.ndjson");
+    const unrelatedPath = path.join(directory, "settings.json");
+    try {
+      syncFs.writeFileSync(oldLogPath, "o".repeat(10));
+      syncFs.writeFileSync(middleLogPath, "m".repeat(20));
+      syncFs.writeFileSync(latestLogPath, "n".repeat(30));
+      syncFs.writeFileSync(unrelatedPath, "x".repeat(100));
+      syncFs.utimesSync(oldLogPath, 10, 10);
+      syncFs.utimesSync(middleLogPath, 60, 60);
+      syncFs.utimesSync(latestLogPath, 99, 99);
+      const result = pruneProviderLogs({
+        directory,
+        maxBytes: 40,
+        maxAgeMs: 50_000,
+        nowMs: 100_000,
+      });
+      expect(result).toEqual({ filesRemoved: 2, bytesRemoved: 30, bytesRemaining: 30 });
+      expect(syncFs.existsSync(oldLogPath)).toBe(false);
+      expect(syncFs.existsSync(middleLogPath)).toBe(false);
+      expect(syncFs.existsSync(latestLogPath)).toBe(true);
+      expect(syncFs.existsSync(unrelatedPath)).toBe(true);
+    } finally {
+      syncFs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a missing log directory as an empty quota", () => {
+    const directory = path.join(os.tmpdir(), `missing-provider-logs-${crypto.randomUUID()}`);
+    expect(pruneProviderLogs({ directory, maxBytes: 1024, maxAgeMs: 1_000, nowMs: 1_000 })).toEqual(
+      {
+        filesRemoved: 0,
+        bytesRemoved: 0,
+        bytesRemaining: 0,
+      },
+    );
   });
 });

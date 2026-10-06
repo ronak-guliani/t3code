@@ -22,6 +22,16 @@ import type { Effect, PubSub, Scope, Stream } from "effect";
 import type { OrchestrationDispatchError } from "../Errors.ts";
 import type { OrchestrationEventStoreError } from "../../persistence/Errors.ts";
 
+export type OrchestrationActivityAppendCommand = Extract<
+  OrchestrationCommand,
+  { readonly type: "thread.activity.append" }
+>;
+
+export interface OrchestrationDispatchTicket {
+  /** Resolves only after the command has been durably committed and projected. */
+  readonly awaitResult: Effect.Effect<DispatchResult, OrchestrationDispatchError>;
+}
+
 /**
  * OrchestrationEngineShape - Service API for orchestration command and event flow.
  */
@@ -55,6 +65,16 @@ export interface OrchestrationEngineShape {
   readonly dispatch: (
     command: OrchestrationCommand,
   ) => Effect.Effect<DispatchResult, OrchestrationDispatchError, never>;
+
+  /**
+   * Enqueue a tool activity without blocking its producer; await `awaitResult`
+   * before acknowledging the source event. This lets serialized producers feed
+   * the engine's ordered activity batch window without losing durability.
+   * Test doubles may omit this optional optimization; callers then use dispatch.
+   */
+  readonly enqueueToolActivityAppend?: (
+    command: OrchestrationActivityAppendCommand,
+  ) => Effect.Effect<OrchestrationDispatchTicket, OrchestrationDispatchError, never>;
 
   /**
    * Serialize worktree binding and cleanup operations to prevent ownership races.

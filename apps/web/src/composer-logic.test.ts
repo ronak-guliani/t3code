@@ -9,6 +9,8 @@ import {
   replaceTextRange,
 } from "./composer-logic";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
+import { formatThreadContextReference } from "@t3tools/shared/threadContext";
+import { ThreadContextId } from "@t3tools/contracts";
 
 describe("detectComposerTrigger", () => {
   it("detects @path trigger at cursor", () => {
@@ -142,6 +144,14 @@ describe("replaceTextRange", () => {
 });
 
 describe("expandCollapsedComposerCursor", () => {
+  it("uses the original source span for a thread reference label", () => {
+    const reference = formatThreadContextReference({
+      contextId: ThreadContextId.make("ctx-test"),
+      label: "two  spaces\\",
+    });
+    const text = `${reference} tail`;
+    expect(expandCollapsedComposerCursor(text, 1)).toBe(reference.length);
+  });
   it("keeps cursor unchanged when no mention segment is present", () => {
     expect(expandCollapsedComposerCursor("plain text", 5)).toBe(5);
   });

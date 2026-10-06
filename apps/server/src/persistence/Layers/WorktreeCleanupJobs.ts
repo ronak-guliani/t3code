@@ -15,7 +15,10 @@ import {
 } from "../Services/WorktreeCleanupJobs.ts";
 
 const ThreadRequest = Schema.Struct({ threadId: WorktreeCleanupJob.fields.threadId });
-const DueJobsRequest = Schema.Struct({ now: WorktreeCleanupJob.fields.requestedAt });
+const DueJobsRequest = Schema.Struct({
+  now: WorktreeCleanupJob.fields.requestedAt,
+  limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1_000 })),
+});
 const ReservationByPathRequest = Schema.Struct({
   canonicalWorktreePath: Schema.String,
 });
@@ -253,7 +256,7 @@ const make = Effect.gen(function* () {
   const listDueJobs = SqlSchema.findAll({
     Request: DueJobsRequest,
     Result: WorktreeCleanupJob,
-    execute: ({ now }) =>
+    execute: ({ now, limit }) =>
       sql`
         SELECT
           thread_id AS "threadId",
@@ -271,6 +274,7 @@ const make = Effect.gen(function* () {
         WHERE status = 'waiting'
           AND (next_attempt_at IS NULL OR next_attempt_at <= ${now})
         ORDER BY next_attempt_at ASC, requested_at ASC, thread_id ASC
+        LIMIT ${limit}
       `,
   });
 

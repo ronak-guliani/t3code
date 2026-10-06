@@ -293,7 +293,7 @@ const offlineFlag = Flag.boolean("offline").pipe(
 const EnvServerConfig = Config.all({
   logLevel: Config.logLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
   traceMinLevel: Config.logLevel("T3CODE_TRACE_MIN_LEVEL").pipe(Config.withDefault("Info")),
-  traceTimingEnabled: Config.boolean("T3CODE_TRACE_TIMING_ENABLED").pipe(Config.withDefault(true)),
+  traceTimingEnabled: Config.boolean("T3CODE_TRACE_TIMING_ENABLED").pipe(Config.withDefault(false)),
   traceFile: Config.string("T3CODE_TRACE_FILE").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),

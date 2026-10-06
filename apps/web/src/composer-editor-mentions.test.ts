@@ -159,7 +159,12 @@ describe("thread context segments", () => {
       splitPromptIntoComposerSegments("see [Auth](t3-context://v1/thread/ctx-1) please"),
     ).toEqual([
       { type: "text", text: "see " },
-      { type: "thread-context", contextId: "ctx-1", label: "Auth" },
+      {
+        type: "thread-context",
+        contextId: "ctx-1",
+        label: "Auth",
+        sourceLength: "[Auth](t3-context://v1/thread/ctx-1)".length,
+      },
       { type: "text", text: " please" },
     ]);
   });
@@ -170,16 +175,31 @@ describe("thread context segments", () => {
         "[A](t3-context://v1/thread/ctx-a) plus [B](t3-context://v1/thread/ctx-b)",
       ),
     ).toEqual([
-      { type: "thread-context", contextId: "ctx-a", label: "A" },
+      {
+        type: "thread-context",
+        contextId: "ctx-a",
+        label: "A",
+        sourceLength: "[A](t3-context://v1/thread/ctx-a)".length,
+      },
       { type: "text", text: " plus " },
-      { type: "thread-context", contextId: "ctx-b", label: "B" },
+      {
+        type: "thread-context",
+        contextId: "ctx-b",
+        label: "B",
+        sourceLength: "[B](t3-context://v1/thread/ctx-b)".length,
+      },
     ]);
   });
 
   it("does not parse mention tokens inside a thread reference label", () => {
     const segments = splitPromptIntoComposerSegments("[a@b](t3-context://v1/thread/ctx-9) ");
     expect(segments).toEqual([
-      { type: "thread-context", contextId: "ctx-9", label: "a@b" },
+      {
+        type: "thread-context",
+        contextId: "ctx-9",
+        label: "a@b",
+        sourceLength: "[a@b](t3-context://v1/thread/ctx-9)".length,
+      },
       { type: "text", text: " " },
     ]);
   });

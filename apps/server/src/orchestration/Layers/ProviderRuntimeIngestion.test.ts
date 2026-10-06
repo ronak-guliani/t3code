@@ -30,6 +30,7 @@ import {
   Exit,
   Layer,
   ManagedRuntime,
+  Metric,
   PubSub,
   Scope,
   Stream,
@@ -843,6 +844,7 @@ describe("ProviderRuntimeIngestion", () => {
         delta: "older response",
       },
     });
+    await harness.drain();
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",
@@ -1202,6 +1204,51 @@ describe("ProviderRuntimeIngestion", () => {
       thread.activities.some(
         (activity: ProviderRuntimeTestActivity) =>
           activity.kind === "insights.turn.aborted" && activity.turnId === activeTurnId,
+      ),
+    ).toBe(true);
+  });
+
+  it("batches production tool activity dispatches before acknowledging the source events", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-production-tool-batch");
+    const count = 6;
+
+    for (let index = 0; index < count; index += 1) {
+      harness.emit({
+        type: "item.updated",
+        eventId: asEventId(`evt-production-tool-batch-${index}`),
+        provider: ProviderDriverKind.make("copilot"),
+        threadId: asThreadId("thread-1"),
+        turnId,
+        itemId: asItemId(`item-production-tool-batch-${index}`),
+        createdAt: new Date().toISOString(),
+        payload: {
+          itemType: "command_execution",
+          status: "in_progress",
+          title: `Tool ${index}`,
+          detail: `output ${index}`,
+          data: {
+            toolCallId: `tool-production-batch-${index}`,
+            kind: "execute",
+            command: `command-${index}`,
+          },
+        },
+      });
+    }
+
+    await harness.drain();
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    expect(thread?.activities.filter((activity) => activity.kind === "tool.updated")).toHaveLength(
+      count,
+    );
+    const metrics = await Effect.runPromise(Metric.snapshot);
+    expect(
+      metrics.some(
+        (snapshot) =>
+          snapshot.id === "t3_orchestration_activity_append_batches_total" &&
+          snapshot.attributes?.batchSize === String(count),
       ),
     ).toBe(true);
   });
