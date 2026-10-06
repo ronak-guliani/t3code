@@ -829,6 +829,41 @@ export function AppearanceSettingsPanel() {
           }
         />
         <SettingsRow
+          title="Tab font size"
+          description="Font size for the file, terminal, browser, and pull request tab labels above the right panel."
+          resetAction={
+            settings.tabFontSize !== recommendedFontSizes.tabFontSize ? (
+              <SettingResetButton
+                label="tab font size"
+                onClick={() => updateSettings({ tabFontSize: recommendedFontSizes.tabFontSize })}
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={String(settings.tabFontSize)}
+              onValueChange={(value) => {
+                const num = Number(value);
+                if (isFontSize(num)) updateSettings({ tabFontSize: num });
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Tab font size">
+                <SelectValue>
+                  {FONT_SIZE_OPTIONS.find((option) => option.value === settings.tabFontSize)
+                    ?.label ?? `${recommendedFontSizes.tabFontSize}px`}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {FONT_SIZE_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={String(option.value)}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
           title="Tool output font size"
           description="Font size for work log entries and tool call output."
           resetAction={

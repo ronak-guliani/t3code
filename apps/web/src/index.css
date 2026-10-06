@@ -182,6 +182,9 @@
   --app-sidebar-legacy-row-padding-x: calc(var(--app-sidebar-font-size) * 0.545455);
   --app-tool-font-size: 12px;
   --app-input-font-size: 14px;
+  /* Right-panel tab labels. Chrome, not content, so the default tracks the
+     sidebar row size rather than body text. */
+  --app-tab-font-size: 11px;
   /* Workspace/branch/PR line under the message composer. Its own setting so
      it can stay visibly quieter than the composer's controls at any size. */
   --app-composer-meta-font-size: 11px;

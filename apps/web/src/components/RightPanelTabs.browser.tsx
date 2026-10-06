@@ -129,6 +129,21 @@ describe("RightPanelTabs", () => {
     }
   });
 
+  it.each([9, 11, 16])("renders tab labels at the configured %ipx", async (fontSize) => {
+    document.documentElement.style.setProperty("--app-tab-font-size", `${fontSize}px`);
+    const { screen } = await mountTabs();
+    try {
+      for (const title of ["Files", "src/index.ts", "Terminal 2", "Local dashboard"]) {
+        const tab = await page.getByTitle(title).element();
+        expect(getComputedStyle(tab.parentElement!).fontSize, title).toBe(`${fontSize}px`);
+      }
+    } finally {
+      // The var is written to <html>, which afterEach does not reset.
+      document.documentElement.style.removeProperty("--app-tab-font-size");
+      await screen.unmount();
+    }
+  });
+
   it("scrolls overflowing tabs with buttons and disables them at the edges", async () => {
     const tabs: RightPanelSurface[] = Array.from({ length: 12 }, (_, index) => ({
       id: `file:src/long-file-name-${index}.ts`,
@@ -182,8 +197,8 @@ describe("RightPanelTabs", () => {
       const fileTab = await page.getByTitle("src/index.ts").element();
 
       expect(closeButton.parentElement).toBe(tabBar);
-      expect(getComputedStyle(browserTab.parentElement!).fontSize).toBe("13px");
-      expect(getComputedStyle(fileTab.parentElement!).fontSize).toBe("13px");
+      expect(getComputedStyle(browserTab.parentElement!).fontSize).toBe("11px");
+      expect(getComputedStyle(fileTab.parentElement!).fontSize).toBe("11px");
       expect(fileTab.parentElement!.getBoundingClientRect().height).toBe(28);
       expect(getComputedStyle(fileTab.parentElement!.parentElement!).columnGap).toBe("4px");
       const closeFile = await page.getByLabelText("Close index.ts").element();

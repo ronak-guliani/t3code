@@ -291,7 +291,7 @@ export function RightPanelTabs({
                     }}
                     onAuxClick={(event) => closeOnMiddleClick(event, surface)}
                     className={cn(
-                      "group flex h-7 min-w-0 max-w-36 shrink-0 items-center gap-1 rounded-md pl-2 pr-2.5 text-[13px] [-webkit-app-region:no-drag]",
+                      "group flex h-7 min-w-0 max-w-36 shrink-0 items-center gap-1 rounded-md pl-2 pr-2.5 text-[length:var(--app-tab-font-size)] [-webkit-app-region:no-drag]",
                       active
                         ? "bg-accent text-foreground"
                         : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",

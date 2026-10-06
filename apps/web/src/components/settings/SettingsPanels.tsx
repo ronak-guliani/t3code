@@ -1192,6 +1192,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.sidebarRowSpacing !== DEFAULT_UNIFIED_SETTINGS.sidebarRowSpacing
         ? ["Sidebar row spacing"]
         : []),
+      ...(settings.tabFontSize !== DEFAULT_UNIFIED_SETTINGS.tabFontSize ? ["Tab font size"] : []),
       ...(settings.toolFontSize !== DEFAULT_UNIFIED_SETTINGS.toolFontSize
         ? ["Tool font size"]
         : []),
@@ -1308,6 +1309,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sidebarTranslucency,
       settings.threadCompletionNotifications,
       settings.timestampFormat,
+      settings.tabFontSize,
       settings.toolFontSize,
       settings.uiDensity,
       settings.uiFont,

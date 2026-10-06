@@ -64,6 +64,9 @@ export const DEFAULT_SIDEBAR_META_FONT_SIZE: FontSize = 10 as FontSize;
     sidebar used before this became a setting. */
 export const DEFAULT_SIDEBAR_ICON_SIZE: FontSize = 14 as FontSize;
 export const DEFAULT_INPUT_FONT_SIZE: FontSize = 14 as FontSize;
+/** Right-panel tab labels are navigation chrome, not content, so they sit at the
+    same weight as a sidebar row rather than at body size. */
+export const DEFAULT_TAB_FONT_SIZE: FontSize = 11 as FontSize;
 /** Under-composer metadata (workspace, branch, pull request). 11px keeps it a
     deliberate step below the composer's own controls. */
 export const DEFAULT_COMPOSER_META_FONT_SIZE: FontSize = 11 as FontSize;
@@ -115,6 +118,7 @@ export interface DensityFontSizes {
   readonly sidebarMetaFontSize: FontSize;
   readonly sidebarIconSize: FontSize;
   readonly statusLineFontSize: FontSize;
+  readonly tabFontSize: FontSize;
   readonly toolFontSize: FontSize;
 }
 
@@ -137,6 +141,7 @@ export const RECOMMENDED_FONT_SIZES_BY_UI_DENSITY: Readonly<Record<UiDensity, De
     sidebarMetaFontSize: 9 as FontSize,
     sidebarIconSize: 12 as FontSize,
     statusLineFontSize: 12 as FontSize,
+    tabFontSize: 10 as FontSize,
     toolFontSize: 11 as FontSize,
   },
   default: {
@@ -148,6 +153,7 @@ export const RECOMMENDED_FONT_SIZES_BY_UI_DENSITY: Readonly<Record<UiDensity, De
     sidebarMetaFontSize: DEFAULT_SIDEBAR_META_FONT_SIZE,
     sidebarIconSize: DEFAULT_SIDEBAR_ICON_SIZE,
     statusLineFontSize: DEFAULT_STATUS_LINE_FONT_SIZE,
+    tabFontSize: DEFAULT_TAB_FONT_SIZE,
     toolFontSize: DEFAULT_TOOL_FONT_SIZE,
   },
   comfortable: {
@@ -159,6 +165,7 @@ export const RECOMMENDED_FONT_SIZES_BY_UI_DENSITY: Readonly<Record<UiDensity, De
     sidebarMetaFontSize: 11 as FontSize,
     sidebarIconSize: 15 as FontSize,
     statusLineFontSize: 15 as FontSize,
+    tabFontSize: 12 as FontSize,
     toolFontSize: 13 as FontSize,
   },
   spacious: {
@@ -170,6 +177,7 @@ export const RECOMMENDED_FONT_SIZES_BY_UI_DENSITY: Readonly<Record<UiDensity, De
     sidebarMetaFontSize: 12 as FontSize,
     sidebarIconSize: 16 as FontSize,
     statusLineFontSize: 16 as FontSize,
+    tabFontSize: 13 as FontSize,
     toolFontSize: 14 as FontSize,
   },
 };
@@ -334,6 +342,7 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_TRANSLUCENCY)),
   ),
   toolFontSize: FontSize.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_TOOL_FONT_SIZE))),
+  tabFontSize: FontSize.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_TAB_FONT_SIZE))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   codeFont: CodeFont.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_CODE_FONT))),
@@ -915,6 +924,7 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarRowSpacing: Schema.optionalKey(SidebarRowSpacing),
   sidebarTranslucency: Schema.optionalKey(SidebarTranslucency),
   toolFontSize: Schema.optionalKey(FontSize),
+  tabFontSize: Schema.optionalKey(FontSize),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   codeFont: Schema.optionalKey(CodeFont),
