@@ -104,6 +104,9 @@ describe("settings search", () => {
       id: "setting-idle-worktree-reclamation",
       to: "/settings/general",
     });
-    expect(searchSettings("storage cleanup")[0]?.title).toBe("Idle worktree reclamation");
+    // "Storage & cleanup" now also holds the master switch, so assert membership, not rank.
+    expect(searchSettings("storage cleanup").map((result) => result.title)).toContain(
+      "Idle worktree reclamation",
+    );
   });
 });
