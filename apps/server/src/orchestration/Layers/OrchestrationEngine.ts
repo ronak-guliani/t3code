@@ -30,6 +30,7 @@ import {
   orchestrationCommandAckDuration,
   orchestrationCommandsTotal,
   orchestrationCommandDuration,
+  orchestrationActivityAppendBatchesTotal,
 } from "../../observability/Metrics.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { runStartupPhase } from "../../startupTiming.ts";
@@ -42,6 +43,7 @@ import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/Checkout
 import { WorkspaceOwnershipRepository } from "../../persistence/Services/WorkspaceOwnership.ts";
 import { WorkspaceOwnershipRepositoryLive } from "../../persistence/Layers/WorkspaceOwnership.ts";
 import { ThreadUrlBuilder } from "../../threadUrl.ts";
+import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import {
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
@@ -53,7 +55,7 @@ import {
   layer as AutomaticArchiveGuardRegistryLayer,
 } from "../Services/AutomaticArchiveGuardRegistry.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
-import { childReportDedupeKey } from "../dispatchAuthority.ts";
+import { childReportIdentity, legacyChildReportKey } from "../dispatchAuthority.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import {
   admitWorkspaceCommand,
@@ -66,7 +68,14 @@ import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.
 import type { ProjectionReceipt } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
+  ACTIVITY_APPEND_BATCH_MAX_SIZE,
+  ACTIVITY_APPEND_BATCH_WINDOW_MS,
+  isBatchableToolActivity,
+} from "../activityAppendBatch.ts";
+import {
   OrchestrationEngineService,
+  type OrchestrationActivityAppendCommand,
+  type OrchestrationDispatchTicket,
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 
@@ -80,6 +89,25 @@ interface CommandEnvelope {
   result: Deferred.Deferred<DispatchResult, OrchestrationDispatchError>;
   startedAtMs: number;
 }
+
+type ActivityAppendCommand = OrchestrationActivityAppendCommand;
+
+interface ActivityAppendEnvelope extends CommandEnvelope {
+  readonly command: ActivityAppendCommand;
+}
+
+const waitForActivityAppendBatchWindow = () =>
+  Effect.promise(
+    () => new Promise<void>((resolve) => setTimeout(resolve, ACTIVITY_APPEND_BATCH_WINDOW_MS)),
+  );
+
+function isBatchableToolActivityCommand(
+  command: OrchestrationCommand,
+): command is ActivityAppendCommand {
+  return command.type === "thread.activity.append" && isBatchableToolActivity(command.activity);
+}
+
+class ActivityAppendBatchUnavailable extends Error {}
 
 function commandToAggregateRef(command: OrchestrationCommand): {
   readonly aggregateKind: "project" | "thread" | "workflow";
@@ -120,6 +148,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const maybeDelegationAuditRepository = yield* Effect.serviceOption(DelegationAuditRepository);
   const threadUrls = yield* Effect.serviceOption(ThreadUrlBuilder);
   const coordinator = yield* CheckoutCoordinator;
+  const checkpointStore = yield* CheckpointStore;
   const workspaceOwnership = yield* WorkspaceOwnershipRepository;
   const automaticArchiveGuards = yield* AutomaticArchiveGuardRegistry;
 
@@ -129,6 +158,54 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const eventPubSub = yield* PubSub.unbounded<OrchestrationEvent>();
   const initialized = yield* Deferred.make<void, OrchestrationDispatchError>();
   const worktreeLock = yield* Semaphore.make(1);
+
+  // Dispatch parallelism. Commands are sharded by aggregate so commands for
+  // the same thread/project/workflow stay FIFO-serial on one shard worker.
+  // That preserves per-stream event ordering and the stream_version
+  // read-then-write in the event store, while unrelated aggregates commit
+  // concurrently instead of head-of-line blocking behind one slow command.
+  // The commit section below stays globally serialized behind commitLock, so
+  // the in-memory read-model swap, command-receipt dedupe, and domain-event
+  // publish order keep single-writer semantics. The projector is
+  // immutable-update, so read-model reads outside the commit lock still
+  // observe a consistent (at most milliseconds-stale, cross-aggregate only)
+  // snapshot; same-aggregate reads are fresh because the shard serializes
+  // them, and decide() always runs on the fresh model inside the commit
+  // section. Lock order is always checkout/worktree locks -> commitLock,
+  // never the reverse. The intake and shard queues stay unbounded to preserve
+  // dispatch() backpressure semantics; throughput keeps them shallow instead.
+  // The shard key is deliberately the command's own aggregate only: sharding
+  // a cross-thread turn.start on its source thread would break per-thread
+  // commit ordering (provider ingestion relies on same-thread commands
+  // committing in dispatch order). Cross-thread session reads are therefore
+  // validated on the fresh model at commit time and fail closed; a rejection
+  // is transient — operation retries mint a new commandId — and the
+  // cross-aggregate staleness window shrank from seconds of queue-wait to the
+  // millisecond admission phase.
+  // Collaboration commands (child.report, delegation.settle) stay on their
+  // own aggregate for the same reason even though they emit onto related
+  // streams: their dispatchers observe settleable/reportable state on the
+  // committed model before dispatching with a fresh commandId, commit-time
+  // decide revalidates on the fresh model, and every settlement-affecting
+  // domain event re-drives settle evaluation for the thread and its parent —
+  // so a transient miss is re-driven, never permanently lost, while
+  // per-thread commit ordering (which provider ingestion relies on) holds.
+  const DISPATCH_SHARD_COUNT = 16;
+  const shardIndexForCommand = (command: OrchestrationCommand): number => {
+    const ref = commandToAggregateRef(command);
+    const key = `${ref.aggregateKind}:${ref.aggregateId}`;
+    let hash = 2166136261;
+    for (let index = 0; index < key.length; index++) {
+      hash ^= key.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0) % DISPATCH_SHARD_COUNT;
+  };
+  const shardQueues: Array<Queue.Queue<CommandEnvelope>> = [];
+  for (let index = 0; index < DISPATCH_SHARD_COUNT; index++) {
+    shardQueues.push(yield* Queue.unbounded<CommandEnvelope>());
+  }
+  const commitLock = yield* Semaphore.make(1);
 
   const withWorktreeLock: OrchestrationEngineShape["withWorktreeLock"] = (effect) =>
     worktreeLock.withPermits(1)(effect);
@@ -250,25 +327,34 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   ) => {
     const delegation = model.threads.find((thread) => thread.id === command.threadId)?.nudging
       ?.delegation;
-    const assignmentId = command.assignmentId ?? delegation?.assignmentId;
-    if (!assignmentId) return null;
+    const identity = childReportIdentity({
+      childThreadId: command.threadId,
+      delegation,
+      claimedAssignmentId: command.assignmentId,
+      claimedDispatchId: command.dispatchId,
+      originTurnId: command.originTurnId,
+      reportId: command.reportId,
+    });
+    if (!identity) return null;
     return {
-      reportKey: childReportDedupeKey({
+      reportKey: identity.reportKey,
+      legacyReportKey: legacyChildReportKey({
         childThreadId: command.threadId,
-        dispatchId: command.dispatchId,
+        claimedDispatchId: command.dispatchId,
         originTurnId: command.originTurnId,
-        assignmentId,
+        assignmentId: identity.assignmentId,
         reportId: command.reportId,
+        resolvedDispatchId: identity.dispatchId,
       }),
-      assignmentId,
+      assignmentId: identity.assignmentId,
     };
   };
 
-  const findRecordedReportOutcome = (reportKey: string) =>
+  const findRecordedReportOutcome = (reportKey: string, legacyReportKey: string | null) =>
     sql<{ readonly outcome: string }>`
       SELECT outcome
       FROM delegation_report_receipts
-      WHERE report_key = ${reportKey}
+      WHERE report_key IN (${reportKey}, ${legacyReportKey ?? reportKey})
     `.pipe(
       Effect.map((rows) => {
         const outcome = rows[0]?.outcome;
@@ -282,22 +368,28 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const admissionDeps: WorkspaceAdmissionDeps = {
     findThread: (threadId) => readModel.threads.find((entry) => entry.id === threadId),
     findProject: (projectId) => readModel.projects.find((entry) => entry.id === projectId),
+    listThreads: () => readModel.threads,
     claimOwnership: (input) => workspaceOwnership.claim(input),
     hasCleanupReservationByPath: (canonicalPath) =>
       worktreeCleanupJobs.hasReservationByPath(canonicalPath),
+    createWorkspaceSnapshotCommit: (cwd) => checkpointStore.createWorkspaceSnapshotCommit({ cwd }),
   };
 
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
-    const dispatchStartSequence = readModel.snapshotSequence;
     const processingStartedAtMs = Date.now();
     const aggregateRef = commandToAggregateRef(envelope.command);
     const baseMetricAttributes = {
       commandType: envelope.command.type,
       aggregateKind: aggregateRef.aggregateKind,
     } as const;
+    // Failure-path safety net. Every successful commit swaps the read model
+    // under commitLock, so while holding that lock the model already includes
+    // every concurrently committed event; only replay events newer than the
+    // current snapshot (normally none). Must run under commitLock: replaying
+    // from an older cursor while another shard commits would double-apply.
     const reconcileReadModelAfterDispatchFailure = Effect.gen(function* () {
       const persistedEvents = yield* Stream.runCollect(
-        eventStore.readFromSequence(dispatchStartSequence),
+        eventStore.readFromSequence(readModel.snapshotSequence),
       ).pipe(Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)));
       if (persistedEvents.length === 0) {
         return;
@@ -313,6 +405,40 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         yield* PubSub.publish(eventPubSub, persistedEvent);
       }
     });
+    // Command-receipt check shared by the admission pre-check (best-effort,
+    // outside the commit lock) and the authoritative re-check inside the
+    // serial commit section, so the check-and-record pair stays atomic
+    // however commands interleave across shards.
+    const checkCommandReceipt = (command: OrchestrationCommand) =>
+      Effect.gen(function* () {
+        const existingReceipt = yield* commandReceiptRepository.getByCommandId({
+          commandId: command.commandId,
+        });
+        if (Option.isNone(existingReceipt)) {
+          return null;
+        }
+        if (existingReceipt.value.status === "accepted") {
+          // Durable verdict replay: a retried report returns its recorded
+          // outcome without re-mutating. The in-memory read model caps
+          // activities (projector retains 500), so fall back to the durable
+          // event log by command ID when the receipt activity has aged out.
+          const completedCommand = command;
+          const replayedVerdict =
+            completedCommand.type === "thread.child.report"
+              ? (reportVerdictFromActivities(
+                  completedCommand.commandId,
+                  readModel.threads.find((thread) => thread.id === completedCommand.threadId)
+                    ?.activities ?? [],
+                ) ?? (yield* reportVerdictFromDurableEvents(completedCommand.commandId)))
+              : undefined;
+          return dispatchResult(command, existingReceipt.value.resultSequence, replayedVerdict);
+        }
+
+        return yield* new OrchestrationCommandPreviouslyRejectedError({
+          commandId: command.commandId,
+          detail: existingReceipt.value.error ?? "Previously rejected.",
+        });
+      });
     // Canonical path admitted by this dispatch attempt (the Git top-level
     // ownership key). Recorded for failure compensation below: recomputing it
     // from the command input would miss the claimed row when a handoff
@@ -329,37 +455,13 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           "orchestration.aggregate_id": aggregateRef.aggregateId,
         });
 
-        const existingReceipt = yield* commandReceiptRepository.getByCommandId({
-          commandId: envelope.command.commandId,
-        });
-        if (Option.isSome(existingReceipt)) {
-          if (existingReceipt.value.status === "accepted") {
-            // Durable verdict replay: a retried report returns its recorded
-            // outcome without re-mutating. The in-memory read model caps
-            // activities (projector retains 500), so fall back to the durable
-            // event log by command ID when the receipt activity has aged out.
-            const completedCommand = envelope.command;
-            const replayedVerdict =
-              completedCommand.type === "thread.child.report"
-                ? (reportVerdictFromActivities(
-                    completedCommand.commandId,
-                    readModel.threads.find((thread) => thread.id === completedCommand.threadId)
-                      ?.activities ?? [],
-                  ) ?? (yield* reportVerdictFromDurableEvents(completedCommand.commandId)))
-                : undefined;
-            return dispatchResult(command, existingReceipt.value.resultSequence, replayedVerdict);
-          }
-
-          return yield* new OrchestrationCommandPreviouslyRejectedError({
-            commandId: envelope.command.commandId,
-            detail: existingReceipt.value.error ?? "Previously rejected.",
-          });
+        const replayed = yield* checkCommandReceipt(command);
+        // Best-effort pre-check; the authoritative re-check runs inside the
+        // serial commit section below.
+        if (replayed !== null) {
+          return replayed;
         }
 
-        const previousWorkspaceBinding =
-          command.type === "thread.workspace.handoff"
-            ? readModel.threads.find((thread) => thread.id === command.threadId)?.workspaceBinding
-            : undefined;
         const admittedCommand = yield* admitWorkspaceCommand(admissionDeps, command);
         admittedCanonicalPath =
           "workspaceBinding" in admittedCommand
@@ -394,63 +496,90 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }
         }
 
-        const reportIdentity =
-          command.type === "thread.child.report"
-            ? reportIdentityForCommand(command, readModel)
-            : null;
-        const recordedReportOutcome =
-          reportIdentity === null
-            ? undefined
-            : yield* findRecordedReportOutcome(reportIdentity.reportKey);
-        const eventBase = yield* decideOrchestrationCommand({
-          command: admittedCommand,
-          readModel,
-          // Read per command: an archiver may register after the worker starts.
-          ...(admittedCommand.type === "thread.archive" && admittedCommand.automatic === true
-            ? { automaticArchiveGuards: yield* automaticArchiveGuards.guards }
-            : {}),
-          ...(recordedReportOutcome !== undefined ? { recordedReportOutcome } : {}),
-        });
-        const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
-        // State-dependent no-ops are accepted once so retries cannot apply
-        // them to a later state.
-        if (
-          eventBases.length === 0 &&
-          (admittedCommand.type === "thread.delegation.settle" ||
-            admittedCommand.type === "thread.child.wait.prune" ||
-            (admittedCommand.type === "thread.meta.update" &&
-              (admittedCommand.expectedUpdatedAt !== undefined ||
-                admittedCommand.expectedWorkspaceCwd !== undefined)))
-        ) {
-          yield* commandReceiptRepository.upsert({
-            commandId: command.commandId,
-            aggregateKind: aggregateRef.aggregateKind,
-            aggregateId: aggregateRef.aggregateId,
-            acceptedAt: new Date().toISOString(),
-            resultSequence: readModel.snapshotSequence,
-            status: "accepted",
-            error: null,
-          });
-          return dispatchResult(command, readModel.snapshotSequence);
-        }
-        const committedCommand = yield* sql
-          .withTransaction(
-            Effect.gen(function* () {
-              const committedEvents: OrchestrationEvent[] = [];
-              const projectionReceipts: ProjectionReceipt[] = [];
-              let nextReadModel = readModel;
-              const skippedEventIds = new Set<string>();
+        // ---- Serial commit section. Admission above (including slow
+        // Git/subprocess work) ran concurrently across shards; everything from
+        // here through the read-model swap and event publish holds the global
+        // commit lock, so decide() always sees the fresh model.
+        const committed = yield* commitLock.withPermits(1)(
+          Effect.gen(function* () {
+            const authoritativeReplay = yield* checkCommandReceipt(command);
+            if (authoritativeReplay !== null) {
+              return { result: authoritativeReplay, projectionReceipts: [] } as const;
+            }
+            const previousWorkspaceBinding =
+              command.type === "thread.workspace.handoff"
+                ? readModel.threads.find((thread) => thread.id === command.threadId)
+                    ?.workspaceBinding
+                : undefined;
+            const reportIdentity =
+              command.type === "thread.child.report"
+                ? reportIdentityForCommand(command, readModel)
+                : null;
+            const recordedReportOutcome =
+              reportIdentity === null
+                ? undefined
+                : yield* findRecordedReportOutcome(
+                    reportIdentity.reportKey,
+                    reportIdentity.legacyReportKey,
+                  );
+            const eventBase = yield* decideOrchestrationCommand({
+              command: admittedCommand,
+              readModel,
+              // Read per command: an archiver may register after the worker starts.
+              ...(admittedCommand.type === "thread.archive" && admittedCommand.automatic === true
+                ? { automaticArchiveGuards: yield* automaticArchiveGuards.guards }
+                : {}),
+              ...(recordedReportOutcome !== undefined ? { recordedReportOutcome } : {}),
+            });
+            const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
+            // State-dependent no-ops are accepted once so retries cannot apply
+            // them to a later state.
+            if (
+              eventBases.length === 0 &&
+              (admittedCommand.type === "thread.delegation.settle" ||
+                admittedCommand.type === "thread.queue.hold" ||
+                admittedCommand.type === "thread.queue.release" ||
+                admittedCommand.type === "thread.queued-turn.delete" ||
+                admittedCommand.type === "thread.child.wait.prune" ||
+                (admittedCommand.type === "thread.meta.update" &&
+                  (admittedCommand.expectedUpdatedAt !== undefined ||
+                    admittedCommand.expectedArchivedAt !== undefined ||
+                    admittedCommand.expectedWorkspaceCwd !== undefined ||
+                    admittedCommand.expectedPendingPullRequestAssociationRequestId !== undefined ||
+                    admittedCommand.expectedPullRequestAssociationContext !== undefined)))
+            ) {
+              yield* commandReceiptRepository.upsert({
+                commandId: command.commandId,
+                aggregateKind: aggregateRef.aggregateKind,
+                aggregateId: aggregateRef.aggregateId,
+                acceptedAt: new Date().toISOString(),
+                resultSequence: readModel.snapshotSequence,
+                status: "accepted",
+                error: null,
+              });
+              return {
+                result: dispatchResult(command, readModel.snapshotSequence),
+                projectionReceipts: [],
+              } as const;
+            }
+            const committedCommand = yield* sql
+              .withTransaction(
+                Effect.gen(function* () {
+                  const committedEvents: OrchestrationEvent[] = [];
+                  const projectionReceipts: ProjectionReceipt[] = [];
+                  let nextReadModel = readModel;
+                  const skippedEventIds = new Set<string>();
 
-              for (const nextEvent of eventBases) {
-                if (
-                  nextEvent.causationEventId !== null &&
-                  skippedEventIds.has(nextEvent.causationEventId)
-                ) {
-                  skippedEventIds.add(nextEvent.eventId);
-                  continue;
-                }
-                if (nextEvent.type === "thread.child-lifecycle-notified") {
-                  const claimed = yield* sql<{ readonly dedupe_key: string }>`
+                  for (const nextEvent of eventBases) {
+                    if (
+                      nextEvent.causationEventId !== null &&
+                      skippedEventIds.has(nextEvent.causationEventId)
+                    ) {
+                      skippedEventIds.add(nextEvent.eventId);
+                      continue;
+                    }
+                    if (nextEvent.type === "thread.child-lifecycle-notified") {
+                      const claimed = yield* sql<{ readonly dedupe_key: string }>`
                     INSERT INTO child_lifecycle_notification_dedup (
                       dedupe_key,
                       event_id,
@@ -464,29 +593,29 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                     ON CONFLICT(dedupe_key) DO NOTHING
                     RETURNING dedupe_key
                   `;
-                  if (claimed.length === 0) {
-                    skippedEventIds.add(nextEvent.eventId);
-                    continue;
+                      if (claimed.length === 0) {
+                        skippedEventIds.add(nextEvent.eventId);
+                        continue;
+                      }
+                    }
+                    const savedEvent = yield* eventStore.append(nextEvent);
+                    nextReadModel = yield* projectEvent(nextReadModel, savedEvent);
+                    projectionReceipts.push(yield* projectionPipeline.projectEvent(savedEvent));
+                    committedEvents.push(savedEvent);
                   }
-                }
-                const savedEvent = yield* eventStore.append(nextEvent);
-                nextReadModel = yield* projectEvent(nextReadModel, savedEvent);
-                projectionReceipts.push(yield* projectionPipeline.projectEvent(savedEvent));
-                committedEvents.push(savedEvent);
-              }
 
-              const lastSavedEvent = committedEvents.at(-1) ?? null;
-              if (lastSavedEvent === null) {
-                return yield* new OrchestrationCommandInvariantError({
-                  commandType: envelope.command.type,
-                  detail: "Command produced no events.",
-                });
-              }
+                  const lastSavedEvent = committedEvents.at(-1) ?? null;
+                  if (lastSavedEvent === null) {
+                    return yield* new OrchestrationCommandInvariantError({
+                      commandType: envelope.command.type,
+                      detail: "Command produced no events.",
+                    });
+                  }
 
-              if (command.type === "thread.child.report" && reportIdentity !== null) {
-                const outcome = reportVerdictForCommand(command.commandId, committedEvents);
-                if (outcome === "accepted" || outcome === "stale") {
-                  yield* sql`
+                  if (command.type === "thread.child.report" && reportIdentity !== null) {
+                    const outcome = reportVerdictForCommand(command.commandId, committedEvents);
+                    if (outcome === "accepted" || outcome === "stale") {
+                      yield* sql`
                     INSERT INTO delegation_report_receipts (
                       report_key,
                       command_id,
@@ -511,55 +640,97 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                     )
                     ON CONFLICT(report_key) DO NOTHING
                   `;
-                }
-              }
+                    }
+                  }
 
-              yield* commandReceiptRepository.upsert({
-                commandId: envelope.command.commandId,
-                aggregateKind: lastSavedEvent.aggregateKind,
-                aggregateId: lastSavedEvent.aggregateId,
-                acceptedAt: lastSavedEvent.occurredAt,
-                resultSequence: lastSavedEvent.sequence,
-                status: "accepted",
-                error: null,
-              });
+                  yield* commandReceiptRepository.upsert({
+                    commandId: envelope.command.commandId,
+                    aggregateKind: lastSavedEvent.aggregateKind,
+                    aggregateId: lastSavedEvent.aggregateId,
+                    acceptedAt: lastSavedEvent.occurredAt,
+                    resultSequence: lastSavedEvent.sequence,
+                    status: "accepted",
+                    error: null,
+                  });
 
-              return {
-                committedEvents,
-                lastSequence: lastSavedEvent.sequence,
-                nextReadModel,
-                projectionReceipts,
-              } as const;
-            }),
-          )
-          .pipe(
-            Effect.catchTag("SqlError", (sqlError) =>
-              Effect.fail(
-                toPersistenceSqlError("OrchestrationEngine.processEnvelope:transaction")(sqlError),
-              ),
-            ),
-          );
-
-        readModel = committedCommand.nextReadModel;
-        if (
-          admittedCommand.type === "thread.workspace.handoff" &&
-          previousWorkspaceBinding !== undefined &&
-          admittedCommand.workspaceBinding !== undefined &&
-          previousWorkspaceBinding.canonicalPath !== admittedCommand.workspaceBinding.canonicalPath
-        ) {
-          yield* workspaceOwnership
-            .release(admittedCommand.threadId, previousWorkspaceBinding.canonicalPath)
-            .pipe(
-              Effect.catch((error) =>
-                Effect.logError("workspace handoff committed but old ownership remains held", {
-                  threadId: admittedCommand.threadId,
-                  canonicalPath: previousWorkspaceBinding.canonicalPath,
-                  error,
+                  return {
+                    committedEvents,
+                    lastSequence: lastSavedEvent.sequence,
+                    nextReadModel,
+                    projectionReceipts,
+                  } as const;
                 }),
-              ),
+              )
+              .pipe(
+                Effect.catchTag("SqlError", (sqlError) =>
+                  Effect.fail(
+                    toPersistenceSqlError("OrchestrationEngine.processEnvelope:transaction")(
+                      sqlError,
+                    ),
+                  ),
+                ),
+              );
+
+            readModel = committedCommand.nextReadModel;
+            if (
+              admittedCommand.type === "thread.workspace.handoff" &&
+              previousWorkspaceBinding !== undefined &&
+              admittedCommand.workspaceBinding !== undefined &&
+              previousWorkspaceBinding.canonicalPath !==
+                admittedCommand.workspaceBinding.canonicalPath
+            ) {
+              yield* workspaceOwnership
+                .release(admittedCommand.threadId, previousWorkspaceBinding.canonicalPath)
+                .pipe(
+                  Effect.catch((error) =>
+                    Effect.logError("workspace handoff committed but old ownership remains held", {
+                      threadId: admittedCommand.threadId,
+                      canonicalPath: previousWorkspaceBinding.canonicalPath,
+                      error,
+                    }),
+                  ),
+                );
+            }
+            // Committed, so an interrupt mid-loop would strand events nothing
+            // re-publishes. Pure in-memory fan-out, so atomicity is free.
+            yield* Effect.uninterruptible(
+              Effect.gen(function* () {
+                for (const [index, event] of committedCommand.committedEvents.entries()) {
+                  yield* PubSub.publish(eventPubSub, event);
+                  if (index === 0) {
+                    yield* Metric.update(
+                      Metric.withAttributes(
+                        orchestrationCommandAckDuration,
+                        metricAttributes({
+                          ...baseMetricAttributes,
+                          ackEventType: event.type,
+                        }),
+                      ),
+                      Duration.millis(Math.max(0, Date.now() - envelope.startedAtMs)),
+                    );
+                  }
+                }
+              }),
             );
-        }
-        yield* Effect.forEach(committedCommand.projectionReceipts, (receipt) => receipt.reconcile, {
+            return {
+              result: dispatchResult(
+                admittedCommand,
+                committedCommand.lastSequence,
+                command.type === "thread.child.report"
+                  ? reportVerdictForCommand(command.commandId, committedCommand.committedEvents)
+                  : undefined,
+              ),
+              projectionReceipts: committedCommand.projectionReceipts,
+            } as const;
+          }),
+        );
+        // Post-commit projection reconcile runs outside the commit lock: it
+        // only requires the transaction above to have committed, serializes
+        // concurrent drains on the reconciler's own lock, and stays awaited
+        // here so dispatch() still resolves after fully-reconciled state.
+        // Publish order stays commit order because publishing above holds the
+        // lock; only the unbounded reconcile filesystem work moves out.
+        yield* Effect.forEach(committed.projectionReceipts, (receipt) => receipt.reconcile, {
           concurrency: 1,
           discard: true,
         }).pipe(
@@ -571,28 +742,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           ),
           Effect.ignore,
         );
-        for (const [index, event] of committedCommand.committedEvents.entries()) {
-          yield* PubSub.publish(eventPubSub, event);
-          if (index === 0) {
-            yield* Metric.update(
-              Metric.withAttributes(
-                orchestrationCommandAckDuration,
-                metricAttributes({
-                  ...baseMetricAttributes,
-                  ackEventType: event.type,
-                }),
-              ),
-              Duration.millis(Math.max(0, Date.now() - envelope.startedAtMs)),
-            );
-          }
-        }
-        return dispatchResult(
-          admittedCommand,
-          committedCommand.lastSequence,
-          command.type === "thread.child.report"
-            ? reportVerdictForCommand(command.commandId, committedCommand.committedEvents)
-            : undefined,
-        );
+        return committed.result;
       }).pipe(Effect.withSpan(`orchestration.command.${envelope.command.type}`)),
     ).pipe(
       Effect.flatMap((exit) =>
@@ -628,102 +778,106 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           const error = Cause.squash(exit.cause) as OrchestrationDispatchError;
           let dispatchError = error;
           if (!isOrchestrationCommandPreviouslyRejectedError(error)) {
-            const releaseFailedAdmission = Effect.gen(function* () {
-              const failedThreadId = (() => {
-                switch (envelope.command.type) {
-                  case "thread.create":
-                    return envelope.command.threadId;
-                  case "thread.turn.start":
-                    return envelope.command.bootstrap?.createThread === undefined
-                      ? undefined
-                      : envelope.command.threadId;
-                  default:
-                    return undefined;
-                }
-              })();
-              if (
-                failedThreadId !== undefined &&
-                !readModel.threads.some((thread) => thread.id === failedThreadId)
-              ) {
-                yield* workspaceOwnership.release(failedThreadId);
-              }
+            // Failure compensation mutates durable receipts and the read
+            // model; serialize it with commits.
+            yield* commitLock.withPermits(1)(
+              Effect.gen(function* () {
+                const releaseFailedAdmission = Effect.gen(function* () {
+                  const failedThreadId = (() => {
+                    switch (envelope.command.type) {
+                      case "thread.create":
+                        return envelope.command.threadId;
+                      case "thread.turn.start":
+                        return envelope.command.bootstrap?.createThread === undefined
+                          ? undefined
+                          : envelope.command.threadId;
+                      default:
+                        return undefined;
+                    }
+                  })();
+                  if (
+                    failedThreadId !== undefined &&
+                    !readModel.threads.some((thread) => thread.id === failedThreadId)
+                  ) {
+                    yield* workspaceOwnership.release(failedThreadId);
+                  }
 
-              const transferCommand =
-                envelope.command.type === "thread.workspace.handoff" ||
-                envelope.command.type === "thread.meta.update"
-                  ? envelope.command
-                  : undefined;
-              if (transferCommand !== undefined && admittedCanonicalPath !== undefined) {
-                const currentThread = readModel.threads.find(
-                  (thread) => thread.id === transferCommand.threadId,
+                  const transferCommand =
+                    envelope.command.type === "thread.workspace.handoff" ||
+                    envelope.command.type === "thread.meta.update"
+                      ? envelope.command
+                      : undefined;
+                  if (transferCommand !== undefined && admittedCanonicalPath !== undefined) {
+                    const currentThread = readModel.threads.find(
+                      (thread) => thread.id === transferCommand.threadId,
+                    );
+                    if (admittedCanonicalPath !== currentThread?.workspaceBinding?.canonicalPath) {
+                      yield* workspaceOwnership.release(
+                        transferCommand.threadId,
+                        admittedCanonicalPath,
+                      );
+                    }
+                  }
+                }).pipe(
+                  Effect.catch((cleanupError) =>
+                    Effect.logWarning("failed to compensate workspace admission", {
+                      commandId: envelope.command.commandId,
+                      cleanupError,
+                    }),
+                  ),
                 );
-                if (admittedCanonicalPath !== currentThread?.workspaceBinding?.canonicalPath) {
-                  yield* workspaceOwnership.release(
-                    transferCommand.threadId,
-                    admittedCanonicalPath,
-                  );
-                }
-              }
-            }).pipe(
-              Effect.catch((cleanupError) =>
-                Effect.logWarning("failed to compensate workspace admission", {
-                  commandId: envelope.command.commandId,
-                  cleanupError,
-                }),
-              ),
-            );
-            yield* releaseFailedAdmission;
-            yield* reconcileReadModelAfterDispatchFailure.pipe(
-              Effect.catch(() =>
-                Effect.logWarning(
-                  "failed to reconcile orchestration read model after dispatch failure",
-                ).pipe(
-                  Effect.annotateLogs({
-                    commandId: envelope.command.commandId,
-                    snapshotSequence: readModel.snapshotSequence,
-                  }),
-                ),
-              ),
-            );
+                yield* releaseFailedAdmission;
+                yield* reconcileReadModelAfterDispatchFailure.pipe(
+                  Effect.catch(() =>
+                    Effect.logWarning(
+                      "failed to reconcile orchestration read model after dispatch failure",
+                    ).pipe(
+                      Effect.annotateLogs({
+                        commandId: envelope.command.commandId,
+                        snapshotSequence: readModel.snapshotSequence,
+                      }),
+                    ),
+                  ),
+                );
 
-            if (isOrchestrationCommandInvariantError(error)) {
-              if (
-                envelope.command.type === "thread.turn.start" &&
-                envelope.command.crossThreadSourceThreadId !== undefined &&
-                envelope.command.delegationAudit !== undefined
-              ) {
-                const command = envelope.command;
-                const sourceThreadId = command.crossThreadSourceThreadId;
-                const auditContext = command.delegationAudit;
-                if (sourceThreadId === undefined || auditContext === undefined) {
-                  yield* Effect.logError(
-                    "delegation rejection audit context disappeared before persistence",
-                    { commandId: envelope.command.commandId },
-                  );
-                  dispatchError = new OrchestrationCommandInvariantError({
-                    commandType: command.type,
-                    detail: `${error.detail} Delegation audit context is unavailable; the rejection evidence could not be recorded.`,
-                  });
-                } else {
-                  const sourceThread = readModel.threads.find(
-                    (thread) => thread.id === sourceThreadId,
-                  );
-                  const activeTurnId = sourceThread?.session?.activeTurnId ?? null;
-                  const activeMessageId = sourceThread?.session?.activeMessageId ?? null;
-                  const rejectionCode = error.detail.includes("no authenticated active message")
-                    ? "MISSING_ACTIVE_MESSAGE"
-                    : "CROSS_THREAD_INVARIANT_REJECTED";
-                  const auditExit = Option.isSome(maybeDelegationAuditRepository)
-                    ? yield* Effect.exit(
-                        Effect.gen(function* () {
-                          type SessionTransition = {
-                            readonly sequence: number;
-                            readonly occurred_at: string;
-                            readonly command_id: string | null;
-                            readonly active_turn_id: string | null;
-                            readonly active_message_id: string | null;
-                          };
-                          const [precedingSessionTransition] = yield* sql<SessionTransition>`
+                if (isOrchestrationCommandInvariantError(error)) {
+                  if (
+                    envelope.command.type === "thread.turn.start" &&
+                    envelope.command.crossThreadSourceThreadId !== undefined &&
+                    envelope.command.delegationAudit !== undefined
+                  ) {
+                    const command = envelope.command;
+                    const sourceThreadId = command.crossThreadSourceThreadId;
+                    const auditContext = command.delegationAudit;
+                    if (sourceThreadId === undefined || auditContext === undefined) {
+                      yield* Effect.logError(
+                        "delegation rejection audit context disappeared before persistence",
+                        { commandId: envelope.command.commandId },
+                      );
+                      dispatchError = new OrchestrationCommandInvariantError({
+                        commandType: command.type,
+                        detail: `${error.detail} Delegation audit context is unavailable; the rejection evidence could not be recorded.`,
+                      });
+                    } else {
+                      const sourceThread = readModel.threads.find(
+                        (thread) => thread.id === sourceThreadId,
+                      );
+                      const activeTurnId = sourceThread?.session?.activeTurnId ?? null;
+                      const activeMessageId = sourceThread?.session?.activeMessageId ?? null;
+                      const rejectionCode = error.detail.includes("no authenticated active message")
+                        ? "MISSING_ACTIVE_MESSAGE"
+                        : "CROSS_THREAD_INVARIANT_REJECTED";
+                      const auditExit = Option.isSome(maybeDelegationAuditRepository)
+                        ? yield* Effect.exit(
+                            Effect.gen(function* () {
+                              type SessionTransition = {
+                                readonly sequence: number;
+                                readonly occurred_at: string;
+                                readonly command_id: string | null;
+                                readonly active_turn_id: string | null;
+                                readonly active_message_id: string | null;
+                              };
+                              const [precedingSessionTransition] = yield* sql<SessionTransition>`
                           SELECT
                             sequence,
                             occurred_at,
@@ -737,7 +891,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                           ORDER BY sequence DESC
                             LIMIT 1
                         `;
-                          const [lastActiveTurnTransition] = yield* sql<SessionTransition>`
+                              const [lastActiveTurnTransition] = yield* sql<SessionTransition>`
                           SELECT
                             sequence,
                             occurred_at,
@@ -752,10 +906,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                           ORDER BY sequence DESC
                           LIMIT 1
                         `;
-                          const sameTurnTransitions =
-                            activeTurnId === null
-                              ? []
-                              : yield* sql<SessionTransition>`
+                              const sameTurnTransitions =
+                                activeTurnId === null
+                                  ? []
+                                  : yield* sql<SessionTransition>`
                                 SELECT
                                   sequence,
                                   occurred_at,
@@ -770,10 +924,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                                 ORDER BY sequence DESC
                                 LIMIT 1
                               `;
-                          const messagePreviouslyPresentTransitions =
-                            activeTurnId === null
-                              ? []
-                              : yield* sql<SessionTransition>`
+                              const messagePreviouslyPresentTransitions =
+                                activeTurnId === null
+                                  ? []
+                                  : yield* sql<SessionTransition>`
                                 SELECT
                                   sequence,
                                   occurred_at,
@@ -789,77 +943,79 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                                 ORDER BY sequence DESC
                                 LIMIT 1
                               `;
-                          const sameTurnTransition = sameTurnTransitions[0] ?? null;
-                          const messagePreviouslyPresentTransition =
-                            messagePreviouslyPresentTransitions[0] ?? null;
-                          const evidenceState =
-                            activeTurnId === null
-                              ? lastActiveTurnTransition !== undefined
-                                ? "request-after-turn-end"
-                                : "never-populated"
-                              : activeMessageId !== null
-                                ? "active-message-present"
-                                : messagePreviouslyPresentTransition !== null
-                                  ? "cleared-by-later-update"
-                                  : sameTurnTransition !== null
-                                    ? "never-populated"
-                                    : "unknown";
-                          yield* maybeDelegationAuditRepository.value.append({
-                            eventId: EventId.make(
-                              `delegation-audit:${auditContext.operationId}:${auditContext.attemptId}:turn.start.rejected:${command.commandId}`,
-                            ),
-                            operationId: auditContext.operationId,
-                            sourceThreadId,
-                            attemptId: auditContext.attemptId,
-                            eventType: "turn.start.rejected",
-                            childThreadId: command.threadId,
-                            occurredAt: new Date().toISOString(),
-                            payload: {
-                              code: rejectionCode,
-                              failedInvariant: error.detail,
-                              expectedInitiatingMessageId: auditContext.initiatingMessageId,
-                              actualActiveTurnId: activeTurnId,
-                              actualActiveMessageId: activeMessageId,
-                              evidenceState,
-                              orchestrationSequence: readModel.snapshotSequence,
-                              precedingSessionTransition: precedingSessionTransition ?? null,
-                              lastActiveTurnTransition: lastActiveTurnTransition ?? null,
-                              messagePreviouslyPresentTransition,
-                            },
-                          });
-                        }),
-                      )
-                    : null;
-                  if (auditExit === null || Exit.isFailure(auditExit)) {
-                    const detail =
-                      auditExit === null
-                        ? "Delegation audit persistence is not available in the orchestration runtime."
-                        : Cause.pretty(auditExit.cause);
-                    yield* Effect.logError("delegation rejection audit persistence failed", {
-                      operationId: auditContext.operationId,
-                      attemptId: auditContext.attemptId,
-                      sourceThreadId,
-                      error: detail,
-                    });
-                    dispatchError = new OrchestrationCommandInvariantError({
-                      commandType: command.type,
-                      detail: `${error.detail} Delegation audit persistence is unavailable; the rejection evidence could not be recorded: ${detail}`,
-                    });
+                              const sameTurnTransition = sameTurnTransitions[0] ?? null;
+                              const messagePreviouslyPresentTransition =
+                                messagePreviouslyPresentTransitions[0] ?? null;
+                              const evidenceState =
+                                activeTurnId === null
+                                  ? lastActiveTurnTransition !== undefined
+                                    ? "request-after-turn-end"
+                                    : "never-populated"
+                                  : activeMessageId !== null
+                                    ? "active-message-present"
+                                    : messagePreviouslyPresentTransition !== null
+                                      ? "cleared-by-later-update"
+                                      : sameTurnTransition !== null
+                                        ? "never-populated"
+                                        : "unknown";
+                              yield* maybeDelegationAuditRepository.value.append({
+                                eventId: EventId.make(
+                                  `delegation-audit:${auditContext.operationId}:${auditContext.attemptId}:turn.start.rejected:${command.commandId}`,
+                                ),
+                                operationId: auditContext.operationId,
+                                sourceThreadId,
+                                attemptId: auditContext.attemptId,
+                                eventType: "turn.start.rejected",
+                                childThreadId: command.threadId,
+                                occurredAt: new Date().toISOString(),
+                                payload: {
+                                  code: rejectionCode,
+                                  failedInvariant: error.detail,
+                                  expectedInitiatingMessageId: auditContext.initiatingMessageId,
+                                  actualActiveTurnId: activeTurnId,
+                                  actualActiveMessageId: activeMessageId,
+                                  evidenceState,
+                                  orchestrationSequence: readModel.snapshotSequence,
+                                  precedingSessionTransition: precedingSessionTransition ?? null,
+                                  lastActiveTurnTransition: lastActiveTurnTransition ?? null,
+                                  messagePreviouslyPresentTransition,
+                                },
+                              });
+                            }),
+                          )
+                        : null;
+                      if (auditExit === null || Exit.isFailure(auditExit)) {
+                        const detail =
+                          auditExit === null
+                            ? "Delegation audit persistence is not available in the orchestration runtime."
+                            : Cause.pretty(auditExit.cause);
+                        yield* Effect.logError("delegation rejection audit persistence failed", {
+                          operationId: auditContext.operationId,
+                          attemptId: auditContext.attemptId,
+                          sourceThreadId,
+                          error: detail,
+                        });
+                        dispatchError = new OrchestrationCommandInvariantError({
+                          commandType: command.type,
+                          detail: `${error.detail} Delegation audit persistence is unavailable; the rejection evidence could not be recorded: ${detail}`,
+                        });
+                      }
+                    }
                   }
+                  yield* commandReceiptRepository
+                    .upsert({
+                      commandId: envelope.command.commandId,
+                      aggregateKind: aggregateRef.aggregateKind,
+                      aggregateId: aggregateRef.aggregateId,
+                      acceptedAt: new Date().toISOString(),
+                      resultSequence: readModel.snapshotSequence,
+                      status: "rejected",
+                      error: error.message,
+                    })
+                    .pipe(Effect.catch(() => Effect.void));
                 }
-              }
-              yield* commandReceiptRepository
-                .upsert({
-                  commandId: envelope.command.commandId,
-                  aggregateKind: aggregateRef.aggregateKind,
-                  aggregateId: aggregateRef.aggregateId,
-                  acceptedAt: new Date().toISOString(),
-                  resultSequence: readModel.snapshotSequence,
-                  status: "rejected",
-                  error: error.message,
-                })
-                .pipe(Effect.catch(() => Effect.void));
-            }
+              }),
+            );
           }
 
           yield* Deferred.fail(envelope.result, dispatchError);
@@ -868,12 +1024,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     );
     const command = envelope.command;
     const cleanupPath = cleanupWorktreePath(command, readModel.threads);
-    const requiresWorktreeLock =
-      cleanupPath !== null ||
+    // Admission claims ownership and runs read-only Git, so taking the single
+    // global permit for it serialized every thread's start behind every other's
+    // — the dominant commit latency under load. Removal still takes both this
+    // lock and the per-checkout reservation below, and reserving a cleanup now
+    // takes that reservation too, so either blocks admission.
+    const mutatesCheckoutOnDisk =
       command.type === "thread.archive" ||
       command.type === "thread.unarchive" ||
-      command.type === "thread.delete";
-    const worktreeProcess = requiresWorktreeLock ? withWorktreeLock(process) : process;
+      command.type === "thread.delete" ||
+      command.type === "thread.workspace.handoff" ||
+      (command.type === "thread.create" && cleanupPath !== null);
+    const worktreeProcess = mutatesCheckoutOnDisk ? withWorktreeLock(process) : process;
     if (command.type !== "thread.turn.start" && command.type !== "thread.queued-turn.dispatch") {
       return worktreeProcess;
     }
@@ -885,10 +1047,298 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       thread?.worktreePath ?? bootstrap?.createThread?.worktreePath ?? project?.workspaceRoot;
     // This is the command worker itself, not dispatch(). Release after the
     // committed pending state is visible, before the provider starts its turn.
+    const sourceWorktreePath = bootstrap?.createThread?.sourceWorktreePath;
+    if (cwd && sourceWorktreePath !== undefined) {
+      // Avoid re-acquiring CheckoutCoordinator's non-reentrant lock only when
+      // both paths resolve to the same checkout root.
+      return coordinator.withCheckoutUnlessSameRoot(cwd, sourceWorktreePath, worktreeProcess);
+    }
     return cwd ? coordinator.withCheckout(cwd, worktreeProcess) : worktreeProcess;
   };
 
-  const worker = Effect.forever(Queue.take(commandQueue).pipe(Effect.flatMap(processEnvelope)));
+  const commitActivityAppendBatch = (envelopes: ReadonlyArray<ActivityAppendEnvelope>) =>
+    Effect.gen(function* () {
+      const threadId = envelopes[0]?.command.threadId;
+      if (
+        envelopes.length < 2 ||
+        threadId === undefined ||
+        envelopes.some((envelope) => envelope.command.threadId !== threadId)
+      ) {
+        return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+      }
+
+      const prepared: Array<{
+        readonly envelope: ActivityAppendEnvelope;
+        readonly command: ActivityAppendCommand;
+      }> = [];
+      for (const envelope of envelopes) {
+        const canonicalCommand = yield* canonicalizeCommandWorktree(envelope.command);
+        const admittedCommand = yield* admitWorkspaceCommand(admissionDeps, canonicalCommand);
+        if (admittedCommand.type !== "thread.activity.append") {
+          return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+        }
+        const worktreePath = cleanupWorktreePath(admittedCommand, readModel.threads);
+        if (
+          worktreePath !== null &&
+          (yield* isWorktreeCleanupPending(admissionDeps, worktreePath))
+        ) {
+          return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+        }
+        prepared.push({ envelope, command: admittedCommand });
+      }
+
+      const commandIds = new Set(prepared.map(({ command }) => command.commandId));
+      if (commandIds.size !== prepared.length) {
+        return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+      }
+
+      const committed = yield* commitLock.withPermits(1)(
+        Effect.gen(function* () {
+          for (const { command } of prepared) {
+            const receipt = yield* commandReceiptRepository.getByCommandId({
+              commandId: command.commandId,
+            });
+            if (Option.isSome(receipt)) {
+              return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+            }
+          }
+
+          const result = yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const commandResults: Array<{
+                readonly envelope: ActivityAppendEnvelope;
+                readonly result: DispatchResult;
+                readonly committedEvents: ReadonlyArray<OrchestrationEvent>;
+                readonly projectionReceipts: ReadonlyArray<ProjectionReceipt>;
+              }> = [];
+              let nextReadModel = readModel;
+
+              for (const { envelope, command } of prepared) {
+                const eventBase = yield* decideOrchestrationCommand({
+                  command,
+                  readModel: nextReadModel,
+                });
+                const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
+                if (eventBases.length === 0) {
+                  return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+                }
+
+                const committedEvents: OrchestrationEvent[] = [];
+                const projectionReceipts: ProjectionReceipt[] = [];
+                const skippedEventIds = new Set<string>();
+                for (const nextEvent of eventBases) {
+                  if (
+                    nextEvent.causationEventId !== null &&
+                    skippedEventIds.has(nextEvent.causationEventId)
+                  ) {
+                    skippedEventIds.add(nextEvent.eventId);
+                    continue;
+                  }
+                  if (nextEvent.type === "thread.child-lifecycle-notified") {
+                    const claimed = yield* sql<{ readonly dedupe_key: string }>`
+                      INSERT INTO child_lifecycle_notification_dedup (
+                        dedupe_key,
+                        event_id,
+                        created_at
+                      )
+                      VALUES (
+                        ${nextEvent.payload.dedupeKey},
+                        ${nextEvent.eventId},
+                        ${nextEvent.occurredAt}
+                      )
+                      ON CONFLICT(dedupe_key) DO NOTHING
+                      RETURNING dedupe_key
+                    `;
+                    if (claimed.length === 0) {
+                      skippedEventIds.add(nextEvent.eventId);
+                      continue;
+                    }
+                  }
+
+                  const savedEvent = yield* eventStore.append(nextEvent);
+                  nextReadModel = yield* projectEvent(nextReadModel, savedEvent);
+                  projectionReceipts.push(yield* projectionPipeline.projectEvent(savedEvent));
+                  committedEvents.push(savedEvent);
+                }
+
+                const lastSavedEvent = committedEvents.at(-1);
+                if (lastSavedEvent === undefined) {
+                  return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+                }
+                yield* commandReceiptRepository.upsert({
+                  commandId: command.commandId,
+                  aggregateKind: lastSavedEvent.aggregateKind,
+                  aggregateId: lastSavedEvent.aggregateId,
+                  acceptedAt: lastSavedEvent.occurredAt,
+                  resultSequence: lastSavedEvent.sequence,
+                  status: "accepted",
+                  error: null,
+                });
+                commandResults.push({
+                  envelope,
+                  result: dispatchResult(command, lastSavedEvent.sequence),
+                  committedEvents,
+                  projectionReceipts,
+                });
+              }
+
+              return { commandResults, nextReadModel } as const;
+            }),
+          );
+
+          readModel = result.nextReadModel;
+          yield* Effect.uninterruptible(
+            Effect.gen(function* () {
+              for (const commandResult of result.commandResults) {
+                for (const event of commandResult.committedEvents) {
+                  yield* PubSub.publish(eventPubSub, event);
+                }
+              }
+            }),
+          );
+          yield* Metric.update(
+            Metric.withAttributes(
+              orchestrationActivityAppendBatchesTotal,
+              metricAttributes({ aggregateKind: "thread", batchSize: prepared.length }),
+            ),
+            1,
+          );
+          return result.commandResults;
+        }),
+      );
+
+      for (const commandResult of committed) {
+        const { envelope, result, committedEvents } = commandResult;
+        const firstEvent = committedEvents[0];
+        if (firstEvent !== undefined) {
+          yield* Metric.update(
+            Metric.withAttributes(
+              orchestrationCommandAckDuration,
+              metricAttributes({
+                commandType: envelope.command.type,
+                aggregateKind: "thread",
+                ackEventType: firstEvent.type,
+              }),
+            ),
+            Duration.millis(Math.max(0, Date.now() - envelope.startedAtMs)),
+          );
+        }
+        yield* Metric.update(
+          Metric.withAttributes(
+            orchestrationCommandDuration,
+            metricAttributes({ commandType: envelope.command.type, aggregateKind: "thread" }),
+          ),
+          Duration.millis(Math.max(0, Date.now() - envelope.startedAtMs)),
+        );
+        yield* Metric.update(
+          Metric.withAttributes(
+            orchestrationCommandsTotal,
+            metricAttributes({
+              commandType: envelope.command.type,
+              aggregateKind: "thread",
+              outcome: "success",
+            }),
+          ),
+          1,
+        );
+        yield* Effect.forEach(commandResult.projectionReceipts, (receipt) => receipt.reconcile, {
+          concurrency: 1,
+          discard: true,
+        }).pipe(
+          Effect.tapError((error) =>
+            Effect.logWarning("projection post-commit reconciliation remains pending", {
+              commandId: envelope.command.commandId,
+              error,
+            }),
+          ),
+          Effect.ignore,
+        );
+        yield* Deferred.succeed(envelope.result, result);
+      }
+    }).pipe(Effect.withSpan("orchestration.command.thread.activity.append.batch"));
+
+  const processActivityAppendBatch = (envelopes: ReadonlyArray<ActivityAppendEnvelope>) =>
+    Effect.exit(commitActivityAppendBatch(envelopes)).pipe(
+      Effect.flatMap((exit) =>
+        Exit.isSuccess(exit)
+          ? Effect.void
+          : Effect.forEach(envelopes, processEnvelope, { concurrency: 1, discard: true }),
+      ),
+    );
+
+  // The router does pure key computation only, so it never blocks: every
+  // command reaches its aggregate shard queue, which its shard worker drains
+  // strictly FIFO.
+  const router = Effect.forever(
+    Queue.take(commandQueue).pipe(
+      Effect.flatMap((envelope) =>
+        Queue.offer(shardQueues[shardIndexForCommand(envelope.command)]!, envelope),
+      ),
+    ),
+  );
+  const shardWorker = (shardQueue: Queue.Queue<CommandEnvelope>) =>
+    Effect.gen(function* () {
+      const pending: Array<CommandEnvelope> = [];
+      while (true) {
+        const envelope = pending.shift() ?? (yield* Queue.take(shardQueue));
+        if (!isBatchableToolActivityCommand(envelope.command)) {
+          yield* processEnvelope(envelope);
+          continue;
+        }
+        if (pending.length > 0) {
+          yield* processEnvelope(envelope);
+          continue;
+        }
+
+        const firstAdditional = yield* Effect.raceFirst(
+          Queue.take(shardQueue).pipe(Effect.map(Option.some)),
+          waitForActivityAppendBatchWindow().pipe(Effect.as(Option.none<CommandEnvelope>())),
+        );
+        const activityEnvelope = envelope as ActivityAppendEnvelope;
+        const threadId = activityEnvelope.command.threadId;
+        const batch: Array<ActivityAppendEnvelope> = [activityEnvelope];
+        if (Option.isSome(firstAdditional)) {
+          const candidate = firstAdditional.value;
+          if (
+            !isBatchableToolActivityCommand(candidate.command) ||
+            candidate.command.threadId !== threadId
+          ) {
+            pending.push(candidate);
+            yield* processEnvelope(envelope);
+            continue;
+          }
+          batch.push(candidate as ActivityAppendEnvelope);
+          yield* waitForActivityAppendBatchWindow();
+        }
+
+        const queued: Array<CommandEnvelope> = [];
+        while (batch.length + queued.length < ACTIVITY_APPEND_BATCH_MAX_SIZE) {
+          const next = yield* Queue.poll(shardQueue);
+          if (Option.isNone(next)) break;
+          queued.push(next.value);
+        }
+        let consumed = 0;
+        while (consumed < queued.length) {
+          const candidate = queued[consumed];
+          if (
+            candidate === undefined ||
+            !isBatchableToolActivityCommand(candidate.command) ||
+            candidate.command.threadId !== threadId
+          ) {
+            break;
+          }
+          batch.push(candidate as ActivityAppendEnvelope);
+          consumed += 1;
+        }
+        pending.push(...queued.slice(consumed));
+
+        if (batch.length > 1) {
+          yield* processActivityAppendBatch(batch);
+        } else {
+          yield* processEnvelope(envelope);
+        }
+      }
+    });
   yield* Effect.forkScoped(
     Effect.gen(function* () {
       const initializationExit = yield* Effect.exit(
@@ -898,7 +1348,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             "projections.snapshot",
             projectionSnapshotQuery.getSnapshot(),
           );
-          yield* Effect.forkScoped(worker);
+          yield* Effect.forkScoped(router);
+          for (const shardQueue of shardQueues) {
+            yield* Effect.forkScoped(shardWorker(shardQueue));
+          }
           yield* Effect.logDebug("orchestration engine started").pipe(
             Effect.annotateLogs({ sequence: readModel.snapshotSequence }),
           );
@@ -924,18 +1377,40 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive) =>
     eventStore.readFromSequence(fromSequenceExclusive);
 
-  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
+  const enqueueCommand = (command: OrchestrationCommand) =>
     Effect.gen(function* () {
       yield* Deferred.await(initialized);
       const result = yield* Deferred.make<DispatchResult, OrchestrationDispatchError>();
       yield* Queue.offer(commandQueue, { command, result, startedAtMs: Date.now() });
-      return yield* Deferred.await(result);
+      return Deferred.await(result);
     });
+
+  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
+    enqueueCommand(command).pipe(Effect.flatMap((awaitResult) => awaitResult));
+
+  const enqueueToolActivityAppend: OrchestrationEngineShape["enqueueToolActivityAppend"] = (
+    command,
+  ) =>
+    isBatchableToolActivity(command.activity)
+      ? enqueueCommand(command).pipe(
+          Effect.map(
+            (awaitResult): OrchestrationDispatchTicket => ({
+              awaitResult,
+            }),
+          ),
+        )
+      : Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Only tool lifecycle activities can be enqueued without awaiting dispatch.",
+          }),
+        );
 
   return {
     getReadModel,
     readEvents,
     dispatch,
+    enqueueToolActivityAppend,
     withWorktreeLock,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (wsServer, ProviderRuntimeIngestion, CheckpointReactor, etc.)

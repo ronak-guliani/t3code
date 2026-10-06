@@ -40,6 +40,7 @@ import {
   DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS,
   DEFAULT_BROWSER_RECORDING_FRAME_RATE,
   DEFAULT_THREAD_COMPLETION_NOTIFICATION_MODE,
+  DEFAULT_FILE_PREVIEW_LINE_SPACING,
   DEFAULT_UNIFIED_SETTINGS,
   DEFAULT_AUTO_ARCHIVE_SETTLED_AFTER_DAYS,
   MAX_AUTO_ARCHIVE_SETTLED_AFTER_DAYS,
@@ -70,8 +71,10 @@ import {
   DEFAULT_SIDEBAR_SEARCH_SHOW_SHORTCUT,
   DEFAULT_SIDEBAR_NEW_THREAD_CONFIRM,
   DEFAULT_LOCAL_REBUILD_STALENESS_CHECK_MINUTES,
+  FILE_PREVIEW_LINE_SPACING_VALUES,
   MAX_LOCAL_REBUILD_STALENESS_CHECK_MINUTES,
   type CodeFont,
+  type FilePreviewLineSpacing,
   type FontSize,
   type MessagePreviewLineCount,
   type SidebarRowSpacing,
@@ -151,6 +154,14 @@ import {
   useServerObservability,
   useServerProviders,
 } from "../../rpc/serverState";
+
+function parseOptionalNonNegativeNumber(draft: string): number | null | undefined {
+  const trimmed = draft.trim();
+  if (trimmed === "") return null;
+  if (!/^\d+(?:\.\d+)?$/.test(trimmed)) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
 
 export const THEME_OPTIONS = [
   {
@@ -629,6 +640,21 @@ export function formatMessagePreviewLineCount(lineCount: MessagePreviewLineCount
 
 export function isFontSize(value: unknown): value is FontSize {
   return FONT_SIZE_OPTIONS.some((option) => String(option.value) === String(value));
+}
+
+export const FILE_PREVIEW_LINE_SPACING_OPTIONS: ReadonlyArray<{
+  readonly value: FilePreviewLineSpacing;
+  readonly label: string;
+}> = [
+  { value: FILE_PREVIEW_LINE_SPACING_VALUES[0], label: "Compact" },
+  { value: FILE_PREVIEW_LINE_SPACING_VALUES[1], label: "Comfortable" },
+  { value: DEFAULT_FILE_PREVIEW_LINE_SPACING, label: "Default" },
+  { value: FILE_PREVIEW_LINE_SPACING_VALUES[3], label: "Relaxed" },
+  { value: FILE_PREVIEW_LINE_SPACING_VALUES[4], label: "Loose" },
+];
+
+export function isFilePreviewLineSpacing(value: unknown): value is FilePreviewLineSpacing {
+  return FILE_PREVIEW_LINE_SPACING_OPTIONS.some((option) => option.value === value);
 }
 
 const PULL_REQUESTS_STATE_OPTIONS: ReadonlyArray<{
@@ -1132,6 +1158,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.codeFont !== DEFAULT_UNIFIED_SETTINGS.codeFont ? ["Code font"] : []),
       ...(settings.codeFontSize !== DEFAULT_UNIFIED_SETTINGS.codeFontSize
         ? ["Code font size"]
+        : []),
+      ...(settings.filePreviewLineSpacing !== DEFAULT_UNIFIED_SETTINGS.filePreviewLineSpacing
+        ? ["File preview line spacing"]
         : []),
       ...(settings.chatFontSize !== DEFAULT_UNIFIED_SETTINGS.chatFontSize
         ? ["Chat font size"]
@@ -1642,7 +1671,38 @@ export function GeneralSettingsPanel() {
     (days: number | null) => updateSettings({ autoArchiveSettledAfterDays: days }),
     [updateSettings],
   );
-
+  const updateProviderLogRetentionDays = useCallback(
+    (draft: string) => {
+      const days = parseOptionalNonNegativeNumber(draft);
+      if (days === undefined) {
+        toastManager.add({
+          type: "warning",
+          title: "Enter a non-negative number of days, or leave blank to turn age cleanup off",
+        });
+        return;
+      }
+      if (days !== settings.providerLogRetentionDays) {
+        updateSettings({ providerLogRetentionDays: days });
+      }
+    },
+    [settings.providerLogRetentionDays, updateSettings],
+  );
+  const updateProviderLogMaxTotalMb = useCallback(
+    (draft: string) => {
+      const megabytes = parseOptionalNonNegativeNumber(draft);
+      if (megabytes === undefined) {
+        toastManager.add({
+          type: "warning",
+          title: "Enter a non-negative size in MB, or leave blank to turn the size cap off",
+        });
+        return;
+      }
+      if (megabytes !== settings.providerLogMaxTotalMb) {
+        updateSettings({ providerLogMaxTotalMb: megabytes });
+      }
+    },
+    [settings.providerLogMaxTotalMb, updateSettings],
+  );
   return (
     <SettingsPageContainer>
       <SettingsSection title="Pull request monitoring">
@@ -2502,6 +2562,118 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+      </SettingsSection>
+
+      <SettingsSection title="Storage & cleanup">
+        <SettingsRow
+          title="Provider log retention days"
+          description="Remove provider logs older than this. Leave blank to disable age-based cleanup; recent and active thread heads are protected."
+          resetAction={
+            settings.providerLogRetentionDays !==
+            DEFAULT_UNIFIED_SETTINGS.providerLogRetentionDays ? (
+              <SettingResetButton
+                label="provider log retention"
+                onClick={() =>
+                  updateSettings({
+                    providerLogRetentionDays: DEFAULT_UNIFIED_SETTINGS.providerLogRetentionDays,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <DraftInput
+              className="w-28"
+              value={settings.providerLogRetentionDays?.toString() ?? ""}
+              inputMode="decimal"
+              placeholder="Off"
+              onCommit={updateProviderLogRetentionDays}
+              aria-label="Provider log retention in days"
+            />
+          }
+        />
+        <SettingsRow
+          title="Provider log total size cap"
+          description="After age cleanup, remove the oldest rotations first until logs are under this limit in MB. Leave blank to disable the size cap."
+          resetAction={
+            settings.providerLogMaxTotalMb !== DEFAULT_UNIFIED_SETTINGS.providerLogMaxTotalMb ? (
+              <SettingResetButton
+                label="provider log size cap"
+                onClick={() =>
+                  updateSettings({
+                    providerLogMaxTotalMb: DEFAULT_UNIFIED_SETTINGS.providerLogMaxTotalMb,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <DraftInput
+              className="w-28"
+              value={settings.providerLogMaxTotalMb?.toString() ?? ""}
+              inputMode="decimal"
+              placeholder="Off"
+              onCommit={updateProviderLogMaxTotalMb}
+              aria-label="Provider log total size cap in megabytes"
+            />
+          }
+        />
+        <SettingsRow
+          title="Stop idle terminals"
+          description="Close unattached terminal sessions after the chat and terminal have both been inactive. Pinned, active, queued, and previewed chats are kept."
+          resetAction={
+            settings.idleTerminalStopHours !== DEFAULT_UNIFIED_SETTINGS.idleTerminalStopHours ? (
+              <SettingResetButton
+                label="idle terminal timeout"
+                onClick={() =>
+                  updateSettings({
+                    idleTerminalStopHours: DEFAULT_UNIFIED_SETTINGS.idleTerminalStopHours,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.idleTerminalStopHours !== null}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  idleTerminalStopHours: checked
+                    ? DEFAULT_UNIFIED_SETTINGS.idleTerminalStopHours
+                    : null,
+                })
+              }
+              aria-label="Stop idle terminals"
+            />
+          }
+        />
+        {settings.idleTerminalStopHours !== null ? (
+          <SettingsRow
+            title="Terminal inactivity timeout"
+            description="Hours without chat activity or terminal output before an unattached terminal is stopped."
+            control={
+              <DraftInput
+                className="w-24"
+                value={String(settings.idleTerminalStopHours)}
+                inputMode="decimal"
+                onCommit={(value) => {
+                  const hours = Number(value);
+                  if (!Number.isFinite(hours) || hours < 0.25) {
+                    toastManager.add({
+                      type: "warning",
+                      title: "Enter a terminal timeout of at least 0.25 hours",
+                    });
+                    return;
+                  }
+                  if (hours !== settings.idleTerminalStopHours) {
+                    updateSettings({ idleTerminalStopHours: hours });
+                  }
+                }}
+                aria-label="Terminal inactivity timeout in hours"
+              />
+            }
+          />
+        ) : null}
       </SettingsSection>
 
       <SettingsSection title="Advanced">

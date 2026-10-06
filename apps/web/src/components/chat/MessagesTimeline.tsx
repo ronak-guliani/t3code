@@ -1,10 +1,13 @@
 import {
+  type CrossThreadSendRecord,
   type DelegationAuditActivityEvidence,
   type DelegationAuditPage,
   EnvironmentId,
   EventId,
   type MessageId,
+  type ThreadContextRecord,
   ThreadId,
+  type ScopedThreadRef,
   type TurnDiffScope,
   TurnId,
 } from "@t3tools/contracts";
@@ -28,6 +31,7 @@ import { type TurnDiffSummary } from "../../types";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
 import {
+  ArrowUpRightIcon,
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -58,6 +62,7 @@ import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
 import { WorkLogPanel } from "./WorkLogPanel";
 import { WorkEntryTerminalButton, workEntryTerminalId } from "./WorkEntryTerminalButton";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
+import { openFileReference } from "~/browser/openFileReference";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel } from "./DiffStatLabel";
@@ -76,6 +81,10 @@ import {
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
+import { collectThreadContextReferences } from "@t3tools/shared/threadContext";
+import { ThreadContextChip } from "./ThreadContextChip";
+import { COMPOSER_INLINE_CHIP_UNRESOLVED_CLASS_NAME } from "../composerInlineChip";
+
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
@@ -118,6 +127,8 @@ import { selectSidebarThreadSummaryByRef, useStore, type AppState } from "../../
 import { ensureEnvironmentApi, readEnvironmentApi } from "~/environmentApi";
 import { getEnvironmentHttpBaseUrl } from "~/environments/runtime";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { previewEnvironment } from "~/state/preview";
+import { useAtomCommand } from "~/state/use-atom-command";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via useContext.
@@ -125,6 +136,8 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 // non-row-scoped state. `nowIso` is intentionally excluded — self-ticking
 // components (WorkingTimer, LiveElapsed) handle it.
 // ---------------------------------------------------------------------------
+
+const EMPTY_THREAD_CONTEXTS: ReadonlyArray<ThreadContextRecord> = [];
 
 interface TimelineRowSharedState {
   isWorking: boolean;
@@ -296,6 +309,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
         revertTurnCountByUserMessageId,
+        crossThreadSendsBySourceMessageId: EMPTY_CROSS_THREAD_SENDS_BY_MESSAGE_ID,
       }),
     [
       providedRows,
@@ -541,25 +555,21 @@ type TimelineAttachment = NonNullable<TimelineMessage["attachments"]>[number];
 const TimelineAttachmentTile = memo(function TimelineAttachmentTile({
   attachment,
   images,
-  environmentId,
+  threadRef,
   onImageExpand,
 }: {
   attachment: TimelineAttachment;
   images: ReadonlyArray<TimelineAttachment>;
-  environmentId: EnvironmentId;
+  threadRef: ScopedThreadRef;
   onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
   const [opening, setOpening] = useState(false);
   const openAttachment = useCallback(async () => {
-    if (attachment.previewUrl) {
-      const preview = buildExpandedImagePreview(images, attachment.id);
-      if (preview) onImageExpand(preview);
-      return;
-    }
     if (opening) return;
+    const environmentId = threadRef.environmentId;
     const environmentApi = readEnvironmentApi(environmentId);
     const httpBaseUrl = getEnvironmentHttpBaseUrl(environmentId);
-    if (!environmentApi || !httpBaseUrl) {
+    if ((!environmentApi || !httpBaseUrl) && !attachment.previewUrl) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -571,48 +581,18 @@ const TimelineAttachmentTile = memo(function TimelineAttachmentTile({
     }
     setOpening(true);
     try {
-      const resolved = await Promise.all(
-        images.map(async (image) => {
-          if (image.previewUrl) return image;
-          try {
-            const asset = await environmentApi.assets.createUrl({
-              resource: {
-                _tag: "attachment",
-                attachmentId: image.id,
-                fileName: image.name,
-                mimeType: image.mimeType,
-                disposition: "inline",
-              },
-            });
-            return {
-              ...image,
-              previewUrl: new URL(asset.relativeUrl, httpBaseUrl).toString(),
-            };
-          } catch (error) {
-            // Sibling failures degrade gracefully, but the clicked
-            // attachment's own failure must reach the outer catch so a
-            // transient error reports its real cause instead of reading as
-            // a missing attachment.
-            if (image.id === attachment.id) throw error;
-            return null;
-          }
-        }),
-      );
-      const preview = buildExpandedImagePreview(
-        resolved.filter((image) => image !== null),
-        attachment.id,
-      );
-      if (!preview) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Unable to open attachment",
-            description: "The attachment is no longer available.",
-          }),
-        );
-        return;
-      }
-      onImageExpand(preview);
+      await openFileReference({
+        kind: "attachments",
+        threadRef,
+        attachments: images,
+        selectedAttachmentId: attachment.id,
+        ...(httpBaseUrl ? { httpBaseUrl } : {}),
+        ...(environmentApi ? { createAssetUrl: environmentApi.assets.createUrl } : {}),
+        onOpenGallery: (resolved, selectedId) => {
+          const preview = buildExpandedImagePreview(resolved, selectedId);
+          if (preview) onImageExpand(preview);
+        },
+      });
     } catch (error) {
       toastManager.add(
         stackedThreadToast({
@@ -624,7 +604,7 @@ const TimelineAttachmentTile = memo(function TimelineAttachmentTile({
     } finally {
       setOpening(false);
     }
-  }, [attachment, environmentId, images, onImageExpand, opening]);
+  }, [attachment, images, onImageExpand, opening, threadRef]);
 
   return (
     <div className="overflow-hidden rounded-lg border border-border/80 bg-background/70">
@@ -737,14 +717,16 @@ const TimelineRowContent = memo(function TimelineRowContent(props: { row: Timeli
             <div className="flex flex-col items-end">
               {row.message.origin?.kind === "cross-thread" ? (
                 <CrossThreadProvenance origin={row.message.origin} />
+              ) : isCollaborationMessageOrigin(row.message.origin) ? (
+                <CollaborationProvenance origin={row.message.origin} />
               ) : row.message.origin?.kind === "pull-request-monitor" ? (
                 <PullRequestMonitorProvenance origin={row.message.origin} />
               ) : null}
               <div
                 className={cn(
                   "group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3",
-                  row.message.origin?.kind === "cross-thread" &&
-                    "border-violet-400/30 bg-gradient-to-br from-violet-500/[0.07] via-violet-500/[0.02] to-transparent",
+                  isInterThreadMessageOrigin(row.message.origin) &&
+                    "border-violet-400/55 bg-violet-500/20",
                   row.message.origin?.kind === "pull-request-monitor" &&
                     "border-sky-400/30 bg-gradient-to-br from-sky-500/[0.07] via-sky-500/[0.02] to-transparent",
                 )}
@@ -756,7 +738,7 @@ const TimelineRowContent = memo(function TimelineRowContent(props: { row: Timeli
                         key={image.id}
                         attachment={image}
                         images={regularImages}
-                        environmentId={ctx.activeThreadEnvironmentId}
+                        threadRef={ctx.threadRef}
                         onImageExpand={ctx.onImageExpand}
                       />
                     ))}
@@ -775,6 +757,7 @@ const TimelineRowContent = memo(function TimelineRowContent(props: { row: Timeli
                   rowId={row.id}
                   text={visibleText}
                   terminalContexts={terminalContexts}
+                  threadContexts={row.message.context?.records ?? EMPTY_THREAD_CONTEXTS}
                   collapsedLineLimit={resolveMessagePreviewLineLimit(
                     row.message.origin?.kind,
                     ctx.messagePreviewLineLimits,
@@ -782,6 +765,9 @@ const TimelineRowContent = memo(function TimelineRowContent(props: { row: Timeli
                   forceExpanded={ctx.activeChatFindRowId === row.id}
                 />
               </div>
+              {row.crossThreadSends && row.crossThreadSends.length > 0 && (
+                <CrossThreadSendReceipts sends={row.crossThreadSends} />
+              )}
             </div>
           );
         })()}
@@ -1063,10 +1049,13 @@ function CrossThreadProvenance({
   if (!canNavigate) {
     return (
       <span
-        className="mb-1 mr-2 inline-flex max-w-[80%] items-center gap-1 text-[length:var(--app-status-line-font-size)] text-muted-foreground/40"
+        className="mb-1 mr-2 inline-flex max-w-[80%] items-center gap-1 text-[length:var(--app-status-line-font-size)] text-violet-700/80 dark:text-violet-300/80"
         title={`Source chat unavailable: ${sourceTitle}`}
       >
-        <CornerDownRightIcon className="size-2.5 shrink-0 text-violet-400/40" aria-hidden="true" />
+        <CornerDownRightIcon
+          className="size-2.5 shrink-0 text-violet-600 dark:text-violet-300"
+          aria-hidden="true"
+        />
         <span className="truncate">{sourceTitle}</span>
       </span>
     );
@@ -1075,7 +1064,7 @@ function CrossThreadProvenance({
   return (
     <button
       type="button"
-      className="group/origin mb-1 mr-2 inline-flex max-w-[80%] cursor-pointer items-center gap-1 rounded text-[length:var(--app-status-line-font-size)] text-muted-foreground/45 transition-colors hover:text-muted-foreground/85 focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-violet-500/60"
+      className="group/origin mb-1 mr-2 inline-flex max-w-[80%] cursor-pointer items-center gap-1 rounded text-[length:var(--app-status-line-font-size)] text-violet-700 dark:text-violet-300 transition-colors hover:text-violet-800 dark:hover:text-violet-200 focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-violet-500/60"
       title={`Open source chat: ${sourceTitle}`}
       aria-label={`Open source chat ${sourceTitle} at the initiating message`}
       onClick={() => {
@@ -1090,13 +1079,131 @@ function CrossThreadProvenance({
       }}
     >
       <CornerDownRightIcon
-        className="size-2.5 shrink-0 text-violet-400/50 transition-colors group-hover/origin:text-violet-400/90"
+        className="size-2.5 shrink-0 text-violet-600 dark:text-violet-300 transition-colors group-hover/origin:text-violet-800 dark:group-hover/origin:text-violet-200"
         aria-hidden="true"
       />
       <span className="truncate decoration-current/30 underline-offset-2 group-hover/origin:underline">
         {sourceTitle}
       </span>
     </button>
+  );
+}
+
+const EMPTY_CROSS_THREAD_SENDS_BY_MESSAGE_ID: ReadonlyMap<
+  MessageId,
+  readonly CrossThreadSendRecord[]
+> = new Map();
+
+/** Most turns send once; anything beyond this stays collapsed behind a count. */
+const MAX_VISIBLE_CROSS_THREAD_SENDS = 3;
+
+function CrossThreadSendReceipts({ sends }: { sends: readonly CrossThreadSendRecord[] }) {
+  const visible = sends.slice(0, MAX_VISIBLE_CROSS_THREAD_SENDS);
+  const hiddenCount = sends.length - visible.length;
+  return (
+    <div className="mt-1 mr-2 flex max-w-[80%] flex-col items-end gap-0.5">
+      {visible.map((send) => (
+        <CrossThreadSendReceipt key={send.destinationMessageId} send={send} />
+      ))}
+      {hiddenCount > 0 && (
+        <span className="text-[length:var(--app-status-line-font-size)] text-muted-foreground/40">
+          +{hiddenCount} more thread{sends.length - visible.length === 1 ? "" : "s"}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Quiet receipt for a message this turn pushed into another thread. The
+ * destination side shows the source (`CrossThreadProvenance`); this is the
+ * matching half, linking to the message that was sent.
+ */
+function CrossThreadSendReceipt({ send }: { send: CrossThreadSendRecord }) {
+  const navigate = useNavigate();
+  const ctx = use(TimelineRowCtx);
+  // scopeThreadRef allocates a fresh object; memoize the ref on the primitives
+  // so the selector (and its subscription) stays stable across stream chunks.
+  const environmentId = ctx.activeThreadEnvironmentId;
+  const destinationThreadId = send.destinationThreadId;
+  const destinationSelector = useMemo(() => {
+    const ref = scopeThreadRef(environmentId, destinationThreadId);
+    return (state: AppState) => selectSidebarThreadSummaryByRef(state, ref);
+  }, [environmentId, destinationThreadId]);
+  const destinationThread = useStore(destinationSelector);
+  const destinationTitle = destinationThread?.title.trim() || send.destinationThreadTitle;
+
+  if (destinationThread === null || destinationThread === undefined) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-[length:var(--app-status-line-font-size)] text-muted-foreground/40"
+        title={`Destination chat unavailable: ${destinationTitle}`}
+      >
+        <ArrowUpRightIcon className="size-2.5 shrink-0" aria-hidden="true" />
+        <span className="truncate">Sent to {destinationTitle}</span>
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="group/send inline-flex max-w-full cursor-pointer items-center gap-1 rounded text-[length:var(--app-status-line-font-size)] text-muted-foreground/45 transition-colors hover:text-muted-foreground/85 focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-violet-500/60"
+      title={`Open ${destinationTitle} at the sent message`}
+      aria-label={`Open thread ${destinationTitle} at the message sent from here`}
+      onClick={() => {
+        void navigate({
+          to: "/$environmentId/$threadId",
+          params: { environmentId, threadId: destinationThreadId },
+          search: (previous) => ({ ...previous, message: send.destinationMessageId }),
+        });
+      }}
+    >
+      <ArrowUpRightIcon
+        className="size-2.5 shrink-0 text-violet-600 dark:text-violet-300 transition-colors group-hover/send:text-violet-800 dark:group-hover/send:text-violet-200"
+        aria-hidden="true"
+      />
+      <span className="truncate">
+        Sent to{" "}
+        <span className="decoration-current/30 underline-offset-2 group-hover/send:underline">
+          {destinationTitle}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+type CollaborationMessageOrigin = Extract<
+  NonNullable<TimelineMessage["origin"]>,
+  { kind: "collaboration-request" | "collaboration-response" }
+>;
+
+function isCollaborationMessageOrigin(
+  origin: TimelineMessage["origin"],
+): origin is CollaborationMessageOrigin {
+  return origin?.kind === "collaboration-request" || origin?.kind === "collaboration-response";
+}
+
+function isInterThreadMessageOrigin(origin: TimelineMessage["origin"]): boolean {
+  return origin?.kind === "cross-thread" || isCollaborationMessageOrigin(origin);
+}
+
+function CollaborationProvenance({ origin }: { origin: CollaborationMessageOrigin }) {
+  return (
+    <span
+      className="mb-1 mr-2 inline-flex max-w-[80%] items-center gap-1 text-[length:var(--app-status-line-font-size)] text-violet-700 dark:text-violet-300"
+      title={
+        origin.kind === "collaboration-request"
+          ? "Collaboration request from another thread"
+          : "Collaboration response from another thread"
+      }
+    >
+      <CornerDownRightIcon
+        className="size-2.5 shrink-0 text-violet-600 dark:text-violet-300"
+        aria-hidden="true"
+      />
+      <span>From another thread</span>
+    </span>
   );
 }
 
@@ -1552,9 +1659,10 @@ const AssistantChangedFilesSection = memo(function AssistantChangedFilesSection(
   workspaceRoot: string | undefined;
 }) {
   if (!turnSummary) return null;
-  const snapshotFiles = turnSummary.files;
-  const turnFiles = turnSummary.turnFiles ?? [];
-  if (snapshotFiles.length === 0 && turnFiles.length === 0) return null;
+  // The turn's own transition set, matching the single-turn range the card opens.
+  // `files` is cumulative and would advertise earlier turns' changes here.
+  const turnFiles = turnSummary.transitionFiles ?? turnSummary.turnFiles ?? [];
+  if (turnFiles.length === 0) return null;
 
   return (
     <AssistantChangedFilesSectionInner
@@ -1580,57 +1688,65 @@ function AssistantChangedFilesSectionInner({
   workspaceRoot: string | undefined;
 }) {
   const [collapsed, setCollapsed] = useState(false);
-  const turnFiles = turnSummary.turnFiles ?? [];
-  const visibleFiles = turnFiles;
+  const visibleFiles = turnSummary.transitionFiles ?? turnSummary.turnFiles ?? [];
   const summaryStat = summarizeTurnDiffStats(visibleFiles);
   if (summaryStat.additions === 0 && summaryStat.deletions === 0) return null;
 
   return (
     <div
-      className="relative mt-4 rounded-2xl bg-card/40 shadow-xs/5 not-dark:bg-clip-padding after:pointer-events-none after:absolute after:inset-0 after:z-20 after:rounded-2xl after:border after:border-input"
-      style={{
-        fontSize: "var(--app-tool-font-size)",
-      }}
+      data-changed-files-state={collapsed ? "collapsed" : "tree"}
+      className="mt-4"
+      /* Sized off the chat font, not the code font: this is a file summary
+         inside a message, and raising "code font size" to read diffs should not
+         inflate it. Steps below are `em` so they track whatever chat size the
+         reader has set. */
+      style={{ fontSize: "var(--app-chat-font-size)" }}
     >
-      <div className="sticky top-0 z-10 flex items-center justify-between gap-2 rounded-t-2xl bg-card/72 p-2 backdrop-blur-md">
-        <div className="min-w-0 leading-4">
+      {/* Not sticky: the nearest scroll container is the whole message list, so a
+          sticky header pins to the viewport, detaches from its card, and covers
+          the rows scrolling underneath it. */}
+      <div className="flex items-center justify-between gap-2 rounded-t-xl bg-sunken px-3 py-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 font-medium text-foreground">
+          <span>
+            {visibleFiles.length} changed file{visibleFiles.length === 1 ? "" : "s"}
+          </span>
           <DiffStatLabel
             additions={summaryStat.additions}
-            className="leading-4"
             deletions={summaryStat.deletions}
             layout="inline"
           />
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           <Button
             type="button"
-            size="xs"
-            variant="outline"
-            className="size-[1.5em] p-0 text-[inherit] sm:h-[1.5em] sm:text-[inherit]"
+            size="icon-xs"
+            variant="ghost"
             disabled={visibleFiles.length === 0}
             onClick={() => onOpenTurnDiff(turnSummary.turnId, visibleFiles[0]?.path, "turn")}
-            aria-label="View diff"
+            aria-label="Open diff"
+            data-scroll-anchor-ignore
           >
-            <DiffIcon className="size-[0.85em]" />
+            <DiffIcon className="size-3" />
           </Button>
           <Button
             type="button"
-            size="xs"
+            size="icon-xs"
             variant="ghost"
-            className="size-[1.5em] p-0 text-[inherit] sm:h-[1.5em] sm:text-[inherit]"
             onClick={() => setCollapsed((c) => !c)}
             aria-label={collapsed ? "Expand changed files" : "Collapse changed files"}
+            aria-expanded={!collapsed}
+            data-scroll-anchor-ignore
           >
             {collapsed ? (
-              <ChevronDownIcon className="size-[0.85em]" />
+              <ChevronDownIcon className="size-3" />
             ) : (
-              <ChevronUpIcon className="size-[0.85em]" />
+              <ChevronUpIcon className="size-3" />
             )}
           </Button>
         </div>
       </div>
       {!collapsed && (
-        <div className="px-2 pb-2">
+        <div className="mt-0.5 rounded-b-xl bg-sunken pb-0.5">
           <ChangedFilesTree
             key={`changed-files-tree:${turnSummary.turnId}`}
             turnId={turnSummary.turnId}
@@ -1666,6 +1782,7 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   rowId: string;
   text: string;
   terminalContexts: ParsedTerminalContextEntry[];
+  threadContexts?: ReadonlyArray<ThreadContextRecord> | undefined;
   collapsedLineLimit: MessagePreviewLineCount;
   forceExpanded: boolean;
 }) {
@@ -1738,7 +1855,11 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
             style={{ height: `${props.collapsedLineLimit}lh` }}
           />
           <div ref={contentRef}>
-            <UserMessageBody text={props.text} terminalContexts={props.terminalContexts} />
+            <UserMessageBody
+              text={props.text}
+              terminalContexts={props.terminalContexts}
+              threadContexts={props.threadContexts}
+            />
           </div>
         </div>
       ) : null}
@@ -1763,6 +1884,7 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
 const UserMessageBody = memo(function UserMessageBody(props: {
   text: string;
   terminalContexts: ParsedTerminalContextEntry[];
+  threadContexts?: ReadonlyArray<ThreadContextRecord> | undefined;
 }) {
   if (props.terminalContexts.length > 0) {
     const hasEmbeddedInlineLabels = textContainsInlineTerminalContextLabels(
@@ -1785,7 +1907,10 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         if (matchIndex > cursor) {
           inlineNodes.push(
             <span key={`user-terminal-context-inline-before:${context.header}:${cursor}`}>
-              {props.text.slice(cursor, matchIndex)}
+              <InlineThreadContextText
+                text={props.text.slice(cursor, matchIndex)}
+                records={props.threadContexts ?? EMPTY_THREAD_CONTEXTS}
+              />
             </span>,
           );
         }
@@ -1802,7 +1927,10 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         if (cursor < props.text.length) {
           inlineNodes.push(
             <span key={`user-message-terminal-context-inline-rest:${cursor}`}>
-              {props.text.slice(cursor)}
+              <InlineThreadContextText
+                text={props.text.slice(cursor)}
+                records={props.threadContexts ?? EMPTY_THREAD_CONTEXTS}
+              />
             </span>,
           );
         }
@@ -1830,7 +1958,13 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     }
 
     if (props.text.length > 0) {
-      inlineNodes.push(<span key="user-message-terminal-context-inline-text">{props.text}</span>);
+      inlineNodes.push(
+        <InlineThreadContextText
+          key="user-message-terminal-context-inline-text"
+          text={props.text}
+          records={props.threadContexts ?? EMPTY_THREAD_CONTEXTS}
+        />,
+      );
     } else if (inlinePrefix.length === 0) {
       return null;
     }
@@ -1848,9 +1982,44 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
   return (
     <div className="chat-message-content whitespace-pre-wrap wrap-break-word text-foreground">
-      {props.text}
+      <InlineThreadContextText
+        text={props.text}
+        records={props.threadContexts ?? EMPTY_THREAD_CONTEXTS}
+      />
     </div>
   );
+});
+
+const InlineThreadContextText = memo(function InlineThreadContextText(props: {
+  text: string;
+  records: ReadonlyArray<ThreadContextRecord>;
+}) {
+  const occurrences = collectThreadContextReferences(props.text);
+  if (occurrences.length === 0) return props.text;
+  const records = new Map(props.records.map((record) => [record.contextId, record]));
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  for (const occurrence of occurrences) {
+    nodes.push(props.text.slice(cursor, occurrence.start));
+    const record = records.get(occurrence.contextId);
+    const key = `${occurrence.contextId}:${occurrence.start}`;
+    nodes.push(
+      record ? (
+        <ThreadContextChip key={key} record={record} navigateOnClick />
+      ) : (
+        <span
+          key={key}
+          className={COMPOSER_INLINE_CHIP_UNRESOLVED_CLASS_NAME}
+          title="Thread context is unavailable"
+        >
+          {occurrence.label}
+        </span>
+      ),
+    );
+    cursor = occurrence.end;
+  }
+  nodes.push(props.text.slice(cursor));
+  return <>{nodes}</>;
 });
 
 // ---------------------------------------------------------------------------
@@ -2036,8 +2205,12 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
 
 const WorkEntryDetails = memo(function WorkEntryDetails({
   workEntry,
+  onOpenFile,
+  workspaceRoot,
 }: {
   workEntry: TimelineWorkEntry;
+  onOpenFile: (path: string) => void;
+  workspaceRoot: string | undefined;
 }) {
   const { activeThreadEnvironmentId, activeThreadId } = use(TimelineRowCtx);
   const output = extractCommandOutputText(workEntry.toolData);
@@ -2057,7 +2230,6 @@ const WorkEntryDetails = memo(function WorkEntryDetails({
   const detail = [
     command,
     output ?? workEntry.detail,
-    ...(output ? [] : (workEntry.changedFiles ?? [])),
     fallback === "{}" || fallback === "[]" ? undefined : fallback,
   ]
     .filter((value, index, values) => value && values.indexOf(value) === index)
@@ -2084,6 +2256,25 @@ const WorkEntryDetails = memo(function WorkEntryDetails({
         >
           {detail}
         </pre>
+      ) : null}
+      {workEntry.changedFiles?.length ? (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {workEntry.changedFiles.map((filePath) => {
+            const displayPath = formatWorkspaceRelativePath(filePath, workspaceRoot);
+            return (
+              <button
+                key={`${workEntry.id}:${filePath}`}
+                type="button"
+                className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[0.85em] text-muted-foreground/75 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Open file ${displayPath}`}
+                title={displayPath}
+                onClick={() => onOpenFile(filePath)}
+              >
+                {displayPath}
+              </button>
+            );
+          })}
+        </div>
       ) : null}
       {hasAuditEvidence ? (
         <>
@@ -2136,7 +2327,7 @@ const ActivityEvidenceDetails = memo(function ActivityEvidenceDetails({
   }, [activityId, environmentId, threadId]);
 
   return (
-    <div className="mt-2 space-y-1 text-xs">
+    <div className="mt-2 space-y-1">
       {evidence === null ? (
         <button
           type="button"
@@ -2320,6 +2511,42 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const [isCommandExpanded, setIsCommandExpanded] = useState(false);
   const navigate = useNavigate();
   const { activeThreadEnvironmentId, threadRef } = use(TimelineRowCtx);
+  const openPreview = useAtomCommand(previewEnvironment.open);
+  const navigatePreview = useAtomCommand(previewEnvironment.navigate);
+  const openToolResultFile = useCallback(
+    (filePath: string) => {
+      const environmentApi = readEnvironmentApi(activeThreadEnvironmentId);
+      const httpBaseUrl = getEnvironmentHttpBaseUrl(activeThreadEnvironmentId);
+      if (!environmentApi || !httpBaseUrl) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open file",
+            description: "The tool result's owning environment is unavailable.",
+          }),
+        );
+        return;
+      }
+      void openFileReference({
+        threadRef,
+        filePath,
+        cwd: workspaceRoot,
+        httpBaseUrl,
+        createAssetUrl: environmentApi.assets.createUrl,
+        openPreview,
+        navigatePreview,
+      }).catch((error) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open file",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      });
+    },
+    [activeThreadEnvironmentId, navigatePreview, openPreview, threadRef, workspaceRoot],
+  );
   if (workEntry.agentRun) {
     return <AgentRunRow agentRun={workEntry.agentRun} workspaceRoot={workspaceRoot} />;
   }
@@ -2391,7 +2618,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           <WorkEntryTerminalButton entry={workEntry} threadRef={threadRef} />
         </div>
         <WorkLogPanel open={isCommandExpanded}>
-          <WorkEntryDetails workEntry={workEntry} />
+          <WorkEntryDetails
+            workEntry={workEntry}
+            onOpenFile={openToolResultFile}
+            workspaceRoot={workspaceRoot}
+          />
         </WorkLogPanel>
       </Collapsible>
     );
@@ -2500,13 +2731,16 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           {workEntry.changedFiles?.slice(0, 4).map((filePath) => {
             const displayPath = formatWorkspaceRelativePath(filePath, workspaceRoot);
             return (
-              <span
+              <button
+                type="button"
                 key={`${workEntry.id}:${filePath}`}
-                className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[0.85em] text-muted-foreground/75"
+                className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[0.85em] text-muted-foreground/75 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Open file ${displayPath}`}
                 title={displayPath}
+                onClick={() => openToolResultFile(filePath)}
               >
                 {displayPath}
-              </span>
+              </button>
             );
           })}
           {(workEntry.changedFiles?.length ?? 0) > 4 && (

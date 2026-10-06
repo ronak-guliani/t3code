@@ -31,6 +31,7 @@ import {
   Exit,
   Layer,
   ManagedRuntime,
+  Metric,
   PubSub,
   Scope,
   Stream,
@@ -46,6 +47,7 @@ import {
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
+import { CheckpointStoreDieStubLive } from "../../checkpointing/Layers/CheckpointStore.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
@@ -287,6 +289,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provide(RepositoryIdentityResolverLive),
       Layer.provide(SqlitePersistenceMemory),
+      Layer.provideMerge(CheckpointStoreDieStubLive),
     );
     const engineLayer =
       options?.failAssistantDeltaDispatch === undefined &&
@@ -847,6 +850,7 @@ describe("ProviderRuntimeIngestion", () => {
         delta: "older response",
       },
     });
+    await harness.drain();
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",
@@ -1206,6 +1210,51 @@ describe("ProviderRuntimeIngestion", () => {
       thread.activities.some(
         (activity: ProviderRuntimeTestActivity) =>
           activity.kind === "insights.turn.aborted" && activity.turnId === activeTurnId,
+      ),
+    ).toBe(true);
+  });
+
+  it("batches production tool activity dispatches before acknowledging the source events", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-production-tool-batch");
+    const count = 6;
+
+    for (let index = 0; index < count; index += 1) {
+      harness.emit({
+        type: "item.updated",
+        eventId: asEventId(`evt-production-tool-batch-${index}`),
+        provider: ProviderDriverKind.make("copilot"),
+        threadId: asThreadId("thread-1"),
+        turnId,
+        itemId: asItemId(`item-production-tool-batch-${index}`),
+        createdAt: new Date().toISOString(),
+        payload: {
+          itemType: "command_execution",
+          status: "in_progress",
+          title: `Tool ${index}`,
+          detail: `output ${index}`,
+          data: {
+            toolCallId: `tool-production-batch-${index}`,
+            kind: "execute",
+            command: `command-${index}`,
+          },
+        },
+      });
+    }
+
+    await harness.drain();
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    expect(thread?.activities.filter((activity) => activity.kind === "tool.updated")).toHaveLength(
+      count,
+    );
+    const metrics = await Effect.runPromise(Metric.snapshot);
+    expect(
+      metrics.some(
+        (snapshot) =>
+          snapshot.id === "t3_orchestration_activity_append_batches_total" &&
+          snapshot.attributes?.batchSize === String(count),
       ),
     ).toBe(true);
   });
@@ -5731,5 +5780,65 @@ index 0000000..3333333
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("runtime still processed");
+  });
+  it("keeps a pending turn start across a graceful session exit but not a crash", async () => {
+    // `ensureSessionForThread` restarts the provider session before the turn is
+    // dispatched, and the old session exits gracefully first. Applying that exit
+    // retired the pending start mid-flight, so admission reopened and a second
+    // `thread.turn.start` could be accepted for the same message.
+    const runCase = async (exitKind: "graceful" | "error") => {
+      const harness = await createHarness();
+      const now = new Date().toISOString();
+      harness.setProviderSession({
+        provider: ProviderDriverKind.make("codex"),
+        status: "ready",
+        runtimeMode: "approval-required",
+        threadId: asThreadId("thread-1"),
+        cwd: harness.workspaceRoot,
+        createdAt: now,
+        updatedAt: now,
+      });
+      // Establish an accepted-but-unacknowledged start.
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-pending-${exitKind}`),
+          threadId: asThreadId("thread-1"),
+          message: {
+            messageId: asMessageId(`message-pending-${exitKind}`),
+            role: "user",
+            text: "hello",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      const beforeExit = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (thread) => thread.id === asThreadId("thread-1"),
+      );
+      expect(beforeExit?.pendingTurnStart?.messageId).toBe(`message-pending-${exitKind}`);
+
+      harness.emit({
+        type: "session.exited",
+        eventId: asEventId(`evt-exit-${exitKind}`),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        payload: { exitKind, recoverable: true },
+      });
+      await harness.drain();
+
+      const afterExit = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (thread) => thread.id === asThreadId("thread-1"),
+      );
+      return afterExit?.pendingTurnStart ?? null;
+    };
+
+    // Graceful = deliberate replacement: the start is still owed to a provider.
+    expect(await runCase("graceful")).not.toBeNull();
+    // A crash abandons the start, so the thread must not stay wedged busy.
+    expect(await runCase("error")).toBeNull();
   });
 });

@@ -2,13 +2,14 @@ import type {
   OrchestrationCommand,
   OrchestrationProject,
   OrchestrationThread,
+  ThreadId,
 } from "@t3tools/contracts";
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { Effect } from "effect";
 
-import { canonicalizeWorktreePath, resolveGitWorktreeRoot } from "../git/worktreePaths.ts";
+import { canonicalizeWorktreePath, resolveGitWorktreeIdentity } from "../git/worktreePaths.ts";
 import { runProcess } from "../processRunner.ts";
 import { WorkspaceOwnershipConflict } from "../persistence/Services/WorkspaceOwnership.ts";
 import type { WorkspaceOwnershipRepositoryShape } from "../persistence/Services/WorkspaceOwnership.ts";
@@ -18,8 +19,94 @@ import { OrchestrationCommandInvariantError } from "./Errors.ts";
 export interface WorkspaceAdmissionDeps {
   readonly findThread: (threadId: string) => OrchestrationThread | undefined;
   readonly findProject: (projectId: string) => OrchestrationProject | undefined;
+  readonly listThreads: () => ReadonlyArray<OrchestrationThread>;
   readonly claimOwnership: WorkspaceOwnershipRepositoryShape["claim"];
   readonly hasCleanupReservationByPath: WorktreeCleanupJobRepositoryShape["hasReservationByPath"];
+  readonly createWorkspaceSnapshotCommit: (cwd: string) => Effect.Effect<string, unknown>;
+}
+
+/**
+ * Threads that are in the same lineage as `threadId` *and* bound to the same
+ * checkout: a fork and the chat it was forked from, sibling forks, and their
+ * descendants. Forks inherit the source's worktree (matching orchestration-v2,
+ * whose fork plan spreads the source thread), so without this the fork could
+ * never run a turn.
+ *
+ * Lineage alone is deliberately not enough. `parentThreadId` is also the
+ * delegated-child relation (`t3 chat new --parent`), and a delegated child is
+ * allocated its own isolated worktree while its parent's provider session is
+ * still running, so treating every relative as a co-owner refused the child's
+ * first turn. Matching canonical paths keeps the allowance and the busy check
+ * tied to what actually matters: two threads writing one checkout.
+ */
+function lineageThreadIds(
+  threadId: ThreadId,
+  deps: Pick<WorkspaceAdmissionDeps, "findThread" | "listThreads">,
+): ReadonlyArray<ThreadId> {
+  const lineage = new Set<ThreadId>([threadId]);
+  let cursor = deps.findThread(threadId);
+  while (cursor?.parentThreadId != null && !lineage.has(cursor.parentThreadId)) {
+    lineage.add(cursor.parentThreadId);
+    cursor = deps.findThread(cursor.parentThreadId);
+  }
+  const rootThreadId = cursor?.id ?? threadId;
+  // Descend from the root so sibling forks of the same source share too.
+  const pending = [rootThreadId];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === undefined) continue;
+    for (const candidate of deps.listThreads()) {
+      if (candidate.parentThreadId === current && !lineage.has(candidate.id)) {
+        lineage.add(candidate.id);
+        pending.push(candidate.id);
+      }
+    }
+  }
+  return [...lineage];
+}
+
+/**
+ * Live relatives on the checkout being claimed. Archived and deleted threads
+ * are excluded, matching `findCanonicalActiveWorktreeOwner`: neither
+ * `thread.archived` nor `thread.deleted` clears a non-terminal turn or a
+ * running session, so an archived relative would otherwise block its whole
+ * family forever with advice to stop a thread the user can no longer stop.
+ */
+const findCheckoutRelatives = Effect.fn("findCheckoutRelatives")(function* (
+  threadId: ThreadId,
+  requestedPath: string,
+  deps: Pick<WorkspaceAdmissionDeps, "findThread" | "listThreads">,
+) {
+  const candidates = lineageThreadIds(threadId, deps).flatMap((id) => {
+    const candidate = deps.findThread(id);
+    if (
+      candidate === undefined ||
+      candidate.id === threadId ||
+      candidate.deletedAt !== null ||
+      candidate.archivedAt !== null ||
+      candidate.worktreePath === null
+    ) {
+      return [];
+    }
+    return [candidate];
+  });
+  if (candidates.length === 0) return [] as ReadonlyArray<OrchestrationThread>;
+  const [canonicalRequested, ...canonicalCandidates] = yield* Effect.all(
+    [requestedPath, ...candidates.map((candidate) => candidate.worktreePath!)].map((path) =>
+      Effect.promise(() => canonicalizeWorktreePath(path)),
+    ),
+  );
+  return candidates.filter((_, index) => canonicalCandidates[index] === canonicalRequested);
+});
+
+function threadIsBusy(thread: OrchestrationThread | undefined): boolean {
+  if (thread === undefined) return false;
+  if (thread.deletedAt !== null || thread.archivedAt !== null) return false;
+  return (
+    thread.latestTurn?.state === "running" ||
+    thread.session?.status === "running" ||
+    thread.session?.activeTurnId != null
+  );
 }
 
 /**
@@ -89,11 +176,24 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
   command: OrchestrationCommand,
   projectWorkspaceRoot: string | undefined,
   thread: OrchestrationThread | undefined,
+  createWorkspaceSnapshotCommit: WorkspaceAdmissionDeps["createWorkspaceSnapshotCommit"],
 ) {
   const isExecutionCommand =
     command.type === "thread.create" ||
     command.type === "thread.turn.start" ||
     command.type === "thread.queued-turn.dispatch";
+  // handoff/meta.update keep the full path below: their project-checkout
+  // rejection depends on the Git probing. Every other non-execution command
+  // (notably high-volume activity appends) ignores all probed values, so
+  // return before any filesystem/Git work: each probe costs a subprocess,
+  // and under load those subprocesses serialize on the dispatch path.
+  const needsWorkspacePreparation =
+    isExecutionCommand ||
+    command.type === "thread.workspace.handoff" ||
+    command.type === "thread.meta.update";
+  if (!needsWorkspacePreparation) {
+    return { command, worktreePath: null, branch: null, honoredProjectCheckout: false };
+  }
   const createThread =
     command.type === "thread.create"
       ? command
@@ -116,19 +216,18 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
         : command.type === "thread.meta.update"
           ? command.worktreePath
           : undefined);
-  const projectRoot =
+  const projectIdentity =
     projectWorkspaceRoot === undefined
-      ? undefined
-      : yield* Effect.promise(() => canonicalizeWorktreePath(projectWorkspaceRoot));
-  const gitRoot =
-    projectRoot === undefined
       ? null
-      : yield* Effect.promise(() => resolveGitWorktreeRoot(projectRoot));
+      : yield* Effect.promise(() => resolveGitWorktreeIdentity(projectWorkspaceRoot));
+  const projectRoot = projectIdentity?.canonicalPath;
+  const gitRoot = projectIdentity?.gitRoot ?? null;
 
-  const canonicalRequested =
+  const requestedIdentity =
     requestedPath === null || requestedPath === undefined
       ? null
-      : yield* Effect.promise(() => canonicalizeWorktreePath(requestedPath));
+      : yield* Effect.promise(() => resolveGitWorktreeIdentity(requestedPath));
+  const canonicalRequested = requestedIdentity?.canonicalPath ?? null;
   // An explicit project-checkout path in the current creation request (the
   // client sent a concrete directory instead of null) means the user chose
   // "Current checkout": honor it instead of allocating an isolated
@@ -141,8 +240,8 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
     createThread === undefined &&
     (command.type === "thread.turn.start" || command.type === "thread.queued-turn.dispatch") &&
     thread?.workspaceBinding?.workspaceScope === "project-checkout";
-  if (canonicalRequested !== null) {
-    const requestedRoot = yield* Effect.promise(() => resolveGitWorktreeRoot(canonicalRequested));
+  if (requestedIdentity !== null) {
+    const requestedRoot = requestedIdentity.gitRoot;
     const isProjectCheckout =
       (requestedRoot !== null && requestedRoot === gitRoot) ||
       (requestedRoot === null && projectRoot === canonicalRequested);
@@ -161,7 +260,9 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
     if (isProjectCheckout && isExecutionCommand && gitRoot !== null) {
       // Treat legacy/root bindings as an isolation request. This preserves
       // the user's turn and recovery path while ensuring the human checkout
-      // is never admitted as the writer's workspace.
+      // is never admitted as the writer's workspace. Non-execution commands
+      // (handoff/meta.update) keep the rejection below: they must never
+      // claim the human's main checkout.
     } else if (isProjectCheckout) {
       return yield* new OrchestrationCommandInvariantError({
         commandType: command.type,
@@ -179,6 +280,9 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
   }
 
   if (!isExecutionCommand) {
+    // handoff/meta.update without a path involved: nothing to allocate,
+    // honor, or reject. Execution commands always carry a threadId and
+    // continue to isolated allocation below.
     return {
       command,
       worktreePath: null,
@@ -187,17 +291,7 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
     };
   }
 
-  let threadId: string | undefined;
-  switch (command.type) {
-    case "thread.create":
-    case "thread.turn.start":
-    case "thread.queued-turn.dispatch":
-      threadId = command.threadId;
-      break;
-  }
-  if (threadId === undefined) {
-    return { command, worktreePath: null, branch: null, honoredProjectCheckout: false };
-  }
+  const threadId: string = command.threadId;
   if (gitRoot === null) {
     return yield* new OrchestrationCommandInvariantError({
       commandType: command.type,
@@ -216,6 +310,39 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
     repositoryKey,
     threadWorkspaceKey,
   );
+  const allocationError = (cause: unknown) =>
+    new OrchestrationCommandInvariantError({
+      commandType: command.type,
+      detail: `Unable to allocate isolated workspace '${worktreePath}' for thread '${threadId}': ${cause instanceof Error ? cause.message : String(cause)}`,
+    });
+  const existingWorkspace = yield* Effect.tryPromise({
+    try: () =>
+      runProcess("git", ["-C", worktreePath, "rev-parse", "--show-toplevel"], {
+        allowNonZeroExit: true,
+        maxBufferBytes: 16 * 1024,
+        timeoutMs: 5_000,
+      }),
+    catch: allocationError,
+  });
+
+  let sourceSnapshotRevision: string | undefined;
+  if (existingWorkspace.code !== 0 && createThread?.sourceWorktreePath !== undefined) {
+    // This capture runs on the single orchestration command worker and stalls
+    // later commands. No caller may hold a source checkout lock while awaiting
+    // orchestration dispatch (scar 381); capture itself holds the lock briefly.
+    sourceSnapshotRevision = yield* createWorkspaceSnapshotCommit(
+      createThread.sourceWorktreePath,
+    ).pipe(
+      Effect.mapError((cause) =>
+        allocationError(
+          new Error(
+            `could not snapshot source worktree '${createThread.sourceWorktreePath}': ${cause instanceof Error ? cause.message : String(cause)}`,
+          ),
+        ),
+      ),
+    );
+  }
+
   yield* Effect.tryPromise({
     try: async () => {
       await mkdir(path.dirname(worktreePath), { recursive: true });
@@ -249,12 +376,14 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
         if (existingCommonDir.code !== 0 || existingBranch.code !== 0) {
           throw new Error("existing workspace is not a checked-out Git worktree");
         }
-        const canonicalCommonDir = await canonicalizeWorktreePath(
-          path.resolve(worktreePath, existingCommonDir.stdout.trim()),
-        );
-        const canonicalExpectedCommonDir = await canonicalizeWorktreePath(
-          path.resolve(gitRoot, expectedCommonDir.stdout.trim()),
-        );
+        const canonicalCommonDir = (
+          await resolveGitWorktreeIdentity(
+            path.resolve(worktreePath, existingCommonDir.stdout.trim()),
+          )
+        ).canonicalPath;
+        const canonicalExpectedCommonDir = (
+          await resolveGitWorktreeIdentity(path.resolve(gitRoot, expectedCommonDir.stdout.trim()))
+        ).canonicalPath;
         if (
           canonicalCommonDir !== canonicalExpectedCommonDir ||
           existingBranch.stdout.trim() !== branch
@@ -266,19 +395,7 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
         return;
       }
       const sourceRevision =
-        createThread?.sourceWorktreePath === undefined
-          ? sourceBranch
-          : (
-              await runProcess(
-                "git",
-                ["-C", createThread.sourceWorktreePath, "rev-parse", "HEAD"],
-                {
-                  allowNonZeroExit: true,
-                  maxBufferBytes: 16 * 1024,
-                  timeoutMs: 5_000,
-                },
-              )
-            ).stdout.trim();
+        createThread?.sourceWorktreePath === undefined ? sourceBranch : sourceSnapshotRevision;
       if (!sourceRevision) {
         throw new Error(
           `could not resolve source revision from '${createThread?.sourceWorktreePath ?? sourceBranch}'`,
@@ -306,11 +423,7 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
         throw new Error(result.stderr.trim() || `git worktree add failed with code ${result.code}`);
       }
     },
-    catch: (cause) =>
-      new OrchestrationCommandInvariantError({
-        commandType: command.type,
-        detail: `Unable to allocate isolated workspace '${worktreePath}' for thread '${threadId}': ${cause instanceof Error ? cause.message : String(cause)}`,
-      }),
+    catch: allocationError,
   });
   const nextCommand =
     command.type === "thread.create"
@@ -349,7 +462,12 @@ export const admitWorkspaceCommand = Effect.fn("admitWorkspace")(function* (
     (command.type === "thread.create" ? command.projectId : undefined) ??
     (command.type === "thread.turn.start" ? command.bootstrap?.createThread?.projectId : undefined);
   const project = projectId === undefined ? undefined : deps.findProject(projectId);
-  const prepared = yield* prepareIsolatedWorkspace(command, project?.workspaceRoot, thread);
+  const prepared = yield* prepareIsolatedWorkspace(
+    command,
+    project?.workspaceRoot,
+    thread,
+    deps.createWorkspaceSnapshotCommit,
+  );
   command = prepared.command;
   const requestedPath =
     command.type === "thread.create"
@@ -380,6 +498,21 @@ export const admitWorkspaceCommand = Effect.fn("admitWorkspace")(function* (
   ) {
     return command;
   }
+  // A fork inherits its source's worktree, so relatives bound to the same
+  // checkout share it. Ownership still transfers per command (the generation
+  // advances and `assertOwned` keeps working), and only one of them may hold
+  // the checkout at a time: a running relative would make this claim stale
+  // mid-turn and would let two turns write one index. Scoping to the claimed
+  // path keeps delegated children (own isolated worktree) and handed-off forks
+  // out of it.
+  const relatives = yield* findCheckoutRelatives(command.threadId, requestedPath, deps);
+  const busyRelative = relatives.find(threadIsBusy);
+  if (busyRelative !== undefined) {
+    return yield* new OrchestrationCommandInvariantError({
+      commandType: command.type,
+      detail: `Thread '${busyRelative.id}' is running and shares this workspace with '${command.threadId}'. Wait for it to finish or stop it, then try again; T3 will not let two related chats write one checkout at once.`,
+    });
+  }
   const binding = yield* deps
     .claimOwnership({
       threadId: command.threadId,
@@ -392,6 +525,7 @@ export const admitWorkspaceCommand = Effect.fn("admitWorkspace")(function* (
             : (prepared.branch ?? thread?.workspaceBinding?.branch ?? thread?.branch ?? null),
       commandId: command.commandId,
       now: new Date().toISOString(),
+      coOwnerThreadIds: relatives.map((relative) => relative.id),
     })
     .pipe(
       Effect.mapError((error) => {

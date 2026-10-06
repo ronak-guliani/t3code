@@ -58,14 +58,16 @@ import { githubPullRequestNavigation, openPullRequestLink } from "../lib/openPul
 import { usePrimaryEnvironmentId } from "~/environments/primary";
 import { useProjectEntriesQuery } from "./files/projectFilesQueryState";
 import { buildFileParentSuffixByPath } from "../filePathDisambiguation";
-import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
+import { openFileReference } from "~/browser/openFileReference";
 import { useOpenLink } from "~/browser/useOpenLink";
 import { readEnvironmentApi } from "~/environmentApi";
-import { isPreviewSupportedInRuntime } from "~/previewStateStore";
-import { useRightPanelStore } from "~/rightPanelStore";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { toWorkspaceRelativePath } from "../filePathDisplay";
+import {
+  appendStreamingMarkdown,
+  beginStreamingMarkdown,
+  type StreamingMarkdownSegments,
+} from "./streamingMarkdown";
 
 class CodeHighlightErrorBoundary extends React.Component<
   { fallback: ReactNode; children: ReactNode },
@@ -103,11 +105,24 @@ interface ChatMarkdownProps {
 type MarkdownFunctionComponentProps<K extends keyof Components> = Parameters<
   Extract<NonNullable<Components[K]>, (...args: Array<never>) => unknown>
 >[0];
+const MarkdownSourceContext = React.createContext("");
+
+function MarkdownListItem({ node, ...props }: MarkdownFunctionComponentProps<"li">) {
+  const sourceText = use(MarkdownSourceContext);
+  const listItemStart = node?.position?.start.offset;
+  const markerOffset =
+    typeof listItemStart === "number" ? findTaskListMarkerOffset(sourceText, listItemStart) : null;
+  return <li {...props} data-task-marker-offset={markerOffset ?? undefined} />;
+}
 
 const CODE_FENCE_LANGUAGE_REGEX = /(?:^|\s)language-([^\s]+)/;
 const WEB_CITATION_TOKEN_PATTERN = /\uE200cite(?:\uE202turn\d+[A-Za-z]+\d+)+\uE201/g;
 const TRAILING_PARTIAL_WEB_CITATION_PATTERN = /\uE200cite[\s\S]*$/;
 const MemoizedReactMarkdown = memo(ReactMarkdown);
+const EMPTY_GITHUB_REFERENCES: ReadonlyMap<string, string> = new Map();
+const EMPTY_MARKDOWN_FILE_LINK_META_BY_HREF: ReadonlyMap<string, MarkdownFileLinkMeta> = new Map();
+const isAbsoluteFileReference = (path: string) =>
+  path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
 const MAX_HIGHLIGHT_CACHE_MEMORY_BYTES = 50 * 1024 * 1024;
 const highlightedCodeCache = new LRUCache<string>(
@@ -169,21 +184,82 @@ function normalizeChatMarkdownText(text: string, isStreaming: boolean): string {
   return isStreaming ? normalized.replace(TRAILING_PARTIAL_WEB_CITATION_PATTERN, "") : normalized;
 }
 
-function useStreamingMarkdownText(text: string, isStreaming: boolean): string {
-  const [frameText, setFrameText] = useState(text);
+interface StreamingMarkdownFrame {
+  readonly isStreaming: boolean;
+  readonly markdownText: string;
+  readonly normalizedText: string;
+  readonly segments: StreamingMarkdownSegments | null;
+}
+
+function createStreamingMarkdownFrame(text: string, isStreaming: boolean): StreamingMarkdownFrame {
+  const normalizedText = normalizeChatMarkdownText(text, isStreaming);
+  return {
+    isStreaming,
+    markdownText: text,
+    normalizedText,
+    segments: isStreaming ? beginStreamingMarkdown(normalizedText) : null,
+  };
+}
+
+function useStreamingMarkdownFrame(
+  text: string,
+  isStreaming: boolean,
+): {
+  readonly markdownText: string;
+  readonly normalizedText: string;
+  readonly segments: StreamingMarkdownSegments | null;
+} {
+  const [frame, setFrame] = useState(() => createStreamingMarkdownFrame(text, isStreaming));
 
   useEffect(() => {
     if (!isStreaming) {
-      setFrameText(text);
+      setFrame((previous) =>
+        previous.isStreaming ? createStreamingMarkdownFrame(text, false) : previous,
+      );
       return;
     }
 
-    // Coalesce provider deltas faster than the display can paint into one parse per frame.
-    const frameId = window.requestAnimationFrame(() => setFrameText(text));
+    // Coalesce provider deltas faster than the display can paint. Completed
+    // independent paragraphs keep stable ReactMarkdown props across frames.
+    const frameId = window.requestAnimationFrame(() => {
+      const normalizedText = normalizeChatMarkdownText(text, true);
+      setFrame((previous) => {
+        if (previous.isStreaming && previous.markdownText === text) {
+          return previous;
+        }
+        return {
+          isStreaming: true,
+          markdownText: text,
+          normalizedText,
+          segments:
+            previous.isStreaming && previous.segments !== null
+              ? appendStreamingMarkdown(previous.segments, normalizedText)
+              : beginStreamingMarkdown(normalizedText),
+        };
+      });
+    });
     return () => window.cancelAnimationFrame(frameId);
   }, [isStreaming, text]);
 
-  return isStreaming ? frameText : text;
+  if (!isStreaming) {
+    return {
+      markdownText: text,
+      normalizedText: normalizeChatMarkdownText(text, false),
+      segments: null,
+    };
+  }
+  if (!frame.isStreaming) {
+    return {
+      markdownText: frame.markdownText,
+      normalizedText: frame.normalizedText,
+      segments: null,
+    };
+  }
+  return {
+    markdownText: frame.markdownText,
+    normalizedText: frame.normalizedText,
+    segments: frame.segments,
+  };
 }
 
 function findTaskListMarkerOffset(markdown: string, listItemStart: number): number | null {
@@ -724,6 +800,7 @@ interface MarkdownFileLinkProps {
   threadRef?: ScopedThreadRef;
   cwd?: string | undefined;
   line?: number | undefined;
+  column?: number | undefined;
   className?: string | undefined;
 }
 
@@ -973,42 +1050,51 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   threadRef,
   cwd,
   line,
+  column,
   className,
 }: MarkdownFileLinkProps) {
   const environmentApi = threadRef ? readEnvironmentApi(threadRef.environmentId) : undefined;
   const openPreview = useAtomCommand(previewEnvironment.open);
+  const navigatePreview = useAtomCommand(previewEnvironment.navigate);
   const handleOpen = useCallback(() => {
     const httpBaseUrl = threadRef ? getEnvironmentHttpBaseUrl(threadRef.environmentId) : null;
-    if (
-      threadRef &&
-      environmentApi &&
-      httpBaseUrl &&
-      isPreviewSupportedInRuntime() &&
-      isBrowserPreviewFile(filePath)
-    ) {
-      void openFileInPreview({
+    if (threadRef) {
+      if (!environmentApi || !httpBaseUrl) {
+        toastManager.add({
+          type: "error",
+          title: "Unable to open file",
+          description: "The thread's owning environment is unavailable.",
+        });
+        return;
+      }
+      void openFileReference({
         threadRef,
-        relativePath: filePath,
+        filePath,
+        cwd,
+        ...(line === undefined ? {} : { line }),
+        ...(column === undefined ? {} : { column }),
         httpBaseUrl,
         createAssetUrl: environmentApi.assets.createUrl,
         openPreview,
+        navigatePreview,
       }).catch((error) => {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Unable to open preview",
+            title: "Unable to open file",
             description: error instanceof Error ? error.message : "An error occurred.",
           }),
         );
       });
       return;
     }
-    if (threadRef) {
-      const workspaceRelativePath = toWorkspaceRelativePath(filePath, cwd);
-      if (workspaceRelativePath) {
-        useRightPanelStore.getState().openFile(threadRef, workspaceRelativePath, line);
-        return;
-      }
+    if (isAbsoluteFileReference(filePath)) {
+      toastManager.add({
+        type: "error",
+        title: "Owning environment unavailable",
+        description: "Open this host file from its thread to avoid using a local path.",
+      });
+      return;
     }
     const localApi = readLocalApi();
     if (!localApi) {
@@ -1028,7 +1114,17 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }),
       );
     });
-  }, [cwd, environmentApi, filePath, line, openPreview, targetPath, threadRef]);
+  }, [
+    column,
+    cwd,
+    environmentApi,
+    filePath,
+    line,
+    navigatePreview,
+    openPreview,
+    targetPath,
+    threadRef,
+  ]);
 
   const handleCopy = useCallback((value: string, title: string) => {
     if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
@@ -1145,6 +1241,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.threadRef?.threadId === next.threadRef?.threadId &&
     previous.cwd === next.cwd &&
     previous.line === next.line &&
+    previous.column === next.column &&
     previous.className === next.className
   );
 }
@@ -1206,11 +1303,11 @@ function ChatMarkdownView({
 }: ChatMarkdownViewProps) {
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
-  const markdownText = useStreamingMarkdownText(text, isStreaming);
-  const normalizedText = useMemo(
-    () => normalizeChatMarkdownText(markdownText, isStreaming),
-    [isStreaming, markdownText],
-  );
+  const {
+    markdownText,
+    normalizedText,
+    segments: streamingSegments,
+  } = useStreamingMarkdownFrame(text, isStreaming);
   const environmentIds = useStore(
     useShallow((state) => Object.keys(state.environmentStateById) as EnvironmentId[]),
   );
@@ -1270,6 +1367,9 @@ function ChatMarkdownView({
   // and force react-markdown to re-tokenize the active row every chunk.
   const githubReferencesRef = useRef<ReadonlyMap<string, string> | undefined>(undefined);
   const githubReferences = useMemo(() => {
+    if (streamingSegments?.mode === "segments") {
+      return EMPTY_GITHUB_REFERENCES;
+    }
     const references = new Map<string, string>();
     const navigation = currentThread?.pullRequest?.url
       ? githubPullRequestNavigation(currentThread.pullRequest.url)
@@ -1321,8 +1421,12 @@ function ChatMarkdownView({
     currentProject?.repositoryIdentity?.provider,
     currentThread?.pullRequest?.url,
     normalizedText,
+    streamingSegments?.mode,
   ]);
   const markdownFileLinkMetaByHref = useMemo(() => {
+    if (streamingSegments?.mode === "segments") {
+      return EMPTY_MARKDOWN_FILE_LINK_META_BY_HREF;
+    }
     const metaByHref = new Map<
       string,
       NonNullable<ReturnType<typeof resolveMarkdownFileLinkMeta>>
@@ -1336,7 +1440,7 @@ function ChatMarkdownView({
       }
     }
     return metaByHref;
-  }, [cwd, linkBaseDir, markdownText]);
+  }, [cwd, linkBaseDir, markdownText, streamingSegments?.mode]);
   const fileLinkParentSuffixByPath = useMemo(() => {
     return buildFileParentSuffixByPath(
       [...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath),
@@ -1395,6 +1499,7 @@ function ChatMarkdownView({
           {...(threadRef ? { threadRef } : {})}
           {...(cwd ? { cwd } : {})}
           {...(fileLinkMeta.line !== undefined ? { line: fileLinkMeta.line } : {})}
+          {...(fileLinkMeta.column !== undefined ? { column: fileLinkMeta.column } : {})}
           className={props.className}
         />
       );
@@ -1448,6 +1553,7 @@ function ChatMarkdownView({
               {...(threadRef ? { threadRef } : {})}
               {...(cwd ? { cwd } : {})}
               {...(fileLinkMeta.line !== undefined ? { line: fileLinkMeta.line } : {})}
+              {...(fileLinkMeta.column !== undefined ? { column: fileLinkMeta.column } : {})}
             />
           );
         }
@@ -1459,17 +1565,6 @@ function ChatMarkdownView({
       );
     },
     [resolveChatInlineCode, cwd, resolvedTheme, threadRef],
-  );
-  const markdownListItem = useCallback(
-    ({ node, ...props }: MarkdownFunctionComponentProps<"li">) => {
-      const listItemStart = node?.position?.start.offset;
-      const markerOffset =
-        typeof listItemStart === "number"
-          ? findTaskListMarkerOffset(markdownText, listItemStart)
-          : null;
-      return <li {...props} data-task-marker-offset={markerOffset ?? undefined} />;
-    },
-    [markdownText],
   );
   const markdownTaskInput = useCallback(
     ({
@@ -1515,10 +1610,10 @@ function ChatMarkdownView({
       a: markdownAnchor,
       code: markdownCode,
       pre: markdownPre,
-      li: markdownListItem,
+      li: MarkdownListItem,
       input: markdownTaskInput,
     }),
-    [markdownAnchor, markdownCode, markdownPre, markdownListItem, markdownTaskInput],
+    [markdownAnchor, markdownCode, markdownPre, markdownTaskInput],
   );
   // Stable plugin array: react-markdown re-tokenizes when the array identity
   // changes, so factory plugins must be memoized across streaming renders.
@@ -1540,17 +1635,34 @@ function ChatMarkdownView({
     [resolveChatInlineCode, githubReferences, threadRef?.environmentId, trustedOrigins],
   );
 
-  return (
-    <div
-      className={cn("chat-markdown w-full min-w-0 leading-relaxed text-foreground/80", className)}
-    >
+  const renderMarkdown = (sourceText: string, key: string | number) => (
+    <MarkdownSourceContext.Provider key={key} value={markdownText}>
       <MemoizedReactMarkdown
         remarkPlugins={remarkPlugins}
         components={markdownComponents}
         urlTransform={markdownUrlTransform}
       >
-        {normalizedText}
+        {sourceText}
       </MemoizedReactMarkdown>
+    </MarkdownSourceContext.Provider>
+  );
+
+  return (
+    <div
+      className={cn("chat-markdown w-full min-w-0 leading-relaxed text-foreground/80", className)}
+    >
+      {streamingSegments?.mode === "segments" ? (
+        <>
+          {streamingSegments.completed.map((segment) =>
+            renderMarkdown(segment.text, segment.start),
+          )}
+          {streamingSegments.tailText.length > 0
+            ? renderMarkdown(streamingSegments.tailText, streamingSegments.tailStart)
+            : null}
+        </>
+      ) : (
+        renderMarkdown(normalizedText, "full")
+      )}
     </div>
   );
 }

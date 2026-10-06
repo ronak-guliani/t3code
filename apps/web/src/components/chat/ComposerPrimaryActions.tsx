@@ -19,6 +19,7 @@ interface ComposerPrimaryActionsProps {
   showPlanFollowUpPrompt: boolean;
   promptHasText: boolean;
   isSendBusy: boolean;
+  busyAction?: "queue" | "steer";
   isConnecting: boolean;
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
@@ -58,6 +59,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   showPlanFollowUpPrompt,
   promptHasText,
   isSendBusy,
+  busyAction = "steer",
   isConnecting,
   isPreparingWorktree,
   hasSendableContent,
@@ -105,6 +107,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           size="sm"
           className={cn("rounded-full", compact ? "px-3" : "px-4")}
           {...pointerFocusProps}
+          data-pending-user-input-action="true"
           disabled={
             pendingAction.isResponding ||
             (pendingAction.isLastQuestion ? !pendingAction.isComplete : !pendingAction.canAdvance)
@@ -135,7 +138,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
               disabled={isSendBusy || isConnecting}
               title="Send immediately into the running turn"
             >
-              {isSendBusy ? "Steering..." : "Steer"}
+              {isSendBusy && busyAction === "steer" ? "Steering..." : "Steer"}
             </Button>
             <Button
               type="submit"
@@ -146,7 +149,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
               disabled={isSendBusy || isConnecting}
               title="Queue for after the running turn"
             >
-              {isSendBusy ? "Queueing..." : "Queue"}
+              {isSendBusy && busyAction === "queue" ? "Queueing..." : "Queue"}
             </Button>
           </>
         ) : null}

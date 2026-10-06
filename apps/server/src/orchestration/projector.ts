@@ -10,10 +10,16 @@ import {
   OrchestrationSession,
   OrchestrationThread,
 } from "@t3tools/contracts";
-import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
+import {
+  childLifecycleNotificationToActivity,
+  crossThreadSendRecordToActivity,
+} from "@t3tools/shared/orchestrationActivity";
+import { sessionResolvesPendingTurnStart } from "@t3tools/shared/threadBusyState";
 import { sameThreadPullRequest } from "@t3tools/shared/threadPullRequests";
+import { compareQueuedTurns } from "@t3tools/shared/queuedTurnOrder";
 import { Effect, Schema } from "effect";
 
+import { projectActivityPayload } from "./ActivityPayloadProjection.ts";
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
   applyValidationEvent,
@@ -30,7 +36,7 @@ import {
   resolveInitialThreadPullRequest,
   selectRetainedMessageIds,
   shouldPreserveActiveMessageId,
-  terminalTurnStateForSessionStatus,
+  reconcileLatestTurnWithSession,
 } from "./projection/ProjectionPolicy.ts";
 import {
   MessageSentPayloadSchema,
@@ -39,6 +45,7 @@ import {
   ProjectMetaUpdatedPayload,
   ThreadActivityAppendedPayload,
   ThreadChildLifecycleNotifiedPayload,
+  ThreadCrossThreadSendRecordedPayload,
   ThreadArchivedPayload,
   ThreadCreatedPayload,
   ThreadDecoupledPayload,
@@ -57,6 +64,9 @@ import {
   ThreadQueuedTurnDispatchedPayload,
   ThreadQueuedTurnFailedPayload,
   ThreadQueuedTurnUpdatedPayload,
+  ThreadQueuedTurnReorderedPayload,
+  ThreadQueueHeldPayload,
+  ThreadQueueReleasedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadReviewResultSetPayload,
   ThreadSettledPayload,
@@ -70,6 +80,7 @@ import {
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadTurnDiffCompletedPayload,
+  ThreadTurnStartRequestedPayload,
   WorkflowArtifactCreatedPayload,
   WorkflowNodeWorkerStartedPayload,
   WorkflowRunFinalizedPayload,
@@ -93,35 +104,7 @@ function latestTurnFromSession(
   thread: OrchestrationThread,
   session: OrchestrationSession,
 ): OrchestrationThread["latestTurn"] {
-  if (session.status === "running" && session.activeTurnId !== null) {
-    return {
-      turnId: session.activeTurnId,
-      state: "running",
-      requestedAt:
-        thread.latestTurn?.turnId === session.activeTurnId
-          ? thread.latestTurn.requestedAt
-          : session.updatedAt,
-      startedAt:
-        thread.latestTurn?.turnId === session.activeTurnId
-          ? (thread.latestTurn.startedAt ?? session.updatedAt)
-          : session.updatedAt,
-      completedAt: null,
-      assistantMessageId:
-        thread.latestTurn?.turnId === session.activeTurnId
-          ? thread.latestTurn.assistantMessageId
-          : null,
-    };
-  }
-
-  if (thread.latestTurn?.state === "running") {
-    return {
-      ...thread.latestTurn,
-      state: terminalTurnStateForSessionStatus(session.status),
-      completedAt: session.updatedAt,
-    };
-  }
-
-  return thread.latestTurn;
+  return reconcileLatestTurnWithSession(thread.latestTurn, session);
 }
 
 function updateThread(
@@ -425,12 +408,18 @@ export function projectEvent(
         };
       });
 
+    // Archived and deleted threads stay in the read model forever, so they keep only the
+    // projected activity payloads; the raw tool output remains in SQL. Retaining it for
+    // every dormant thread exhausted the backend heap.
     case "thread.deleted":
       return decodeForEvent(ThreadDeletedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             deletedAt: payload.deletedAt,
+            activities: (
+              nextBase.threads.find((entry) => entry.id === payload.threadId)?.activities ?? []
+            ).map(projectActivityPayload),
             updatedAt: payload.deletedAt,
           }),
         })),
@@ -442,6 +431,9 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: payload.archivedAt,
+            activities: (
+              nextBase.threads.find((entry) => entry.id === payload.threadId)?.activities ?? []
+            ).map(projectActivityPayload),
             titleRegeneration: null,
             updatedAt: payload.updatedAt,
           }),
@@ -798,6 +790,7 @@ export function projectEvent(
             text: payload.text,
             ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
             ...(payload.origin !== undefined ? { origin: payload.origin } : {}),
+            ...(payload.context !== undefined ? { context: payload.context } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
             createdAt: payload.createdAt,
@@ -827,6 +820,12 @@ export function projectEvent(
                     ...(message.attachments !== undefined
                       ? { attachments: message.attachments }
                       : {}),
+                    // Deltas that omit context must not drop the established binding.
+                    ...(message.context !== undefined
+                      ? { context: message.context }
+                      : entry.context !== undefined
+                        ? { context: entry.context }
+                        : {}),
                   }
                 : entry,
             )
@@ -898,10 +897,101 @@ export function projectEvent(
           threads: updateThread(nextBase.threads, payload.threadId, {
             session,
             latestTurn: latestTurnFromSession(thread, session),
+            // Shared with the SQL projection and both client reducers.
+            ...(sessionResolvesPendingTurnStart(session) ? { pendingTurnStart: null } : {}),
             updatedAt: event.occurredAt,
           }),
         };
       });
+
+    case "thread.queue-held":
+      return decodeForEvent(ThreadQueueHeldPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              queueHeldAt: payload.heldAt,
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.queue-released":
+      return decodeForEvent(ThreadQueueReleasedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              queueHeldAt: null,
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.queued-turn-reordered":
+      return decodeForEvent(
+        ThreadQueuedTurnReorderedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+          const positions = new Map(
+            payload.orderedQueuedTurnIds.map((queuedTurnId, index) => [queuedTurnId, index]),
+          );
+          const queuedTurns = (thread.queuedTurns ?? [])
+            .map((queuedTurn) => {
+              const queuePosition = positions.get(queuedTurn.id);
+              return queuePosition === undefined
+                ? queuedTurn
+                : { ...queuedTurn, queuePosition, updatedAt: payload.reorderedAt };
+            })
+            .toSorted(compareQueuedTurns);
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              queuedTurns,
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.turn-start-requested":
+      return decodeForEvent(
+        ThreadTurnStartRequestedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pendingTurnStart: {
+              messageId: payload.messageId,
+              requestedAt: payload.createdAt,
+              ...(payload.sourceProposedPlan !== undefined
+                ? { sourceProposedPlan: payload.sourceProposedPlan }
+                : {}),
+            },
+            updatedAt: event.occurredAt,
+          }),
+        })),
+      );
 
     case "thread.queued-turn-created":
       return decodeForEvent(
@@ -920,10 +1010,7 @@ export function projectEvent(
               (queuedTurn) => queuedTurn.id !== payload.queuedTurn.id,
             ),
             payload.queuedTurn,
-          ].toSorted(
-            (left, right) =>
-              left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-          );
+          ].toSorted(compareQueuedTurns);
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
@@ -950,7 +1037,15 @@ export function projectEvent(
             queuedTurn.id === payload.queuedTurnId
               ? {
                   ...queuedTurn,
-                  message: { ...queuedTurn.message, text: payload.text },
+                  message: {
+                    ...queuedTurn.message,
+                    text: payload.text,
+                    ...(payload.context !== undefined
+                      ? { context: payload.context }
+                      : queuedTurn.message.context !== undefined
+                        ? { context: queuedTurn.message.context }
+                        : {}),
+                  },
                   ...(payload.origin !== undefined ? { origin: payload.origin } : {}),
                   updatedAt: payload.updatedAt,
                   failedAt: null,
@@ -1102,6 +1197,7 @@ export function projectEvent(
             files: payload.files,
             agentTouchedPaths: payload.agentTouchedPaths,
             turnFiles: payload.turnFiles,
+            transitionFiles: payload.transitionFiles,
             assistantMessageId: payload.assistantMessageId,
             completedAt: payload.completedAt,
           },
@@ -1217,10 +1313,33 @@ export function projectEvent(
             return nextBase;
           }
 
+          // Only the pending message's own failure clears it. `payload` is
+          // Schema.Unknown and this runs for every appended activity, so an
+          // unguarded read threw a TypeError that failed the whole transaction.
+          const pending = thread.pendingTurnStart;
+          const activityPayload = payload.activity.payload;
+          const failureMessageId =
+            typeof activityPayload === "object" &&
+            activityPayload !== null &&
+            "messageId" in activityPayload &&
+            typeof activityPayload.messageId === "string"
+              ? activityPayload.messageId
+              : undefined;
+          const clearsPendingStart =
+            payload.activity.kind === "provider.turn.start.failed" &&
+            pending != null &&
+            (failureMessageId === undefined || failureMessageId === pending.messageId);
+
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
-              activities: appendThreadActivity(thread, payload.activity),
+              activities: appendThreadActivity(
+                thread,
+                thread.archivedAt != null || thread.deletedAt !== null
+                  ? projectActivityPayload(payload.activity)
+                  : payload.activity,
+              ),
+              ...(clearsPendingStart ? { pendingTurnStart: null } : {}),
               updatedAt: event.occurredAt,
             }),
           };
@@ -1248,6 +1367,34 @@ export function projectEvent(
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.parentThreadId, {
               activities: appendThreadActivity(parent, activity),
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.cross-thread-send-recorded":
+      return decodeForEvent(
+        ThreadCrossThreadSendRecordedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const source = nextBase.threads.find((entry) => entry.id === payload.sourceThreadId);
+          if (!source) {
+            return nextBase;
+          }
+          const activity = crossThreadSendRecordToActivity({
+            eventId: event.eventId,
+            payload,
+            turnId: payload.sourceTurnId,
+            sequence: event.sequence,
+          });
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.sourceThreadId, {
+              activities: appendThreadActivity(source, activity),
               updatedAt: event.occurredAt,
             }),
           };

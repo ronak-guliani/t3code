@@ -32,10 +32,14 @@ import { Context, Effect, Layer } from "effect";
 import { ServerConfig } from "../../config.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { makeGlobalProviderEventSink } from "./GlobalProviderEventSink.ts";
+import { pruneProviderLogs } from "./ProviderLogRetention.ts";
 
 const GLOBAL_SINK_MAX_BYTES = 10 * 1024 * 1024;
 const GLOBAL_SINK_MAX_FILES = 10;
 const GLOBAL_SINK_BATCH_WINDOW_MS = 200;
+const PROVIDER_LOG_MAX_BYTES = 1024 * 1024 * 1024;
+const PROVIDER_LOG_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const PROVIDER_LOG_RETENTION_INTERVAL = "5 minutes";
 
 export interface ProviderEventLoggersShape {
   readonly native: EventNdjsonLogger | undefined;
@@ -73,7 +77,35 @@ export const NoOpProviderEventLoggers: ProviderEventLoggersShape = {
 export const ProviderEventLoggersLive = Layer.effect(
   ProviderEventLoggers,
   Effect.gen(function* () {
-    const { providerEventLogPath, globalProviderEventLogPath } = yield* ServerConfig;
+    const { providerEventLogPath, globalProviderEventLogPath, providerLogsDir } =
+      yield* ServerConfig;
+    const enforceRetention = Effect.sync(() =>
+      pruneProviderLogs({
+        directory: providerLogsDir,
+        maxBytes: PROVIDER_LOG_MAX_BYTES,
+        maxAgeMs: PROVIDER_LOG_MAX_AGE_MS,
+      }),
+    ).pipe(
+      Effect.tap((result) =>
+        result.filesRemoved === 0
+          ? Effect.void
+          : Effect.logInfo("provider event log retention pruned files", result),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider event log retention pass failed", { cause }).pipe(
+          Effect.ignore,
+        ),
+      ),
+    );
+
+    yield* enforceRetention;
+    yield* Effect.forkScoped(
+      Effect.sleep(PROVIDER_LOG_RETENTION_INTERVAL).pipe(
+        Effect.andThen(enforceRetention),
+        Effect.forever,
+      ),
+    );
+
     const globalSink = yield* makeGlobalProviderEventSink({
       filePath: globalProviderEventLogPath,
       maxBytes: GLOBAL_SINK_MAX_BYTES,

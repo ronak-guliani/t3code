@@ -20,6 +20,7 @@ import {
   makeSqlitePersistenceLive,
 } from "../../persistence/Layers/Sqlite.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
+import { CheckpointStoreDieStubLive } from "../../checkpointing/Layers/CheckpointStore.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
@@ -50,6 +51,7 @@ async function createFenceTestSystem(dbPath?: string) {
     Layer.provide(dbPath ? makeSqlitePersistenceLive(dbPath) : SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(CheckpointStoreDieStubLive),
   );
   const runtime = ManagedRuntime.make(orchestrationLayer);
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -115,6 +117,28 @@ async function setupDelegatedChild(
         followUp: "automatic" as const,
         completedAt: null,
       },
+      createdAt: at,
+    }),
+  );
+  // A freshly created delegation is an *initial* dispatch: minted, but with no
+  // bound turn. `thread.session.set` only mints and binds the authoritative
+  // (dispatch, turn) pair — and only rotates the generation when a second turn
+  // replaces the first — once the assignment has actually arrived as the child's
+  // latest user message. Without this delivery every session set is ignored and
+  // the fence can never observe a bind or a replace.
+  await system.run(
+    system.engine.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("fence-deliver-assignment"),
+      threadId: childId,
+      message: {
+        messageId: MessageId.make("fence-assignment"),
+        role: "user",
+        text: "Investigate the fence.",
+        attachments: [],
+      },
+      runtimeMode: "approval-required",
+      interactionMode: "default",
       createdAt: at,
     }),
   );

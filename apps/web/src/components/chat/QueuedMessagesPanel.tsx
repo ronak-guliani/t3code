@@ -1,18 +1,27 @@
 import type { OrchestrationQueuedTurn, QueuedTurnId } from "@t3tools/contracts";
-import { Check, Pencil, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Pause, Pencil, Play, Trash2, X } from "lucide-react";
 import { memo } from "react";
 import { cn } from "../../lib/utils";
+import { formatThreadContextPlainText } from "@t3tools/shared/threadContext";
 import { Button } from "../ui/button";
 
 interface QueuedMessagesPanelProps {
+  queuedTurnStatuses?: ReadonlyMap<QueuedTurnId, "submitting" | "accepted"> | undefined;
   policyBlocks?: ReadonlyMap<QueuedTurnId, string> | undefined;
   queuedTurns: ReadonlyArray<OrchestrationQueuedTurn>;
+  /**
+   * Set while crash recovery holds the queue. Nothing drains until the user
+   * releases it, so the panel must say so and offer the release.
+   */
+  queueHeldAt: string | null;
   editingQueuedTurnId: QueuedTurnId | null;
   editingText: string;
-  onStartEditingQueuedTurn: (queuedTurn: OrchestrationQueuedTurn) => void;
+  onStartEditingQueuedTurn?: ((queuedTurn: OrchestrationQueuedTurn) => void) | undefined;
   onCancelEditingQueuedTurn: () => void;
   onSaveEditingQueuedTurn: () => void;
   onDeleteQueuedTurn: (queuedTurnId: QueuedTurnId) => void;
+  onMoveQueuedTurn: (queuedTurnId: QueuedTurnId, direction: -1 | 1) => void;
+  onReleaseQueue: () => void;
 }
 
 /**
@@ -31,7 +40,7 @@ function isHiddenQueuedTurn(queuedTurn: OrchestrationQueuedTurn): boolean {
 function queuedTurnLabel(queuedTurn: OrchestrationQueuedTurn): string | null {
   return queuedTurn.origin?.kind === "workspace-handoff"
     ? `Continue in ${queuedTurn.origin.branch}`
-    : queuedTurn.message.text;
+    : formatThreadContextPlainText(queuedTurn.message.text);
 }
 
 function attachmentLabel(queuedTurn: OrchestrationQueuedTurn): string | null {
@@ -44,13 +53,17 @@ function attachmentLabel(queuedTurn: OrchestrationQueuedTurn): string | null {
 
 export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
   policyBlocks,
+  queuedTurnStatuses,
   queuedTurns,
+  queueHeldAt,
   editingQueuedTurnId,
   editingText,
   onStartEditingQueuedTurn,
   onCancelEditingQueuedTurn,
   onSaveEditingQueuedTurn,
   onDeleteQueuedTurn,
+  onMoveQueuedTurn,
+  onReleaseQueue,
 }: QueuedMessagesPanelProps) {
   const nextEligibleId = queuedTurns.find(
     (turn) => !policyBlocks?.has(turn.id) && turn.origin?.kind !== "child-nudge",
@@ -58,23 +71,45 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
   const visibleQueuedTurns = queuedTurns.flatMap((queuedTurn, queueIndex) =>
     isHiddenQueuedTurn(queuedTurn) ? [] : [{ queuedTurn, queueIndex }],
   );
-  if (visibleQueuedTurns.length === 0) {
+  // A stale hold outlives its queue: deleting the last queued turn leaves
+  // queueHeldAt set with nothing left to run. There is nothing to release, so
+  // render nothing rather than a Resume control for an empty queue.
+  if (queuedTurns.length === 0) {
     return null;
   }
+  // The hold banner must render even with no visible rows: crash recovery holds
+  // queues whose only turns are hidden ones (a child nudge, a healthy workspace
+  // handoff), and those live on dedicated surfaces that have no resume control.
+  // Returning null here would leave such a queue held with no way to release it.
+  if (visibleQueuedTurns.length === 0 && queueHeldAt === null) {
+    return null;
+  }
+  const hiddenHeldCount = queuedTurns.length - visibleQueuedTurns.length;
+  const holdDetail =
+    queueHeldAt !== null && visibleQueuedTurns.length === 0
+      ? hiddenHeldCount === 1
+        ? "1 queued follow-up will not run until you resume it."
+        : `${hiddenHeldCount} queued follow-ups will not run until you resume them.`
+      : "These messages will not run until you resume them.";
 
   return (
     <div className="composer-input-font border-b border-border/55 px-3 py-2">
       <ul className="flex flex-col gap-0.5">
         {visibleQueuedTurns.map(({ queuedTurn, queueIndex }) => {
-          const isEditing = editingQueuedTurnId === queuedTurn.id;
+          const isEditing =
+            onStartEditingQueuedTurn !== undefined && editingQueuedTurnId === queuedTurn.id;
           const isFailed = queuedTurn.failedAt !== null;
+          const isPending = queuedTurnStatuses?.has(queuedTurn.id) === true;
+          const isSubmitting = queuedTurnStatuses?.get(queuedTurn.id) === "submitting";
           const policyBlock = policyBlocks?.get(queuedTurn.id);
           const meta = attachmentLabel(queuedTurn);
-          const label = policyBlock
-            ? "Pending"
-            : queuedTurn.id === nextEligibleId
-              ? "Up next"
-              : `Queued ${queueIndex + 1}`;
+          const label = isSubmitting
+            ? "Queuing…"
+            : policyBlock
+              ? "Pending"
+              : queuedTurn.id === nextEligibleId
+                ? "Up next"
+                : `Queued ${queueIndex + 1}`;
           return (
             <li
               key={queuedTurn.id}
@@ -115,6 +150,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
               ) : (
                 <div className="flex items-center gap-2.5">
                   <span
+                    role={isSubmitting ? "status" : undefined}
                     className={cn(
                       "composer-input-font-secondary w-16 shrink-0 font-medium text-muted-foreground",
                       isFailed ? "text-destructive" : null,
@@ -135,9 +171,34 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                       type="button"
                       size="icon-xs"
                       variant="ghost"
+                      disabled={queueIndex === 0 || (queuedTurnStatuses?.size ?? 0) > 0}
+                      aria-label="Move queued message up"
+                      title="Move up"
+                      onClick={() => onMoveQueuedTurn(queuedTurn.id, -1)}
+                    >
+                      <ArrowUp />
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
+                      disabled={
+                        queueIndex === queuedTurns.length - 1 || (queuedTurnStatuses?.size ?? 0) > 0
+                      }
+                      aria-label="Move queued message down"
+                      title="Move down"
+                      onClick={() => onMoveQueuedTurn(queuedTurn.id, 1)}
+                    >
+                      <ArrowDown />
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
                       aria-label="Edit queued message"
+                      disabled={isPending || onStartEditingQueuedTurn === undefined}
                       title="Edit"
-                      onClick={() => onStartEditingQueuedTurn(queuedTurn)}
+                      onClick={() => onStartEditingQueuedTurn?.(queuedTurn)}
                     >
                       <Pencil />
                     </Button>
@@ -146,6 +207,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                       size="icon-xs"
                       variant="ghost"
                       aria-label="Delete queued message"
+                      disabled={isPending}
                       title="Delete"
                       onClick={() => onDeleteQueuedTurn(queuedTurn.id)}
                     >
@@ -168,6 +230,24 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
           );
         })}
       </ul>
+      {queueHeldAt !== null ? (
+        <div className="mt-1.5 flex items-center gap-2.5 rounded-lg border border-border/55 bg-muted/30 px-2.5 py-2">
+          <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+            <Pause className="size-3.5" aria-hidden="true" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="composer-input-font-secondary block font-medium text-foreground">
+              Queue held after restart
+            </span>
+            <span className="composer-input-font-secondary block text-muted-foreground">
+              {holdDetail}
+            </span>
+          </span>
+          <Button type="button" size="xs" className="shrink-0" onClick={onReleaseQueue}>
+            <Play /> Resume queue
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 });

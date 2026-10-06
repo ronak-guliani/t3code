@@ -52,6 +52,10 @@ export const DEFAULT_CODE_FONT_SIZE: FontSize = 13 as FontSize;
 export const DEFAULT_CHAT_FONT_SIZE: FontSize = 14 as FontSize;
 export const DEFAULT_STATUS_LINE_FONT_SIZE: FontSize = 14 as FontSize;
 export const DEFAULT_TOOL_FONT_SIZE: FontSize = 12 as FontSize;
+export const FILE_PREVIEW_LINE_SPACING_VALUES = [1.2, 1.35, 1.5, 1.65, 1.8] as const;
+export const FilePreviewLineSpacing = Schema.Literals(FILE_PREVIEW_LINE_SPACING_VALUES);
+export type FilePreviewLineSpacing = typeof FilePreviewLineSpacing.Type;
+export const DEFAULT_FILE_PREVIEW_LINE_SPACING: FilePreviewLineSpacing = 1.5;
 export const DEFAULT_SIDEBAR_FONT_SIZE: FontSize = 11 as FontSize;
 /** Sidebar metadata (project, worktree, branch, PR, timestamps) sits a deliberate step
     below the thread title so the title stays the row's anchor. */
@@ -190,7 +194,16 @@ export const DEFAULT_SIDEBAR_THREAD_SORT_ORDER: SidebarThreadSortOrder = "update
 export const SidebarThreadFilter = Schema.Literals(["all", "active", "with_pr", "open_pr"]);
 export type SidebarThreadFilter = typeof SidebarThreadFilter.Type;
 export const DEFAULT_SIDEBAR_THREAD_FILTER: SidebarThreadFilter = "all";
-export const DEFAULT_SIDEBAR_V2_ENABLED = false;
+export const MIN_SIDEBAR_SETTLED_THREAD_COUNT = 1;
+export const MAX_SIDEBAR_SETTLED_THREAD_COUNT = 50;
+export const SidebarSettledThreadCount = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_SIDEBAR_SETTLED_THREAD_COUNT,
+    maximum: MAX_SIDEBAR_SETTLED_THREAD_COUNT,
+  }),
+);
+export type SidebarSettledThreadCount = typeof SidebarSettledThreadCount.Type;
+export const DEFAULT_SIDEBAR_SETTLED_THREAD_COUNT: SidebarSettledThreadCount = 5;
 
 /** Initial state filter for the pull requests page when the URL names none. */
 export const DEFAULT_PULL_REQUESTS_DEFAULT_STATE: PullRequestListState = "open";
@@ -298,6 +311,9 @@ export const ClientSettingsSchema = Schema.Struct({
   composerMetaFontSize: FontSize.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_COMPOSER_META_FONT_SIZE)),
   ),
+  filePreviewLineSpacing: FilePreviewLineSpacing.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_FILE_PREVIEW_LINE_SPACING)),
+  ),
   inputFontSize: FontSize.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_INPUT_FONT_SIZE))),
   messagePreviewLineLimits: MessagePreviewLineLimits.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS)),
@@ -372,8 +388,8 @@ export const ClientSettingsSchema = Schema.Struct({
   sidebarThreadFilter: SidebarThreadFilter.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_FILTER)),
   ),
-  sidebarV2Enabled: Schema.Boolean.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_V2_ENABLED)),
+  sidebarSettledThreadCount: SidebarSettledThreadCount.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_SETTLED_THREAD_COUNT)),
   ),
   threadCompletionNotifications: ThreadCompletionNotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_THREAD_COMPLETION_NOTIFICATION_MODE)),
@@ -561,8 +577,17 @@ export const ServerSettings = Schema.Struct({
   autoArchiveReviewThreadsOnMerge: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
+  providerLogRetentionDays: Schema.NullOr(Schema.Number).pipe(
+    Schema.withDecodingDefault(Effect.succeed(14)),
+  ),
+  providerLogMaxTotalMb: Schema.NullOr(Schema.Number).pipe(
+    Schema.withDecodingDefault(Effect.succeed(5120)),
+  ),
   autoArchiveSettledAfterDays: Schema.NullOr(Schema.Number).pipe(
     Schema.withDecodingDefault(Effect.succeed(2)),
+  ),
+  idleTerminalStopHours: Schema.NullOr(Schema.Number).pipe(
+    Schema.withDecodingDefault(Effect.succeed(4)),
   ),
   defaultModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
@@ -802,7 +827,10 @@ export const ServerSettingsPatch = Schema.Struct({
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
   autoArchiveReviewThreadsOnMerge: Schema.optionalKey(Schema.Boolean),
+  providerLogRetentionDays: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  providerLogMaxTotalMb: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   autoArchiveSettledAfterDays: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  idleTerminalStopHours: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
   sourceControlWritingStyle: Schema.optionalKey(Schema.String),
   // Server settings
@@ -874,6 +902,7 @@ export const ClientSettingsPatch = Schema.Struct({
   statusLineFontSize: Schema.optionalKey(FontSize),
   codeFontSize: Schema.optionalKey(FontSize),
   composerMetaFontSize: Schema.optionalKey(FontSize),
+  filePreviewLineSpacing: Schema.optionalKey(FilePreviewLineSpacing),
   inputFontSize: Schema.optionalKey(FontSize),
   messagePreviewLineLimits: Schema.optionalKey(MessagePreviewLineLimits),
   sidebarFontSize: Schema.optionalKey(FontSize),
@@ -917,7 +946,7 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadFilter: Schema.optionalKey(SidebarThreadFilter),
-  sidebarV2Enabled: Schema.optionalKey(Schema.Boolean),
+  sidebarSettledThreadCount: Schema.optionalKey(SidebarSettledThreadCount),
   timestampFormat: Schema.optionalKey(TimestampFormat),
   uiDensity: Schema.optionalKey(UiDensity),
   uiFont: Schema.optionalKey(UiFont),

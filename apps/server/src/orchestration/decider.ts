@@ -25,15 +25,18 @@ import {
   listThreadsByProjectId,
   requireProject,
   requireProjectAbsent,
+  findThreadById,
   requireWritableProjectForThread,
   requireThread,
   requireThreadAbsent,
   requireThreadNotArchived,
+  nextQueuePosition,
   requireQueuedTurn,
   requireThreadReadyForTurnStart,
   requireThreadWithInFlightTurn,
   threadHasPendingInteraction,
   threadHasQueuedTurnStart,
+  threadBlocksSettlement,
   threadHasSettlementOverride,
   threadIsSnoozed,
   CHILD_DECISION_BLOCKED_DETAIL,
@@ -44,6 +47,7 @@ import { assistantTurnCount } from "./Utils.ts";
 import { findCanonicalActiveWorktreeOwner } from "./worktreeOwnership.ts";
 import {
   childNudgePrompt,
+  childPendingRequestUpdate,
   childWakeReason,
   isAutomaticChildNudgeBlocked,
   queueChildNudge,
@@ -60,8 +64,9 @@ import {
 } from "@t3tools/shared/threadPullRequests";
 import {
   bindDelegationExecution,
-  childReportDedupeKey,
+  childReportIdentity,
   classifyChildReport,
+  classifyExecutionProvenance,
   legacyUpdateId,
   mintDispatchRecord,
   transitionDelegationExecution,
@@ -115,6 +120,10 @@ type PlannedOrchestrationEvent = {
 type ChildLifecycleNotificationEvent = Extract<
   PlannedOrchestrationEvent,
   { type: "thread.child-lifecycle-notified" }
+>;
+type CrossThreadSendRecordedEvent = Extract<
+  PlannedOrchestrationEvent,
+  { type: "thread.cross-thread-send-recorded" }
 >;
 
 type DecideOrchestrationCommandResult =
@@ -278,6 +287,7 @@ function collaborationQueueEvent(
   >["delivery"],
   origin: NonNullable<OrchestrationQueuedTurn["origin"]>,
   createdAt: string,
+  queuedTurns: ReadonlyArray<OrchestrationQueuedTurn>,
 ): PlannedOrchestrationEvent {
   return {
     ...withEventBase({
@@ -293,6 +303,10 @@ function collaborationQueueEvent(
         id: delivery.queuedTurnId,
         threadId,
         message: delivery.message,
+        // Assigned here too, not only on the enqueue command path: a turn
+        // created without a position sorts after every positioned turn, so a
+        // later PR-monitor message could overtake a collaboration request.
+        queuePosition: nextQueuePosition(queuedTurns),
         ...(delivery.modelSelection !== undefined
           ? { modelSelection: delivery.modelSelection }
           : {}),
@@ -362,14 +376,23 @@ function appendChildLifecycleNotification(
 
   const dedupeKey = childLifecycleDedupeKey(input.childThread.id, input.lifecycle, input.sourceKey);
   const delegation = input.childThread.nudging?.delegation;
-  const authorizedTurn = (delegation?.dispatchTurnId as string | null | undefined) ?? null;
-  const executionFenced = delegation?.completedAt === null && delegation.dispatchId !== undefined;
-  const superseded =
-    executionFenced &&
-    authorizedTurn !== null &&
-    input.originTurnId !== null &&
-    input.originTurnId !== undefined &&
-    input.originTurnId !== authorizedTurn;
+  // A fenced delegation requires execution proof before anything
+  // state-changing: a turn-absent signal (e.g. an unscoped provider runtime
+  // error) cannot prove it comes from the authorized execution, so terminal
+  // failure/completion stays diagnostic-only and never completes the
+  // delegation or wakes the parent. Plain progress history remains allowed.
+  // Unfenced (pre-dispatch) work keeps the legacy behavior. Parent-side
+  // signals carry parent authority and are never fenced.
+  //
+  // Supersession is settled before the terminal-failure window, and only then is
+  // `wouldMutate` decided: `classifyExecutionProvenance` takes no mutatesState
+  // argument precisely so a signal too old to count as terminal failure is not
+  // fenced just for asking whether it mutates.
+  const provenance =
+    input.authority === "parent"
+      ? ("authorized" as const)
+      : classifyExecutionProvenance({ delegation, claimedTurnId: input.originTurnId });
+  const superseded = provenance === "superseded";
   const terminalFailureOutcome: "failed" | "blocked" | null =
     !superseded &&
     delegation?.completedAt === null &&
@@ -377,22 +400,10 @@ function appendChildLifecycleNotification(
     (input.lifecycle === "failed" || input.lifecycle === "blocked")
       ? input.lifecycle
       : null;
-  const terminalFailure = terminalFailureOutcome !== null;
-  // A fenced delegation requires execution proof before anything
-  // state-changing: a turn-absent signal (e.g. an unscoped provider runtime
-  // error) cannot prove it comes from the authorized execution, so terminal
-  // failure/completion stays diagnostic-only and never completes the
-  // delegation or wakes the parent. Plain progress history remains allowed.
-  // Unfenced (pre-dispatch) work keeps the legacy behavior.
   const wouldMutate =
-    terminalFailure || (input.report !== undefined && input.report.kind !== "progress");
-  const fencedWithoutAuthority =
-    input.authority !== "parent" &&
-    !superseded &&
-    executionFenced &&
-    wouldMutate &&
-    (authorizedTurn === null || input.originTurnId === null || input.originTurnId === undefined);
-  if (fencedWithoutAuthority) {
+    terminalFailureOutcome !== null ||
+    (input.report !== undefined && input.report.kind !== "progress");
+  if (provenance === "unproven" && wouldMutate) {
     return sourceResult;
   }
   const terminalReportId = delegation
@@ -676,6 +687,7 @@ function messageForkEvents(input: {
         role: message.role,
         text: message.text,
         ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+        ...(message.context !== undefined ? { context: message.context } : {}),
         turnId: nextTurnId,
         streaming: false,
         createdAt: message.createdAt,
@@ -694,8 +706,10 @@ type TurnStartRequestedPayload = Extract<
 function buildTurnStartEvents(input: {
   readonly commandId: OrchestrationCommand["commandId"];
   readonly threadId: MessageSentPayload["threadId"];
-  readonly message: Pick<MessageSentPayload, "messageId" | "text" | "attachments">;
+  readonly message: Pick<MessageSentPayload, "messageId" | "text" | "attachments"> &
+    Pick<Partial<MessageSentPayload>, "context">;
   readonly origin?: MessageSentPayload["origin"];
+  readonly context?: MessageSentPayload["context"];
   readonly modelSelection: TurnStartRequestedPayload["modelSelection"];
   readonly titleSeed: TurnStartRequestedPayload["titleSeed"];
   readonly runtimeMode: TurnStartRequestedPayload["runtimeMode"];
@@ -728,6 +742,7 @@ function buildTurnStartEvents(input: {
       text: input.message.text,
       attachments: input.message.attachments,
       ...(input.origin !== undefined ? { origin: input.origin } : {}),
+      ...(input.context !== undefined ? { context: input.context } : {}),
       turnId: null,
       streaming: false,
       createdAt: input.at,
@@ -761,6 +776,7 @@ function buildTurnStartEvents(input: {
         ? { executionAuthority: input.executionAuthority }
         : {}),
       ...(input.workspaceBinding !== undefined ? { workspaceBinding: input.workspaceBinding } : {}),
+      ...(input.context !== undefined ? { context: input.context } : {}),
       createdAt: input.at,
     },
   };
@@ -825,6 +841,62 @@ function deriveCrossThreadOrigin(input: {
     sourceMessageId: sourceMessage.id,
     sourceThreadTitle: sourceThread.title,
   });
+}
+
+/**
+ * `CrossThreadOrigin` only lives on the destination message, so the sending
+ * thread keeps no record of where its message went. Write the counterpart
+ * record to the source thread, anchored to the user message whose turn
+ * performed the send, so the timeline can link to the message it produced.
+ */
+function crossThreadSendRecordedEventFor(input: {
+  readonly command: Extract<
+    OrchestrationCommand,
+    { type: "thread.turn.start" | "thread.queued-turn.create" }
+  >;
+  readonly origin: MessageSentPayload["origin"];
+  readonly destinationThread: OrchestrationReadModel["threads"][number];
+  readonly destinationMessageId: MessageId;
+  readonly readModel: OrchestrationReadModel;
+}): CrossThreadSendRecordedEvent | null {
+  const origin = input.origin;
+  if (origin === undefined || origin.kind !== "cross-thread") {
+    return null;
+  }
+  const sourceThread = input.readModel.threads.find(
+    (thread) => thread.id === origin.sourceThreadId,
+  );
+  if (!sourceThread) {
+    return null;
+  }
+  return {
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: sourceThread.id,
+      occurredAt: input.command.createdAt,
+      commandId: input.command.commandId,
+    }),
+    type: "thread.cross-thread-send-recorded",
+    payload: {
+      sourceThreadId: sourceThread.id,
+      sourceMessageId: origin.sourceMessageId,
+      sourceTurnId: sourceThread.session?.activeTurnId ?? null,
+      destinationThreadId: input.destinationThread.id,
+      destinationThreadTitle: input.destinationThread.title,
+      destinationMessageId: input.destinationMessageId,
+      createdAt: input.command.createdAt,
+    },
+  };
+}
+
+function withCrossThreadSendRecord(
+  decided: DecideOrchestrationCommandResult,
+  record: CrossThreadSendRecordedEvent | null,
+): DecideOrchestrationCommandResult {
+  if (!record) {
+    return decided;
+  }
+  return [...(Array.isArray(decided) ? decided : [decided]), record];
 }
 
 const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
@@ -1799,15 +1871,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // original settledAt and updatedAt so a duplicate command neither rewinds
       // the settlement nor churns sidebar ordering.
       const alreadySettled = thread.settledOverride === "settled";
-      const hasActiveTurn =
-        thread.latestTurn?.state === "running" ||
-        (thread.session?.status === "running" && thread.session.activeTurnId !== null);
-      if (
-        hasActiveTurn ||
-        threadHasQueuedTurnStart(thread, { now: occurredAt }) ||
-        threadHasPendingInteraction(thread) ||
-        thread.session?.status === "error"
-      ) {
+      if (threadBlocksSettlement(thread, { now: occurredAt })) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Thread '${command.threadId}' has active work or a pending interaction and cannot settle.`,
@@ -2118,6 +2182,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               exchangeId: request.exchangeId,
             },
             command.createdAt,
+            recipient.queuedTurns ?? [],
           ),
         );
       }
@@ -2191,6 +2256,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             exchangeId: request.exchangeId,
           },
           command.createdAt,
+          findThreadById(readModel, request.senderThreadId)?.queuedTurns ?? [],
         ),
       ];
       return events;
@@ -2613,9 +2679,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         (command.expectedUpdatedAt !== undefined &&
           command.expectedUpdatedAt !== thread.updatedAt) ||
+        (command.expectedArchivedAt !== undefined &&
+          command.expectedArchivedAt !== (thread.archivedAt ?? null)) ||
         (command.expectedWorkspaceCwd !== undefined &&
           command.expectedWorkspaceCwd !==
-            resolveThreadWorkspaceCwd({ thread, projects: readModel.projects }))
+            resolveThreadWorkspaceCwd({ thread, projects: readModel.projects })) ||
+        (command.expectedPendingPullRequestAssociationRequestId !== undefined &&
+          command.expectedPendingPullRequestAssociationRequestId !==
+            (thread.pendingPullRequestAssociation?.requestId ?? null)) ||
+        (command.expectedPullRequestAssociationContext !== undefined &&
+          (command.expectedPullRequestAssociationContext.projectId !== thread.projectId ||
+            command.expectedPullRequestAssociationContext.branch !== thread.branch ||
+            command.expectedPullRequestAssociationContext.worktreePath !== thread.worktreePath ||
+            command.expectedPullRequestAssociationContext.pullRequestUrl !==
+              (thread.pullRequest?.url ?? null)))
       ) {
         return [];
       }
@@ -3010,6 +3087,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           queuedTurn: {
             ...command.continuation,
             origin: { ...handoffOrigin, role: "continuation" },
+            queuePosition: nextQueuePosition(thread.queuedTurns ?? []),
           },
         },
       });
@@ -3315,6 +3393,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           attachments: command.message.attachments,
         },
         ...(origin !== undefined ? { origin } : {}),
+        ...(command.message.context !== undefined ? { context: command.message.context } : {}),
         modelSelection: command.modelSelection,
         titleSeed: command.titleSeed,
         runtimeMode: targetThread.runtimeMode,
@@ -3399,22 +3478,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               },
             ]
           : [];
-      return appendChildLifecycleNotification({
-        readModel,
-        childThread: targetThread,
-        sourceEvents: [
-          ...workspaceBindingEvent,
-          userMessageEvent,
-          turnStartRequestedEvent,
-          ...delegationEvents,
-          ...lifecycleEvents,
-        ],
-        sourceEvent: turnStartRequestedEvent,
-        lifecycle: "started",
-        sourceKey: command.message.messageId,
-        createdAt: command.createdAt,
-        authority: "parent",
-      });
+      return withCrossThreadSendRecord(
+        appendChildLifecycleNotification({
+          readModel,
+          childThread: targetThread,
+          sourceEvents: [
+            ...workspaceBindingEvent,
+            userMessageEvent,
+            turnStartRequestedEvent,
+            ...delegationEvents,
+            ...lifecycleEvents,
+          ],
+          sourceEvent: turnStartRequestedEvent,
+          lifecycle: "started",
+          sourceKey: command.message.messageId,
+          createdAt: command.createdAt,
+          authority: "parent",
+        }),
+        crossThreadSendRecordedEventFor({
+          command,
+          origin,
+          destinationThread: targetThread,
+          destinationMessageId: command.message.messageId,
+          readModel,
+        }),
+      );
     }
 
     case "thread.queued-turn.create": {
@@ -3462,6 +3550,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ...(origin !== undefined ? { origin } : {}),
         createdAt: command.createdAt,
         updatedAt: command.createdAt,
+        // Appending must never reorder the existing queue: the new turn takes
+        // the next position rather than sorting by its own creation time.
+        queuePosition: nextQueuePosition(thread.queuedTurns ?? []),
         failedAt: null,
         failureMessage: null,
       };
@@ -3478,7 +3569,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           queuedTurn,
         },
       };
-      if (!command.assignment && !command.respondToReportId) return queuedEvent;
+      const crossThreadSendRecord = crossThreadSendRecordedEventFor({
+        command,
+        origin,
+        destinationThread: thread,
+        // The queued turn's message id is reused verbatim when the turn
+        // dispatches, so this is the id the sent message will carry.
+        destinationMessageId: command.message.messageId,
+        readModel,
+      });
+      if (!command.assignment && !command.respondToReportId) {
+        return withCrossThreadSendRecord(queuedEvent, crossThreadSendRecord);
+      }
       const delegation = thread.nudging?.delegation;
       if (
         thread.archivedAt !== null ||
@@ -3554,7 +3656,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             }),
           );
         }
-        return assignmentEvents;
+        return withCrossThreadSendRecord(assignmentEvents, crossThreadSendRecord);
       }
       if (
         !delegation?.decision ||
@@ -3567,17 +3669,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "The decision is no longer current. Refresh the child before responding.",
         });
       }
-      return [
-        queuedEvent,
-        nudgingMetaEvent(thread, queuedEvent, {
-          ...thread.nudging,
-          delegation: {
-            ...delegation,
-            decision: null,
-            pendingResponse: { queuedTurnId: queuedTurn.id, report: delegation.decision },
-          },
-        }),
-      ];
+      return withCrossThreadSendRecord(
+        [
+          queuedEvent,
+          nudgingMetaEvent(thread, queuedEvent, {
+            ...thread.nudging,
+            delegation: {
+              ...delegation,
+              decision: null,
+              pendingResponse: { queuedTurnId: queuedTurn.id, report: delegation.decision },
+            },
+          }),
+        ],
+        crossThreadSendRecord,
+      );
     }
 
     case "thread.queued-turn.update": {
@@ -3606,18 +3711,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           queuedTurnId: command.queuedTurnId,
           text: command.text,
           ...(command.origin !== undefined ? { origin: command.origin } : {}),
+          ...(command.context !== undefined ? { context: command.context } : {}),
           updatedAt: command.updatedAt,
         },
       };
     }
 
     case "thread.queued-turn.delete": {
-      const { thread, queuedTurn } = yield* requireQueuedTurn({
-        readModel,
-        command,
-        threadId: command.threadId,
-        queuedTurnId: command.queuedTurnId,
-      });
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const queuedTurn = thread.queuedTurns?.find((entry) => entry.id === command.queuedTurnId);
+      // Idempotent: a repeated click or a client still showing a turn the
+      // reactor already removed should not surface as a failure.
+      if (!queuedTurn) return [];
       const deleted: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -3845,6 +3950,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           attachments: queuedTurn.message.attachments,
         },
         ...(turnOrigin !== undefined ? { origin: turnOrigin } : {}),
+        // Nudge follow-ups synthesize their own prompt; queued user text keeps its context.
+        ...(followUp || queuedTurn.message.context === undefined
+          ? {}
+          : { context: queuedTurn.message.context }),
         modelSelection: queuedTurn.modelSelection,
         titleSeed: queuedTurn.titleSeed,
         runtimeMode: isNudge ? targetThread.runtimeMode : queuedTurn.runtimeMode,
@@ -3937,6 +4046,95 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           queuedTurnId: command.queuedTurnId,
           failureMessage: command.failureMessage,
           failedAt: command.failedAt,
+        },
+      };
+    }
+
+    case "thread.queue.hold": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // Holding an empty or already-held queue is a no-op rather than an error:
+      // crash recovery sweeps every thread it sees, and repeat boots must not
+      // fail on the state a previous boot already wrote.
+      if ((thread.queuedTurns ?? []).length === 0 || thread.queueHeldAt != null) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.heldAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.queue-held",
+        payload: {
+          threadId: command.threadId,
+          heldAt: command.heldAt,
+        },
+      };
+    }
+
+    case "thread.queue.release": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.queueHeldAt == null) {
+        return [];
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.releasedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.queue-released",
+        payload: {
+          threadId: command.threadId,
+          releasedAt: command.releasedAt,
+        },
+      };
+    }
+
+    case "thread.queued-turn.reorder": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const queuedTurns = thread.queuedTurns ?? [];
+      const current = new Set(queuedTurns.map((queuedTurn) => queuedTurn.id));
+      const requested = new Set(command.orderedQueuedTurnIds);
+      // The order must be a permutation of the live queue. A partial order
+      // would silently drop the omitted turns' positions, so the next boot
+      // would rebuild a different order than the user last saw.
+      if (
+        requested.size !== current.size ||
+        current.size !== command.orderedQueuedTurnIds.length ||
+        !command.orderedQueuedTurnIds.every((queuedTurnId) => current.has(queuedTurnId))
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Reorder for thread '${command.threadId}' must list every queued turn exactly once.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.reorderedAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.queued-turn-reordered",
+        payload: {
+          threadId: command.threadId,
+          orderedQueuedTurnIds: command.orderedQueuedTurnIds,
+          reorderedAt: command.reorderedAt,
         },
       };
     }
@@ -4503,6 +4701,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             interactionMode: command.interactionMode,
             createdAt: command.createdAt,
             updatedAt: command.createdAt,
+            queuePosition: nextQueuePosition(thread.queuedTurns ?? []),
             failedAt: null,
             failureMessage: null,
           },
@@ -4650,6 +4849,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           files: command.files,
           agentTouchedPaths: command.agentTouchedPaths,
           turnFiles: command.turnFiles,
+          transitionFiles: command.transitionFiles,
           assistantMessageId: command.assistantMessageId ?? null,
           completedAt: command.completedAt,
         },
@@ -4824,15 +5024,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "The parent thread has been deleted.",
         });
       }
-      const reportAssignmentId = command.assignmentId ?? delegation.assignmentId;
-      const reportDispatchId = command.dispatchId ?? delegation.dispatchId ?? undefined;
-      const expectedDecisionId = childReportDedupeKey({
+      const reportIdentity = childReportIdentity({
         childThreadId: child.id,
-        dispatchId: reportDispatchId,
+        delegation,
+        claimedAssignmentId: command.assignmentId,
+        claimedDispatchId: command.dispatchId,
         originTurnId: command.originTurnId,
-        assignmentId: reportAssignmentId,
         reportId: command.reportId,
       });
+      if (reportIdentity === null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Reporting requires an active delegated assignment.",
+        });
+      }
+      const { assignmentId: reportAssignmentId, dispatchId: reportDispatchId } = reportIdentity;
+      const expectedDecisionId = reportIdentity.reportKey;
       const verdict = classifyChildReport({
         delegation,
         claimedDispatchId: command.dispatchId,
@@ -4918,13 +5125,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       const source = verdictActivity(command.summary);
       const report = {
-        id: childReportDedupeKey({
-          childThreadId: child.id,
-          dispatchId: reportDispatchId,
-          originTurnId: command.originTurnId,
-          assignmentId: reportAssignmentId,
-          reportId: command.reportId,
-        }),
+        id: expectedDecisionId,
         assignmentId: reportAssignmentId,
         ...(reportDispatchId ? { dispatchId: reportDispatchId } : {}),
         childThreadId: child.id,
@@ -5036,6 +5237,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         lifecycle === "approval-required" || lifecycle === "input-required"
           ? (requestId ?? command.activity.id)
           : (command.activity.turnId ?? thread.latestTurn?.turnId ?? command.activity.id);
+      const originTurnId = command.activity.turnId ?? undefined;
+      const delegation = thread.nudging?.delegation;
+      // Route a delegated child's pending request to its parent. Unproven
+      // provenance keeps the plain lifecycle history instead of being fenced away.
+      const requestReport =
+        (lifecycle === "approval-required" || lifecycle === "input-required") &&
+        requestId !== undefined &&
+        delegation?.completedAt === null &&
+        ["authorized", "unfenced"].includes(
+          classifyExecutionProvenance({ delegation, claimedTurnId: originTurnId }),
+        )
+          ? childPendingRequestUpdate({
+              child: thread,
+              delegation,
+              lifecycle,
+              requestId,
+              payload: command.activity.payload,
+            })
+          : undefined;
       return appendChildLifecycleNotification({
         readModel,
         childThread: thread,
@@ -5044,7 +5264,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         lifecycle,
         sourceKey,
         createdAt: command.createdAt,
-        ...(command.activity.turnId !== null ? { originTurnId: command.activity.turnId } : {}),
+        ...(originTurnId !== undefined ? { originTurnId } : {}),
+        ...(requestReport ? { report: requestReport } : {}),
       });
     }
 

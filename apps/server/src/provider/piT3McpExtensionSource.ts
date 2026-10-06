@@ -31,7 +31,14 @@ const TOKEN_ENV = ${JSON.stringify(T3_MCP_BEARER_ENV)};
 const RUNTIME_MODE_ENV = ${JSON.stringify(T3_PI_RUNTIME_MODE_ENV)};
 const RUNTIME_INSTRUCTIONS = ${JSON.stringify(buildRuntimeInstructions({ harness: "Pi" }))};
 const PROTOCOL = "2025-06-18";
-const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
+const READ_ONLY_TOOLS = new Set([
+  "read",
+  "grep",
+  "find",
+  "ls",
+  // Thread-history reads can expose private conversation content and require
+  // normal confirmation even though the operation itself is read-only.
+]);
 const FILE_CHANGE_TOOLS = new Set(${JSON.stringify(PI_FILE_CHANGE_TOOLS)});
 
 type RuntimeMode = "approval-required" | "auto-accept-edits" | "auto" | "full-access";

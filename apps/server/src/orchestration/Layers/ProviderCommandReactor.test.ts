@@ -17,6 +17,7 @@ import {
   CheckpointRef,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  EnvironmentId,
   EventId,
   MessageId,
   ProjectId,
@@ -28,6 +29,10 @@ import { Deferred, Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
+import {
+  ServerEnvironment,
+  type ServerEnvironmentShape,
+} from "../../environment/Services/ServerEnvironment.ts";
 import { TextGenerationError } from "@t3tools/contracts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
@@ -357,6 +362,7 @@ describe("ProviderCommandReactor", () => {
           turnStartOrder.push("captureCheckpoint");
         }),
       ),
+      createWorkspaceSnapshotCommit: () => Effect.die("unused in provider command tests"),
       restoreCheckpoint: () => Effect.die(new Error("restoreCheckpoint should not be called")),
       diffCheckpoints: () => Effect.die(new Error("diffCheckpoints should not be called")),
       diffCheckpointFiles: () => Effect.die(new Error("diffCheckpointFiles should not be called")),
@@ -435,6 +441,12 @@ describe("ProviderCommandReactor", () => {
       ),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
+      Layer.provideMerge(
+        Layer.succeed(ServerEnvironment, {
+          getEnvironmentId: Effect.succeed(EnvironmentId.make("env-provider-command-reactor-test")),
+          getDescriptor: Effect.die("ServerEnvironment.getDescriptor is unused in this test"),
+        } satisfies ServerEnvironmentShape),
+      ),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -564,15 +576,44 @@ describe("ProviderCommandReactor", () => {
     },
   ): Promise<void> {
     const completedAt = input.completedAt ?? new Date().toISOString();
+    const turnId = input.turnId ?? asTurnId("turn-1");
+    // A real turn is acknowledged before it completes, and that acknowledgement
+    // is what retires the pending start.
+    {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      const providerName = thread?.session?.providerName ?? "codex";
+      const providerInstanceId = thread?.session?.providerInstanceId;
+      const runtimeMode = thread?.session?.runtimeMode ?? "approval-required";
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`${input.commandId}-ack`),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName,
+            ...(providerInstanceId !== undefined ? { providerInstanceId } : {}),
+            runtimeMode,
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: completedAt,
+          },
+          createdAt: completedAt,
+        }),
+      );
+    }
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.turn.diff.complete",
         commandId: CommandId.make(input.commandId),
         threadId: ThreadId.make("thread-1"),
-        turnId: input.turnId ?? asTurnId("turn-1"),
+        turnId,
         checkpointRef: CheckpointRef.make(`refs/t3/checkpoints/thread-1/${input.commandId}`),
         status: "ready",
         files: [],
+        transitionFiles: [],
         agentTouchedPaths: [],
         turnFiles: [],
         checkpointTurnCount: 1,
@@ -580,7 +621,85 @@ describe("ProviderCommandReactor", () => {
         createdAt: completedAt,
       }),
     );
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`${input.commandId}-release`),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          ...thread!.session!,
+          status: "ready",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: completedAt,
+        },
+        createdAt: completedAt,
+      }),
+    );
   }
+
+  it("starts another thread's turn while one thread's turn start is still blocked", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-2-create"),
+        threadId: ThreadId.make("thread-2"),
+        projectId: asProjectId("project-1"),
+        title: "Thread 2",
+        modelSelection: harness.modelSelection,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: harness.workspacePath2,
+        createdAt: now,
+      }),
+    );
+    let releaseThreadOne!: () => void;
+    const threadOneGate = new Promise<void>((resolve) => {
+      releaseThreadOne = resolve;
+    });
+    const startSessionImpl = harness.startSession.getMockImplementation()!;
+    harness.startSession.mockImplementation((threadId, input) =>
+      threadId === ThreadId.make("thread-1")
+        ? Effect.promise(() => threadOneGate).pipe(
+            Effect.andThen(startSessionImpl(threadId, input)),
+          )
+        : startSessionImpl(threadId, input),
+    );
+    const sentThreadIds = () =>
+      harness.sendTurn.mock.calls.map((call) => (call[0] as { threadId: ThreadId }).threadId);
+
+    for (const threadId of ["thread-1", "thread-2"] as const) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-turn-start-${threadId}`),
+          threadId: ThreadId.make(threadId),
+          message: {
+            messageId: asMessageId(`user-message-${threadId}`),
+            role: "user",
+            text: `hello ${threadId}`,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+    }
+
+    await waitFor(() => sentThreadIds().includes(ThreadId.make("thread-2")));
+    expect(sentThreadIds()).toEqual([ThreadId.make("thread-2")]);
+
+    releaseThreadOne();
+    await waitFor(() => sentThreadIds().length === 2);
+    expect(sentThreadIds()).toEqual([ThreadId.make("thread-2"), ThreadId.make("thread-1")]);
+  });
 
   it("reacts to thread.turn.start by ensuring session and sending provider turn", async () => {
     const harness = await createHarness();
@@ -690,7 +809,7 @@ describe("ProviderCommandReactor", () => {
         commandId: CommandId.make("cmd-provider-authority-initial"),
         threadId: ThreadId.make("thread-1"),
         message: {
-          messageId: asMessageId("user-provider-authority-initial"),
+          messageId: asMessageId("assignment-provider-authority"),
           role: "user",
           text: "bind authority",
           attachments: [],
@@ -758,7 +877,7 @@ describe("ProviderCommandReactor", () => {
   });
 
   it("injects a valid complete authority through the production event path", async () => {
-    const messageId = asMessageId("user-provider-authority-injected");
+    const messageId = asMessageId("assignment-provider-authority");
     const harness = await createHarness({
       delegation: {
         assignmentId: asMessageId("assignment-provider-authority"),
@@ -890,7 +1009,7 @@ describe("ProviderCommandReactor", () => {
   ])(
     "rejects %s authority through the production event path before provider calls",
     async (_label, mutateAuthority) => {
-      const messageId = asMessageId("user-provider-authority-rejected");
+      const messageId = asMessageId("assignment-provider-authority");
       const harness = await createHarness({
         delegation: {
           assignmentId: asMessageId("assignment-provider-authority"),
@@ -1190,7 +1309,7 @@ describe("ProviderCommandReactor", () => {
         message: {
           messageId: asMessageId("user-message-title"),
           role: "user",
-          text: "Please investigate reconnect failures after restarting the session.",
+          text: "Please investigate [Auth refactor](t3-context://v1/thread/ctx_title).",
           attachments: [],
         },
         titleSeed: seededTitle,
@@ -1202,7 +1321,7 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.generateThreadTitle.mock.calls.length === 1);
     expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
-      message: "Please investigate reconnect failures after restarting the session.",
+      message: "Please investigate Auth refactor.",
     });
 
     await waitFor(async () => {
@@ -1491,7 +1610,7 @@ describe("ProviderCommandReactor", () => {
         message: {
           messageId: asMessageId("user-message-branch-model"),
           role: "user",
-          text: "Add a safer reconnect backoff.",
+          text: "Add a safer reconnect backoff [Auth refactor](t3-context://v1/thread/ctx_branch).",
           attachments: [],
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -1503,7 +1622,7 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.generateBranchName.mock.calls.length === 1);
     await waitFor(() => harness.refreshStatus.mock.calls.length === 1);
     expect(harness.generateBranchName.mock.calls[0]?.[0]).toMatchObject({
-      message: "Add a safer reconnect backoff.",
+      message: "Add a safer reconnect backoff Auth refactor.",
     });
     expect(harness.refreshStatus.mock.calls[0]?.[0]).toBe("/tmp/provider-project-worktree");
   });
@@ -3288,5 +3407,57 @@ describe("ProviderCommandReactor", () => {
     expect(
       thread?.activities.some((activity) => activity.kind === "provider.session.stop.failed"),
     ).toBe(true);
+  });
+  it("rejects a duplicate start when the session carries a previous terminal status", async () => {
+    // The send-after-stop path: the session still carries the previous turn's
+    // terminal status, so the duplicate below used to be accepted.
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    const startTurn = (commandId: string, messageId: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(commandId),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId(messageId),
+            role: "user",
+            text: "hello",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+
+    await startTurn("cmd-terminal-1", "message-terminal-1");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await completeTurnForNextStart(harness, { commandId: "cmd-terminal-complete" });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-terminal-session"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          ...(await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+            (entry) => entry.id === ThreadId.make("thread-1"),
+          )!.session!,
+          status: "interrupted",
+          activeTurnId: null,
+          lastError: "No active provider turn.",
+        },
+        createdAt: now,
+      }),
+    );
+
+    await startTurn("cmd-terminal-2", "message-terminal-2");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+
+    await expect(startTurn("cmd-terminal-dup", "message-terminal-dup")).rejects.toThrow(
+      /already has a turn in flight/,
+    );
   });
 });

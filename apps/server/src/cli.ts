@@ -293,7 +293,7 @@ const offlineFlag = Flag.boolean("offline").pipe(
 const EnvServerConfig = Config.all({
   logLevel: Config.logLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
   traceMinLevel: Config.logLevel("T3CODE_TRACE_MIN_LEVEL").pipe(Config.withDefault("Info")),
-  traceTimingEnabled: Config.boolean("T3CODE_TRACE_TIMING_ENABLED").pipe(Config.withDefault(true)),
+  traceTimingEnabled: Config.boolean("T3CODE_TRACE_TIMING_ENABLED").pipe(Config.withDefault(false)),
   traceFile: Config.string("T3CODE_TRACE_FILE").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -2128,8 +2128,9 @@ const updatePendingPullRequestAssociation = (
       type: "thread.meta.update",
       commandId: CommandId.make(`cli:associate-pr-pending:${crypto.randomUUID()}`),
       threadId: thread.id,
-      expectedUpdatedAt: thread.updatedAt,
+      expectedArchivedAt: null,
       expectedWorkspaceCwd: workspaceCwd,
+      expectedPendingPullRequestAssociationRequestId: requestId,
       pendingPullRequestAssociation,
     }).pipe(
       Effect.flatMap(() =>
@@ -2195,8 +2196,10 @@ const chatAssociatePrCommand = Command.make("associate-pr", {
               type: "thread.meta.update",
               commandId: CommandId.make(`cli:associate-pr-intent:${crypto.randomUUID()}`),
               threadId: thread.id,
-              expectedUpdatedAt: thread.updatedAt,
+              expectedArchivedAt: null,
               expectedWorkspaceCwd: workspaceCwd,
+              expectedPendingPullRequestAssociationRequestId:
+                thread.pendingPullRequestAssociation?.requestId ?? null,
               pendingPullRequestAssociation: pending,
             });
             return {
@@ -2326,8 +2329,9 @@ const chatAssociatePrCommand = Command.make("associate-pr", {
                 type: "thread.meta.update",
                 commandId: CommandId.make(`cli:associate-pr-block:${crypto.randomUUID()}`),
                 threadId: thread.id,
-                expectedUpdatedAt: thread.updatedAt,
+                expectedArchivedAt: null,
                 expectedWorkspaceCwd: context.workspaceCwd,
+                expectedPendingPullRequestAssociationRequestId: requestId,
                 pendingPullRequestAssociation: blocked,
               });
               return { status: "blocked" as const, reason: blocked.reason };
@@ -2350,8 +2354,9 @@ const chatAssociatePrCommand = Command.make("associate-pr", {
                 type: "thread.meta.update",
                 commandId: CommandId.make(`cli:associate-pr-block:${crypto.randomUUID()}`),
                 threadId: thread.id,
-                expectedUpdatedAt: thread.updatedAt,
+                expectedArchivedAt: null,
                 expectedWorkspaceCwd: context.workspaceCwd,
+                expectedPendingPullRequestAssociationRequestId: requestId,
                 pendingPullRequestAssociation: blocked,
               });
               return { status: "blocked" as const, reason };
@@ -2361,8 +2366,15 @@ const chatAssociatePrCommand = Command.make("associate-pr", {
               type: "thread.meta.update",
               commandId: CommandId.make(`cli:associate-pr:${crypto.randomUUID()}`),
               threadId: thread.id,
-              expectedUpdatedAt: thread.updatedAt,
+              expectedArchivedAt: null,
               expectedWorkspaceCwd: context.workspaceCwd,
+              expectedPendingPullRequestAssociationRequestId: requestId,
+              expectedPullRequestAssociationContext: {
+                projectId: context.projectId,
+                branch: context.branch,
+                worktreePath: context.worktreePath,
+                pullRequestUrl: context.pullRequestUrl,
+              },
               pullRequest: resolution.success.pullRequest,
               pullRequestSource: "agent",
               pullRequestOwnership: "transfer",
@@ -2380,6 +2392,19 @@ const chatAssociatePrCommand = Command.make("associate-pr", {
           Effect.succeed(
             thread.pullRequest?.url === associationResult.pullRequest.url &&
               thread.pendingPullRequestAssociation == null,
+          ),
+        );
+        if (!confirmed) {
+          yield* printJson({ status: "superseded", reference });
+          return;
+        }
+      }
+      if (associationResult.status === "blocked") {
+        const confirmed = yield* withThreadDispatch(flags, flags.chat, ({ thread }) =>
+          Effect.succeed(
+            thread.pendingPullRequestAssociation?.requestId === requestId &&
+              thread.pendingPullRequestAssociation.status === "blocked" &&
+              thread.pendingPullRequestAssociation.reason === associationResult.reason,
           ),
         );
         if (!confirmed) {
@@ -4334,6 +4359,29 @@ const gitStatusCommand = Command.make("status", {
   ),
 );
 
+const gitActivityLogCommand = Command.make("log", {
+  ...liveTargetFlags,
+  all: Flag.boolean("all").pipe(Flag.withDefault(false)),
+  thread: Flag.string("thread").pipe(Flag.optional),
+  pr: Flag.integer("pr").pipe(Flag.optional),
+  limit: limitFlag,
+}).pipe(
+  Command.withDescription("List recent app-owned Git activity; --all includes read-only commands."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const result = yield* callWsRpc(flags, (client) =>
+        client[WS_METHODS.gitLog]({
+          all: flags.all,
+          limit: Option.getOrElse(flags.limit, () => 100),
+          ...(Option.isSome(flags.thread) ? { threadId: ThreadId.make(flags.thread.value) } : {}),
+          ...(Option.isSome(flags.pr) ? { pullRequestNumber: flags.pr.value } : {}),
+        }),
+      );
+      yield* printJson(result);
+    }),
+  ),
+);
+
 const gitWatchCommand = Command.make("watch", {
   ...liveTargetFlags,
   cwd: cwdFlag,
@@ -4576,6 +4624,7 @@ const gitStackedActionCommand = Command.make("stacked-action", {
 const gitCommand = Command.make("git").pipe(
   Command.withDescription("Run Git operations through T3."),
   Command.withSubcommands([
+    gitActivityLogCommand,
     gitStatusCommand,
     gitWatchCommand,
     gitPullCommand,

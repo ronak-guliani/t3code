@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import nodePath from "node:path";
 
-import { Cache, Data, Duration, Effect, Exit, Layer, FileSystem, Path } from "effect";
+import { Cache, Data, Duration, Effect, Exit, Layer, FileSystem, Option, Path } from "effect";
 
 import { CheckpointInvariantError, CheckpointRefUnavailableError } from "../Errors.ts";
 import { GitCommandError } from "@t3tools/contracts";
@@ -97,7 +97,6 @@ const makeCheckpointStore = Effect.gen(function* () {
           "--no-color",
           "--find-renames",
           "--find-copies",
-          "--find-copies-harder",
           ...(key.ignoreWhitespace ? ["--ignore-all-space"] : []),
           key.fromCommitOid,
           key.toCommitOid,
@@ -257,6 +256,44 @@ const makeCheckpointStore = Effect.gen(function* () {
         Effect.catch(() => Effect.succeed(false)),
       );
 
+  /**
+   * Seed a scratch index with a copy of the worktree's own index so `git add -A`
+   * reuses its cached stat data and hashes only changed files. A `read-tree`
+   * seed has no stat data, which forces a re-hash of every tracked file per
+   * snapshot. The copy keeps the source mtime because racy-git detection compares
+   * entry mtimes against the index file's own mtime. Returns false when there is
+   * no index to copy, so the caller falls back to `read-tree HEAD`.
+   */
+  const seedIndexFromWorktree = Effect.fn("seedIndexFromWorktree")(function* (
+    cwd: string,
+    tempIndexPath: string,
+  ) {
+    const result = yield* git.execute({
+      operation: "CheckpointStore.seedIndexFromWorktree",
+      cwd,
+      args: ["rev-parse", "--git-path", "index"],
+      allowNonZeroExit: true,
+    });
+    const relativeIndexPath = result.stdout.trim();
+    if (result.code !== 0 || relativeIndexPath.length === 0) return false;
+    const indexPath = path.resolve(cwd, relativeIndexPath);
+    return yield* Effect.gen(function* () {
+      const info = yield* fs.stat(indexPath);
+      yield* fs.copyFile(indexPath, tempIndexPath);
+      const mtime = Option.getOrElse(info.mtime, () => new Date(0));
+      yield* fs.utimes(
+        tempIndexPath,
+        Option.getOrElse(info.atime, () => mtime),
+        mtime,
+      );
+      return true;
+    }).pipe(
+      Effect.catchTag("PlatformError", () =>
+        fs.remove(tempIndexPath, { force: true }).pipe(Effect.ignore, Effect.as(false)),
+      ),
+    );
+  });
+
   const snapshotWorkspace = Effect.fn("snapshotWorkspace")(function* (input: {
     readonly cwd: string;
     readonly operation: string;
@@ -272,8 +309,15 @@ const makeCheckpointStore = Effect.gen(function* () {
               ...process.env,
               GIT_INDEX_FILE: tempIndexPath,
             };
-            const headCommit = yield* resolveHeadCommit(input.cwd);
-            if (headCommit !== null) {
+            const [headCommit, seededFromIndex, exclusions] = yield* Effect.all(
+              [
+                resolveHeadCommit(input.cwd),
+                seedIndexFromWorktree(input.cwd, tempIndexPath),
+                foreignNestedWorktreeExclusions(input.cwd),
+              ],
+              { concurrency: "unbounded" },
+            );
+            if (!seededFromIndex && headCommit !== null) {
               yield* git.execute({
                 operation: input.operation,
                 cwd: input.cwd,
@@ -284,13 +328,7 @@ const makeCheckpointStore = Effect.gen(function* () {
             yield* git.execute({
               operation: input.operation,
               cwd: input.cwd,
-              args: [
-                "add",
-                "-A",
-                "--",
-                ".",
-                ...(yield* foreignNestedWorktreeExclusions(input.cwd)),
-              ],
+              args: ["add", "-A", "--", ".", ...exclusions],
               env,
             });
             const writeTreeResult = yield* git.execute({
@@ -395,6 +433,54 @@ const makeCheckpointStore = Effect.gen(function* () {
       args: ["update-ref", input.checkpointRef, commitOid],
     });
   });
+
+  const createWorkspaceSnapshotCommit: CheckpointStoreShape["createWorkspaceSnapshotCommit"] =
+    Effect.fn("createWorkspaceSnapshotCommit")(function* (input) {
+      const operation = "CheckpointStore.createWorkspaceSnapshotCommit";
+      const { headCommit, treeOid } = yield* snapshotWorkspace({
+        cwd: input.cwd,
+        operation,
+      });
+      if (headCommit === null) {
+        return yield* new GitCommandError({
+          operation,
+          command: "git rev-parse HEAD",
+          cwd: input.cwd,
+          detail: "Cannot snapshot a source worktree without a HEAD commit.",
+        });
+      }
+      const headTree = yield* git.execute({
+        operation,
+        cwd: input.cwd,
+        args: ["rev-parse", `${headCommit}^{tree}`],
+      });
+      if (headTree.stdout.trim() === treeOid) {
+        return headCommit;
+      }
+
+      const commit = yield* git.execute({
+        operation,
+        cwd: input.cwd,
+        args: ["commit-tree", treeOid, "-p", headCommit, "-m", "t3 snapshot fork"],
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "T3 Code",
+          GIT_AUTHOR_EMAIL: "t3code@users.noreply.github.com",
+          GIT_COMMITTER_NAME: "T3 Code",
+          GIT_COMMITTER_EMAIL: "t3code@users.noreply.github.com",
+        },
+      });
+      const commitOid = commit.stdout.trim();
+      if (commitOid.length === 0) {
+        return yield* new GitCommandError({
+          operation,
+          command: "git commit-tree",
+          cwd: input.cwd,
+          detail: "git commit-tree returned an empty commit oid.",
+        });
+      }
+      return commitOid;
+    });
 
   const hasCheckpointRef: CheckpointStoreShape["hasCheckpointRef"] = (input) =>
     resolveCheckpointCommit(input.cwd, input.checkpointRef).pipe(
@@ -982,7 +1068,7 @@ const makeCheckpointStore = Effect.gen(function* () {
     key: CheckpointDiffFilesCacheKey,
   ) => {
     const pathArgs = key.paths.length > 0 ? ["--", ...key.paths] : [];
-    // Like the patch path, minus quadratic --find-copies-harder.
+    // Keep patch and summary copy detection aligned without scanning unchanged files.
     const similarityArgs = ["--find-renames", "--find-copies"];
     return Effect.all(
       [
@@ -1084,6 +1170,7 @@ const makeCheckpointStore = Effect.gen(function* () {
   return {
     isGitRepository,
     captureCheckpoint,
+    createWorkspaceSnapshotCommit,
     hasCheckpointRef,
     checkpointRefMatchesWorkspace,
     restoreCheckpoint: (input) => coordinator.withCheckout(input.cwd, restoreCheckpoint(input)),
@@ -1096,3 +1183,20 @@ const makeCheckpointStore = Effect.gen(function* () {
 export const CheckpointStoreLive = Layer.effect(CheckpointStore, makeCheckpointStore).pipe(
   Layer.provideMerge(CheckoutCoordinatorLive),
 );
+
+/**
+ * Die-on-use CheckpointStore for orchestration unit tests that never fork a
+ * source worktree. Keeps the engine's snapshot dependency satisfied at layer
+ * build time without booting Git; any actual fork attempt dies loudly.
+ */
+export const CheckpointStoreDieStubLive = Layer.succeed(CheckpointStore, {
+  isGitRepository: () => Effect.die("CheckpointStore is stubbed in this test"),
+  captureCheckpoint: () => Effect.die("CheckpointStore is stubbed in this test"),
+  createWorkspaceSnapshotCommit: () => Effect.die("CheckpointStore is stubbed in this test"),
+  hasCheckpointRef: () => Effect.die("CheckpointStore is stubbed in this test"),
+  checkpointRefMatchesWorkspace: () => Effect.die("CheckpointStore is stubbed in this test"),
+  restoreCheckpoint: () => Effect.die("CheckpointStore is stubbed in this test"),
+  diffCheckpoints: () => Effect.die("CheckpointStore is stubbed in this test"),
+  diffCheckpointFiles: () => Effect.die("CheckpointStore is stubbed in this test"),
+  deleteCheckpointRefs: () => Effect.die("CheckpointStore is stubbed in this test"),
+});

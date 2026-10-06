@@ -6,6 +6,8 @@ import {
   ORCHESTRATION_WS_METHODS,
   EnvironmentId,
   type EnvironmentApi,
+  type ClientOrchestrationCommand,
+  type OrchestrationEvent,
   type MessageId,
   type OrchestrationReadModel,
   type PreviewSessionSnapshot,
@@ -35,6 +37,7 @@ import { useComposerDraftStore, DraftId } from "../composerDraftStore";
 import {
   __resetEnvironmentApiOverridesForTests,
   __setEnvironmentApiOverrideForTests,
+  readEnvironmentApi,
 } from "../environmentApi";
 import {
   resetSavedEnvironmentRegistryStoreForTests,
@@ -59,6 +62,7 @@ import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
 import {
   selectBootstrapCompleteForActiveEnvironment,
+  selectThreadByRef,
   type EnvironmentState,
   useStore,
 } from "../store";
@@ -73,6 +77,7 @@ import { createAuthenticatedSessionHandlers } from "../../test/authHttpHandlers"
 import { BrowserWsRpcHarness, type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
 
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+import { applyEnvironmentThreadDetailEvent } from "../environments/runtime/service";
 
 vi.mock("../env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../env")>()),
@@ -482,6 +487,41 @@ function createSnapshotForTargetUser(options: {
   };
 }
 
+function addSettledThreads(
+  snapshot: OrchestrationReadModel,
+  count: number,
+): OrchestrationReadModel {
+  const template = snapshot.threads[0]!;
+  const settledThreads = Array.from({ length: count }, (_, index) => {
+    const id = ThreadId.make(`settled-browser-${index}`);
+    const minute = String(index).padStart(2, "0");
+    const createdAt = `2026-03-09T10:${minute}:00.000Z`;
+    return {
+      ...template,
+      id,
+      title: `Settled ${index}`,
+      createdAt,
+      updatedAt: createdAt,
+      settledOverride: "settled" as const,
+      settledAt: `2026-03-09T11:${minute}:00.000Z`,
+      messages: [],
+      session: {
+        ...template.session!,
+        threadId: id,
+        status: "ready" as const,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: createdAt,
+      },
+    } satisfies OrchestrationReadModel["threads"][number];
+  });
+
+  return {
+    ...snapshot,
+    threads: [...snapshot.threads, ...settledThreads],
+  };
+}
+
 function buildFixture(snapshot: OrchestrationReadModel): TestFixture {
   return {
     snapshot,
@@ -562,6 +602,8 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     latestTurn: thread.latestTurn,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
+    settledOverride: thread.settledOverride ?? null,
+    settledAt: thread.settledAt ?? null,
     archivedAt: thread.archivedAt,
     session: thread.session,
     latestUserMessageAt:
@@ -952,7 +994,11 @@ function createSnapshotWithSecondaryProject(options?: {
   };
 }
 
-function createSnapshotWithPendingUserInput(): OrchestrationReadModel {
+function createSnapshotWithPendingUserInput(
+  options: {
+    readonly multiSelect?: boolean;
+  } = {},
+): OrchestrationReadModel {
   const snapshot = createSnapshotForTargetUser({
     targetMessageId: "msg-user-pending-input-target" as MessageId,
     targetText: "question thread",
@@ -1004,6 +1050,7 @@ function createSnapshotWithPendingUserInput(): OrchestrationReadModel {
                       ],
                     },
                   ],
+                  ...(options.multiSelect ? { multiSelect: true } : {}),
                 },
                 turnId: null,
                 sequence: 1,
@@ -1478,6 +1525,21 @@ async function waitForButtonContainingText(text: string): Promise<HTMLButtonElem
   return waitForElement(
     () => findButtonContainingText(text),
     `Unable to find button containing "${text}".`,
+  );
+}
+
+// Spelled "Next" / "Submit" when the footer is compact and "Next question" /
+// "Submit answers" when it is not, so select the action by its stable hook.
+function findPendingFooterActionButton(): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>('[data-pending-user-input-action="true"]');
+}
+
+async function waitForEnabledPendingFooterActionButton(): Promise<void> {
+  await vi.waitFor(
+    () => {
+      expect(findPendingFooterActionButton()?.disabled).toBe(false);
+    },
+    { timeout: 8_000, interval: 16 },
   );
 }
 
@@ -2440,7 +2502,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("keeps a review worker in the background and opens it on demand", async () => {
+  it("keeps a review worker in the background without switching threads", async () => {
     const workerThreadId = ThreadId.make("review-worker-thread");
     let workerSnapshot: OrchestrationReadModel | null = null;
     const mounted = await mountChatView({
@@ -2538,24 +2600,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
               (request) => request._tag === ORCHESTRATION_WS_METHODS.getShellSnapshot,
             ),
           ).toBe(true);
-          expect(document.body.textContent).toContain("Workflow started in background");
           expect(mounted.router.state.location.pathname).toBe(serverThreadPath(THREAD_ID));
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-
-      const openThreadButton = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (element) => element.textContent?.trim() === "Open thread",
-          ) ?? null,
-        "Unable to find Open thread toast action.",
-      );
-      openThreadButton.click();
-
-      await vi.waitFor(
-        () => {
-          expect(mounted.router.state.location.pathname).toBe(serverThreadPath(workerThreadId));
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -2838,6 +2883,280 @@ describe("ChatView timeline estimator parity (full app)", () => {
             request._tag === WS_METHODS.terminalWrite && request.data === "bun install\r",
         ),
       ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Network delay must not hide local intent. The pending row must dedupe
+  // against live delivery and a rejection must not erase newer draft edits.
+  it.each([
+    { outcome: "accepted", editDraft: true },
+    { outcome: "accepted", editDraft: false },
+    { outcome: "rejected", editDraft: true },
+    { outcome: "rejected", editDraft: false },
+    { outcome: "lost-receipt-queued", editDraft: true },
+    { outcome: "lost-receipt-queued", editDraft: false },
+    { outcome: "lost-receipt-dispatched", editDraft: true },
+    { outcome: "lost-receipt-dispatched", editDraft: false },
+  ] as const)(
+    "shows a queued message immediately before a delayed $outcome receipt (editDraft=$editDraft)",
+    async ({ outcome, editDraft }) => {
+      let resolveDispatch!: (value: { sequence: number }) => void;
+      let rejectDispatch!: (error: Error) => void;
+      const dispatchPromise = new Promise<{ sequence: number }>((resolve, reject) => {
+        resolveDispatch = resolve;
+        rejectDispatch = reject;
+      });
+      const baseSnapshot = createSnapshotForTargetUser({
+        targetMessageId: "queue-latency-user" as MessageId,
+        targetText: "Running task",
+        sessionStatus: "running",
+      });
+      const runningTurnId = "queue-latency-running" as TurnId;
+      const snapshot: OrchestrationReadModel = {
+        ...baseSnapshot,
+        threads: baseSnapshot.threads.map((thread) => ({
+          ...thread,
+          latestTurn: {
+            turnId: runningTurnId,
+            state: "running",
+            requestedAt: NOW_ISO,
+            startedAt: NOW_ISO,
+            completedAt: null,
+            assistantMessageId: null,
+          },
+          session: thread.session ? { ...thread.session, activeTurnId: runningTurnId } : null,
+        })),
+      };
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot,
+        resolveRpc: (body) =>
+          body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand
+            ? outcome.startsWith("lost-receipt")
+              ? { sequence: snapshot.snapshotSequence + 1 }
+              : dispatchPromise
+            : undefined,
+      });
+      let dispatchOperation: Promise<{ sequence: number }> | undefined;
+      if (outcome.startsWith("lost-receipt")) {
+        const api = readEnvironmentApi(LOCAL_ENVIRONMENT_ID)!;
+        __setEnvironmentApiOverrideForTests(LOCAL_ENVIRONMENT_ID, {
+          ...api,
+          orchestration: {
+            ...api.orchestration,
+            dispatchCommand: (command) => {
+              dispatchOperation = api.orchestration
+                .dispatchCommand(command)
+                .then(() => dispatchPromise);
+              return dispatchOperation;
+            },
+          },
+        });
+      }
+      try {
+        const editor = page.getByTestId("composer-editor");
+        await editor.fill("Immediate follow-up");
+        (await waitForButtonByText("Queue")).click();
+        await vi.waitFor(
+          () => {
+            expect(
+              [...document.querySelectorAll("li")].some((li) =>
+                li.textContent?.includes("Immediate follow-up"),
+              ),
+            ).toBe(true);
+          },
+          { timeout: 2_000, interval: 16 },
+        );
+        await expect.element(page.getByText("Queuing…", { exact: true })).toBeVisible();
+        await expect
+          .element(page.getByRole("button", { name: "Steer", exact: true }))
+          .toBeDisabled();
+        expect(composerDraftFor(THREAD_ID)?.prompt).toBe("Immediate follow-up");
+
+        // Keep a newer draft safe while the older submission is in flight.
+        if (editDraft) await editor.fill("Newer draft must survive");
+        if (outcome === "rejected") {
+          rejectDispatch(new Error("Queue rejected for test"));
+          await expect.element(page.getByText("Queuing…", { exact: true })).not.toBeInTheDocument();
+          await expect
+            .element(editor)
+            .toHaveTextContent(editDraft ? "Newer draft must survive" : "Immediate follow-up");
+          return;
+        }
+        if (outcome === "lost-receipt-queued" || outcome === "lost-receipt-dispatched") {
+          await vi.waitFor(() => {
+            expect(wsRequests.some((request) => request.type === "thread.queued-turn.create")).toBe(
+              true,
+            );
+          });
+          const request = wsRequests.find(
+            (request) => request.type === "thread.queued-turn.create",
+          ) as unknown as Extract<
+            ClientOrchestrationCommand,
+            { type: "thread.queued-turn.create" }
+          >;
+          const eventBase = {
+            sequence: snapshot.snapshotSequence + 1,
+            eventId: EventId.make(`queue-${outcome}`),
+            aggregateKind: "thread" as const,
+            aggregateId: THREAD_ID,
+            occurredAt: NOW_ISO,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+          };
+          const committedEvent: OrchestrationEvent =
+            outcome === "lost-receipt-dispatched"
+              ? {
+                  ...eventBase,
+                  type: "thread.message-sent",
+                  payload: {
+                    threadId: THREAD_ID,
+                    messageId: request.message.messageId,
+                    role: "user",
+                    text: "Immediate follow-up",
+                    turnId: null,
+                    streaming: false,
+                    createdAt: NOW_ISO,
+                    updatedAt: NOW_ISO,
+                  },
+                }
+              : {
+                  ...eventBase,
+                  type: "thread.queued-turn-created",
+                  payload: {
+                    threadId: THREAD_ID,
+                    queuedTurn: {
+                      id: request.queuedTurnId,
+                      threadId: THREAD_ID,
+                      message: {
+                        messageId: request.message.messageId,
+                        role: "user",
+                        text: "Immediate follow-up",
+                        attachments: [],
+                      },
+                      runtimeMode: "full-access",
+                      interactionMode: "default",
+                      createdAt: NOW_ISO,
+                      updatedAt: NOW_ISO,
+                      queuePosition: 0,
+                      failedAt: null,
+                      failureMessage: null,
+                    },
+                  },
+                };
+          // Model independent committed-event delivery at the production event
+          // application boundary while the unary receipt remains unresolved.
+          applyEnvironmentThreadDetailEvent(committedEvent, LOCAL_ENVIRONMENT_ID);
+          await vi.waitFor(() => {
+            const thread = selectThreadByRef(useStore.getState(), THREAD_REF);
+            expect(
+              outcome === "lost-receipt-dispatched"
+                ? thread?.messages.some((message) => message.id === request.message.messageId)
+                : thread?.queuedTurns?.some((turn) => turn.id === request.queuedTurnId),
+            ).toBe(true);
+          });
+          // The server event is authoritative before the RPC receipt is lost.
+          rejectDispatch(new Error("Queue receipt lost after commit"));
+          await dispatchOperation!.catch(() => undefined);
+          await vi.waitFor(
+            () => {
+              expect(composerDraftFor(THREAD_ID)?.prompt ?? "").toBe(
+                editDraft ? "Newer draft must survive" : "",
+              );
+            },
+            { timeout: 2_000 },
+          );
+          await expect
+            .element(editor)
+            .toHaveTextContent(editDraft ? "Newer draft must survive" : "");
+          expect(selectThreadByRef(useStore.getState(), THREAD_REF)?.error).toBeFalsy();
+          expect(
+            [...document.querySelectorAll("li")].filter((li) =>
+              li.textContent?.includes("Immediate follow-up"),
+            ),
+          ).toHaveLength(outcome === "lost-receipt-dispatched" ? 0 : 1);
+          return;
+        }
+        resolveDispatch({ sequence: snapshot.snapshotSequence + 1 });
+        await expect.element(page.getByText("Queuing…", { exact: true })).not.toBeInTheDocument();
+        const request = wsRequests.find(
+          (request) => request.type === "thread.queued-turn.create",
+        ) as unknown as Extract<ClientOrchestrationCommand, { type: "thread.queued-turn.create" }>;
+        rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+          kind: "event",
+          event: {
+            sequence: snapshot.snapshotSequence + 1,
+            eventId: EventId.make("queue-latency-created"),
+            aggregateKind: "thread",
+            aggregateId: THREAD_ID,
+            occurredAt: NOW_ISO,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "thread.queued-turn-created",
+            payload: {
+              threadId: THREAD_ID,
+              queuedTurn: {
+                id: request.queuedTurnId as QueuedTurnId,
+                threadId: THREAD_ID,
+                message: {
+                  messageId: request.message.messageId,
+                  role: "user",
+                  text: "Immediate follow-up",
+                  attachments: [],
+                },
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                createdAt: NOW_ISO,
+                updatedAt: NOW_ISO,
+                queuePosition: 0,
+                failedAt: null,
+                failureMessage: null,
+              },
+            },
+          },
+        });
+        await expect
+          .element(page.getByRole("listitem").filter({ hasText: "Immediate follow-up" }))
+          .toBeVisible();
+        expect(
+          [...document.querySelectorAll("li")].filter((li) =>
+            li.textContent?.includes("Immediate follow-up"),
+          ),
+        ).toHaveLength(1);
+        await expect.element(editor).toHaveTextContent(editDraft ? "Newer draft must survive" : "");
+        expect(composerDraftFor(THREAD_ID)?.prompt ?? "").toBe(
+          editDraft ? "Newer draft must survive" : "",
+        );
+      } finally {
+        resolveDispatch({ sequence: snapshot.snapshotSequence + 1 });
+        usePendingTurnStore.getState().clearThreadState(THREAD_REF);
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("keeps incoming queued work visible while a user-input request blocks dispatch", async () => {
+    const inputSnapshot = createSnapshotWithPendingUserInput();
+    const queuedTurns = createSnapshotWithQueuedTurn().threads[0]!.queuedTurns ?? [];
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...inputSnapshot,
+        threads: inputSnapshot.threads.map((thread) => ({ ...thread, queuedTurns })),
+      },
+    });
+    try {
+      await expect.element(page.getByText("Original queued text", { exact: true })).toBeVisible();
+      await expect
+        .element(page.getByText("What should this change cover?", { exact: true }))
+        .toBeVisible();
+      await expect.element(page.getByLabelText("Edit queued message")).toBeDisabled();
     } finally {
       await mounted.cleanup();
     }
@@ -7024,20 +7343,12 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("runs the Sidebar V2 top and footer actions", async () => {
-    localStorage.setItem(
-      "t3code:client-settings:v1",
-      JSON.stringify({
-        ...DEFAULT_CLIENT_SETTINGS,
-        sidebarV2Enabled: true,
-      }),
-    );
-
+  it("runs the sidebar top and footer actions", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-sidebar-v2-top-actions" as MessageId,
-        targetText: "sidebar v2 top actions",
+        targetMessageId: "msg-user-sidebar-top-actions" as MessageId,
+        targetText: "sidebar top actions",
       }),
     });
 
@@ -7068,8 +7379,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           threadId: THREAD_ID,
         },
       });
-      await expect.element(page.getByText("New thread", { exact: true })).toBeInTheDocument();
-      await page.getByText("New thread", { exact: true }).click();
+      await page.getByTestId("new-thread-button").click();
 
       const draftPath = await waitForURL(
         mounted.router,
@@ -7079,7 +7389,76 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const draft = useComposerDraftStore.getState().getDraftSession(draftIdFromPath(draftPath));
       expect(draft?.projectId).toBe(PROJECT_ID);
     } finally {
-      localStorage.removeItem("t3code:client-settings:v1");
+      await mounted.cleanup();
+    }
+  });
+
+  it("groups settled threads per project, shows the recent limit, and expands or collapses", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: addSettledThreads(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-settled-sidebar" as MessageId,
+          targetText: "settled sidebar fixture",
+        }),
+        7,
+      ),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const settledHeader = page.getByRole("button", { name: "Settled 7" });
+      await expect.element(settledHeader).toBeVisible();
+      await expect.element(page.getByText("Settled 6", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Settled 2", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Settled 1", { exact: true })).not.toBeInTheDocument();
+
+      const showMore = page.getByRole("button", { name: "Show 2 more" });
+      await expect.element(showMore).toBeVisible();
+      await page.screenshot({ path: "../../../../.t3/settled-v1-project-group.png" });
+      await showMore.click();
+      await expect.element(page.getByText("Settled 1", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Settled 0", { exact: true })).toBeVisible();
+      await page.screenshot({ path: "../../../../.t3/settled-v1-project-group-expanded.png" });
+
+      await settledHeader.click();
+      await expect.element(settledHeader).toHaveAttribute("aria-expanded", "false");
+      await expect.element(page.getByText("Settled 6", { exact: true })).not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("groups settled threads per project, shows the recent limit, and expands or collapses", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: addSettledThreads(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-settled-sidebar" as MessageId,
+          targetText: "settled sidebar fixture",
+        }),
+        7,
+      ),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const settledHeader = page.getByRole("button", { name: "Settled 7" });
+      await expect.element(settledHeader).toBeVisible();
+      await expect.element(page.getByText("Settled 6", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Settled 2", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Settled 1", { exact: true })).not.toBeInTheDocument();
+
+      const showMore = page.getByRole("button", { name: "Show 2 more" });
+      await expect.element(showMore).toBeVisible();
+      await showMore.click();
+      await expect.element(page.getByText("Settled 1", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Settled 0", { exact: true })).toBeVisible();
+
+      await settledHeader.click();
+      await expect.element(settledHeader).toHaveAttribute("aria-expanded", "false");
+      await expect.element(page.getByText("Settled 6", { exact: true })).not.toBeInTheDocument();
+    } finally {
       await mounted.cleanup();
     }
   });
@@ -7309,6 +7688,158 @@ describe("ChatView timeline estimator parity (full app)", () => {
           });
         },
         { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("responds once when a footer submit races the single-select auto-advance", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput(),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return {
+            sequence: fixture.snapshot.snapshotSequence + 1,
+          };
+        }
+        return undefined;
+      },
+    });
+
+    const respondRequests = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          request.type === "thread.user-input.respond",
+      );
+
+    try {
+      (await waitForButtonContainingText("Tight")).click();
+
+      // Land on the final question, answer it, then submit by hand inside the
+      // 200ms auto-advance window instead of waiting for it.
+      (await waitForButtonContainingText("Conservative")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(respondRequests()).toMatchObject([
+            {
+              requestId: "req-browser-user-input",
+              answers: { scope: "Tight", risk: "Conservative" },
+            },
+          ]);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // The trailing auto-advance must not dispatch a second response for the
+      // same request; the server rejects that as an unknown request id.
+      await new Promise((resolve) => window.setTimeout(resolve, 600));
+      expect(respondRequests()).toHaveLength(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("locks the pending user input options while a response is in flight", async () => {
+    const releaseDispatches: Array<() => void> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({ multiSelect: true }),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return new Promise((resolve) => {
+            releaseDispatches.push(() =>
+              resolve({ sequence: fixture.snapshot.snapshotSequence + 1 }),
+            );
+          });
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      // Multi-select never auto-advances, so both questions are answered by
+      // hand before the response is submitted.
+      (await waitForButtonContainingText("Tight")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      (await waitForButtonContainingText("Conservative")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(findButtonContainingText("Balanced")?.disabled).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      for (const release of releaseDispatches) {
+        release();
+      }
+      await mounted.cleanup();
+    }
+  });
+
+  it("lets a failed user input response be retried", async () => {
+    let respondAttempts = 0;
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({ multiSelect: true }),
+      resolveRpc: (body) => {
+        if (
+          body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          body.type === "thread.user-input.respond"
+        ) {
+          respondAttempts += 1;
+          return respondAttempts === 1
+            ? Promise.reject(new Error("socket closed"))
+            : { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        return undefined;
+      },
+    });
+
+    const respondRequests = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          request.type === "thread.user-input.respond",
+      );
+
+    try {
+      (await waitForButtonContainingText("Tight")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      (await waitForButtonContainingText("Conservative")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(respondRequests()).toHaveLength(1);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // A rejected dispatch never reached the provider, so the question is
+      // still open and Submitting again has to actually reach the provider
+      // rather than being swallowed as a duplicate response.
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(respondRequests()).toHaveLength(2);
+        },
+        { timeout: 4_000, interval: 16 },
       );
     } finally {
       await mounted.cleanup();

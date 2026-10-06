@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
 import type {
   SidebarProjectSortOrder,
   SidebarThreadFilter,
@@ -23,13 +24,72 @@ import {
   hasUnseenThreadCompletion,
   resolveThreadSemanticStatus,
 } from "@t3tools/client-runtime/state/thread-status";
-import { effectiveSettled } from "@t3tools/client-runtime/state/thread-settled";
+import { canSettle, effectiveSettled } from "@t3tools/client-runtime/state/thread-settled";
 import { resolveSettledThreadTimestamp } from "@t3tools/client-runtime/state/thread-sort";
+import { formatThreadContextPlainText } from "@t3tools/shared/threadContext";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
 export const SIDEBAR_THREAD_HOVER_PREWARM_DELAY_MS = 120;
 export type SidebarNewThreadEnvMode = "local" | "worktree";
+export type ThreadLifecycleSupport = {
+  readonly settlement: boolean;
+  readonly snooze: boolean;
+};
+
+export function resolveThreadLifecycleSupport(
+  descriptors: readonly (ExecutionEnvironmentDescriptor | null | undefined)[],
+): ReadonlyMap<string, ThreadLifecycleSupport> {
+  const byEnvironment = new Map<string, ThreadLifecycleSupport>();
+  for (const descriptor of descriptors) {
+    if (!descriptor) continue;
+    byEnvironment.set(descriptor.environmentId, {
+      settlement: descriptor.capabilities.threadSettlement === true,
+      snooze: descriptor.capabilities.threadSnooze === true,
+    });
+  }
+  return byEnvironment;
+}
+
+/** Drop the repeated relative-time suffix to keep sidebar metadata compact. */
+export function compactSidebarTimeLabel(label: string): string {
+  if (label === "just now") return "now";
+  return label.endsWith(" ago") ? label.slice(0, -" ago".length) : label;
+}
+
+function firstValidTimestamp(
+  ...candidates: ReadonlyArray<string | null | undefined>
+): string | null {
+  for (const candidate of candidates) {
+    if (candidate == null) continue;
+    if (!Number.isNaN(Date.parse(candidate))) return candidate;
+  }
+  return null;
+}
+
+export function resolveWorkingStartedAt(
+  thread: Pick<SidebarThreadSummary, "latestTurn" | "session" | "createdAt">,
+): string | null {
+  const turn = thread.latestTurn;
+  if (turn && turn.completedAt === null) {
+    return firstValidTimestamp(
+      turn.startedAt,
+      turn.requestedAt,
+      thread.session?.updatedAt,
+      thread.createdAt,
+    );
+  }
+  return firstValidTimestamp(thread.session?.updatedAt, thread.createdAt);
+}
+
+export function formatWorkingDurationLabel(elapsedMs: number): string {
+  const seconds = Number.isFinite(elapsedMs) ? Math.max(0, Math.floor(elapsedMs / 1000)) : 0;
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
 export const SIDEBAR_THREAD_FILTER_LABELS: Record<SidebarThreadFilter, string> = {
   all: "All threads",
   active: "Active threads",
@@ -116,12 +176,18 @@ export function resolveSidebarDraftPreview(input: {
     attachments?: readonly unknown[];
   } | null;
 }): string {
-  const promptPreview = input.draftPrompt?.trim().split("\n", 1)[0] ?? "";
+  const promptPreview =
+    formatThreadContextPlainText(input.draftPrompt ?? "")
+      .trim()
+      .split("\n", 1)[0] ?? "";
   if (promptPreview) {
     return promptPreview;
   }
 
-  const optimisticPreview = input.optimisticMessage?.text.trim().split("\n", 1)[0] ?? "";
+  const optimisticPreview =
+    formatThreadContextPlainText(input.optimisticMessage?.text ?? "")
+      .trim()
+      .split("\n", 1)[0] ?? "";
   if (optimisticPreview) {
     return optimisticPreview;
   }
@@ -133,7 +199,10 @@ export function resolveSidebarDraftPreview(input: {
 export function resolveExistingThreadDraftPreview(
   prompt: string | null | undefined,
 ): string | null {
-  const preview = prompt?.trim().split("\n", 1)[0] ?? "";
+  const preview =
+    formatThreadContextPlainText(prompt ?? "")
+      .trim()
+      .split("\n", 1)[0] ?? "";
   return preview.length > 0 ? preview : null;
 }
 
@@ -788,6 +857,44 @@ export interface PartitionedSidebarRows<TRow extends PartitionableSidebarRow> {
   readonly orderedThreadKeys: string[];
   /** Every row key (roots and nested children) inside a settled subtree. */
   readonly settledThreadKeys: ReadonlySet<string>;
+  /** Pinned and active subtrees, kept outside the collapsible Settled group. */
+  readonly activeRows: readonly TRow[];
+  /** Settled subtrees in most-recently-settled order. */
+  readonly settledGroups: readonly (readonly TRow[])[];
+}
+
+export function selectVisibleSettledSidebarRows<TRow extends PartitionableSidebarRow>(input: {
+  readonly activeRows: readonly TRow[];
+  readonly settledGroups: readonly (readonly TRow[])[];
+  readonly visibleCount: number;
+  readonly showAll: boolean;
+  readonly activeThreadKey: string | null;
+}): {
+  readonly activeRows: readonly TRow[];
+  readonly settledRows: readonly TRow[];
+  readonly orderedThreadKeys: readonly string[];
+  readonly remainingCount: number;
+} {
+  let visibleGroups = input.showAll
+    ? [...input.settledGroups]
+    : input.settledGroups.slice(0, input.visibleCount);
+  if (
+    input.activeThreadKey !== null &&
+    !visibleGroups.some((group) => group.some((row) => row.threadKey === input.activeThreadKey))
+  ) {
+    const activeGroup = input.settledGroups.find((group) =>
+      group.some((row) => row.threadKey === input.activeThreadKey),
+    );
+    if (activeGroup) visibleGroups = [...visibleGroups, activeGroup];
+  }
+
+  const settledRows = visibleGroups.flat();
+  return {
+    activeRows: input.activeRows,
+    settledRows,
+    orderedThreadKeys: [...input.activeRows, ...settledRows].map((row) => row.threadKey),
+    remainingCount: Math.max(0, input.settledGroups.length - visibleGroups.length),
+  };
 }
 
 function resolveSettledSortTimestampMs(thread: SidebarThreadSummary): number {
@@ -805,12 +912,22 @@ function resolveSettledSortTimestampMs(thread: SidebarThreadSummary): number {
   return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
 }
 
-/**
- * Collapsed-project single-row counterpart to `partitionSettledSidebarRows`:
- * the active route renders alone while its project is collapsed, so the same
- * root-status rule applies — a pill (failed turn, unseen completion) keeps
- * the row full-strength even when the settled override survives.
- */
+export function resolveSettleMenuItems(input: {
+  readonly status: ThreadStatusPill | null;
+  readonly thread: SidebarThreadSummary;
+  readonly settlementSupported: boolean;
+  readonly now: string;
+}): ReadonlyArray<{ readonly id: "settle" | "reopen"; readonly label: string }> {
+  if (!input.settlementSupported) return [];
+  if (isCollapsedSettledRow({ status: input.status, thread: input.thread, now: input.now })) {
+    return [{ id: "reopen", label: "Reopen thread" }];
+  }
+  if (canSettle(input.thread, { now: input.now })) {
+    return [{ id: "settle", label: "Settle thread" }];
+  }
+  return [];
+}
+
 export function isCollapsedSettledRow(input: {
   readonly status: ThreadStatusPill | null;
   readonly thread: SidebarThreadSummary;
@@ -821,12 +938,12 @@ export function isCollapsedSettledRow(input: {
 
 /**
  * Sinks settled roots to the bottom of their own project list. The whole
- * subtree follows its root, mirroring `classifySidebarV2Shelves`: a block
- * stays active while any row in it — root or descendant — carries a status
+ * subtree follows its root: a block stays active while any row in it — root
+ * or descendant — carries a status
  * pill, since the root's own `canSettle` check cannot see pills like a failed
  * turn or an unseen completion that still need attention. Pinned roots keep
  * their leading position — a pin is an explicit order override the settle
- * must not defeat — but still fade when settled, matching SidebarV2. Settled
+ * must not defeat — but still fade when settled. Settled
  * roots sort most-recently-settled first (`settledAt`, falling back through
  * the same stamps `resolveSettledThreadTimestamp` uses); the sort is stable
  * so ties keep their existing order.
@@ -885,9 +1002,97 @@ export function partitionSettledSidebarRows<TRow extends PartitionableSidebarRow
 
   const ordered = [...pinnedBlocks, ...activeBlocks, ...settledBlocks];
   const reordered = ordered.flat();
+  const activeRows = [...pinnedBlocks, ...activeBlocks].flat();
   return {
     rowViews: reordered,
     orderedThreadKeys: reordered.map((row) => row.threadKey),
     settledThreadKeys,
+    activeRows,
+    settledGroups: settledBlocks,
   };
+}
+
+/**
+ * Sidebar thread-context drag: pointer-gesture gating for dragging a thread
+ * row out of the list to attach it as composer context.
+ *
+ * The gesture coexists with the per-project pinned `DndContext`s: vertical
+ * moves inside the list keep the reorder preview, while a horizontal exit
+ * past the list edge switches to the context ghost. A context drop never
+ * reorders — `resolvePinnedDragEndShouldReorder` is the single decision
+ * point both paths share.
+ */
+
+/** Pointer travel before a press becomes a context drag. Matches dnd-kit's pinned distance. */
+export const THREAD_CONTEXT_DRAG_ACTIVATION_DISTANCE = 6;
+
+/** Presses that must never start the gesture: native controls and row actions. */
+const THREAD_CONTEXT_DRAG_INTERACTIVE_SELECTOR = [
+  "button",
+  "input",
+  "a",
+  "textarea",
+  "select",
+  "[data-thread-selection-safe]",
+  "[contenteditable]",
+  "[role='menu']",
+  "[role='dialog']",
+].join(", ");
+
+export function shouldArmThreadContextDrag(input: {
+  readonly isDraft: boolean;
+  readonly isVirtualAgentRun: boolean;
+}): boolean {
+  // Drafts are unsent composer state, not threads: they navigate, never drag
+  // (SidebarDraftRow never attaches the gesture — structural, not gated).
+  // Virtual-agent run rows are not threads either: their ref points at the
+  // parent thread while the label names the child run, so arming them would
+  // attach the wrong identity. Every other real row arms the gesture.
+  if (input.isDraft) return false;
+  if (input.isVirtualAgentRun) return false;
+  return true;
+}
+
+export function shouldIgnoreThreadContextDragStart(input: {
+  readonly button: number;
+  readonly isPrimary: boolean;
+  readonly closest: (selector: string) => unknown;
+}): boolean {
+  // Only the primary button starts the gesture; right/middle clicks and
+  // multi-touch pointers keep their click, selection, and menu behavior.
+  if (!input.isPrimary || input.button !== 0) return true;
+  return input.closest(THREAD_CONTEXT_DRAG_INTERACTIVE_SELECTOR) != null;
+}
+
+export function resolveThreadContextDragRefs(input: {
+  readonly activeKey: string;
+  readonly selectedKeys: readonly string[];
+  readonly parseScopedKey: (key: string) => unknown;
+}): string[] {
+  // The multi-selection travels when the picked-up row is part of it;
+  // otherwise only the picked-up row does. Unparseable keys never leak into
+  // the drop payload.
+  const keys = input.selectedKeys.includes(input.activeKey)
+    ? [...input.selectedKeys]
+    : [input.activeKey];
+  return keys.filter((key) => input.parseScopedKey(key) != null);
+}
+
+export function isThreadContextDragOutsideList(
+  point: { readonly x: number },
+  bounds: { readonly left: number; readonly right: number },
+): boolean {
+  return point.x < bounds.left || point.x > bounds.right;
+}
+
+export function resolvePinnedDragEndShouldReorder(input: {
+  readonly wasContextDrag: boolean;
+  readonly activeId: string;
+  readonly overId: string | null;
+}): boolean {
+  // Releasing a context gesture — on a composer target or on empty space —
+  // never reorders pins, including under the nested per-project DndContexts.
+  if (input.wasContextDrag) return false;
+  if (input.overId === null || input.overId === input.activeId) return false;
+  return true;
 }

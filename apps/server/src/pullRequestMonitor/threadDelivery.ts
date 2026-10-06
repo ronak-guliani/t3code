@@ -32,8 +32,9 @@ export type OwnerAvailability =
   | { readonly kind: "unknown"; readonly cause: unknown };
 
 /**
- * Whether a thread still has work in flight. A queued turn counts: the thread is
- * scheduled to act, so taking ownership away from it would create a second modifier.
+ * Whether a thread still has work in flight. A queued turn that will dispatch on
+ * its own counts: the thread is scheduled to act, so taking ownership away from
+ * it would create a second modifier. A held or paused queue waits for the user.
  */
 export function threadShellIsBusy(shell: {
   readonly latestTurn: { readonly state: string } | null;

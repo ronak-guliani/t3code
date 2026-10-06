@@ -3,7 +3,7 @@ export const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
 type ThreadLifecycleSnapshot = {
   readonly hasPendingApprovals: boolean;
   readonly hasPendingUserInput: boolean;
-  /** Shell-projected non-failed queue (handoff continuation or user follow-up). */
+  /** Shell-projected queue that will dispatch on its own (see queueAwaitsDispatch). */
   readonly hasPendingQueuedTurn?: boolean;
   readonly latestUserMessageAt: string | null;
   readonly latestTurn: {
@@ -151,9 +151,10 @@ export function threadWokeAt(
 }
 
 /**
- * V1 intentionally has no automatic inactivity or pull-request settlement.
- * The durable explicit lifecycle still honors blockers so a stale settlement
- * can never hide a thread that now needs attention.
+ * V1 has no automatic inactivity settlement; automatic pull-request
+ * settlement exists (a merged PR settles the thread that created it). The
+ * durable explicit lifecycle still honors blockers so a stale settlement can
+ * never hide a thread that now needs attention.
  */
 export function effectiveSettled(
   shell: ThreadLifecycleSnapshot & {

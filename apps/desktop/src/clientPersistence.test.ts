@@ -63,6 +63,7 @@ const clientSettings: ClientSettings = {
   statusLineFontSize: 14,
   codeFontSize: 12,
   composerMetaFontSize: 11,
+  filePreviewLineSpacing: 1.5,
   inputFontSize: 14,
   messagePreviewLineLimits: {
     normal: 10,
@@ -91,7 +92,7 @@ const clientSettings: ClientSettings = {
   sidebarProjectSortOrder: "manual",
   sidebarThreadFilter: "all",
   sidebarThreadSortOrder: "created_at",
-  sidebarV2Enabled: false,
+  sidebarSettledThreadCount: 5,
   threadCompletionNotifications: "background-only",
   timestampFormat: "24-hour",
   uiDensity: "default",

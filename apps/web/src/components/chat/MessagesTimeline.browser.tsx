@@ -1,6 +1,9 @@
 import "../../index.css";
 
 import {
+  CollaborationRequestId,
+  CollaborationResponseId,
+  CollaborativeAcceptanceExchangeId,
   EnvironmentId,
   MessageId,
   ThreadId,
@@ -12,17 +15,26 @@ import type { LegendListRef } from "@legendapp/list/react";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
+import type { OpenAttachmentReferenceInput } from "~/browser/openFileReference";
 
 const scrollToEndSpy = vi.fn();
 const getStateSpy = vi.fn(() => ({ isAtEnd: true }));
 const createAssetUrlMock = vi.hoisted(() =>
   vi.fn(async () => ({ relativeUrl: "/assets/signed/abc123" })),
 );
+const openFileReferenceMock = vi.hoisted(() => vi.fn());
 const toastAddMock = vi.hoisted(() => vi.fn());
+
+vi.mock("~/browser/openFileReference", () => ({ openFileReference: openFileReferenceMock }));
 
 vi.mock("../ui/toast", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../ui/toast")>()),
   toastManager: { add: toastAddMock },
+}));
+
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
+  useNavigate: () => vi.fn(),
 }));
 
 vi.mock("~/environmentApi", () => ({
@@ -299,6 +311,113 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("visibly distinguishes messages sent from another thread", async () => {
+    const text = "Please address these review findings.";
+    const collaborationRequestText = "A parent thread sent a review request.";
+    const collaborationResponseText = "A child thread sent its review findings.";
+    const ownMessageText = "I’ll take care of the fixes here.";
+    const screen = await render(
+      <AppAtomRegistryProvider>
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[
+            {
+              id: "cross-thread-message",
+              kind: "message",
+              createdAt: "2026-04-13T12:00:00.000Z",
+              message: {
+                id: MessageId.make("cross-thread-message"),
+                role: "user",
+                text,
+                origin: {
+                  kind: "cross-thread",
+                  sourceThreadId: ThreadId.make("review-thread"),
+                  sourceMessageId: MessageId.make("review-request"),
+                  sourceThreadTitle: "Review thread",
+                },
+                createdAt: "2026-04-13T12:00:00.000Z",
+                streaming: false,
+              },
+            },
+            {
+              id: "collaboration-request-message",
+              kind: "message",
+              createdAt: "2026-04-13T12:00:30.000Z",
+              message: {
+                id: MessageId.make("collaboration-request-message"),
+                role: "user",
+                text: collaborationRequestText,
+                origin: {
+                  kind: "collaboration-request",
+                  requestId: CollaborationRequestId.make("request-1"),
+                  exchangeId: CollaborativeAcceptanceExchangeId.make("exchange-1"),
+                },
+                createdAt: "2026-04-13T12:00:30.000Z",
+                streaming: false,
+              },
+            },
+            {
+              id: "collaboration-response-message",
+              kind: "message",
+              createdAt: "2026-04-13T12:00:45.000Z",
+              message: {
+                id: MessageId.make("collaboration-response-message"),
+                role: "user",
+                text: collaborationResponseText,
+                origin: {
+                  kind: "collaboration-response",
+                  requestId: CollaborationRequestId.make("request-1"),
+                  responseId: CollaborationResponseId.make("response-1"),
+                  exchangeId: CollaborativeAcceptanceExchangeId.make("exchange-1"),
+                },
+                createdAt: "2026-04-13T12:00:45.000Z",
+                streaming: false,
+              },
+            },
+            {
+              id: "user-message",
+              kind: "message",
+              createdAt: "2026-04-13T12:01:00.000Z",
+              message: {
+                id: MessageId.make("user-message"),
+                role: "user",
+                text: ownMessageText,
+                createdAt: "2026-04-13T12:01:00.000Z",
+                streaming: false,
+              },
+            },
+          ]}
+        />
+      </AppAtomRegistryProvider>,
+    );
+
+    try {
+      const message = page.getByText(text, { exact: true }).element().closest(".group");
+      expect(message).not.toBeNull();
+      expect(message!.classList.contains("bg-violet-500/20")).toBe(true);
+      expect(message!.classList.contains("border-violet-400/55")).toBe(true);
+      expect(getComputedStyle(message!).backgroundColor).toContain("/ 0.2)");
+      await expect.element(page.getByText("Review thread", { exact: true })).toBeVisible();
+      for (const collaborationText of [collaborationRequestText, collaborationResponseText]) {
+        const collaborationMessage = page
+          .getByText(collaborationText, { exact: true })
+          .element()
+          .closest(".group");
+        expect(collaborationMessage?.classList.contains("bg-violet-500/20")).toBe(true);
+        expect(getComputedStyle(collaborationMessage!).backgroundColor).toContain("/ 0.2)");
+      }
+      expect(page.getByText("From another thread", { exact: true }).elements()).toHaveLength(2);
+      const ownMessage = page
+        .getByText(ownMessageText, { exact: true })
+        .element()
+        .closest(".group");
+      expect(ownMessage?.classList.contains("bg-secondary")).toBe(true);
+      expect(ownMessage?.classList.contains("bg-violet-500/20")).toBe(false);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("snaps to the bottom when timeline rows appear after an initially empty render", async () => {
     const requestAnimationFrameSpy = vi
       .spyOn(window, "requestAnimationFrame")
@@ -503,6 +622,7 @@ describe("MessagesTimeline", () => {
                   id: "long-edit",
                   createdAt,
                   turnId,
+                  sourceActivityKind: "tool.started",
                   tone: "tool",
                   label: "Edit file",
                   detail: "/workspace/src/durable-worktree-c...",
@@ -549,6 +669,9 @@ describe("MessagesTimeline", () => {
         expect(getComputedStyle(details!).getPropertyValue("text-size-adjust")).toBe("100%");
         expect(getComputedStyle(detail).backgroundColor).toBe("rgba(0, 0, 0, 0)");
         expect(detail.scrollWidth).toBeLessThanOrEqual(detail.clientWidth + 1);
+        const evidenceButton = page.getByRole("button", { name: "Load full tool evidence" });
+        await expect.element(evidenceButton).toBeVisible();
+        expect(getComputedStyle(evidenceButton.element()).fontSize).toBe(`${fontSize}px`);
       } finally {
         await screen.unmount();
       }
@@ -1282,6 +1405,16 @@ describe("MessagesTimeline", () => {
 
   it("opens message attachments staged outside the workspace", async () => {
     const props = buildProps();
+    const threadRef = scopeThreadRef(props.activeThreadEnvironmentId, props.activeThreadId);
+    openFileReferenceMock.mockImplementationOnce(async (input: OpenAttachmentReferenceInput) => {
+      input.onOpenGallery(
+        input.attachments.map((image, index) => ({
+          ...image,
+          previewUrl: `http://localhost:3773/assets/signed/${index ? "def456" : "abc123"}`,
+        })),
+        input.selectedAttachmentId,
+      );
+    });
     const screen = await render(
       <MessagesTimeline
         {...props}
@@ -1313,15 +1446,17 @@ describe("MessagesTimeline", () => {
     try {
       await page.getByRole("button", { name: "Open shot.png" }).click();
       await vi.waitFor(() => {
-        expect(createAssetUrlMock).toHaveBeenCalledWith({
-          resource: {
-            _tag: "attachment",
-            attachmentId: "thread-1-abc123",
-            fileName: "shot.png",
-            mimeType: "image/png",
-            disposition: "inline",
-          },
-        });
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: "attachments",
+            threadRef,
+            selectedAttachmentId: "thread-1-abc123",
+            attachments: [expect.objectContaining({ id: "thread-1-abc123", name: "shot.png" })],
+            createAssetUrl: expect.any(Function),
+            httpBaseUrl: "http://localhost:3773",
+            onOpenGallery: expect.any(Function),
+          }),
+        );
       });
       expect(props.onImageExpand).toHaveBeenCalledWith({
         images: [{ src: "http://localhost:3773/assets/signed/abc123", name: "shot.png" }],
@@ -1332,8 +1467,64 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("opens tool-result file cards through the owning-thread file-reference boundary", async () => {
+    const props = buildProps();
+    const threadRef = scopeThreadRef(props.activeThreadEnvironmentId, props.activeThreadId);
+    openFileReferenceMock.mockResolvedValueOnce({ _tag: "Success", value: undefined });
+    const createdAt = "2026-09-08T10:00:00.000Z";
+    const turnId = TurnId.make("file-change-turn");
+    const filePath = "/tmp/tool-output notes.ts";
+    const screen = await render(
+      <MessagesTimeline
+        {...props}
+        activeTurnId={turnId}
+        activeTurnInProgress
+        isWorking
+        activeTurnStartedAt={createdAt}
+        timelineEntries={[
+          {
+            id: "file-change-1",
+            kind: "work",
+            createdAt,
+            entry: {
+              id: "file-change-1",
+              createdAt,
+              turnId,
+              sourceActivityKind: "tool.completed",
+              label: "Edit file",
+              tone: "tool",
+              detail: "Updated source file",
+              changedFiles: [filePath],
+              toolLifecycleStatus: "completed",
+              isComplete: true,
+            },
+          },
+        ]}
+      />,
+    );
+    try {
+      await page.getByRole("button", { name: /Expand details:/ }).click();
+      await page.getByRole("button", { name: `Open file ${filePath}` }).click();
+      await vi.waitFor(() => {
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            threadRef,
+            filePath,
+            cwd: props.workspaceRoot,
+            httpBaseUrl: "http://localhost:3773",
+            createAssetUrl: expect.any(Function),
+            openPreview: expect.any(Function),
+            navigatePreview: expect.any(Function),
+          }),
+        );
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("reports the real error when the clicked attachment fails to load", async () => {
-    createAssetUrlMock.mockRejectedValueOnce(new Error("boom"));
+    openFileReferenceMock.mockRejectedValueOnce(new Error("boom"));
     const props = buildProps();
     const screen = await render(
       <MessagesTimeline
