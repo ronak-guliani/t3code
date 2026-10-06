@@ -119,11 +119,16 @@ describe("RightPanelTabs", () => {
     }
   });
 
-  it("keeps the surface title bar compact", async () => {
+  it("matches the chat header height at desktop and mobile widths", async () => {
     const { screen } = await mountTabs();
     try {
       const tabBar = document.querySelector<HTMLElement>("[data-right-panel-tabbar]")!;
-      expect(tabBar.getBoundingClientRect().height).toBe(44);
+      expect(tabBar.getBoundingClientRect().height).toBe(57);
+
+      await page.viewport(430, 800);
+      await vi.waitFor(() => {
+        expect(tabBar.getBoundingClientRect().height).toBe(49);
+      });
     } finally {
       await screen.unmount();
     }

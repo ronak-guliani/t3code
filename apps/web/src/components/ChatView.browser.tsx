@@ -8924,6 +8924,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
           () => document.querySelector<HTMLElement>("[data-file-browser-panel]"),
           "Unable to find file browser.",
         );
+        const expectHeaderAlignment = () => {
+          const chatHeader = document.querySelector<HTMLElement>("main header");
+          const panelHeader = document.querySelector<HTMLElement>("[data-right-panel-tabbar]");
+          expect(panelHeader?.getBoundingClientRect().height).toBe(
+            chatHeader?.getBoundingClientRect().height,
+          );
+        };
+        expectHeaderAlignment();
         await vi.waitFor(() => {
           expect(document.documentElement.classList.contains("dark")).toBe(theme === "dark");
         });
@@ -8957,6 +8965,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
               document.querySelector<HTMLElement>(`[data-chat-view-right-panel-surface="${kind}"]`),
             `Unable to find ${kind} surface.`,
           );
+          expectHeaderAlignment();
           await vi.waitFor(() => {
             expectBackground(surface.firstElementChild);
             if (kind === "preview") {
@@ -9612,7 +9621,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
         (pathname) => pathname === serverThreadPath(secondThreadId),
         "The benchmark navigation did not reach its thread route.",
       );
-      await expect.element(page.getByText("Send a message to start the conversation.")).toBeVisible();
+      await expect
+        .element(page.getByText("Send a message to start the conversation."))
+        .toBeVisible();
       const navigationFinishedAt = performance.now();
       const threadNavigationMs = navigationFinishedAt - navigationStartedAt;
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -9624,8 +9635,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
       ];
       const longTasks = longTaskEntries.map(({ startTime, duration }) => ({
         phase:
-          phaseWindows.find((window) => startTime < window.end && startTime + duration > window.start)
-            ?.phase ?? "outside",
+          phaseWindows.find(
+            (window) => startTime < window.end && startTime + duration > window.start,
+          )?.phase ?? "outside",
         durationMs: Number(duration.toFixed(2)),
       }));
       console.warn(
@@ -9692,5 +9704,4 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await mounted?.cleanup();
     }
   });
-
 });
