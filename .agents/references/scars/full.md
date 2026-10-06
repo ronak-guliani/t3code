@@ -94,6 +94,7 @@
 
 ## Provider tools and workspace ownership
 
+- Bind Pi's `PWD` to its requested spawn cwd. Setting only the subprocess cwd leaves the server's `PWD` inherited; extensions such as context-mode prefer that environment value and otherwise execute tools in the server's repository despite a correct thread/worktree binding.
 - Agent CLI stdout is a data boundary: send logs and failures to stderr, use the server-matched launcher rather than ambient PATH, and never infer matching protocol contracts from equal package versions.
 - OpenCode SSE connection success is not semantic progress: admit prompts only after the subscription is established, correlate each prompt with a client message ID, and reconcile transcript plus native status until correlated work is idle before projecting one terminal turn event. Replayed evidence must be idempotent, and interrupt/session replacement remains authoritative over delayed recovery results.
 - OpenCode prompt admission is not turn completion: long tool-heavy turns can remain busy for minutes after `promptAsync` returns, so recovery polling must back off and wait for native idle evidence instead of treating a short admission window as a failed turn.
