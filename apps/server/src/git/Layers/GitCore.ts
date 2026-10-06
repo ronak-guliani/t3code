@@ -917,9 +917,15 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
 
     // Acquire outside the execution timeout and measured duration so queue
     // waits neither time out commands nor pollute Git/activity timings.
+    // Queue wait stays unmeasured there on purpose, so record it here as its own
+    // span: without it an unbounded wait is invisible, and the client's only
+    // signal that a read is slow is a deadline firing on a request that was
+    // about to succeed.
     const pooledExecution = shouldBypassGitProcessPool(input)
       ? execution
-      : gitProcesses.withPermits(1)(execution);
+      : gitProcesses
+          .withPermits(1)(execution)
+          .pipe(Effect.withSpan(`${input.operation}.gitPoolQueue`, { kind: "client" }));
     return pooledExecution.pipe(
       Effect.withSpan(input.operation, {
         kind: "client",

@@ -23,11 +23,17 @@ import { type WsRpcProtocolClient } from "./protocol";
 import { resetWsReconnectBackoff } from "./wsConnectionState";
 import { WsTransport } from "./wsTransport";
 
-// Every Git command inside the server-side branch fan-out is individually capped
-// at 10s, so a healthy read finishes far inside this. A request still pending
-// past it is stuck, not slow, and should surface as an error instead of sitting
-// in the slow-RPC toast indefinitely.
-const GIT_LIST_BRANCHES_TIMEOUT = Duration.seconds(30);
+// A hang guard, not a latency budget. The branch read is two sequential phases
+// — `branch --no-color` (10s), then a five-command fan-out whose longest is
+// `for-each-ref` at 15s — so ~25s of pure command execution is already possible
+// with an idle process pool. On top of that, `GitCore.execute` deliberately
+// acquires its eight-slot subprocess semaphore outside the per-command timeout,
+// so queue wait is unbounded and cannot be derived from the command timeouts.
+// Anything near the command total would cancel reads that were about to succeed.
+// This only needs to outlast a healthy-but-contended read; a genuinely dead
+// connection is already handled by ping timeout, which reconnects and clears
+// tracked requests.
+const GIT_LIST_BRANCHES_TIMEOUT = Duration.seconds(120);
 
 type RpcTag = keyof WsRpcProtocolClient & string;
 type RpcMethod<TTag extends RpcTag> = WsRpcProtocolClient[TTag];
