@@ -76,6 +76,7 @@ const clientSettings: ClientSettings = {
   sidebarRowSpacing: "default",
   sidebarTranslucency: "off",
   toolFontSize: 12,
+  tabFontSize: 11,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
   codeFont: "jetbrains-mono",

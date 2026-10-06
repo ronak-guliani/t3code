@@ -104,6 +104,7 @@ const settingsByPage: ReadonlyArray<{
       "Sidebar font size",
       "Sidebar icon size",
       "Sidebar metadata font size",
+      "Tab font size",
       "Sidebar row spacing",
       "Tool output font size",
       "Normal message preview",
