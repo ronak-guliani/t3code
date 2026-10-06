@@ -343,6 +343,47 @@ it.layer(TestLayer)("git integration", (it) => {
   // ── listGitBranches ──
 
   describe("listGitBranches", () => {
+    it.effect("coalesces concurrent reads of one repo without serving stale branches", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(tmp);
+        const core = yield* GitCore;
+        const fanOuts = yield* Metric.value(
+          Metric.withAttributes(
+            gitCommandDuration,
+            metricAttributes({ operation: "GitCore.listBranches.branchNoColor" }),
+          ),
+        );
+
+        // Ten clients asking the same question at once must run one fan-out,
+        // not ten. Every caller still gets its own filtered page.
+        const [all, filtered, paged] = yield* Effect.all(
+          [
+            core.listBranches({ cwd: tmp }),
+            core.listBranches({ cwd: tmp, query: initialBranch }),
+            core.listBranches({ cwd: tmp, limit: 1 }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        const afterBurst = yield* Metric.value(
+          Metric.withAttributes(
+            gitCommandDuration,
+            metricAttributes({ operation: "GitCore.listBranches.branchNoColor" }),
+          ),
+        );
+        expect(afterBurst.count - fanOuts.count).toBe(1);
+        expect(all.branches.map((branch) => branch.name)).toContain(initialBranch);
+        expect(filtered.branches.map((branch) => branch.name)).toEqual([initialBranch]);
+        expect(paged.branches).toHaveLength(1);
+
+        // The shared read is dropped once it resolves, so a later read after a
+        // mutation must observe the new branch rather than a coalesced leftover.
+        yield* core.createBranch({ cwd: tmp, branch: "added-after-burst" });
+        const afterMutation = yield* core.listBranches({ cwd: tmp });
+        expect(afterMutation.branches.map((branch) => branch.name)).toContain("added-after-burst");
+      }),
+    );
+
     it.effect("returns isRepo: false for non-git directory", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();

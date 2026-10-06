@@ -212,6 +212,11 @@ export function BranchToolbarBranchSelector({
     );
   }, [branchCwd, environmentId, queryClient]);
 
+  // Gated on the menu being open: an always-mounted search query re-ran the
+  // server's branch fan-out on every window focus, reconnect, and 60s tick
+  // while nobody was looking at the picker, and each typed character opened a
+  // new query key. The prefetch above already warms the empty query, so opening
+  // the menu still reads from cache.
   const {
     data: branchesSearchData,
     fetchNextPage,
@@ -223,6 +228,7 @@ export function BranchToolbarBranchSelector({
       environmentId,
       cwd: branchCwd,
       query: deferredTrimmedBranchQuery,
+      enabled: isBranchMenuOpen,
     }),
   );
   const branches = useMemo(
@@ -589,7 +595,10 @@ export function BranchToolbarBranchSelector({
           "min-w-0 max-w-full font-normal text-muted-foreground/70 text-[length:var(--app-composer-meta-font-size)]! hover:text-foreground/80 active:scale-100",
           className,
         )}
-        disabled={(isBranchesSearchPending && branches.length === 0) || isBranchActionPending}
+        disabled={
+          (isBranchMenuOpen && isBranchesSearchPending && branches.length === 0) ||
+          isBranchActionPending
+        }
       >
         <GitBranchIcon className="size-3 shrink-0 opacity-70" />
         <span className="min-w-0 max-w-[240px] truncate">{triggerLabel}</span>

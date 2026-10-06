@@ -17,11 +17,23 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { applyGitStatusStreamEvent } from "@t3tools/shared/git";
-import { Effect, Stream } from "effect";
+import { Duration, Effect, Stream } from "effect";
 
 import { type WsRpcProtocolClient } from "./protocol";
 import { resetWsReconnectBackoff } from "./wsConnectionState";
 import { WsTransport } from "./wsTransport";
+
+// A hang guard, not a latency budget. The branch read is two sequential phases
+// — `branch --no-color` (10s), then a five-command fan-out whose longest is
+// `for-each-ref` at 15s — so ~25s of pure command execution is already possible
+// with an idle process pool. On top of that, `GitCore.execute` deliberately
+// acquires its eight-slot subprocess semaphore outside the per-command timeout,
+// so queue wait is unbounded and cannot be derived from the command timeouts.
+// Anything near the command total would cancel reads that were about to succeed.
+// This only needs to outlast a healthy-but-contended read; a genuinely dead
+// connection is already handled by ping timeout, which reconnects and clears
+// tracked requests.
+const GIT_LIST_BRANCHES_TIMEOUT = Duration.seconds(120);
 
 type RpcTag = keyof WsRpcProtocolClient & string;
 type RpcMethod<TTag extends RpcTag> = WsRpcProtocolClient[TTag];
@@ -409,7 +421,9 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         throw new Error("Git action stream completed without a final result.");
       },
       listBranches: (input) =>
-        transport.request((client) => client[WS_METHODS.gitListBranches](input)),
+        transport.request((client) => client[WS_METHODS.gitListBranches](input), {
+          timeout: GIT_LIST_BRANCHES_TIMEOUT,
+        }),
       createWorktree: (input) =>
         transport.request((client) => client[WS_METHODS.gitCreateWorktree](input)),
       removeWorktree: (input) =>

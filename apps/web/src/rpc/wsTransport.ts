@@ -1,14 +1,4 @@
-import {
-  Cause,
-  Duration,
-  Effect,
-  Exit,
-  Layer,
-  ManagedRuntime,
-  Option,
-  Scope,
-  Stream,
-} from "effect";
+import { Cause, Duration, Effect, Exit, Layer, ManagedRuntime, Scope, Stream } from "effect";
 import { RpcClient } from "effect/unstable/rpc";
 
 import { ClientTracingLive } from "../observability/clientTracing";
@@ -31,7 +21,7 @@ interface SubscribeOptions {
 }
 
 interface RequestOptions {
-  readonly timeout?: Option.Option<Duration.Input>;
+  readonly timeout?: Duration.Input;
 }
 
 const DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS = Duration.millis(250);
@@ -83,7 +73,7 @@ export class WsTransport {
 
   async request<TSuccess>(
     execute: (client: WsRpcProtocolClient) => Effect.Effect<TSuccess, Error, never>,
-    _options?: RequestOptions,
+    options?: RequestOptions,
   ): Promise<TSuccess> {
     if (this.disposed) {
       throw new Error("Transport disposed");
@@ -91,7 +81,12 @@ export class WsTransport {
 
     const session = this.session;
     const client = await session.clientPromise;
-    return await session.runtime.runPromise(Effect.suspend(() => execute(client)));
+    const effect = Effect.suspend(() => execute(client));
+    // Without this, a request the server never answers stays pending forever and
+    // only ever shows up in the slow-RPC toast.
+    return await session.runtime.runPromise(
+      options?.timeout === undefined ? effect : Effect.timeout(effect, options.timeout),
+    );
   }
 
   async requestStream<TValue>(
