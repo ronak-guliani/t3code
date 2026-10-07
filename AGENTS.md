@@ -47,6 +47,10 @@ If a tradeoff is required, choose correctness and robustness over short-term con
 Long-term maintainability is a core priority. Before adding functionality, check whether shared logic should be extracted. Avoid duplicated logic, don't be afraid to change existing code, and don't solve problems with narrow local shortcuts.
 Write only the small, concise amount of code needed to solve the problem; avoid unnecessary abstraction, features, and complexity.
 
+## Navigation
+
+For wrong-workspace behavior, slow provider startup, cleanup failures, missing PR associations, or misrouted review feedback, start with the [symptom-to-owner map](docs/agents/navigation.md).
+
 ## Scars
 
 Read the universal invariants in [scars.md](scars.md), then load the matching detailed subsystem section from [.agents/references/scars/full.md](.agents/references/scars/full.md) for the task at hand.

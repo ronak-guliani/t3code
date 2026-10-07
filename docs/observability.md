@@ -135,6 +135,27 @@ Migration 103 repairs chronology indexes skipped by older divergent migration
 ledgers; the first upgrade may spend time building those indexes, while subsequent
 launches reuse them.
 
+### Turn-start timing
+
+Backend startup and a thread's turn start are different measurements. Enable span timing
+with `T3CODE_TRACE_TIMING_ENABLED=true` before launching the affected server, then correlate
+its `server.log`, `server.trace.ndjson`, and provider events by thread and command IDs.
+Use the affected server's configured log paths, not another dev worktree's default home.
+
+Compare these boundaries separately:
+
+| Boundary                              | Evidence and owner                                                                                                                                                                                                                               |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Command receipt to commit             | `client command received` / `client command committed` records in [ws.ts](../apps/server/src/ws.ts), matched by `commandId`. This includes normalization and command dispatch, not provider readiness.                                           |
+| Checkpoint and session preparation    | `ensurePreTurnBaselineForThread` / `ensureSessionForThread` in [ProviderCommandReactor](../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts); follow the checkpoint store and selected provider adapter when their spans dominate. |
+| Provider readiness to prompt dispatch | Adapter/native protocol evidence. A spawned process or ready session has not necessarily received the prompt.                                                                                                                                    |
+| Prompt dispatch to first model output | Native provider events compared with canonical events; this includes model/provider latency, not just T3 preparation.                                                                                                                            |
+
+Not every boundary has a dedicated timing record. Report missing evidence explicitly;
+a UI Working timer or a zero-duration span cannot establish which phase was slow.
+Inspect [shell activity](#inspecting-shell-commands) when a tool, rather than turn startup,
+is taking the time. Nested or concurrent spans overlap; do not add them as sequential work.
+
 ## Run The Server In Instrumented Mode
 
 There are two useful modes:
@@ -142,13 +163,19 @@ There are two useful modes:
 - local-only: stdout + local `server.trace.ndjson`
 - full local observability: stdout + local trace file + OTLP export to Grafana/Tempo/Prometheus
 
-The local trace file is always on. OTLP export is opt-in.
+The local trace file is always on. Span timing and OTLP export are opt-in.
 
 ### Option 1: Local Traces Only
 
-You do not need any extra env vars. Just run the app normally and inspect `server.trace.ndjson`.
+Normal launches write `server.trace.ndjson` without extra environment variables, but span
+timing is disabled by default. For a performance investigation, enable timing before
+starting the server and inspect the trace file:
 
-Examples:
+```bash
+export T3CODE_TRACE_TIMING_ENABLED=true
+```
+
+Launch from that same shell using one of:
 
 ```bash
 npx t3
@@ -190,12 +217,13 @@ export T3CODE_OTLP_METRICS_URL=http://localhost:4318/v1/metrics
 export T3CODE_OTLP_SERVICE_NAME=t3-local
 ```
 
-Optional:
+For timing measurements, also set:
 
 ```bash
-export T3CODE_TRACE_MIN_LEVEL=Info
 export T3CODE_TRACE_TIMING_ENABLED=true
 ```
+
+`T3CODE_TRACE_MIN_LEVEL` can separately change the minimum recorded trace level.
 
 #### 3. Launch the app from that same shell
 
@@ -573,7 +601,7 @@ Local trace file:
 - `T3CODE_TRACE_MAX_FILES`: rotated file count, default `10`
 - `T3CODE_TRACE_BATCH_WINDOW_MS`: flush window, default `200`
 - `T3CODE_TRACE_MIN_LEVEL`: minimum trace level, default `Info`
-- `T3CODE_TRACE_TIMING_ENABLED`: enable timing metadata, default `true`
+- `T3CODE_TRACE_TIMING_ENABLED`: enable span timing metadata, default `false`; see [CLI configuration](../apps/server/src/cli.ts) for runtime defaults
 
 OTLP export:
 
