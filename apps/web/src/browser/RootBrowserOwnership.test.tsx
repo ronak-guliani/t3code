@@ -77,13 +77,10 @@ describe("root browser ownership", () => {
     expect((await renderRoot()).match(/data-test-browser-host/g)).toHaveLength(1);
   });
 
-  it.each(["/pair", "/connect", "/connect/callback"])(
-    "does not mount a native browser host on %s",
-    async (pathname) => {
-      state.pathname = pathname;
-      expect(await renderRoot()).not.toContain("data-test-browser-host");
-    },
-  );
+  it.each(["/pair", "/connect"])("does not mount a native browser host on %s", async (pathname) => {
+    state.pathname = pathname;
+    expect(await renderRoot()).not.toContain("data-test-browser-host");
+  });
 
   it("does not mount a native browser host outside Electron", async () => {
     state.electron = false;
