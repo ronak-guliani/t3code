@@ -17,6 +17,7 @@ describe("previewAutomationBudgets", () => {
     expect(budgets.networkMode).toBe("failed");
     expect(budgets.maxVisibleText).toBe(8_000);
     expect(budgets.maxInteractiveElements).toBe(80);
+    expect(budgets.maxActionTimelineEntries).toBe(40);
   });
 
   it("filters console to important levels including CDP warning", () => {
@@ -107,6 +108,54 @@ describe("previewAutomationBudgets", () => {
     expect(snapshot.networkEntries.map((e) => e.url)).toEqual(["/bad"]);
     expect(snapshot.diagnosticsSummary).toContain("console: 1 error(s), 1 warn(s)");
     expect(snapshot.diagnosticsSummary).toContain("latestError: boom");
+  });
+
+  it("keeps small action timelines unchanged and retains only the newest entries", () => {
+    const action = (id: number) => ({
+      id: String(id),
+      action: "click",
+      status: "succeeded" as const,
+      startedAt: `t${id}`,
+    });
+    const smallTimeline = [action(0), action(1)];
+    const snapshot = (actionTimeline: ReturnType<typeof action>[]) =>
+      applySnapshotBudgets(
+        {
+          url: "https://example.com",
+          title: "Example",
+          loading: false,
+          visibleText: "",
+          interactiveElements: [],
+          accessibilityTree: null,
+          consoleEntries: [],
+          networkEntries: [],
+          actionTimeline,
+          screenshot: { mimeType: "image/png" as const, data: "", width: 0, height: 0 },
+        },
+        resolveSnapshotBudgets({}),
+      );
+
+    expect(snapshot(smallTimeline).actionTimeline).toBe(smallTimeline);
+
+    const timeline = Array.from({ length: 80 }, (_, id) => action(id));
+    expect(snapshot(timeline).actionTimeline).toEqual(timeline.slice(-40));
+
+    const expanded = applySnapshotBudgets(
+      {
+        url: "https://example.com",
+        title: "Example",
+        loading: false,
+        visibleText: "",
+        interactiveElements: [],
+        accessibilityTree: null,
+        consoleEntries: [],
+        networkEntries: [],
+        actionTimeline: timeline,
+        screenshot: { mimeType: "image/png", data: "", width: 0, height: 0 },
+      },
+      resolveSnapshotBudgets({ maxActionTimelineEntries: 60 }),
+    );
+    expect(expanded.actionTimeline).toEqual(timeline.slice(-60));
   });
 
   it("returns small metadata unchanged by the final text budget", () => {

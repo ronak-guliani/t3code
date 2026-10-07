@@ -609,6 +609,7 @@ export const DEFAULT_SNAPSHOT_MAX_INTERACTIVE_ELEMENTS = 80;
 export const DEFAULT_SNAPSHOT_MAX_SCREENSHOT_EDGE = 1280;
 export const DEFAULT_SNAPSHOT_MAX_CONSOLE_ENTRIES = 40;
 export const DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES = 40;
+export const DEFAULT_SNAPSHOT_MAX_ACTION_TIMELINE_ENTRIES = 40;
 export const DEFAULT_LOCATOR_CANDIDATE_LIMIT = 5;
 /**
  * Hard ceiling for serialized snapshot metadata text returned over MCP.
@@ -671,6 +672,10 @@ export const PreviewAutomationSnapshotInput = Schema.Struct({
   ),
   maxNetworkEntries: OptionalPositiveInt(
     `Max network entries returned. Defaults to ${DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES}.`,
+    200,
+  ),
+  maxActionTimelineEntries: OptionalPositiveInt(
+    `Max action timeline entries returned. Defaults to ${DEFAULT_SNAPSHOT_MAX_ACTION_TIMELINE_ENTRIES}.`,
     200,
   ),
 }).annotate({
@@ -770,6 +775,10 @@ export const PreviewAutomationOpenAndSnapshotInput = Schema.Struct({
   ),
   maxNetworkEntries: OptionalPositiveInt(
     `Max network entries. Defaults to ${DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES}.`,
+    200,
+  ),
+  maxActionTimelineEntries: OptionalPositiveInt(
+    `Max action timeline entries. Defaults to ${DEFAULT_SNAPSHOT_MAX_ACTION_TIMELINE_ENTRIES}.`,
     200,
   ),
 })
