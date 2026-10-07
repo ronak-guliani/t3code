@@ -118,6 +118,39 @@ function replaceLine(contents: string, lineIndex: number, replacement: string): 
 }
 
 describe("CheckpointStoreLive range resolution", () => {
+  it.effect("resolves the worktree root once for snapshot and ref provenance", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      yield* initRepoWithCommit(cwd);
+      const real = yield* GitCore;
+      const rootReads: string[] = [];
+      const instrumentedGit = Layer.succeed(GitCore, {
+        ...real,
+        execute: (input) => {
+          if (input.operation === "CheckpointStore.resolveWorktreeRoot") {
+            rootReads.push(input.operation);
+          }
+          return real.execute(input);
+        },
+      });
+      yield* Effect.gen(function* () {
+        const store = yield* CheckpointStore;
+        yield* store.captureCheckpoint({
+          cwd,
+          checkpointRef: checkpointBaselineRefForThreadTurn(ThreadId.make("inventory"), 1),
+        });
+        expect(rootReads).toHaveLength(1);
+      }).pipe(
+        Effect.provide(
+          CheckpointStoreLive.pipe(
+            Layer.provide(instrumentedGit),
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, GitCoreTestLayer))),
+  );
+
   for (const phase of [
     "HEAD",
     "workspace tree",
@@ -754,6 +787,26 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
   });
 
   describe("captureCheckpoint", () => {
+    it.effect("excludes a registered nested worktree from the scratch snapshot", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const nestedPath = path.join(cwd, "nested-worktree");
+        yield* git(cwd, ["worktree", "add", "-b", "checkpoint-foreign", nestedPath]);
+        yield* writeTextFile(path.join(nestedPath, "foreign.txt"), "foreign data\n");
+        const checkpointRef = checkpointRefForThreadTurn(
+          ThreadId.make("thread-checkpoint-store-foreign-worktree"),
+          0,
+        );
+
+        yield* (yield* CheckpointStore).captureCheckpoint({ cwd, checkpointRef });
+
+        expect(yield* git(cwd, ["ls-tree", "-r", "--name-only", checkpointRef])).not.toContain(
+          "nested-worktree/foreign.txt",
+        );
+      }),
+    );
+
     it.effect("captures the exact worktree even when the index holds stale stat data", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();

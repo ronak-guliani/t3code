@@ -469,6 +469,7 @@ const make = Effect.gen(function* () {
     options?: {
       readonly modelSelection?: ModelSelection;
       readonly executionAuthority?: CollaborationExecutionAuthority;
+      readonly activeMessageId?: MessageId;
     },
   ) {
     const readModel = yield* orchestrationEngine.getReadModel();
@@ -626,6 +627,9 @@ const make = Effect.gen(function* () {
             runtimeMode: desiredRuntimeMode,
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
+            ...(options?.activeMessageId === undefined
+              ? {}
+              : { activeMessageId: options.activeMessageId }),
             ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
             lastError: session.lastError ?? null,
             updatedAt: session.updatedAt,
@@ -661,6 +665,20 @@ const make = Effect.gen(function* () {
         !shouldRestartForModelChange &&
         !shouldRestartForModelSelectionChange
       ) {
+        if (options?.activeMessageId !== undefined && thread.session !== null) {
+          yield* setThreadSession({
+            threadId,
+            session: {
+              ...thread.session,
+              status: isTerminalOrchestrationSessionStatus(thread.session.status)
+                ? "starting"
+                : thread.session.status,
+              activeMessageId: options.activeMessageId,
+              updatedAt: createdAt,
+            },
+            createdAt,
+          });
+        }
         return existingSessionThreadId;
       }
 
@@ -731,6 +749,7 @@ const make = Effect.gen(function* () {
     readonly delegationAssignmentId?: MessageId;
     readonly delegationDispatchId?: string;
     readonly executionAuthority?: CollaborationExecutionAuthority;
+    readonly activeMessageId?: MessageId;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -746,6 +765,7 @@ const make = Effect.gen(function* () {
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       ...(executionAuthority !== undefined ? { executionAuthority } : {}),
+      ...(input.activeMessageId !== undefined ? { activeMessageId: input.activeMessageId } : {}),
     });
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
@@ -1143,12 +1163,8 @@ const make = Effect.gen(function* () {
     }
 
     const captureBaseline = ensurePreTurnBaselineForThread(event.payload.threadId).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("provider command reactor failed to capture pre-turn checkpoint", {
-          threadId: event.payload.threadId,
-          detail: error.message,
-        }),
-      ),
+      Effect.as(true),
+      Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(false))),
     );
 
     const prepareTurnRequest = Effect.gen(function* () {
@@ -1169,6 +1185,7 @@ const make = Effect.gen(function* () {
         ...(event.payload.executionAuthority !== undefined
           ? { executionAuthority: event.payload.executionAuthority }
           : {}),
+        activeMessageId: event.payload.messageId,
         createdAt: event.payload.createdAt,
       });
     }).pipe(
@@ -1176,32 +1193,17 @@ const make = Effect.gen(function* () {
       Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(Option.none()))),
     );
 
-    // Session boot does not send the prompt; join the baseline before any provider turn can edit.
-    const [, sendTurnRequest] = yield* Effect.all([captureBaseline, prepareTurnRequest], {
-      concurrency: 2,
-    });
+    // The baseline and provider preparation may overlap, but neither failure
+    // can be mistaken for successful preparation or authorize sending a prompt.
+    const [baselineReady, sendTurnRequest] = yield* Effect.all(
+      [captureBaseline, prepareTurnRequest],
+      {
+        concurrency: 2,
+      },
+    );
 
-    if (Option.isNone(sendTurnRequest)) {
+    if (!baselineReady || Option.isNone(sendTurnRequest)) {
       return;
-    }
-
-    const sessionBeforeTurn = yield* resolveThread(event.payload.threadId);
-    if (sessionBeforeTurn?.session) {
-      yield* setThreadSession({
-        threadId: event.payload.threadId,
-        session: {
-          ...sessionBeforeTurn.session,
-          // A terminal status here describes the *previous* turn, and every
-          // reader treats terminal-with-no-active-turn as settled — so keeping it
-          // retired this start before the provider was called.
-          status: isTerminalOrchestrationSessionStatus(sessionBeforeTurn.session.status)
-            ? "starting"
-            : sessionBeforeTurn.session.status,
-          activeMessageId: event.payload.messageId,
-          updatedAt: event.payload.createdAt,
-        },
-        createdAt: event.payload.createdAt,
-      });
     }
 
     const pendingTurnStart: PendingTurnStart = {
