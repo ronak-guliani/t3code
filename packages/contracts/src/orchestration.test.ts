@@ -29,6 +29,7 @@ import {
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
   ThreadTurnDiffCompletedPayload,
+  WorkspaceBinding,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
@@ -68,6 +69,24 @@ it("recognizes supported image MIME types without accepting whitespace or parame
   ]) {
     assert.equal(isProviderSendTurnSupportedImageMimeType(mimeType), false);
   }
+});
+
+it("keeps legacy workspace bindings readable while preserving optional source provenance", () => {
+  const decode = Schema.decodeUnknownSync(WorkspaceBinding);
+  const legacy = decode({
+    canonicalPath: "/repo/worktree",
+    worktreePath: "/repo/worktree",
+    branch: "feature",
+    generation: 1,
+  });
+  assert.equal(legacy.sourceBranch, undefined);
+  const current = decode({
+    ...legacy,
+    sourceBranch: "main",
+    sourceWorktreePath: "/repo/source",
+  });
+  assert.equal(current.sourceBranch, "main");
+  assert.equal(current.sourceWorktreePath, "/repo/source");
 });
 
 function getOptionValue(

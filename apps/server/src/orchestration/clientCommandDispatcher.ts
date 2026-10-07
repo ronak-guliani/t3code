@@ -8,8 +8,8 @@ import {
 } from "@t3tools/contracts";
 
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
-import { CheckoutCoordinator } from "../git/CheckoutCoordinator.ts";
 import type { GitStatusBroadcasterShape } from "../git/Services/GitStatusBroadcaster.ts";
+import { CheckoutCoordinator } from "../git/CheckoutCoordinator.ts";
 import type { ProjectSetupScriptRunnerShape } from "../project/Services/ProjectSetupScriptRunner.ts";
 import type { ServerRuntimeStartupShape } from "../serverRuntimeStartup.ts";
 import {
@@ -46,10 +46,8 @@ export const makeClientCommandDispatcher = ({
   gitStatusBroadcaster,
   projectSetupScriptRunner,
 }: ClientCommandDispatcherDeps) => {
-  const refreshGitStatus = (cwd: string) =>
-    gitStatusBroadcaster
-      .refreshStatus(cwd)
-      .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
+  void git;
+  void gitStatusBroadcaster;
 
   const appendSetupScriptActivity = (input: {
     readonly threadId: ThreadId;
@@ -85,6 +83,9 @@ export const makeClientCommandDispatcher = ({
     Effect.gen(function* () {
       const bootstrap = command.bootstrap;
       const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
+      const admittedTurnStartCommand = bootstrap?.prepareWorktree
+        ? { ...finalTurnStartCommand, bootstrap: { prepareWorktree: bootstrap.prepareWorktree } }
+        : finalTurnStartCommand;
       let createdThread = false;
       let targetProjectId = bootstrap?.createThread?.projectId;
       let targetProjectCwd = bootstrap?.prepareWorktree?.projectCwd;
@@ -226,8 +227,21 @@ export const makeClientCommandDispatcher = ({
             modelSelection: bootstrap.createThread.modelSelection,
             runtimeMode: bootstrap.createThread.runtimeMode,
             interactionMode: bootstrap.createThread.interactionMode,
-            branch: bootstrap.createThread.branch,
+            branch:
+              bootstrap.createThread.worktreePath === null
+                ? (bootstrap.prepareWorktree?.branch ?? bootstrap.createThread.branch)
+                : bootstrap.createThread.branch,
             worktreePath: bootstrap.createThread.worktreePath,
+            ...((bootstrap.prepareWorktree?.baseBranch ?? bootstrap.createThread.sourceBranch) !==
+            undefined
+              ? {
+                  sourceBranch:
+                    bootstrap.prepareWorktree?.baseBranch ?? bootstrap.createThread.sourceBranch,
+                }
+              : {}),
+            ...(bootstrap.createThread.sourceWorktreePath !== undefined
+              ? { sourceWorktreePath: bootstrap.createThread.sourceWorktreePath }
+              : {}),
             ...(bootstrap.createThread.pullRequest !== undefined
               ? { pullRequest: bootstrap.createThread.pullRequest }
               : {}),
@@ -239,31 +253,21 @@ export const makeClientCommandDispatcher = ({
           createdThread = true;
         }
 
-        if (bootstrap?.prepareWorktree) {
-          const checkoutCoordinator = yield* CheckoutCoordinator;
-          const worktree = yield* checkoutCoordinator.withCheckout(
-            bootstrap.prepareWorktree.projectCwd,
-            git.createWorktree({
-              cwd: bootstrap.prepareWorktree.projectCwd,
-              branch: bootstrap.prepareWorktree.baseBranch,
-              newBranch: bootstrap.prepareWorktree.branch,
-              path: null,
-            }),
-          );
-          targetWorktreePath = worktree.worktree.path;
-          yield* orchestrationEngine.dispatch({
-            type: "thread.meta.update",
-            commandId: serverCommandId("bootstrap-thread-meta-update"),
-            threadId: command.threadId,
-            branch: worktree.worktree.branch,
-            worktreePath: targetWorktreePath,
-          });
-          yield* refreshGitStatus(targetWorktreePath);
+        if (bootstrap?.prepareWorktree || bootstrap?.createThread) {
+          const model = yield* orchestrationEngine.getReadModel();
+          const admittedThread = model.threads.find((thread) => thread.id === command.threadId);
+          if (!admittedThread?.workspaceBinding) {
+            return yield* Effect.fail(
+              new Error("Thread workspace admission did not return an authoritative binding."),
+            );
+          }
+          targetWorktreePath = admittedThread.workspaceBinding.worktreePath;
+          targetProjectId = admittedThread.projectId;
         }
 
         yield* runSetupProgram();
 
-        return yield* orchestrationEngine.dispatch(finalTurnStartCommand);
+        return yield* orchestrationEngine.dispatch(admittedTurnStartCommand);
       });
 
       return yield* bootstrapProgram.pipe(

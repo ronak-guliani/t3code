@@ -211,6 +211,32 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
     createThread === undefined &&
     thread !== undefined &&
     (command.type === "thread.turn.start" || command.type === "thread.queued-turn.dispatch");
+  const bootstrapIntent =
+    isExistingThreadTurn && thread !== undefined && command.type === "thread.turn.start"
+      ? command.bootstrap?.prepareWorktree
+      : undefined;
+  const existingBinding = thread?.workspaceBinding;
+  if (bootstrapIntent !== undefined) {
+    if (existingBinding?.sourceBranch === undefined) {
+      return yield* new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail:
+          "This legacy workspace binding has no recorded source branch. Retry without bootstrap workspace intent or create a new isolated thread; T3 will not rebase or replace an owned workspace.",
+      });
+    }
+    if (existingBinding.sourceBranch !== bootstrapIntent.baseBranch) {
+      return yield* new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: `Requested base branch '${bootstrapIntent.baseBranch}' differs from the authoritative workspace source '${existingBinding.sourceBranch}'. T3 will not rebase an owned workspace.`,
+      });
+    }
+    if (bootstrapIntent.branch !== undefined && existingBinding.branch !== bootstrapIntent.branch) {
+      return yield* new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: `Requested workspace branch '${bootstrapIntent.branch}' differs from the authoritative binding '${existingBinding.branch ?? "(none)"}'.`,
+      });
+    }
+  }
   if (isExistingThreadTurn) {
     yield* deps.cancelIdleByThreadId(thread.id);
   }
@@ -394,7 +420,7 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
   const threadWorkspaceKey = createHash("sha256").update(threadId).digest("hex");
   const sourceBranch =
     createThread?.sourceBranch ?? createThread?.branch ?? thread?.branch ?? "HEAD";
-  const branch = `t3/thread/${threadWorkspaceKey.slice(0, 24)}`;
+  const branch = createThread?.branch ?? `t3/thread/${threadWorkspaceKey.slice(0, 24)}`;
   const worktreePath = path.join(
     path.dirname(gitRoot),
     ".t3-thread-workspaces",
@@ -627,11 +653,37 @@ export const admitWorkspaceCommand = Effect.fn("admitWorkspace")(function* (
         });
       }),
     );
+  const sourceBranch =
+    command.type === "thread.create"
+      ? command.sourceBranch
+      : command.type === "thread.turn.start"
+        ? (command.bootstrap?.createThread?.sourceBranch ??
+          command.bootstrap?.prepareWorktree?.baseBranch)
+        : undefined;
+  const sourceWorktreePath =
+    command.type === "thread.create"
+      ? command.sourceWorktreePath
+      : command.type === "thread.turn.start"
+        ? command.bootstrap?.createThread?.sourceWorktreePath
+        : undefined;
   const withBinding = {
     ...command,
-    workspaceBinding: prepared.honoredProjectCheckout
-      ? { ...binding, workspaceScope: "project-checkout" as const }
-      : binding,
+    workspaceBinding: {
+      ...binding,
+      ...(sourceBranch !== undefined ? { sourceBranch } : {}),
+      ...(sourceWorktreePath !== undefined ? { sourceWorktreePath } : {}),
+      ...(command.type !== "thread.workspace.handoff" &&
+      sourceBranch === undefined &&
+      thread?.workspaceBinding?.sourceBranch !== undefined
+        ? { sourceBranch: thread.workspaceBinding.sourceBranch }
+        : {}),
+      ...(command.type !== "thread.workspace.handoff" &&
+      sourceWorktreePath === undefined &&
+      thread?.workspaceBinding?.sourceWorktreePath !== undefined
+        ? { sourceWorktreePath: thread.workspaceBinding.sourceWorktreePath }
+        : {}),
+      ...(prepared.honoredProjectCheckout ? { workspaceScope: "project-checkout" as const } : {}),
+    },
   } as OrchestrationCommand;
   return withBinding;
 });
