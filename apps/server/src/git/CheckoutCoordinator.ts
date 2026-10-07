@@ -1,6 +1,7 @@
 import { Context, Effect, Layer, Semaphore } from "effect";
 import type { Option } from "effect";
 import { canonicalizeWorktreePath, resolveGitWorktreeRoot } from "./worktreePaths.ts";
+import { recordStageTiming } from "../observability/Metrics.ts";
 
 /**
  * Process-local checkout coordination. Callers hold a reservation only around
@@ -36,10 +37,27 @@ export const CheckoutCoordinatorLive = Layer.effect(
   Effect.sync(() => {
     const locks = new Map<string, { semaphore: Semaphore.Semaphore; users: number }>();
     const finalizations = new Map<string, Set<string>>();
+    const profileTimingsEnabled = process.env.T3CODE_PROFILE_GIT_TIMINGS === "1";
     const canonical = (cwd: string) =>
       Effect.promise(
         async () => (await resolveGitWorktreeRoot(cwd)) ?? (await canonicalizeWorktreePath(cwd)),
       );
+    const withMeasuredCheckoutLock = <A, E, R>(
+      lock: Semaphore.Semaphore,
+      effect: Effect.Effect<A, E, R>,
+    ) =>
+      !profileTimingsEnabled
+        ? lock.withPermits(1)(effect)
+        : Effect.suspend(() => {
+            const waitStartedAt = performance.now();
+            return lock.withPermits(1)(
+              Effect.suspend(() =>
+                recordStageTiming("checkout-lock-wait", performance.now() - waitStartedAt).pipe(
+                  Effect.andThen(effect),
+                ),
+              ),
+            );
+          });
     const withLock = <A, E, R>(
       cwd: string,
       use: (lock: Semaphore.Semaphore) => Effect.Effect<A, E, R>,
@@ -61,14 +79,15 @@ export const CheckoutCoordinatorLive = Layer.effect(
       );
 
     return {
-      withCheckout: (cwd, effect) => withLock(cwd, (lock) => lock.withPermits(1)(effect)),
+      withCheckout: (cwd, effect) =>
+        withLock(cwd, (lock) => withMeasuredCheckoutLock(lock, effect)),
       withCheckoutUnlessSameRoot: (cwd, comparisonPath, effect) =>
         Effect.flatMap(
           Effect.all([canonical(cwd), canonical(comparisonPath)], { concurrency: "unbounded" }),
           ([cwdKey, comparisonKey]) =>
             cwdKey === comparisonKey
               ? effect
-              : withLock(cwd, (lock) => lock.withPermits(1)(effect)),
+              : withLock(cwd, (lock) => withMeasuredCheckoutLock(lock, effect)),
         ),
       tryWithCheckout: (cwd, effect) =>
         withLock(cwd, (lock) => lock.withPermitsIfAvailable(1)(effect)),

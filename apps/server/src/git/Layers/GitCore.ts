@@ -32,7 +32,12 @@ import { findCanonicalActiveWorktreeOwner } from "../../orchestration/worktreeOw
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { currentLogContext } from "../../observability/LogContext.ts";
 import { compactTraceAttributes } from "../../observability/Attributes.ts";
-import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../../observability/Metrics.ts";
+import {
+  gitCommandDuration,
+  gitCommandsTotal,
+  recordStageTiming,
+  withMetrics,
+} from "../../observability/Metrics.ts";
 import { ProjectionThreadPullRequestRepository } from "../../persistence/Services/ProjectionThreadPullRequests.ts";
 import { GitActivityLedger } from "../../persistence/Services/GitActivityLedger.ts";
 import {
@@ -62,6 +67,7 @@ import { isGitMutatingInvocation } from "../gitActivity.ts";
 const isGitCommandError = Schema.is(GitCommandError);
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const profileGitTimingsEnabled = () => process.env.T3CODE_PROFILE_GIT_TIMINGS === "1";
 // Short-lived Git commands (status polls, rev-parse, diff reads) can burst by
 // the dozens across projects and WebSocket sessions, starving connection
 // heartbeats. Bound them with a process-wide pool shared by every GitCore
@@ -892,9 +898,20 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     }).pipe(Effect.catchCause(() => Effect.void));
 
   const execute: GitCoreShape["execute"] = (input) => {
+    const profileStage = <A, E, R>(stage: string, effect: Effect.Effect<A, E, R>) =>
+      profileGitTimingsEnabled()
+        ? Effect.suspend(() => {
+            const startedAt = performance.now();
+            const report = () =>
+              recordStageTiming(stage, performance.now() - startedAt, {
+                operation: input.operation,
+              });
+            return effect.pipe(Effect.tap(report), Effect.tapCause(report));
+          })
+        : effect;
     const execution = Effect.suspend(() => {
       const startedAt = Date.now();
-      return executeRaw(input).pipe(
+      return profileStage("git-execution", executeRaw(input)).pipe(
         withMetrics({
           counter: gitCommandsTotal,
           timer: gitCommandDuration,
@@ -904,28 +921,39 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
         }),
         Effect.matchCauseEffect({
           onFailure: (cause) =>
-            recordActivity(input, null, Math.max(0, Date.now() - startedAt)).pipe(
-              Effect.andThen(Effect.failCause(cause)),
-            ),
+            profileStage(
+              "git-activity-audit",
+              recordActivity(input, null, Math.max(0, Date.now() - startedAt)),
+            ).pipe(Effect.andThen(Effect.failCause(cause))),
           onSuccess: (result) =>
-            recordActivity(input, result.code, Math.max(0, Date.now() - startedAt)).pipe(
-              Effect.as(result),
-            ),
+            profileStage(
+              "git-activity-audit",
+              recordActivity(input, result.code, Math.max(0, Date.now() - startedAt)),
+            ).pipe(Effect.as(result)),
         }),
       );
     });
 
     // Acquire outside the execution timeout and measured duration so queue
     // waits neither time out commands nor pollute Git/activity timings.
-    // Queue wait stays unmeasured there on purpose, so record it here as its own
-    // span: without it an unbounded wait is invisible, and the client's only
-    // signal that a read is slow is a deadline firing on a request that was
-    // about to succeed.
     const pooledExecution = shouldBypassGitProcessPool(input)
       ? execution
-      : gitProcesses
-          .withPermits(1)(execution)
-          .pipe(Effect.withSpan(`${input.operation}.gitPoolQueue`, { kind: "client" }));
+      : profileGitTimingsEnabled()
+        ? Effect.suspend(() => {
+            const waitStartedAt = performance.now();
+            return gitProcesses
+              .withPermits(1)(
+                Effect.suspend(() =>
+                  recordStageTiming("git-pool-wait", performance.now() - waitStartedAt, {
+                    operation: input.operation,
+                  }).pipe(Effect.andThen(execution)),
+                ),
+              )
+              .pipe(Effect.withSpan(`${input.operation}.gitPoolQueue`, { kind: "client" }));
+          })
+        : gitProcesses
+            .withPermits(1)(execution)
+            .pipe(Effect.withSpan(`${input.operation}.gitPoolQueue`, { kind: "client" }));
     return pooledExecution.pipe(
       Effect.withSpan(input.operation, {
         kind: "client",

@@ -30,7 +30,11 @@ import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
 import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
-import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
+import {
+  increment,
+  orchestrationEventsProcessedTotal,
+  recordStageTiming,
+} from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
@@ -596,17 +600,27 @@ const make = Effect.gen(function* () {
     const startProviderSession = (input?: {
       readonly resumeCursor?: unknown;
       readonly provider?: ProviderDriverKind;
-    }) =>
-      providerService.startSession(threadId, {
-        threadId,
-        ...(preferredProvider ? { provider: preferredProvider } : {}),
-        providerInstanceId: desiredInstanceId,
-        ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
-        modelSelection: desiredModelSelection,
-        ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
-        runtimeMode: desiredRuntimeMode,
-        ...(executionAuthority === undefined ? {} : { executionAuthority }),
-      });
+    }) => {
+      const startedAt = performance.now();
+      return providerService
+        .startSession(threadId, {
+          threadId,
+          ...(preferredProvider ? { provider: preferredProvider } : {}),
+          providerInstanceId: desiredInstanceId,
+          ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+          modelSelection: desiredModelSelection,
+          ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+          runtimeMode: desiredRuntimeMode,
+          ...(executionAuthority === undefined ? {} : { executionAuthority }),
+        })
+        .pipe(
+          Effect.tap(() =>
+            recordStageTiming("provider-session-start", performance.now() - startedAt, {
+              provider: preferredProvider,
+            }),
+          ),
+        );
+    };
 
     const bindSessionToThread = (session: ProviderSession) =>
       Effect.gen(function* () {
@@ -1162,7 +1176,11 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.forkScoped);
     }
 
+    const baselineStartedAt = performance.now();
     const captureBaseline = ensurePreTurnBaselineForThread(event.payload.threadId).pipe(
+      Effect.tap(() =>
+        recordStageTiming("pre-turn-baseline", performance.now() - baselineStartedAt),
+      ),
       Effect.as(true),
       Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(false))),
     );

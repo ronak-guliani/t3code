@@ -21,6 +21,7 @@ import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/Checkout
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
 import { CheckpointRef, type WorkspaceBinding } from "@t3tools/contracts";
 import { normalizeChangedFilePath } from "@t3tools/shared/toolChangedFiles";
+import { recordStageTiming } from "../../observability/Metrics.ts";
 import {
   parseTurnDiffFilesFromNumstat,
   parseTurnDiffFileStatusesFromNameStatus,
@@ -303,6 +304,7 @@ const makeCheckpointStore = Effect.gen(function* () {
     readonly cwd: string;
     readonly operation: string;
   }) {
+    const startedAt = performance.now();
     return yield* coordinator
       .withCheckout(
         input.cwd,
@@ -371,6 +373,11 @@ const makeCheckpointStore = Effect.gen(function* () {
         ),
       )
       .pipe(
+        Effect.tap(() =>
+          recordStageTiming("checkpoint-scratch-snapshot", performance.now() - startedAt, {
+            operation: input.operation,
+          }),
+        ),
         Effect.catchTag("PlatformError", (error) =>
           Effect.fail(
             new CheckpointInvariantError({
@@ -431,11 +438,22 @@ const makeCheckpointStore = Effect.gen(function* () {
       });
     }
 
-    yield* git.execute({
-      operation,
-      cwd: input.cwd,
-      args: ["update-ref", input.checkpointRef, commitOid],
-    });
+    const refPublicationStartedAt = performance.now();
+    yield* git
+      .execute({
+        operation,
+        cwd: input.cwd,
+        args: ["update-ref", input.checkpointRef, commitOid],
+      })
+      .pipe(
+        Effect.tap(() =>
+          recordStageTiming(
+            "checkpoint-ref-publication",
+            performance.now() - refPublicationStartedAt,
+            { operation },
+          ),
+        ),
+      );
   });
 
   const createWorkspaceSnapshotCommit: CheckpointStoreShape["createWorkspaceSnapshotCommit"] =
