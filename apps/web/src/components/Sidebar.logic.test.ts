@@ -536,7 +536,7 @@ describe("resolveSidebarNewThreadEnvMode", () => {
 });
 
 describe("resolveSidebarNewThreadSeedContext", () => {
-  it("starts on a new worktree off main instead of inheriting thread context", () => {
+  it("starts on a new worktree with the project branch unresolved instead of inheriting thread context", () => {
     expect(
       resolveSidebarNewThreadSeedContext({
         projectId: "project-1",
@@ -554,7 +554,7 @@ describe("resolveSidebarNewThreadSeedContext", () => {
         },
       }),
     ).toEqual({
-      branch: "main",
+      branch: null,
       worktreePath: null,
       envMode: "worktree",
     });
@@ -573,7 +573,7 @@ describe("resolveSidebarNewThreadSeedContext", () => {
         activeDraftThread: null,
       }),
     ).toEqual({
-      branch: "main",
+      branch: null,
       worktreePath: null,
       envMode: "worktree",
     });
@@ -597,13 +597,13 @@ describe("resolveSidebarNewThreadSeedContext", () => {
         },
       }),
     ).toEqual({
-      branch: "main",
+      branch: null,
       worktreePath: null,
       envMode: "worktree",
     });
   });
 
-  it("uses a new worktree off main when there is no matching active thread context", () => {
+  it("uses a new worktree with the project branch unresolved when there is no matching active thread context", () => {
     expect(
       resolveSidebarNewThreadSeedContext({
         projectId: "project-2",
@@ -616,7 +616,7 @@ describe("resolveSidebarNewThreadSeedContext", () => {
         activeDraftThread: null,
       }),
     ).toEqual({
-      branch: "main",
+      branch: null,
       worktreePath: null,
       envMode: "worktree",
     });

@@ -3228,7 +3228,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       resolveRpc: (body) => {
         wsRequests.push(body as { _tag: string });
         return body._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot
-          ? { _tag: "OrchestrationReadThreadInputError", message: "Historical message was not found in this thread." }
+          ? {
+              _tag: "OrchestrationReadThreadInputError",
+              message: "Historical message was not found in this thread.",
+            }
           : undefined;
       },
     });
@@ -7598,10 +7601,25 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("creates a new thread from project search when no active project thread exists", async () => {
+  it("creates and sends a new project thread from its current branch, not a stale main", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotWithSecondaryProject({ includeSecondaryThread: false }),
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.gitListBranches) {
+          return {
+            isRepo: true,
+            hasOriginRemote: true,
+            nextCursor: null,
+            totalCount: 2,
+            branches: [
+              { name: "main", current: false, isDefault: false, worktreePath: null },
+              { name: "master", current: true, isDefault: true, worktreePath: null },
+            ],
+          };
+        }
+        return undefined;
+      },
       configureFixture: (nextFixture) => {
         nextFixture.serverConfig = {
           ...nextFixture.serverConfig,
@@ -7652,9 +7670,29 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const nextDraftId = draftIdFromPath(nextPath);
       const draftThread = useComposerDraftStore.getState().getDraftSession(nextDraftId);
       expect(draftThread?.projectId).toBe(SECOND_PROJECT_ID);
-      expect(draftThread?.branch).toBe("main");
       expect(draftThread?.worktreePath).toBeNull();
       expect(draftThread?.envMode).toBe("worktree");
+      await waitForButtonByText("From master");
+      useComposerDraftStore.getState().setPrompt(nextDraftId, "Ship it");
+      await waitForLayout();
+      (await waitForSendButton()).click();
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.find(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.turn.start",
+          ),
+        ).toMatchObject({
+          bootstrap: {
+            createThread: { projectId: SECOND_PROJECT_ID },
+            prepareWorktree: {
+              projectCwd: "/repo/clients/docs-portal",
+              baseBranch: "master",
+            },
+          },
+        });
+      });
     } finally {
       await mounted.cleanup();
     }
