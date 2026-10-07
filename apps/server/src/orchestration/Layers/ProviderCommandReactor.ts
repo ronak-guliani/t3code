@@ -1139,7 +1139,7 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.forkScoped);
     }
 
-    yield* ensurePreTurnBaselineForThread(event.payload.threadId).pipe(
+    const captureBaseline = ensurePreTurnBaselineForThread(event.payload.threadId).pipe(
       Effect.catch((error) =>
         Effect.logWarning("provider command reactor failed to capture pre-turn checkpoint", {
           threadId: event.payload.threadId,
@@ -1148,28 +1148,35 @@ const make = Effect.gen(function* () {
       ),
     );
 
-    const sendTurnRequest = yield* buildSendTurnRequestForThread({
-      threadId: event.payload.threadId,
-      messageText: yield* resolveProviderPromptText(message),
-      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-      ...(event.payload.modelSelection !== undefined
-        ? { modelSelection: event.payload.modelSelection }
-        : {}),
-      interactionMode: event.payload.interactionMode,
-      ...(event.payload.delegationAssignmentId !== undefined
-        ? { delegationAssignmentId: event.payload.delegationAssignmentId }
-        : {}),
-      ...(event.payload.delegationDispatchId !== undefined
-        ? { delegationDispatchId: event.payload.delegationDispatchId }
-        : {}),
-      ...(event.payload.executionAuthority !== undefined
-        ? { executionAuthority: event.payload.executionAuthority }
-        : {}),
-      createdAt: event.payload.createdAt,
+    const prepareTurnRequest = Effect.gen(function* () {
+      return yield* buildSendTurnRequestForThread({
+        threadId: event.payload.threadId,
+        messageText: yield* resolveProviderPromptText(message),
+        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+        ...(event.payload.modelSelection !== undefined
+          ? { modelSelection: event.payload.modelSelection }
+          : {}),
+        interactionMode: event.payload.interactionMode,
+        ...(event.payload.delegationAssignmentId !== undefined
+          ? { delegationAssignmentId: event.payload.delegationAssignmentId }
+          : {}),
+        ...(event.payload.delegationDispatchId !== undefined
+          ? { delegationDispatchId: event.payload.delegationDispatchId }
+          : {}),
+        ...(event.payload.executionAuthority !== undefined
+          ? { executionAuthority: event.payload.executionAuthority }
+          : {}),
+        createdAt: event.payload.createdAt,
+      });
     }).pipe(
       Effect.map(Option.some),
       Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(Option.none()))),
     );
+
+    // Session boot does not send the prompt; join the baseline before any provider turn can edit.
+    const [, sendTurnRequest] = yield* Effect.all([captureBaseline, prepareTurnRequest], {
+      concurrency: 2,
+    });
 
     if (Option.isNone(sendTurnRequest)) {
       return;
