@@ -77,6 +77,7 @@ import {
 import {
   DEFAULT_PORT,
   deriveServerPaths,
+  DEV_STATE_VARIANT_URL,
   ensureServerDirectories,
   resolveStaticDir,
   ServerConfig,
@@ -109,6 +110,11 @@ import { getAutoBootstrapDefaultModelSelection } from "./serverRuntimeStartup.ts
 import { readPersistedServerRuntimeState } from "./serverRuntimeState.ts";
 import { DurationFromString } from "./cli/duration.ts";
 import { pendingActivitiesFor } from "./cli/pendingRequests.ts";
+import { explainTurn } from "./cli/turnVerdict.ts";
+import {
+  summarizeTraceDiagnostics,
+  toPlainTraceDiagnostics,
+} from "./observability/TraceDiagnostics.ts";
 import { WorkspacePaths } from "./workspace/Services/WorkspacePaths.ts";
 import { WorkspacePathsLive } from "./workspace/Layers/WorkspacePaths.ts";
 import {
@@ -1701,6 +1707,12 @@ const chatShowCommand = Command.make("show", {
     Flag.optional,
     Flag.withDescription("Opaque page.before cursor from the previous history page."),
   ),
+  explain: Flag.boolean("explain").pipe(
+    Flag.withDefault(false),
+    Flag.withDescription(
+      "Explain the latest turn from recorded activity evidence: provider completion, whether the provider produced assistant text, and whether that reply was persisted.",
+    ),
+  ),
 }).pipe(
   Command.withDescription("Show a chat."),
   Command.withHandler((flags) =>
@@ -1718,6 +1730,11 @@ const chatShowCommand = Command.make("show", {
             "Choose --messages, --activities, or --full; pagination cannot be used with --full.",
         });
       }
+      if (flags.explain && (flags.messages || flags.activities || flags.full)) {
+        return yield* new CliPayloadError({
+          message: "Use --explain on its own; it renders the turn verdict instead of a view.",
+        });
+      }
       if (flags.full) {
         return yield* withThreadDetail(flags, flags.chat, ({ detail }) => printJson(detail), {
           includeArchived: true,
@@ -1730,11 +1747,30 @@ const chatShowCommand = Command.make("show", {
       if (
         !flags.messages &&
         !flags.activities &&
+        !flags.explain &&
         (Option.isSome(flags.before) || limit !== undefined)
       ) {
         return yield* new CliPayloadError({
           message: "Pagination requires --messages or --activities.",
         });
+      }
+      if (flags.explain) {
+        // The verdict reads the activity feed, so it uses the same paginated
+        // evidence as --activities rather than a second projection.
+        const explained = yield* readLiveThread(flags, {
+          thread: flags.chat,
+          view: "activities",
+          ...(limit !== undefined ? { limit } : {}),
+          ...(Option.isSome(flags.before) ? { before: flags.before.value } : {}),
+        });
+        yield* Effect.forEach(
+          explainTurn({
+            latestTurn: explained.thread.latestTurn,
+            activities: explained.activities ?? [],
+          }),
+          (line) => Console.log(line),
+        );
+        return;
       }
       const result = yield* readLiveThread(flags, {
         thread: flags.chat,
@@ -5722,16 +5758,55 @@ const keybindingCommand = Command.make("keybinding").pipe(
   Command.withSubcommands([keybindingListCommand, keybindingAddCommand, keybindingRemoveCommand]),
 );
 
+/**
+ * A live server knows its own resolved trace path, so prefer the RPC when one
+ * answers. A stopped server cannot answer, and the retained trace files are
+ * exactly what is worth reading then, so fall back to the local paths the same
+ * derivation would produce.
+ */
+const localTraceFilePaths = Effect.fn("localTraceFilePaths")(function* (
+  baseDir: string | undefined,
+) {
+  const traceFileOverride = process.env.T3CODE_TRACE_FILE?.trim();
+  if (traceFileOverride) {
+    return [yield* expandHomePath(traceFileOverride)];
+  }
+  const resolvedBaseDir = yield* resolveBaseDir(baseDir ?? process.env.T3CODE_HOME);
+  const userdata = yield* deriveServerPaths(resolvedBaseDir, undefined);
+  const dev = yield* deriveServerPaths(resolvedBaseDir, DEV_STATE_VARIANT_URL);
+  return [
+    userdata.serverTracePath,
+    ...(dev.serverTracePath === userdata.serverTracePath ? [] : [dev.serverTracePath]),
+  ];
+});
+
 const diagnosticsTraceCommand = Command.make("trace", {
   ...liveTargetFlags,
 }).pipe(
-  Command.withDescription("Print trace diagnostics."),
+  Command.withDescription("Print trace diagnostics read from the server's retained trace files."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      const result = yield* callWsRpc(flags, (client) =>
+      // A live server knows the path it actually wrote to; a stopped one cannot
+      // answer, and the retained files are then the only evidence available.
+      const live = yield* callWsRpc(flags, (client) =>
         client[WS_METHODS.serverGetTraceDiagnostics]({}),
-      );
-      yield* printJson(result);
+      ).pipe(Effect.result);
+      if (live._tag === "Success") {
+        yield* printJson({ source: "server", ...toPlainTraceDiagnostics(live.success) });
+        return;
+      }
+      const traceFilePaths = yield* localTraceFilePaths(Option.getOrUndefined(flags.baseDir));
+      const summary = yield* Effect.promise(() => summarizeTraceDiagnostics({ traceFilePaths }));
+      yield* printJson({
+        source: "local-files",
+        ...summary,
+        notes: [
+          ...summary.notes,
+          `Read from disk because no server answered: ${
+            live.failure instanceof Error ? live.failure.message : String(live.failure)
+          }`,
+        ],
+      });
     }),
   ),
 );
@@ -5739,7 +5814,7 @@ const diagnosticsTraceCommand = Command.make("trace", {
 const diagnosticsProcessCommand = Command.make("process", {
   ...liveTargetFlags,
 }).pipe(
-  Command.withDescription("Print process diagnostics."),
+  Command.withDescription("Print process diagnostics (not implemented by this server)."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
       const result = yield* callWsRpc(flags, (client) =>
@@ -5755,7 +5830,7 @@ const diagnosticsResourcesCommand = Command.make("resources", {
   windowMs: Flag.integer("window-ms").pipe(Flag.withDefault(5 * 60 * 1000)),
   bucketMs: Flag.integer("bucket-ms").pipe(Flag.withDefault(10_000)),
 }).pipe(
-  Command.withDescription("Print process resource history."),
+  Command.withDescription("Print process resource history (not implemented by this server)."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
       const result = yield* callWsRpc(flags, (client) =>

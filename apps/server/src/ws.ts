@@ -59,6 +59,7 @@ import {
   ProjectId,
   ProviderSessionCommandError,
   ServerChatArchiveError,
+  ServerDiagnosticsUnsupportedError,
   ServerProviderListCommandsError,
   ServerExportThreadMarkdownError,
   ThreadId,
@@ -162,6 +163,10 @@ import {
   observeRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import { withLogContext } from "./observability/LogContext.ts";
+import {
+  summarizeTraceDiagnostics,
+  toServerTraceDiagnosticsResult,
+} from "./observability/TraceDiagnostics.ts";
 import { websocketDisconnectFields } from "./observability/Attributes.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
@@ -3138,82 +3143,37 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "server" },
           ),
-        // Process/trace diagnostics are not instrumented in the fork; return
-        // well-formed empty snapshots so the client renders an empty state.
         [WS_METHODS.serverGetTraceDiagnostics]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverGetTraceDiagnostics,
-            Effect.gen(function* () {
-              const now = yield* DateTime.now;
-              return {
-                traceFilePath: "unavailable",
-                scannedFilePaths: [],
-                readAt: now,
-                recordCount: 0,
-                parseErrorCount: 0,
-                firstSpanAt: Option.none(),
-                lastSpanAt: Option.none(),
-                failureCount: 0,
-                interruptionCount: 0,
-                slowSpanThresholdMs: 0,
-                slowSpanCount: 0,
-                logLevelCounts: {},
-                topSpansByCount: [],
-                slowestSpans: [],
-                commonFailures: [],
-                latestFailures: [],
-                latestWarningAndErrorLogs: [],
-                partialFailure: Option.none(),
-                error: Option.none(),
-              };
-            }),
+            Effect.map(
+              Effect.promise(() =>
+                summarizeTraceDiagnostics({
+                  traceFilePaths: [config.serverTracePath],
+                }),
+              ),
+              toServerTraceDiagnosticsResult,
+            ),
             { "rpc.aggregate": "server" },
           ),
+        // Process diagnostics are not implemented on this server. Failing is
+        // deliberate: a zeroed result would read as "no processes, no findings".
         [WS_METHODS.serverGetProcessDiagnostics]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverGetProcessDiagnostics,
-            Effect.gen(function* () {
-              const now = yield* DateTime.now;
-              return {
-                serverPid: process.pid,
-                readAt: now,
-                processCount: 0,
-                totalRssBytes: 0,
-                totalCpuPercent: 0,
-                processes: [],
-                error: Option.none(),
-              };
-            }),
+            Effect.fail(new ServerDiagnosticsUnsupportedError({ probe: "process" })),
             { "rpc.aggregate": "server" },
           ),
-        [WS_METHODS.serverGetProcessResourceHistory]: (input) =>
+        [WS_METHODS.serverGetProcessResourceHistory]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverGetProcessResourceHistory,
-            Effect.gen(function* () {
-              const now = yield* DateTime.now;
-              return {
-                readAt: now,
-                windowMs: input.windowMs,
-                bucketMs: input.bucketMs,
-                sampleIntervalMs: 0,
-                retainedSampleCount: 0,
-                totalCpuSecondsApprox: 0,
-                buckets: [],
-                topProcesses: [],
-                error: Option.none(),
-              };
-            }),
+            Effect.fail(new ServerDiagnosticsUnsupportedError({ probe: "resources" })),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverSignalProcess]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverSignalProcess,
-            Effect.succeed({
-              pid: input.pid,
-              signal: input.signal,
-              signaled: false,
-              message: Option.some("Process signaling is not supported on this server."),
-            }),
+            Effect.fail(new ServerDiagnosticsUnsupportedError({ probe: "signal" })),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverReportClientActivity]: (input) =>

@@ -196,6 +196,7 @@ import {
   ServerConfigStreamEvent,
   ServerConfig,
   ServerChatArchiveError,
+  ServerDiagnosticsUnsupportedError,
   ServerExportActiveChatsInput,
   ServerExportActiveChatsResult,
   ServerExportThreadMarkdownError,
@@ -1505,6 +1506,7 @@ export const WsServerGetTraceDiagnosticsRpc = Rpc.make(WS_METHODS.serverGetTrace
 export const WsServerGetProcessDiagnosticsRpc = Rpc.make(WS_METHODS.serverGetProcessDiagnostics, {
   payload: Schema.Struct({}),
   success: ServerProcessDiagnosticsResult,
+  error: ServerDiagnosticsUnsupportedError,
 });
 
 export const WsServerGetProcessResourceHistoryRpc = Rpc.make(
@@ -1512,12 +1514,14 @@ export const WsServerGetProcessResourceHistoryRpc = Rpc.make(
   {
     payload: ServerProcessResourceHistoryInput,
     success: ServerProcessResourceHistoryResult,
+    error: ServerDiagnosticsUnsupportedError,
   },
 );
 
 export const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess, {
   payload: ServerSignalProcessInput,
   success: ServerSignalProcessResult,
+  error: ServerDiagnosticsUnsupportedError,
 });
 
 export const WsOrchestrationGetArchivedShellSnapshotRpc = Rpc.make(

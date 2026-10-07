@@ -64,6 +64,34 @@ interface OtlpTraceRecord extends BaseTraceRecord {
 
 export type TraceRecord = EffectTraceRecord | OtlpTraceRecord;
 
+export type TraceRecordExitTag = "Success" | "Interrupted" | "Failure" | "Unknown";
+
+/**
+ * Single source of truth for "did this span end badly". Trace retention, the
+ * local sink's sampling, and trace diagnostics must agree, otherwise a span the
+ * sink kept for its failure can still be reported as clean.
+ */
+export function traceRecordExitTag(record: {
+  readonly type?: unknown;
+  readonly exit?: unknown;
+  readonly status?: unknown;
+}): TraceRecordExitTag {
+  if (record.type === "effect-span") {
+    const exitTag =
+      typeof record.exit === "object" && record.exit !== null
+        ? (record.exit as { readonly _tag?: unknown })._tag
+        : undefined;
+    if (exitTag === "Interrupted") return "Interrupted";
+    if (exitTag === undefined) return "Unknown";
+    return exitTag === "Success" ? "Success" : "Failure";
+  }
+  if (record.type !== "otlp-span") return "Unknown";
+  const status = record.status;
+  if (typeof status !== "object" || status === null) return "Success";
+  const otlp = status as { readonly code?: unknown; readonly message?: unknown };
+  return otlp.code === "2" || otlp.message !== undefined ? "Failure" : "Success";
+}
+
 type OtlpSpan = OtlpTracer.ScopeSpan["spans"][number];
 type OtlpSpanEvent = OtlpSpan["events"][number];
 type OtlpSpanLink = OtlpSpan["links"][number];

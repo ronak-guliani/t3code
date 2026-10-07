@@ -5844,4 +5844,269 @@ index 0000000..3333333
     // A crash abandons the start, so the thread must not stay wedged busy.
     expect(await runCase("error")).toBeNull();
   });
+
+  it("records provider stop reason and a delivered reply on insights.turn.completed", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-delivery-persisted");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-delivery-persisted-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId,
+    });
+    await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "running" && entry.session?.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-turn-delivery-persisted-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId,
+      itemId: asItemId("item-delivery-persisted"),
+      payload: { streamKind: "assistant_text", delta: "Here is the answer." },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-delivery-persisted-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId,
+      payload: { state: "completed", stopReason: "end_turn", totalCostUsd: 0.01 },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.session?.status === "ready" &&
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.kind === "insights.turn.completed" &&
+            activity.id === "evt-turn-delivery-persisted-completed",
+        ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-turn-delivery-persisted-completed",
+    );
+    const payload =
+      activity?.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : undefined;
+
+    expect(activity?.kind).toBe("insights.turn.completed");
+    expect(payload?.stopReason).toBe("end_turn");
+    expect(payload?.assistantTextObserved).toBe(true);
+    expect(payload?.assistantMessagePersisted).toBe(true);
+    expect(
+      thread.messages.some(
+        (entry) => entry.role === "assistant" && entry.turnId === turnId && entry.text.length > 0,
+      ),
+    ).toBe(true);
+  });
+
+  it("reports assistant text with nothing persisted when turn finalization cannot claim it", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-delivery-orphaned");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-delivery-orphaned-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId,
+      payload: {},
+    });
+    await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "running" && entry.session?.activeTurnId === turnId,
+    );
+
+    // The provider emits assistant text before the delta carries a turn id, so
+    // the buffered text is not registered against the turn and turn completion
+    // finalizes an empty message set: provider text exists, nothing persists.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-turn-delivery-orphaned-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      itemId: asItemId("item-delivery-orphaned"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "The provider answered, but nobody stored it.",
+      },
+    });
+    await harness.drain();
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-delivery-orphaned-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId,
+      payload: { state: "completed", stopReason: "end_turn" },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.session?.status === "ready" &&
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.kind === "insights.turn.completed" &&
+            activity.id === "evt-turn-delivery-orphaned-completed",
+        ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-turn-delivery-orphaned-completed",
+    );
+    const payload =
+      activity?.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : undefined;
+
+    expect(payload?.assistantTextObserved).toBe(true);
+    expect(payload?.assistantMessagePersisted).toBe(false);
+    expect(payload?.state).toBe("completed");
+    expect(activity?.turnId).toBe(turnId);
+    expect(
+      thread.messages.some((entry) => entry.role === "assistant" && entry.turnId === turnId),
+    ).toBe(false);
+  });
+
+  it("does not claim assistant text or a reply for a tool-only turn", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-delivery-tool-only");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-delivery-tool-only-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId,
+    });
+    await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "running" && entry.session?.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-turn-delivery-tool-only-tool"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId,
+      itemId: asItemId("item-delivery-tool-only"),
+      payload: {
+        itemType: "command_execution",
+        status: "completed",
+        title: "Ran command",
+        detail: "bun run lint",
+        data: { toolCallId: "tool-delivery-tool-only", kind: "execute", command: "bun run lint" },
+      },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-delivery-tool-only-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId,
+      payload: { state: "completed", stopReason: "end_turn" },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.session?.status === "ready" &&
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.kind === "insights.turn.completed" &&
+            activity.id === "evt-turn-delivery-tool-only-completed",
+        ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-turn-delivery-tool-only-completed",
+    );
+    const payload =
+      activity?.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : undefined;
+
+    expect(payload?.assistantTextObserved).toBe(false);
+    expect(payload?.assistantMessagePersisted).toBe(false);
+    expect(
+      thread.messages.some((entry) => entry.role === "assistant" && entry.turnId === turnId),
+    ).toBe(false);
+    expect(
+      thread.activities.some(
+        (entry: ProviderRuntimeTestActivity) => entry.kind === "tool.completed",
+      ),
+    ).toBe(true);
+  });
+
+  it("omits the provider stop reason when the provider reports none", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-delivery-no-stop-reason");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-delivery-no-stop-reason-started"),
+      provider: ProviderDriverKind.make("pi"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId,
+    });
+    await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "running" && entry.session?.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-delivery-no-stop-reason-completed"),
+      provider: ProviderDriverKind.make("pi"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId,
+      payload: { state: "completed" },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.session?.status === "ready" &&
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.id === "evt-turn-delivery-no-stop-reason-completed",
+        ),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) =>
+        entry.id === "evt-turn-delivery-no-stop-reason-completed",
+    );
+    const payload =
+      activity?.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : undefined;
+
+    expect(payload?.stopReason).toBeUndefined();
+    expect(payload?.assistantTextObserved).toBe(false);
+    expect(payload?.assistantMessagePersisted).toBe(false);
+  });
 });
