@@ -8439,7 +8439,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("locks the pending user input options while a response is in flight", async () => {
+  it("clears the pending user input as soon as a response is submitted", async () => {
+    // The dispatch never resolves during the assertion, so the panel can only
+    // disappear if the client hides it optimistically rather than waiting for
+    // the websocket round trip.
     const releaseDispatches: Array<() => void> = [];
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
@@ -8469,7 +8472,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await vi.waitFor(
         () => {
-          expect(findButtonContainingText("Balanced")?.disabled).toBe(true);
+          expect(document.querySelector("[data-pending-user-input-toggle]")).toBeNull();
+          expect(findButtonContainingText("Balanced")).toBeNull();
         },
         { timeout: 4_000, interval: 16 },
       );

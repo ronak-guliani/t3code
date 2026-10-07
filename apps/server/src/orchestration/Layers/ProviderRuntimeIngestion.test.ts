@@ -5715,6 +5715,47 @@ index 0000000..3333333
     });
   });
 
+  it("keeps the dismissible flag on a projected user input request", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "user-input.requested",
+      eventId: asEventId("evt-user-input-requested-dismissible"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-user-input-dismissible"),
+      requestId: ApprovalRequestId.make("req-user-input-dismissible"),
+      payload: {
+        dismissible: true,
+        questions: [
+          {
+            id: "sandbox_mode",
+            header: "Sandbox",
+            question: "Which mode should be used?",
+            options: [{ label: "workspace-write", description: "Allow workspace writes only" }],
+          },
+        ],
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "evt-user-input-requested-dismissible",
+      ),
+    );
+    const requested = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) =>
+        activity.id === "evt-user-input-requested-dismissible",
+    );
+    const payload =
+      requested?.payload && typeof requested.payload === "object"
+        ? (requested.payload as Record<string, unknown>)
+        : undefined;
+    expect(payload?.dismissible).toBe(true);
+  });
+
   it("keeps the session running when user input resolves back into a turn", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

@@ -952,6 +952,10 @@ function ChatViewBody(
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
+  // Hide a request the moment its current attempt is dispatched; the resolved
+  // activity only arrives after a websocket round trip. Undo it if that attempt fails.
+  const [optimisticallyResolvedUserInputRequestIds, setOptimisticallyResolvedUserInputRequestIds] =
+    useState<ApprovalRequestId[]>([]);
   // A failed provider response must release only the attempt that produced it;
   // a request can be retried while its earlier failure remains in history.
   const activeUserInputAttemptRef = useRef<{
@@ -1632,10 +1636,12 @@ function ChatViewBody(
     () => derivePendingApprovals(threadStateActivities),
     [threadStateActivities],
   );
-  const pendingUserInputs = useMemo(
-    () => derivePendingUserInputs(threadStateActivities),
-    [threadStateActivities],
-  );
+  const pendingUserInputs = useMemo(() => {
+    const derived = derivePendingUserInputs(threadStateActivities);
+    if (optimisticallyResolvedUserInputRequestIds.length === 0) return derived;
+    const resolved = new Set(optimisticallyResolvedUserInputRequestIds);
+    return derived.filter((pending) => !resolved.has(pending.requestId));
+  }, [threadStateActivities, optimisticallyResolvedUserInputRequestIds]);
   const activePendingUserInput = pendingUserInputs[0] ?? null;
 
   useEffect(() => {
@@ -1651,6 +1657,10 @@ function ChatViewBody(
     );
     if (responseFailed) {
       activeUserInputAttemptRef.current = null;
+      // The provider rejected the attempt, so show the question again for a retry.
+      setOptimisticallyResolvedUserInputRequestIds((existing) =>
+        existing.filter((id) => id !== attempt.requestId),
+      );
     }
   }, [threadStateActivities]);
 
@@ -4333,6 +4343,9 @@ function ChatViewBody(
       setRespondingUserInputRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
+      setOptimisticallyResolvedUserInputRequestIds((existing) =>
+        existing.includes(requestId) ? existing : [...existing, requestId],
+      );
       const createdAt = new Date().toISOString();
       try {
         await api.orchestration.dispatchCommand(
@@ -4358,6 +4371,10 @@ function ChatViewBody(
         // A rejected dispatch never reached the provider; allow a retry.
         if (activeUserInputAttemptRef.current?.commandId === commandId) {
           activeUserInputAttemptRef.current = null;
+          // Bring the question back so the retry has something to answer.
+          setOptimisticallyResolvedUserInputRequestIds((existing) =>
+            existing.filter((id) => id !== requestId),
+          );
         }
       }
       setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));

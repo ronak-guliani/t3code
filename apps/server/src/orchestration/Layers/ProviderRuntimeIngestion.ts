@@ -531,6 +531,9 @@ function runtimeEventToActivities(
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             questions: event.payload.questions,
+            ...(event.payload.dismissible !== undefined
+              ? { dismissible: event.payload.dismissible }
+              : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
