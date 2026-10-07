@@ -36,9 +36,8 @@ const READ_ONLY_TOOLS = new Set([
   "grep",
   "find",
   "ls",
-  // Reference-only thread-history reads never mutate state; like read they
-  // stay available without a confirmation in restrictive runtime modes.
-  "mcp__t3-code__t3_thread_read",
+  // Thread-history reads can expose private conversation content and require
+  // normal confirmation even though the operation itself is read-only.
 ]);
 const FILE_CHANGE_TOOLS = new Set(${JSON.stringify(PI_FILE_CHANGE_TOOLS)});
 

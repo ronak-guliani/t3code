@@ -61,7 +61,12 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
 import { usePrimaryEnvironmentId } from "../environments/primary/context";
-import { readEnvironmentConnection } from "../environments/runtime";
+import {
+  readEnvironmentConnection,
+  loadOlderThreadHistory,
+  loadCompleteThreadHistory,
+  loadThreadHistoryAroundMessage,
+} from "../environments/runtime";
 import { readEnvironmentApi } from "../environmentApi";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
@@ -73,7 +78,10 @@ import {
   parseDiffRouteSearch,
 } from "../diffRouteSearch";
 import { collapseExpandedComposerCursor } from "../composer-logic";
-import { collectThreadContextReferences } from "@t3tools/shared/threadContext";
+import {
+  collectThreadContextReferences,
+  formatThreadContextPlainText,
+} from "@t3tools/shared/threadContext";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -174,6 +182,7 @@ import { FilePreviewPanel } from "./files/FilePreviewPanel";
 import { ChevronDownIcon } from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
 import { TITLEBAR_CONTROL_INSET_CLASS, TITLEBAR_ROW_CLASS } from "~/lib/titlebar";
+import { CHAT_HEADER_WEB_ROW_CLASS } from "~/lib/chatHeaderLayout";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { isRateLimitQueryError } from "../lib/rateLimitQuery";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -262,6 +271,7 @@ import {
   shouldRenderPreviewMiniPlayer,
   shouldWriteThreadErrorToCurrentServerThread,
   type ThreadPlanCatalogEntry,
+  turnStartFailedForPendingTurn,
   waitForRoutableServerThread,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
@@ -476,22 +486,36 @@ function useLocalDispatchState(input: {
     usePendingTurnStore.getState().clearPendingTurn(threadRef);
   }, [threadRef]);
 
+  const activeSession = input.activeThread?.session ?? null;
+  const activeThreadActivities = input.activeThread?.activities;
+  const activeThreadMessages = input.activeThread?.messages;
+  const latestUserMessageId = useMemo(
+    () => activeThreadMessages?.findLast((message) => message.role === "user")?.id ?? null,
+    [activeThreadMessages],
+  );
+
   const serverAcknowledgedLocalDispatch = useMemo(
     () =>
       hasServerAcknowledgedPendingTurn({
         pendingTurn: localDispatch,
         phase: input.phase,
         latestTurn: input.activeLatestTurn,
-        session: input.activeThread?.session ?? null,
+        session: activeSession,
         hasPendingApproval: input.activePendingApproval !== null,
         hasPendingUserInput: input.activePendingUserInput !== null,
         threadError: input.threadError,
+        turnStartFailed: turnStartFailedForPendingTurn({
+          activities: activeThreadActivities,
+          latestUserMessageId,
+        }),
       }),
     [
       input.activeLatestTurn,
       input.activePendingApproval,
       input.activePendingUserInput,
-      input.activeThread?.session,
+      activeSession,
+      activeThreadActivities,
+      latestUserMessageId,
       input.phase,
       input.threadError,
       localDispatch,
@@ -944,6 +968,13 @@ function ChatViewBody(
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
+  // A failed provider response must release only the attempt that produced it;
+  // a request can be retried while its earlier failure remains in history.
+  // In-flight respond/dismiss command per request. Keyed by request so a
+  // newer question's attempt never overwrites an earlier unresolved one.
+  const userInputAttemptsRef = useRef(
+    new Map<ApprovalRequestId, ReturnType<typeof newCommandId>>(),
+  );
   const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
     Record<string, Record<string, PendingUserInputDraftAnswer>>
   >({});
@@ -1520,19 +1551,33 @@ function ChatViewBody(
       ),
     [activeOlderActivityState.activities, activeThread?.insightActivities, liveThreadActivities],
   );
+  const threadHistory = useStore(
+    (state) => selectEnvironmentState(state, environmentId).threadHistoryById?.[threadId],
+  );
   const hasMoreOlderActivities = activeOlderActivityState.loaded
     ? activeOlderActivityState.hasMore
-    : (activeThread?.hasMoreCurrentTurnActivities ?? false);
+    : ((threadHistory
+        ? activeThread?.hasMoreActivities
+        : activeThread?.hasMoreCurrentTurnActivities) ?? false);
+  // Drain messages first, then independently pageable activity. One selected
+  // lane owns the button's visibility, loading feedback, and next action.
+  const olderHistorySource = threadHistory?.hasMore
+    ? "messages"
+    : hasMoreOlderActivities
+      ? "activities"
+      : null;
   const loadOlderActivities = useCallback(() => {
     if (!activeThread || !activeThreadActivityHistoryKey || !hasMoreOlderActivities) return;
-    const oldestActivity = threadActivities[0];
-    if (!oldestActivity) return;
+    const oldestActivity = threadHistory
+      ? activeOlderActivityState.activities[0]
+      : threadActivities[0];
+    if (!oldestActivity && !threadHistory) return;
     if (inFlightOlderActivitiesKeyRef.current === activeThreadActivityHistoryKey) return;
 
     const api = readEnvironmentApi(activeThread.environmentId);
     if (!api) return;
     const requestKey = activeThreadActivityHistoryKey;
-    const activeTurnId = activeLatestTurn?.turnId;
+    const activeTurnId = threadHistory ? undefined : activeLatestTurn?.turnId;
     inFlightOlderActivitiesKeyRef.current = requestKey;
     setOlderActivityState((previous) => ({
       historyKey: requestKey,
@@ -1545,8 +1590,11 @@ function ChatViewBody(
       .getThreadActivities({
         threadId: activeThread.id,
         ...(activeTurnId !== undefined ? { turnId: activeTurnId } : {}),
-        beforeCreatedAt: oldestActivity.createdAt,
-        beforeActivityId: oldestActivity.id,
+        // A turn window is not global activity coverage: independently page
+        // from the newest activity so unscoped/interleaved rows are reachable.
+        ...(oldestActivity
+          ? { beforeCreatedAt: oldestActivity.createdAt, beforeActivityId: oldestActivity.id }
+          : {}),
       })
       .then((page) => {
         if (activeThreadActivityHistoryKeyRef.current !== requestKey) return;
@@ -1594,6 +1642,8 @@ function ChatViewBody(
     activeThreadActivityHistoryKey,
     hasMoreOlderActivities,
     threadActivities,
+    threadHistory,
+    activeOlderActivityState.activities,
   ]);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadStateActivities),
@@ -1604,6 +1654,28 @@ function ChatViewBody(
     [threadStateActivities],
   );
   const activePendingUserInput = pendingUserInputs[0] ?? null;
+
+  useEffect(() => {
+    const attempts = userInputAttemptsRef.current;
+    if (attempts.size === 0) return;
+    for (const activity of threadStateActivities) {
+      const payload = activity.payload;
+      if (
+        activity.kind !== "provider.user-input.respond.failed" ||
+        typeof payload !== "object" ||
+        payload === null ||
+        !("requestId" in payload) ||
+        !("originCommandId" in payload)
+      ) {
+        continue;
+      }
+      const requestId = payload.requestId as ApprovalRequestId;
+      if (attempts.get(requestId) === payload.originCommandId) {
+        attempts.delete(requestId);
+      }
+    }
+  }, [threadStateActivities]);
+
   const activePendingDraftAnswers = useMemo(
     () =>
       activePendingUserInput
@@ -1912,6 +1984,32 @@ function ChatViewBody(
   const focusComposer = useCallback(() => {
     composerRef.current?.focusAtEnd();
   }, []);
+  const loadEarlierTurns = useCallback(() => {
+    void loadOlderThreadHistory(environmentId, threadId).catch((error) => {
+      setThreadError(
+        threadId,
+        error instanceof Error ? error.message : "Could not load earlier messages.",
+      );
+    });
+  }, [environmentId, threadId, setThreadError]);
+  const ensureCompleteHistory = useCallback(
+    (shouldContinue: () => boolean) =>
+      loadCompleteThreadHistory(environmentId, threadId, shouldContinue).catch((error) => {
+        setThreadError(
+          threadId,
+          error instanceof Error ? error.message : "Could not load full chat history.",
+        );
+        throw error;
+      }),
+    [environmentId, threadId, setThreadError],
+  );
+  // A dead ?message= link is a dead link, not a thread transport failure. The
+  // timeline swallows this rejection, so reporting it here would raise a
+  // thread-wide banner for a condition with no thread-level remedy.
+  const ensureMessageHistory = useCallback(
+    (messageId: MessageId) => loadThreadHistoryAroundMessage(environmentId, threadId, messageId),
+    [environmentId, threadId],
+  );
   const scheduleComposerFocus = useCallback(() => {
     window.requestAnimationFrame(() => {
       focusComposer();
@@ -2301,9 +2399,9 @@ function ChatViewBody(
     [activeThreadRef],
   );
   const openRightPanelFile = useCallback(
-    (relativePath: string) => {
+    (relativePath: string, line?: number, column?: number) => {
       if (!activeThreadRef) return;
-      useRightPanelStore.getState().openFile(activeThreadRef, relativePath);
+      useRightPanelStore.getState().openFile(activeThreadRef, relativePath, line, column);
     },
     [activeThreadRef],
   );
@@ -3531,9 +3629,16 @@ function ChatViewBody(
       if (
         !sent &&
         (!currentDraft ||
-          (!currentDraft.prompt &&
-            currentDraft.images.length === 0 &&
-            currentDraft.threadContexts.length === 0))
+          isComposerDraftCleared({
+            prompt: currentDraft.prompt,
+            imageCount: currentDraft.images.length,
+            terminalContextCount: currentDraft.terminalContexts.length,
+            threadContextCount: countReferencedThreadContexts(
+              currentDraft.prompt,
+              currentDraft.threadContexts,
+            ),
+            previewAnnotationCount: currentDraft.previewAnnotations.length,
+          }))
       ) {
         setComposerDraftPrompt(composerDraftTarget, draftPromptForSend);
         setComposerDraftThreadContexts(composerDraftTarget, draftThreadContextsForSend);
@@ -3595,7 +3700,7 @@ function ChatViewBody(
           composerTerminalContextsSnapshot,
         );
         const firstComposerImageName = composerImagesSnapshot[0]?.name ?? null;
-        let titleSeed = trimmed;
+        let titleSeed = formatThreadContextPlainText(trimmed);
         if (!titleSeed) {
           if (firstComposerImageName) {
             titleSeed = `Image: ${firstComposerImageName}`;
@@ -3804,7 +3909,7 @@ function ChatViewBody(
           firstComposerImageName = firstComposerImage.name;
         }
       }
-      let titleSeed = trimmed;
+      let titleSeed = formatThreadContextPlainText(trimmed);
       if (!titleSeed) {
         if (firstComposerImageName) {
           titleSeed = `Image: ${firstComposerImageName}`;
@@ -3920,11 +4025,14 @@ function ChatViewBody(
                 prompt: currentDraft.prompt,
                 imageCount: currentDraft.images.length,
                 terminalContextCount: currentDraft.terminalContexts.length,
-                threadContextCount: currentDraft.threadContexts.length,
+                threadContextCount: countReferencedThreadContexts(
+                  currentDraft.prompt,
+                  currentDraft.threadContexts,
+                ),
+                previewAnnotationCount: currentDraft.previewAnnotations.length,
               }
             : undefined,
-        ) &&
-        (currentDraft?.previewAnnotations.length ?? 0) === 0
+        )
       ) {
         usePendingTurnStore
           .getState()
@@ -4224,32 +4332,68 @@ function ChatViewBody(
     [activeThreadId, environmentId, setThreadError],
   );
 
-  const onRespondToUserInput = useCallback(
-    async (requestId: ApprovalRequestId, answers: Record<string, unknown>) => {
+  // A pending request accepts exactly one in-flight response or dismissal.
+  // Claim it synchronously before awaiting: a single-select auto-advance timer,
+  // manual submit, Enter, and the mobile send arrow can all reach this funnel.
+  // The claim is released only by a failure tied to this attempt's commandId,
+  // so a stale failure from an earlier attempt never unlocks a newer one.
+  const dispatchUserInputAttempt = useCallback(
+    async (
+      requestId: ApprovalRequestId,
+      answers: Record<string, unknown> | null,
+      failureMessage: string,
+    ) => {
       const api = readEnvironmentApi(environmentId);
       if (!api || !activeThreadId) return;
-
+      const attempts = userInputAttemptsRef.current;
+      if (attempts.has(requestId)) return;
+      const commandId = newCommandId();
+      attempts.set(requestId, commandId);
       setRespondingUserInputRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
-      await api.orchestration
-        .dispatchCommand({
-          type: "thread.user-input.respond",
-          commandId: newCommandId(),
-          threadId: activeThreadId,
-          requestId,
-          answers,
-          createdAt: new Date().toISOString(),
-        })
-        .catch((err: unknown) => {
-          setThreadError(
-            activeThreadId,
-            err instanceof Error ? err.message : "Failed to submit user input.",
-          );
-        });
+      const createdAt = new Date().toISOString();
+      try {
+        await api.orchestration.dispatchCommand(
+          answers
+            ? {
+                type: "thread.user-input.respond",
+                commandId,
+                threadId: activeThreadId,
+                requestId,
+                answers,
+                createdAt,
+              }
+            : {
+                type: "thread.user-input.dismiss",
+                commandId,
+                threadId: activeThreadId,
+                requestId,
+                createdAt,
+              },
+        );
+      } catch (err: unknown) {
+        setThreadError(activeThreadId, err instanceof Error ? err.message : failureMessage);
+        // A rejected dispatch never reached the provider; allow a retry.
+        if (attempts.get(requestId) === commandId) {
+          attempts.delete(requestId);
+        }
+      }
       setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
     },
     [activeThreadId, environmentId, setThreadError],
+  );
+
+  const onRespondToUserInput = useCallback(
+    (requestId: ApprovalRequestId, answers: Record<string, unknown>) =>
+      dispatchUserInputAttempt(requestId, answers, "Failed to submit user input."),
+    [dispatchUserInputAttempt],
+  );
+
+  const onDismissActivePendingUserInput = useCallback(
+    (requestId: ApprovalRequestId) =>
+      dispatchUserInputAttempt(requestId, null, "Failed to dismiss the question."),
+    [dispatchUserInputAttempt],
   );
 
   const setActivePendingUserInputQuestionIndex = useCallback(
@@ -5438,8 +5582,14 @@ function ChatViewBody(
               kind={surface.kind}
               cwd={activeWorkspaceRoot ?? activeProject?.cwd ?? ""}
               projectName={activeProject?.name}
-              relativePath={surface.kind === "file" ? surface.relativePath : null}
+              relativePath={
+                surface.kind === "file" && !surface.reference ? surface.relativePath : null
+              }
               revealLine={surface.kind === "file" ? surface.revealLine : null}
+              revealColumn={surface.kind === "file" ? (surface.revealColumn ?? null) : null}
+              {...(surface.kind === "file" && surface.reference
+                ? { fileReference: surface.reference }
+                : {})}
               threadRef={activeThreadRef}
               onOpenFile={openRightPanelFile}
               onPendingChange={handleFilePendingChange}
@@ -5470,7 +5620,10 @@ function ChatViewBody(
                   (shouldUseRightPanelSheet || !browserPanel.isOpen) &&
                     TITLEBAR_CONTROL_INSET_CLASS,
                 )
-              : "py-2 ps-[calc(env(safe-area-inset-left)+--spacing(3))] pe-[calc(env(safe-area-inset-right)+--spacing(3))] sm:py-3 sm:ps-[calc(env(safe-area-inset-left)+--spacing(5))] sm:pe-[calc(env(safe-area-inset-right)+--spacing(5))]",
+              : cn(
+                  CHAT_HEADER_WEB_ROW_CLASS,
+                  "ps-[calc(env(safe-area-inset-left)+--spacing(3))] pe-[calc(env(safe-area-inset-right)+--spacing(3))] sm:ps-[calc(env(safe-area-inset-left)+--spacing(5))] sm:pe-[calc(env(safe-area-inset-right)+--spacing(5))]",
+                ),
           )}
         >
           <ChatHeader
@@ -5555,9 +5708,17 @@ function ChatViewBody(
                   messagePreviewLineLimits={settings.messagePreviewLineLimits}
                   workspaceRoot={activeWorkspaceRoot}
                   chatFindShortcutLabel={chatFindShortcutLabel}
-                  hasMoreOlder={hasMoreOlderActivities}
-                  loadingOlder={activeOlderActivityState.loading}
-                  onLoadOlder={loadOlderActivities}
+                  hasMoreOlder={olderHistorySource !== null}
+                  loadingOlder={
+                    olderHistorySource === "messages"
+                      ? (threadHistory?.loadingOlder ?? false)
+                      : activeOlderActivityState.loading
+                  }
+                  onLoadOlder={
+                    olderHistorySource === "messages" ? loadEarlierTurns : loadOlderActivities
+                  }
+                  onEnsureCompleteHistory={ensureCompleteHistory}
+                  onEnsureMessageHistory={ensureMessageHistory}
                   onOpenTurnDiff={onOpenTurnDiff}
                   onRevertToTurnCount={onRevertToTurnCount}
                   {...(isImportedChat ? {} : { onForkAssistantMessage })}
@@ -5638,6 +5799,7 @@ function ChatViewBody(
                     activePendingDraftAnswers={activePendingDraftAnswers}
                     activePendingQuestionIndex={activePendingQuestionIndex}
                     respondingRequestIds={respondingRequestIds}
+                    respondingUserInputRequestIds={respondingUserInputRequestIds}
                     showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                     activeProposedPlan={activeProposedPlan}
                     activePlan={activePlan}
@@ -5674,6 +5836,7 @@ function ChatViewBody(
                     onReleaseQueue={onReleaseQueue}
                     onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
                     onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
+                    onDismissActivePendingUserInput={onDismissActivePendingUserInput}
                     onPreviousActivePendingUserInputQuestion={
                       onPreviousActivePendingUserInputQuestion
                     }

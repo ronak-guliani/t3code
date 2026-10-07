@@ -24,7 +24,9 @@ import {
 } from "../../persistence/Layers/Sqlite.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
+import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
+import { CheckpointStoreDieStubLive } from "../../checkpointing/Layers/CheckpointStore.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import {
   ORCHESTRATION_PROJECTOR_NAMES,
@@ -53,6 +55,49 @@ const exists = (filePath: string) =>
 
 const WorkspaceBindingClearTestLayer = makeProjectionPipelinePrefixedTestLayer(
   "t3-projection-binding-clear-test-",
+);
+
+it.effect("keeps a legacy message's origin order when a late delta arrives", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const pipeline = yield* OrchestrationProjectionPipeline;
+    const now = "2026-10-04T00:00:00.000Z",
+      threadId = ThreadId.make("legacy-origin-thread");
+    yield* pipeline.bootstrap;
+    yield* sql`INSERT INTO projection_projects (project_id,title,workspace_root,scripts_json,created_at,updated_at) VALUES ('legacy-origin-project','Origin','/tmp/legacy-origin','[]',${now},${now})`;
+    yield* sql`INSERT INTO projection_threads (thread_id,project_id,title,model_selection_json,runtime_mode,interaction_mode,created_at,updated_at) VALUES (${threadId},'legacy-origin-project','Origin','{"instanceId":"codex","model":"gpt-5.4"}','full-access','default',${now},${now})`;
+    yield* sql`INSERT INTO projection_thread_messages (message_id,thread_id,sequence,role,text,attachments_json,is_streaming,created_at,updated_at) VALUES ('legacy-origin-message',${threadId},NULL,'assistant','Legacy prefix','[]',1,${now},${now})`;
+    yield* pipeline.projectEvent({
+      eventId: EventId.make("legacy-origin-delta"),
+      sequence: 1000,
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      type: "thread.message-sent",
+      occurredAt: now,
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      payload: {
+        threadId,
+        messageId: MessageId.make("legacy-origin-message"),
+        role: "assistant",
+        turnId: null,
+        text: " tail",
+        streaming: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    const rows = yield* sql<{
+      sequence: number | null;
+      text: string;
+    }>`SELECT sequence,text FROM projection_thread_messages WHERE message_id='legacy-origin-message'`;
+    assert.isNull(rows[0]?.sequence);
+    assert.equal(rows[0]?.text, "Legacy prefix tail");
+  }).pipe(
+    Effect.provide(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-legacy-origin-test-"))),
+  ),
 );
 
 it.layer(WorkspaceBindingClearTestLayer)("Workspace binding recovery", (it) => {
@@ -291,7 +336,6 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         eventStore
           .append(event)
           .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
-
       yield* appendAndProject({
         type: "thread.created",
         eventId: EventId.make("evt-pr-refresh-created"),
@@ -550,6 +594,35 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         eventStore
           .append(event)
           .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+      const appendUserInputActivity = (input: {
+        readonly suffix: string;
+        readonly kind: "user-input.requested" | "user-input.resolved";
+        readonly requestId: string;
+        readonly createdAt: string;
+      }) =>
+        appendAndProject({
+          type: "thread.activity-appended",
+          eventId: EventId.make(`evt-deferred-user-input-${input.suffix}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: input.createdAt,
+          commandId: CommandId.make(`cmd-deferred-user-input-${input.suffix}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-deferred-user-input-${input.suffix}`),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make(`activity-deferred-user-input-${input.suffix}`),
+              tone: "info",
+              kind: input.kind,
+              summary: input.kind === "user-input.requested" ? "Input required" : "Input submitted",
+              payload: { requestId: input.requestId },
+              turnId: null,
+              createdAt: input.createdAt,
+            },
+          },
+        });
 
       yield* appendAndProject({
         type: "project.created",
@@ -596,28 +669,11 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           updatedAt: now,
         },
       });
-      const receipt = yield* appendAndProject({
-        type: "thread.activity-appended",
-        eventId: EventId.make("evt-deferred-reconciliation-3"),
-        aggregateKind: "thread",
-        aggregateId: threadId,
-        occurredAt: now,
-        commandId: CommandId.make("cmd-deferred-reconciliation-3"),
-        causationEventId: null,
-        correlationId: CorrelationId.make("cmd-deferred-reconciliation-3"),
-        metadata: {},
-        payload: {
-          threadId,
-          activity: {
-            id: EventId.make("activity-deferred-user-input"),
-            tone: "approval",
-            kind: "user-input.requested",
-            summary: "Input required",
-            payload: { requestId: "request-deferred-user-input" },
-            turnId: null,
-            createdAt: now,
-          },
-        },
+      const receipt = yield* appendUserInputActivity({
+        suffix: "request-1",
+        kind: "user-input.requested",
+        requestId: "request-deferred-user-input",
+        createdAt: now,
       });
 
       const before = yield* sql<{
@@ -633,7 +689,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         FROM projection_threads
         WHERE thread_id = ${threadId}
       `;
-      assert.deepEqual(before, [{ pendingUserInputCount: 0, pendingJobs: 1 }]);
+      assert.deepEqual(before, [{ pendingUserInputCount: 1, pendingJobs: 1 }]);
 
       yield* sql`
         CREATE TRIGGER fail_deferred_shell_reconciliation
@@ -659,7 +715,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         FROM projection_threads
         WHERE thread_id = ${threadId}
       `;
-      assert.deepEqual(afterFailure, [{ pendingUserInputCount: 0, pendingJobs: 1 }]);
+      assert.deepEqual(afterFailure, [{ pendingUserInputCount: 1, pendingJobs: 1 }]);
 
       yield* sql`DROP TRIGGER fail_deferred_shell_reconciliation`;
       yield* projectionPipeline.bootstrap;
@@ -678,6 +734,67 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         WHERE thread_id = ${threadId}
       `;
       assert.deepEqual(after, [{ pendingUserInputCount: 1, pendingJobs: 0 }]);
+
+      const secondRequestReceipt = yield* appendUserInputActivity({
+        suffix: "request-2",
+        kind: "user-input.requested",
+        requestId: "request-deferred-user-input-2",
+        createdAt: "2026-03-01T12:00:03.000Z",
+      });
+      const afterSecondRequest = yield* sql<{ readonly pendingUserInputCount: number }>`
+        SELECT pending_user_input_count AS "pendingUserInputCount"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(afterSecondRequest, [{ pendingUserInputCount: 2 }]);
+      yield* secondRequestReceipt.reconcile;
+
+      const resolvedReceipt = yield* appendUserInputActivity({
+        suffix: "resolved-1",
+        kind: "user-input.resolved",
+        requestId: "request-deferred-user-input",
+        createdAt: "2026-03-01T12:00:04.000Z",
+      });
+
+      const afterResolutionBeforeReconcile = yield* sql<{
+        readonly pendingUserInputCount: number;
+        readonly pendingJobs: number;
+      }>`
+        SELECT
+          pending_user_input_count AS "pendingUserInputCount",
+          (
+            SELECT COUNT(*)
+            FROM projection_reconciliation_jobs
+          ) AS "pendingJobs"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(afterResolutionBeforeReconcile, [
+        { pendingUserInputCount: 1, pendingJobs: 1 },
+      ]);
+      yield* resolvedReceipt.reconcile;
+
+      const secondResolvedReceipt = yield* appendUserInputActivity({
+        suffix: "resolved-2",
+        kind: "user-input.resolved",
+        requestId: "request-deferred-user-input-2",
+        createdAt: "2026-03-01T12:00:05.000Z",
+      });
+      const afterAllInputsResolved = yield* sql<{
+        readonly pendingUserInputCount: number;
+        readonly pendingJobs: number;
+      }>`
+        SELECT
+          pending_user_input_count AS "pendingUserInputCount",
+          (
+            SELECT COUNT(*)
+            FROM projection_reconciliation_jobs
+          ) AS "pendingJobs"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(afterAllInputsResolved, [{ pendingUserInputCount: 0, pendingJobs: 1 }]);
+      yield* secondResolvedReceipt.reconcile;
 
       const proposedPlanReceipt = yield* appendAndProject({
         type: "thread.proposed-plan-upserted",
@@ -716,7 +833,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       `;
       assert.deepEqual(derivedShell, [
         {
-          pendingUserInputCount: 1,
+          pendingUserInputCount: 0,
           hasActionableProposedPlan: 1,
         },
       ]);
@@ -4368,6 +4485,7 @@ const engineLayer = it.layer(
       }),
     ),
     Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(CheckpointStoreDieStubLive),
   ),
 );
 
@@ -4624,13 +4742,26 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       Effect.gen(function* () {
         const engine = yield* OrchestrationEngineService;
         const snapshotQuery = yield* ProjectionSnapshotQuery;
+        const fileSystem = yield* FileSystem.FileSystem;
         const createdAt = new Date().toISOString();
         const threadId = ThreadId.make("thread-handoff-origin");
+        const projectRoot = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-handoff-origin-project-",
+        });
+        const threadWorktreePath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-handoff-origin-thread-",
+        });
+        const handoffWorktreePath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-handoff-origin-target-",
+        });
+        const canonicalHandoffWorktreePath = yield* Effect.promise(() =>
+          canonicalizeWorktreePath(handoffWorktreePath),
+        );
         const origin = {
           kind: "workspace-handoff",
           role: "continuation",
           branch: "feature/handoff",
-          worktreePath: "/tmp/handoff-origin",
+          worktreePath: canonicalHandoffWorktreePath,
         } as const;
 
         yield* engine.dispatch({
@@ -4638,7 +4769,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           commandId: CommandId.make("cmd-handoff-origin-project"),
           projectId: ProjectId.make("project-handoff-origin"),
           title: "Handoff Origin",
-          workspaceRoot: "/tmp/project-handoff-origin",
+          workspaceRoot: projectRoot,
           defaultModelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
@@ -4659,7 +4790,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           interactionMode: "default",
           runtimeMode: "full-access",
           branch: null,
-          worktreePath: "/tmp/handoff-origin-thread-worktree",
+          worktreePath: threadWorktreePath,
           createdAt,
         });
 
@@ -4668,7 +4799,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           commandId: CommandId.make("cmd-handoff-origin"),
           threadId,
           branch: "feature/handoff",
-          worktreePath: "/tmp/handoff-origin",
+          worktreePath: canonicalHandoffWorktreePath,
           markerMessageId: MessageId.make("message-handoff-origin-marker"),
           continuation: {
             id: QueuedTurnId.make("queued-turn-handoff-origin"),

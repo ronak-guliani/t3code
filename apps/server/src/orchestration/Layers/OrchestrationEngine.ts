@@ -30,6 +30,7 @@ import {
   orchestrationCommandAckDuration,
   orchestrationCommandsTotal,
   orchestrationCommandDuration,
+  orchestrationActivityAppendBatchesTotal,
 } from "../../observability/Metrics.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { runStartupPhase } from "../../startupTiming.ts";
@@ -53,6 +54,10 @@ import {
   AutomaticArchiveGuardRegistry,
   layer as AutomaticArchiveGuardRegistryLayer,
 } from "../Services/AutomaticArchiveGuardRegistry.ts";
+import {
+  ThreadWorktreeRestorerRegistry,
+  layer as ThreadWorktreeRestorerRegistryLayer,
+} from "../Services/ThreadWorktreeRestorerRegistry.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
 import { childReportIdentity, legacyChildReportKey } from "../dispatchAuthority.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
@@ -67,7 +72,14 @@ import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.
 import type { ProjectionReceipt } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
+  ACTIVITY_APPEND_BATCH_MAX_SIZE,
+  ACTIVITY_APPEND_BATCH_WINDOW_MS,
+  isBatchableToolActivity,
+} from "../activityAppendBatch.ts";
+import {
   OrchestrationEngineService,
+  type OrchestrationActivityAppendCommand,
+  type OrchestrationDispatchTicket,
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 
@@ -81,6 +93,25 @@ interface CommandEnvelope {
   result: Deferred.Deferred<DispatchResult, OrchestrationDispatchError>;
   startedAtMs: number;
 }
+
+type ActivityAppendCommand = OrchestrationActivityAppendCommand;
+
+interface ActivityAppendEnvelope extends CommandEnvelope {
+  readonly command: ActivityAppendCommand;
+}
+
+const waitForActivityAppendBatchWindow = () =>
+  Effect.promise(
+    () => new Promise<void>((resolve) => setTimeout(resolve, ACTIVITY_APPEND_BATCH_WINDOW_MS)),
+  );
+
+function isBatchableToolActivityCommand(
+  command: OrchestrationCommand,
+): command is ActivityAppendCommand {
+  return command.type === "thread.activity.append" && isBatchableToolActivity(command.activity);
+}
+
+class ActivityAppendBatchUnavailable extends Error {}
 
 function commandToAggregateRef(command: OrchestrationCommand): {
   readonly aggregateKind: "project" | "thread" | "workflow";
@@ -121,9 +152,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const maybeDelegationAuditRepository = yield* Effect.serviceOption(DelegationAuditRepository);
   const threadUrls = yield* Effect.serviceOption(ThreadUrlBuilder);
   const coordinator = yield* CheckoutCoordinator;
-  const checkpointStore = yield* Effect.serviceOption(CheckpointStore);
+  const checkpointStore = yield* CheckpointStore;
   const workspaceOwnership = yield* WorkspaceOwnershipRepository;
   const automaticArchiveGuards = yield* AutomaticArchiveGuardRegistry;
+  const threadWorktreeRestorer = yield* ThreadWorktreeRestorerRegistry;
 
   let readModel = createEmptyReadModel(new Date().toISOString());
 
@@ -345,12 +377,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     claimOwnership: (input) => workspaceOwnership.claim(input),
     hasCleanupReservationByPath: (canonicalPath) =>
       worktreeCleanupJobs.hasReservationByPath(canonicalPath),
-    createWorkspaceSnapshotCommit: (cwd) =>
-      Option.isSome(checkpointStore)
-        ? checkpointStore.value.createWorkspaceSnapshotCommit({ cwd })
-        : Effect.fail(
-            new Error("Checkpoint snapshot service is unavailable; refusing a HEAD-only fork."),
-          ),
+    hasCleanupReservationByThreadId: (threadId) =>
+      worktreeCleanupJobs.hasReservationByThreadId(threadId),
+    cancelIdleByThreadId: (threadId) => worktreeCleanupJobs.cancelIdleByThreadId(threadId),
+    restoreThreadWorktree: threadWorktreeRestorer.restore,
+    createWorkspaceSnapshotCommit: (cwd) => checkpointStore.createWorkspaceSnapshotCommit({ cwd }),
   };
 
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
@@ -517,10 +548,14 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               (admittedCommand.type === "thread.delegation.settle" ||
                 admittedCommand.type === "thread.queue.hold" ||
                 admittedCommand.type === "thread.queue.release" ||
+                admittedCommand.type === "thread.queued-turn.delete" ||
                 admittedCommand.type === "thread.child.wait.prune" ||
                 (admittedCommand.type === "thread.meta.update" &&
                   (admittedCommand.expectedUpdatedAt !== undefined ||
-                    admittedCommand.expectedWorkspaceCwd !== undefined)))
+                    admittedCommand.expectedArchivedAt !== undefined ||
+                    admittedCommand.expectedWorkspaceCwd !== undefined ||
+                    admittedCommand.expectedPendingPullRequestAssociationRequestId !== undefined ||
+                    admittedCommand.expectedPullRequestAssociationContext !== undefined)))
             ) {
               yield* commandReceiptRepository.upsert({
                 commandId: command.commandId,
@@ -1030,6 +1065,216 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     return cwd ? coordinator.withCheckout(cwd, worktreeProcess) : worktreeProcess;
   };
 
+  const commitActivityAppendBatch = (envelopes: ReadonlyArray<ActivityAppendEnvelope>) =>
+    Effect.gen(function* () {
+      const threadId = envelopes[0]?.command.threadId;
+      if (
+        envelopes.length < 2 ||
+        threadId === undefined ||
+        envelopes.some((envelope) => envelope.command.threadId !== threadId)
+      ) {
+        return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+      }
+
+      const prepared: Array<{
+        readonly envelope: ActivityAppendEnvelope;
+        readonly command: ActivityAppendCommand;
+      }> = [];
+      for (const envelope of envelopes) {
+        const canonicalCommand = yield* canonicalizeCommandWorktree(envelope.command);
+        const admittedCommand = yield* admitWorkspaceCommand(admissionDeps, canonicalCommand);
+        if (admittedCommand.type !== "thread.activity.append") {
+          return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+        }
+        const worktreePath = cleanupWorktreePath(admittedCommand, readModel.threads);
+        if (
+          worktreePath !== null &&
+          (yield* isWorktreeCleanupPending(admissionDeps, worktreePath))
+        ) {
+          return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+        }
+        prepared.push({ envelope, command: admittedCommand });
+      }
+
+      const commandIds = new Set(prepared.map(({ command }) => command.commandId));
+      if (commandIds.size !== prepared.length) {
+        return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+      }
+
+      const committed = yield* commitLock.withPermits(1)(
+        Effect.gen(function* () {
+          for (const { command } of prepared) {
+            const receipt = yield* commandReceiptRepository.getByCommandId({
+              commandId: command.commandId,
+            });
+            if (Option.isSome(receipt)) {
+              return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+            }
+          }
+
+          const result = yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const commandResults: Array<{
+                readonly envelope: ActivityAppendEnvelope;
+                readonly result: DispatchResult;
+                readonly committedEvents: ReadonlyArray<OrchestrationEvent>;
+                readonly projectionReceipts: ReadonlyArray<ProjectionReceipt>;
+              }> = [];
+              let nextReadModel = readModel;
+
+              for (const { envelope, command } of prepared) {
+                const eventBase = yield* decideOrchestrationCommand({
+                  command,
+                  readModel: nextReadModel,
+                });
+                const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
+                if (eventBases.length === 0) {
+                  return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+                }
+
+                const committedEvents: OrchestrationEvent[] = [];
+                const projectionReceipts: ProjectionReceipt[] = [];
+                const skippedEventIds = new Set<string>();
+                for (const nextEvent of eventBases) {
+                  if (
+                    nextEvent.causationEventId !== null &&
+                    skippedEventIds.has(nextEvent.causationEventId)
+                  ) {
+                    skippedEventIds.add(nextEvent.eventId);
+                    continue;
+                  }
+                  if (nextEvent.type === "thread.child-lifecycle-notified") {
+                    const claimed = yield* sql<{ readonly dedupe_key: string }>`
+                      INSERT INTO child_lifecycle_notification_dedup (
+                        dedupe_key,
+                        event_id,
+                        created_at
+                      )
+                      VALUES (
+                        ${nextEvent.payload.dedupeKey},
+                        ${nextEvent.eventId},
+                        ${nextEvent.occurredAt}
+                      )
+                      ON CONFLICT(dedupe_key) DO NOTHING
+                      RETURNING dedupe_key
+                    `;
+                    if (claimed.length === 0) {
+                      skippedEventIds.add(nextEvent.eventId);
+                      continue;
+                    }
+                  }
+
+                  const savedEvent = yield* eventStore.append(nextEvent);
+                  nextReadModel = yield* projectEvent(nextReadModel, savedEvent);
+                  projectionReceipts.push(yield* projectionPipeline.projectEvent(savedEvent));
+                  committedEvents.push(savedEvent);
+                }
+
+                const lastSavedEvent = committedEvents.at(-1);
+                if (lastSavedEvent === undefined) {
+                  return yield* Effect.fail(new ActivityAppendBatchUnavailable());
+                }
+                yield* commandReceiptRepository.upsert({
+                  commandId: command.commandId,
+                  aggregateKind: lastSavedEvent.aggregateKind,
+                  aggregateId: lastSavedEvent.aggregateId,
+                  acceptedAt: lastSavedEvent.occurredAt,
+                  resultSequence: lastSavedEvent.sequence,
+                  status: "accepted",
+                  error: null,
+                });
+                commandResults.push({
+                  envelope,
+                  result: dispatchResult(command, lastSavedEvent.sequence),
+                  committedEvents,
+                  projectionReceipts,
+                });
+              }
+
+              return { commandResults, nextReadModel } as const;
+            }),
+          );
+
+          readModel = result.nextReadModel;
+          yield* Effect.uninterruptible(
+            Effect.gen(function* () {
+              for (const commandResult of result.commandResults) {
+                for (const event of commandResult.committedEvents) {
+                  yield* PubSub.publish(eventPubSub, event);
+                }
+              }
+            }),
+          );
+          yield* Metric.update(
+            Metric.withAttributes(
+              orchestrationActivityAppendBatchesTotal,
+              metricAttributes({ aggregateKind: "thread", batchSize: prepared.length }),
+            ),
+            1,
+          );
+          return result.commandResults;
+        }),
+      );
+
+      for (const commandResult of committed) {
+        const { envelope, result, committedEvents } = commandResult;
+        const firstEvent = committedEvents[0];
+        if (firstEvent !== undefined) {
+          yield* Metric.update(
+            Metric.withAttributes(
+              orchestrationCommandAckDuration,
+              metricAttributes({
+                commandType: envelope.command.type,
+                aggregateKind: "thread",
+                ackEventType: firstEvent.type,
+              }),
+            ),
+            Duration.millis(Math.max(0, Date.now() - envelope.startedAtMs)),
+          );
+        }
+        yield* Metric.update(
+          Metric.withAttributes(
+            orchestrationCommandDuration,
+            metricAttributes({ commandType: envelope.command.type, aggregateKind: "thread" }),
+          ),
+          Duration.millis(Math.max(0, Date.now() - envelope.startedAtMs)),
+        );
+        yield* Metric.update(
+          Metric.withAttributes(
+            orchestrationCommandsTotal,
+            metricAttributes({
+              commandType: envelope.command.type,
+              aggregateKind: "thread",
+              outcome: "success",
+            }),
+          ),
+          1,
+        );
+        yield* Effect.forEach(commandResult.projectionReceipts, (receipt) => receipt.reconcile, {
+          concurrency: 1,
+          discard: true,
+        }).pipe(
+          Effect.tapError((error) =>
+            Effect.logWarning("projection post-commit reconciliation remains pending", {
+              commandId: envelope.command.commandId,
+              error,
+            }),
+          ),
+          Effect.ignore,
+        );
+        yield* Deferred.succeed(envelope.result, result);
+      }
+    }).pipe(Effect.withSpan("orchestration.command.thread.activity.append.batch"));
+
+  const processActivityAppendBatch = (envelopes: ReadonlyArray<ActivityAppendEnvelope>) =>
+    Effect.exit(commitActivityAppendBatch(envelopes)).pipe(
+      Effect.flatMap((exit) =>
+        Exit.isSuccess(exit)
+          ? Effect.void
+          : Effect.forEach(envelopes, processEnvelope, { concurrency: 1, discard: true }),
+      ),
+    );
+
   // The router does pure key computation only, so it never blocks: every
   // command reaches its aggregate shard queue, which its shard worker drains
   // strictly FIFO.
@@ -1041,7 +1286,68 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     ),
   );
   const shardWorker = (shardQueue: Queue.Queue<CommandEnvelope>) =>
-    Effect.forever(Queue.take(shardQueue).pipe(Effect.flatMap(processEnvelope)));
+    Effect.gen(function* () {
+      const pending: Array<CommandEnvelope> = [];
+      while (true) {
+        const envelope = pending.shift() ?? (yield* Queue.take(shardQueue));
+        if (!isBatchableToolActivityCommand(envelope.command)) {
+          yield* processEnvelope(envelope);
+          continue;
+        }
+        if (pending.length > 0) {
+          yield* processEnvelope(envelope);
+          continue;
+        }
+
+        const firstAdditional = yield* Effect.raceFirst(
+          Queue.take(shardQueue).pipe(Effect.map(Option.some)),
+          waitForActivityAppendBatchWindow().pipe(Effect.as(Option.none<CommandEnvelope>())),
+        );
+        const activityEnvelope = envelope as ActivityAppendEnvelope;
+        const threadId = activityEnvelope.command.threadId;
+        const batch: Array<ActivityAppendEnvelope> = [activityEnvelope];
+        if (Option.isSome(firstAdditional)) {
+          const candidate = firstAdditional.value;
+          if (
+            !isBatchableToolActivityCommand(candidate.command) ||
+            candidate.command.threadId !== threadId
+          ) {
+            pending.push(candidate);
+            yield* processEnvelope(envelope);
+            continue;
+          }
+          batch.push(candidate as ActivityAppendEnvelope);
+          yield* waitForActivityAppendBatchWindow();
+        }
+
+        const queued: Array<CommandEnvelope> = [];
+        while (batch.length + queued.length < ACTIVITY_APPEND_BATCH_MAX_SIZE) {
+          const next = yield* Queue.poll(shardQueue);
+          if (Option.isNone(next)) break;
+          queued.push(next.value);
+        }
+        let consumed = 0;
+        while (consumed < queued.length) {
+          const candidate = queued[consumed];
+          if (
+            candidate === undefined ||
+            !isBatchableToolActivityCommand(candidate.command) ||
+            candidate.command.threadId !== threadId
+          ) {
+            break;
+          }
+          batch.push(candidate as ActivityAppendEnvelope);
+          consumed += 1;
+        }
+        pending.push(...queued.slice(consumed));
+
+        if (batch.length > 1) {
+          yield* processActivityAppendBatch(batch);
+        } else {
+          yield* processEnvelope(envelope);
+        }
+      }
+    });
   yield* Effect.forkScoped(
     Effect.gen(function* () {
       const initializationExit = yield* Effect.exit(
@@ -1080,18 +1386,40 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive) =>
     eventStore.readFromSequence(fromSequenceExclusive);
 
-  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
+  const enqueueCommand = (command: OrchestrationCommand) =>
     Effect.gen(function* () {
       yield* Deferred.await(initialized);
       const result = yield* Deferred.make<DispatchResult, OrchestrationDispatchError>();
       yield* Queue.offer(commandQueue, { command, result, startedAtMs: Date.now() });
-      return yield* Deferred.await(result);
+      return Deferred.await(result);
     });
+
+  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
+    enqueueCommand(command).pipe(Effect.flatMap((awaitResult) => awaitResult));
+
+  const enqueueToolActivityAppend: OrchestrationEngineShape["enqueueToolActivityAppend"] = (
+    command,
+  ) =>
+    isBatchableToolActivity(command.activity)
+      ? enqueueCommand(command).pipe(
+          Effect.map(
+            (awaitResult): OrchestrationDispatchTicket => ({
+              awaitResult,
+            }),
+          ),
+        )
+      : Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Only tool lifecycle activities can be enqueued without awaiting dispatch.",
+          }),
+        );
 
   return {
     getReadModel,
     readEvents,
     dispatch,
+    enqueueToolActivityAppend,
     withWorktreeLock,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (wsServer, ProviderRuntimeIngestion, CheckpointReactor, etc.)
@@ -1112,6 +1440,7 @@ export const OrchestrationEngineLive = Layer.effect(
   Layer.provideMerge(WorktreeCleanupJobRepositoryLive),
   Layer.provideMerge(CheckoutCoordinatorLive),
   Layer.provideMerge(WorkspaceOwnershipRepositoryLive),
+  Layer.provideMerge(ThreadWorktreeRestorerRegistryLayer),
   // Private: the engine reads the guards but does not export the registry.
   Layer.provide(AutomaticArchiveGuardRegistryLayer),
 );

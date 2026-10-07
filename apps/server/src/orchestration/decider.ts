@@ -36,6 +36,7 @@ import {
   requireThreadWithInFlightTurn,
   threadHasPendingInteraction,
   threadHasQueuedTurnStart,
+  threadBlocksSettlement,
   threadHasSettlementOverride,
   threadIsSnoozed,
   CHILD_DECISION_BLOCKED_DETAIL,
@@ -46,6 +47,7 @@ import { assistantTurnCount } from "./Utils.ts";
 import { findCanonicalActiveWorktreeOwner } from "./worktreeOwnership.ts";
 import {
   childNudgePrompt,
+  childPendingRequestUpdate,
   childWakeReason,
   isAutomaticChildNudgeBlocked,
   queueChildNudge,
@@ -1665,16 +1667,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Thread '${command.sourceThreadId}' is deleted and cannot be forked.`,
         });
       }
-      if (
-        sourceThread.session?.status === "running" ||
-        sourceThread.session?.activeTurnId != null ||
-        sourceThread.latestTurn?.state === "running"
-      ) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: "Source run status is 'running'; only provider-finished runs can be forked.",
-        });
-      }
       const targetMessageIndex = sourceThread.messages.findIndex(
         (message) => message.id === command.targetMessageId,
       );
@@ -1879,15 +1871,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // original settledAt and updatedAt so a duplicate command neither rewinds
       // the settlement nor churns sidebar ordering.
       const alreadySettled = thread.settledOverride === "settled";
-      const hasActiveTurn =
-        thread.latestTurn?.state === "running" ||
-        (thread.session?.status === "running" && thread.session.activeTurnId !== null);
-      if (
-        hasActiveTurn ||
-        threadHasQueuedTurnStart(thread, { now: occurredAt }) ||
-        threadHasPendingInteraction(thread) ||
-        thread.session?.status === "error"
-      ) {
+      if (threadBlocksSettlement(thread, { now: occurredAt })) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Thread '${command.threadId}' has active work or a pending interaction and cannot settle.`,
@@ -2695,9 +2679,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         (command.expectedUpdatedAt !== undefined &&
           command.expectedUpdatedAt !== thread.updatedAt) ||
+        (command.expectedArchivedAt !== undefined &&
+          command.expectedArchivedAt !== (thread.archivedAt ?? null)) ||
         (command.expectedWorkspaceCwd !== undefined &&
           command.expectedWorkspaceCwd !==
-            resolveThreadWorkspaceCwd({ thread, projects: readModel.projects }))
+            resolveThreadWorkspaceCwd({ thread, projects: readModel.projects })) ||
+        (command.expectedPendingPullRequestAssociationRequestId !== undefined &&
+          command.expectedPendingPullRequestAssociationRequestId !==
+            (thread.pendingPullRequestAssociation?.requestId ?? null)) ||
+        (command.expectedPullRequestAssociationContext !== undefined &&
+          (command.expectedPullRequestAssociationContext.projectId !== thread.projectId ||
+            command.expectedPullRequestAssociationContext.branch !== thread.branch ||
+            command.expectedPullRequestAssociationContext.worktreePath !== thread.worktreePath ||
+            command.expectedPullRequestAssociationContext.pullRequestUrl !==
+              (thread.pullRequest?.url ?? null)))
       ) {
         return [];
       }
@@ -3723,12 +3718,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.queued-turn.delete": {
-      const { thread, queuedTurn } = yield* requireQueuedTurn({
-        readModel,
-        command,
-        threadId: command.threadId,
-        queuedTurnId: command.queuedTurnId,
-      });
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const queuedTurn = thread.queuedTurns?.find((entry) => entry.id === command.queuedTurnId);
+      // Idempotent: a repeated click or a client still showing a turn the
+      // reactor already removed should not surface as a failure.
+      if (!queuedTurn) return [];
       const deleted: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -4304,6 +4298,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           requestId: command.requestId,
           answers: command.answers,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.user-input.dismiss": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: {
+            requestId: command.requestId,
+          },
+        }),
+        type: "thread.user-input-dismiss-requested",
+        payload: {
+          threadId: command.threadId,
+          requestId: command.requestId,
           createdAt: command.createdAt,
         },
       };
@@ -5243,6 +5262,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         lifecycle === "approval-required" || lifecycle === "input-required"
           ? (requestId ?? command.activity.id)
           : (command.activity.turnId ?? thread.latestTurn?.turnId ?? command.activity.id);
+      const originTurnId = command.activity.turnId ?? undefined;
+      const delegation = thread.nudging?.delegation;
+      // Route a delegated child's pending request to its parent. Unproven
+      // provenance keeps the plain lifecycle history instead of being fenced away.
+      const requestReport =
+        (lifecycle === "approval-required" || lifecycle === "input-required") &&
+        requestId !== undefined &&
+        delegation?.completedAt === null &&
+        ["authorized", "unfenced"].includes(
+          classifyExecutionProvenance({ delegation, claimedTurnId: originTurnId }),
+        )
+          ? childPendingRequestUpdate({
+              child: thread,
+              delegation,
+              lifecycle,
+              requestId,
+              payload: command.activity.payload,
+            })
+          : undefined;
       return appendChildLifecycleNotification({
         readModel,
         childThread: thread,
@@ -5251,7 +5289,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         lifecycle,
         sourceKey,
         createdAt: command.createdAt,
-        ...(command.activity.turnId !== null ? { originTurnId: command.activity.turnId } : {}),
+        ...(originTurnId !== undefined ? { originTurnId } : {}),
+        ...(requestReport ? { report: requestReport } : {}),
       });
     }
 

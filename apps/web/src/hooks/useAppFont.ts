@@ -13,6 +13,7 @@ import {
   DEFAULT_SIDEBAR_META_FONT_SIZE,
   DEFAULT_SIDEBAR_ROW_SPACING,
   DEFAULT_STATUS_LINE_FONT_SIZE,
+  DEFAULT_TAB_FONT_SIZE,
   DEFAULT_TOOL_FONT_SIZE,
   DEFAULT_UI_DENSITY,
   DEFAULT_UI_FONT,
@@ -106,6 +107,7 @@ export function applyFontSizes(sizes: {
   sidebarIconSize: FontSize;
   toolFontSize: FontSize;
   inputFontSize: FontSize;
+  tabFontSize: FontSize;
   pullRequestsBodyFontSize: FontSize;
 }): void {
   if (typeof document === "undefined") {
@@ -122,6 +124,7 @@ export function applyFontSizes(sizes: {
   style.setProperty("--app-sidebar-icon-size", `${sizes.sidebarIconSize}px`);
   style.setProperty("--app-tool-font-size", `${sizes.toolFontSize}px`);
   style.setProperty("--app-input-font-size", `${sizes.inputFontSize}px`);
+  style.setProperty("--app-tab-font-size", `${sizes.tabFontSize}px`);
   style.setProperty("--pr-body-font-size", `${sizes.pullRequestsBodyFontSize}px`);
 }
 
@@ -262,6 +265,7 @@ if (typeof document !== "undefined") {
     sidebarIconSize: normalizeFontSize(storedSettings?.sidebarIconSize, DEFAULT_SIDEBAR_ICON_SIZE),
     toolFontSize: normalizeFontSize(storedSettings?.toolFontSize, DEFAULT_TOOL_FONT_SIZE),
     inputFontSize: normalizeFontSize(storedSettings?.inputFontSize, DEFAULT_INPUT_FONT_SIZE),
+    tabFontSize: normalizeFontSize(storedSettings?.tabFontSize, DEFAULT_TAB_FONT_SIZE),
     pullRequestsBodyFontSize: normalizeFontSize(
       storedSettings?.pullRequestsBodyFontSize,
       DEFAULT_PULL_REQUESTS_BODY_FONT_SIZE,
@@ -286,6 +290,7 @@ export function useAppFont() {
   const sidebarRowSpacing = useSettings((settings) => settings.sidebarRowSpacing);
   const toolFontSize = useSettings((settings) => settings.toolFontSize);
   const inputFontSize = useSettings((settings) => settings.inputFontSize);
+  const tabFontSize = useSettings((settings) => settings.tabFontSize);
   const pullRequestsBodyFontSize = useSettings((settings) => settings.pullRequestsBodyFontSize);
   const uiDensity = useSettings((settings) => settings.uiDensity);
   const sidebarTranslucency = useSettings((settings) => settings.sidebarTranslucency);
@@ -313,6 +318,7 @@ export function useAppFont() {
       sidebarIconSize,
       toolFontSize,
       inputFontSize,
+      tabFontSize,
       pullRequestsBodyFontSize,
     });
   }, [
@@ -325,6 +331,7 @@ export function useAppFont() {
     sidebarIconSize,
     toolFontSize,
     inputFontSize,
+    tabFontSize,
     pullRequestsBodyFontSize,
   ]);
 
@@ -373,6 +380,7 @@ export function useAppFont() {
     sidebarRowSpacing,
     toolFontSize,
     inputFontSize,
+    tabFontSize,
     pullRequestsBodyFontSize,
     uiDensity,
     sidebarTranslucency,

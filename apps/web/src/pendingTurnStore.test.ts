@@ -89,6 +89,28 @@ describe("pendingTurnStore", () => {
     ).toBe(true);
   });
 
+  // A first turn on a sessionless thread fails before the provider is reached.
+  // The reactor cannot write a terminal session or lastError there, so nothing
+  // but the failure activity moves — without it the composer stays disabled
+  // and the "Working for" timer runs forever.
+  it("acknowledges a pending send whose turn failed to start", () => {
+    usePendingTurnStore.getState().beginPendingTurn(threadRef, undefined);
+    const pendingTurn = Object.values(usePendingTurnStore.getState().pendingByThreadKey)[0]!;
+
+    expect(
+      hasServerAcknowledgedPendingTurn({
+        pendingTurn,
+        phase: "disconnected",
+        latestTurn: null,
+        session: null,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+        turnStartFailed: true,
+      }),
+    ).toBe(true);
+  });
+
   it("keeps optimistic messages available across component remounts", () => {
     usePendingTurnStore.getState().addOptimisticMessage(threadRef, {
       id: MessageId.make("message-1"),

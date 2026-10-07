@@ -1077,6 +1077,30 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("does not synthesize an answer when a provider cannot dismiss a question", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      routing.codex.respondToUserInput.mockClear();
+      const session = yield* provider.startSession(asThreadId("thread-no-dismiss"), {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId: asThreadId("thread-no-dismiss"),
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+
+      const result = yield* Effect.exit(
+        provider.dismissUserInput({
+          threadId: session.threadId,
+          requestId: asRequestId("req-user-input-unsupported-dismiss"),
+        }),
+      );
+
+      assert.equal(result._tag, "Failure");
+      assert.equal(routing.codex.respondToUserInput.mock.calls.length, 0);
+    }),
+  );
+
   it.effect("recovers stale persisted sessions for rollback by resuming thread identity", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;

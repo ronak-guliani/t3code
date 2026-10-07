@@ -67,6 +67,27 @@ export interface TerminalStartInput extends TerminalOpenInput {
   rows: number;
 }
 
+export interface TerminalReaperSession {
+  readonly threadId: string;
+  readonly terminalId: string;
+  readonly title: string;
+  readonly lastOutputAt: string;
+  /** Open attach streams (viewers); `closeIfIdle` refuses while any are open. */
+  readonly attachedStreams: number;
+}
+
+export interface OwnedTerminalProcessRecord {
+  readonly version: 1;
+  readonly threadId: string;
+  readonly terminalId: string;
+  readonly title: string;
+  readonly pid: number;
+  readonly startIdentity: string;
+  readonly ownerToken: string;
+  readonly serverInstanceId: string;
+  readonly lastOutputAt: string;
+}
+
 /**
  * TerminalManagerShape - Service API for terminal session lifecycle operations.
  */
@@ -127,6 +148,24 @@ export interface TerminalManagerShape {
    * When `terminalId` is omitted, closes all sessions for the thread.
    */
   readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
+
+  /** Running terminals with their last actual output time (not metadata updates). */
+  readonly listReaperSessions: () => Effect.Effect<ReadonlyArray<TerminalReaperSession>>;
+
+  /** Close a running session only if output is old enough and no attach stream is open. */
+  readonly closeIfIdle: (input: {
+    readonly threadId: string;
+    readonly terminalId: string;
+    readonly outputBefore: string;
+  }) => Effect.Effect<boolean, TerminalError>;
+
+  /** Persisted process groups without a live terminal session. */
+  readonly listOwnedProcessRecords: () => Effect.Effect<ReadonlyArray<OwnedTerminalProcessRecord>>;
+
+  /** Verify and terminate one orphan process group, retaining its record on ambiguity. */
+  readonly terminateOwnedProcessRecord: (
+    record: OwnedTerminalProcessRecord,
+  ) => Effect.Effect<"terminated" | "missing" | "skipped">;
 
   /**
    * Subscribe to terminal runtime events with a direct callback.

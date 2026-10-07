@@ -930,8 +930,8 @@ export const OrchestrationThread = Schema.Struct({
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   /**
    * "settled" hides the thread from the inbox. "active" is a user pin that
-   * suppresses automatic settlement; it is inert until auto-settle exists, so
-   * do not remove it as dead code.
+   * suppresses automatic settlement, which is why reopening a thread a merge
+   * settled keeps it open.
    */
   settledOverride: Schema.optionalKey(Schema.NullOr(Schema.Literals(["settled", "active"]))),
   settledAt: Schema.optionalKey(Schema.NullOr(IsoDateTime)),
@@ -1038,8 +1038,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
-  // True while a non-failed queued turn remains (handoff continuation or user
-  // follow-up). Defaults false so older snapshots/clients decode cleanly.
+  // True while the queue will dispatch another turn on its own (handoff
+  // continuation or user follow-up): not held, and not stopped behind a paused
+  // turn. See queueAwaitsDispatch. Defaults false so older snapshots decode.
   hasPendingQueuedTurn: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   backgroundAgentRuns: Schema.optionalKey(Schema.Array(OrchestrationBackgroundAgentRunShell)),
 });
@@ -1068,24 +1069,57 @@ export const OrchestrationSubscribeShellInput = Schema.Struct({
 });
 export type OrchestrationSubscribeShellInput = typeof OrchestrationSubscribeShellInput.Type;
 
+export const ThreadHistoryTurnLimit = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: 100 }),
+);
+export const ThreadHistoryCursor = TrimmedNonEmptyString.check(Schema.isMaxLength(2048));
+const exclusiveHistoryWindow = (value: { beforeCursor?: string; aroundMessageId?: string }) =>
+  value.beforeCursor === undefined ||
+  value.aroundMessageId === undefined ||
+  "Choose either beforeCursor or aroundMessageId.";
+export const OrchestrationThreadHistoryWindow = Schema.Struct({
+  turnLimit: Schema.optionalKey(ThreadHistoryTurnLimit),
+  beforeCursor: Schema.optionalKey(ThreadHistoryCursor),
+  aroundMessageId: Schema.optionalKey(MessageId),
+}).check(Schema.makeFilter(exclusiveHistoryWindow));
+export type OrchestrationThreadHistoryWindow = typeof OrchestrationThreadHistoryWindow.Type;
+
 export const OrchestrationSubscribeThreadInput = Schema.Struct({
+  ...OrchestrationThreadHistoryWindow.fields,
   threadId: ThreadId,
+  // Resume reuses an already loaded window; turnLimit sizes a snapshot fallback.
   afterSequence: Schema.optionalKey(NonNegativeInt),
   requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
-});
+}).check(
+  Schema.makeFilter(exclusiveHistoryWindow),
+  Schema.makeFilter(
+    (value) =>
+      value.afterSequence === undefined ||
+      (value.beforeCursor === undefined && value.aroundMessageId === undefined) ||
+      "Historical page selectors cannot be combined with afterSequence. Use getThreadSnapshot.",
+  ),
+);
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 
+export const OrchestrationMessageOrigin = Schema.Struct({
+  sequence: Schema.NullOr(NonNegativeInt),
+  rowId: NonNegativeInt,
+});
+export type OrchestrationMessageOrigin = typeof OrchestrationMessageOrigin.Type;
+export const OrchestrationThreadDetailPage = Schema.Struct({
+  beforeCursor: Schema.NullOr(TrimmedNonEmptyString),
+  hasMore: Schema.Boolean,
+  snapshotSequence: NonNegativeInt,
+  /** Only this thread's detail watermark is reachable through its stream. */
+  threadSequence: Schema.optionalKey(NonNegativeInt),
+  windowStart: Schema.optionalKey(Schema.NullOr(OrchestrationMessageOrigin)),
+  userOrigins: Schema.optionalKey(Schema.Record(Schema.String, OrchestrationMessageOrigin)),
+});
+export type OrchestrationThreadDetailPage = typeof OrchestrationThreadDetailPage.Type;
 export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   thread: OrchestrationThread,
-  page: Schema.optionalKey(
-    Schema.Struct({
-      beforeCursor: Schema.NullOr(TrimmedNonEmptyString),
-      hasMore: Schema.Boolean,
-      snapshotSequence: NonNegativeInt,
-      threadSequence: Schema.optionalKey(NonNegativeInt),
-    }),
-  ),
+  page: Schema.optionalKey(OrchestrationThreadDetailPage),
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;
 
@@ -1243,7 +1277,17 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   expectedUpdatedAt: Schema.optional(IsoDateTime),
+  expectedArchivedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   expectedWorkspaceCwd: Schema.optional(TrimmedNonEmptyString),
+  expectedPendingPullRequestAssociationRequestId: Schema.optional(Schema.NullOr(CommandId)),
+  expectedPullRequestAssociationContext: Schema.optional(
+    Schema.Struct({
+      projectId: ProjectId,
+      branch: Schema.NullOr(TrimmedNonEmptyString),
+      worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+      pullRequestUrl: Schema.NullOr(TrimmedNonEmptyString),
+    }),
+  ),
   title: Schema.optional(TrimmedNonEmptyString),
   regenerateTitle: Schema.optional(Schema.Literal(true)),
   modelSelection: Schema.optional(ModelSelection),
@@ -1739,6 +1783,14 @@ const ThreadUserInputRespondCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadUserInputDismissCommand = Schema.Struct({
+  type: Schema.Literal("thread.user-input.dismiss"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  createdAt: IsoDateTime,
+});
+
 const ThreadCheckpointRevertCommand = Schema.Struct({
   type: Schema.Literal("thread.checkpoint.revert"),
   commandId: CommandId,
@@ -1994,6 +2046,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadTurnSteerCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
+  ThreadUserInputDismissCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadValidationRequestCommand,
@@ -2046,6 +2099,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ClientThreadTurnSteerCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
+  ThreadUserInputDismissCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadValidationRequestCommand,
@@ -2262,6 +2316,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.turn-interrupt-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
+  "thread.user-input-dismiss-requested",
   "thread.checkpoint-revert-requested",
   "thread.reverted",
   "thread.session-stop-requested",
@@ -2627,6 +2682,12 @@ const ThreadUserInputResponseRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadUserInputDismissRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  createdAt: IsoDateTime,
+});
+
 export const ThreadCheckpointRevertRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnCount: NonNegativeInt,
@@ -2979,6 +3040,11 @@ export const OrchestrationEvent = Schema.Union([
   }),
   Schema.Struct({
     ...EventBaseFields,
+    type: Schema.Literal("thread.user-input-dismiss-requested"),
+    payload: ThreadUserInputDismissRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
     type: Schema.Literal("thread.checkpoint-revert-requested"),
     payload: ThreadCheckpointRevertRequestedPayload,
   }),
@@ -3144,6 +3210,7 @@ export const OrchestrationThreadStreamItem = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("event"),
     event: OrchestrationEvent,
+    messageOrigin: Schema.optionalKey(OrchestrationMessageOrigin),
   }),
 ]);
 export type OrchestrationThreadStreamItem = typeof OrchestrationThreadStreamItem.Type;
@@ -3422,10 +3489,16 @@ export type OrchestrationGetTurnDiffResult = typeof OrchestrationGetTurnDiffResu
 export const OrchestrationGetThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optionalKey(TurnId),
-  beforeCreatedAt: IsoDateTime,
-  beforeActivityId: EventId,
+  beforeCreatedAt: Schema.optionalKey(IsoDateTime),
+  beforeActivityId: Schema.optionalKey(EventId),
   limit: Schema.optionalKey(NonNegativeInt),
-});
+}).check(
+  Schema.makeFilter(
+    (value) =>
+      (value.beforeCreatedAt === undefined) === (value.beforeActivityId === undefined) ||
+      "Supply both activity cursor fields, or neither for the latest page.",
+  ),
+);
 export type OrchestrationGetThreadActivitiesInput =
   typeof OrchestrationGetThreadActivitiesInput.Type;
 
@@ -3548,7 +3621,9 @@ export class OrchestrationReadThreadInputError extends Schema.TaggedErrorClass<O
   "OrchestrationReadThreadInputError",
   {
     message: TrimmedNonEmptyString,
+    reason: Schema.optionalKey(Schema.Literal("history-cursor-stale")),
   },
+  { httpApiStatus: 400 },
 ) {}
 
 export class OrchestrationGetSnapshotError extends Schema.TaggedErrorClass<OrchestrationGetSnapshotError>()(
@@ -3682,24 +3757,6 @@ const ProviderSendTurnSupportedImageMimeType = TrimmedNonEmptyString.check(
 export const isProviderSendTurnSupportedImageMimeType = Schema.is(
   ProviderSendTurnSupportedImageMimeType,
 );
-
-export const OrchestrationThreadDetailPage = Schema.Struct({
-  beforeCursor: Schema.NullOr(TrimmedNonEmptyString),
-  hasMore: Schema.Boolean,
-  snapshotSequence: NonNegativeInt,
-  /**
-   * Highest event sequence applied to THIS thread at page read time. The
-   * global `snapshotSequence` advances with every thread's events, so a
-   * client cannot wait for it via its per-thread subscription; this
-   * thread-scoped watermark is reachable. A client merging an older page
-   * must first have applied live events up to it — otherwise a streaming
-   * turn outside the loaded window could have deltas replayed on top of
-   * page content that already includes them, duplicating text.
-   */
-  threadSequence: Schema.optionalKey(NonNegativeInt),
-});
-
-export type OrchestrationThreadDetailPage = typeof OrchestrationThreadDetailPage.Type;
 
 export const ProviderApprovalOption = Schema.Struct({
   decision: ProviderApprovalDecision,

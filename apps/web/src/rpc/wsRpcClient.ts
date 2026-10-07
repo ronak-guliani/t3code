@@ -17,11 +17,23 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { applyGitStatusStreamEvent } from "@t3tools/shared/git";
-import { Effect, Stream } from "effect";
+import { Duration, Effect, Stream } from "effect";
 
 import { type WsRpcProtocolClient } from "./protocol";
 import { resetWsReconnectBackoff } from "./wsConnectionState";
 import { WsTransport } from "./wsTransport";
+
+// A hang guard, not a latency budget. The branch read is two sequential phases
+// — `branch --no-color` (10s), then a five-command fan-out whose longest is
+// `for-each-ref` at 15s — so ~25s of pure command execution is already possible
+// with an idle process pool. On top of that, `GitCore.execute` deliberately
+// acquires its eight-slot subprocess semaphore outside the per-command timeout,
+// so queue wait is unbounded and cannot be derived from the command timeouts.
+// Anything near the command total would cancel reads that were about to succeed.
+// This only needs to outlast a healthy-but-contended read; a genuinely dead
+// connection is already handled by ping timeout, which reconnects and clears
+// tracked requests.
+const GIT_LIST_BRANCHES_TIMEOUT = Duration.seconds(120);
 
 type RpcTag = keyof WsRpcProtocolClient & string;
 type RpcMethod<TTag extends RpcTag> = WsRpcProtocolClient[TTag];
@@ -46,10 +58,10 @@ type RpcStreamMethod<TTag extends RpcTag> =
     ? (listener: (event: TEvent) => void, options?: StreamSubscriptionOptions) => () => void
     : never;
 
-type RpcInputStreamMethod<TTag extends RpcTag> =
+type RpcInputStreamMethod<TTag extends RpcTag, Dynamic extends boolean = false> =
   RpcMethod<TTag> extends (input: any, options?: any) => Stream.Stream<infer TEvent, any, any>
     ? (
-        input: RpcInput<TTag>,
+        input: Dynamic extends true ? RpcInput<TTag> | (() => RpcInput<TTag>) : RpcInput<TTag>,
         listener: (event: TEvent) => void,
         options?: StreamSubscriptionOptions,
       ) => () => void
@@ -200,6 +212,11 @@ export interface WsRpcClient {
   readonly workflow: {
     readonly run: RpcUnaryMethod<typeof WS_METHODS.workflowRun>;
   };
+  readonly storage: {
+    readonly getUsage: RpcUnaryMethod<typeof WS_METHODS.storageGetUsage>;
+    readonly previewCleanup: RpcUnaryMethod<typeof WS_METHODS.storagePreviewCleanup>;
+    readonly executeCleanup: RpcUnaryMethod<typeof WS_METHODS.storageExecuteCleanup>;
+  };
   readonly server: {
     readonly getConfig: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetConfig>;
     /**
@@ -258,7 +275,10 @@ export interface WsRpcClient {
     >;
     readonly searchTranscript: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.searchTranscript>;
     readonly subscribeShell: RpcStreamMethod<typeof ORCHESTRATION_WS_METHODS.subscribeShell>;
-    readonly subscribeThread: RpcInputStreamMethod<typeof ORCHESTRATION_WS_METHODS.subscribeThread>;
+    readonly subscribeThread: RpcInputStreamMethod<
+      typeof ORCHESTRATION_WS_METHODS.subscribeThread,
+      true
+    >;
   };
 }
 
@@ -409,7 +429,9 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         throw new Error("Git action stream completed without a final result.");
       },
       listBranches: (input) =>
-        transport.request((client) => client[WS_METHODS.gitListBranches](input)),
+        transport.request((client) => client[WS_METHODS.gitListBranches](input), {
+          timeout: GIT_LIST_BRANCHES_TIMEOUT,
+        }),
       createWorktree: (input) =>
         transport.request((client) => client[WS_METHODS.gitCreateWorktree](input)),
       removeWorktree: (input) =>
@@ -514,6 +536,13 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
     workflow: {
       run: (input) => transport.request((client) => client[WS_METHODS.workflowRun](input)),
     },
+    storage: {
+      getUsage: (input) => transport.request((client) => client[WS_METHODS.storageGetUsage](input)),
+      previewCleanup: (input) =>
+        transport.request((client) => client[WS_METHODS.storagePreviewCleanup](input)),
+      executeCleanup: (input) =>
+        transport.request((client) => client[WS_METHODS.storageExecuteCleanup](input)),
+    },
     server: {
       getConfig: () => transport.request((client) => client[WS_METHODS.serverGetConfig]({})),
       refreshProviders: (input) =>
@@ -602,7 +631,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         ),
       subscribeThread: (input, listener, options) =>
         transport.subscribe(
-          (client) => client[ORCHESTRATION_WS_METHODS.subscribeThread](input),
+          (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeThread](
+              typeof input === "function" ? input() : input,
+            ),
           listener,
           options,
         ),

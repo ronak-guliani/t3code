@@ -36,6 +36,7 @@ import {
   resolveSendEnvMode,
   shouldWriteThreadErrorToCurrentServerThread,
   threadHasStarted,
+  turnStartFailedForPendingTurn,
   waitForRoutableServerThread,
 } from "./ChatView.logic";
 
@@ -73,6 +74,84 @@ describe("deriveTimelineWorkState", () => {
         latestTurnSettled: false,
       }),
     ).toEqual({ isWorking: true, latestTurnSettled: false, timelineActiveWork: true });
+  });
+});
+
+describe("turnStartFailedForPendingTurn", () => {
+  const MESSAGE_ID = "message-1";
+  const RETRY_MESSAGE_ID = "message-2";
+
+  function failureActivity(input: {
+    messageId?: string | null;
+    createdAt?: string;
+  }): OrchestrationThreadActivity {
+    return {
+      id: EventId.make(`activity-${input.messageId ?? "unattributed"}`),
+      tone: "error",
+      kind: "provider.turn.start.failed",
+      summary: "Provider turn start failed",
+      payload: {
+        detail: "fetch failed",
+        ...(input.messageId ? { messageId: input.messageId } : {}),
+      },
+      turnId: null,
+      createdAt: input.createdAt ?? "2026-01-01T00:00:01.000Z",
+    };
+  }
+
+  it("reports a failure attributed to the message being sent", () => {
+    expect(
+      turnStartFailedForPendingTurn({
+        activities: [failureActivity({ messageId: MESSAGE_ID })],
+        latestUserMessageId: MESSAGE_ID,
+      }),
+    ).toBe(true);
+  });
+
+  // The activity is stamped by the server and the dispatch by the browser, so a
+  // skewed clock must not be able to hide the failure that releases this send.
+  it("reports a failure whose server timestamp precedes any client dispatch time", () => {
+    expect(
+      turnStartFailedForPendingTurn({
+        activities: [failureActivity({ messageId: MESSAGE_ID, createdAt: "2020-01-01T00:00:00Z" })],
+        latestUserMessageId: MESSAGE_ID,
+      }),
+    ).toBe(true);
+  });
+
+  // A thread keeps its activities, so a retry must not be released by the
+  // failure that already ended the previous send.
+  it("ignores a failure attributed to an earlier message", () => {
+    expect(
+      turnStartFailedForPendingTurn({
+        activities: [failureActivity({ messageId: MESSAGE_ID })],
+        latestUserMessageId: RETRY_MESSAGE_ID,
+      }),
+    ).toBe(false);
+  });
+
+  it("attributes a failure that names no message to the newest user message", () => {
+    expect(
+      turnStartFailedForPendingTurn({
+        activities: [failureActivity({})],
+        latestUserMessageId: RETRY_MESSAGE_ID,
+      }),
+    ).toBe(true);
+  });
+
+  it("is inert without activities or without a user message", () => {
+    expect(
+      turnStartFailedForPendingTurn({
+        activities: undefined,
+        latestUserMessageId: MESSAGE_ID,
+      }),
+    ).toBe(false);
+    expect(
+      turnStartFailedForPendingTurn({
+        activities: [failureActivity({ messageId: MESSAGE_ID })],
+        latestUserMessageId: null,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -1058,5 +1137,14 @@ describe("thread context send builders", () => {
     expect(isComposerDraftCleared(null)).toBe(true);
     // Clearing the last content can remove the draft entirely; it is still safe to restore.
     expect(isComposerDraftCleared(undefined)).toBe(true);
+    expect(
+      isComposerDraftCleared({
+        prompt: "",
+        imageCount: 0,
+        terminalContextCount: 0,
+        threadContextCount: 0,
+        previewAnnotationCount: 1,
+      }),
+    ).toBe(false);
   });
 });

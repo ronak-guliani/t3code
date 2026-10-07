@@ -43,6 +43,21 @@ describe("settings search", () => {
       title: "Delete merged worktrees",
       to: "/settings/storage",
     });
+    expect(searchSettings("idle terminal cleanup")[0]).toMatchObject({
+      title: "Stop idle terminals",
+      to: "/settings/general",
+    });
+  });
+
+  it("finds provider log cleanup settings", () => {
+    expect(searchSettings("provider log retention")[0]).toMatchObject({
+      title: "Provider log retention days",
+      to: "/settings/general",
+    });
+    expect(searchSettings("log size cap")[0]).toMatchObject({
+      title: "Provider log total size cap",
+      to: "/settings/general",
+    });
   });
 
   it("routes appearance and provider settings to their dedicated pages", () => {
@@ -81,5 +96,17 @@ describe("settings search", () => {
     expect(searchSettings("local source")).toEqual([]);
     expect(searchSettings("sidebar icon size")[0]?.title).toBe("Sidebar icon size");
     expect(searchSettings("normal message preview")[0]?.title).toBe("Normal message preview");
+  });
+
+  it("finds idle worktree reclamation by its cleanup terminology", () => {
+    expect(searchSettings("worktree reclaim")[0]).toMatchObject({
+      title: "Idle worktree reclamation",
+      id: "setting-idle-worktree-reclamation",
+      to: "/settings/general",
+    });
+    // "Storage & cleanup" now also holds the master switch, so assert membership, not rank.
+    expect(searchSettings("storage cleanup").map((result) => result.title)).toContain(
+      "Idle worktree reclamation",
+    );
   });
 });

@@ -26,6 +26,8 @@ import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionD
 import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/ProviderSessionRuntime.ts";
 import { ProjectionWorkflowRepositoryLive } from "./persistence/Layers/ProjectionWorkflows.ts";
 import { ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers.ts";
+import { StorageCleanupLive } from "./storage/StorageCleanupLive.ts";
+import { StorageCleanupPolicyLive } from "./storage/StorageCleanupPolicy.ts";
 import { ProviderRuntimeLivenessLive } from "./provider/Layers/ProviderRuntimeLiveness.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { OpenCodeRuntimeLive } from "./provider/opencodeRuntime.ts";
@@ -39,6 +41,7 @@ import { ProjectAutoPullLive } from "./git/ProjectAutoPull.ts";
 import { TextGenerationLive } from "./git/Layers/TextGenerationLive.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { TerminalManagerLive } from "./terminal/Layers/Manager.ts";
+import { IdleTerminalReaperLive } from "./terminal/Layers/IdleTerminalReaper.ts";
 import { GitManagerLive } from "./git/Layers/GitManager.ts";
 import { KeybindingsLive } from "./keybindings.ts";
 import { ServerRuntimeStartup, ServerRuntimeStartupLive } from "./serverRuntimeStartup.ts";
@@ -250,7 +253,10 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ReviewSnapshotVerifierLive),
   Layer.provideMerge(ProjectionWorkflowRepositoryLive),
   Layer.provideMerge(ServerShutdownMarkerRepositoryLive),
+  Layer.provideMerge(StorageCleanupLive),
   Layer.provideMerge(ThreadDeletionReactorLive),
+  Layer.provideMerge(IdleTerminalReaperLive),
+  Layer.provideMerge(StorageCleanupPolicyLive),
   Layer.provideMerge(RuntimeReceiptBusLive),
   Layer.provideMerge(createdPullRequestReviewReactorLayer),
   Layer.provideMerge(settledAutoArchiveLayerLive),

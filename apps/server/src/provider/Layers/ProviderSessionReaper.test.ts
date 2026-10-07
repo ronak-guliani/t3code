@@ -182,6 +182,7 @@ describe("ProviderSessionReaper", () => {
       steerTurn: () => unsupported(),
       respondToRequest: () => unsupported(),
       respondToUserInput: () => unsupported(),
+      dismissUserInput: () => unsupported(),
       sessionCommand: () => unsupported(),
       stopSession,
       listSessions: () =>

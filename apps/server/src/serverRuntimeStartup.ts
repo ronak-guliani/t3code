@@ -43,6 +43,8 @@ import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { readCliDesiredCloudLink } from "./cloud/CliState.ts";
 import { reconcileDesiredCloudLink } from "./cloud/http.ts";
 import { AgentAwarenessRelay } from "./relay/AgentAwarenessRelay.ts";
+import { IdleTerminalReaper } from "./terminal/Services/IdleTerminalReaper.ts";
+import { StorageCleanup } from "./storage/StorageCleanup.ts";
 import { ProjectAutoPull } from "./git/ProjectAutoPull.ts";
 import {
   formatHeadlessServeOutput,
@@ -371,6 +373,8 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const serverEnvironment = yield* ServerEnvironment;
   const shutdownMarker = yield* ServerShutdownMarkerRepository;
   const agentAwarenessRelay = yield* AgentAwarenessRelay;
+  const idleTerminalReaper = yield* IdleTerminalReaper;
+  const storageCleanup = yield* StorageCleanup;
 
   const commandGate = yield* makeCommandGate;
   const httpListening = yield* Deferred.make<void>();
@@ -446,12 +450,30 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
       ),
     );
 
+    // Before reactors and command readiness: an eligible VACUUM blocks no live work.
+    yield* runStartupPhase(
+      "storage.vacuum",
+      serverSettings.ready.pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("storage vacuum skipped; settings are not ready", { error }),
+        ),
+        Effect.andThen(storageCleanup.runStartupVacuum),
+      ),
+    );
+
     yield* Effect.logDebug("startup phase: starting orchestration reactors");
     yield* runStartupPhase(
       "reactors.start",
       Effect.gen(function* () {
         yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
         yield* agentAwarenessRelay.start().pipe(Scope.provide(reactorScope));
+        yield* serverSettings.ready.pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("idle terminal reaper settings are not ready", { error }),
+          ),
+        );
+        yield* idleTerminalReaper.reconcileStartup;
+        yield* idleTerminalReaper.start().pipe(Scope.provide(reactorScope));
       }),
     );
 

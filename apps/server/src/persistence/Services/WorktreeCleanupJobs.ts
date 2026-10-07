@@ -4,7 +4,7 @@ import { IsoDateTime, NonNegativeInt, ThreadId } from "@t3tools/contracts";
 
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
-export const WorktreeCleanupSource = Schema.Literals(["archive", "delete", "legacy"]);
+export const WorktreeCleanupSource = Schema.Literals(["archive", "delete", "idle", "legacy"]);
 export type WorktreeCleanupSource = typeof WorktreeCleanupSource.Type;
 
 export const WorktreeCleanupStatus = Schema.Literals([
@@ -37,7 +37,7 @@ export const WorktreeCleanupIntent = Schema.Struct({
   worktreePath: Schema.String,
   canonicalWorktreePath: Schema.String,
   requestedAt: IsoDateTime,
-  source: Schema.Literals(["archive", "delete"]),
+  source: Schema.Literals(["archive", "delete", "idle"]),
   allowTerminalReset: Schema.Boolean,
 });
 export type WorktreeCleanupIntent = typeof WorktreeCleanupIntent.Type;
@@ -65,12 +65,16 @@ export interface WorktreeCleanupJobRepositoryShape {
   readonly list: () => Effect.Effect<ReadonlyArray<WorktreeCleanupJob>, ProjectionRepositoryError>;
   readonly listDue: (input: {
     readonly now: IsoDateTime;
+    readonly limit: number;
   }) => Effect.Effect<ReadonlyArray<WorktreeCleanupJob>, ProjectionRepositoryError>;
   readonly getByThreadId: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<WorktreeCleanupJob>, ProjectionRepositoryError>;
   readonly hasReservationByPath: (
     canonicalWorktreePath: string,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
+  readonly hasReservationByThreadId: (
+    threadId: ThreadId,
   ) => Effect.Effect<boolean, ProjectionRepositoryError>;
   readonly tryReserveForRemoval: (input: {
     readonly threadId: ThreadId;
@@ -110,6 +114,9 @@ export interface WorktreeCleanupJobRepositoryShape {
     readonly threadId: ThreadId;
   }) => Effect.Effect<Option.Option<WorktreeCleanupJob>, ProjectionRepositoryError>;
   readonly cancelByThreadId: (threadId: ThreadId) => Effect.Effect<void, ProjectionRepositoryError>;
+  readonly cancelIdleByThreadId: (
+    threadId: ThreadId,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
   readonly recordFailure: (input: {
     readonly threadId: ThreadId;
     readonly error: string;

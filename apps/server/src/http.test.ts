@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isLoopbackHostname, resolveDevRedirectUrl } from "./http.ts";
+import { isLoopbackHostname, parseAssetByteRange, resolveDevRedirectUrl } from "./http.ts";
 
 describe("http dev routing", () => {
   it("treats localhost and loopback addresses as local", () => {
@@ -24,4 +24,22 @@ describe("http dev routing", () => {
       "http://127.0.0.1:5173/pair?token=test-token",
     );
   });
+});
+
+describe("asset byte ranges", () => {
+  it.each([
+    { range: "bytes=-100", size: 1_000, expected: { start: 900, end: 999 } },
+    { range: "bytes=-100", size: 50, expected: { start: 0, end: 49 } },
+    { range: "bytes=100-200", size: 150, expected: { start: 100, end: 149 } },
+    { range: "bytes=100-", size: 150, expected: { start: 100, end: 149 } },
+  ])("parses $range for a $size-byte file", ({ range, size, expected }) => {
+    expect(parseAssetByteRange(range, size)).toEqual(expected);
+  });
+
+  it.each(["bytes=-0", "bytes=50-49", "bytes=150-", "items=0-10"])(
+    "rejects unsatisfiable or invalid range %s",
+    (range) => {
+      expect(parseAssetByteRange(range, 50)).toBeNull();
+    },
+  );
 });

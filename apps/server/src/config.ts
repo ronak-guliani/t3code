@@ -157,7 +157,7 @@ export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShap
         return {
           logLevel: "Error",
           traceMinLevel: "Info",
-          traceTimingEnabled: true,
+          traceTimingEnabled: false,
           traceBatchWindowMs: 200,
           traceMaxBytes: 10 * 1024 * 1024,
           traceMaxFiles: 10,

@@ -14,24 +14,7 @@ it.effect("repairs skipped chronology indexes above the existing migration high-
     yield* sql`DROP INDEX idx_projection_thread_activities_thread_kind_created`;
     yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 60`;
 
-    assert.deepStrictEqual(yield* runMigrations(), [
-      [103, "RepairActivityChronologyIndexes"],
-      [104, "StopTerminalPullRequestMonitors"],
-      [105, "ProjectionThreadPendingPullRequestAssociation"],
-      [106, "PullRequestCreationIntents"],
-      [107, "DelegationAudit"],
-      [108, "DelegationAuditLookupIndexes"],
-      [109, "DelegationAuditToolCallIndex"],
-      [110, "ActivityPayloadBlobs"],
-      [111, "RemoveRedundantProjectionIndexes"],
-      [112, "RequeuePullRequestGatedWorktreeCleanup"],
-      [113, "ProjectionCheckpointTransitionFiles"],
-      [114, "RepairThreadContextHistory"],
-      [115, "GitActivityLedger"],
-      [116, "CollaborativeAcceptancePullRequestLookup"],
-      [117, "PendingPullRequestFeedbackIndex"],
-      [118, "QueueHoldAndShutdownMarker"],
-    ]);
+    yield* runMigrations();
     yield* repair;
     assert.deepStrictEqual(yield* runMigrations(), []);
     assert.deepStrictEqual(

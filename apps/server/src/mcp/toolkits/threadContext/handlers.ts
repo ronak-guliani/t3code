@@ -2,6 +2,7 @@ import { Effect, Option } from "effect";
 
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadMessageRepository } from "../../../persistence/Services/ProjectionThreadMessages.ts";
+import { ProjectionQueuedTurnRepository } from "../../../persistence/Services/ProjectionQueuedTurns.ts";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
 import {
   THREAD_READ_DEFAULT_LIMIT,
@@ -35,7 +36,7 @@ const truncateMessageText = (text: string): Pick<T3ThreadReadMessage, "text" | "
 export const ThreadContextToolkitHandlersLive = ThreadContextToolkit.toLayer({
   t3_thread_read: (input) =>
     Effect.gen(function* () {
-      yield* McpInvocationContext;
+      const invocation = yield* McpInvocationContext;
       const cursorComplete =
         (input.afterCreatedAt === undefined) === (input.afterMessageId === undefined);
       if (!cursorComplete) {
@@ -43,12 +44,29 @@ export const ThreadContextToolkitHandlersLive = ThreadContextToolkit.toLayer({
           "Invalid history cursor: afterCreatedAt and afterMessageId must be passed together from nextCursor.",
         );
       }
+      const [callerMessages, queuedTurns] = yield* Effect.all([
+        (yield* ProjectionThreadMessageRepository).listByThreadId({
+          threadId: invocation.threadId,
+        }),
+        (yield* ProjectionQueuedTurnRepository).listByThreadId({ threadId: invocation.threadId }),
+      ]).pipe(Effect.mapError(() => toolError("Thread was not found or has been deleted.")));
+      const isAttached = [...callerMessages, ...queuedTurns].some((item) =>
+        item.context?.records.some(
+          (record) =>
+            record.kind === "thread" &&
+            record.environmentId === invocation.environmentId &&
+            record.threadId === input.threadId,
+        ),
+      );
+      if (!isAttached) {
+        return yield* toolError(`Thread '${input.threadId}' was not found or has been deleted.`);
+      }
       const projections = yield* ProjectionSnapshotQuery;
       const shell = yield* projections
         .getThreadShellById(input.threadId)
         .pipe(
-          Effect.mapError((cause) =>
-            toolError(`Could not resolve thread '${input.threadId}': ${String(cause)}.`),
+          Effect.mapError(() =>
+            toolError(`Thread '${input.threadId}' was not found or has been deleted.`),
           ),
         );
       if (Option.isNone(shell)) {
@@ -66,8 +84,8 @@ export const ThreadContextToolkitHandlersLive = ThreadContextToolkit.toLayer({
           limit: limit + 1,
         })
         .pipe(
-          Effect.mapError((cause) =>
-            toolError(`Could not read thread '${input.threadId}' history: ${String(cause)}.`),
+          Effect.mapError(() =>
+            toolError(`Thread '${input.threadId}' was not found or has been deleted.`),
           ),
         );
       const page = rows.slice(0, limit);

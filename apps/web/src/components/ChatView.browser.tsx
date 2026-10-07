@@ -10,6 +10,7 @@ import {
   type OrchestrationEvent,
   type MessageId,
   type OrchestrationReadModel,
+  type OrchestrationThreadDetailSnapshot,
   type PreviewSessionSnapshot,
   type ProjectId,
   ProviderDriverKind,
@@ -57,12 +58,13 @@ import {
 import { isMacPlatform } from "../lib/utils";
 import { __resetLocalApiForTests } from "../localApi";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
-import { getServerConfig } from "../rpc/serverState";
+import { getServerConfig, setServerConfigSnapshot } from "../rpc/serverState";
 import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
 import {
   selectBootstrapCompleteForActiveEnvironment,
   selectThreadByRef,
+  selectEnvironmentState,
   type EnvironmentState,
   useStore,
 } from "../store";
@@ -141,6 +143,7 @@ interface TestFixture {
   snapshot: OrchestrationReadModel;
   serverConfig: ServerConfig;
   welcome: ServerLifecycleWelcomePayload;
+  threadSnapshot?: OrchestrationThreadDetailSnapshot;
 }
 
 let fixture: TestFixture;
@@ -284,6 +287,7 @@ function createMockEnvironmentApi(input: {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["workflow"]["run"],
     },
+    storage: {} as EnvironmentApi["storage"],
     server: {
       exportActiveChats: async () => ({ path: "/tmp/t3-chats", threadCount: 1 }),
       importChatArchive: async () => ({ projectId: "imported" as ProjectId, threadCount: 1 }),
@@ -487,6 +491,41 @@ function createSnapshotForTargetUser(options: {
   };
 }
 
+function addSettledThreads(
+  snapshot: OrchestrationReadModel,
+  count: number,
+): OrchestrationReadModel {
+  const template = snapshot.threads[0]!;
+  const settledThreads = Array.from({ length: count }, (_, index) => {
+    const id = ThreadId.make(`settled-browser-${index}`);
+    const minute = String(index).padStart(2, "0");
+    const createdAt = `2026-03-09T10:${minute}:00.000Z`;
+    return {
+      ...template,
+      id,
+      title: `Settled ${index}`,
+      createdAt,
+      updatedAt: createdAt,
+      settledOverride: "settled" as const,
+      settledAt: `2026-03-09T11:${minute}:00.000Z`,
+      messages: [],
+      session: {
+        ...template.session!,
+        threadId: id,
+        status: "ready" as const,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: createdAt,
+      },
+    } satisfies OrchestrationReadModel["threads"][number];
+  });
+
+  return {
+    ...snapshot,
+    threads: [...snapshot.threads, ...settledThreads],
+  };
+}
+
 function buildFixture(snapshot: OrchestrationReadModel): TestFixture {
   return {
     snapshot,
@@ -567,6 +606,8 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     latestTurn: thread.latestTurn,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
+    settledOverride: thread.settledOverride ?? null,
+    settledAt: thread.settledAt ?? null,
     archivedAt: thread.archivedAt,
     session: thread.session,
     latestUserMessageAt:
@@ -957,11 +998,39 @@ function createSnapshotWithSecondaryProject(options?: {
   };
 }
 
-function createSnapshotWithPendingUserInput(): OrchestrationReadModel {
-  const snapshot = createSnapshotForTargetUser({
+function createSnapshotWithPendingUserInput(
+  options: {
+    readonly multiSelect?: boolean;
+    readonly dismissible?: boolean;
+    readonly compactMessages?: boolean;
+  } = {},
+): OrchestrationReadModel {
+  const baseSnapshot = createSnapshotForTargetUser({
     targetMessageId: "msg-user-pending-input-target" as MessageId,
     targetText: "question thread",
   });
+  const snapshot = options.compactMessages
+    ? {
+        ...baseSnapshot,
+        threads: baseSnapshot.threads.map((thread) => {
+          if (thread.id !== THREAD_ID) return thread;
+          return {
+            ...thread,
+            messages: thread.messages
+              .filter(
+                (message) =>
+                  message.id === "msg-user-pending-input-target" ||
+                  message.id === "msg-assistant-3",
+              )
+              .map((message) =>
+                message.id === "msg-user-pending-input-target"
+                  ? { ...message, text: "Can you help me find why submit is not responding?" }
+                  : { ...message, text: "I can trace either path. Which should I check first?" },
+              ),
+          };
+        }),
+      }
+    : baseSnapshot;
 
   return {
     ...snapshot,
@@ -977,6 +1046,7 @@ function createSnapshotWithPendingUserInput(): OrchestrationReadModel {
                 summary: "User input requested",
                 payload: {
                   requestId: "req-browser-user-input",
+                  ...(options.dismissible ? { dismissible: true } : {}),
                   questions: [
                     {
                       id: "scope",
@@ -1009,6 +1079,7 @@ function createSnapshotWithPendingUserInput(): OrchestrationReadModel {
                       ],
                     },
                   ],
+                  ...(options.multiSelect ? { multiSelect: true } : {}),
                 },
                 turnId: null,
                 sequence: 1,
@@ -1486,6 +1557,21 @@ async function waitForButtonContainingText(text: string): Promise<HTMLButtonElem
   );
 }
 
+// Spelled "Next" / "Submit" when the footer is compact and "Next question" /
+// "Submit answers" when it is not, so select the action by its stable hook.
+function findPendingFooterActionButton(): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>('[data-pending-user-input-action="true"]');
+}
+
+async function waitForEnabledPendingFooterActionButton(): Promise<void> {
+  await vi.waitFor(
+    () => {
+      expect(findPendingFooterActionButton()?.disabled).toBe(false);
+    },
+    { timeout: 8_000, interval: 16 },
+  );
+}
+
 async function waitForSelectItemContainingText(text: string): Promise<HTMLElement> {
   return waitForElement(
     () =>
@@ -1780,6 +1866,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
           ];
         }
         if (request._tag === ORCHESTRATION_WS_METHODS.subscribeThread) {
+          if (fixture.threadSnapshot)
+            return [{ kind: "snapshot", snapshot: fixture.threadSnapshot }];
           const thread = fixture.snapshot.threads.find((entry) => entry.id === request.threadId);
           return thread
             ? [
@@ -2826,6 +2914,336 @@ describe("ChatView timeline estimator parity (full app)", () => {
             request._tag === WS_METHODS.terminalWrite && request.data === "bun install\r",
         ),
       ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each([
+    "load earlier",
+    "find",
+    "message link",
+    "cold message link",
+    "around older find",
+    "unscoped activities",
+  ] as const)("loads recent history first and retains complete history for %s", async (action) => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "old-history-target" as MessageId,
+      targetText: "Rare phrase in the oldest turn",
+    });
+    const thread = snapshot.threads[0]!;
+    const historyThread =
+      action === "around older find"
+        ? {
+            ...thread,
+            messages: thread.messages.map((message) => ({
+              ...message,
+              createdAt: "2026-10-04T00:00:00.000Z",
+            })),
+          }
+        : thread;
+    const originByMessageId = new Map(
+      historyThread.messages.map((message, index) => [
+        message.id,
+        { sequence: index + 1, rowId: index + 1 },
+      ]),
+    );
+    const userOriginsFor = (messages: typeof historyThread.messages) =>
+      Object.fromEntries(
+        messages
+          .filter((message) => message.role === "user")
+          .map((message) => [message.id, originByMessageId.get(message.id)!]),
+      );
+    const isMessageLink = action.endsWith("message link");
+    const isAroundHistory = isMessageLink || action === "around older find";
+    const recent = { ...historyThread, messages: historyThread.messages.slice(-20) };
+    const older = {
+      ...historyThread,
+      messages: historyThread.messages.slice(0, -20),
+      ...(action === "unscoped activities" ? { hasMoreActivities: true } : {}),
+    };
+    const around = {
+      ...historyThread,
+      messages: historyThread.messages.slice(
+        historyThread.messages.findIndex((message) => message.id === "old-history-target"),
+        historyThread.messages.findIndex((message) => message.id === "old-history-target") + 2,
+      ),
+    };
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+      ...(action === "cold message link"
+        ? { initialPath: `${serverThreadPath(THREAD_ID)}?message=old-history-target` }
+        : {}),
+      configureFixture: (fixture) => {
+        fixture.serverConfig = {
+          ...fixture.serverConfig,
+          threadSnapshotPagination: true,
+          threadSnapshotAroundMessage: true,
+          keybindings: [
+            {
+              command: "chat.find",
+              shortcut: {
+                key: "f",
+                modKey: true,
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+              },
+            },
+          ],
+        };
+        setServerConfigSnapshot(fixture.serverConfig);
+        fixture.threadSnapshot = {
+          snapshotSequence: 1,
+          thread: recent,
+          page: {
+            snapshotSequence: 1,
+            threadSequence: 1,
+            beforeCursor: "older-turns",
+            hasMore: true,
+            userOrigins: userOriginsFor(recent.messages),
+          },
+        };
+      },
+      resolveRpc: (body) =>
+        body._tag === ORCHESTRATION_WS_METHODS.getThreadActivities
+          ? {
+              activities: [
+                {
+                  id: EventId.make("unscoped-synthetic"),
+                  kind: "runtime.info",
+                  tone: "info",
+                  summary: "Unscoped synthetic history",
+                  turnId: null,
+                  payload: {},
+                  createdAt: NOW_ISO,
+                },
+              ],
+              hasMore: false,
+            }
+          : body._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot
+            ? {
+                snapshotSequence: 1,
+                thread: body.aroundMessageId === undefined ? older : around,
+                page: {
+                  snapshotSequence: 1,
+                  threadSequence: 1,
+                  beforeCursor: body.aroundMessageId === undefined ? null : "older-turns",
+                  hasMore: body.aroundMessageId !== undefined,
+                  userOrigins: userOriginsFor(
+                    body.aroundMessageId === undefined ? older.messages : around.messages,
+                  ),
+                },
+              }
+            : undefined,
+    });
+    try {
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.find((request) => request._tag === ORCHESTRATION_WS_METHODS.subscribeThread),
+        ).toMatchObject({ turnLimit: 10 });
+        if (action === "cold message link")
+          expect(
+            selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.length,
+          ).toBeGreaterThanOrEqual(20);
+        else expect(selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.length).toBe(20);
+      });
+      if (action !== "cold message link")
+        expect(
+          wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+          ),
+        ).toHaveLength(0);
+      if (isAroundHistory) {
+        if (action !== "cold message link")
+          await mounted.router.navigate({
+            to: "/$environmentId/$threadId",
+            params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: THREAD_ID },
+            search: { message: "old-history-target" },
+          });
+        await vi.waitFor(() => {
+          expect(selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.length).toBe(
+            20 + around.messages.length,
+          );
+          expect(
+            wsRequests.filter(
+              (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+            ),
+          ).toEqual([
+            expect.objectContaining({ aroundMessageId: "old-history-target", turnLimit: 1 }),
+          ]);
+        });
+        expect(
+          wsRequests.find((request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot),
+        ).toMatchObject({ aroundMessageId: "old-history-target", turnLimit: 1 });
+        expect(
+          selectEnvironmentState(useStore.getState(), LOCAL_ENVIRONMENT_ID).threadHistoryById?.[
+            THREAD_ID
+          ],
+        ).toMatchObject({ beforeCursor: "older-turns", hasMore: true });
+        if (isMessageLink) return;
+      }
+      if (action === "around older find") {
+        const timeline = document.querySelector<HTMLElement>(".overscroll-y-contain")!;
+        timeline.scrollTop = 0;
+        timeline.dispatchEvent(new Event("scroll"));
+        await waitForLayout();
+        const button = findButtonByText("Load older history");
+        expect(button).not.toBeNull();
+        button!.click();
+      } else if (action === "find") {
+        dispatchChatFindShortcut();
+        await waitForLayout();
+        expect(
+          wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+          ),
+        ).toHaveLength(0);
+        await page.getByPlaceholder(/Find in chat/).fill("Rare phrase in the oldest turn");
+      } else {
+        const timeline = document.querySelector<HTMLElement>(".overscroll-y-contain")!;
+        timeline.scrollTop = 0;
+        timeline.dispatchEvent(new Event("scroll"));
+        await waitForLayout();
+        const button = findButtonByText("Load older history");
+        button?.click();
+      }
+      await vi.waitFor(() => {
+        expect(selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.length).toBe(
+          historyThread.messages.length,
+        );
+        expect(
+          wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+          ),
+        ).toHaveLength(action === "around older find" ? 2 : 1);
+      });
+      expect(
+        selectThreadByRef(useStore.getState(), THREAD_REF)?.messages.map((message) => message.id),
+      ).toEqual(historyThread.messages.map((message) => message.id));
+      if (action === "around older find") {
+        expect(
+          wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+          ),
+        ).toEqual([
+          expect.objectContaining({ aroundMessageId: "old-history-target", turnLimit: 1 }),
+          expect.objectContaining({ beforeCursor: "older-turns", turnLimit: 20 }),
+        ]);
+        expect(
+          selectEnvironmentState(useStore.getState(), LOCAL_ENVIRONMENT_ID).threadHistoryById?.[
+            THREAD_ID
+          ],
+        ).toMatchObject({ beforeCursor: null, hasMore: false, loadingOlder: false });
+        const renderedRows = Array.from(
+          document.querySelectorAll<HTMLElement>('[data-timeline-root="true"] [data-message-id]'),
+          (element) => ({
+            id: element.dataset.messageId,
+            top: element.getBoundingClientRect().top,
+          }),
+        ).filter((row): row is { id: string; top: number } => row.id !== undefined);
+        const fullOrder = new Map(
+          historyThread.messages.map((message, index) => [String(message.id), index]),
+        );
+        const renderedOrder = renderedRows
+          .toSorted((left, right) => left.top - right.top)
+          .map((row) => fullOrder.get(row.id));
+        const knownOrder = renderedOrder.filter((index): index is number => index !== undefined);
+        expect(knownOrder).toHaveLength(renderedOrder.length);
+        expect(knownOrder).toEqual([...knownOrder].sort((left, right) => left - right));
+        dispatchChatFindShortcut();
+        await waitForLayout();
+        await page.getByPlaceholder(/Find in chat/).fill("Rare phrase in the oldest turn");
+      } else if (action === "find")
+        await expect.element(page.getByText("1 of 1", { exact: true })).toBeVisible();
+      if (action === "around older find") {
+        await expect.element(page.getByText("1 of 1", { exact: true })).toBeVisible();
+        expect(
+          wsRequests.filter(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+          ),
+        ).toHaveLength(2);
+      }
+      if (action === "unscoped activities") {
+        await waitForLayout();
+        const timeline = document.querySelector<HTMLElement>(".overscroll-y-contain")!;
+        timeline.scrollTop = 0;
+        timeline.dispatchEvent(new Event("scroll"));
+        await waitForLayout();
+        const button = findButtonByText("Load older history");
+        expect(button).not.toBeNull();
+        button!.click();
+        await vi.waitFor(() =>
+          expect(
+            wsRequests.some(
+              (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadActivities,
+            ),
+          ).toBe(true),
+        );
+        const request = wsRequests.find(
+          (request) => request._tag === ORCHESTRATION_WS_METHODS.getThreadActivities,
+        )!;
+        expect(request).not.toHaveProperty("beforeCreatedAt");
+        expect(request).not.toHaveProperty("beforeActivityId");
+        expect(request).not.toHaveProperty("turnId");
+      }
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // A deep link to a message the thread no longer contains is a dead link, not
+  // a transport failure. It must not raise the thread-wide error banner.
+  it("does not raise a thread error for a stale historical message link", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "old-history-target" as MessageId,
+      targetText: "Rare phrase in the oldest turn",
+    });
+    const wsRequests: { _tag: string }[] = [];
+    const recent = { ...snapshot.threads[0]!, messages: snapshot.threads[0]!.messages.slice(-20) };
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+      initialPath: `${serverThreadPath(THREAD_ID)}?message=deleted-message`,
+      configureFixture: (fixture) => {
+        fixture.serverConfig = {
+          ...fixture.serverConfig,
+          threadSnapshotPagination: true,
+          threadSnapshotAroundMessage: true,
+        };
+        setServerConfigSnapshot(fixture.serverConfig);
+        fixture.threadSnapshot = {
+          snapshotSequence: 1,
+          thread: recent,
+          page: {
+            snapshotSequence: 1,
+            threadSequence: 1,
+            beforeCursor: "older-turns",
+            hasMore: true,
+          },
+        };
+      },
+      resolveRpc: (body) => {
+        wsRequests.push(body as { _tag: string });
+        return body._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot
+          ? { _tag: "OrchestrationReadThreadInputError", message: "Historical message was not found in this thread." }
+          : undefined;
+      },
+    });
+    try {
+      await vi.waitFor(() =>
+        expect(
+          wsRequests.some(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.getThreadSnapshot &&
+              "aroundMessageId" in (request as object),
+          ),
+        ).toBe(true),
+      );
+      await waitForLayout();
+      expect(selectThreadByRef(useStore.getState(), THREAD_REF)?.error ?? null).toBeNull();
     } finally {
       await mounted.cleanup();
     }
@@ -7286,20 +7704,12 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("runs the Sidebar V2 top and footer actions", async () => {
-    localStorage.setItem(
-      "t3code:client-settings:v1",
-      JSON.stringify({
-        ...DEFAULT_CLIENT_SETTINGS,
-        sidebarV2Enabled: true,
-      }),
-    );
-
+  it("runs the sidebar top and footer actions", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-sidebar-v2-top-actions" as MessageId,
-        targetText: "sidebar v2 top actions",
+        targetMessageId: "msg-user-sidebar-top-actions" as MessageId,
+        targetText: "sidebar top actions",
       }),
     });
 
@@ -7330,8 +7740,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           threadId: THREAD_ID,
         },
       });
-      await expect.element(page.getByText("New thread", { exact: true })).toBeInTheDocument();
-      await page.getByText("New thread", { exact: true }).click();
+      await page.getByTestId("new-thread-button").click();
 
       const draftPath = await waitForURL(
         mounted.router,
@@ -7341,7 +7750,76 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const draft = useComposerDraftStore.getState().getDraftSession(draftIdFromPath(draftPath));
       expect(draft?.projectId).toBe(PROJECT_ID);
     } finally {
-      localStorage.removeItem("t3code:client-settings:v1");
+      await mounted.cleanup();
+    }
+  });
+
+  it("groups settled threads per project, shows the recent limit, and expands or collapses", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: addSettledThreads(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-settled-sidebar" as MessageId,
+          targetText: "settled sidebar fixture",
+        }),
+        7,
+      ),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const settledHeader = page.getByRole("button", { name: "Settled 7" });
+      await expect.element(settledHeader).toBeVisible();
+      await expect.element(page.getByText("Settled 6", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Settled 2", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Settled 1", { exact: true })).not.toBeInTheDocument();
+
+      const showMore = page.getByRole("button", { name: "Show 2 more" });
+      await expect.element(showMore).toBeVisible();
+      await page.screenshot({ path: "../../../../.t3/settled-v1-project-group.png" });
+      await showMore.click();
+      await expect.element(page.getByText("Settled 1", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Settled 0", { exact: true })).toBeVisible();
+      await page.screenshot({ path: "../../../../.t3/settled-v1-project-group-expanded.png" });
+
+      await settledHeader.click();
+      await expect.element(settledHeader).toHaveAttribute("aria-expanded", "false");
+      await expect.element(page.getByText("Settled 6", { exact: true })).not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("groups settled threads per project, shows the recent limit, and expands or collapses", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: addSettledThreads(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-settled-sidebar" as MessageId,
+          targetText: "settled sidebar fixture",
+        }),
+        7,
+      ),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const settledHeader = page.getByRole("button", { name: "Settled 7" });
+      await expect.element(settledHeader).toBeVisible();
+      await expect.element(page.getByText("Settled 6", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Settled 2", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Settled 1", { exact: true })).not.toBeInTheDocument();
+
+      const showMore = page.getByRole("button", { name: "Show 2 more" });
+      await expect.element(showMore).toBeVisible();
+      await showMore.click();
+      await expect.element(page.getByText("Settled 1", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Settled 0", { exact: true })).toBeVisible();
+
+      await settledHeader.click();
+      await expect.element(settledHeader).toHaveAttribute("aria-expanded", "false");
+      await expect.element(page.getByText("Settled 6", { exact: true })).not.toBeInTheDocument();
+    } finally {
       await mounted.cleanup();
     }
   });
@@ -7524,6 +8002,394 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("collapses pending questions and only offers dismissal when supported", async () => {
+    const captureDirectory = import.meta.env.VITE_PENDING_USER_INPUT_CAPTURE_DIR;
+    if (captureDirectory) await page.viewport(1_400, 1_100);
+    const notDismissible = await mountChatView({
+      viewport: captureDirectory ? WIDE_FOOTER_VIEWPORT : DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({
+        compactMessages: Boolean(captureDirectory),
+      }),
+    });
+
+    try {
+      await waitForButtonContainingText("Tight");
+      expect(document.querySelector("[data-pending-user-input-dismiss]")).toBeNull();
+      if (captureDirectory) {
+        await page.screenshot({ path: `${captureDirectory}/question-panel-expanded.png` });
+      }
+      const expandedToggle = document.querySelector<HTMLButtonElement>(
+        '[data-pending-user-input-toggle="expanded"]',
+      );
+      expect(expandedToggle).not.toBeNull();
+      expandedToggle?.click();
+
+      await vi.waitFor(
+        () => {
+          const collapsedToggle = document.querySelector<HTMLButtonElement>(
+            '[data-pending-user-input-toggle="collapsed"]',
+          );
+          expect(collapsedToggle?.getAttribute("aria-expanded")).toBe("false");
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      await vi.waitFor(
+        () => {
+          const panel = document.querySelector<HTMLElement>("[data-pending-user-input-panel]");
+          expect(panel === null || panel.getBoundingClientRect().height === 0).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      if (captureDirectory) {
+        await page.screenshot({ path: `${captureDirectory}/question-panel-collapsed.png` });
+      }
+    } finally {
+      await notDismissible.cleanup();
+    }
+
+    const dismissible = await mountChatView({
+      viewport: captureDirectory ? WIDE_FOOTER_VIEWPORT : DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({
+        dismissible: true,
+        compactMessages: Boolean(captureDirectory),
+      }),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      const dismissButton = (await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            "[data-pending-user-input-dismiss]",
+          ) as HTMLElement | null,
+        "Unable to find the dismissible pending-question action.",
+      )) as HTMLButtonElement;
+      if (captureDirectory) {
+        await page.screenshot({ path: `${captureDirectory}/pending-question-dismissible.png` });
+      }
+      dismissButton.click();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.some(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                request.type === "thread.user-input.dismiss" &&
+                request.requestId === "req-browser-user-input",
+            ),
+          ).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      await dismissible.cleanup();
+    }
+  });
+
+  it("explains that single-select choices advance automatically", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput(),
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(
+            document.querySelector("[data-pending-user-input-progression-hint]")?.textContent,
+          ).toBe("Choose one option to continue automatically.");
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not let an earlier provider failure unlock a newer user-input retry", async () => {
+    const responseRequests: NormalizedWsRpcRequestBody[] = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput(),
+      resolveRpc: (body) => {
+        if (
+          body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand ||
+          body.type !== "thread.user-input.respond"
+        ) {
+          return undefined;
+        }
+        responseRequests.push(body);
+        return { sequence: fixture.snapshot.snapshotSequence + responseRequests.length };
+      },
+    });
+
+    const emitActivity = (input: {
+      sequence: number;
+      kind: string;
+      summary: string;
+      payload: Record<string, unknown>;
+      tone?: "info" | "error";
+    }) => {
+      applyEnvironmentThreadDetailEvent(
+        {
+          sequence: input.sequence,
+          eventId: EventId.make(`user-input-retry-event-${input.sequence}`),
+          aggregateKind: "thread",
+          aggregateId: THREAD_ID,
+          occurredAt: isoAt(input.sequence),
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.activity-appended",
+          payload: {
+            threadId: THREAD_ID,
+            activity: {
+              id: EventId.make(`user-input-retry-activity-${input.sequence}`),
+              tone: input.tone ?? "error",
+              kind: input.kind,
+              summary: input.summary,
+              payload: input.payload,
+              turnId: null,
+              sequence: input.sequence,
+              createdAt: isoAt(input.sequence),
+            },
+          },
+        },
+        LOCAL_ENVIRONMENT_ID,
+      );
+    };
+
+    try {
+      (await waitForButtonContainingText("Tight")).click();
+      (await waitForButtonContainingText("Conservative")).click();
+      await vi.waitFor(() => expect(responseRequests).toHaveLength(1));
+      const firstCommandId = responseRequests[0]?.commandId;
+      expect(typeof firstCommandId).toBe("string");
+
+      emitActivity({
+        sequence: 2,
+        kind: "provider.user-input.respond.failed",
+        summary: "Provider user input response failed",
+        payload: {
+          requestId: "req-browser-user-input",
+          originCommandId: firstCommandId,
+          detail: "Temporary provider failure.",
+        },
+      });
+      await vi.waitFor(() => {
+        expect(
+          selectThreadByRef(useStore.getState(), THREAD_REF)?.activities.some(
+            (activity) =>
+              activity.kind === "provider.user-input.respond.failed" &&
+              typeof activity.payload === "object" &&
+              activity.payload !== null &&
+              "originCommandId" in activity.payload &&
+              activity.payload.originCommandId === firstCommandId,
+          ),
+        ).toBe(true);
+      });
+
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+      await vi.waitFor(() => expect(responseRequests).toHaveLength(2));
+      const retryCommandId = responseRequests[1]?.commandId;
+      expect(retryCommandId).not.toBe(firstCommandId);
+
+      emitActivity({
+        sequence: 3,
+        kind: "runtime.info",
+        tone: "info",
+        summary: "Unrelated activity while retry is pending",
+        payload: {},
+      });
+      await vi.waitFor(() => {
+        expect(
+          selectThreadByRef(useStore.getState(), THREAD_REF)?.activities.some(
+            (activity) =>
+              activity.summary === "Unrelated activity while retry is pending" &&
+              selectThreadByRef(useStore.getState(), THREAD_REF)?.activities.some(
+                (failure) =>
+                  failure.kind === "provider.user-input.respond.failed" &&
+                  typeof failure.payload === "object" &&
+                  failure.payload !== null &&
+                  "originCommandId" in failure.payload &&
+                  failure.payload.originCommandId === firstCommandId,
+              ),
+          ),
+        ).toBe(true);
+      });
+      expect(responseRequests).toHaveLength(2);
+
+      const composerForm = document.querySelector<HTMLFormElement>(
+        '[data-chat-composer-form="true"]',
+      );
+      expect(composerForm).not.toBeNull();
+      composerForm?.requestSubmit();
+      await vi.waitFor(() => expect(responseRequests).toHaveLength(2));
+      expect(responseRequests).toHaveLength(2);
+
+      emitActivity({
+        sequence: 4,
+        kind: "provider.user-input.respond.failed",
+        summary: "Provider user input retry failed",
+        payload: {
+          requestId: "req-browser-user-input",
+          originCommandId: retryCommandId,
+          detail: "Second temporary provider failure.",
+        },
+      });
+      await vi.waitFor(() => {
+        expect(
+          selectThreadByRef(useStore.getState(), THREAD_REF)?.activities.some(
+            (activity) =>
+              activity.kind === "provider.user-input.respond.failed" &&
+              typeof activity.payload === "object" &&
+              activity.payload !== null &&
+              "originCommandId" in activity.payload &&
+              activity.payload.originCommandId === retryCommandId,
+          ),
+        ).toBe(true);
+      });
+
+      composerForm?.requestSubmit();
+      await vi.waitFor(() => expect(responseRequests).toHaveLength(3));
+      expect(responseRequests[2]?.commandId).not.toBe(retryCommandId);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps dismissal retries correlated to their provider attempt", async () => {
+    const dismissRequests: NormalizedWsRpcRequestBody[] = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({ dismissible: true }),
+      resolveRpc: (body) => {
+        if (
+          body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          body.type === "thread.user-input.dismiss"
+        ) {
+          dismissRequests.push(body);
+          return { sequence: fixture.snapshot.snapshotSequence + dismissRequests.length };
+        }
+        return undefined;
+      },
+    });
+
+    const emitActivity = (sequence: number, kind: string, payload: Record<string, unknown>) => {
+      applyEnvironmentThreadDetailEvent(
+        {
+          sequence,
+          eventId: EventId.make(`user-input-dismiss-event-${sequence}`),
+          aggregateKind: "thread",
+          aggregateId: THREAD_ID,
+          occurredAt: isoAt(sequence),
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.activity-appended",
+          payload: {
+            threadId: THREAD_ID,
+            activity: {
+              id: EventId.make(`user-input-dismiss-activity-${sequence}`),
+              tone: kind === "runtime.info" ? "info" : "error",
+              kind,
+              summary: kind,
+              payload,
+              turnId: null,
+              sequence,
+              createdAt: isoAt(sequence),
+            },
+          },
+        },
+        LOCAL_ENVIRONMENT_ID,
+      );
+    };
+
+    const activeDismissButton = () =>
+      document.querySelector<HTMLButtonElement>("[data-pending-user-input-dismiss]");
+    const waitForDismissEnabled = async () =>
+      vi.waitFor(() => expect(activeDismissButton()?.disabled).toBe(false), {
+        timeout: 4_000,
+        interval: 16,
+      });
+    const waitForActivity = async (summary: string) =>
+      vi.waitFor(
+        () => {
+          expect(
+            selectThreadByRef(useStore.getState(), THREAD_REF)?.activities.some(
+              (activity) => activity.summary === summary,
+            ),
+          ).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    const waitForFailure = async (originCommandId: unknown) =>
+      vi.waitFor(
+        () => {
+          expect(
+            selectThreadByRef(useStore.getState(), THREAD_REF)?.activities.some(
+              (activity) =>
+                activity.kind === "provider.user-input.respond.failed" &&
+                typeof activity.payload === "object" &&
+                activity.payload !== null &&
+                "originCommandId" in activity.payload &&
+                activity.payload.originCommandId === originCommandId,
+            ),
+          ).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+    try {
+      await waitForDismissEnabled();
+      activeDismissButton()?.click();
+      await vi.waitFor(() => expect(dismissRequests).toHaveLength(1));
+      const firstCommandId = dismissRequests[0]?.commandId;
+      expect(typeof firstCommandId).toBe("string");
+
+      emitActivity(2, "provider.user-input.respond.failed", {
+        requestId: "req-browser-user-input",
+        originCommandId: firstCommandId,
+        detail: "Temporary dismissal failure.",
+      });
+      await waitForFailure(firstCommandId);
+      await waitForDismissEnabled();
+      activeDismissButton()?.click();
+      await vi.waitFor(() => expect(dismissRequests).toHaveLength(2));
+      const retryCommandId = dismissRequests[1]?.commandId;
+      expect(retryCommandId).not.toBe(firstCommandId);
+      await waitForDismissEnabled();
+
+      emitActivity(3, "runtime.info", {});
+      await waitForActivity("runtime.info");
+      await waitForDismissEnabled();
+      activeDismissButton()?.click();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      expect(dismissRequests).toHaveLength(2);
+
+      emitActivity(4, "provider.user-input.respond.failed", {
+        requestId: "req-browser-user-input",
+        originCommandId: retryCommandId,
+        detail: "Second temporary dismissal failure.",
+      });
+      await waitForFailure(retryCommandId);
+      await waitForDismissEnabled();
+      activeDismissButton()?.click();
+      await vi.waitFor(() => expect(dismissRequests).toHaveLength(3));
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("submits pending user input after the final option selection resolves the draft answers", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -7571,6 +8437,158 @@ describe("ChatView timeline estimator parity (full app)", () => {
           });
         },
         { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("responds once when a footer submit races the single-select auto-advance", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput(),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return {
+            sequence: fixture.snapshot.snapshotSequence + 1,
+          };
+        }
+        return undefined;
+      },
+    });
+
+    const respondRequests = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          request.type === "thread.user-input.respond",
+      );
+
+    try {
+      (await waitForButtonContainingText("Tight")).click();
+
+      // Land on the final question, answer it, then submit by hand inside the
+      // 200ms auto-advance window instead of waiting for it.
+      (await waitForButtonContainingText("Conservative")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(respondRequests()).toMatchObject([
+            {
+              requestId: "req-browser-user-input",
+              answers: { scope: "Tight", risk: "Conservative" },
+            },
+          ]);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // The trailing auto-advance must not dispatch a second response for the
+      // same request; the server rejects that as an unknown request id.
+      await new Promise((resolve) => window.setTimeout(resolve, 600));
+      expect(respondRequests()).toHaveLength(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("locks the pending user input options while a response is in flight", async () => {
+    const releaseDispatches: Array<() => void> = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({ multiSelect: true }),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return new Promise((resolve) => {
+            releaseDispatches.push(() =>
+              resolve({ sequence: fixture.snapshot.snapshotSequence + 1 }),
+            );
+          });
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      // Multi-select never auto-advances, so both questions are answered by
+      // hand before the response is submitted.
+      (await waitForButtonContainingText("Tight")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      (await waitForButtonContainingText("Conservative")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(findButtonContainingText("Balanced")?.disabled).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      for (const release of releaseDispatches) {
+        release();
+      }
+      await mounted.cleanup();
+    }
+  });
+
+  it("lets a failed user input response be retried", async () => {
+    let respondAttempts = 0;
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({ multiSelect: true }),
+      resolveRpc: (body) => {
+        if (
+          body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          body.type === "thread.user-input.respond"
+        ) {
+          respondAttempts += 1;
+          return respondAttempts === 1
+            ? Promise.reject(new Error("socket closed"))
+            : { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        return undefined;
+      },
+    });
+
+    const respondRequests = () =>
+      wsRequests.filter(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          request.type === "thread.user-input.respond",
+      );
+
+    try {
+      (await waitForButtonContainingText("Tight")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      (await waitForButtonContainingText("Conservative")).click();
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(respondRequests()).toHaveLength(1);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      // A rejected dispatch never reached the provider, so the question is
+      // still open and Submitting again has to actually reach the provider
+      // rather than being swallowed as a duplicate response.
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+
+      await vi.waitFor(
+        () => {
+          expect(respondRequests()).toHaveLength(2);
+        },
+        { timeout: 4_000, interval: 16 },
       );
     } finally {
       await mounted.cleanup();
@@ -8374,6 +9392,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
           () => document.querySelector<HTMLElement>("[data-file-browser-panel]"),
           "Unable to find file browser.",
         );
+        const expectHeaderAlignment = () => {
+          const chatHeader = document.querySelector<HTMLElement>("main header");
+          const panelHeader = document.querySelector<HTMLElement>("[data-right-panel-tabbar]");
+          expect(panelHeader?.getBoundingClientRect().height).toBe(
+            chatHeader?.getBoundingClientRect().height,
+          );
+        };
+        expectHeaderAlignment();
         await vi.waitFor(() => {
           expect(document.documentElement.classList.contains("dark")).toBe(theme === "dark");
         });
@@ -8407,6 +9433,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
               document.querySelector<HTMLElement>(`[data-chat-view-right-panel-surface="${kind}"]`),
             `Unable to find ${kind} surface.`,
           );
+          expectHeaderAlignment();
           await vi.waitFor(() => {
             expectBackground(surface.firstElementChild);
             if (kind === "preview") {
@@ -8962,6 +9989,187 @@ describe("ChatView timeline estimator parity (full app)", () => {
       });
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("reports a full ChatView journey performance baseline with 300 tool activities", async () => {
+    const toolCount = 300;
+    const activities = Array.from({ length: toolCount }, (_, index) => ({
+      id: EventId.make(`perf-tool-${index}`),
+      tone: "tool" as const,
+      kind: "tool.completed",
+      summary: `Read file ${index}`,
+      payload: {
+        title: `Read file ${index}`,
+        detail: `Tool output ${index}`,
+        data: {
+          toolCallId: `perf-call-${index}`,
+          toolName: "read_file",
+          rawInput: { path: `src/file-${index}.ts` },
+          rawOutput: { content: `Tool output ${index}` },
+        },
+      },
+      turnId: null,
+      sequence: index + 1,
+      createdAt: isoAt(2_000_000 + index),
+    })) as OrchestrationReadModel["threads"][number]["activities"];
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-perf-seed" as MessageId,
+      targetText: "performance seed",
+    });
+    const snapshot: OrchestrationReadModel = {
+      ...baseSnapshot,
+      threads: baseSnapshot.threads.map((thread) =>
+        thread.id === THREAD_ID ? { ...thread, activities } : thread,
+      ),
+    };
+    const secondThreadId = ThreadId.make("thread-performance-navigation");
+    const navigationSnapshot = addThreadToSnapshot(snapshot, secondThreadId);
+    const longTaskEntries: Array<{ startTime: number; duration: number }> = [];
+    const longTaskObserver =
+      typeof PerformanceObserver === "undefined"
+        ? null
+        : new PerformanceObserver((entries) => {
+            for (const entry of entries.getEntries()) {
+              longTaskEntries.push({ startTime: entry.startTime, duration: entry.duration });
+            }
+          });
+    try {
+      longTaskObserver?.observe({ entryTypes: ["longtask"] });
+    } catch {
+      longTaskObserver?.disconnect();
+    }
+    let mounted: MountedChatView | undefined;
+
+    try {
+      const startupStartedAt = performance.now();
+      mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot: navigationSnapshot });
+      await waitForComposerEditor();
+      const mountFinishedAt = performance.now();
+      const mountToComposerReadyMs = mountFinishedAt - startupStartedAt;
+      let toolGroupExpandMs: number | null = null;
+      let toolGroupExpandWindow = {
+        phase: "toolExpansion",
+        start: mountFinishedAt,
+        end: mountFinishedAt,
+      };
+      if (toolCount > 0) {
+        const expandToolCalls = page.getByRole("button", {
+          name: `Expand Tool Calls (${toolCount})`,
+          exact: true,
+        });
+        await expect.element(expandToolCalls).toBeVisible();
+        const toolGroupExpandStartedAt = performance.now();
+        await expandToolCalls.click();
+        await vi.waitFor(() => {
+          expect(document.body.textContent).toContain(`Read file-${toolCount - 1}.ts`);
+        });
+        const toolGroupExpandFinishedAt = performance.now();
+        toolGroupExpandMs = toolGroupExpandFinishedAt - toolGroupExpandStartedAt;
+        toolGroupExpandWindow = {
+          phase: "toolExpansion",
+          start: toolGroupExpandStartedAt,
+          end: toolGroupExpandFinishedAt,
+        };
+      }
+      const composer = await waitForComposerEditor();
+      const composerInputStartedAt = performance.now();
+      await userEvent.type(composer, "x");
+      await waitForComposerText("x");
+      const composerInputFinishedAt = performance.now();
+      const composerInputToStoreMs = composerInputFinishedAt - composerInputStartedAt;
+
+      const navigationStartedAt = performance.now();
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: LOCAL_ENVIRONMENT_ID, threadId: secondThreadId },
+      });
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === serverThreadPath(secondThreadId),
+        "The benchmark navigation did not reach its thread route.",
+      );
+      await expect
+        .element(page.getByText("Send a message to start the conversation."))
+        .toBeVisible();
+      const navigationFinishedAt = performance.now();
+      const threadNavigationMs = navigationFinishedAt - navigationStartedAt;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const phaseWindows = [
+        { phase: "mount", start: startupStartedAt, end: mountFinishedAt },
+        toolGroupExpandWindow,
+        { phase: "composerInput", start: composerInputStartedAt, end: composerInputFinishedAt },
+        { phase: "navigation", start: navigationStartedAt, end: navigationFinishedAt },
+      ];
+      const longTasks = longTaskEntries.map(({ startTime, duration }) => ({
+        phase:
+          phaseWindows.find(
+            (window) => startTime < window.end && startTime + duration > window.start,
+          )?.phase ?? "outside",
+        durationMs: Number(duration.toFixed(2)),
+      }));
+      console.warn(
+        JSON.stringify({
+          benchmark: "full-chat-journeys",
+          visibleMessages: snapshot.threads[0]?.messages.length ?? 0,
+          toolActivities: toolCount,
+          mountToComposerReadyMs: Number(mountToComposerReadyMs.toFixed(2)),
+          toolGroupExpandMs:
+            toolGroupExpandMs === null ? null : Number(toolGroupExpandMs.toFixed(2)),
+          composerInputToStoreMs: Number(composerInputToStoreMs.toFixed(2)),
+          threadNavigationMs: Number(threadNavigationMs.toFixed(2)),
+          longTasks,
+        }),
+      );
+    } finally {
+      longTaskObserver?.disconnect();
+      await mounted?.cleanup();
+    }
+  });
+
+  it("reports a full ChatView journey performance baseline control without tool history", async () => {
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-perf-control-seed" as MessageId,
+      targetText: "performance control seed",
+    });
+    const snapshot = addThreadToSnapshot(
+      baseSnapshot,
+      ThreadId.make("thread-performance-control-navigation"),
+    );
+    const longTaskEntries: Array<{ startTime: number; duration: number }> = [];
+    const longTaskObserver =
+      typeof PerformanceObserver === "undefined"
+        ? null
+        : new PerformanceObserver((entries) => {
+            for (const entry of entries.getEntries()) {
+              longTaskEntries.push({ startTime: entry.startTime, duration: entry.duration });
+            }
+          });
+    try {
+      longTaskObserver?.observe({ entryTypes: ["longtask"] });
+    } catch {
+      longTaskObserver?.disconnect();
+    }
+    let mounted: MountedChatView | undefined;
+
+    try {
+      const mountStartedAt = performance.now();
+      mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+      await waitForComposerEditor();
+      const mountReadyAt = performance.now();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      console.warn(
+        JSON.stringify({
+          benchmark: "full-chat-mount-control",
+          visibleMessages: snapshot.threads[0]?.messages.length ?? 0,
+          toolActivities: 0,
+          mountToComposerReadyMs: Number((mountReadyAt - mountStartedAt).toFixed(2)),
+          longTasksMs: longTaskEntries.map((entry) => Number(entry.duration.toFixed(2))),
+        }),
+      );
+    } finally {
+      longTaskObserver?.disconnect();
+      await mounted?.cleanup();
     }
   });
 });

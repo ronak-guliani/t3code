@@ -276,6 +276,33 @@ function childEvent(
   };
 }
 
+function sessionSetEvent(eventId: string, target: ThreadId = threadId): OrchestrationEvent {
+  return {
+    sequence: 2,
+    eventId: EventId.make(eventId),
+    aggregateKind: "thread",
+    aggregateId: target,
+    type: "thread.session-set",
+    occurredAt: now,
+    commandId: CommandId.make(eventId),
+    causationEventId: null,
+    correlationId: CommandId.make(eventId),
+    metadata: {},
+    payload: {
+      threadId: target,
+      session: {
+        threadId: target,
+        status: "ready",
+        providerName: "copilot",
+        runtimeMode: "approval-required",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: now,
+      },
+    },
+  };
+}
+
 function settlementCommands(commands: ReadonlyArray<OrchestrationCommand>) {
   return commands.filter((command) => (command.type as string) === "thread.delegation.settle");
 }
@@ -338,6 +365,7 @@ async function runReactor(
       readonly readModel: OrchestrationReadModel;
       readonly event: OrchestrationEvent;
       readonly additionalEvents?: ReadonlyArray<OrchestrationEvent>;
+      readonly afterMs?: number;
     };
     readonly providerInstances?: ServerSettings["providerInstances"];
     readonly optIn?: boolean;
@@ -357,6 +385,10 @@ async function runReactor(
     };
     /** Fail `thread.queue.hold` dispatches until this 1-based attempt number. */
     readonly failHoldUntilAttempt?: number;
+    /** Reject only the first dispatch of this command type. */
+    readonly failFirstDispatchOf?: OrchestrationCommand["type"];
+    /** Delay dispatches of these command types before they commit. */
+    readonly dispatchDelayMs?: Partial<Record<OrchestrationCommand["type"], number>>;
     readonly delegationIdleStallThresholdMs?: number;
   },
 ): Promise<ReadonlyArray<OrchestrationCommand>> {
@@ -366,6 +398,7 @@ async function runReactor(
   let dispatchesStarted = 0;
   let publishedDuringStart = false;
   let holdAttempts = 0;
+  let failedFirstDispatch = false;
   const holdAttemptsForTest = options?.holdAttemptsForTest ?? { value: 0 };
   const engineLayer = Layer.succeed(OrchestrationEngineService, {
     getReadModel: () =>
@@ -385,6 +418,22 @@ async function runReactor(
       }),
     readEvents: () => Stream.empty,
     dispatch: (command) => {
+      if (options?.failFirstDispatchOf === command.type && !failedFirstDispatch) {
+        failedFirstDispatch = true;
+        return Effect.fail(
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "simulated transient dispatch failure",
+          }),
+        );
+      }
+      const delayMs = options?.dispatchDelayMs?.[command.type] ?? 0;
+      if (delayMs > 0) {
+        return Effect.sleep(delayMs).pipe(
+          Effect.andThen(Effect.sync(() => commands.push(command))),
+          Effect.as({ sequence: 2 }),
+        );
+      }
       if (command.type === "thread.queue.hold") {
         holdAttempts += 1;
         holdAttemptsForTest.value = holdAttempts;
@@ -608,6 +657,8 @@ async function runReactor(
         // before crash recovery has installed the holds.
         yield* reactor.start();
         if (options?.resume) {
+          // Let startup drains read the pre-resume model before it changes.
+          if (options.resume.afterMs !== undefined) yield* Effect.sleep(options.resume.afterMs);
           expect(commands).toHaveLength(0);
           readModel = options.resume.readModel;
           yield* Effect.forEach(
@@ -2169,6 +2220,129 @@ describe("QueuedTurnReactor", () => {
     expect(commands).toEqual([
       expect.objectContaining({ type: "thread.queued-turn.dispatch", threadId, queuedTurnId }),
     ]);
+  });
+
+  it("keeps draining a thread after one drain attempt fails", async () => {
+    const stale = queuedReadModel({
+      origin: { kind: "pull-request-monitor", repository: "acme/app", number: 42 },
+    });
+    const userTurnId = QueuedTurnId.make("queued-after-failed-drain");
+    const state = {
+      ...stale,
+      threads: stale.threads.map((thread) => ({
+        ...thread,
+        queuedTurns: [
+          { ...thread.queuedTurns![0]!, queuePosition: 0 },
+          {
+            ...thread.queuedTurns![0]!,
+            id: userTurnId,
+            origin: undefined,
+            queuePosition: 1,
+          },
+        ],
+      })),
+    };
+    const commands = await runReactor(state, monitorSnapshot("head-current"), {
+      monitorTerminal: true,
+      failFirstDispatchOf: "thread.queued-turn.delete",
+      resume: { readModel: state, event: sessionSetEvent("retry-after-failed-drain") },
+    });
+    expect(commands).toMatchObject([
+      { type: "thread.queued-turn.delete", queuedTurnId },
+      { type: "thread.queued-turn.dispatch", queuedTurnId: userTurnId },
+    ]);
+  });
+
+  it("dispatches a ready queue while another thread's settlement is still committing", async () => {
+    const busyParent = (model: OrchestrationReadModel): OrchestrationReadModel => ({
+      ...model,
+      threads: model.threads.map((thread) =>
+        thread.id === threadId
+          ? {
+              ...thread,
+              session: {
+                threadId,
+                status: "running" as const,
+                providerName: "copilot",
+                runtimeMode: "approval-required" as const,
+                activeTurnId: TurnId.make("parent-turn"),
+                lastError: null,
+                updatedAt: now,
+              },
+            }
+          : thread,
+      ),
+    });
+    const settled = delegatedReadModel();
+    const child = settled.threads[1]!;
+    const commands = await runReactor(
+      busyParent(delegatedReadModel({ activeTurn: true })),
+      monitorSnapshot("head-current"),
+      {
+        dispatchDelayMs: { "thread.delegation.settle": 1_000 },
+        waitAfterStartMs: 200,
+        resume: {
+          readModel: settled,
+          event: childEvent(
+            child,
+            "child-finished",
+            "thread.activity-appended",
+            "insights.turn.completed",
+          ),
+          additionalEvents: [sessionSetEvent("parent-idle")],
+          afterMs: 20,
+        },
+      },
+    );
+    expect(commands).toMatchObject([
+      { type: "thread.queued-turn.dispatch", threadId, queuedTurnId },
+    ]);
+  });
+
+  it("dispatches once the approval blocking the queue is resolved", async () => {
+    const approval = (kind: "approval.requested" | "approval.resolved") => ({
+      id: EventId.make(kind),
+      kind,
+      tone: "approval" as const,
+      summary: kind,
+      payload: { requestId: "approval-blocking-queue" },
+      turnId: null,
+      createdAt: now,
+    });
+    const withActivities = (
+      activities: ReadonlyArray<ReturnType<typeof approval>>,
+    ): OrchestrationReadModel => {
+      const model = queuedReadModel();
+      return {
+        ...model,
+        threads: model.threads.map((thread) => ({ ...thread, activities: [...activities] })),
+      };
+    };
+    const resolved = approval("approval.resolved");
+    const commands = await runReactor(
+      withActivities([approval("approval.requested")]),
+      monitorSnapshot("head-current"),
+      {
+        resume: {
+          readModel: withActivities([approval("approval.requested"), resolved]),
+          event: {
+            sequence: 2,
+            eventId: EventId.make("approval-resolved"),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            type: "thread.activity-appended",
+            occurredAt: now,
+            commandId: CommandId.make("approval-resolved"),
+            causationEventId: null,
+            correlationId: CommandId.make("approval-resolved"),
+            metadata: {},
+            payload: { threadId, activity: resolved },
+          },
+          afterMs: 20,
+        },
+      },
+    );
+    expect(commands).toMatchObject([{ type: "thread.queued-turn.dispatch", queuedTurnId }]);
   });
 
   it("keeps parent feedback queued while monitoring is paused or policy-disabled", async () => {

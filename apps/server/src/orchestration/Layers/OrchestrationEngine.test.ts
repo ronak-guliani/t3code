@@ -34,6 +34,7 @@ import {
 } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
 import { issueCrossThreadDispatchCapability } from "../CrossThreadDispatchCapability.ts";
+import { CheckpointStoreDieStubLive } from "../../checkpointing/Layers/CheckpointStore.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
@@ -112,6 +113,7 @@ async function createOrchestrationSystem(
     Layer.provideMerge(Layer.succeed(DelegationAuditRepository, delegationAuditRepository)),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(CheckpointStoreDieStubLive),
   );
   const runtime = ManagedRuntime.make(orchestrationLayer);
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -506,6 +508,117 @@ describe("OrchestrationEngine", () => {
     }
   });
 
+  it("projects queue presence only while the queue will dispatch on its own", async () => {
+    const system = await createOrchestrationSystem();
+    const projectId = ProjectId.make("queue-presence-project");
+    const threadId = ThreadId.make("queue-presence-thread");
+    const createdAt = now();
+    const [firstId, secondId] = [
+      QueuedTurnId.make("queued-first"),
+      QueuedTurnId.make("queued-second"),
+    ];
+    const hasPendingQueuedTurn = async () => {
+      const snapshot = await system.run(system.snapshots.getShellSnapshot());
+      const shell = await system.run(system.snapshots.getThreadShellById(threadId));
+      const fromSnapshot = snapshot.threads.find(
+        (entry) => entry.id === threadId,
+      )?.hasPendingQueuedTurn;
+      expect(Option.getOrThrow(shell).hasPendingQueuedTurn).toBe(fromSnapshot);
+      return fromSnapshot;
+    };
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("queue-presence-project"),
+          projectId,
+          title: "Queue presence",
+          workspaceRoot: "/tmp/queue-presence-project",
+          createdAt,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("queue-presence-thread"),
+          threadId,
+          projectId,
+          title: "Queue presence",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+      for (const queuedTurnId of [firstId, secondId]) {
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.queued-turn.create",
+            commandId: CommandId.make(`create-${queuedTurnId}`),
+            threadId,
+            queuedTurnId,
+            message: {
+              messageId: asMessageId(`message-${queuedTurnId}`),
+              role: "user",
+              text: queuedTurnId,
+              attachments: [],
+            },
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            createdAt,
+          }),
+        );
+      }
+      expect(await hasPendingQueuedTurn()).toBe(true);
+
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.queue.hold",
+          commandId: CommandId.make("queue-presence-hold"),
+          threadId,
+          heldAt: now(),
+        }),
+      );
+      expect(await hasPendingQueuedTurn()).toBe(false);
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.queue.release",
+          commandId: CommandId.make("queue-presence-release"),
+          threadId,
+          releasedAt: now(),
+        }),
+      );
+      expect(await hasPendingQueuedTurn()).toBe(true);
+
+      // The reactor never dispatches past a paused head, so nothing behind it runs.
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.queued-turn.fail",
+          commandId: CommandId.make("queue-presence-fail"),
+          threadId,
+          queuedTurnId: firstId,
+          failureMessage: "Provider rejected the turn.",
+          failedAt: now(),
+        }),
+      );
+      expect(await hasPendingQueuedTurn()).toBe(false);
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.queued-turn.reorder",
+          commandId: CommandId.make("queue-presence-reorder"),
+          threadId,
+          orderedQueuedTurnIds: [secondId, firstId],
+          reorderedAt: now(),
+        }),
+      );
+      expect(await hasPendingQueuedTurn()).toBe(true);
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("accepts stale conditional metadata as a durable no-op through real dispatch", async () => {
     const projected: OrchestrationEvent[] = [];
     const system = await createOrchestrationSystem((event) =>
@@ -562,6 +675,27 @@ describe("OrchestrationEngine", () => {
       const eventCount = projected.length;
       const result = await system.run(system.engine.dispatch(command));
       expect(result.sequence).toBe(before.snapshotSequence);
+      expect(await system.run(system.engine.getReadModel())).toEqual(before);
+      expect(projected).toHaveLength(eventCount);
+
+      const supersededAssociationCommand = {
+        type: "thread.meta.update" as const,
+        commandId: CommandId.make("superseded-association-intent"),
+        threadId,
+        expectedPendingPullRequestAssociationRequestId: CommandId.make("newer-association-intent"),
+        pendingPullRequestAssociation: {
+          requestId: CommandId.make("superseded-association-intent"),
+          reference: "https://github.com/acme/app/pull/42",
+          requestedAt: "2026-09-08T00:00:00.000Z",
+          nextAttemptAt: "2026-09-08T00:01:00.000Z",
+          status: "blocked" as const,
+          reason: "resolve-failed" as const,
+        },
+      };
+      const supersededAssociationResult = await system.run(
+        system.engine.dispatch(supersededAssociationCommand),
+      );
+      expect(supersededAssociationResult.sequence).toBe(before.snapshotSequence);
       expect(await system.run(system.engine.getReadModel())).toEqual(before);
       expect(projected).toHaveLength(eventCount);
 
@@ -643,6 +777,29 @@ describe("OrchestrationEngine", () => {
       expect(pruned.sequence).toBe(clearedWait.snapshotSequence);
       expect(await system.run(system.engine.getReadModel())).toEqual(clearedWait);
       expect(await system.run(system.engine.dispatch(pruneCommand))).toEqual(pruned);
+
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("archive-before-association"),
+          threadId,
+        }),
+      );
+      const archivedThread = await system.run(system.engine.getReadModel());
+      const archiveEventCount = projected.length;
+      const staleAssociationCommit = await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("association-after-archive"),
+          threadId,
+          expectedArchivedAt: null,
+          pullRequest: { ...pullRequest, title: "Association after archive" },
+          pullRequestOwnership: "transfer",
+        }),
+      );
+      expect(staleAssociationCommit.sequence).toBe(archivedThread.snapshotSequence);
+      expect(await system.run(system.engine.getReadModel())).toEqual(archivedThread);
+      expect(projected).toHaveLength(archiveEventCount);
     } finally {
       await system.dispose();
     }
@@ -1172,6 +1329,7 @@ describe("OrchestrationEngine", () => {
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
+          getThreadMessageOriginById: () => Effect.die("unused"),
           readThread: () => Effect.die("unused"),
         }),
       ),
@@ -1186,6 +1344,7 @@ describe("OrchestrationEngine", () => {
       Layer.provide(Layer.succeed(OrchestrationEventStore, failOnHistoricalReplayStore)),
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provide(SqlitePersistenceMemory),
+      Layer.provideMerge(CheckpointStoreDieStubLive),
     );
 
     const runtime = ManagedRuntime.make(layer);
@@ -1235,6 +1394,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(SqlitePersistenceMemory),
         Layer.provideMerge(serverConfigLayer),
         Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(CheckpointStoreDieStubLive),
       ),
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -1610,6 +1770,179 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
+  it("batches concurrent activity appends without changing their per-thread order", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+    const projectId = asProjectId("project-activity-batch");
+    const threadId = ThreadId.make("thread-activity-batch");
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-activity-batch"),
+        projectId,
+        title: "Activity batch",
+        workspaceRoot: "/tmp/project-activity-batch",
+        defaultModelSelection: null,
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-activity-batch"),
+        threadId,
+        projectId,
+        title: "Activity batch",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    const commands = [0, 1, 2, 3].map((index) => ({
+      type: "thread.activity.append" as const,
+      commandId: CommandId.make(`cmd-activity-batch-${index}`),
+      threadId,
+      activity: {
+        id: EventId.make(`activity-batch-${index}`),
+        tone: "tool" as const,
+        kind: "tool.started",
+        summary: `Tool ${index} started`,
+        payload: { index },
+        turnId: TurnId.make("turn-activity-batch"),
+        createdAt,
+      },
+      createdAt,
+    }));
+
+    try {
+      const results = await system.run(
+        Effect.all(
+          commands.map((command) => engine.dispatch(command)),
+          {
+            concurrency: "unbounded",
+          },
+        ),
+      );
+      const events = await system.run(
+        Stream.runCollect(engine.readEvents(0)).pipe(
+          Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),
+        ),
+      );
+      const activities = events.filter(
+        (event) => event.type === "thread.activity-appended" && event.payload.threadId === threadId,
+      );
+
+      expect(results.map((result) => result.sequence)).toEqual(
+        results.map((result) => result.sequence).toSorted((left, right) => left - right),
+      );
+      expect(
+        activities.map((event) =>
+          event.type === "thread.activity-appended" ? event.payload.activity.id : "",
+        ),
+      ).toEqual(commands.map((command) => command.activity.id));
+
+      const snapshots = await system.run(Metric.snapshot);
+      expect(
+        hasMetricSnapshot(snapshots, "t3_orchestration_activity_append_batches_total", {
+          aggregateKind: "thread",
+          batchSize: "4",
+        }),
+      ).toBe(true);
+    } finally {
+      await system.dispose();
+    }
+  });
+
+  it("treats deleting an already-deleted queued turn as a no-op", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+    const threadId = ThreadId.make("thread-double-delete");
+    const queuedTurnId = QueuedTurnId.make("queued-double-delete");
+    try {
+      await system.run(
+        engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-double-delete"),
+          projectId: asProjectId("project-double-delete"),
+          title: "Double Delete",
+          workspaceRoot: "/tmp/project-double-delete",
+          defaultModelSelection: null,
+          createdAt,
+        }),
+      );
+      await system.run(
+        engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-thread-double-delete"),
+          threadId,
+          projectId: asProjectId("project-double-delete"),
+          title: "Double Delete",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+      await system.run(
+        engine.dispatch({
+          type: "thread.queued-turn.create",
+          commandId: CommandId.make("cmd-queue-double-delete"),
+          threadId,
+          queuedTurnId,
+          message: {
+            messageId: MessageId.make("message-double-delete"),
+            role: "user",
+            text: "hello",
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt,
+        }),
+      );
+      const deleteCommand = (id: string) =>
+        engine.dispatch({
+          type: "thread.queued-turn.delete",
+          commandId: CommandId.make(id),
+          threadId,
+          queuedTurnId,
+          deletedAt: createdAt,
+        });
+      await system.run(deleteCommand("cmd-delete-first"));
+      await system.run(deleteCommand("cmd-delete-second"));
+
+      const thread = (await system.run(engine.getReadModel())).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      expect(thread?.queuedTurns ?? []).toEqual([]);
+      await expect(
+        system.run(
+          engine.dispatch({
+            type: "thread.queued-turn.delete",
+            commandId: CommandId.make("cmd-delete-missing-thread"),
+            threadId: ThreadId.make("thread-missing"),
+            queuedTurnId,
+            deletedAt: createdAt,
+          }),
+        ),
+      ).rejects.toThrow("does not exist");
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("records failed command dispatches as metric failures", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;
@@ -1773,6 +2106,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(SqlitePersistenceMemory),
         Layer.provideMerge(ServerConfigLayer),
         Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(CheckpointStoreDieStubLive),
       ),
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -1870,6 +2204,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(RepositoryIdentityResolverLive),
         Layer.provide(SqlitePersistenceMemory),
+        Layer.provideMerge(CheckpointStoreDieStubLive),
       ),
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -1992,6 +2327,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(RepositoryIdentityResolverLive),
         Layer.provide(SqlitePersistenceMemory),
+        Layer.provideMerge(CheckpointStoreDieStubLive),
       ),
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -2066,6 +2402,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(RepositoryIdentityResolverLive),
         Layer.provide(SqlitePersistenceMemory),
+        Layer.provideMerge(CheckpointStoreDieStubLive),
       ),
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));

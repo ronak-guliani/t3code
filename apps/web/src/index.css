@@ -48,6 +48,9 @@
   --color-foreground: var(--foreground);
   --color-background: var(--background);
   --color-chat-background: var(--chat-background);
+  --color-diff-addition: var(--diff-addition);
+  --color-diff-deletion: var(--diff-deletion);
+  --color-sunken: var(--sunken);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -179,6 +182,9 @@
   --app-sidebar-legacy-row-padding-x: calc(var(--app-sidebar-font-size) * 0.545455);
   --app-tool-font-size: 12px;
   --app-input-font-size: 14px;
+  /* Right-panel tab labels. Chrome, not content, so the default tracks the
+     sidebar row size rather than body text. */
+  --app-tab-font-size: 11px;
   /* Workspace/branch/PR line under the message composer. Its own setting so
      it can stay visibly quieter than the composer's controls at any size. */
   --app-composer-meta-font-size: 11px;
@@ -212,6 +218,16 @@
   --secondary: --alpha(var(--color-black) / 4%);
   --secondary-foreground: var(--color-neutral-800);
   --muted: --alpha(var(--color-black) / 4%);
+  /* Recessed well: darker than the page in both modes, so a contained region
+     reads as sunk rather than raised. Never paired with a border or shadow —
+     the fill alone declares the elevation.
+
+     Opaque, not an alpha: the diff renderer paints this colour on the host,
+     the gutter, the content column and the sticky file header, so a
+     translucent value compounds once per layer and the well ends up roughly
+     twice as dark as intended in light mode. Mixing against the canvas keeps
+     stacking idempotent. */
+  --sunken: color-mix(in srgb, var(--color-black) 4%, var(--chat-background));
   --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-black));
   --accent: --alpha(var(--color-black) / 4%);
   --accent-foreground: var(--color-neutral-800);
@@ -250,6 +266,10 @@
     --secondary: --alpha(var(--color-white) / 4%);
     --secondary-foreground: var(--color-neutral-100);
     --muted: --alpha(var(--color-white) / 4%);
+    /* On a near-black canvas there is no room below the page to sink into, so in
+       dark the well is the chat background itself and only light mode gets a
+       visible step. */
+    --sunken: var(--chat-background);
     --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
     --accent: --alpha(var(--color-white) / 4%);
     --accent-foreground: var(--color-neutral-100);
@@ -1050,10 +1070,9 @@ label:has(> select#reasoning-effort) select {
 }
 
 .diff-render-file {
-  border: 1px solid var(--border);
   border-radius: 0.5rem;
   overflow: clip;
-  background: color-mix(in srgb, var(--card) 92%, var(--background));
+  background: var(--sunken);
 }
 
 @keyframes ultrathink-rainbow {

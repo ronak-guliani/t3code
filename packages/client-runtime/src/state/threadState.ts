@@ -1,4 +1,5 @@
-import type { OrchestrationThread } from "@t3tools/contracts";
+import type { OrchestrationThread, OrchestrationThreadDetailPage } from "@t3tools/contracts";
+import type { HistoryRetentionLimits } from "@t3tools/shared/threadHistoryState";
 import * as Option from "effect/Option";
 
 export type EnvironmentThreadStatus = "empty" | "cached" | "synchronizing" | "live" | "deleted";
@@ -10,11 +11,13 @@ export type EnvironmentThreadStatus = "empty" | "cached" | "synchronizing" | "li
  * the top.
  */
 export interface EnvironmentThreadPageState {
-  /** Opaque exclusive cursor for the next older slice; null when fully loaded. */
+  /** Exclusive cursor, validated by the server; not a security credential. */
   readonly beforeCursor: string | null;
   readonly hasMore: boolean;
   /** True while an older page fetch is in flight. */
   readonly loadingOlder: boolean;
+  readonly metadata?: OrchestrationThreadDetailPage;
+  readonly retention?: HistoryRetentionLimits;
 }
 
 export interface EnvironmentThreadState {

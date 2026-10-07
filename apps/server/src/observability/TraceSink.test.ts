@@ -5,10 +5,10 @@ import path from "node:path";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
 
-import type { TraceRecord } from "./TraceRecord.ts";
+import type { EffectTraceRecord, TraceRecord } from "./TraceRecord.ts";
 import { makeTraceSink } from "./TraceSink.ts";
 
-const makeRecord = (name: string, suffix = ""): TraceRecord => ({
+const makeRecord = (name: string, suffix = ""): EffectTraceRecord => ({
   type: "effect-span",
   name,
   traceId: `trace-${name}-${suffix}`,
@@ -56,6 +56,52 @@ describe("TraceSink", () => {
           assert.equal(lines.length, 2);
           assert.equal(lines[0]?.name, "alpha");
           assert.equal(lines[1]?.name, "beta");
+        } finally {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+      }),
+    ),
+  );
+
+  it.effect("samples successful SQL spans while retaining SQL failures", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-trace-sql-sampling-"));
+        const tracePath = path.join(tempDir, "server.trace.ndjson");
+
+        try {
+          const sink = yield* makeTraceSink({
+            filePath: tracePath,
+            maxBytes: 1024 * 1024,
+            maxFiles: 2,
+            batchWindowMs: 10_000,
+          });
+
+          for (let index = 0; index < 100; index += 1) {
+            sink.push({
+              ...makeRecord("sql.query", String(index)),
+              attributes: { "db.system.name": "sqlite" },
+            });
+          }
+          sink.push({
+            ...makeRecord("sql.query.failure"),
+            attributes: { "db.system.name": "sqlite" },
+            exit: { _tag: "Failure", cause: "database unavailable" },
+          });
+          yield* sink.close();
+
+          const records = fs
+            .readFileSync(tracePath, "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line) as TraceRecord);
+
+          assert.equal(
+            records.some((record) => record.name === "sql.query.failure"),
+            true,
+          );
+          assert.equal(records.length > 1, true);
+          assert.equal(records.length < 30, true);
         } finally {
           fs.rmSync(tempDir, { recursive: true, force: true });
         }

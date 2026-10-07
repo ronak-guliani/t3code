@@ -842,6 +842,38 @@ it.effect("accepts an internal title regeneration completion", () =>
   }),
 );
 
+it.effect("accepts an association request ID precondition in thread.meta.update", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.meta.update",
+      commandId: "cmd-association-cas",
+      threadId: "thread-1",
+      expectedArchivedAt: null,
+      expectedPendingPullRequestAssociationRequestId: "association-request-1",
+      expectedPullRequestAssociationContext: {
+        projectId: "project-1",
+        branch: "feature",
+        worktreePath: "/workspace/feature",
+        pullRequestUrl: null,
+      },
+    });
+    assert.strictEqual(parsed.type, "thread.meta.update");
+    if (parsed.type === "thread.meta.update") {
+      assert.strictEqual(
+        parsed.expectedPendingPullRequestAssociationRequestId,
+        "association-request-1",
+      );
+      assert.strictEqual(parsed.expectedArchivedAt, null);
+      assert.deepStrictEqual(parsed.expectedPullRequestAssociationContext, {
+        projectId: "project-1",
+        branch: "feature",
+        worktreePath: "/workspace/feature",
+        pullRequestUrl: null,
+      });
+    }
+  }),
+);
+
 it.effect("rejects an explicit title combined with title regeneration", () =>
   Effect.gen(function* () {
     const result = yield* Effect.exit(
@@ -1215,5 +1247,19 @@ it.effect("ModelSelection rejects malformed instance ids", () =>
       }),
     );
     assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+it.effect("decodes pending user-input dismissal commands", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeClientOrchestrationCommand({
+      type: "thread.user-input.dismiss",
+      commandId: "cmd-dismiss-user-input",
+      threadId: "thread-1",
+      requestId: "request-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.type, "thread.user-input.dismiss");
+    assert.strictEqual(parsed.requestId, "request-1");
   }),
 );

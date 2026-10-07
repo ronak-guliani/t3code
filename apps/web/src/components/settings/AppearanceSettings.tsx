@@ -10,12 +10,14 @@ import {
   DEFAULT_FILE_PREVIEW_LINE_SPACING,
   DEFAULT_CODE_FONT,
   DEFAULT_SIDEBAR_ROW_SPACING,
+  DEFAULT_SIDEBAR_SETTLED_THREAD_COUNT,
   DEFAULT_SIDEBAR_TRANSLUCENCY,
   DEFAULT_UI_DENSITY,
   DEFAULT_UI_FONT,
   DEFAULT_UNIFIED_SETTINGS,
   RECOMMENDED_FONT_SIZES_BY_UI_DENSITY,
   type SidebarRowSpacing,
+  type SidebarSettledThreadCount,
   type UiDensity,
 } from "@t3tools/contracts/settings";
 import { isElectronRuntime } from "../../env";
@@ -53,6 +55,10 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
+
+const SIDEBAR_SETTLED_THREAD_COUNT_OPTIONS = [
+  1, 3, 5, 10, 15, 20, 25, 50,
+] as const satisfies readonly SidebarSettledThreadCount[];
 
 export function AppearanceSettingsPanel() {
   const { theme, setTheme } = useTheme();
@@ -246,23 +252,41 @@ export function AppearanceSettingsPanel() {
 
       <SettingsSection title="Sidebar">
         <SettingsRow
-          title="Inbox sidebar (beta)"
-          description="Use the flat inbox with active, snoozed, and settled thread shelves."
+          title="Settled threads shown"
+          description="How many recent settled threads to show per project before the Show X more button."
           resetAction={
-            settings.sidebarV2Enabled !== DEFAULT_UNIFIED_SETTINGS.sidebarV2Enabled ? (
+            settings.sidebarSettledThreadCount !== DEFAULT_SIDEBAR_SETTLED_THREAD_COUNT ? (
               <SettingResetButton
-                label="inbox sidebar"
+                label="settled thread count"
                 onClick={() =>
-                  updateSettings({ sidebarV2Enabled: DEFAULT_UNIFIED_SETTINGS.sidebarV2Enabled })
+                  updateSettings({
+                    sidebarSettledThreadCount: DEFAULT_SIDEBAR_SETTLED_THREAD_COUNT,
+                  })
                 }
               />
             ) : null
           }
           control={
-            <Switch
-              checked={settings.sidebarV2Enabled}
-              onCheckedChange={(checked) => updateSettings({ sidebarV2Enabled: Boolean(checked) })}
-            />
+            <Select
+              value={String(settings.sidebarSettledThreadCount)}
+              onValueChange={(value) => {
+                const count = SIDEBAR_SETTLED_THREAD_COUNT_OPTIONS.find(
+                  (option) => String(option) === value,
+                );
+                if (count !== undefined) updateSettings({ sidebarSettledThreadCount: count });
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Settled threads shown">
+                <SelectValue>{settings.sidebarSettledThreadCount}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {SIDEBAR_SETTLED_THREAD_COUNT_OPTIONS.map((count) => (
+                  <SelectItem hideIndicator key={count} value={String(count)}>
+                    {count}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
           }
         />
         <SettingsRow
@@ -792,6 +816,41 @@ export function AppearanceSettingsPanel() {
                 <SelectValue>
                   {FONT_SIZE_OPTIONS.find((option) => option.value === settings.sidebarMetaFontSize)
                     ?.label ?? `${recommendedFontSizes.sidebarMetaFontSize}px`}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {FONT_SIZE_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={String(option.value)}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Tab font size"
+          description="Font size for the file, terminal, browser, and pull request tab labels above the right panel."
+          resetAction={
+            settings.tabFontSize !== recommendedFontSizes.tabFontSize ? (
+              <SettingResetButton
+                label="tab font size"
+                onClick={() => updateSettings({ tabFontSize: recommendedFontSizes.tabFontSize })}
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={String(settings.tabFontSize)}
+              onValueChange={(value) => {
+                const num = Number(value);
+                if (isFontSize(num)) updateSettings({ tabFontSize: num });
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Tab font size">
+                <SelectValue>
+                  {FONT_SIZE_OPTIONS.find((option) => option.value === settings.tabFontSize)
+                    ?.label ?? `${recommendedFontSizes.tabFontSize}px`}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>

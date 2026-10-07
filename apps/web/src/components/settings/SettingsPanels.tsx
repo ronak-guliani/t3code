@@ -102,6 +102,7 @@ import { isElectronRuntime } from "../../env";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { DeviceSettings } from "./DeviceSettings";
 import { GitHubApiUsagePanel } from "./GitHubApiUsagePanel";
+import { StorageUsagePanel } from "./StorageCleanupPanel";
 import { useTheme } from "../../hooks/useTheme";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useLocalRebuildState, useRequestLocalRebuild } from "../../hooks/useLocalRebuild";
@@ -154,6 +155,14 @@ import {
   useServerObservability,
   useServerProviders,
 } from "../../rpc/serverState";
+
+function parseOptionalNonNegativeNumber(draft: string): number | null | undefined {
+  const trimmed = draft.trim();
+  if (trimmed === "") return null;
+  if (!/^\d+(?:\.\d+)?$/.test(trimmed)) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
 
 export const THEME_OPTIONS = [
   {
@@ -1184,6 +1193,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.sidebarRowSpacing !== DEFAULT_UNIFIED_SETTINGS.sidebarRowSpacing
         ? ["Sidebar row spacing"]
         : []),
+      ...(settings.tabFontSize !== DEFAULT_UNIFIED_SETTINGS.tabFontSize ? ["Tab font size"] : []),
       ...(settings.toolFontSize !== DEFAULT_UNIFIED_SETTINGS.toolFontSize
         ? ["Tool font size"]
         : []),
@@ -1300,6 +1310,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sidebarTranslucency,
       settings.threadCompletionNotifications,
       settings.timestampFormat,
+      settings.tabFontSize,
       settings.toolFontSize,
       settings.uiDensity,
       settings.uiFont,
@@ -1663,7 +1674,38 @@ export function GeneralSettingsPanel() {
     (days: number | null) => updateSettings({ autoArchiveSettledAfterDays: days }),
     [updateSettings],
   );
-
+  const updateProviderLogRetentionDays = useCallback(
+    (draft: string) => {
+      const days = parseOptionalNonNegativeNumber(draft);
+      if (days === undefined) {
+        toastManager.add({
+          type: "warning",
+          title: "Enter a non-negative number of days, or leave blank to turn age cleanup off",
+        });
+        return;
+      }
+      if (days !== settings.providerLogRetentionDays) {
+        updateSettings({ providerLogRetentionDays: days });
+      }
+    },
+    [settings.providerLogRetentionDays, updateSettings],
+  );
+  const updateProviderLogMaxTotalMb = useCallback(
+    (draft: string) => {
+      const megabytes = parseOptionalNonNegativeNumber(draft);
+      if (megabytes === undefined) {
+        toastManager.add({
+          type: "warning",
+          title: "Enter a non-negative size in MB, or leave blank to turn the size cap off",
+        });
+        return;
+      }
+      if (megabytes !== settings.providerLogMaxTotalMb) {
+        updateSettings({ providerLogMaxTotalMb: megabytes });
+      }
+    },
+    [settings.providerLogMaxTotalMb, updateSettings],
+  );
   return (
     <SettingsPageContainer>
       <SettingsSection title="Pull request monitoring">
@@ -2523,6 +2565,196 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+      </SettingsSection>
+
+      <SettingsSection title="Storage & cleanup">
+        <StorageUsagePanel />
+        <SettingsRow
+          title="Automatic cleanup"
+          description="Reclaim archived and idle worktrees, old logs, idle terminals, leftover validation environments and database free space in the background. Turning this off pauses every automatic sweep; removals already in progress still finish, and Clean up now keeps working."
+          resetAction={
+            settings.automaticCleanupEnabled !==
+            DEFAULT_UNIFIED_SETTINGS.automaticCleanupEnabled ? (
+              <SettingResetButton
+                label="automatic cleanup"
+                onClick={() =>
+                  updateSettings({
+                    automaticCleanupEnabled: DEFAULT_UNIFIED_SETTINGS.automaticCleanupEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.automaticCleanupEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ automaticCleanupEnabled: Boolean(checked) })
+              }
+              aria-label="Automatic cleanup"
+            />
+          }
+        />
+        <SettingsRow
+          title="Provider log retention days"
+          description="Remove provider logs older than this. Leave blank to disable age-based cleanup; recent and active thread heads are protected."
+          resetAction={
+            settings.providerLogRetentionDays !==
+            DEFAULT_UNIFIED_SETTINGS.providerLogRetentionDays ? (
+              <SettingResetButton
+                label="provider log retention"
+                onClick={() =>
+                  updateSettings({
+                    providerLogRetentionDays: DEFAULT_UNIFIED_SETTINGS.providerLogRetentionDays,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <DraftInput
+              className="w-28"
+              value={settings.providerLogRetentionDays?.toString() ?? ""}
+              inputMode="decimal"
+              placeholder="Off"
+              onCommit={updateProviderLogRetentionDays}
+              aria-label="Provider log retention in days"
+            />
+          }
+        />
+        <SettingsRow
+          title="Provider log total size cap"
+          description="After age cleanup, remove the oldest rotations first until logs are under this limit in MB. Leave blank to disable the size cap."
+          resetAction={
+            settings.providerLogMaxTotalMb !== DEFAULT_UNIFIED_SETTINGS.providerLogMaxTotalMb ? (
+              <SettingResetButton
+                label="provider log size cap"
+                onClick={() =>
+                  updateSettings({
+                    providerLogMaxTotalMb: DEFAULT_UNIFIED_SETTINGS.providerLogMaxTotalMb,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <DraftInput
+              className="w-28"
+              value={settings.providerLogMaxTotalMb?.toString() ?? ""}
+              inputMode="decimal"
+              placeholder="Off"
+              onCommit={updateProviderLogMaxTotalMb}
+              aria-label="Provider log total size cap in megabytes"
+            />
+          }
+        />
+        <SettingsRow
+          title="Idle worktree reclamation"
+          description="After this many inactive days, clean worktrees can be reclaimed; committed work stays on its branch and the same worktree is restored on your next message. Uncommitted changes are never removed. Turn off to keep all worktrees."
+          resetAction={
+            settings.idleWorktreeReclaimDays !==
+            DEFAULT_UNIFIED_SETTINGS.idleWorktreeReclaimDays ? (
+              <SettingResetButton
+                label="idle worktree reclamation"
+                onClick={() =>
+                  updateSettings({
+                    idleWorktreeReclaimDays: DEFAULT_UNIFIED_SETTINGS.idleWorktreeReclaimDays,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="flex items-center gap-2">
+              <DraftInput
+                className="w-20"
+                value={String(settings.idleWorktreeReclaimDays ?? 7)}
+                inputMode="numeric"
+                disabled={settings.idleWorktreeReclaimDays === null}
+                onCommit={(value) => {
+                  const days = Number.parseInt(value.trim(), 10);
+                  if (!Number.isFinite(days) || days < 1 || days > 3650) {
+                    toastManager.add({
+                      type: "warning",
+                      title: "Idle worktree reclamation must be between 1 and 3650 days",
+                    });
+                    return;
+                  }
+                  updateSettings({ idleWorktreeReclaimDays: days });
+                }}
+                aria-label="Idle worktree reclamation interval in days"
+              />
+              <span className="text-xs text-muted-foreground">days</span>
+              <Switch
+                checked={settings.idleWorktreeReclaimDays !== null}
+                onCheckedChange={(checked) =>
+                  updateSettings({
+                    idleWorktreeReclaimDays: checked
+                      ? (DEFAULT_UNIFIED_SETTINGS.idleWorktreeReclaimDays ?? 7)
+                      : null,
+                  })
+                }
+                aria-label="Enable idle worktree reclamation"
+              />
+            </div>
+          }
+        />
+        <SettingsRow
+          title="Stop idle terminals"
+          description="Close unattached terminal sessions after the chat and terminal have both been inactive. Pinned, active, queued, and previewed chats are kept."
+          resetAction={
+            settings.idleTerminalStopHours !== DEFAULT_UNIFIED_SETTINGS.idleTerminalStopHours ? (
+              <SettingResetButton
+                label="idle terminal timeout"
+                onClick={() =>
+                  updateSettings({
+                    idleTerminalStopHours: DEFAULT_UNIFIED_SETTINGS.idleTerminalStopHours,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.idleTerminalStopHours !== null}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  idleTerminalStopHours: checked
+                    ? DEFAULT_UNIFIED_SETTINGS.idleTerminalStopHours
+                    : null,
+                })
+              }
+              aria-label="Stop idle terminals"
+            />
+          }
+        />
+        {settings.idleTerminalStopHours !== null ? (
+          <SettingsRow
+            title="Terminal inactivity timeout"
+            description="Hours without chat activity or terminal output before an unattached terminal is stopped."
+            control={
+              <DraftInput
+                className="w-24"
+                value={String(settings.idleTerminalStopHours)}
+                inputMode="decimal"
+                onCommit={(value) => {
+                  const hours = Number(value);
+                  if (!Number.isFinite(hours) || hours < 0.25) {
+                    toastManager.add({
+                      type: "warning",
+                      title: "Enter a terminal timeout of at least 0.25 hours",
+                    });
+                    return;
+                  }
+                  if (hours !== settings.idleTerminalStopHours) {
+                    updateSettings({ idleTerminalStopHours: hours });
+                  }
+                }}
+                aria-label="Terminal inactivity timeout in hours"
+              />
+            }
+          />
+        ) : null}
       </SettingsSection>
 
       <SettingsSection title="Advanced">

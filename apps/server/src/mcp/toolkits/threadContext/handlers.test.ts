@@ -4,6 +4,7 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  ThreadContextId,
   ThreadId,
   type OrchestrationThreadShell,
 } from "@t3tools/contracts";
@@ -11,6 +12,7 @@ import { Effect, Option, Schema, Sink, Stream } from "effect";
 
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionThreadMessageRepository } from "../../../persistence/Services/ProjectionThreadMessages.ts";
+import { ProjectionQueuedTurnRepository } from "../../../persistence/Services/ProjectionQueuedTurns.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { T3ThreadReadResult } from "./tools.ts";
 import { ThreadContextToolkitHandlersLive } from "./handlers.ts";
@@ -26,6 +28,20 @@ const invocation: McpInvocationContext.McpInvocationScope = {
   providerInstanceId: ProviderInstanceId.make("copilot"),
   capabilities: new Set(),
   issuedAt: 1,
+};
+const attachment = {
+  version: 1 as const,
+  records: [
+    {
+      version: 1 as const,
+      kind: "thread" as const,
+      contextId: ThreadContextId.make("ref-1"),
+      label: "Target",
+      environmentId: invocation.environmentId,
+      threadId: targetThreadId,
+      title: "Target thread",
+    },
+  ],
 };
 
 const shell = {
@@ -60,6 +76,8 @@ const runRead = (
   overrides?: {
     readonly shellOption?: Option.Option<OrchestrationThreadShell>;
     readonly rows?: ReadonlyArray<ReturnType<typeof messageRow>>;
+    readonly callerMessages?: ReadonlyArray<{ context?: typeof attachment }>;
+    readonly queuedTurns?: ReadonlyArray<{ context?: typeof attachment }>;
   },
 ) =>
   Effect.gen(function* () {
@@ -71,10 +89,15 @@ const runRead = (
     Effect.provide(ThreadContextToolkitHandlersLive),
     Effect.provideService(ProjectionSnapshotQuery, {
       getThreadShellById: () => Effect.succeed(overrides?.shellOption ?? Option.some(shell)),
+      getThreadCheckpointContext: () => Effect.succeed(Option.none()),
     } as unknown as ProjectionSnapshotQuery["Service"]),
     Effect.provideService(ProjectionThreadMessageRepository, {
       listMessagesPage: () => Effect.succeed(overrides?.rows ?? []),
+      listByThreadId: () => Effect.succeed(overrides?.callerMessages ?? [{ context: attachment }]),
     } as unknown as ProjectionThreadMessageRepository["Service"]),
+    Effect.provideService(ProjectionQueuedTurnRepository, {
+      listByThreadId: () => Effect.succeed(overrides?.queuedTurns ?? []),
+    } as unknown as ProjectionQueuedTurnRepository["Service"]),
     Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
   );
 
@@ -142,12 +165,36 @@ it.effect("truncates oversized message text with an explicit marker", () =>
   }),
 );
 
-it.effect("reads a different thread on the same server for reference", () =>
-  Effect.gen(function* () {
-    // Server-scoped authority: any thread in this server's projection is readable
-    // as reference material. The tool is read-only, so no send/message authority exists.
-    assert.notEqual(callerThreadId, targetThreadId);
-    const outcome = yield* runRead({ threadId: targetThreadId }, { rows: [messageRow(0)] });
-    assert.isFalse(outcome.isFailure);
-  }),
+it.effect(
+  "reads an attached thread and denies unattached targets without revealing existence",
+  () =>
+    Effect.gen(function* () {
+      assert.notEqual(callerThreadId, targetThreadId);
+      const outcome = yield* runRead(
+        { threadId: targetThreadId },
+        {
+          rows: [messageRow(0)],
+          callerMessages: [{ context: attachment }],
+        },
+      );
+      assert.isFalse(outcome.isFailure);
+      const denied = yield* runRead(
+        { threadId: targetThreadId },
+        { rows: [messageRow(0)], callerMessages: [] },
+      ).pipe(Effect.result);
+      assert.strictEqual(denied._tag, "Failure");
+      if (denied._tag === "Failure") assert.include(String(denied.failure), "not found");
+      const foreignAttachment = {
+        ...attachment,
+        records: [{ ...attachment.records[0]!, environmentId: EnvironmentId.make("env-other") }],
+      };
+      const crossEnvironment = yield* runRead(
+        { threadId: targetThreadId },
+        { callerMessages: [{ context: foreignAttachment }] },
+      ).pipe(Effect.result);
+      assert.strictEqual(crossEnvironment._tag, "Failure");
+      if (crossEnvironment._tag === "Failure") {
+        assert.include(String(crossEnvironment.failure), "not found");
+      }
+    }),
 );

@@ -18,11 +18,14 @@ import {
   DEFAULT_SIDEBAR_ICON_SIZE,
   DEFAULT_SIDEBAR_META_FONT_SIZE,
   DEFAULT_SIDEBAR_ROW_SPACING,
+  DEFAULT_SIDEBAR_SETTLED_THREAD_COUNT,
   DEFAULT_SIDEBAR_TRANSLUCENCY,
   DEFAULT_SERVER_SETTINGS,
   DEFAULT_UI_DENSITY,
   MAX_AUTO_ARCHIVE_SETTLED_AFTER_DAYS,
+  MAX_SIDEBAR_SETTLED_THREAD_COUNT,
   MIN_AUTO_ARCHIVE_SETTLED_AFTER_DAYS,
+  MIN_SIDEBAR_SETTLED_THREAD_COUNT,
   RECOMMENDED_FONT_SIZES_BY_UI_DENSITY,
   ServerSettings,
   ServerSettingsPatch,
@@ -108,6 +111,59 @@ describe("ServerSettings.autoArchiveSettledAfterDays", () => {
   });
 });
 
+describe("ClientSettings.sidebarSettledThreadCount", () => {
+  it("defaults legacy settings to five and allows a custom value", () => {
+    expect(DEFAULT_SIDEBAR_SETTLED_THREAD_COUNT).toBe(5);
+    expect(decodeClientSettings({}).sidebarSettledThreadCount).toBe(5);
+    expect(decodeClientSettingsPatch({ sidebarSettledThreadCount: 12 })).toEqual({
+      sidebarSettledThreadCount: 12,
+    });
+  });
+
+  it("rejects values outside its supported integer range", () => {
+    expect(MIN_SIDEBAR_SETTLED_THREAD_COUNT).toBe(1);
+    expect(MAX_SIDEBAR_SETTLED_THREAD_COUNT).toBe(50);
+    for (const value of [0, 51, 1.5]) {
+      expect(() => decodeClientSettingsPatch({ sidebarSettledThreadCount: value })).toThrow();
+    }
+  });
+});
+
+describe("provider log retention settings", () => {
+  it("defaults the age and total-size policies", () => {
+    expect(DEFAULT_SERVER_SETTINGS.providerLogRetentionDays).toBe(14);
+    expect(DEFAULT_SERVER_SETTINGS.providerLogMaxTotalMb).toBe(5120);
+    expect(decodeServerSettings({}).providerLogRetentionDays).toBe(14);
+    expect(decodeServerSettings({}).providerLogMaxTotalMb).toBe(5120);
+  });
+
+  it("preserves null as disabled and accepts numeric patch values", () => {
+    expect(
+      decodeServerSettingsPatch({ providerLogRetentionDays: null }).providerLogRetentionDays,
+    ).toBeNull();
+    expect(
+      decodeServerSettingsPatch({ providerLogMaxTotalMb: null }).providerLogMaxTotalMb,
+    ).toBeNull();
+    expect(
+      decodeServerSettingsPatch({ providerLogRetentionDays: 30 }).providerLogRetentionDays,
+    ).toBe(30);
+    expect(decodeServerSettingsPatch({ providerLogMaxTotalMb: 2048 }).providerLogMaxTotalMb).toBe(
+      2048,
+    );
+  });
+});
+
+describe("ServerSettings.idleTerminalStopHours", () => {
+  it("defaults to four hours and preserves null as disabled", () => {
+    expect(DEFAULT_SERVER_SETTINGS.idleTerminalStopHours).toBe(4);
+    expect(decodeServerSettings({}).idleTerminalStopHours).toBe(4);
+    expect(decodeServerSettings({ idleTerminalStopHours: null }).idleTerminalStopHours).toBeNull();
+    expect(
+      decodeServerSettingsPatch({ idleTerminalStopHours: null }).idleTerminalStopHours,
+    ).toBeNull();
+  });
+});
+
 describe("ServerSettings.pullRequestMonitoring", () => {
   it("defaults automatic monitoring and maintenance chats on", () => {
     expect(DEFAULT_SERVER_SETTINGS.autoMonitorPullRequestsOnCreate).toBe(true);
@@ -124,6 +180,18 @@ describe("ServerSettings.pullRequestMonitoring", () => {
       autoMonitorPullRequestsOnCreate: false,
       autoLaunchPrMonitorFallback: false,
     });
+  });
+});
+
+describe("ServerSettings.idleWorktreeReclaimDays", () => {
+  it("defaults idle worktree reclamation to seven days and accepts null to disable it", () => {
+    expect(DEFAULT_SERVER_SETTINGS.idleWorktreeReclaimDays).toBe(7);
+    expect(
+      decodeServerSettingsPatch({ idleWorktreeReclaimDays: null }).idleWorktreeReclaimDays,
+    ).toBe(null);
+    expect(decodeServerSettingsPatch({ idleWorktreeReclaimDays: 14 }).idleWorktreeReclaimDays).toBe(
+      14,
+    );
   });
 });
 

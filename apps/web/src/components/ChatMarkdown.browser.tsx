@@ -9,7 +9,7 @@ import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools
 
 const {
   createAssetUrlMock,
-  openFileInPreviewMock,
+  openFileReferenceMock,
   openBrowserMock,
   openFileMock,
   openInPreferredEditorMock,
@@ -18,7 +18,7 @@ const {
   readLocalApiMock,
 } = vi.hoisted(() => ({
   createAssetUrlMock: vi.fn(async () => ({ relativeUrl: "/assets/signed" })),
-  openFileInPreviewMock: vi.fn(async () => ({ _tag: "Success", value: undefined })),
+  openFileReferenceMock: vi.fn(async () => ({ _tag: "Success", value: undefined })),
   openBrowserMock: vi.fn(),
   openFileMock: vi.fn(),
   openInPreferredEditorMock: vi.fn(async () => "vscode"),
@@ -100,13 +100,17 @@ vi.mock("../state/preview", () => ({
 
 vi.mock("../rightPanelStore", () => ({
   useRightPanelStore: {
-    getState: () => ({ openBrowser: openBrowserMock, openFile: openFileMock }),
+    getState: () => ({
+      openBrowser: openBrowserMock,
+      openFile: openFileMock,
+      openExternalFile: vi.fn(),
+    }),
   },
 }));
 
-vi.mock("../browser/openFileInPreview", () => ({
+vi.mock("../browser/openFileReference", () => ({
   isBrowserPreviewFile: (path: string) => /\.(?:html?|pdf)$/i.test(path),
-  openFileInPreview: openFileInPreviewMock,
+  openFileReference: openFileReferenceMock,
 }));
 
 import ChatMarkdown from "./ChatMarkdown";
@@ -212,7 +216,7 @@ describe("ChatMarkdown", () => {
   afterEach(() => {
     useStore.setState(initialStoreState, true);
     openInPreferredEditorMock.mockClear();
-    openFileInPreviewMock.mockClear();
+    openFileReferenceMock.mockClear();
     openFileMock.mockClear();
     openPreviewMock.mockClear();
     navigateMock.mockClear();
@@ -308,7 +312,11 @@ describe("ChatMarkdown", () => {
     const filePath =
       "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/PermissionRule.ts";
     const screen = await render(
-      <ChatMarkdown text={`[PermissionRule.ts](file://${filePath})`} cwd="/repo/project" />,
+      <ChatMarkdown
+        text={`[PermissionRule.ts](file://${filePath})`}
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
     );
 
     try {
@@ -319,8 +327,11 @@ describe("ChatMarkdown", () => {
       await link.click();
 
       await vi.waitFor(() => {
-        expect(openInPreferredEditorMock).toHaveBeenCalledWith(expect.anything(), filePath);
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({ threadRef, cwd: "/repo/project", filePath }),
+        );
       });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
@@ -330,7 +341,11 @@ describe("ChatMarkdown", () => {
     const filePath =
       "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/PermissionRule.ts";
     const screen = await render(
-      <ChatMarkdown text={`[PermissionRule.ts:1](file://${filePath}#L1)`} cwd="/repo/project" />,
+      <ChatMarkdown
+        text={`[PermissionRule.ts:1](file://${filePath}#L1)`}
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
     );
 
     try {
@@ -341,8 +356,11 @@ describe("ChatMarkdown", () => {
       await link.click();
 
       await vi.waitFor(() => {
-        expect(openInPreferredEditorMock).toHaveBeenCalledWith(expect.anything(), `${filePath}:1`);
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({ threadRef, cwd: "/repo/project", filePath, line: 1 }),
+        );
       });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
@@ -352,7 +370,11 @@ describe("ChatMarkdown", () => {
     const filePath =
       "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/PermissionRule.ts";
     const screen = await render(
-      <ChatMarkdown text={`[PermissionRule.ts](file://${filePath}#L1C7)`} cwd="/repo/project" />,
+      <ChatMarkdown
+        text={`[PermissionRule.ts](file://${filePath}#L1C7)`}
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
     );
 
     try {
@@ -363,11 +385,17 @@ describe("ChatMarkdown", () => {
       await link.click();
 
       await vi.waitFor(() => {
-        expect(openInPreferredEditorMock).toHaveBeenCalledWith(
-          expect.anything(),
-          `${filePath}:1:7`,
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            threadRef,
+            cwd: "/repo/project",
+            filePath,
+            line: 1,
+            column: 7,
+          }),
         );
       });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
@@ -690,6 +718,65 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("reports a streaming Markdown performance baseline", async () => {
+    const samples: number[] = [];
+    let text = "";
+    const paragraphCount = 16;
+    const screen = await render(
+      <ChatMarkdown text={text} cwd="/repo/project" isStreaming threadRef={threadRef} />,
+    );
+
+    try {
+      for (let index = 0; index < paragraphCount; index += 1) {
+        const paragraph = `Streaming paragraph ${index} with ordinary prose.`;
+        const nextText = `${text}${text.length > 0 ? "\n\n" : ""}${paragraph}`;
+        const startedAt = performance.now();
+        await screen.rerender(
+          <ChatMarkdown
+            text={nextText}
+            cwd="/repo/project"
+            isStreaming
+            threadRef={threadRef}
+          />,
+        );
+        await new Promise<void>((resolve, reject) => {
+          const timeout = window.setTimeout(
+            () => reject(new Error(`Streaming paragraph ${index} did not render.`)),
+            5_000,
+          );
+          const check = () => {
+            if (document.body.textContent?.includes(paragraph)) {
+              window.clearTimeout(timeout);
+              resolve();
+              return;
+            }
+            window.requestAnimationFrame(check);
+          };
+          check();
+        });
+        if (index >= 2) {
+          samples.push(performance.now() - startedAt);
+        }
+        text = nextText;
+      }
+
+      const sortedSamples = samples.toSorted((left, right) => left - right);
+      const medianMs = sortedSamples[Math.floor(sortedSamples.length / 2)] ?? 0;
+      const p95Ms = sortedSamples[Math.ceil(sortedSamples.length * 0.95) - 1] ?? 0;
+      console.warn(
+        JSON.stringify({
+          benchmark: "streaming-markdown",
+          appendedParagraphs: paragraphCount,
+          measuredChunks: samples.length,
+          medianMs: Number(medianMs.toFixed(2)),
+          p95Ms: Number(p95Ms.toFixed(2)),
+        }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps table headers from inheriting emergency word breaks", async () => {
     const screen = await render(
       <ChatMarkdown
@@ -729,12 +816,14 @@ describe("ChatMarkdown", () => {
       try {
         await page.getByRole("link", { name: fileName }).click();
         await vi.waitFor(() => {
-          expect(openFileInPreviewMock).toHaveBeenCalledWith({
+          expect(openFileReferenceMock).toHaveBeenCalledWith({
             threadRef,
-            relativePath: `/repo/project/./${fileName}`,
+            filePath: `/repo/project/./${fileName}`,
+            cwd: "/repo/project",
             httpBaseUrl: "http://localhost:3773",
             createAssetUrl: createAssetUrlMock,
             openPreview: openPreviewMock,
+            navigatePreview: openPreviewMock,
           });
         });
         expect(openInPreferredEditorMock).not.toHaveBeenCalled();
@@ -756,12 +845,15 @@ describe("ChatMarkdown", () => {
     try {
       await page.getByRole("link", { name: "report.html · L12" }).click();
       await vi.waitFor(() => {
-        expect(openFileInPreviewMock).toHaveBeenCalledWith({
+        expect(openFileReferenceMock).toHaveBeenCalledWith({
           threadRef,
-          relativePath: "/repo/project/./report.html",
+          filePath: "/repo/project/./report.html",
+          cwd: "/repo/project",
+          line: 12,
           httpBaseUrl: "http://localhost:3773",
           createAssetUrl: createAssetUrlMock,
           openPreview: openPreviewMock,
+          navigatePreview: openPreviewMock,
         });
       });
       expect(openInPreferredEditorMock).not.toHaveBeenCalled();
@@ -782,9 +874,16 @@ describe("ChatMarkdown", () => {
     try {
       await page.getByRole("link", { name: "index.ts · L12" }).click();
       await vi.waitFor(() => {
-        expect(openFileMock).toHaveBeenCalledWith(threadRef, "src/index.ts", 12);
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            threadRef,
+            cwd: "/repo/project",
+            filePath: expect.any(String),
+            line: 12,
+          }),
+        );
       });
-      expect(openFileInPreviewMock).not.toHaveBeenCalled();
+      expect(openFileMock).not.toHaveBeenCalled();
       expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
@@ -803,7 +902,9 @@ describe("ChatMarkdown", () => {
     try {
       await page.getByRole("link", { name: "index.ts · L40" }).click();
       await vi.waitFor(() => {
-        expect(openFileMock).toHaveBeenCalledWith(threadRef, "src/index.ts", 40);
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({ threadRef, cwd: "/repo/project", line: 40 }),
+        );
       });
       expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
@@ -823,7 +924,9 @@ describe("ChatMarkdown", () => {
     try {
       await page.getByRole("link", { name: "CopilotProvider.ts · L103" }).click();
       await vi.waitFor(() => {
-        expect(openFileMock).toHaveBeenCalledWith(threadRef, "CopilotProvider.ts", 103);
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({ threadRef, cwd: "/repo/project", line: 103 }),
+        );
       });
       expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
@@ -843,7 +946,9 @@ describe("ChatMarkdown", () => {
     try {
       await page.getByRole("link", { name: "settings.ts · L542,733" }).click();
       await vi.waitFor(() => {
-        expect(openFileMock).toHaveBeenCalledWith(threadRef, "settings.ts", 542);
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({ threadRef, cwd: "/repo/project", line: 542 }),
+        );
       });
       expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
@@ -851,23 +956,77 @@ describe("ChatMarkdown", () => {
     }
   });
 
-  it("falls back to the external editor for files outside the workspace", async () => {
-    const filePath = "/Users/other/project/outside.ts";
+  it("opens external text references through the owning environment, never the local editor", async () => {
+    const filePath = "/tmp/External notes.txt";
+    const captureDirectory = import.meta.env.VITE_FILE_REFERENCE_CAPTURE_DIR;
+    if (captureDirectory) await page.viewport(1280, 800);
     const screen = await render(
       <ChatMarkdown
-        text={`[outside.ts](file://${filePath})`}
+        text="See [External notes](file:///tmp/External%20notes.txt)"
         cwd="/repo/project"
         threadRef={threadRef}
       />,
     );
 
     try {
-      await page.getByRole("link", { name: "outside.ts" }).click();
+      if (captureDirectory) {
+        await page.screenshot({ path: `${captureDirectory}/external-file-before.png` });
+      }
+      await page.getByRole("link", { name: "External notes" }).click();
       await vi.waitFor(() => {
-        expect(openInPreferredEditorMock).toHaveBeenCalledWith(expect.anything(), filePath);
+        expect(openFileReferenceMock).toHaveBeenCalledWith({
+          threadRef,
+          filePath,
+          cwd: "/repo/project",
+          httpBaseUrl: "http://localhost:3773",
+          createAssetUrl: createAssetUrlMock,
+          openPreview: openPreviewMock,
+          navigatePreview: openPreviewMock,
+        });
       });
       expect(openFileMock).not.toHaveBeenCalled();
-      expect(openFileInPreviewMock).not.toHaveBeenCalled();
+      expect(openFileReferenceMock).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("never sends an absolute remote reference without an owning thread to the local editor", async () => {
+    const screen = await render(
+      <ChatMarkdown text="[outside](file:///tmp/outside.ts)" cwd="/repo/project" />,
+    );
+    try {
+      await page.getByRole("link", { name: "outside" }).click();
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+      expect(readLocalApiMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("decodes Unicode file URLs once and preserves both line and column", async () => {
+    const filePath = "/tmp/Quarterly report café.ts";
+    const screen = await render(
+      <ChatMarkdown
+        text="[Quarterly report](file:///tmp/Quarterly%20report%20caf%C3%A9.ts#L5C3)"
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+    try {
+      await page.getByRole("link", { name: /Quarterly report/ }).click();
+      await vi.waitFor(() => {
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            threadRef,
+            cwd: "/repo/project",
+            filePath,
+            line: 5,
+            column: 3,
+          }),
+        );
+      });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }

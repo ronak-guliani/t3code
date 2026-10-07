@@ -311,7 +311,10 @@ export const makeOrchestrationIntegrationHarness = (
     const projectionSnapshotQueryLayer = OrchestrationProjectionSnapshotQueryLive;
     const runtimeServicesLayer = Layer.mergeAll(
       projectionSnapshotQueryLayer,
-      orchestrationLayer.pipe(Layer.provide(projectionSnapshotQueryLayer)),
+      orchestrationLayer.pipe(
+        Layer.provide(projectionSnapshotQueryLayer),
+        Layer.provide(checkpointStoreLayer),
+      ),
       ProjectionCheckpointRepositoryLive,
       ProjectionPendingApprovalRepositoryLive,
       checkpointStoreLayer,
@@ -396,6 +399,8 @@ export const makeOrchestrationIntegrationHarness = (
         Layer.succeed(ThreadDeletionReactor, {
           start: () => Effect.void,
           drain: Effect.void,
+          reclaimWorktreeNow: () => Effect.die("unused in this harness"),
+          isIdleReclaimEligibleIgnoringAge: () => Effect.succeed(false),
         }),
       ),
       Layer.provideMerge(

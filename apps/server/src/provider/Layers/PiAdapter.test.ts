@@ -37,6 +37,9 @@ const decodeRecordLine = Schema.decodeSync(
 );
 const encodeJsonLine = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
+/** A Pi session-tree entry for a user message, as `get_entries` reports it. */
+const piUserEntry = (id: string) => ({ type: "message", id, message: { role: "user" } });
+
 const PI_INSTANCE_ID = ProviderInstanceId.make("pi");
 const THREAD_ID = ThreadId.make("thread-pi-adapter");
 const SESSION_FILE = "/fake/.pi/agent/sessions/--workspace--/0001.jsonl";
@@ -440,52 +443,102 @@ describe("PiAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  it.effect("refuses to fork while the source Pi turn is active", () =>
+  it.effect("forks while the source Pi turn is active, without starting Pi", () =>
     Effect.gen(function* () {
-      const { fake, adapter } = yield* makeHarness();
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pi-fork-active-" });
+      const sessionFile = `${dir}/source.jsonl`;
+      yield* fs.writeFileString(sessionFile, "");
+      const { fake, adapter } = yield* makeHarness(sessionFile);
       yield* adapter.startSession({
         threadId: THREAD_ID,
         cwd: process.cwd(),
         runtimeMode: "full-access",
+        resumeCursor: { schemaVersion: 1, sessionFile, turnEntryIds: ["user-1"] },
       });
+      // Pi writes the prompt's entry before the turn settles, which is what
+      // lets a fork resolve the streaming turn's boundary.
+      fake.queueEntries({ entries: [piUserEntry("user-2")], leafId: "leaf-2" });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "still working" });
+      yield* fake.takeRequest("prompt");
+      const spawnsBeforeFork = fake.spawnHistory().length;
+
+      const forked = yield* adapter.forkSession({
+        sourceThreadId: THREAD_ID,
+        threadId: ThreadId.make("thread-pi-fork-active-target"),
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(fake.spawnHistory().length, spawnsBeforeFork);
+      const cursor = forked.resumeCursor as {
+        sessionFile: string;
+        turnEntryIds: Array<string | null>;
+        pendingFork?: { entryId: string | null };
+      };
+      assert.notEqual(cursor.sessionFile, sessionFile);
+      assert.isTrue(yield* fs.exists(cursor.sessionFile));
+      assert.deepEqual(cursor.turnEntryIds, ["user-1", "user-2"]);
+      assert.deepEqual(cursor.pendingFork, { entryId: null });
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("forks at the last settled turn while the next turn is still streaming", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pi-fork-active-anchor-" });
+      const sessionFile = `${dir}/source.jsonl`;
+      yield* fs.writeFileString(sessionFile, "");
+      const { fake, adapter } = yield* makeHarness(sessionFile);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: { schemaVersion: 1, sessionFile, turnEntryIds: ["user-1"] },
+      });
+      fake.queueEntries({ entries: [piUserEntry("user-2")], leafId: "leaf-2" });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "still working" });
+      yield* fake.takeRequest("prompt");
+
+      const forked = yield* adapter.forkSession({
+        sourceThreadId: THREAD_ID,
+        threadId: ThreadId.make("thread-pi-fork-active-anchor-target"),
+        runtimeMode: "full-access",
+        forkAnchor: { turnId: TurnId.make("turn-pi-anchor"), turnIndex: 0 },
+      });
+
+      // The streaming turn has no settled boundary yet, so the fork resolves it
+      // from the live session and re-roots at its user message.
+      assert.deepEqual(forked.resumeCursor, {
+        schemaVersion: 1,
+        sessionFile: (forked.resumeCursor as { sessionFile: string }).sessionFile,
+        turnEntryIds: ["user-1"],
+        pendingFork: { entryId: "user-2" },
+      });
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("still refuses an anchored fork when the discarded turn's entry cannot be read", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pi-fork-active-unreadable-" });
+      const sessionFile = `${dir}/source.jsonl`;
+      yield* fs.writeFileString(sessionFile, "");
+      const { fake, adapter } = yield* makeHarness(sessionFile);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        // A turn whose boundary was never readable stays unresolved.
+        resumeCursor: { schemaVersion: 1, sessionFile, turnEntryIds: ["user-1", null] },
+      });
+      fake.queueEntries({ entries: [piUserEntry("user-2")], leafId: "leaf-2" });
       yield* adapter.sendTurn({ threadId: THREAD_ID, input: "still working" });
       yield* fake.takeRequest("prompt");
 
       const error = yield* adapter
         .forkSession({
           sourceThreadId: THREAD_ID,
-          threadId: ThreadId.make("thread-pi-fork-active-target"),
-          runtimeMode: "full-access",
-        })
-        .pipe(Effect.flip);
-
-      assert.equal(error._tag, "ProviderAdapterValidationError");
-      assert.include(error.message, "active");
-    }).pipe(Effect.scoped, Effect.provide(testLayer)),
-  );
-
-  it.effect("refuses an anchor whose following turn has no captured session-tree entry", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pi-fork-boundary-" });
-      const sessionFile = `${dir}/source.jsonl`;
-      yield* fs.writeFileString(sessionFile, "");
-      const { adapter } = yield* makeHarness(sessionFile);
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        cwd: process.cwd(),
-        runtimeMode: "full-access",
-        resumeCursor: {
-          schemaVersion: 1,
-          sessionFile,
-          turnEntryIds: ["target-entry", null],
-        },
-      });
-
-      const error = yield* adapter
-        .forkSession({
-          sourceThreadId: THREAD_ID,
-          threadId: ThreadId.make("thread-pi-fork-boundary-target"),
+          threadId: ThreadId.make("thread-pi-fork-active-unreadable-target"),
           runtimeMode: "full-access",
           forkAnchor: { turnId: TurnId.make("turn-pi-anchor"), turnIndex: 0 },
         })
@@ -495,29 +548,99 @@ describe("PiAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  it.effect("refuses to return the source file as a forked session", () =>
+  it.effect("refuses a fork Pi did not copy into its own session directory", () =>
     Effect.gen(function* () {
-      const { fake, adapter } = yield* makeHarness();
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pi-fork-same-file-" });
+      const sessionFile = `${dir}/source.jsonl`;
+      yield* fs.writeFileString(sessionFile, "");
+      const { fake, adapter } = yield* makeHarness(sessionFile);
       yield* adapter.startSession({
         threadId: THREAD_ID,
         cwd: process.cwd(),
         runtimeMode: "full-access",
+        resumeCursor: { schemaVersion: 1, sessionFile, turnEntryIds: ["user-1"] },
       });
-      fake.setForkSessionFile(SESSION_FILE);
+      const forked = yield* adapter.forkSession({
+        sourceThreadId: THREAD_ID,
+        threadId: ThreadId.make("thread-pi-fork-same-file"),
+        runtimeMode: "full-access",
+      });
+      const snapshot = (forked.resumeCursor as { sessionFile: string }).sessionFile;
+      fake.setForkSessionFile(snapshot);
 
       const error = yield* adapter
-        .forkSession({
-          sourceThreadId: THREAD_ID,
+        .startSession({
           threadId: ThreadId.make("thread-pi-fork-same-file"),
+          cwd: process.cwd(),
           runtimeMode: "full-access",
+          resumeCursor: forked.resumeCursor,
         })
         .pipe(Effect.flip);
 
-      assert.include(error.message, "distinct session file");
+      assert.include(error.message, "did not create a session file");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  it.effect("creates and registers an anchored Pi fork under the target thread", () =>
+  it.effect("sweeps fork snapshots no live fork can still claim", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pi-fork-sweep-" });
+      const sessionFile = `${dir}/source.jsonl`;
+      yield* fs.writeFileString(sessionFile, "");
+      const snapshots = path.join(config.stateDir, "pi-fork-snapshots");
+      const stale = path.join(snapshots, "stale.jsonl");
+      const fresh = path.join(snapshots, "fresh.jsonl");
+      yield* fs.makeDirectory(snapshots, { recursive: true });
+      yield* fs.writeFileString(stale, "");
+      yield* fs.writeFileString(fresh, "");
+      const longAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+      yield* fs.utimes(stale, longAgo, longAgo);
+
+      const { adapter } = yield* makeHarness(sessionFile);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: { schemaVersion: 1, sessionFile, turnEntryIds: ["user-1"] },
+      });
+      yield* adapter.forkSession({
+        sourceThreadId: THREAD_ID,
+        threadId: ThreadId.make("thread-pi-fork-sweep-target"),
+        runtimeMode: "full-access",
+      });
+
+      assert.isFalse(yield* fs.exists(stale));
+      assert.isTrue(yield* fs.exists(fresh));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("refuses to start a fork whose snapshot is gone", () =>
+    Effect.gen(function* () {
+      const { adapter } = yield* makeHarness();
+      const missing = `${process.cwd()}/t3-pi-fork-missing-snapshot.jsonl`;
+
+      const error = yield* adapter
+        .startSession({
+          threadId: THREAD_ID,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: {
+            schemaVersion: 1,
+            sessionFile: missing,
+            turnEntryIds: ["user-1"],
+            pendingFork: { entryId: null },
+          },
+        })
+        .pipe(Effect.flip);
+
+      assert.include(error.message, "fork snapshot is missing");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("snapshots an anchored fork and materializes it on the fork's first start", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pi-fork-success-" });
@@ -552,32 +675,45 @@ describe("PiAdapter", () => {
         forkAnchor: { turnId: TurnId.make("turn-pi-anchor"), turnIndex: 0 },
       });
 
-      const forkRequest = yield* fake.takeRequest("fork");
-      const forkSpawn = fake.spawnHistory().at(-1);
-      assert.equal(forkRequest["entryId"], "turn-2-entry");
       assert.equal(forked.threadId, targetThreadId);
       assert.equal(forked.providerInstanceId, PI_INSTANCE_ID);
       assert.equal(forked.status, "ready");
+      // No Pi process runs for the fork itself, and the snapshot keeps the
+      // source's bytes so later source turns cannot leak into the fork.
+      assert.deepEqual(fake.spawnHistory().at(-1)?.args.includes("--fork"), false);
+      const snapshot = (forked.resumeCursor as { sessionFile: string }).sessionFile;
+      assert.notEqual(snapshot, sessionFile);
       assert.deepEqual(forked.resumeCursor, {
         schemaVersion: 1,
-        sessionFile: "/fake/fork-1.jsonl",
+        sessionFile: snapshot,
         turnEntryIds: ["turn-1-entry"],
+        pendingFork: { entryId: "turn-2-entry" },
       });
 
-      assert.isDefined(forkSpawn);
-      assert.include(forkSpawn?.args ?? [], "--fork");
-      assert.include(forkSpawn?.args ?? [], sessionFile);
-      assert.include(forkSpawn?.args ?? [], "--no-extensions");
-      assert.include(forkSpawn?.args ?? [], "--no-tools");
-      assert.equal(forkSpawn?.cwd, process.cwd());
-
-      yield* adapter.startSession({
+      const started = yield* adapter.startSession({
         threadId: targetThreadId,
         cwd: process.cwd(),
         runtimeMode: "full-access",
         resumeCursor: forked.resumeCursor,
         modelSelection,
       });
+
+      const forkRequest = yield* fake.takeRequest("fork");
+      const forkSpawn = fake.spawnHistory().at(-1);
+      assert.equal(forkRequest["entryId"], "turn-2-entry");
+      assert.include(forkSpawn?.args ?? [], "--fork");
+      assert.include(forkSpawn?.args ?? [], snapshot);
+      assert.equal(forkSpawn?.cwd, process.cwd());
+      assert.deepEqual(started.resumeCursor, {
+        schemaVersion: 1,
+        sessionFile: "/fake/fork-1.jsonl",
+        turnEntryIds: ["turn-1-entry"],
+      });
+      // The snapshot outlives materialization: the durable resume cursor stops
+      // naming it only once the caller persists the session returned above, so
+      // deleting it here would make a crash in that window unrecoverable.
+      assert.isTrue(yield* fs.exists(snapshot));
+
       yield* adapter.sendTurn({
         threadId: targetThreadId,
         input: "continue from the fork",
@@ -588,6 +724,37 @@ describe("PiAdapter", () => {
         modelId: "gpt-5",
       });
       assert.equal((yield* fake.takeRequest("set_thinking_level"))["level"], "high");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("refuses an anchor whose following turn has no captured session-tree entry", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pi-fork-boundary-" });
+      const sessionFile = `${dir}/source.jsonl`;
+      yield* fs.writeFileString(sessionFile, "");
+      const { adapter } = yield* makeHarness(sessionFile);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 1,
+          sessionFile,
+          turnEntryIds: ["target-entry", null],
+        },
+      });
+
+      const error = yield* adapter
+        .forkSession({
+          sourceThreadId: THREAD_ID,
+          threadId: ThreadId.make("thread-pi-fork-boundary-target"),
+          runtimeMode: "full-access",
+          forkAnchor: { turnId: TurnId.make("turn-pi-anchor"), turnIndex: 0 },
+        })
+        .pipe(Effect.flip);
+
+      assert.include(error.message, "no captured session-tree entry");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

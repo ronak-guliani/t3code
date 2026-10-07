@@ -152,6 +152,12 @@ export const ProviderRespondToUserInputInput = Schema.Struct({
 });
 export type ProviderRespondToUserInputInput = typeof ProviderRespondToUserInputInput.Type;
 
+export const ProviderDismissUserInputInput = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+});
+export type ProviderDismissUserInputInput = typeof ProviderDismissUserInputInput.Type;
+
 const ProviderEventKind = Schema.Literals(["session", "notification", "request", "error"]);
 
 export const ProviderEvent = Schema.Struct({

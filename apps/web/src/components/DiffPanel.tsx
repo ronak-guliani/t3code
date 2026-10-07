@@ -45,7 +45,11 @@ import { useTheme } from "../hooks/useTheme";
 import { buildPatchCacheKey } from "../lib/diffRendering";
 import { reportClientWarning } from "../lib/clientLogger";
 import { resolveDiffThemeName } from "../lib/diffRendering";
-import { areAllDiffFilesCollapsed, toggleAllDiffFiles } from "../lib/diffCollapse";
+import {
+  areAllDiffFilesCollapsed,
+  mergeCollapsedFileKeys,
+  toggleAllDiffFiles,
+} from "../lib/diffCollapse";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { selectProjectByRef, useStore } from "../store";
 import { createThreadSelectorByRef } from "../storeSelectors";
@@ -139,33 +143,39 @@ function diffZoomLineHeight(zoom: number): number {
 }
 
 const DIFF_PANEL_UNSAFE_CSS = `
+/* :host, not the tag name — this CSS is injected into the shadow root, where
+   only :host reaches the element that paints the diff surface. */
+:host,
 [data-diffs-header],
 [data-diff],
 [data-file],
 [data-error-wrapper],
 [data-virtualizer-buffer] {
-  --diffs-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
-  --diffs-light-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
-  --diffs-dark-bg: color-mix(in srgb, var(--card) 90%, var(--background)) !important;
+  --diffs-bg: var(--sunken) !important;
+  --diffs-light-bg: var(--sunken) !important;
+  --diffs-dark-bg: var(--sunken) !important;
   --diffs-token-light-bg: transparent;
   --diffs-token-dark-bg: transparent;
 
-  --diffs-bg-context-override: color-mix(in srgb, var(--background) 97%, var(--foreground));
-  --diffs-bg-hover-override: color-mix(in srgb, var(--background) 94%, var(--foreground));
-  --diffs-bg-separator-override: color-mix(in srgb, var(--background) 95%, var(--foreground));
-  --diffs-bg-buffer-override: color-mix(in srgb, var(--background) 90%, var(--foreground));
+  /* Gutter, context, and row tints all derive from the recessed well the diff
+     body sits on, matching the in-chat changed-files card. Mixing from the
+     canvas instead leaves the gutter reading as a raised card edge. */
+  --diffs-bg-context-override: color-mix(in srgb, var(--sunken) 97%, var(--code-foreground));
+  --diffs-bg-hover-override: color-mix(in srgb, var(--sunken) 94%, var(--code-foreground));
+  --diffs-bg-separator-override: color-mix(in srgb, var(--sunken) 95%, var(--code-foreground));
+  --diffs-bg-buffer-override: color-mix(in srgb, var(--sunken) 90%, var(--code-foreground));
 
-  --diffs-bg-addition-override: color-mix(in srgb, var(--background) 92%, var(--success));
-  --diffs-bg-addition-number-override: color-mix(in srgb, var(--background) 88%, var(--success));
-  --diffs-bg-addition-hover-override: color-mix(in srgb, var(--background) 85%, var(--success));
-  --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--background) 80%, var(--success));
+  --diffs-bg-addition-override: color-mix(in srgb, var(--sunken) 92%, var(--success));
+  --diffs-bg-addition-number-override: color-mix(in srgb, var(--sunken) 88%, var(--success));
+  --diffs-bg-addition-hover-override: color-mix(in srgb, var(--sunken) 85%, var(--success));
+  --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--sunken) 80%, var(--success));
 
-  --diffs-bg-deletion-override: color-mix(in srgb, var(--background) 92%, var(--destructive));
-  --diffs-bg-deletion-number-override: color-mix(in srgb, var(--background) 88%, var(--destructive));
-  --diffs-bg-deletion-hover-override: color-mix(in srgb, var(--background) 85%, var(--destructive));
+  --diffs-bg-deletion-override: color-mix(in srgb, var(--sunken) 92%, var(--destructive));
+  --diffs-bg-deletion-number-override: color-mix(in srgb, var(--sunken) 88%, var(--destructive));
+  --diffs-bg-deletion-hover-override: color-mix(in srgb, var(--sunken) 85%, var(--destructive));
   --diffs-bg-deletion-emphasis-override: color-mix(
     in srgb,
-    var(--background) 80%,
+    var(--sunken) 80%,
     var(--destructive)
   );
 
@@ -173,8 +183,7 @@ const DIFF_PANEL_UNSAFE_CSS = `
 }
 
 [data-file-info] {
-  background-color: color-mix(in srgb, var(--card) 94%, var(--foreground)) !important;
-  border-block-color: var(--border) !important;
+  background-color: var(--sunken) !important;
   color: var(--foreground) !important;
 }
 
@@ -182,8 +191,8 @@ const DIFF_PANEL_UNSAFE_CSS = `
   position: sticky !important;
   top: 0;
   z-index: 4;
-  background-color: color-mix(in srgb, var(--card) 94%, var(--foreground)) !important;
-  border-bottom: 1px solid var(--border) !important;
+  /* Shares the well. Opaque, so it still occludes rows scrolling underneath. */
+  background-color: var(--sunken) !important;
 }
 
 [data-title] {
@@ -305,7 +314,7 @@ function getDiffCollapseIconClassName(fileDiff: FileDiffMetadata): string {
   }
 }
 
-function diffFileSafetyLabel(diffFile: DiffFile | undefined): string | null {
+function diffFileSafetyLabel(diffFile: DiffFile | undefined, collapsed: boolean): string | null {
   if (!diffFile) {
     return null;
   }
@@ -316,7 +325,7 @@ function diffFileSafetyLabel(diffFile: DiffFile | undefined): string | null {
     return "Hidden bidirectional Unicode characters detected.";
   }
   if (diffFile.size === "large") {
-    return "Large diff collapsed by default.";
+    return collapsed ? "Large diff collapsed by default." : "Large diff — expand to review.";
   }
   if (diffFile.size === "unrenderable") {
     return "Diff is too large to render safely.";
@@ -346,9 +355,9 @@ export default function DiffPanel({
   const [diffRenderMode, setDiffRenderMode] = useState<DiffRenderMode>("stacked");
   const [diffWordWrap, setDiffWordWrap] = useState(settings.diffWordWrap);
   const [diffZoom, setDiffZoom] = useState(DIFF_ZOOM_DEFAULT);
-  const [collapsedDiffFileKeys, setCollapsedDiffFileKeys] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
+  const [collapsedFileOverrides, setCollapsedFileOverrides] = useState<
+    ReadonlyMap<string, boolean>
+  >(() => new Map());
   const patchViewportRef = useRef<HTMLDivElement>(null);
   const turnStripRef = useRef<HTMLDivElement>(null);
   const previousDiffOpenRef = useRef(false);
@@ -635,6 +644,24 @@ export default function DiffPanel({
     () => renderableFiles.map(buildFileDiffRenderKey),
     [renderableFiles],
   );
+  const defaultCollapsedDiffFileKeys = useMemo(
+    () =>
+      new Set(
+        renderableFiles
+          .filter((fileDiff) => {
+            const path = resolveFileDiffPath(fileDiff);
+            // The file the user navigated to stays open even when it is large;
+            // folding the thing someone just asked to see hides the answer.
+            return path !== selectedFilePath && diffSafetyByPath.get(path)?.size === "large";
+          })
+          .map(buildFileDiffRenderKey),
+      ),
+    [diffSafetyByPath, renderableFiles, selectedFilePath],
+  );
+  const collapsedDiffFileKeys = useMemo(
+    () => mergeCollapsedFileKeys(defaultCollapsedDiffFileKeys, collapsedFileOverrides),
+    [collapsedFileOverrides, defaultCollapsedDiffFileKeys],
+  );
   const allDiffFilesCollapsed = areAllDiffFilesCollapsed(diffFileKeys, collapsedDiffFileKeys);
   const diffUnsafeCss = useMemo(
     () => buildDiffPanelUnsafeCss(diffZoom, settings.codeFontSize),
@@ -647,33 +674,6 @@ export default function DiffPanel({
     }),
     [diffZoom, settings.codeFontSize],
   );
-
-  useEffect(() => {
-    if (renderableFiles.length === 0) {
-      setCollapsedDiffFileKeys((current) => (current.size === 0 ? current : new Set()));
-      return;
-    }
-
-    const visibleFileKeys = new Set(renderableFiles.map(buildFileDiffRenderKey));
-    setCollapsedDiffFileKeys((current) => {
-      const next = new Set([...current].filter((fileKey) => visibleFileKeys.has(fileKey)));
-      for (const fileDiff of renderableFiles) {
-        const filePath = resolveFileDiffPath(fileDiff);
-        const safety = diffSafetyByPath.get(filePath);
-        if (safety?.size === "large") {
-          const fileKey = buildFileDiffRenderKey(fileDiff);
-          if (filePath === selectedFilePath) {
-            next.delete(fileKey);
-          } else {
-            next.add(fileKey);
-          }
-        }
-      }
-      const unchanged =
-        next.size === current.size && [...next].every((fileKey) => current.has(fileKey));
-      return unchanged ? current : next;
-    });
-  }, [diffSafetyByPath, renderableFiles, selectedFilePath]);
 
   useEffect(() => {
     if (diffOpen && !previousDiffOpenRef.current) {
@@ -801,20 +801,19 @@ export default function DiffPanel({
     },
     [activeCwd],
   );
-  const toggleDiffFileCollapsed = useCallback((fileKey: string) => {
-    setCollapsedDiffFileKeys((current) => {
-      const next = new Set(current);
-      if (next.has(fileKey)) {
-        next.delete(fileKey);
-      } else {
-        next.add(fileKey);
-      }
-      return next;
-    });
-  }, []);
+  const toggleDiffFileCollapsed = useCallback(
+    (fileKey: string) => {
+      setCollapsedFileOverrides((current) => {
+        const next = new Map(current);
+        next.set(fileKey, !(current.get(fileKey) ?? collapsedDiffFileKeys.has(fileKey)));
+        return next;
+      });
+    },
+    [collapsedDiffFileKeys],
+  );
   const toggleAllDiffFilesCollapsed = useCallback(() => {
-    setCollapsedDiffFileKeys((current) => toggleAllDiffFiles(diffFileKeys, current));
-  }, [diffFileKeys]);
+    setCollapsedFileOverrides(toggleAllDiffFiles(diffFileKeys, !allDiffFilesCollapsed));
+  }, [allDiffFilesCollapsed, diffFileKeys]);
 
   const updateDiffSelection = useCallback(
     (nextSearch: DiffRouteSearch) => {
@@ -1166,7 +1165,7 @@ export default function DiffPanel({
                   const themedFileKey = `${fileKey}:${resolvedTheme}`;
                   const collapsed = collapsedDiffFileKeys.has(fileKey);
                   const safety = diffSafetyByPath.get(filePath);
-                  const safetyLabel = diffFileSafetyLabel(safety);
+                  const safetyLabel = diffFileSafetyLabel(safety, collapsed);
                   const lineAnnotations = showReviewSnapshot
                     ? (reviewAnnotationsByPath.get(filePath) ?? EMPTY_REVIEW_ANNOTATIONS)
                     : EMPTY_REVIEW_ANNOTATIONS;
@@ -1177,7 +1176,7 @@ export default function DiffPanel({
                       <div
                         key={themedFileKey}
                         data-diff-file-path={filePath}
-                        className="diff-render-file mb-2 rounded-md border border-border/70 bg-background/70 p-3 first:mt-2 last:mb-0"
+                        className="diff-render-file mb-2 rounded-md p-3 first:mt-2 last:mb-0"
                       >
                         <button
                           type="button"
@@ -1210,7 +1209,7 @@ export default function DiffPanel({
                       }}
                     >
                       {safetyLabel && (
-                        <div className="rounded-t-md border border-b-0 border-border/70 bg-background/70 px-3 py-1 text-[length:var(--app-code-font-size)] text-muted-foreground/75">
+                        <div className="rounded-t-md px-3 py-1 text-[length:var(--app-code-font-size)] text-muted-foreground/75">
                           {safetyLabel}
                         </div>
                       )}
@@ -1268,7 +1267,7 @@ export default function DiffPanel({
                   </p>
                   <pre
                     className={cn(
-                      "max-h-[72vh] rounded-md border border-border/70 bg-background/70 p-3 font-mono text-muted-foreground/90",
+                      "max-h-[72vh] rounded-md bg-sunken p-3 font-mono text-muted-foreground/90",
                       diffWordWrap
                         ? "overflow-auto whitespace-pre-wrap wrap-break-word"
                         : "overflow-auto",

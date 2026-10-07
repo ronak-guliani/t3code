@@ -14,6 +14,7 @@
 import type {
   ProviderInterruptTurnInput,
   ProviderInstanceId,
+  ProviderDismissUserInputInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderDriverKind,
@@ -97,6 +98,14 @@ export interface ProviderServiceShape {
    */
   readonly respondToUserInput: (
     input: ProviderRespondToUserInputInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Reject a pending question only when the bound provider has native support.
+   * Unsupported providers fail without submitting an empty or synthetic answer.
+   */
+  readonly dismissUserInput: (
+    input: ProviderDismissUserInputInput,
   ) => Effect.Effect<void, ProviderServiceError>;
 
   /**

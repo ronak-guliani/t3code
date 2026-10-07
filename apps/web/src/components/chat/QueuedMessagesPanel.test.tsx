@@ -56,6 +56,16 @@ function render(
   );
 }
 
+describe("queued thread context display", () => {
+  it("renders the reference label instead of its URI", () => {
+    const html = render([
+      queuedTurn("queued-context", "Review [Auth refactor](t3-context://v1/thread/ctx_queued)"),
+    ]);
+    expect(html).toContain("Review Auth refactor");
+    expect(html).not.toContain("t3-context://");
+  });
+});
+
 function renderEditing(queuedTurn: OrchestrationQueuedTurn) {
   return renderToStaticMarkup(
     <QueuedMessagesPanel
@@ -140,6 +150,22 @@ describe("QueuedMessagesPanel hold banner", () => {
 
     expect(html).toContain("Queue held after restart");
     expect(html).toContain("Resume queue");
+  });
+
+  it("renders nothing when held but the queue is literally empty", () => {
+    const html = renderHeld([]);
+
+    expect(html).toBe("");
+    expect(html).not.toContain("Resume queue");
+  });
+
+  it("names the hidden follow-ups when no queued message is visible", () => {
+    const html = renderHeld([
+      queuedTurn("nudge", "Generated prompt", { kind: "child-nudge" } as never),
+    ]);
+
+    expect(html).toContain("1 queued follow-up");
+    expect(html).not.toContain("These messages");
   });
 
   it("still renders nothing when unheld and every turn is hidden", () => {

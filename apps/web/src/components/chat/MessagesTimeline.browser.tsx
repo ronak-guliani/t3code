@@ -10,18 +10,22 @@ import {
   TurnId,
   type TerminalMetadataStreamEvent,
 } from "@t3tools/contracts";
-import { createRef } from "react";
+import { Profiler, createRef } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
+import type { OpenAttachmentReferenceInput } from "~/browser/openFileReference";
 
 const scrollToEndSpy = vi.fn();
 const getStateSpy = vi.fn(() => ({ isAtEnd: true }));
 const createAssetUrlMock = vi.hoisted(() =>
   vi.fn(async () => ({ relativeUrl: "/assets/signed/abc123" })),
 );
+const openFileReferenceMock = vi.hoisted(() => vi.fn());
 const toastAddMock = vi.hoisted(() => vi.fn());
+
+vi.mock("~/browser/openFileReference", () => ({ openFileReference: openFileReferenceMock }));
 
 vi.mock("../ui/toast", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../ui/toast")>()),
@@ -1055,6 +1059,113 @@ describe("MessagesTimeline", () => {
     },
   );
 
+  it("reports tool group expansion latency for a 300-entry history", async () => {
+    const toolCount = 300;
+    const createdAt = "2026-09-08T10:00:00.000Z";
+    const groupedEntries = Array.from({ length: toolCount }, (_, index) => ({
+      id: `perf-tool-${index}`,
+      stableId: `perf-tool-${index}`,
+      sourceActivityKind: "tool.completed",
+      createdAt,
+      label: "Read file",
+      detail: `Tool output ${index}`,
+      tone: "tool" as const,
+      toolLifecycleStatus: "completed" as const,
+      toolData: {
+        toolCallId: `perf-call-${index}`,
+        toolName: "read_file",
+        rawInput: { path: `src/file-${index}.ts` },
+        rawOutput: { content: `Tool output ${index}` },
+      },
+    }));
+    const reactCommitDurations: number[] = [];
+    const screen = await render(
+      <AppAtomRegistryProvider>
+        <Profiler
+          id="tool-output-expansion"
+          onRender={(_id, _phase, actualDuration) => reactCommitDurations.push(actualDuration)}
+        >
+          <MessagesTimeline
+            {...buildProps()}
+            rows={[
+              {
+                kind: "work",
+                id: "perf-tool-group",
+                createdAt,
+                groupedEntries,
+                shouldAutoCollapse: true,
+              },
+            ]}
+            timelineEntries={[]}
+          />
+        </Profiler>
+      </AppAtomRegistryProvider>,
+    );
+
+    try {
+      const samples: number[] = [];
+      const reactCommitSamples: number[] = [];
+      const visibleDetailCount = () =>
+        Array.from(
+          document.querySelectorAll<HTMLButtonElement>('button[aria-label^="Expand details:"]'),
+        ).filter((button) => button.getClientRects().length > 0).length;
+      const waitForVisibleDetailCount = (expected: number) =>
+        new Promise<void>((resolve, reject) => {
+          const timeout = window.setTimeout(
+            () => reject(new Error(`Expected ${expected} visible tool details.`)),
+            5_000,
+          );
+          const check = () => {
+            if (visibleDetailCount() === expected) {
+              window.clearTimeout(timeout);
+              resolve();
+              return;
+            }
+            window.requestAnimationFrame(check);
+          };
+          check();
+        });
+      const expansionCount = 20;
+      for (let index = 0; index < expansionCount; index += 1) {
+        const commitStartIndex = reactCommitDurations.length;
+        const startedAt = performance.now();
+        await page.getByRole("button", { name: `Expand Tool Calls (${toolCount})` }).click();
+        await waitForVisibleDetailCount(50);
+        samples.push(performance.now() - startedAt);
+        reactCommitSamples.push(
+          reactCommitDurations.slice(commitStartIndex).reduce((total, duration) => total + duration, 0),
+        );
+        if (index < expansionCount - 1) {
+          await page.getByRole("button", { name: `Collapse Tool Calls (${toolCount})` }).click();
+          await waitForVisibleDetailCount(0);
+        }
+      }
+
+      const sortedSamples = samples.toSorted((left, right) => left - right);
+      const medianMs = sortedSamples[Math.floor(sortedSamples.length / 2)] ?? 0;
+      const p95Ms = sortedSamples[Math.ceil(sortedSamples.length * 0.95) - 1] ?? 0;
+      const sortedReactSamples = reactCommitSamples.toSorted((left, right) => left - right);
+      const reactCommitMedianMs =
+        sortedReactSamples[Math.floor(sortedReactSamples.length / 2)] ?? 0;
+      const reactCommitP95Ms =
+        sortedReactSamples[Math.ceil(sortedReactSamples.length * 0.95) - 1] ?? 0;
+      console.warn(
+        JSON.stringify({
+          benchmark: "tool-output-expansion",
+          totalEntries: toolCount,
+          initiallyRenderedEntries: 50,
+          expansionSamples: samples.length,
+          medianMs: Number(medianMs.toFixed(2)),
+          p95Ms: Number(p95Ms.toFixed(2)),
+          reactCommitMedianMs: Number(reactCommitMedianMs.toFixed(2)),
+          reactCommitP95Ms: Number(reactCommitP95Ms.toFixed(2)),
+        }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("bounds consolidated history across multiple work phases to 50 entries", async () => {
     const createdAt = "2026-09-08T10:00:00.000Z";
     const turnId = TurnId.make("bounded-receipt");
@@ -1401,6 +1512,16 @@ describe("MessagesTimeline", () => {
 
   it("opens message attachments staged outside the workspace", async () => {
     const props = buildProps();
+    const threadRef = scopeThreadRef(props.activeThreadEnvironmentId, props.activeThreadId);
+    openFileReferenceMock.mockImplementationOnce(async (input: OpenAttachmentReferenceInput) => {
+      input.onOpenGallery(
+        input.attachments.map((image, index) => ({
+          ...image,
+          previewUrl: `http://localhost:3773/assets/signed/${index ? "def456" : "abc123"}`,
+        })),
+        input.selectedAttachmentId,
+      );
+    });
     const screen = await render(
       <MessagesTimeline
         {...props}
@@ -1432,15 +1553,17 @@ describe("MessagesTimeline", () => {
     try {
       await page.getByRole("button", { name: "Open shot.png" }).click();
       await vi.waitFor(() => {
-        expect(createAssetUrlMock).toHaveBeenCalledWith({
-          resource: {
-            _tag: "attachment",
-            attachmentId: "thread-1-abc123",
-            fileName: "shot.png",
-            mimeType: "image/png",
-            disposition: "inline",
-          },
-        });
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: "attachments",
+            threadRef,
+            selectedAttachmentId: "thread-1-abc123",
+            attachments: [expect.objectContaining({ id: "thread-1-abc123", name: "shot.png" })],
+            createAssetUrl: expect.any(Function),
+            httpBaseUrl: "http://localhost:3773",
+            onOpenGallery: expect.any(Function),
+          }),
+        );
       });
       expect(props.onImageExpand).toHaveBeenCalledWith({
         images: [{ src: "http://localhost:3773/assets/signed/abc123", name: "shot.png" }],
@@ -1451,8 +1574,64 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("opens tool-result file cards through the owning-thread file-reference boundary", async () => {
+    const props = buildProps();
+    const threadRef = scopeThreadRef(props.activeThreadEnvironmentId, props.activeThreadId);
+    openFileReferenceMock.mockResolvedValueOnce({ _tag: "Success", value: undefined });
+    const createdAt = "2026-09-08T10:00:00.000Z";
+    const turnId = TurnId.make("file-change-turn");
+    const filePath = "/tmp/tool-output notes.ts";
+    const screen = await render(
+      <MessagesTimeline
+        {...props}
+        activeTurnId={turnId}
+        activeTurnInProgress
+        isWorking
+        activeTurnStartedAt={createdAt}
+        timelineEntries={[
+          {
+            id: "file-change-1",
+            kind: "work",
+            createdAt,
+            entry: {
+              id: "file-change-1",
+              createdAt,
+              turnId,
+              sourceActivityKind: "tool.completed",
+              label: "Edit file",
+              tone: "tool",
+              detail: "Updated source file",
+              changedFiles: [filePath],
+              toolLifecycleStatus: "completed",
+              isComplete: true,
+            },
+          },
+        ]}
+      />,
+    );
+    try {
+      await page.getByRole("button", { name: /Expand details:/ }).click();
+      await page.getByRole("button", { name: `Open file ${filePath}` }).click();
+      await vi.waitFor(() => {
+        expect(openFileReferenceMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            threadRef,
+            filePath,
+            cwd: props.workspaceRoot,
+            httpBaseUrl: "http://localhost:3773",
+            createAssetUrl: expect.any(Function),
+            openPreview: expect.any(Function),
+            navigatePreview: expect.any(Function),
+          }),
+        );
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("reports the real error when the clicked attachment fails to load", async () => {
-    createAssetUrlMock.mockRejectedValueOnce(new Error("boom"));
+    openFileReferenceMock.mockRejectedValueOnce(new Error("boom"));
     const props = buildProps();
     const screen = await render(
       <MessagesTimeline

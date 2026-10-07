@@ -34,6 +34,35 @@ describe("rightPanelStore", () => {
     expect(panel.activeSurfaceId).toBe("file:src/index.ts");
   });
 
+  it("deduplicates external file references and updates line/column reveal", () => {
+    const store = useRightPanelStore.getState();
+    store.openExternalFile(ref, {
+      kind: "external",
+      path: "/tmp/Quarterly notes.ts",
+      line: 2,
+      column: 4,
+    });
+    store.openExternalFile(ref, {
+      kind: "external",
+      path: "/tmp/Quarterly notes.ts",
+      line: 8,
+      column: 3,
+    });
+
+    const panel = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, ref);
+    expect(panel.surfaces).toEqual([
+      {
+        id: "file-reference:/tmp/Quarterly notes.ts",
+        kind: "file",
+        relativePath: "/tmp/Quarterly notes.ts",
+        revealLine: 8,
+        revealColumn: 3,
+        reference: { kind: "external", path: "/tmp/Quarterly notes.ts", line: 8, column: 3 },
+      },
+    ]);
+    expect(panel.activeSurfaceId).toBe("file-reference:/tmp/Quarterly notes.ts");
+  });
+
   it("switches from a file preview to the files surface when toggled", () => {
     const store = useRightPanelStore.getState();
     store.openFile(ref, "src/index.ts");

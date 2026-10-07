@@ -909,6 +909,65 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
     }),
   );
 
+  // Failure modes: a viewer may attach while cleanup is queued, output activity
+  // is distinct from resize/subprocess metadata updates, and cleanup must not
+  // delete the user's persisted terminal history.
+  it.effect("stops only idle unattached terminals and retains their history", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, logsDir } = yield* createManager();
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+      process.emitData("preserve this output\n");
+      yield* waitFor(pathExists(historyLogPath(logsDir)));
+
+      const stopped = yield* manager.closeIfIdle({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        outputBefore: new Date(Date.now() + 1_000).toISOString(),
+      });
+
+      expect(stopped).toBe(true);
+      expect(process.killed).toBe(true);
+      expect(yield* readFileString(historyLogPath(logsDir))).toContain("preserve this output");
+    }),
+  );
+
+  it.effect("keeps attached terminals and terminals with recent output", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, getEvents } = yield* createManager();
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      const unsubscribe = yield* manager.attachStream(openInput(), () => Effect.void);
+      const attachedResult = yield* manager.closeIfIdle({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        outputBefore: new Date(Date.now() + 1_000).toISOString(),
+      });
+      unsubscribe();
+      expect(attachedResult).toBe(false);
+
+      process.emitData("recent output\n");
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "output" && event.data.includes("recent output")),
+        ),
+      );
+      const recentOutputResult = yield* manager.closeIfIdle({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        outputBefore: new Date(Date.now() - 1_000).toISOString(),
+      });
+
+      expect(recentOutputResult).toBe(false);
+      expect(process.killed).toBe(false);
+    }),
+  );
+
   it.effect("closes all terminals for a thread when close omits terminalId", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter, logsDir } = yield* createManager();

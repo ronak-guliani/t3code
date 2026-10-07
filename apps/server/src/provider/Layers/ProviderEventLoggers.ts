@@ -74,6 +74,8 @@ export const ProviderEventLoggersLive = Layer.effect(
   ProviderEventLoggers,
   Effect.gen(function* () {
     const { providerEventLogPath, globalProviderEventLogPath } = yield* ServerConfig;
+    // Aggregate retention is owned by the storage cleanup policy (master switch,
+    // low-disk tightening, live-head protection); see storage/contributors/logs.ts.
     const globalSink = yield* makeGlobalProviderEventSink({
       filePath: globalProviderEventLogPath,
       maxBytes: GLOBAL_SINK_MAX_BYTES,

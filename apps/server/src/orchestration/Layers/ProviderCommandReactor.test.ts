@@ -285,6 +285,7 @@ describe("ProviderCommandReactor", () => {
     );
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
+    const dismissUserInput = vi.fn<ProviderServiceShape["dismissUserInput"]>(() => Effect.void);
     const stopSession = vi.fn<ProviderServiceShape["stopSession"]>((input) =>
       Effect.sync(() => {
         const threadId =
@@ -378,6 +379,7 @@ describe("ProviderCommandReactor", () => {
       steerTurn: steerTurn as ProviderServiceShape["steerTurn"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
+      dismissUserInput: dismissUserInput as ProviderServiceShape["dismissUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       sessionCommand: unsupported as ProviderServiceShape["sessionCommand"],
       listSessions: () => Effect.succeed(runtimeSessions),
@@ -546,6 +548,7 @@ describe("ProviderCommandReactor", () => {
       steerTurn,
       respondToRequest,
       respondToUserInput,
+      dismissUserInput,
       stopSession,
       renameBranch,
       refreshStatus,
@@ -1209,41 +1212,73 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
   });
 
-  it("captures the pre-turn checkpoint before sending the provider turn", async () => {
-    const harness = await createHarness({ checkpointIsGitRepository: true });
-    const now = new Date().toISOString();
+  it.each(["checkpoint", "session"] as const)(
+    "overlaps checkpoint and session startup but waits for both when %s finishes first",
+    async (first) => {
+      const harness = await createHarness({ checkpointIsGitRepository: true });
+      const checkpointGate = Effect.runSync(Deferred.make<void>());
+      const sessionGate = Effect.runSync(Deferred.make<void>());
+      const completed: string[] = [];
+      const captureCheckpoint = vi.mocked(harness.checkpointStore.captureCheckpoint);
+      const captureImpl = captureCheckpoint.getMockImplementation()!;
+      captureCheckpoint.mockImplementation((input) =>
+        Deferred.await(checkpointGate).pipe(
+          Effect.andThen(captureImpl(input)),
+          Effect.tap(() => Effect.sync(() => completed.push("checkpoint"))),
+        ),
+      );
+      const startImpl = harness.startSession.getMockImplementation()!;
+      harness.startSession.mockImplementation((threadId, input) =>
+        Deferred.await(sessionGate).pipe(
+          Effect.andThen(Effect.suspend(() => startImpl(threadId, input))),
+          Effect.tap(() => Effect.sync(() => completed.push("session"))),
+        ),
+      );
+      const now = new Date().toISOString();
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-checkpoint-baseline"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: asMessageId("user-message-checkpoint-baseline"),
-          role: "user",
-          text: "change files",
-          attachments: [],
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-checkpoint-baseline"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-checkpoint-baseline"),
+            role: "user",
+            text: "change files",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+
+      await waitFor(() => captureCheckpoint.mock.calls.length === 1);
+      await waitFor(() => harness.startSession.mock.calls.length === 1);
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      await Effect.runPromise(
+        Deferred.succeed(first === "checkpoint" ? checkpointGate : sessionGate, undefined),
+      );
+      await waitFor(() => completed.includes(first));
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      await Effect.runPromise(
+        Deferred.succeed(first === "checkpoint" ? sessionGate : checkpointGate, undefined),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+      expect(harness.checkpointStore.captureCheckpoint).toHaveBeenCalledWith({
+        cwd: harness.workspacePath,
+        checkpointRef: checkpointBaselineRefForThreadTurn(ThreadId.make("thread-1"), 1),
+        workspaceBinding: {
+          canonicalPath: harness.workspacePath,
+          worktreePath: harness.workspacePath,
+          branch: null,
+          generation: 1,
         },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: now,
-      }),
-    );
-
-    await waitFor(() => harness.turnStartOrder.length === 2);
-
-    expect(harness.checkpointStore.captureCheckpoint).toHaveBeenCalledWith({
-      cwd: harness.workspacePath,
-      checkpointRef: checkpointBaselineRefForThreadTurn(ThreadId.make("thread-1"), 1),
-      workspaceBinding: {
-        canonicalPath: harness.workspacePath,
-        worktreePath: harness.workspacePath,
-        branch: null,
-        generation: 1,
-      },
-    });
-    expect(harness.turnStartOrder).toEqual(["captureCheckpoint", "sendTurn"]);
-  });
+      });
+      expect(harness.turnStartOrder).toEqual(["captureCheckpoint", "sendTurn"]);
+    },
+  );
 
   it("captures a distinct pre-turn baseline when a completion ref already exists", async () => {
     const harness = await createHarness({
@@ -1309,7 +1344,7 @@ describe("ProviderCommandReactor", () => {
         message: {
           messageId: asMessageId("user-message-title"),
           role: "user",
-          text: "Please investigate reconnect failures after restarting the session.",
+          text: "Please investigate [Auth refactor](t3-context://v1/thread/ctx_title).",
           attachments: [],
         },
         titleSeed: seededTitle,
@@ -1321,7 +1356,7 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.generateThreadTitle.mock.calls.length === 1);
     expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
-      message: "Please investigate reconnect failures after restarting the session.",
+      message: "Please investigate Auth refactor.",
     });
 
     await waitFor(async () => {
@@ -1575,6 +1610,11 @@ describe("ProviderCommandReactor", () => {
 
   it("generates a worktree branch name for the first turn", async () => {
     const harness = await createHarness();
+    // Turn admission restores missing worktrees, so model a real checkout directory.
+    const worktreePath = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "provider-project-worktree-")),
+    );
+    createdBaseDirs.add(worktreePath);
     const now = new Date().toISOString();
 
     await Effect.runPromise(
@@ -1583,7 +1623,7 @@ describe("ProviderCommandReactor", () => {
         commandId: CommandId.make("cmd-thread-branch"),
         threadId: ThreadId.make("thread-1"),
         branch: "t3code/1234abcd",
-        worktreePath: "/tmp/provider-project-worktree",
+        worktreePath: worktreePath,
       }),
     );
 
@@ -1610,7 +1650,7 @@ describe("ProviderCommandReactor", () => {
         message: {
           messageId: asMessageId("user-message-branch-model"),
           role: "user",
-          text: "Add a safer reconnect backoff.",
+          text: "Add a safer reconnect backoff [Auth refactor](t3-context://v1/thread/ctx_branch).",
           attachments: [],
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -1622,9 +1662,9 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.generateBranchName.mock.calls.length === 1);
     await waitFor(() => harness.refreshStatus.mock.calls.length === 1);
     expect(harness.generateBranchName.mock.calls[0]?.[0]).toMatchObject({
-      message: "Add a safer reconnect backoff.",
+      message: "Add a safer reconnect backoff Auth refactor.",
     });
-    expect(harness.refreshStatus.mock.calls[0]?.[0]).toBe("/tmp/provider-project-worktree");
+    expect(harness.refreshStatus.mock.calls[0]?.[0]).toBe(worktreePath);
   });
 
   it("forwards codex model options through session start and turn send", async () => {
@@ -3111,6 +3151,45 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("reacts to thread.user-input.dismiss by forwarding the request to the provider", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-for-user-input-dismiss"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "opencode",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.user-input.dismiss",
+        commandId: CommandId.make("cmd-user-input-dismiss"),
+        threadId: ThreadId.make("thread-1"),
+        requestId: asApprovalRequestId("user-input-request-1"),
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.dismissUserInput.mock.calls.length === 1);
+    expect(harness.dismissUserInput.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-1",
+      requestId: "user-input-request-1",
+    });
+  });
+
   it("surfaces stale provider approval request failures without faking approval resolution", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -3204,6 +3283,57 @@ describe("ProviderCommandReactor", () => {
         (activity.payload as Record<string, unknown>).requestId === "approval-request-1",
     );
     expect(resolvedActivity).toBeUndefined();
+
+    harness.dismissUserInput.mockImplementation(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: ProviderDriverKind.make("opencode"),
+          method: "question.reject",
+          detail: "Unknown pending user-input request: user-input-request-1",
+        }),
+      ),
+    );
+    const dismissCommandId = CommandId.make("cmd-user-input-dismiss-stale");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.user-input.dismiss",
+        commandId: dismissCommandId,
+        threadId: ThreadId.make("thread-1"),
+        requestId: asApprovalRequestId("user-input-request-1"),
+        createdAt: now,
+      }),
+    );
+    await waitFor(async () => {
+      const currentReadModel = await Effect.runPromise(harness.engine.getReadModel());
+      const currentThread = currentReadModel.threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      return currentThread?.activities.some(
+        (activity) =>
+          activity.kind === "provider.user-input.respond.failed" &&
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          "originCommandId" in activity.payload &&
+          activity.payload.originCommandId === dismissCommandId,
+      ) ?? false;
+    });
+
+    const afterDismissReadModel = await Effect.runPromise(harness.engine.getReadModel());
+    const afterDismissThread = afterDismissReadModel.threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    const dismissFailureActivity = afterDismissThread?.activities.find(
+      (activity) =>
+        activity.kind === "provider.user-input.respond.failed" &&
+        typeof activity.payload === "object" &&
+        activity.payload !== null &&
+        "originCommandId" in activity.payload &&
+        activity.payload.originCommandId === dismissCommandId,
+    );
+    expect(dismissFailureActivity?.payload).toMatchObject({
+      requestId: "user-input-request-1",
+      originCommandId: dismissCommandId,
+    });
   });
 
   it("surfaces stale provider user-input failures without faking user-input resolution", async () => {
@@ -3302,6 +3432,7 @@ describe("ProviderCommandReactor", () => {
     expect(failureActivity).toBeDefined();
     expect(failureActivity?.payload).toMatchObject({
       requestId: "user-input-request-1",
+      originCommandId: "cmd-user-input-respond-stale",
       detail: expect.stringContaining("Stale pending user-input request: user-input-request-1"),
     });
 

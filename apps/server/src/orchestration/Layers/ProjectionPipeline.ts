@@ -71,6 +71,7 @@ import {
   type OrchestrationProjectionPipelineShape,
 } from "../Services/ProjectionPipeline.ts";
 import {
+  activityChangesShellSummary,
   emptyProjectionImpact,
   isActionableApprovalRequest,
   mergeProjectionImpact,
@@ -81,6 +82,7 @@ import {
   ProjectionReconciler,
   ProjectionReconcilerLive,
 } from "../projection/ProjectionReconciler.ts";
+import { derivePendingUserInputCount } from "../projection/pendingUserInputCount.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -984,7 +986,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadMessageRepository.upsert({
             messageId: event.payload.messageId,
             threadId: event.payload.threadId,
-            sequence: previousMessage?.sequence ?? event.sequence,
+            ...(previousMessage === undefined
+              ? { sequence: event.sequence }
+              : previousMessage.sequence === undefined
+                ? {}
+                : { sequence: previousMessage.sequence }),
             turnId: event.payload.turnId,
             role: event.payload.role,
             text: nextText,
@@ -1128,6 +1134,28 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : {}),
             createdAt: event.payload.activity.createdAt,
           });
+          if (
+            activityChangesShellSummary(event.payload.activity) &&
+            (event.payload.activity.kind === "user-input.requested" ||
+              event.payload.activity.kind === "user-input.resolved" ||
+              event.payload.activity.kind === "provider.user-input.respond.failed")
+          ) {
+            // The event is broadcast before deferred reconciliation finishes,
+            // so keep this small lifecycle summary current in the same projection
+            // transaction or the sidebar can retain a stale "Awaiting Input" state.
+            const [thread, userInputActivities] = yield* Effect.all([
+              projectionThreadRepository.getById({ threadId: event.payload.threadId }),
+              projectionThreadActivityRepository.listUserInputLifecycleByThreadId({
+                threadId: event.payload.threadId,
+              }),
+            ]);
+            if (Option.isSome(thread)) {
+              yield* projectionThreadRepository.upsert({
+                ...thread.value,
+                pendingUserInputCount: derivePendingUserInputCount(userInputActivities),
+              });
+            }
+          }
           // Must match the projector exactly: a late failure for an older
           // message must not delete a newer start's row.
           if (event.payload.activity.kind === "provider.turn.start.failed") {

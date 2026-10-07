@@ -114,11 +114,23 @@ export function hasServerAcknowledgedPendingTurn(input: {
   hasPendingApproval: boolean;
   hasPendingUserInput: boolean;
   threadError: string | null | undefined;
+  /**
+   * A turn that never reached the provider. On a thread with no session yet the
+   * reactor cannot write a terminal session or `lastError`, so the failure
+   * activity is the only signal that this send will never be acknowledged —
+   * without it the busy latch, its timer, and the disabled composer never clear.
+   */
+  turnStartFailed?: boolean | undefined;
 }): boolean {
   if (!input.pendingTurn) {
     return false;
   }
-  if (input.hasPendingApproval || input.hasPendingUserInput || Boolean(input.threadError)) {
+  if (
+    input.hasPendingApproval ||
+    input.hasPendingUserInput ||
+    Boolean(input.threadError) ||
+    input.turnStartFailed
+  ) {
     return true;
   }
 

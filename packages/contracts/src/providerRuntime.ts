@@ -459,6 +459,7 @@ export const UserInputQuestion = Schema.Struct({
 export type UserInputQuestion = typeof UserInputQuestion.Type;
 
 const UserInputRequestedPayload = Schema.Struct({
+  dismissible: Schema.optionalKey(Schema.Boolean),
   questions: Schema.Array(UserInputQuestion),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;

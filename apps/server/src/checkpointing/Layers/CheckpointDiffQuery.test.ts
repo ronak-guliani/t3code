@@ -103,6 +103,8 @@ describe("CheckpointDiffQueryLive", () => {
       const checkpointStore: CheckpointStoreShape = {
         isGitRepository: () => Effect.succeed(true),
         captureCheckpoint: () => Effect.void,
+        createWorkspaceSnapshotCommit: () =>
+          Effect.die("CheckpointDiffQuery should not snapshot worktrees"),
         hasCheckpointRef: () =>
           Effect.die("CheckpointDiffQuery should not preflight checkpoint refs"),
         checkpointRefMatchesWorkspace: () => Effect.succeed(true),
@@ -134,6 +136,7 @@ describe("CheckpointDiffQueryLive", () => {
             getThreadDetailById: () => Effect.succeed(Option.none()),
             getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
             listThreadProjectIds: () => Effect.die("unused"),
+            getThreadMessageOriginById: () => Effect.die("unused"),
             getThreadActivitiesPage: () => Effect.die("unused"),
             readThread: () => Effect.die("unused"),
           }),
@@ -236,6 +239,7 @@ describe("CheckpointDiffQueryLive", () => {
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
+          getThreadMessageOriginById: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
           readThread: () => Effect.die("unused"),
         }),
@@ -303,6 +307,7 @@ describe("CheckpointDiffQueryLive", () => {
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
+          getThreadMessageOriginById: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
           readThread: () => Effect.die("unused"),
         }),
@@ -367,6 +372,7 @@ describe("CheckpointDiffQueryLive", () => {
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
+          getThreadMessageOriginById: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
           readThread: () => Effect.die("unused"),
         }),
@@ -426,6 +432,7 @@ describe("CheckpointDiffQueryLive", () => {
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           listThreadProjectIds: () => Effect.die("unused"),
+          getThreadMessageOriginById: () => Effect.die("unused"),
           getThreadActivitiesPage: () => Effect.die("unused"),
           readThread: () => Effect.die("unused"),
         }),

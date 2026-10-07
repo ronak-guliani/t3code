@@ -23,6 +23,8 @@ import { type MouseEvent, type ReactNode, useEffect, useRef, useState } from "re
 import type { RightPanelSurface } from "~/rightPanelStore";
 import { isElectron } from "~/env";
 import { cn } from "~/lib/utils";
+import { CHAT_HEADER_WEB_ROW_CLASS } from "~/lib/chatHeaderLayout";
+import { TITLEBAR_ROW_CLASS } from "~/lib/titlebar";
 import { useBrowserDefaults } from "~/browser/browserDefaults";
 import { useTheme } from "~/hooks/useTheme";
 import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanelShell";
@@ -83,7 +85,11 @@ function titleFor(
     case "insights":
       return "Insights";
     case "file":
-      return surface.relativePath.split("/").at(-1) ?? surface.relativePath;
+      return (
+        surface.reference?.metadata?.name ??
+        surface.relativePath.split(/[\\/]/).at(-1) ??
+        surface.relativePath
+      );
     case "terminal":
       return terminalLabels[surface.resourceId] ?? "Terminal";
     case "pull-request":
@@ -258,7 +264,8 @@ export function RightPanelTabs({
     <PreviewPanelShell mode={mode} maximized={maximized}>
       <div
         className={cn(
-          "flex h-11 shrink-0 items-center gap-1 border-b border-border/70 bg-chat-background px-2",
+          "flex shrink-0 items-center gap-1 border-b border-border/70 bg-chat-background px-2",
+          isElectron ? TITLEBAR_ROW_CLASS : CHAT_HEADER_WEB_ROW_CLASS,
           isElectron && mode === "inline" && "drag-region",
         )}
         data-right-panel-tabbar
@@ -287,7 +294,7 @@ export function RightPanelTabs({
                     }}
                     onAuxClick={(event) => closeOnMiddleClick(event, surface)}
                     className={cn(
-                      "group flex h-7 min-w-0 max-w-36 shrink-0 items-center gap-1 rounded-md pl-2 pr-2.5 text-[13px] [-webkit-app-region:no-drag]",
+                      "group flex h-7 min-w-0 max-w-36 shrink-0 items-center gap-1 rounded-md pl-2 pr-2.5 text-[length:var(--app-tab-font-size)] [-webkit-app-region:no-drag]",
                       active
                         ? "bg-accent text-foreground"
                         : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",

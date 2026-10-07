@@ -133,6 +133,7 @@ import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { DelegationAuditRepositoryLive } from "./persistence/Layers/DelegationAudit.ts";
 import { ProjectionThreadActivityRepositoryLive } from "./persistence/Layers/ProjectionThreadActivities.ts";
 import { WorktreeCleanupJobRepositoryLive } from "./persistence/Layers/WorktreeCleanupJobs.ts";
+import { StorageCleanup } from "./storage/StorageCleanup.ts";
 import {
   ProviderRegistry,
   type ProviderRegistryShape,
@@ -588,9 +589,14 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provideMerge(gitStatusBroadcasterLayer),
       Layer.provide(
-        Layer.mock(TerminalManager)({
-          ...options?.layers?.terminalManager,
-        }),
+        Layer.merge(
+          Layer.mock(TerminalManager)({
+            ...options?.layers?.terminalManager,
+          }),
+          Layer.mock(StorageCleanup)({
+            getUsage: () => Effect.die("Not implemented in server test."),
+          }),
+        ),
       ),
       Layer.provide(
         Layer.merge(
@@ -3042,6 +3048,136 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(response.status, 200);
       assert.equal(snapshot.snapshotSequence, 42);
       assert.equal(snapshot.thread.id, defaultThreadId);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  const historyMessageEvent = (sequence: number) => ({
+    sequence,
+    eventId: EventId.make(`history-message-${sequence}`),
+    aggregateKind: "thread" as const,
+    aggregateId: defaultThreadId,
+    occurredAt: "2026-01-01T00:00:01.000Z",
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "thread.message-sent" as const,
+    payload: {
+      threadId: defaultThreadId,
+      messageId: MessageId.make("history-message"),
+      role: "assistant" as const,
+      text: "delta",
+      turnId: null,
+      streaming: true,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    },
+  });
+
+  it.effect("refreshes a windowed baseline when a streamed message origin is unavailable", () =>
+    Effect.gen(function* () {
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      const events = yield* PubSub.unbounded<OrchestrationEvent>();
+      let reads = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: { streamDomainEvents: Stream.fromPubSub(events) },
+          projectionSnapshotQuery: {
+            getThreadMessageOriginById: () => Effect.succeed(Option.none()),
+            getThreadDetailSnapshotById: () =>
+              Effect.sync(() => {
+                reads++;
+                return Option.some({
+                  snapshotSequence: reads === 1 ? 1 : 3,
+                  thread,
+                  page: {
+                    snapshotSequence: reads === 1 ? 1 : 3,
+                    threadSequence: reads === 1 ? 1 : 3,
+                    hasMore: true,
+                    beforeCursor: "older",
+                    windowStart: { sequence: 1, rowId: 1 },
+                  },
+                });
+              }),
+          },
+        },
+      });
+      const url = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(url, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            turnLimit: 10,
+          }).pipe(
+            Stream.tap((item) =>
+              item.kind === "snapshot" && item.snapshot.snapshotSequence === 1
+                ? PubSub.publish(events, historyMessageEvent(2))
+                : Effect.void,
+            ),
+            Stream.take(2),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+      assert.equal(items[1]?.kind, "snapshot");
+      assert.equal(items[1]?.kind === "snapshot" ? items[1].snapshot.snapshotSequence : 0, 3);
+      assert.equal(reads, 2);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("caches origin lookups across streaming deltas for the same message", () =>
+    Effect.gen(function* () {
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      const events = yield* PubSub.unbounded<OrchestrationEvent>();
+      let lookups = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: { streamDomainEvents: Stream.fromPubSub(events) },
+          projectionSnapshotQuery: {
+            getThreadMessageOriginById: () =>
+              Effect.sync(() => {
+                lookups++;
+                return Option.some({ sequence: 2, rowId: 2 });
+              }),
+            getThreadDetailSnapshotById: () =>
+              Effect.succeed(
+                Option.some({
+                  snapshotSequence: 1,
+                  thread,
+                  page: {
+                    snapshotSequence: 1,
+                    threadSequence: 1,
+                    hasMore: true,
+                    beforeCursor: "older",
+                    windowStart: { sequence: 1, rowId: 1 },
+                  },
+                }),
+              ),
+          },
+        },
+      });
+      const url = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(url, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            turnLimit: 10,
+          }).pipe(
+            Stream.tap((item) =>
+              item.kind === "snapshot"
+                ? PubSub.publish(events, historyMessageEvent(2))
+                : item.kind === "event" && item.event.sequence === 2
+                  ? PubSub.publish(events, historyMessageEvent(3))
+                  : Effect.void,
+            ),
+            Stream.take(3),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+      assert.equal(items[2]?.kind, "event");
+      assert.equal(items[2]?.kind === "event" ? items[2].messageOrigin?.sequence : 0, 2);
+      assert.equal(lookups, 1);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

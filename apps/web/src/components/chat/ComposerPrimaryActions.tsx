@@ -107,6 +107,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           size="sm"
           className={cn("rounded-full", compact ? "px-3" : "px-4")}
           {...pointerFocusProps}
+          data-pending-user-input-action="true"
           disabled={
             pendingAction.isResponding ||
             (pendingAction.isLastQuestion ? !pendingAction.isComplete : !pendingAction.canAdvance)

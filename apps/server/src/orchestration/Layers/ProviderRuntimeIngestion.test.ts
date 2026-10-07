@@ -8,6 +8,7 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  GitCommandError,
   type ReviewSnapshot,
   type OrchestrationCommand,
 } from "@t3tools/contracts";
@@ -30,6 +31,7 @@ import {
   Exit,
   Layer,
   ManagedRuntime,
+  Metric,
   PubSub,
   Scope,
   Stream,
@@ -45,6 +47,7 @@ import {
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
+import { CheckpointStoreDieStubLive } from "../../checkpointing/Layers/CheckpointStore.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
@@ -138,6 +141,7 @@ function createProviderServiceHarness() {
     steerTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
+    dismissUserInput: () => unsupported(),
     sessionCommand: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
@@ -260,6 +264,10 @@ describe("ProviderRuntimeIngestion", () => {
   async function createHarness(options?: {
     serverSettings?: Partial<ServerSettings>;
     reviewSnapshot?: ReviewSnapshot;
+    reviewSnapshotVerifier?: (input: {
+      readonly cwd: string;
+      readonly snapshot: ReviewSnapshot;
+    }) => Effect.Effect<ReviewSnapshot | null, GitCommandError>;
     failAssistantDeltaDispatch?: (
       command: OrchestrationCommand,
     ) => boolean | "invariant" | "transient" | "interrupt" | "commit-then-interrupt";
@@ -282,6 +290,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provide(RepositoryIdentityResolverLive),
       Layer.provide(SqlitePersistenceMemory),
+      Layer.provideMerge(CheckpointStoreDieStubLive),
     );
     const engineLayer =
       options?.failAssistantDeltaDispatch === undefined &&
@@ -349,7 +358,8 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(
         Layer.succeed(ReviewSnapshotVerifier, {
-          currentSnapshot: (input) => Effect.succeed(input.snapshot),
+          currentSnapshot: (input) =>
+            options?.reviewSnapshotVerifier?.(input) ?? Effect.succeed(input.snapshot),
         }),
       ),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
@@ -841,6 +851,7 @@ describe("ProviderRuntimeIngestion", () => {
         delta: "older response",
       },
     });
+    await harness.drain();
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",
@@ -1204,6 +1215,51 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe(true);
   });
 
+  it("batches production tool activity dispatches before acknowledging the source events", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-production-tool-batch");
+    const count = 6;
+
+    for (let index = 0; index < count; index += 1) {
+      harness.emit({
+        type: "item.updated",
+        eventId: asEventId(`evt-production-tool-batch-${index}`),
+        provider: ProviderDriverKind.make("copilot"),
+        threadId: asThreadId("thread-1"),
+        turnId,
+        itemId: asItemId(`item-production-tool-batch-${index}`),
+        createdAt: new Date().toISOString(),
+        payload: {
+          itemType: "command_execution",
+          status: "in_progress",
+          title: `Tool ${index}`,
+          detail: `output ${index}`,
+          data: {
+            toolCallId: `tool-production-batch-${index}`,
+            kind: "execute",
+            command: `command-${index}`,
+          },
+        },
+      });
+    }
+
+    await harness.drain();
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    expect(thread?.activities.filter((activity) => activity.kind === "tool.updated")).toHaveLength(
+      count,
+    );
+    const metrics = await Effect.runPromise(Metric.snapshot);
+    expect(
+      metrics.some(
+        (snapshot) =>
+          snapshot.id === "t3_orchestration_activity_append_batches_total" &&
+          snapshot.attributes?.batchSize === String(count),
+      ),
+    ).toBe(true);
+  });
+
   it("coalesces repeated tool progress and acknowledges events after projection", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -1541,6 +1597,201 @@ describe("ProviderRuntimeIngestion", () => {
       status: "parsed",
       findings: [{ title: "Second finding" }],
     });
+  });
+
+  it("persists the review result from the turn's snapshot when the finalization snapshot refresh fails", async () => {
+    // GitHub (or git) can be unavailable at finalization time. The reviewer
+    // already inspected the turn's snapshot, so findings must persist against
+    // it instead of being discarded with the failed refresh.
+    const harness = await createHarness({
+      reviewSnapshot: {
+        scope: { kind: "uncommitted", branch: "main", untrackedFiles: [] },
+        diff: buildLargeReviewDiff(),
+        diffHash: "snapshot-hash",
+      },
+      reviewSnapshotVerifier: () =>
+        Effect.fail(
+          new GitCommandError({
+            operation: "test",
+            command: "gh pr diff",
+            cwd: "test",
+            detail: "GitHub unavailable",
+          }),
+        ),
+    });
+    const startedAt = new Date().toISOString();
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-review-turn-started-outage"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: startedAt,
+      turnId: asTurnId("review-turn-outage"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "review-turn-outage",
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-review-output-outage"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("review-turn-outage"),
+      createdAt: new Date().toISOString(),
+      payload: {
+        streamKind: "assistant_text",
+        delta: JSON.stringify({
+          findings: [
+            {
+              priority: 1,
+              title: "[P1] Unsafe new value",
+              body: "The replacement needs validation.",
+              confidence_score: 0.9,
+              code_location: {
+                absolute_file_path: "/workspace/project/src/later.ts",
+                line_range: { start: 1, end: 1 },
+              },
+            },
+          ],
+          overall_correctness: "patch is incorrect",
+          overall_explanation: "One issue found.",
+          overall_confidence_score: 0.9,
+        }),
+      },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-review-turn-completed-outage"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("review-turn-outage"),
+      createdAt: new Date().toISOString(),
+      payload: { state: "completed" },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.reviewResult?.status === "parsed",
+    );
+    expect(thread.reviewResult).toMatchObject({
+      status: "parsed",
+      findings: [{ id: "finding-1", location: { path: "src/later.ts" } }],
+      verdict: "request-changes",
+    });
+    if (thread.reviewResult?.status === "parsed") {
+      expect(thread.reviewResult.snapshot.diffHash).toBe("snapshot-hash");
+    }
+  });
+
+  it("anchors findings to the turn's snapshot when the PR revision changes before finalization", async () => {
+    // The PR head can move between the review and its finalization. The
+    // reviewer never examined the newer patch, so findings stay tied to the
+    // head the turn was bound to instead of being re-anchored (and dropped).
+    const newerDiff = `diff --git a/src/other.ts b/src/other.ts
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/src/other.ts
+@@ -0,0 +1 @@
++export const other = true;
+`;
+    const harness = await createHarness({
+      reviewSnapshot: {
+        scope: {
+          kind: "pull-request",
+          number: 1,
+          title: "Example PR",
+          url: "https://github.com/example/repo/pull/1",
+          baseBranch: "main",
+          headBranch: "feature",
+          headSha: "head-1",
+        },
+        diff: buildLargeReviewDiff(),
+        diffHash: "snapshot-hash-head-1",
+      },
+      reviewSnapshotVerifier: () =>
+        Effect.succeed({
+          scope: {
+            kind: "pull-request",
+            number: 1,
+            title: "Example PR",
+            url: "https://github.com/example/repo/pull/1",
+            baseBranch: "main",
+            headBranch: "feature",
+            headSha: "head-2",
+          },
+          diff: newerDiff,
+          diffHash: "snapshot-hash-head-2",
+        } satisfies ReviewSnapshot),
+    });
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-review-turn-started-moved"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId: asTurnId("review-turn-moved"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "review-turn-moved",
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-review-output-moved"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("review-turn-moved"),
+      createdAt: new Date().toISOString(),
+      payload: {
+        streamKind: "assistant_text",
+        delta: JSON.stringify({
+          findings: [
+            {
+              priority: 1,
+              title: "[P1] Unsafe new value",
+              body: "The replacement needs validation.",
+              confidence_score: 0.9,
+              code_location: {
+                absolute_file_path: "/workspace/project/src/later.ts",
+                line_range: { start: 1, end: 1 },
+              },
+            },
+          ],
+          overall_correctness: "patch is incorrect",
+          overall_explanation: "One issue found.",
+          overall_confidence_score: 0.9,
+        }),
+      },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-review-turn-completed-moved"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("review-turn-moved"),
+      createdAt: new Date().toISOString(),
+      payload: { state: "completed" },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.reviewResult?.status === "parsed",
+    );
+    expect(thread.reviewResult).toMatchObject({
+      status: "parsed",
+      findings: [{ id: "finding-1", location: { path: "src/later.ts" } }],
+    });
+    if (thread.reviewResult?.status === "parsed") {
+      expect(thread.reviewResult.snapshot.diffHash).toBe("snapshot-hash-head-1");
+      expect(thread.reviewResult.snapshot.scope).toMatchObject({
+        kind: "pull-request",
+        headSha: "head-1",
+      });
+    }
   });
 
   it("accepts turn completion without a provider turn id for the currently active turn", async () => {
@@ -2233,6 +2484,7 @@ describe("ProviderRuntimeIngestion", () => {
     const sourceTurnId = asTurnId("turn-plan-source");
     const targetTurnId = asTurnId("turn-plan-implement");
     const createdAt = new Date().toISOString();
+    fs.mkdirSync(path.join(harness.workspaceRoot, String(targetThreadId)), { recursive: true });
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -2574,6 +2826,7 @@ describe("ProviderRuntimeIngestion", () => {
     const expectedTurnId = asTurnId("turn-plan-implement");
     const replayedTurnId = asTurnId("turn-replayed");
     const createdAt = new Date().toISOString();
+    fs.mkdirSync(path.join(harness.workspaceRoot, String(targetThreadId)), { recursive: true });
 
     await Effect.runPromise(
       harness.engine.dispatch({

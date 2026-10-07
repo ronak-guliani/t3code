@@ -251,7 +251,7 @@ describe("decider thread.fork", () => {
     ).rejects.toThrow("still streaming");
   });
 
-  it("rejects a fork while the source provider run is still in progress", async () => {
+  it("forks a settled turn while a later turn is still running", async () => {
     const baseReadModel = createReadModel();
     const sourceThread = baseReadModel.threads[0];
     if (!sourceThread) throw new Error("missing source thread");
@@ -282,20 +282,26 @@ describe("decider thread.fork", () => {
       ],
     };
 
-    await expect(
-      Effect.runPromise(
-        decideOrchestrationCommand({
-          command: {
-            type: "thread.fork",
-            commandId: CommandId.make("fork-command-running"),
-            sourceThreadId,
-            threadId: forkThreadId,
-            targetMessageId: MessageId.make("assistant-1"),
-            createdAt: now,
-          },
-          readModel,
-        }),
-      ),
-    ).rejects.toThrow("running");
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.fork",
+          commandId: CommandId.make("fork-command-running"),
+          sourceThreadId,
+          threadId: forkThreadId,
+          targetMessageId: MessageId.make("assistant-1"),
+          createdAt: now,
+        },
+        readModel,
+      }),
+    );
+    const events = Array.isArray(result) ? result : [result];
+
+    expect(events.map((event) => event.type)).toEqual([
+      "thread.created",
+      "thread.provider-fork-requested",
+      "thread.message-sent",
+      "thread.message-sent",
+    ]);
   });
 });

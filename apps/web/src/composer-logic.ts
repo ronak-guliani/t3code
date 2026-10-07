@@ -3,7 +3,6 @@ import {
   splitPromptIntoComposerSegments,
   type ComposerPromptSegment,
 } from "./composer-editor-mentions";
-import { formatThreadContextReference } from "@t3tools/shared/threadContext";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
 export type ComposerTriggerKind = "path" | "slash-command" | "skill";
@@ -79,7 +78,7 @@ export function expandCollapsedComposerCursor(text: string, cursorInput: number)
       continue;
     }
     if (segment.type === "thread-context") {
-      const expandedLength = formatThreadContextReference(segment).length;
+      const expandedLength = segment.sourceLength;
       if (remaining <= 1) return expandedCursor + (remaining === 0 ? 0 : expandedLength);
       remaining -= 1;
       expandedCursor += expandedLength;
@@ -169,7 +168,7 @@ export function collapseExpandedComposerCursor(text: string, cursorInput: number
       continue;
     }
     if (segment.type === "thread-context") {
-      const expandedLength = formatThreadContextReference(segment).length;
+      const expandedLength = segment.sourceLength;
       if (remaining === 0) return collapsedCursor;
       if (remaining <= expandedLength) return collapsedCursor + 1;
       remaining -= expandedLength;

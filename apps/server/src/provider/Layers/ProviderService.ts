@@ -15,6 +15,7 @@ import {
   NonNegativeInt,
   ThreadId,
   ProviderInterruptTurnInput,
+  ProviderDismissUserInputInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderSendTurnInput,
@@ -1163,6 +1164,47 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const dismissUserInput: ProviderServiceShape["dismissUserInput"] = Effect.fn("dismissUserInput")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.dismissUserInput",
+        schema: ProviderDismissUserInputInput,
+        payload: rawInput,
+      });
+      let metricProvider = "unknown";
+      return yield* Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.dismissUserInput",
+          allowRecovery: true,
+        });
+        metricProvider = routed.adapter.provider;
+        yield* Effect.annotateCurrentSpan({
+          "provider.operation": "dismiss-user-input",
+          "provider.kind": routed.adapter.provider,
+          "provider.thread_id": input.threadId,
+          "provider.request_id": input.requestId,
+        });
+        if (!routed.adapter.dismissUserInput) {
+          return yield* new ProviderAdapterRequestError({
+            provider: routed.adapter.provider,
+            method: "question.reject",
+            detail: "This provider cannot dismiss pending user-input requests.",
+          });
+        }
+        yield* routed.adapter.dismissUserInput(routed.threadId, input.requestId);
+      }).pipe(
+        withMetrics({
+          counter: providerTurnsTotal,
+          outcomeAttributes: () =>
+            providerMetricAttributes(metricProvider, {
+              operation: "user-input-dismiss",
+            }),
+        }),
+      );
+    },
+  );
+
   const stopSession: ProviderServiceShape["stopSession"] = Effect.fn("stopSession")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1462,6 +1504,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     steerTurn,
     respondToRequest,
     respondToUserInput,
+    dismissUserInput,
     stopSession,
     sessionCommand,
     listSessions,

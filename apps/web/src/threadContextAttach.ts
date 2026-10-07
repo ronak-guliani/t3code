@@ -315,6 +315,7 @@ export const THREAD_CONTEXT_CLIPBOARD_MIME = "application/x-t3-thread-context" a
 export interface ThreadContextClipboardPayload {
   version: 1;
   records: ThreadContextRecord[];
+  text?: string;
 }
 
 export interface SerializedThreadContextClipboard {
@@ -336,19 +337,33 @@ export function serializeThreadContextClipboard(
   prompt: string,
   records: ReadonlyArray<ThreadContextRecord>,
 ): SerializedThreadContextClipboard {
-  const payload: ThreadContextClipboardPayload = { version: 1, records: [...records] };
-  const chips = records
-    .map(
-      (record) =>
-        `<span data-t3-thread-context="${escapeClipboardHtml(String(record.contextId))}">#${escapeClipboardHtml(record.title || record.label)}</span>`,
-    )
-    .join(" ");
+  const readable = replaceThreadContextReferences(prompt, (occurrence) => occurrence.label);
+  const payload: ThreadContextClipboardPayload = {
+    version: 1,
+    records: [...records],
+    text: prompt,
+  };
   return {
     mimeType: THREAD_CONTEXT_CLIPBOARD_MIME,
     json: JSON.stringify(payload),
-    html: `<meta charset="utf-8"><div>${escapeClipboardHtml(prompt)}${chips.length > 0 ? ` ${chips}` : ""}</div>`,
-    text: prompt,
+    html: `<meta charset="utf-8"><div>${escapeClipboardHtml(readable)}</div>`,
+    text: readable,
   };
+}
+
+export function threadContextTextAsLabels(text: string): string {
+  return replaceThreadContextReferences(text, (occurrence) => occurrence.label);
+}
+
+export function threadContextClipboardText(json: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object") return null;
+    const payload = parsed as { version?: unknown; text?: unknown };
+    return payload.version === 1 && typeof payload.text === "string" ? payload.text : null;
+  } catch {
+    return null;
+  }
 }
 
 const isThreadContextRecord = Schema.is(ThreadContextRecordSchema);
@@ -443,32 +458,23 @@ export function mergeThreadContextClipboard(
     seenIds.add(key);
     const record = byId.get(key);
     if (!record) {
-      return {
-        ...unchanged,
-        reason: "Pasted thread context is no longer available.",
-      };
+      continue;
     }
     if (!isThreadContextRecord(record)) {
-      return {
-        ...unchanged,
-        reason: "Pasted thread context is no longer available.",
-      };
+      continue;
     }
     if (record.environmentId !== input.environmentId) {
-      return {
-        ...unchanged,
-        reason: "Pasted threads must be on the same environment as this chat.",
-      };
+      continue;
     }
     if (record.threadId === input.selfThreadId) {
-      return { ...unchanged, reason: "Cannot attach the current thread to itself." };
+      continue;
     }
     const resolved = input.resolveThread({
       environmentId: record.environmentId,
       threadId: record.threadId,
     });
     if (!resolved || !resolved.title || resolved.title.trim().length === 0) {
-      return { ...unchanged, reason: "That thread no longer exists." };
+      continue;
     }
     const scopeKey = scopedKeyOf(record);
     const existing = recordsByScope.get(scopeKey);
@@ -490,7 +496,7 @@ export function mergeThreadContextClipboard(
   const after = input.existingPrompt.slice(at);
   const text = replaceThreadContextReferences(input.pastedText, (occurrence) => {
     const record = rewritten.get(occurrence.contextId);
-    return record ? formatThreadContextReference(record) : occurrence.source;
+    return record ? formatThreadContextReference(record) : occurrence.label;
   });
   const spacer = before.length > 0 && !/\s$/.test(before) && text.length > 0 ? " " : "";
   const nextPrompt = `${before}${spacer}${text}${after}`;

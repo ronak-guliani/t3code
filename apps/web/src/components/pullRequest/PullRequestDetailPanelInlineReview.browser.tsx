@@ -289,6 +289,7 @@ async function renderPanel(
         }),
     }),
     workflow: {} as EnvironmentApi["workflow"],
+    storage: {} as EnvironmentApi["storage"],
     server: {} as EnvironmentApi["server"],
     orchestration: {} as EnvironmentApi["orchestration"],
   };

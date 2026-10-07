@@ -140,6 +140,7 @@ export interface PendingApproval {
 export interface PendingUserInput {
   requestId: ApprovalRequestId;
   createdAt: string;
+  dismissible: boolean;
   questions: ReadonlyArray<UserInputQuestion>;
 }
 
@@ -482,6 +483,7 @@ export function derivePendingUserInputs(
       openByRequestId.set(requestId, {
         requestId,
         createdAt: activity.createdAt,
+        dismissible: payload?.dismissible === true,
         questions,
       });
       continue;

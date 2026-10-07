@@ -54,20 +54,36 @@ function pathAnchorDepth(flavor: AbsolutePathFlavor): number {
 
 /**
  * Workspace-relative path for the integrated file viewer, or null when the
- * file lives outside the workspace root. Resolves `.`/`..` so paths like
- * `/repo/project/./report.html` still map to `report.html`. Containment is
- * case-sensitive on POSIX (a case mismatch falls back to the external editor
- * instead of opening the wrong file) and case-insensitive for Windows
- * drive/UNC paths only.
+ * path is outside the workspace. Relative inputs are workspace-root-relative
+ * and cannot escape it. Absolute inputs must be contained by the supplied
+ * root; comparison is case-sensitive on POSIX and case-insensitive for Windows
+ * drive/UNC paths.
  */
 export function toWorkspaceRelativePath(
   filePath: string,
   workspaceRoot: string | undefined,
 ): string | null {
-  if (!workspaceRoot) return null;
   const pathFlavor = absolutePathFlavor(filePath);
+  if (!pathFlavor) {
+    const rootFlavor = workspaceRoot ? absolutePathFlavor(workspaceRoot) : null;
+    const windowsPath = rootFlavor === "drive" || rootFlavor === "unc";
+    if (windowsPath && /^[A-Za-z]:/.test(filePath)) return null;
+    if (filePath.includes("\\") && !windowsPath) return null;
+    const segments: string[] = [];
+    for (const segment of (windowsPath ? normalizePathSeparators(filePath) : filePath).split("/")) {
+      if (segment.length === 0 || segment === ".") continue;
+      if (segment === "..") {
+        if (segments.length === 0) return null;
+        segments.pop();
+      } else {
+        segments.push(segment);
+      }
+    }
+    return segments.length > 0 ? segments.join("/") : null;
+  }
+  if (!workspaceRoot) return null;
   const rootFlavor = absolutePathFlavor(workspaceRoot);
-  if (!pathFlavor || pathFlavor !== rootFlavor) return null;
+  if (pathFlavor !== rootFlavor) return null;
   if (pathFlavor === "posix" && (filePath.includes("\\") || workspaceRoot.includes("\\"))) {
     return null;
   }

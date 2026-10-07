@@ -101,6 +101,11 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
     workflow: {
       run: rpcClient.workflow.run,
     },
+    storage: {
+      getUsage: rpcClient.storage.getUsage,
+      previewCleanup: rpcClient.storage.previewCleanup,
+      executeCleanup: rpcClient.storage.executeCleanup,
+    },
     server: {
       exportActiveChats: rpcClient.server.exportActiveChats,
       importChatArchive: rpcClient.server.importChatArchive,

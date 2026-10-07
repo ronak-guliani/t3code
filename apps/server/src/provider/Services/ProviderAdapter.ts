@@ -129,6 +129,16 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<void, TError>;
 
   /**
+   * Reject a pending structured user-input request when the provider offers a
+   * native, request-scoped cancellation path. Omit this for providers that
+   * cannot cancel without manufacturing an answer.
+   */
+  readonly dismissUserInput?: (
+    threadId: ThreadId,
+    requestId: ApprovalRequestId,
+  ) => Effect.Effect<void, TError>;
+
+  /**
    * Stop one provider session.
    */
   readonly stopSession: (threadId: ThreadId) => Effect.Effect<void, TError>;

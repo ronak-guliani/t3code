@@ -31,6 +31,13 @@ export const orchestrationCommandAckDuration = Metric.timer(
   },
 );
 
+export const orchestrationActivityAppendBatchesTotal = Metric.counter(
+  "t3_orchestration_activity_append_batches_total",
+  {
+    description: "Number of committed transactions containing multiple activity append commands.",
+  },
+);
+
 export const orchestrationEventsProcessedTotal = Metric.counter(
   "t3_orchestration_events_processed_total",
   {

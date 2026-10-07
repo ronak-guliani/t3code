@@ -398,6 +398,7 @@ export function isComposerDraftCleared(
         imageCount: number;
         terminalContextCount: number;
         threadContextCount: number;
+        previewAnnotationCount?: number;
       }
     | null
     | undefined,
@@ -407,7 +408,8 @@ export function isComposerDraftCleared(
     draft.prompt.length === 0 &&
     draft.imageCount === 0 &&
     draft.terminalContextCount === 0 &&
-    draft.threadContextCount === 0
+    draft.threadContextCount === 0 &&
+    (draft.previewAnnotationCount ?? 0) === 0
   );
 }
 
@@ -447,6 +449,44 @@ export function canStartThreadTurn(input: {
   return (
     input.phase !== "running" && !input.isSendBusy && !input.isConnecting && !input.sendInFlight
   );
+}
+
+/** The user message a turn-start failure is attributed to, when it names one. */
+function turnStartFailureMessageId(payload: unknown): string | null {
+  if (payload === null || typeof payload !== "object" || !("messageId" in payload)) {
+    return null;
+  }
+  const { messageId } = payload as { readonly messageId?: unknown };
+  return typeof messageId === "string" && messageId.length > 0 ? messageId : null;
+}
+
+/**
+ * A turn that failed before reaching the provider will never be acknowledged by
+ * session or turn state, so its failure activity is the only signal that retires
+ * the send's busy latch.
+ *
+ * Correlated by message id, never by timestamp: the activity's `createdAt` is
+ * stamped by the server while the pending dispatch is stamped by the browser, so
+ * clock skew could hide a failure that is the only acknowledgement this send will
+ * ever get. Matching against the newest user message also keeps a retry from
+ * being released by the failure that already ended the previous send.
+ */
+export function turnStartFailedForPendingTurn(input: {
+  readonly activities: ReadonlyArray<OrchestrationThreadActivity> | undefined;
+  readonly latestUserMessageId: string | null;
+}): boolean {
+  if (!input.activities || input.latestUserMessageId === null) {
+    return false;
+  }
+  return input.activities.some((activity) => {
+    if (activity.kind !== "provider.turn.start.failed") {
+      return false;
+    }
+    const messageId = turnStartFailureMessageId(activity.payload);
+    // A failure naming no message belongs to the newest user message, matching
+    // the server's own hasFailedTurnStart attribution.
+    return messageId === null || messageId === input.latestUserMessageId;
+  });
 }
 
 export function deriveTimelineWorkState(input: {
