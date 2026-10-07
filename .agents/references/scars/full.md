@@ -180,7 +180,7 @@
 
 - The always-loaded `AGENTS.md` is the highest-leverage and highest-decay surface: it is paid on every turn, so anything it restates from a skill, `package.json`, or a subsystem scar is a cache that only goes stale. Point at the authority and let the pointer's wording carry the trigger.
 - Before adding an always-loaded rule, run it against the model default. Rules that name no observable bound — "performance first", "be thorough" — change no decision, however well intended. Keep the clause that changes a decision and drop the sentiment around it.
-- When a subtree already carries a procedure — a skill with the full recipe — the parent document keeps the trigger and the exceptions, never the steps. Duplicated procedure is worse than duplicated prose: it drifts on only one side, and the agent has no way to tell which copy is authoritative.
+- When a subtree already carries a procedure — a skill with the full recipe — the parent document keeps the trigger and the exceptions, never the steps. Duplicated procedure is worse than duplicated prose: it drifts on only one side, and the agent has no way to tell which copy is authoritative. Check that the subtree actually carries it: this section's own preview rule was deleted as a `test-t3-app` duplicate when that skill only named `preview_open_and_snapshot` and never `preview_status`, so an invariant asserting a required sequence must survive where it is the only statement of it.
 
 ## PR reviews and checkpoint provenance
 

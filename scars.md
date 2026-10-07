@@ -41,6 +41,6 @@ The complete scar record is preserved in `.agents/references/scars/full.md`. Loa
 | [Checkpoint and snapshot atomicity](.agents/references/scars/full.md#checkpoint-and-snapshot-atomicity)                           | Completion queues, SQLite snapshot transactions, revert finalization                      |
 | [MCP schemas and auth bootstrap](.agents/references/scars/full.md#mcp-schemas-and-auth-bootstrap)                                 | No-argument tool schemas, auth cache races                                                |
 | [Mobile drafts and navigation](.agents/references/scars/full.md#mobile-drafts-and-navigation)                                     | Subchat draft ownership, iPad navigation, rejected-outbox recovery                        |
-| [Agent instruction surfaces](.agents/references/scars/full.md#agent-instruction-surfaces)                                         | AGENTS.md and skill overlap, no-op rules, delegated-work verification                     |
+| [Agent instruction surfaces](.agents/references/scars/full.md#agent-instruction-surfaces)                                         | AGENTS.md and skill overlap, no-op rules, trigger-vs-procedure                            |
 
 When a new hard-earned lesson is discovered, add it to `full.md` under the matching area and keep this index updated. Do not replace a detailed scar with a generic reminder.

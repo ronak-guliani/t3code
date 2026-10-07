@@ -4,7 +4,7 @@ Consulted on demand from [AGENTS.md](AGENTS.md). Load it when the task writes co
 
 ## Validation
 
-`pnpm fmt:check`, `pnpm lint`, and `pnpm typecheck` gate a code task; `pnpm test` is the suite. `pnpm test:self` is a pairing and reconnect smoke check: run it when those flows change, and never read it as a gate on feature work.
+The gates are in [AGENTS.md](AGENTS.md) step 1. One extra distinction belongs here: `pnpm test:self` is a pairing and reconnect smoke check, so run it when those flows change and never read it as a gate on feature work.
 
 ## Tests
 
@@ -15,6 +15,10 @@ An acceptance test exercises the production code responsible for the claimed out
 ## Proving a change
 
 A user-visible web change earns one [`test-t3-app`](.agents/skills/test-t3-app/SKILL.md) pass, owned by the primary agent; delegated agents leave that dev server alone. Launching the isolated dev server is implied permission unless the user opts out or the flow would touch nonlocal data.
+
+A closed collaborative browser is not an unavailable one. Call `preview_status` first, and reach for `preview_open` or `preview_open_and_snapshot` before concluding browser automation is unavailable.
+
+Navigate a local app with an environment-port target, because `localhost` can bind IPv6 while environment-port navigation uses IPv4, and a cookie paired on `127.0.0.1` will not authenticate a `localhost` WebSocket. Inspect a snapshot before interacting and prefer the semantic locators it provides.
 
 Assert snapshots, page state, console output, and failed-network diagnostics. Record a short video when motion or timing is part of the change — a video is evidence, not the assertion. Keep the dev process, authenticated tab, and test state alive while the loop runs; tear them down when it ends. Pairing tokens and credentials stay out of captures, committed files, and logs.
 
