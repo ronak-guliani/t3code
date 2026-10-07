@@ -97,6 +97,7 @@ describe("admitWorkspaceCommand", () => {
   it("allocates one real isolated worktree from the normalized source branch", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "admission-single-allocation-"));
     let allocatedPath: string | undefined;
+    let explicitPath: string | undefined;
     const sourceFile = join(projectRoot, "README.md");
     await import("node:fs/promises").then(({ writeFile }) => writeFile(sourceFile, "source\n"));
     execFileSync("git", ["init", "-b", "main", projectRoot], { stdio: "ignore" });
@@ -137,9 +138,8 @@ describe("admitWorkspaceCommand", () => {
         modelSelection: { instanceId: "pi", model: "default" },
         runtimeMode: "full-access",
         interactionMode: "default",
-        branch: "feature/bootstrap",
+        branch: "main",
         worktreePath: null,
-        sourceBranch: "main",
         sourceWorktreePath: projectRoot,
         createdAt: "2026-09-05T00:00:00.000Z",
       } as OrchestrationCommand;
@@ -162,13 +162,14 @@ describe("admitWorkspaceCommand", () => {
       expect(admitted.type).toBe("thread.create");
       if (admitted.type !== "thread.create") throw new Error("Expected thread.create");
       allocatedPath = admitted.worktreePath ?? undefined;
-      expect(admitted.branch).toBe("feature/bootstrap");
+      const expectedBranch = `t3/thread/${createHash("sha256").update(threadId).digest("hex").slice(0, 24)}`;
+      expect(admitted.branch).toBe(expectedBranch);
       expect(admitted.worktreePath).not.toBe(projectRoot);
       expect(
         execFileSync("git", ["-C", admitted.worktreePath!, "branch", "--show-current"], {
           encoding: "utf8",
         }).trim(),
-      ).toBe("feature/bootstrap");
+      ).toBe(expectedBranch);
       expect(
         execFileSync("git", ["-C", admitted.worktreePath!, "rev-parse", "HEAD"], {
           encoding: "utf8",
@@ -178,13 +179,10 @@ describe("admitWorkspaceCommand", () => {
       );
       expect(admitted.workspaceBinding?.sourceBranch).toBe("main");
       expect(admitted.workspaceBinding?.sourceWorktreePath).toBe(projectRoot);
-      const worktreeCountAfterCold = execFileSync(
-        "git",
-        ["-C", projectRoot, "worktree", "list", "--porcelain"],
-        {
+      const worktreeCountAfterCold =
+        execFileSync("git", ["-C", projectRoot, "worktree", "list", "--porcelain"], {
           encoding: "utf8",
-        },
-      ).match(/^worktree /gm)?.length;
+        }).match(/^worktree /gm)?.length ?? 0;
       expect(worktreeCountAfterCold).toBe(2);
 
       const admittedThread = {
@@ -217,7 +215,7 @@ describe("admitWorkspaceCommand", () => {
           prepareWorktree: {
             projectCwd: projectRoot,
             baseBranch: "main",
-            branch: "feature/bootstrap",
+            branch: expectedBranch,
           },
         },
       } as unknown as OrchestrationCommand;
@@ -239,7 +237,7 @@ describe("admitWorkspaceCommand", () => {
             prepareWorktree: {
               projectCwd: projectRoot,
               baseBranch: "other",
-              branch: "feature/bootstrap",
+              branch: expectedBranch,
             },
           },
         } as unknown as OrchestrationCommand).pipe(Effect.flip),
@@ -263,6 +261,222 @@ describe("admitWorkspaceCommand", () => {
       );
       expect(legacyFailure).toBeInstanceOf(OrchestrationCommandInvariantError);
       expect((legacyFailure as Error).message).toMatch(/legacy|source|binding/i);
+
+      const explicitThreadId = ThreadId.make("admission-explicit-destination");
+      const explicit = await Effect.runPromise(
+        admitWorkspaceCommand(
+          {
+            ...depsWithoutOwnership,
+            findProject: () =>
+              ({ id: projectId, workspaceRoot: projectRoot }) as OrchestrationProject,
+            claimOwnership: ({ worktreePath, branch }) =>
+              Effect.succeed({ canonicalPath: worktreePath, worktreePath, branch, generation: 1 }),
+          },
+          {
+            type: "thread.create",
+            commandId: CommandId.make("explicit-destination"),
+            threadId: explicitThreadId,
+            projectId,
+            parentThreadId: null,
+            title: "explicit destination",
+            modelSelection: { instanceId: "pi", model: "default" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: "main",
+            workspaceBranch: "feature/bootstrap-explicit",
+            worktreePath: null,
+            createdAt: "2026-09-05T00:00:00.000Z",
+          } as unknown as OrchestrationCommand,
+        ),
+      );
+      if (explicit.type !== "thread.create") throw new Error("Expected thread.create");
+      explicitPath = explicit.worktreePath ?? undefined;
+      expect(explicit.branch).toBe("feature/bootstrap-explicit");
+      expect(
+        execFileSync("git", ["-C", explicit.worktreePath!, "branch", "--show-current"], {
+          encoding: "utf8",
+        }).trim(),
+      ).toBe("feature/bootstrap-explicit");
+      expect(
+        execFileSync("git", ["-C", explicit.worktreePath!, "rev-parse", "HEAD"], {
+          encoding: "utf8",
+        }).trim(),
+      ).toBe(
+        execFileSync("git", ["-C", projectRoot, "rev-parse", "main"], { encoding: "utf8" }).trim(),
+      );
+
+      execFileSync("git", ["-C", projectRoot, "branch", "feature/preexisting", "main"]);
+      const preexistingFailure = await Effect.runPromise(
+        admitWorkspaceCommand(
+          {
+            ...depsWithoutOwnership,
+            findProject: () =>
+              ({ id: projectId, workspaceRoot: projectRoot }) as OrchestrationProject,
+            claimOwnership: ({ worktreePath, branch }) =>
+              Effect.succeed({ canonicalPath: worktreePath, worktreePath, branch, generation: 1 }),
+          },
+          {
+            type: "thread.create",
+            commandId: CommandId.make("preexisting-destination"),
+            threadId: ThreadId.make("preexisting-destination-thread"),
+            projectId,
+            parentThreadId: null,
+            title: "preexisting destination rejection",
+            modelSelection: { instanceId: "pi", model: "default" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: "main",
+            workspaceBranch: "feature/preexisting",
+            worktreePath: null,
+            createdAt: "2026-09-05T00:00:00.000Z",
+          } as unknown as OrchestrationCommand,
+        ).pipe(Effect.flip),
+      );
+      expect(preexistingFailure).toBeInstanceOf(OrchestrationCommandInvariantError);
+      expect((preexistingFailure as Error).message).toMatch(/already exists/);
+      expect(
+        execFileSync("git", ["-C", projectRoot, "worktree", "list", "--porcelain"], {
+          encoding: "utf8",
+        }).match(/^worktree /gm)?.length,
+      ).toBe(worktreeCountAfterCold + 1);
+
+      const staleThreadId = ThreadId.make("stale-generated-destination");
+      const staleGeneratedBranch = `t3/thread/${createHash("sha256").update(staleThreadId).digest("hex").slice(0, 24)}`;
+      execFileSync("git", ["-C", projectRoot, "branch", staleGeneratedBranch, "main"]);
+      const staleDestinationFailure = await Effect.runPromise(
+        admitWorkspaceCommand(
+          {
+            ...depsWithoutOwnership,
+            findProject: () =>
+              ({ id: projectId, workspaceRoot: projectRoot }) as OrchestrationProject,
+            claimOwnership: ({ worktreePath, branch }) =>
+              Effect.succeed({ canonicalPath: worktreePath, worktreePath, branch, generation: 1 }),
+          },
+          {
+            type: "thread.create",
+            commandId: CommandId.make("stale-generated-destination"),
+            threadId: staleThreadId,
+            projectId,
+            parentThreadId: null,
+            title: "stale generated branch rejection",
+            modelSelection: { instanceId: "pi", model: "default" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: "main",
+            worktreePath: null,
+            createdAt: "2026-09-05T00:00:00.000Z",
+          } as unknown as OrchestrationCommand,
+        ).pipe(Effect.flip),
+      );
+      expect(staleDestinationFailure).toBeInstanceOf(OrchestrationCommandInvariantError);
+      expect((staleDestinationFailure as Error).message).toMatch(/already exists/);
+    } finally {
+      for (const worktreePath of [allocatedPath, explicitPath].filter(
+        (candidate): candidate is string => candidate !== undefined,
+      )) {
+        execFileSync("git", ["-C", projectRoot, "worktree", "remove", "--force", worktreePath], {
+          stdio: "ignore",
+        });
+        await rm(worktreePath, { recursive: true, force: true });
+      }
+      const repositoryKey = createHash("sha256").update(projectRoot).digest("hex").slice(0, 16);
+      await rm(join(dirname(projectRoot), ".t3-thread-workspaces", repositoryKey), {
+        recursive: true,
+        force: true,
+      });
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Review Code's branch as the source when it creates an isolated thread", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "admission-review-source-"));
+    let allocatedPath: string | undefined;
+    const sourceFile = join(projectRoot, "README.md");
+    await import("node:fs/promises").then(({ writeFile }) =>
+      writeFile(sourceFile, "review source\n"),
+    );
+    execFileSync("git", ["init", "-b", "main", projectRoot], { stdio: "ignore" });
+    execFileSync("git", [
+      "-C",
+      projectRoot,
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "add",
+      "README.md",
+    ]);
+    execFileSync(
+      "git",
+      [
+        "-C",
+        projectRoot,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-m",
+        "initial",
+      ],
+      { stdio: "ignore" },
+    );
+    const reviewThreadId = ThreadId.make("review-code-source-thread");
+    try {
+      const admitted = await Effect.runPromise(
+        admitWorkspaceCommand(
+          {
+            ...depsWithoutOwnership,
+            findProject: () =>
+              ({ id: "review-project", workspaceRoot: projectRoot }) as OrchestrationProject,
+            claimOwnership: ({ worktreePath, branch }) =>
+              Effect.succeed({ canonicalPath: worktreePath, worktreePath, branch, generation: 1 }),
+          },
+          {
+            type: "thread.create",
+            commandId: CommandId.make("review-source-create"),
+            threadId: reviewThreadId,
+            projectId: "review-project",
+            parentThreadId: null,
+            title: "Review Code",
+            modelSelection: { instanceId: "pi", model: "default" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: "main",
+            worktreePath: null,
+            reviewSnapshot: {
+              scope: {
+                kind: "against-base",
+                branch: "main",
+                baseBranch: "main",
+                mergeBaseSha: execFileSync("git", ["-C", projectRoot, "rev-parse", "HEAD"], {
+                  encoding: "utf8",
+                }).trim(),
+                untrackedFiles: [],
+              },
+              diff: "",
+              diffHash: "review-diff-hash",
+            },
+            createdAt: "2026-09-05T00:00:00.000Z",
+          } as unknown as OrchestrationCommand,
+        ),
+      );
+      if (admitted.type !== "thread.create") throw new Error("Expected thread.create");
+      allocatedPath = admitted.worktreePath ?? undefined;
+      expect(admitted.branch).toMatch(/^t3\/thread\//);
+      expect(admitted.branch).not.toBe("main");
+      expect(
+        execFileSync("git", ["-C", admitted.worktreePath!, "branch", "--show-current"], {
+          encoding: "utf8",
+        }).trim(),
+      ).toBe(admitted.branch);
+      expect(
+        execFileSync("git", ["-C", admitted.worktreePath!, "rev-parse", "HEAD"], {
+          encoding: "utf8",
+        }).trim(),
+      ).toBe(
+        execFileSync("git", ["-C", projectRoot, "rev-parse", "main"], { encoding: "utf8" }).trim(),
+      );
     } finally {
       if (allocatedPath) {
         execFileSync("git", ["-C", projectRoot, "worktree", "remove", "--force", allocatedPath], {

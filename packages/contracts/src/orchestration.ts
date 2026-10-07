@@ -1190,6 +1190,9 @@ const ThreadCreateCommand = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
+  // Explicit destination for an allocated workspace. `branch` remains the
+  // legacy source branch when callers do not supply this field.
+  workspaceBranch: Schema.optional(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   sourceBranch: Schema.optional(TrimmedNonEmptyString),
   sourceWorktreePath: Schema.optional(TrimmedNonEmptyString),

@@ -16,6 +16,7 @@ import {
   dispatchThroughStartupGate,
   toOrchestrationDispatchCommandError,
 } from "./gatedDispatch.ts";
+import { workspaceBootstrapIntentError } from "./workspaceAdmission.ts";
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
 
 const serverCommandId = (tag: string) => CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
@@ -227,10 +228,11 @@ export const makeClientCommandDispatcher = ({
             modelSelection: bootstrap.createThread.modelSelection,
             runtimeMode: bootstrap.createThread.runtimeMode,
             interactionMode: bootstrap.createThread.interactionMode,
-            branch:
-              bootstrap.createThread.worktreePath === null
-                ? (bootstrap.prepareWorktree?.branch ?? bootstrap.createThread.branch)
-                : bootstrap.createThread.branch,
+            branch: bootstrap.createThread.branch,
+            ...(bootstrap.createThread.worktreePath === null &&
+            bootstrap.prepareWorktree?.branch !== undefined
+              ? { workspaceBranch: bootstrap.prepareWorktree.branch }
+              : {}),
             worktreePath: bootstrap.createThread.worktreePath,
             ...((bootstrap.prepareWorktree?.baseBranch ?? bootstrap.createThread.sourceBranch) !==
             undefined
@@ -260,6 +262,13 @@ export const makeClientCommandDispatcher = ({
             return yield* Effect.fail(
               new Error("Thread workspace admission did not return an authoritative binding."),
             );
+          }
+          if (bootstrap?.prepareWorktree) {
+            const intentError = workspaceBootstrapIntentError(
+              admittedThread.workspaceBinding,
+              bootstrap.prepareWorktree,
+            );
+            if (intentError !== null) return yield* Effect.fail(intentError);
           }
           targetWorktreePath = admittedThread.workspaceBinding.worktreePath;
           targetProjectId = admittedThread.projectId;

@@ -23,6 +23,11 @@ it("uses the admission binding for setup and dispatch without a second worktree 
   const events: string[] = [];
   let locked = false;
   let exposeBinding = true;
+  let currentBinding: {
+    readonly worktreePath: string;
+    readonly branch: string;
+    readonly sourceBranch?: string;
+  } = { worktreePath: target, branch: "feature", sourceBranch: "main" };
   const command: OrchestrationCommand = {
     type: "thread.turn.start",
     commandId: CommandId.make("bootstrap"),
@@ -112,7 +117,7 @@ it("uses the admission binding for setup and dispatch without a second worktree 
                   id: ThreadId.make("thread"),
                   worktreePath: target,
                   branch: "feature",
-                  workspaceBinding: { worktreePath: target },
+                  workspaceBinding: currentBinding,
                 },
               ]
             : [],
@@ -122,7 +127,8 @@ it("uses the admission binding for setup and dispatch without a second worktree 
           expect(locked).toBe(false);
           if (dispatched.type === "thread.create") {
             expect(dispatched.sourceBranch).toBe("main");
-            expect(dispatched.branch).toBe("feature");
+            expect(dispatched.branch).toBeNull();
+            expect(dispatched.workspaceBranch).toBe("feature");
           }
           if (dispatched.type === "thread.turn.start") {
             expect(dispatched.bootstrap?.prepareWorktree?.baseBranch).toBe("main");
@@ -165,6 +171,44 @@ it("uses the admission binding for setup and dispatch without a second worktree 
   );
   expect(events).toEqual(["queue", "thread.create", "setup", "thread.turn.start"]);
 
+  const setupCount = () => events.filter((event) => event === "setup").length;
+  const warmBootstrap = {
+    ...command,
+    bootstrap: {
+      prepareWorktree: { projectCwd: source, baseBranch: "main", branch: "feature" },
+      runSetupScript: true,
+    },
+  };
+  const beforeRejectedWarmSend = setupCount();
+  const turnStartsBeforeRejectedWarmSend = events.filter(
+    (event) => event === "thread.turn.start",
+  ).length;
+  for (const binding of [
+    { ...currentBinding, sourceBranch: "different-base" },
+    { worktreePath: target, branch: "feature" },
+  ]) {
+    currentBinding = binding;
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const dispatch = makeClientCommandDispatcher({
+            git: yield* GitCore,
+            gitStatusBroadcaster: yield* GitStatusBroadcaster,
+            orchestrationEngine: yield* OrchestrationEngineService,
+            projectSetupScriptRunner: yield* ProjectSetupScriptRunner,
+            startup: yield* ServerRuntimeStartup,
+          });
+          yield* dispatch(warmBootstrap);
+        }).pipe(Effect.provide(layer)),
+      ),
+    ).rejects.toThrow(/base branch|legacy workspace binding/i);
+    expect(setupCount()).toBe(beforeRejectedWarmSend);
+    expect(events.filter((event) => event === "thread.turn.start")).toHaveLength(
+      turnStartsBeforeRejectedWarmSend,
+    );
+    expect(currentBinding).toEqual(binding);
+  }
+
   exposeBinding = false;
   await expect(
     Effect.runPromise(
@@ -180,5 +224,5 @@ it("uses the admission binding for setup and dispatch without a second worktree 
       }).pipe(Effect.provide(layer)),
     ),
   ).rejects.toThrow("authoritative binding");
-  expect(events.slice(4)).toEqual(["queue", "thread.create", "thread.delete"]);
+  expect(events.slice(-3)).toEqual(["queue", "thread.create", "thread.delete"]);
 });
