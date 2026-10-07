@@ -55,6 +55,26 @@ extension runs outside a tool call remains governed by Pi's own extension trust 
 
 ## Troubleshooting
 
+### Workspace diagnostics
+
+If Pi tools inspect the wrong repository, first compare the thread's recorded worktree with
+its Git registration. A correct checkout does not prove an extension runs there.
+Trace the remaining boundaries in order:
+
+1. [ProviderCommandReactor](../../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts)
+   resolves the thread workspace through `resolveThreadWorkspaceCwd`.
+2. [PiAdapter](../../apps/server/src/provider/Layers/PiAdapter.ts) supplies that directory to
+   [PiRpc](../../apps/server/src/provider/PiRpc.ts), which sets both the subprocess cwd and `PWD`.
+3. Inspect the failing tool's native Pi invocation and the extension that owns it. Extensions
+   such as context-mode may select their directory from `PWD` rather than the process cwd.
+
+Extensions may come from the user's Pi installation or the affected project, rather than
+T3's server checkout; inspect their configuration and source separately from the worktree
+binding. See the [navigation map](../agents/navigation.md)
+for the project-selection boundary.
+
+### Availability and discovery
+
 - If Pi is unavailable, confirm that the configured binary runs on the server machine, then refresh
   the provider in Settings.
 - If no models appear, open Pi directly and confirm its authentication and model configuration.
