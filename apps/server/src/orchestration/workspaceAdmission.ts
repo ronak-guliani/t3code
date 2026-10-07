@@ -2,7 +2,9 @@ import type {
   OrchestrationCommand,
   OrchestrationProject,
   OrchestrationThread,
+  ThreadTurnStartBootstrap,
   ThreadId,
+  WorkspaceBinding,
 } from "@t3tools/contracts";
 import { createHash } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
@@ -161,6 +163,33 @@ export function cleanupWorktreePath(
   }
 }
 
+/** Validate an already-authoritative workspace against legacy bootstrap intent. */
+export function workspaceBootstrapIntentError(
+  binding: WorkspaceBinding | null | undefined,
+  intent: NonNullable<ThreadTurnStartBootstrap["prepareWorktree"]>,
+): OrchestrationCommandInvariantError | null {
+  if (binding?.sourceBranch === undefined) {
+    return new OrchestrationCommandInvariantError({
+      commandType: "thread.turn.start",
+      detail:
+        "This legacy workspace binding has no recorded source branch. Retry without bootstrap workspace intent or create a new isolated thread; T3 will not rebase or replace an owned workspace.",
+    });
+  }
+  if (binding.sourceBranch !== intent.baseBranch) {
+    return new OrchestrationCommandInvariantError({
+      commandType: "thread.turn.start",
+      detail: `Requested base branch '${intent.baseBranch}' differs from the authoritative workspace source '${binding.sourceBranch}'. T3 will not rebase an owned workspace.`,
+    });
+  }
+  if (intent.branch !== undefined && binding.branch !== intent.branch) {
+    return new OrchestrationCommandInvariantError({
+      commandType: "thread.turn.start",
+      detail: `Requested workspace branch '${intent.branch}' differs from the authoritative binding '${binding.branch ?? "(none)"}'.`,
+    });
+  }
+  return null;
+}
+
 export const canonicalizeCommandWorktree = Effect.fn("canonicalizeCommandWorktree")(function* (
   command: OrchestrationCommand,
 ) {
@@ -211,6 +240,15 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
     createThread === undefined &&
     thread !== undefined &&
     (command.type === "thread.turn.start" || command.type === "thread.queued-turn.dispatch");
+  const bootstrapIntent =
+    isExistingThreadTurn && thread !== undefined && command.type === "thread.turn.start"
+      ? command.bootstrap?.prepareWorktree
+      : undefined;
+  const existingBinding = thread?.workspaceBinding;
+  if (bootstrapIntent !== undefined) {
+    const intentError = workspaceBootstrapIntentError(existingBinding, bootstrapIntent);
+    if (intentError !== null) return yield* intentError;
+  }
   if (isExistingThreadTurn) {
     yield* deps.cancelIdleByThreadId(thread.id);
   }
@@ -394,7 +432,13 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
   const threadWorkspaceKey = createHash("sha256").update(threadId).digest("hex");
   const sourceBranch =
     createThread?.sourceBranch ?? createThread?.branch ?? thread?.branch ?? "HEAD";
-  const branch = `t3/thread/${threadWorkspaceKey.slice(0, 24)}`;
+  const explicitDestinationBranch =
+    command.type === "thread.create"
+      ? command.workspaceBranch
+      : command.type === "thread.turn.start"
+        ? command.bootstrap?.prepareWorktree?.branch
+        : undefined;
+  const branch = explicitDestinationBranch ?? `t3/thread/${threadWorkspaceKey.slice(0, 24)}`;
   const worktreePath = path.join(
     path.dirname(gitRoot),
     ".t3-thread-workspaces",
@@ -501,10 +545,21 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
           timeoutMs: 5_000,
         },
       );
-      const worktreeArguments =
-        existingBranch.code === 0
-          ? ["-C", gitRoot, "worktree", "add", worktreePath, branch]
-          : ["-C", gitRoot, "worktree", "add", "-b", branch, worktreePath, sourceRevision];
+      if (existingBranch.code === 0) {
+        throw new Error(
+          `destination branch '${branch}' already exists without its matching workspace; refusing to attach this thread to a preexisting branch`,
+        );
+      }
+      const worktreeArguments = [
+        "-C",
+        gitRoot,
+        "worktree",
+        "add",
+        "-b",
+        branch,
+        worktreePath,
+        sourceRevision,
+      ];
       const result = await runProcess("git", worktreeArguments, {
         allowNonZeroExit: true,
         maxBufferBytes: 64 * 1024,
@@ -518,13 +573,28 @@ export const prepareIsolatedWorkspace = Effect.fn("prepareIsolatedWorkspace")(fu
   });
   const nextCommand =
     command.type === "thread.create"
-      ? { ...command, branch, worktreePath }
+      ? {
+          ...command,
+          branch,
+          ...(command.sourceBranch === undefined && command.branch !== null
+            ? { sourceBranch: command.branch }
+            : {}),
+          worktreePath,
+        }
       : command.type === "thread.turn.start" && command.bootstrap?.createThread
         ? {
             ...command,
             bootstrap: {
               ...command.bootstrap,
-              createThread: { ...command.bootstrap.createThread, branch, worktreePath },
+              createThread: {
+                ...command.bootstrap.createThread,
+                branch,
+                ...(command.bootstrap.createThread.sourceBranch === undefined &&
+                command.bootstrap.createThread.branch !== null
+                  ? { sourceBranch: command.bootstrap.createThread.branch }
+                  : {}),
+                worktreePath,
+              },
             },
           }
         : command.type === "thread.queued-turn.dispatch"
@@ -627,11 +697,38 @@ export const admitWorkspaceCommand = Effect.fn("admitWorkspace")(function* (
         });
       }),
     );
+  const sourceBranch =
+    command.type === "thread.create"
+      ? command.sourceBranch
+      : command.type === "thread.turn.start"
+        ? (command.bootstrap?.prepareWorktree?.baseBranch ??
+          command.bootstrap?.createThread?.sourceBranch ??
+          command.bootstrap?.createThread?.branch)
+        : undefined;
+  const sourceWorktreePath =
+    command.type === "thread.create"
+      ? command.sourceWorktreePath
+      : command.type === "thread.turn.start"
+        ? command.bootstrap?.createThread?.sourceWorktreePath
+        : undefined;
   const withBinding = {
     ...command,
-    workspaceBinding: prepared.honoredProjectCheckout
-      ? { ...binding, workspaceScope: "project-checkout" as const }
-      : binding,
+    workspaceBinding: {
+      ...binding,
+      ...(sourceBranch !== undefined ? { sourceBranch } : {}),
+      ...(sourceWorktreePath !== undefined ? { sourceWorktreePath } : {}),
+      ...(command.type !== "thread.workspace.handoff" &&
+      sourceBranch === undefined &&
+      thread?.workspaceBinding?.sourceBranch !== undefined
+        ? { sourceBranch: thread.workspaceBinding.sourceBranch }
+        : {}),
+      ...(command.type !== "thread.workspace.handoff" &&
+      sourceWorktreePath === undefined &&
+      thread?.workspaceBinding?.sourceWorktreePath !== undefined
+        ? { sourceWorktreePath: thread.workspaceBinding.sourceWorktreePath }
+        : {}),
+      ...(prepared.honoredProjectCheckout ? { workspaceScope: "project-checkout" as const } : {}),
+    },
   } as OrchestrationCommand;
   return withBinding;
 });
