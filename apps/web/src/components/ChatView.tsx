@@ -968,9 +968,13 @@ function ChatViewBody(
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
-  // Single slot: only one request can be active in the composer, and a new
-  // request id never matches the answered one.
-  const respondedUserInputRequestIdRef = useRef<ApprovalRequestId | null>(null);
+  // A failed provider response must release only the attempt that produced it;
+  // a request can be retried while its earlier failure remains in history.
+  // In-flight respond/dismiss command per request. Keyed by request so a
+  // newer question's attempt never overwrites an earlier unresolved one.
+  const userInputAttemptsRef = useRef(
+    new Map<ApprovalRequestId, ReturnType<typeof newCommandId>>(),
+  );
   const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
     Record<string, Record<string, PendingUserInputDraftAnswer>>
   >({});
@@ -1650,6 +1654,28 @@ function ChatViewBody(
     [threadStateActivities],
   );
   const activePendingUserInput = pendingUserInputs[0] ?? null;
+
+  useEffect(() => {
+    const attempts = userInputAttemptsRef.current;
+    if (attempts.size === 0) return;
+    for (const activity of threadStateActivities) {
+      const payload = activity.payload;
+      if (
+        activity.kind !== "provider.user-input.respond.failed" ||
+        typeof payload !== "object" ||
+        payload === null ||
+        !("requestId" in payload) ||
+        !("originCommandId" in payload)
+      ) {
+        continue;
+      }
+      const requestId = payload.requestId as ApprovalRequestId;
+      if (attempts.get(requestId) === payload.originCommandId) {
+        attempts.delete(requestId);
+      }
+    }
+  }, [threadStateActivities]);
+
   const activePendingDraftAnswers = useMemo(
     () =>
       activePendingUserInput
@@ -4306,51 +4332,68 @@ function ChatViewBody(
     [activeThreadId, environmentId, setThreadError],
   );
 
-  const onRespondToUserInput = useCallback(
-    async (requestId: ApprovalRequestId, answers: Record<string, unknown>) => {
+  // A pending request accepts exactly one in-flight response or dismissal.
+  // Claim it synchronously before awaiting: a single-select auto-advance timer,
+  // manual submit, Enter, and the mobile send arrow can all reach this funnel.
+  // The claim is released only by a failure tied to this attempt's commandId,
+  // so a stale failure from an earlier attempt never unlocks a newer one.
+  const dispatchUserInputAttempt = useCallback(
+    async (
+      requestId: ApprovalRequestId,
+      answers: Record<string, unknown> | null,
+      failureMessage: string,
+    ) => {
       const api = readEnvironmentApi(environmentId);
       if (!api || !activeThreadId) return;
-
-      // A pending request accepts exactly one response. Claim it synchronously
-      // before awaiting anything: a single-select option click arms a short
-      // auto-advance timer, so a manual submit, the Enter key and the mobile
-      // send arrow can all reach this funnel for the same request. The provider
-      // consumes the request id on the first response and rejects the rest as
-      // unknown, which clears the form as if it had gone missing.
-      if (respondedUserInputRequestIdRef.current === requestId) {
-        return;
-      }
-      respondedUserInputRequestIdRef.current = requestId;
-
+      const attempts = userInputAttemptsRef.current;
+      if (attempts.has(requestId)) return;
+      const commandId = newCommandId();
+      attempts.set(requestId, commandId);
       setRespondingUserInputRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
-      let submissionFailed = false;
+      const createdAt = new Date().toISOString();
       try {
-        await api.orchestration.dispatchCommand({
-          type: "thread.user-input.respond",
-          commandId: newCommandId(),
-          threadId: activeThreadId,
-          requestId,
-          answers,
-          createdAt: new Date().toISOString(),
-        });
-      } catch (err: unknown) {
-        submissionFailed = true;
-        setThreadError(
-          activeThreadId,
-          err instanceof Error ? err.message : "Failed to submit user input.",
+        await api.orchestration.dispatchCommand(
+          answers
+            ? {
+                type: "thread.user-input.respond",
+                commandId,
+                threadId: activeThreadId,
+                requestId,
+                answers,
+                createdAt,
+              }
+            : {
+                type: "thread.user-input.dismiss",
+                commandId,
+                threadId: activeThreadId,
+                requestId,
+                createdAt,
+              },
         );
+      } catch (err: unknown) {
+        setThreadError(activeThreadId, err instanceof Error ? err.message : failureMessage);
+        // A rejected dispatch never reached the provider; allow a retry.
+        if (attempts.get(requestId) === commandId) {
+          attempts.delete(requestId);
+        }
       }
       setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
-      // A rejected dispatch never reached the provider, so the question is still
-      // open. Release the claim once the responding state is cleared, otherwise
-      // every retry is discarded as a duplicate and the provider waits forever.
-      if (submissionFailed && respondedUserInputRequestIdRef.current === requestId) {
-        respondedUserInputRequestIdRef.current = null;
-      }
     },
     [activeThreadId, environmentId, setThreadError],
+  );
+
+  const onRespondToUserInput = useCallback(
+    (requestId: ApprovalRequestId, answers: Record<string, unknown>) =>
+      dispatchUserInputAttempt(requestId, answers, "Failed to submit user input."),
+    [dispatchUserInputAttempt],
+  );
+
+  const onDismissActivePendingUserInput = useCallback(
+    (requestId: ApprovalRequestId) =>
+      dispatchUserInputAttempt(requestId, null, "Failed to dismiss the question."),
+    [dispatchUserInputAttempt],
   );
 
   const setActivePendingUserInputQuestionIndex = useCallback(
@@ -5793,6 +5836,7 @@ function ChatViewBody(
                     onReleaseQueue={onReleaseQueue}
                     onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}
                     onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
+                    onDismissActivePendingUserInput={onDismissActivePendingUserInput}
                     onPreviousActivePendingUserInputQuestion={
                       onPreviousActivePendingUserInputQuestion
                     }

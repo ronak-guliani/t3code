@@ -1284,6 +1284,7 @@ export function makeOpenCodeAdapter(
             })),
             type: "user-input.requested",
             payload: {
+              dismissible: true,
               questions: normalizeQuestionRequest(event.properties),
             },
           });
@@ -2435,6 +2436,36 @@ export function makeOpenCodeAdapter(
         });
     });
 
+    const dismissUserInput: NonNullable<OpenCodeAdapterShape["dismissUserInput"]> = Effect.fn(
+      "dismissUserInput",
+    )(function* (threadId, requestId) {
+      const context = ensureSessionContext(sessions, threadId);
+      if (!context.pendingQuestions.has(requestId)) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "question.reject",
+          detail: `Unknown pending user-input request: ${requestId}`,
+        });
+      }
+
+      yield* runOpenCodeSdk("question.reject", () =>
+        context.client.question.reject({
+          requestID: requestId,
+          directory: context.directory,
+        }),
+      ).pipe(Effect.mapError(toRequestError));
+
+      const shouldEmitResolution = context.pendingQuestions.delete(requestId);
+      context.resolvedRequestIds.add(requestId);
+      if (shouldEmitResolution) {
+        yield* emit({
+          ...(yield* buildEventBase({ threadId, requestId })),
+          type: "user-input.resolved",
+          payload: { answers: {} },
+        });
+      }
+    });
+
     const stopSession: OpenCodeAdapterShape["stopSession"] = Effect.fn("stopSession")(
       function* (threadId) {
         const context = sessions.get(threadId);
@@ -2558,6 +2589,7 @@ export function makeOpenCodeAdapter(
       interruptTurn,
       respondToRequest,
       respondToUserInput,
+      dismissUserInput,
       stopSession,
       listSessions,
       hasSession,

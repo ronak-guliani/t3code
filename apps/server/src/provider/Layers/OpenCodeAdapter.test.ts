@@ -92,6 +92,7 @@ const runtimeMock = {
     listedPermissions: [] as Array<Record<string, unknown>>,
     permissionListError: null as Error | null,
     questionReplies: [] as Array<{ requestID: string; answers: string[][] }>,
+    questionRejections: [] as Array<{ requestID: string; directory?: unknown }>,
     questionReplyError: null as Error | null,
     listedQuestions: [] as Array<Record<string, unknown>>,
     questionListError: null as Error | null,
@@ -142,6 +143,7 @@ const runtimeMock = {
     this.state.listedPermissions = [];
     this.state.permissionListError = null;
     this.state.questionReplies = [];
+    this.state.questionRejections = [];
     this.state.questionReplyError = null;
     this.state.listedQuestions = [];
     this.state.questionListError = null;
@@ -398,6 +400,13 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           if (runtimeMock.state.questionReplyError) {
             throw runtimeMock.state.questionReplyError;
           }
+        },
+        reject: async (input: { requestID: string; directory?: unknown }) => {
+          runtimeMock.state.questionRejections.push(input);
+          runtimeMock.state.postCalls.push({
+            op: "question.reject",
+            directory: input.directory,
+          });
         },
       },
       mcp: {
@@ -874,6 +883,75 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         { requestID: "child-input", answers: [["Local"]], directory: process.cwd() },
       ]);
       assert.deepEqual(runtimeMock.state.permissionReplies, []);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("rejects a pending OpenCode question and resolves it without answers", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("child-question-dismiss");
+      runtimeMock.state.sessionParents.set("child", "http://127.0.0.1:9999/session");
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "question.asked",
+          properties: {
+            sessionID: "child",
+            id: "child-input-dismiss",
+            questions: [
+              {
+                question: "Which target?",
+                header: "Target",
+                options: [{ label: "Local", description: "Local target" }],
+              },
+            ],
+          },
+        },
+      ];
+      const requestedEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil(
+          (event) =>
+            event.type === "user-input.requested" && event.requestId === "child-input-dismiss",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const requestedEvents = Array.from(yield* Fiber.join(requestedEventsFiber));
+      const request = requestedEvents.find(
+        (event) =>
+          event.type === "user-input.requested" && event.requestId === "child-input-dismiss",
+      );
+      assert.ok(request?.type === "user-input.requested");
+      assert.equal(request.payload.dismissible, true);
+
+      const resolvedEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.threadId === threadId &&
+            event.type === "user-input.resolved" &&
+            event.requestId === "child-input-dismiss",
+        ),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      assert.ok(adapter.dismissUserInput);
+      yield* adapter.dismissUserInput(threadId, ApprovalRequestId.make("child-input-dismiss"));
+      const resolvedEvents = Array.from(yield* Fiber.join(resolvedEventsFiber));
+      const resolved = resolvedEvents[0];
+      assert.ok(resolved?.type === "user-input.resolved");
+      assert.deepEqual(resolved.payload.answers, {});
+      assert.deepEqual(runtimeMock.state.questionRejections, [
+        { requestID: "child-input-dismiss", directory: process.cwd() },
+      ]);
+      assert.deepEqual(runtimeMock.state.questionReplies, []);
       yield* adapter.stopSession(threadId);
     }),
   );

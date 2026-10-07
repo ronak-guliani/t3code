@@ -1001,12 +1001,36 @@ function createSnapshotWithSecondaryProject(options?: {
 function createSnapshotWithPendingUserInput(
   options: {
     readonly multiSelect?: boolean;
+    readonly dismissible?: boolean;
+    readonly compactMessages?: boolean;
   } = {},
 ): OrchestrationReadModel {
-  const snapshot = createSnapshotForTargetUser({
+  const baseSnapshot = createSnapshotForTargetUser({
     targetMessageId: "msg-user-pending-input-target" as MessageId,
     targetText: "question thread",
   });
+  const snapshot = options.compactMessages
+    ? {
+        ...baseSnapshot,
+        threads: baseSnapshot.threads.map((thread) => {
+          if (thread.id !== THREAD_ID) return thread;
+          return {
+            ...thread,
+            messages: thread.messages
+              .filter(
+                (message) =>
+                  message.id === "msg-user-pending-input-target" ||
+                  message.id === "msg-assistant-3",
+              )
+              .map((message) =>
+                message.id === "msg-user-pending-input-target"
+                  ? { ...message, text: "Can you help me find why submit is not responding?" }
+                  : { ...message, text: "I can trace either path. Which should I check first?" },
+              ),
+          };
+        }),
+      }
+    : baseSnapshot;
 
   return {
     ...snapshot,
@@ -1022,6 +1046,7 @@ function createSnapshotWithPendingUserInput(
                 summary: "User input requested",
                 payload: {
                   requestId: "req-browser-user-input",
+                  ...(options.dismissible ? { dismissible: true } : {}),
                   questions: [
                     {
                       id: "scope",
@@ -7972,6 +7997,394 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await mounted.setContainerSize(COMPACT_FOOTER_VIEWPORT);
       await expectComposerActionsContained();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("collapses pending questions and only offers dismissal when supported", async () => {
+    const captureDirectory = import.meta.env.VITE_PENDING_USER_INPUT_CAPTURE_DIR;
+    if (captureDirectory) await page.viewport(1_400, 1_100);
+    const notDismissible = await mountChatView({
+      viewport: captureDirectory ? WIDE_FOOTER_VIEWPORT : DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({
+        compactMessages: Boolean(captureDirectory),
+      }),
+    });
+
+    try {
+      await waitForButtonContainingText("Tight");
+      expect(document.querySelector("[data-pending-user-input-dismiss]")).toBeNull();
+      if (captureDirectory) {
+        await page.screenshot({ path: `${captureDirectory}/question-panel-expanded.png` });
+      }
+      const expandedToggle = document.querySelector<HTMLButtonElement>(
+        '[data-pending-user-input-toggle="expanded"]',
+      );
+      expect(expandedToggle).not.toBeNull();
+      expandedToggle?.click();
+
+      await vi.waitFor(
+        () => {
+          const collapsedToggle = document.querySelector<HTMLButtonElement>(
+            '[data-pending-user-input-toggle="collapsed"]',
+          );
+          expect(collapsedToggle?.getAttribute("aria-expanded")).toBe("false");
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      await vi.waitFor(
+        () => {
+          const panel = document.querySelector<HTMLElement>("[data-pending-user-input-panel]");
+          expect(panel === null || panel.getBoundingClientRect().height === 0).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      if (captureDirectory) {
+        await page.screenshot({ path: `${captureDirectory}/question-panel-collapsed.png` });
+      }
+    } finally {
+      await notDismissible.cleanup();
+    }
+
+    const dismissible = await mountChatView({
+      viewport: captureDirectory ? WIDE_FOOTER_VIEWPORT : DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({
+        dismissible: true,
+        compactMessages: Boolean(captureDirectory),
+      }),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      const dismissButton = (await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            "[data-pending-user-input-dismiss]",
+          ) as HTMLElement | null,
+        "Unable to find the dismissible pending-question action.",
+      )) as HTMLButtonElement;
+      if (captureDirectory) {
+        await page.screenshot({ path: `${captureDirectory}/pending-question-dismissible.png` });
+      }
+      dismissButton.click();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.some(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                request.type === "thread.user-input.dismiss" &&
+                request.requestId === "req-browser-user-input",
+            ),
+          ).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      await dismissible.cleanup();
+    }
+  });
+
+  it("explains that single-select choices advance automatically", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput(),
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(
+            document.querySelector("[data-pending-user-input-progression-hint]")?.textContent,
+          ).toBe("Choose one option to continue automatically.");
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not let an earlier provider failure unlock a newer user-input retry", async () => {
+    const responseRequests: NormalizedWsRpcRequestBody[] = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput(),
+      resolveRpc: (body) => {
+        if (
+          body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand ||
+          body.type !== "thread.user-input.respond"
+        ) {
+          return undefined;
+        }
+        responseRequests.push(body);
+        return { sequence: fixture.snapshot.snapshotSequence + responseRequests.length };
+      },
+    });
+
+    const emitActivity = (input: {
+      sequence: number;
+      kind: string;
+      summary: string;
+      payload: Record<string, unknown>;
+      tone?: "info" | "error";
+    }) => {
+      applyEnvironmentThreadDetailEvent(
+        {
+          sequence: input.sequence,
+          eventId: EventId.make(`user-input-retry-event-${input.sequence}`),
+          aggregateKind: "thread",
+          aggregateId: THREAD_ID,
+          occurredAt: isoAt(input.sequence),
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.activity-appended",
+          payload: {
+            threadId: THREAD_ID,
+            activity: {
+              id: EventId.make(`user-input-retry-activity-${input.sequence}`),
+              tone: input.tone ?? "error",
+              kind: input.kind,
+              summary: input.summary,
+              payload: input.payload,
+              turnId: null,
+              sequence: input.sequence,
+              createdAt: isoAt(input.sequence),
+            },
+          },
+        },
+        LOCAL_ENVIRONMENT_ID,
+      );
+    };
+
+    try {
+      (await waitForButtonContainingText("Tight")).click();
+      (await waitForButtonContainingText("Conservative")).click();
+      await vi.waitFor(() => expect(responseRequests).toHaveLength(1));
+      const firstCommandId = responseRequests[0]?.commandId;
+      expect(typeof firstCommandId).toBe("string");
+
+      emitActivity({
+        sequence: 2,
+        kind: "provider.user-input.respond.failed",
+        summary: "Provider user input response failed",
+        payload: {
+          requestId: "req-browser-user-input",
+          originCommandId: firstCommandId,
+          detail: "Temporary provider failure.",
+        },
+      });
+      await vi.waitFor(() => {
+        expect(
+          selectThreadByRef(useStore.getState(), THREAD_REF)?.activities.some(
+            (activity) =>
+              activity.kind === "provider.user-input.respond.failed" &&
+              typeof activity.payload === "object" &&
+              activity.payload !== null &&
+              "originCommandId" in activity.payload &&
+              activity.payload.originCommandId === firstCommandId,
+          ),
+        ).toBe(true);
+      });
+
+      await waitForEnabledPendingFooterActionButton();
+      findPendingFooterActionButton()?.click();
+      await vi.waitFor(() => expect(responseRequests).toHaveLength(2));
+      const retryCommandId = responseRequests[1]?.commandId;
+      expect(retryCommandId).not.toBe(firstCommandId);
+
+      emitActivity({
+        sequence: 3,
+        kind: "runtime.info",
+        tone: "info",
+        summary: "Unrelated activity while retry is pending",
+        payload: {},
+      });
+      await vi.waitFor(() => {
+        expect(
+          selectThreadByRef(useStore.getState(), THREAD_REF)?.activities.some(
+            (activity) =>
+              activity.summary === "Unrelated activity while retry is pending" &&
+              selectThreadByRef(useStore.getState(), THREAD_REF)?.activities.some(
+                (failure) =>
+                  failure.kind === "provider.user-input.respond.failed" &&
+                  typeof failure.payload === "object" &&
+                  failure.payload !== null &&
+                  "originCommandId" in failure.payload &&
+                  failure.payload.originCommandId === firstCommandId,
+              ),
+          ),
+        ).toBe(true);
+      });
+      expect(responseRequests).toHaveLength(2);
+
+      const composerForm = document.querySelector<HTMLFormElement>(
+        '[data-chat-composer-form="true"]',
+      );
+      expect(composerForm).not.toBeNull();
+      composerForm?.requestSubmit();
+      await vi.waitFor(() => expect(responseRequests).toHaveLength(2));
+      expect(responseRequests).toHaveLength(2);
+
+      emitActivity({
+        sequence: 4,
+        kind: "provider.user-input.respond.failed",
+        summary: "Provider user input retry failed",
+        payload: {
+          requestId: "req-browser-user-input",
+          originCommandId: retryCommandId,
+          detail: "Second temporary provider failure.",
+        },
+      });
+      await vi.waitFor(() => {
+        expect(
+          selectThreadByRef(useStore.getState(), THREAD_REF)?.activities.some(
+            (activity) =>
+              activity.kind === "provider.user-input.respond.failed" &&
+              typeof activity.payload === "object" &&
+              activity.payload !== null &&
+              "originCommandId" in activity.payload &&
+              activity.payload.originCommandId === retryCommandId,
+          ),
+        ).toBe(true);
+      });
+
+      composerForm?.requestSubmit();
+      await vi.waitFor(() => expect(responseRequests).toHaveLength(3));
+      expect(responseRequests[2]?.commandId).not.toBe(retryCommandId);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps dismissal retries correlated to their provider attempt", async () => {
+    const dismissRequests: NormalizedWsRpcRequestBody[] = [];
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPendingUserInput({ dismissible: true }),
+      resolveRpc: (body) => {
+        if (
+          body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          body.type === "thread.user-input.dismiss"
+        ) {
+          dismissRequests.push(body);
+          return { sequence: fixture.snapshot.snapshotSequence + dismissRequests.length };
+        }
+        return undefined;
+      },
+    });
+
+    const emitActivity = (sequence: number, kind: string, payload: Record<string, unknown>) => {
+      applyEnvironmentThreadDetailEvent(
+        {
+          sequence,
+          eventId: EventId.make(`user-input-dismiss-event-${sequence}`),
+          aggregateKind: "thread",
+          aggregateId: THREAD_ID,
+          occurredAt: isoAt(sequence),
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.activity-appended",
+          payload: {
+            threadId: THREAD_ID,
+            activity: {
+              id: EventId.make(`user-input-dismiss-activity-${sequence}`),
+              tone: kind === "runtime.info" ? "info" : "error",
+              kind,
+              summary: kind,
+              payload,
+              turnId: null,
+              sequence,
+              createdAt: isoAt(sequence),
+            },
+          },
+        },
+        LOCAL_ENVIRONMENT_ID,
+      );
+    };
+
+    const activeDismissButton = () =>
+      document.querySelector<HTMLButtonElement>("[data-pending-user-input-dismiss]");
+    const waitForDismissEnabled = async () =>
+      vi.waitFor(() => expect(activeDismissButton()?.disabled).toBe(false), {
+        timeout: 4_000,
+        interval: 16,
+      });
+    const waitForActivity = async (summary: string) =>
+      vi.waitFor(
+        () => {
+          expect(
+            selectThreadByRef(useStore.getState(), THREAD_REF)?.activities.some(
+              (activity) => activity.summary === summary,
+            ),
+          ).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    const waitForFailure = async (originCommandId: unknown) =>
+      vi.waitFor(
+        () => {
+          expect(
+            selectThreadByRef(useStore.getState(), THREAD_REF)?.activities.some(
+              (activity) =>
+                activity.kind === "provider.user-input.respond.failed" &&
+                typeof activity.payload === "object" &&
+                activity.payload !== null &&
+                "originCommandId" in activity.payload &&
+                activity.payload.originCommandId === originCommandId,
+            ),
+          ).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+    try {
+      await waitForDismissEnabled();
+      activeDismissButton()?.click();
+      await vi.waitFor(() => expect(dismissRequests).toHaveLength(1));
+      const firstCommandId = dismissRequests[0]?.commandId;
+      expect(typeof firstCommandId).toBe("string");
+
+      emitActivity(2, "provider.user-input.respond.failed", {
+        requestId: "req-browser-user-input",
+        originCommandId: firstCommandId,
+        detail: "Temporary dismissal failure.",
+      });
+      await waitForFailure(firstCommandId);
+      await waitForDismissEnabled();
+      activeDismissButton()?.click();
+      await vi.waitFor(() => expect(dismissRequests).toHaveLength(2));
+      const retryCommandId = dismissRequests[1]?.commandId;
+      expect(retryCommandId).not.toBe(firstCommandId);
+      await waitForDismissEnabled();
+
+      emitActivity(3, "runtime.info", {});
+      await waitForActivity("runtime.info");
+      await waitForDismissEnabled();
+      activeDismissButton()?.click();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      expect(dismissRequests).toHaveLength(2);
+
+      emitActivity(4, "provider.user-input.respond.failed", {
+        requestId: "req-browser-user-input",
+        originCommandId: retryCommandId,
+        detail: "Second temporary dismissal failure.",
+      });
+      await waitForFailure(retryCommandId);
+      await waitForDismissEnabled();
+      activeDismissButton()?.click();
+      await vi.waitFor(() => expect(dismissRequests).toHaveLength(3));
     } finally {
       await mounted.cleanup();
     }
