@@ -9,6 +9,8 @@ Keep this file small and load the detailed scar only for the subsystem being cha
 - Preserve isolated state, workspace ownership, provider lifecycle, and ambiguous-outcome recovery.
 - Validate the acceptance criteria and relevant behavior, report blockers plainly, and do not treat an unrelated passing command as proof.
 - Ship the smallest diff that makes the behavior true: no restating comments, no tests for pass-through wiring a real-client pass already covers, one check per non-trivial branch.
+- Reuse before you add: extract shared logic rather than copying it, change existing code when that is the honest fix, and reject the narrow local shortcut that only satisfies this call site.
+- Keep each meaning in one place, and prefer the authoritative source over a copy of it. `package.json`, a skill, and a subsystem scar already answer most questions a document would otherwise restate.
 
 ## Subsystem index
 
@@ -39,5 +41,6 @@ The complete scar record is preserved in `.agents/references/scars/full.md`. Loa
 | [Checkpoint and snapshot atomicity](.agents/references/scars/full.md#checkpoint-and-snapshot-atomicity)                           | Completion queues, SQLite snapshot transactions, revert finalization                      |
 | [MCP schemas and auth bootstrap](.agents/references/scars/full.md#mcp-schemas-and-auth-bootstrap)                                 | No-argument tool schemas, auth cache races                                                |
 | [Mobile drafts and navigation](.agents/references/scars/full.md#mobile-drafts-and-navigation)                                     | Subchat draft ownership, iPad navigation, rejected-outbox recovery                        |
+| [Agent instruction surfaces](.agents/references/scars/full.md#agent-instruction-surfaces)                                         | AGENTS.md and skill overlap, no-op rules, delegated-work verification                     |
 
 When a new hard-earned lesson is discovered, add it to `full.md` under the matching area and keep this index updated. Do not replace a detailed scar with a generic reminder.

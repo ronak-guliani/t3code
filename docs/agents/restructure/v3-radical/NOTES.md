@@ -4,7 +4,7 @@ Most radical rung, and the only one that changes a file outside the proposal. `A
 
 ## Deleted outright (not moved)
 
-- **`## Links in Responses`** — dropped, not pointed. The rule reduces to "use a Markdown link for a PR or issue", which is the default for any model formatting a repository artifact; the elaborated `owner/repo#123` convention is an output-format preference, not a behavioural guard. A sibling variant keeps it; the case for keeping is that it also fixes permalink usage, which the default does not.
+- **`## Links in Responses`** — this deletion was **reversed** in the installed result and survives as spine step 4. The argument below held against dropping it: "use a Markdown link for a PR or issue" is a default, but linking a review comment to its permalink and labelling a cross-repo issue `owner/repo#123` are not. That is the residue that earns an always-loaded line.
 - **`## Core Priorities`** — dropped as prose. "Performance first" and "Reliability first" name no observable bound and change no decision. The one clause that does change a decision (correctness over convenience, predictable under restarts) survives as step 3. The dropped words were already the repo's priorities; stating them changed nothing.
 - **`## Keep This File Updated`** — folded into the `Any change` pointer, since `## Scars` above it named the same two files.
 

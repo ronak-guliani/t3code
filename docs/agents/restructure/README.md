@@ -1,37 +1,25 @@
-# AGENTS.md restructuring proposals
+# AGENTS.md restructuring — superseded
 
-Three candidate restructurings of the root `AGENTS.md`, each a self-contained drop-in, each more radical than the last. Nothing here is installed — the root `AGENTS.md` is unchanged, and adopting a variant is a separate decision.
+The three candidate restructurings that lived here were consolidated into a single installed change; this directory is retained only as the record of the deliberation.
 
-Read a variant's `AGENTS.md` as if it sat at the repo root; the links are repo-root-relative.
+The installed result is in the root [`AGENTS.md`](../../AGENTS.md), [`CODING_STANDARDS.md`](../../CODING_STANDARDS.md), [`scars.md`](../../scars.md), and [`full.md`](../../.agents/references/scars/full.md). Start there.
 
-| Variant                       | Root `AGENTS.md` | New files             | Also changes       | Character                                                                  |
-| ----------------------------- | ---------------- | --------------------- | ------------------ | -------------------------------------------------------------------------- |
-| [`v1-prune/`](v1-prune)       | 60 → 36 lines    | none                  | —                  | Wording and deletion only. Same shape, same pointers.                      |
-| [`v2-disclose/`](v2-disclose) | 60 → 22 lines    | `CODING_STANDARDS.md` | —                  | Spine plus a trigger-first pointer table.                                  |
-| [`v3-radical/`](v3-radical)   | 60 → 14 lines    | `CODING_STANDARDS.md` | variant `scars.md` | Deletes non-bounded prose, folds a rule into the always-loaded invariants. |
+Each variant below is a self-contained drop-in, written as if installed at the repo root, with its own `NOTES.md` listing every deletion and its justification. They are kept for the arguments, not as installable options — the v1 and v2 rungs are superseded in full, and the v3 rung is installed with one deviation noted in its `NOTES.md`.
+
+| Variant                       | Root `AGENTS.md` | New files             | Also changes       | Status                                                                |
+| ----------------------------- | ---------------- | --------------------- | ------------------ | --------------------------------------------------------------------- |
+| [`v1-prune/`](v1-prune)       | 60 → 36 lines    | none                  | —                  | Superseded; its deletions are all in the installed result.            |
+| [`v2-disclose/`](v2-disclose) | 60 → 22 lines    | `CODING_STANDARDS.md` | —                  | Superseded; its pointer table became the installed `Load` list.       |
+| [`v3-radical/`](v3-radical)   | 60 → 14 lines    | `CODING_STANDARDS.md` | variant `scars.md` | Installed, except that `Links in Responses` was kept as spine step 4. |
 
 ## What all three found
 
 The `Integrated Product Validation` section — nine bullets, the largest block in the file — restates [`.agents/skills/test-t3-app/SKILL.md`](../../.agents/skills/test-t3-app/SKILL.md) almost bullet for bullet. That skill is 173 lines and already covers the isolated environment, `preview_status`/`preview_open` auth, snapshot plus console and network diagnostics, captures, secrets hygiene, `test:self` scope, and preserve-then-tear-down. Nine bullets were paying context load for a skill the agent can load on demand.
 
-Five more findings are common to all three:
+Five more findings were common to all three:
 
 - Toolchain literals (`pnpm@11.10.0`, `node@^24.13.1`) are a verbatim cache of `package.json`.
 - Two publication instructions where the standing rule subsumes the other.
 - `## Keep This File Updated` names the same two files as `## Scars`, directly above it.
-- `## Maintainability` restates `scars.md` universal invariant 5 in prose.
+- `## Maintainability` restates a `scars.md` universal invariant in prose.
 - `## Links in Responses` duplicates `.agents/references/skill-delivery.md` and the `create-pr` skill.
-
-## Choosing
-
-**v1** if the file's shape is load-bearing for you and you want the wins without the churn. Lowest risk, smallest diff, and the duplication is gone either way. Start here.
-
-**v2** if you want the always-loaded file to stop carrying rules that only some tasks need. The pointer table names its branch in the first few words, which is what keeps the hidden rules reachable. The cost is real: a missed pointer is a missed rule.
-
-**v3** goes furthest, dropping `Core Priorities` and `Links in Responses` outright and editing `scars.md`. Its extra reach comes at the price of touching a file that other docs and skills already point at.
-
-Recommendation: **v2**, on the argument that the duplication is worth fixing everywhere but the extra reach of v3 is only worth its second always-loaded home if you are confident the invariant carries it.
-
-## Notes
-
-Each variant's `NOTES.md` lists every deletion with its justification, what moved, and the residual risk a reviewer should check first.
