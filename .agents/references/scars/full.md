@@ -175,7 +175,6 @@
 - Workspace handoff retries must reuse a durable orchestration command ID. If every response is lost, preserve the created worktree because the binding may already have committed; only roll back after a definitive server rejection, and surface cleanup failures.
 - A handoff that re-targets the worktree and branch the thread is already bound to is not a move: compare the canonical path (not the requested spelling) plus branch, and omit the `Moved to` marker instead of appending a divider per request. Still queue the continuation, because the caller is told to end its turn and let T3 resume — dropping it strands the turn rather than merely hiding noise. Ownership stays claimed at the same generation, so the binding is persisted either way.
 - Local desktop flavors must never use Official's `~/.t3` home. If a divergent build replaces role auth tables with scope-only tables, append a repair above the latest auth migration; replaying an earlier repair is impossible once the ledger high-water mark has passed it.
-- A child result is a claim, not an artifact. Verify delegated work against the filesystem — `git status` for files, an actual file read for content — before reporting it upstream or building on it. Three parallel children once returned result-ready reports with per-file line counts while their working tree stayed clean and their threads were already unreadable; only a `git status` caught that nothing had been written. A plausible report is the most expensive kind of failure because it is trusted by default.
 
 ## Agent instruction surfaces
 
