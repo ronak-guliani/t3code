@@ -94,7 +94,7 @@
 
 ## Provider tools and workspace ownership
 
-- Leave new-thread base branches unresolved until the selected project's Git status supplies its current branch. Hard-coding `main` bypasses the existing picker initialization and can seed a worktree from an obsolete branch even when `master` is current.
+- Leave new-thread base branches unresolved until the selected project's Git status supplies its current branch; for detached HEAD, fall back to the branch list's repository default only when choosing a new worktree base. Hard-coding `main` bypasses the existing picker initialization and can seed a worktree from an obsolete branch even when `master` is current.
 - Bind Pi's `PWD` to its requested spawn cwd. Setting only the subprocess cwd leaves the server's `PWD` inherited; extensions such as context-mode prefer that environment value and otherwise execute tools in the server's repository despite a correct thread/worktree binding.
 - Agent CLI stdout is a data boundary: send logs and failures to stderr, use the server-matched launcher rather than ambient PATH, and never infer matching protocol contracts from equal package versions.
 - OpenCode SSE connection success is not semantic progress: admit prompts only after the subscription is established, correlate each prompt with a client message ID, and reconcile transcript plus native status until correlated work is idle before projecting one terminal turn event. Replayed evidence must be idempotent, and interrupt/session replacement remains authoritative over delayed recovery results.

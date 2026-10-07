@@ -237,11 +237,16 @@ export function BranchToolbarBranchSelector({
   );
   const currentGitBranch =
     branchStatusQuery.data?.branch ?? branches.find((branch) => branch.current)?.name ?? null;
+  const worktreeBaseBranch =
+    currentGitBranch ?? branches.find((branch) => branch.isDefault)?.name ?? null;
   const canonicalActiveBranch = resolveBranchToolbarValue({
     envMode: effectiveEnvMode,
     activeWorktreePath,
     activeThreadBranch,
-    currentGitBranch,
+    currentGitBranch:
+      effectiveEnvMode === "worktree" && !activeWorktreePath
+        ? worktreeBaseBranch
+        : currentGitBranch,
   });
   const branchNames = useMemo(() => branches.map((branch) => branch.name), [branches]);
   const branchByName = useMemo(
@@ -413,12 +418,18 @@ export function BranchToolbarBranchSelector({
       effectiveEnvMode !== "worktree" ||
       activeWorktreePath ||
       activeThreadBranch ||
-      !currentGitBranch
+      !worktreeBaseBranch
     ) {
       return;
     }
-    setThreadBranch(currentGitBranch, null);
-  }, [activeThreadBranch, activeWorktreePath, currentGitBranch, effectiveEnvMode, setThreadBranch]);
+    setThreadBranch(worktreeBaseBranch, null);
+  }, [
+    activeThreadBranch,
+    activeWorktreePath,
+    worktreeBaseBranch,
+    effectiveEnvMode,
+    setThreadBranch,
+  ]);
 
   // ---------------------------------------------------------------------------
   // Combobox / list plumbing

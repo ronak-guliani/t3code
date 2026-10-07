@@ -7601,7 +7601,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("creates and sends a new project thread from its current branch, not a stale main", async () => {
+  it.each([
+    { checkout: "current", current: true },
+    { checkout: "detached", current: false },
+  ])("creates and sends a new project thread from a $checkout checkout", async ({ current }) => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotWithSecondaryProject({ includeSecondaryThread: false }),
@@ -7613,8 +7616,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
             nextCursor: null,
             totalCount: 2,
             branches: [
-              { name: "main", current: false, isDefault: false, worktreePath: null },
-              { name: "master", current: true, isDefault: true, worktreePath: null },
+              { name: "main", current: false, isDefault: current, worktreePath: null },
+              { name: "master", current, isDefault: !current, worktreePath: null },
             ],
           };
         }
