@@ -50,7 +50,7 @@ describe("chatThreadActions", () => {
     expect(projectRef).toEqual(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID));
   });
 
-  it("starts a fresh worktree main thread instead of inheriting the active draft context", async () => {
+  it("starts a fresh worktree thread with the project branch unresolved instead of inheriting the active draft context", async () => {
     const handleNewThread = vi.fn<ChatThreadActionContext["handleNewThread"]>(async () => {});
 
     const didStart = await startNewThreadFromContext(
@@ -68,13 +68,13 @@ describe("chatThreadActions", () => {
 
     expect(didStart).toBe(true);
     expect(handleNewThread).toHaveBeenCalledWith(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), {
-      branch: "main",
+      branch: null,
       worktreePath: null,
       envMode: "worktree",
     });
   });
 
-  it("starts a worktree main thread regardless of the configured default env mode", async () => {
+  it("starts a worktree thread with the project branch unresolved regardless of the configured default env mode", async () => {
     const handleNewThread = vi.fn<ChatThreadActionContext["handleNewThread"]>(async () => {});
 
     const didStart = await startNewLocalThreadFromContext(
@@ -87,7 +87,7 @@ describe("chatThreadActions", () => {
 
     expect(didStart).toBe(true);
     expect(handleNewThread).toHaveBeenCalledWith(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), {
-      branch: "main",
+      branch: null,
       worktreePath: null,
       envMode: "worktree",
     });
