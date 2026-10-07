@@ -522,6 +522,22 @@ export const ServerTraceDiagnosticsErrorKind = Schema.Literals([
 ]);
 export type ServerTraceDiagnosticsErrorKind = typeof ServerTraceDiagnosticsErrorKind.Type;
 
+/**
+ * Process/resource/signal diagnostics are unimplemented. A typed failure keeps
+ * them distinguishable from a probe that genuinely found nothing.
+ */
+export const ServerDiagnosticsProbe = Schema.Literals(["process", "resources", "signal"]);
+export type ServerDiagnosticsProbe = typeof ServerDiagnosticsProbe.Type;
+
+export class ServerDiagnosticsUnsupportedError extends Schema.TaggedErrorClass<ServerDiagnosticsUnsupportedError>()(
+  "ServerDiagnosticsUnsupportedError",
+  { probe: ServerDiagnosticsProbe },
+) {
+  override get message(): string {
+    return `This server does not implement the '${this.probe}' diagnostics probe; no process data was collected.`;
+  }
+}
+
 export const ServerTraceDiagnosticsSpanSummary = Schema.Struct({
   name: TrimmedNonEmptyString,
   count: NonNegativeInt,
@@ -596,6 +612,11 @@ export const ServerTraceDiagnosticsResult = Schema.Struct({
       message: TrimmedNonEmptyString,
     }),
   ),
+  /**
+   * Retention, sampling, and parse caveats a zero counter cannot express, so a
+   * partial read is never mistaken for a clean trace.
+   */
+  notes: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
 });
 export type ServerTraceDiagnosticsResult = typeof ServerTraceDiagnosticsResult.Type;
 
