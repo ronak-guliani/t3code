@@ -176,6 +176,12 @@
 - A handoff that re-targets the worktree and branch the thread is already bound to is not a move: compare the canonical path (not the requested spelling) plus branch, and omit the `Moved to` marker instead of appending a divider per request. Still queue the continuation, because the caller is told to end its turn and let T3 resume — dropping it strands the turn rather than merely hiding noise. Ownership stays claimed at the same generation, so the binding is persisted either way.
 - Local desktop flavors must never use Official's `~/.t3` home. If a divergent build replaces role auth tables with scope-only tables, append a repair above the latest auth migration; replaying an earlier repair is impossible once the ledger high-water mark has passed it.
 
+## Agent instruction surfaces
+
+- The always-loaded `AGENTS.md` is the highest-leverage and highest-decay surface: it is paid on every turn, so anything it restates from a skill, `package.json`, or a subsystem scar is a cache that only goes stale. Point at the authority and let the pointer's wording carry the trigger.
+- Before adding an always-loaded rule, run it against the model default. Rules that name no observable bound — "performance first", "be thorough" — change no decision, however well intended. Keep the clause that changes a decision and drop the sentiment around it.
+- When a subtree already carries a procedure — a skill with the full recipe — the parent document keeps the trigger and the exceptions, never the steps. Duplicated procedure is worse than duplicated prose: it drifts on only one side, and the agent has no way to tell which copy is authoritative. Check that the subtree actually carries it: this section's own preview rule was deleted as a `test-t3-app` duplicate when that skill only named `preview_open_and_snapshot` and never `preview_status`, so an invariant asserting a required sequence must survive where it is the only statement of it.
+
 ## PR reviews and checkpoint provenance
 
 - `pullRequest: null` and an absent `pullRequest` are different things. `null` is an explicit "no association" that short-circuits `resolveInitialThreadPullRequest` before snapshot recovery, so a review worker created with it keeps no link at all and any sweep reading only links cannot see it. Suppressing `CreatedPullRequestReviewReactor` is the job of the `isReviewWorkflowThread` guards, not of dropping the association; when a consumer needs the PR, fall back to `pullRequestFromReviewSnapshot` as migrations 067/068 do.
