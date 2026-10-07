@@ -1209,41 +1209,73 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
   });
 
-  it("captures the pre-turn checkpoint before sending the provider turn", async () => {
-    const harness = await createHarness({ checkpointIsGitRepository: true });
-    const now = new Date().toISOString();
+  it.each(["checkpoint", "session"] as const)(
+    "overlaps checkpoint and session startup but waits for both when %s finishes first",
+    async (first) => {
+      const harness = await createHarness({ checkpointIsGitRepository: true });
+      const checkpointGate = Effect.runSync(Deferred.make<void>());
+      const sessionGate = Effect.runSync(Deferred.make<void>());
+      const completed: string[] = [];
+      const captureCheckpoint = vi.mocked(harness.checkpointStore.captureCheckpoint);
+      const captureImpl = captureCheckpoint.getMockImplementation()!;
+      captureCheckpoint.mockImplementation((input) =>
+        Deferred.await(checkpointGate).pipe(
+          Effect.andThen(captureImpl(input)),
+          Effect.tap(() => Effect.sync(() => completed.push("checkpoint"))),
+        ),
+      );
+      const startImpl = harness.startSession.getMockImplementation()!;
+      harness.startSession.mockImplementation((threadId, input) =>
+        Deferred.await(sessionGate).pipe(
+          Effect.andThen(Effect.suspend(() => startImpl(threadId, input))),
+          Effect.tap(() => Effect.sync(() => completed.push("session"))),
+        ),
+      );
+      const now = new Date().toISOString();
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-checkpoint-baseline"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: asMessageId("user-message-checkpoint-baseline"),
-          role: "user",
-          text: "change files",
-          attachments: [],
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-checkpoint-baseline"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-checkpoint-baseline"),
+            role: "user",
+            text: "change files",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+
+      await waitFor(() => captureCheckpoint.mock.calls.length === 1);
+      await waitFor(() => harness.startSession.mock.calls.length === 1);
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      await Effect.runPromise(
+        Deferred.succeed(first === "checkpoint" ? checkpointGate : sessionGate, undefined),
+      );
+      await waitFor(() => completed.includes(first));
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      await Effect.runPromise(
+        Deferred.succeed(first === "checkpoint" ? sessionGate : checkpointGate, undefined),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+      expect(harness.checkpointStore.captureCheckpoint).toHaveBeenCalledWith({
+        cwd: harness.workspacePath,
+        checkpointRef: checkpointBaselineRefForThreadTurn(ThreadId.make("thread-1"), 1),
+        workspaceBinding: {
+          canonicalPath: harness.workspacePath,
+          worktreePath: harness.workspacePath,
+          branch: null,
+          generation: 1,
         },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: now,
-      }),
-    );
-
-    await waitFor(() => harness.turnStartOrder.length === 2);
-
-    expect(harness.checkpointStore.captureCheckpoint).toHaveBeenCalledWith({
-      cwd: harness.workspacePath,
-      checkpointRef: checkpointBaselineRefForThreadTurn(ThreadId.make("thread-1"), 1),
-      workspaceBinding: {
-        canonicalPath: harness.workspacePath,
-        worktreePath: harness.workspacePath,
-        branch: null,
-        generation: 1,
-      },
-    });
-    expect(harness.turnStartOrder).toEqual(["captureCheckpoint", "sendTurn"]);
-  });
+      });
+      expect(harness.turnStartOrder).toEqual(["captureCheckpoint", "sendTurn"]);
+    },
+  );
 
   it("captures a distinct pre-turn baseline when a completion ref already exists", async () => {
     const harness = await createHarness({
