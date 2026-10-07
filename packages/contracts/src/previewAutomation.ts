@@ -674,6 +674,10 @@ export const PreviewAutomationSnapshotInput = Schema.Struct({
     `Max network entries returned. Defaults to ${DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES}.`,
     200,
   ),
+  maxActionTimelineEntries: OptionalPositiveInt(
+    `Max action timeline entries returned. Defaults to ${DEFAULT_SNAPSHOT_MAX_ACTION_TIMELINE_ENTRIES}.`,
+    200,
+  ),
 }).annotate({
   description:
     "Inspect a collaborative browser tab. Budgets default to context-safe sizes; set includeAccessibilityTree=true only when needed.",
@@ -771,6 +775,10 @@ export const PreviewAutomationOpenAndSnapshotInput = Schema.Struct({
   ),
   maxNetworkEntries: OptionalPositiveInt(
     `Max network entries. Defaults to ${DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES}.`,
+    200,
+  ),
+  maxActionTimelineEntries: OptionalPositiveInt(
+    `Max action timeline entries. Defaults to ${DEFAULT_SNAPSHOT_MAX_ACTION_TIMELINE_ENTRIES}.`,
     200,
   ),
 })

@@ -17,6 +17,7 @@ describe("previewAutomationBudgets", () => {
     expect(budgets.networkMode).toBe("failed");
     expect(budgets.maxVisibleText).toBe(8_000);
     expect(budgets.maxInteractiveElements).toBe(80);
+    expect(budgets.maxActionTimelineEntries).toBe(40);
   });
 
   it("filters console to important levels including CDP warning", () => {
@@ -138,6 +139,23 @@ describe("previewAutomationBudgets", () => {
 
     const timeline = Array.from({ length: 80 }, (_, id) => action(id));
     expect(snapshot(timeline).actionTimeline).toEqual(timeline.slice(-40));
+
+    const expanded = applySnapshotBudgets(
+      {
+        url: "https://example.com",
+        title: "Example",
+        loading: false,
+        visibleText: "",
+        interactiveElements: [],
+        accessibilityTree: null,
+        consoleEntries: [],
+        networkEntries: [],
+        actionTimeline: timeline,
+        screenshot: { mimeType: "image/png", data: "", width: 0, height: 0 },
+      },
+      resolveSnapshotBudgets({ maxActionTimelineEntries: 60 }),
+    );
+    expect(expanded.actionTimeline).toEqual(timeline.slice(-60));
   });
 
   it("returns small metadata unchanged by the final text budget", () => {

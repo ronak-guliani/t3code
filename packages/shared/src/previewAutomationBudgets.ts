@@ -1,7 +1,7 @@
 import {
   DEFAULT_LOCATOR_CANDIDATE_LIMIT,
-  DEFAULT_SNAPSHOT_MAX_CONSOLE_ENTRIES,
   DEFAULT_SNAPSHOT_MAX_ACTION_TIMELINE_ENTRIES,
+  DEFAULT_SNAPSHOT_MAX_CONSOLE_ENTRIES,
   DEFAULT_SNAPSHOT_MAX_INTERACTIVE_ELEMENTS,
   DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES,
   DEFAULT_SNAPSHOT_MAX_SCREENSHOT_EDGE,
@@ -25,6 +25,7 @@ export type ResolvedSnapshotBudgets = {
   maxScreenshotEdge: number;
   maxConsoleEntries: number;
   maxNetworkEntries: number;
+  maxActionTimelineEntries: number;
 };
 
 export function resolveSnapshotBudgets(
@@ -40,6 +41,7 @@ export function resolveSnapshotBudgets(
     | "maxScreenshotEdge"
     | "maxConsoleEntries"
     | "maxNetworkEntries"
+    | "maxActionTimelineEntries"
   > = {},
 ): ResolvedSnapshotBudgets {
   return {
@@ -54,6 +56,8 @@ export function resolveSnapshotBudgets(
     maxScreenshotEdge: input.maxScreenshotEdge ?? DEFAULT_SNAPSHOT_MAX_SCREENSHOT_EDGE,
     maxConsoleEntries: input.maxConsoleEntries ?? DEFAULT_SNAPSHOT_MAX_CONSOLE_ENTRIES,
     maxNetworkEntries: input.maxNetworkEntries ?? DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES,
+    maxActionTimelineEntries:
+      input.maxActionTimelineEntries ?? DEFAULT_SNAPSHOT_MAX_ACTION_TIMELINE_ENTRIES,
   };
 }
 
@@ -171,8 +175,8 @@ export function applySnapshotBudgets(
     consoleEntries,
     networkEntries,
     actionTimeline:
-      snapshot.actionTimeline.length > DEFAULT_SNAPSHOT_MAX_ACTION_TIMELINE_ENTRIES
-        ? snapshot.actionTimeline.slice(-DEFAULT_SNAPSHOT_MAX_ACTION_TIMELINE_ENTRIES)
+      snapshot.actionTimeline.length > budgets.maxActionTimelineEntries
+        ? snapshot.actionTimeline.slice(-budgets.maxActionTimelineEntries)
         : snapshot.actionTimeline,
     diagnosticsSummary,
   };
