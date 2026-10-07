@@ -954,10 +954,11 @@ function ChatViewBody(
   >([]);
   // A failed provider response must release only the attempt that produced it;
   // a request can be retried while its earlier failure remains in history.
-  const activeUserInputAttemptRef = useRef<{
-    requestId: ApprovalRequestId;
-    commandId: ReturnType<typeof newCommandId>;
-  } | null>(null);
+  // In-flight respond/dismiss command per request. Keyed by request so a
+  // newer question's attempt never overwrites an earlier unresolved one.
+  const userInputAttemptsRef = useRef(
+    new Map<ApprovalRequestId, ReturnType<typeof newCommandId>>(),
+  );
   const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
     Record<string, Record<string, PendingUserInputDraftAnswer>>
   >({});
@@ -1639,18 +1640,23 @@ function ChatViewBody(
   const activePendingUserInput = pendingUserInputs[0] ?? null;
 
   useEffect(() => {
-    const attempt = activeUserInputAttemptRef.current;
-    if (!attempt) return;
-    const responseFailed = threadStateActivities.some(
-      (activity) =>
-        activity.kind === "provider.user-input.respond.failed" &&
-        typeof activity.payload === "object" &&
-        activity.payload !== null &&
-        "originCommandId" in activity.payload &&
-        activity.payload.originCommandId === attempt.commandId,
-    );
-    if (responseFailed) {
-      activeUserInputAttemptRef.current = null;
+    const attempts = userInputAttemptsRef.current;
+    if (attempts.size === 0) return;
+    for (const activity of threadStateActivities) {
+      const payload = activity.payload;
+      if (
+        activity.kind !== "provider.user-input.respond.failed" ||
+        typeof payload !== "object" ||
+        payload === null ||
+        !("requestId" in payload) ||
+        !("originCommandId" in payload)
+      ) {
+        continue;
+      }
+      const requestId = payload.requestId as ApprovalRequestId;
+      if (attempts.get(requestId) === payload.originCommandId) {
+        attempts.delete(requestId);
+      }
     }
   }, [threadStateActivities]);
 
@@ -4327,9 +4333,10 @@ function ChatViewBody(
     ) => {
       const api = readEnvironmentApi(environmentId);
       if (!api || !activeThreadId) return;
-      if (activeUserInputAttemptRef.current?.requestId === requestId) return;
+      const attempts = userInputAttemptsRef.current;
+      if (attempts.has(requestId)) return;
       const commandId = newCommandId();
-      activeUserInputAttemptRef.current = { requestId, commandId };
+      attempts.set(requestId, commandId);
       setRespondingUserInputRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
@@ -4356,8 +4363,8 @@ function ChatViewBody(
       } catch (err: unknown) {
         setThreadError(activeThreadId, err instanceof Error ? err.message : failureMessage);
         // A rejected dispatch never reached the provider; allow a retry.
-        if (activeUserInputAttemptRef.current?.commandId === commandId) {
-          activeUserInputAttemptRef.current = null;
+        if (attempts.get(requestId) === commandId) {
+          attempts.delete(requestId);
         }
       }
       setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
