@@ -1586,6 +1586,21 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-hard-delete-pur
           `;
         }
 
+        for (const id of [threadId, otherThreadId]) {
+          yield* sql`
+            INSERT INTO projection_workflow_runs
+              (run_id, workflow_id, parent_thread_id, status, definition_json, created_at, updated_at)
+            VALUES (${`run-${id}`}, 'workflow', ${id}, 'pending', '{}', ${now}, ${now})
+          `;
+          yield* sql`
+            INSERT INTO orchestration_events
+              (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+               command_id, actor_kind, payload_json, metadata_json)
+            VALUES (${`workflow-event-${id}`}, 'workflow', ${`run-${id}`}, 0,
+              'workflow.run-requested', ${now}, ${`workflow-command-${id}`}, 'client', '{}', '{}')
+          `;
+        }
+
         yield* project({
           sequence: nextSequence(),
           type: "thread.deleted",
@@ -1607,6 +1622,11 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-hard-delete-pur
             `;
             return rows[0]?.total ?? 0;
           });
+        assert.strictEqual(yield* count("orchestration_events", "stream_id", `run-${threadId}`), 0);
+        assert.strictEqual(
+          yield* count("orchestration_events", "stream_id", `run-${otherThreadId}`),
+          1,
+        );
 
         for (const [table, column] of [
           ["projection_threads", "thread_id"],

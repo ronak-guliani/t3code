@@ -19,4 +19,12 @@ export default Effect.gen(function* () {
       ADD COLUMN expected_branch TEXT
     `;
   }
+  yield* sql`
+    UPDATE worktree_cleanup_jobs
+    SET expected_branch = (
+      SELECT branch FROM projection_threads
+      WHERE projection_threads.thread_id = worktree_cleanup_jobs.thread_id
+    )
+    WHERE expected_branch IS NULL
+  `;
 });

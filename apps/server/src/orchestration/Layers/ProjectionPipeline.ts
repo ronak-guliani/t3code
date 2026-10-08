@@ -340,7 +340,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               requestedAt: event.payload.archivedAt,
               source: "archive",
               allowTerminalReset: true,
-              expectedBranch: event.payload.worktreeCleanup.expectedBranch,
+              expectedBranch: event.payload.worktreeCleanup.expectedBranch ?? null,
             });
           }
           const existingRow = yield* projectionThreadRepository.getById({
@@ -777,6 +777,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // client-scoped pin key the server rewrites wholesale from the client
           // snapshot, and it carries no conversation data.
           const threadId = event.payload.threadId;
+          const deletedThread = yield* projectionThreadRepository.getById({ threadId });
           yield* projectionThreadPullRequestRepository.deleteByThreadId({ threadId });
           if (event.payload.worktreeCleanup !== undefined) {
             yield* worktreeCleanupJobRepository.enqueue({
@@ -789,7 +790,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               requestedAt: event.payload.deletedAt,
               source: "delete",
               allowTerminalReset: true,
-              expectedBranch: event.payload.worktreeCleanup.expectedBranch,
+              expectedBranch:
+                event.payload.worktreeCleanup.expectedBranch === undefined
+                  ? (Option.isSome(deletedThread) ? deletedThread.value.branch : null)
+                  : event.payload.worktreeCleanup.expectedBranch,
             });
           }
 
@@ -830,6 +834,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             DELETE FROM projection_workflow_artifacts WHERE producer_thread_id = ${threadId}
           `;
           yield* sql`DELETE FROM projection_workflow_nodes WHERE worker_thread_id = ${threadId}`;
+          yield* sql`
+            DELETE FROM orchestration_events
+            WHERE aggregate_kind = 'workflow' AND stream_id IN (
+              SELECT run_id FROM projection_workflow_runs WHERE parent_thread_id = ${threadId}
+            )
+          `;
+          yield* sql`
+            DELETE FROM orchestration_command_receipts
+            WHERE aggregate_kind = 'workflow' AND aggregate_id IN (
+              SELECT run_id FROM projection_workflow_runs WHERE parent_thread_id = ${threadId}
+            )
+          `;
           yield* sql`DELETE FROM projection_workflow_runs WHERE parent_thread_id = ${threadId}`;
           yield* sql`DELETE FROM projection_queued_turns WHERE thread_id = ${threadId}`;
           yield* sql`DELETE FROM projection_pending_approvals WHERE thread_id = ${threadId}`;
