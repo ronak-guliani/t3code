@@ -63,7 +63,11 @@ function threadDetailToShell(
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
-    hasPendingQueuedTurn: queueAwaitsDispatch(thread.queueHeldAt, thread.queuedTurns ?? []),
+    hasPendingQueuedTurn: queueAwaitsDispatch(
+      thread.queueHeldAt,
+      thread.queuedTurns ?? [],
+      thread.nudging?.paused,
+    ),
   };
 }
 

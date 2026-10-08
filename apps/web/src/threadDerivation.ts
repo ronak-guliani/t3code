@@ -1,5 +1,6 @@
 import type { MessageId, OrchestrationQueuedTurn, ThreadId, TurnId } from "@t3tools/contracts";
 import { validationRunEquals } from "@t3tools/client-runtime/validation-lifecycle";
+import { jsonValuesEqual } from "./lib/jsonValuesEqual";
 import type { EnvironmentState } from "./store";
 import type {
   ChatMessage,
@@ -91,6 +92,8 @@ function threadShellContentEqualIgnoringUpdatedAt(
     previous.settledAt === next.settledAt &&
     previous.snoozedUntil === next.snoozedUntil &&
     previous.snoozedAt === next.snoozedAt &&
+    previous.queueHeldAt === next.queueHeldAt &&
+    jsonValuesEqual(previous.nudging, next.nudging) &&
     previous.branch === next.branch &&
     previous.worktreePath === next.worktreePath &&
     threadPullRequestEqual(previous.pullRequest, next.pullRequest) &&

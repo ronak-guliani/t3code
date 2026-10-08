@@ -3283,4 +3283,67 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(yield* snapshotQuery.getSnapshotSequence(), 0);
     }),
   );
+  it.effect(
+    "does not count paused PR feedback as working, but preserves explicit queued work",
+    () =>
+      Effect.gen(function* () {
+        const query = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = asThreadId("paused-feedback-thread");
+        const now = "2026-09-16T00:00:00.000Z";
+        yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES ('paused-feedback-project', 'Queue', '/tmp/paused-feedback', '[]', ${now}, ${now})
+      `;
+        yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          nudging_json, created_at, updated_at
+        ) VALUES (${threadId}, 'paused-feedback-project', 'Paused feedback',
+          '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default',
+          '{"paused":true}', ${now}, ${now})
+      `;
+        yield* sql`
+        INSERT INTO projection_queued_turns (
+          queued_turn_id, thread_id, message_id, text, attachments_json,
+          runtime_mode, interaction_mode, origin_json, queue_position, created_at, updated_at
+        ) VALUES ('paused-feedback-turn', ${threadId}, 'paused-feedback-message', 'Review feedback',
+          '[]', 'full-access', 'default',
+          '{"kind":"pull-request-monitor","repository":"acme/app","number":42}', 0, ${now}, ${now})
+      `;
+        const assertPending = (expected: boolean) =>
+          Effect.gen(function* () {
+            const shell = yield* query.getShellSnapshot();
+            const targeted = Option.getOrThrow(yield* query.getThreadShellById(threadId));
+            assert.equal(
+              shell.threads.find((thread) => thread.id === threadId)?.hasPendingQueuedTurn,
+              expected,
+            );
+            assert.equal(targeted.hasPendingQueuedTurn, expected);
+          });
+        // A paused monitor must not keep an otherwise idle thread working.
+        yield* assertPending(false);
+        yield* sql`UPDATE projection_threads SET nudging_json = '{"paused":false}' WHERE thread_id = ${threadId}`;
+        yield* assertPending(true);
+        yield* sql`UPDATE projection_threads SET nudging_json = '{"paused":true}' WHERE thread_id = ${threadId}`;
+        yield* sql`
+        INSERT INTO projection_queued_turns (
+          queued_turn_id, thread_id, message_id, text, attachments_json,
+          runtime_mode, interaction_mode, queue_position, created_at, updated_at
+        ) VALUES ('explicit-feedback-turn', ${threadId}, 'explicit-feedback-message', 'User follow-up',
+          '[]', 'full-access', 'default', 1, ${now}, ${now})
+      `;
+        // Paused automatic work is skipped, not a barrier to a user message.
+        yield* assertPending(true);
+        yield* sql`UPDATE projection_queued_turns SET failed_at = ${now} WHERE queued_turn_id = 'explicit-feedback-turn'`;
+        yield* assertPending(false);
+        yield* sql`UPDATE projection_queued_turns SET failed_at = NULL WHERE queued_turn_id = 'explicit-feedback-turn'`;
+        yield* sql`UPDATE projection_threads SET queue_held_at = ${now} WHERE thread_id = ${threadId}`;
+        yield* assertPending(false);
+        yield* sql`DELETE FROM projection_queued_turns WHERE thread_id = ${threadId}`;
+        yield* sql`DELETE FROM projection_threads WHERE thread_id = ${threadId}`;
+        yield* sql`DELETE FROM projection_projects WHERE project_id = 'paused-feedback-project'`;
+      }),
+  );
 });

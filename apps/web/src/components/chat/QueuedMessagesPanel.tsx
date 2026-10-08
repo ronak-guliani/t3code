@@ -3,11 +3,13 @@ import { ArrowDown, ArrowUp, Check, Pause, Pencil, Play, Trash2, X } from "lucid
 import { memo } from "react";
 import { cn } from "../../lib/utils";
 import { formatThreadContextPlainText } from "@t3tools/shared/threadContext";
+import { isQueuedTurnPausedByParent } from "@t3tools/shared/queuedTurnOrder";
 import { Button } from "../ui/button";
 
 interface QueuedMessagesPanelProps {
   queuedTurnStatuses?: ReadonlyMap<QueuedTurnId, "submitting" | "accepted"> | undefined;
   policyBlocks?: ReadonlyMap<QueuedTurnId, string> | undefined;
+  automaticFollowUpPaused?: boolean | undefined;
   queuedTurns: ReadonlyArray<OrchestrationQueuedTurn>;
   /**
    * Set while crash recovery holds the queue. Nothing drains until the user
@@ -53,6 +55,7 @@ function attachmentLabel(queuedTurn: OrchestrationQueuedTurn): string | null {
 
 export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
   policyBlocks,
+  automaticFollowUpPaused,
   queuedTurnStatuses,
   queuedTurns,
   queueHeldAt,
@@ -66,7 +69,10 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
   onReleaseQueue,
 }: QueuedMessagesPanelProps) {
   const nextEligibleId = queuedTurns.find(
-    (turn) => !policyBlocks?.has(turn.id) && turn.origin?.kind !== "child-nudge",
+    (turn) =>
+      !policyBlocks?.has(turn.id) &&
+      turn.origin?.kind !== "child-nudge" &&
+      !isQueuedTurnPausedByParent(automaticFollowUpPaused, turn.origin),
   )?.id;
   const visibleQueuedTurns = queuedTurns.flatMap((queuedTurn, queueIndex) =>
     isHiddenQueuedTurn(queuedTurn) ? [] : [{ queuedTurn, queueIndex }],
@@ -101,7 +107,9 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
           const isFailed = queuedTurn.failedAt !== null;
           const isPending = queuedTurnStatuses?.has(queuedTurn.id) === true;
           const isSubmitting = queuedTurnStatuses?.get(queuedTurn.id) === "submitting";
-          const policyBlock = policyBlocks?.get(queuedTurn.id);
+          const policyBlock = isQueuedTurnPausedByParent(automaticFollowUpPaused, queuedTurn.origin)
+            ? "Automatic follow-up is paused. Resume child follow-up to send this PR feedback."
+            : policyBlocks?.get(queuedTurn.id);
           const meta = attachmentLabel(queuedTurn);
           const label = isSubmitting
             ? "Queuing…"
