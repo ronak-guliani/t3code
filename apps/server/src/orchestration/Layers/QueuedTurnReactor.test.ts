@@ -2394,6 +2394,26 @@ describe("QueuedTurnReactor", () => {
     const commands = await runReactor(pausedParent, monitorSnapshot("head-current"));
 
     expect(commands).toEqual([]);
+    const resumed = await runReactor(pausedParent, monitorSnapshot("head-current"), {
+      resume: {
+        readModel: model,
+        event: {
+          sequence: 2,
+          eventId: EventId.make("resume-parent-feedback"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: CommandId.make("resume-parent-feedback"),
+          causationEventId: null,
+          correlationId: CommandId.make("resume-parent-feedback"),
+          metadata: {},
+          type: "thread.meta-updated",
+          payload: { threadId, nudging: { paused: false }, updatedAt: now },
+        },
+        afterMs: 10,
+      },
+    });
+    expect(resumed).toMatchObject([{ type: "thread.queued-turn.dispatch", queuedTurnId }]);
   });
 
   it("returns stale-recipient feedback to durable retry after ownership changes", async () => {

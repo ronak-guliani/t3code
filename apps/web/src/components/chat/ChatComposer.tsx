@@ -2596,6 +2596,7 @@ export const ChatComposer = memo(
             <QueuedMessagesPanel
               queuedTurnStatuses={props.queuedTurnStatuses}
               policyBlocks={queuedPolicyBlocks}
+              automaticFollowUpPaused={activeThread?.nudging?.paused}
               queuedTurns={queuedTurns}
               queueHeldAt={queueHeldAt}
               editingQueuedTurnId={editingQueuedTurn?.id ?? null}

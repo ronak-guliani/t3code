@@ -24,6 +24,7 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { mergeHistoryCollections } from "@t3tools/shared/threadHistory";
+import { jsonValuesEqual } from "./lib/jsonValuesEqual";
 import {
   historyRetentionLimits,
   DEFAULT_HISTORY_RETENTION,
@@ -582,31 +583,6 @@ function latestTurnsEqual(
   );
 }
 
-function resumeCursorsEqual(left: unknown, right: unknown): boolean {
-  if (left === right) return true;
-  if (left === null || right === null) return false;
-  if (typeof left !== "object" || typeof right !== "object") return false;
-
-  if (Array.isArray(left) || Array.isArray(right)) {
-    if (!Array.isArray(left) || !Array.isArray(right)) return false;
-    if (left.length !== right.length) return false;
-    for (let index = 0; index < left.length; index += 1) {
-      if (!resumeCursorsEqual(left[index], right[index])) return false;
-    }
-    return true;
-  }
-
-  const leftRecord = left as Record<string, unknown>;
-  const rightRecord = right as Record<string, unknown>;
-  const leftKeys = Object.keys(leftRecord);
-  if (leftKeys.length !== Object.keys(rightRecord).length) return false;
-  for (const key of leftKeys) {
-    if (!Object.prototype.hasOwnProperty.call(rightRecord, key)) return false;
-    if (!resumeCursorsEqual(leftRecord[key], rightRecord[key])) return false;
-  }
-  return true;
-}
-
 function threadSessionsEqual(
   left: ThreadSession | null | undefined,
   right: ThreadSession | null | undefined,
@@ -621,7 +597,7 @@ function threadSessionsEqual(
     left.createdAt === right.createdAt &&
     left.updatedAt === right.updatedAt &&
     left.lastError === right.lastError &&
-    resumeCursorsEqual(left.resumeCursor ?? null, right.resumeCursor ?? null)
+    jsonValuesEqual(left.resumeCursor ?? null, right.resumeCursor ?? null)
   );
 }
 
@@ -751,7 +727,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     pullRequestsEqual(left.pullRequest, right.pullRequest) &&
     threadPullRequestLinksEqual(left.pullRequests ?? [], right.pullRequests ?? []) &&
     validationRunEquals(left.validationRun, right.validationRun) &&
-    resumeCursorsEqual(left.nudging, right.nudging)
+    jsonValuesEqual(left.nudging, right.nudging)
   );
 }
 

@@ -45,7 +45,7 @@ import {
 } from "../commandInvariants.ts";
 import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import { isAutomaticChildNudgeBlocked } from "../childNudging.ts";
-import { compareQueuedTurns } from "@t3tools/shared/queuedTurnOrder";
+import { compareQueuedTurns, isQueuedTurnPausedByParent } from "@t3tools/shared/queuedTurnOrder";
 import { childWaitIsSatisfied, evaluateChildFollowUp } from "@t3tools/shared/childFollowUp";
 import {
   delegationSettlementNotBefore,
@@ -373,7 +373,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
       }
       // Parent pause covers automatic PR remediation as well as child nudges;
       // keep the durable feedback queued without letting it start a turn.
-      if (thread.nudging?.paused) continue;
+      if (isQueuedTurnPausedByParent(thread.nudging?.paused, origin)) continue;
       if (turn.failedAt !== null) {
         dispatchableTurns.push(turn);
         continue;

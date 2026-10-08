@@ -329,18 +329,23 @@ const QueueDispatchRow = Schema.Struct({
   createdAt: Schema.String,
   queuePosition: Schema.NullOr(Schema.Number),
   failedAt: Schema.NullOr(Schema.String),
+  originKind: Schema.NullOr(Schema.String),
 });
 type QueueDispatchRow = typeof QueueDispatchRow.Type;
 
 function queueAwaitsDispatchFromRows(
   queueHeldAt: string | null,
   rows: ReadonlyArray<QueueDispatchRow> | undefined,
+  automaticFollowUpPaused: boolean | undefined,
 ): boolean {
   return queueAwaitsDispatch(
     queueHeldAt,
-    (rows ?? []).map(({ queuePosition, ...row }) =>
-      queuePosition === null ? row : { ...row, queuePosition },
-    ),
+    (rows ?? []).map(({ queuePosition, originKind, ...row }) => ({
+      ...row,
+      ...(queuePosition !== null ? { queuePosition } : {}),
+      ...(originKind !== null ? { origin: { kind: originKind } } : {}),
+    })),
+    automaticFollowUpPaused,
   );
 }
 
@@ -835,7 +840,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     queued_turn_id AS "id",
     created_at AS "createdAt",
     queue_position AS "queuePosition",
-    failed_at AS "failedAt"
+    failed_at AS "failedAt",
+    json_extract(origin_json, '$.kind') AS "originKind"
   `;
   const listQueueDispatchRows = SqlSchema.findAll({
     Request: Schema.Void,
@@ -2560,6 +2566,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     hasPendingQueuedTurn: queueAwaitsDispatchFromRows(
                       row.queueHeldAt,
                       queueDispatchRowsByThread.get(row.threadId),
+                      row.nudging?.paused,
                     ),
                     ...(backgroundAgentRunsByThread.get(row.threadId)?.length
                       ? { backgroundAgentRuns: backgroundAgentRunsByThread.get(row.threadId)! }
@@ -2926,6 +2933,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             hasPendingQueuedTurn: queueAwaitsDispatchFromRows(
               threadRow.value.queueHeldAt,
               queueDispatchRows,
+              threadRow.value.nudging?.paused,
             ),
             ...(backgroundAgentRuns.length > 0 ? { backgroundAgentRuns } : {}),
           },

@@ -131,6 +131,31 @@ describe("getThreadCoreFromEnvironmentState", () => {
     expect(secondThread).toBe(firstThread);
   });
 
+  it("invalidates the cached core on pause and queue-hold changes, not equivalent nudging snapshots", () => {
+    const state = buildState("Hello");
+    state.threadShellById[THREAD_ID] = { ...buildShell(), nudging: { paused: true } };
+    const paused = getThreadCoreFromEnvironmentState(state, THREAD_ID);
+    state.threadShellById[THREAD_ID] = {
+      ...buildShell(),
+      nudging: { paused: true },
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    };
+    expect(getThreadCoreFromEnvironmentState(state, THREAD_ID)).toBe(paused);
+    state.threadShellById[THREAD_ID] = { ...buildShell(), nudging: { paused: false } };
+    const resumed = getThreadCoreFromEnvironmentState(state, THREAD_ID);
+    expect(resumed).not.toBe(paused);
+    expect(resumed?.nudging?.paused).toBe(false);
+    state.threadShellById[THREAD_ID] = {
+      ...state.threadShellById[THREAD_ID]!,
+      queueHeldAt: "2026-01-01T00:00:02.000Z",
+    };
+    const held = getThreadCoreFromEnvironmentState(state, THREAD_ID);
+    expect(held).not.toBe(resumed);
+    expect(held?.queueHeldAt).toBe("2026-01-01T00:00:02.000Z");
+    state.threadShellById[THREAD_ID] = { ...state.threadShellById[THREAD_ID]!, queueHeldAt: null };
+    expect(getThreadCoreFromEnvironmentState(state, THREAD_ID)?.queueHeldAt).toBeNull();
+  });
+
   it("returns a stable thread reference when only message text changes", () => {
     const state = buildState("Hello");
     const firstThread = getThreadCoreFromEnvironmentState(state, THREAD_ID);

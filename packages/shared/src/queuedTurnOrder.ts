@@ -55,20 +55,37 @@ export interface QueueDispatchCandidate extends QueueOrderable {
   readonly origin?: { readonly kind: string } | undefined;
 }
 
+export function isQueuedTurnPausedByParent(
+  automaticFollowUpPaused: boolean | undefined,
+  origin: QueueDispatchCandidate["origin"],
+): boolean {
+  return (
+    automaticFollowUpPaused === true &&
+    (origin?.kind === "child-nudge" || origin?.kind === "pull-request-monitor")
+  );
+}
+
 /**
  * Whether the queue will start another turn without user action, i.e. whether
  * the thread is still working through it. A held queue waits for Resume, and
  * the reactor never dispatches past a paused (failed) head. Child nudges are
- * parent plumbing, not the parent's execution status.
+ * parent plumbing, not the parent's execution status. Paused automatic PR
+ * feedback is skipped, just as it is by the reactor; explicit user work remains
+ * eligible even when automatic follow-up is paused.
  */
 export function queueAwaitsDispatch(
   queueHeldAt: string | null | undefined,
   queuedTurns: ReadonlyArray<QueueDispatchCandidate>,
+  automaticFollowUpPaused?: boolean,
 ): boolean {
   if (queueHeldAt != null) return false;
   let head: QueueDispatchCandidate | undefined;
   for (const turn of queuedTurns) {
-    if (turn.origin?.kind === "child-nudge") continue;
+    if (
+      turn.origin?.kind === "child-nudge" ||
+      isQueuedTurnPausedByParent(automaticFollowUpPaused, turn.origin)
+    )
+      continue;
     if (head === undefined || compareQueuedTurns(turn, head) < 0) head = turn;
   }
   return head !== undefined && head.failedAt === null;
