@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   CheckpointRef,
   CommandId,
@@ -20,6 +23,7 @@ import {
   ProjectionSnapshotQueryTestHooks,
 } from "./ProjectionSnapshotQuery.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { createChatArchiveManifest, readChatArchive, writeChatArchive } from "../chatArchive.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
@@ -136,7 +140,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
-  it.effect("loads active chat archive rows in one consistent query surface", () =>
+  it.effect("exports active chats with excluded parents and preserves included descendants", () =>
     Effect.gen(function* () {
       const query = yield* ProjectionSnapshotQuery;
       const sql = yield* SqlClient.SqlClient;
@@ -149,15 +153,15 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`
         INSERT INTO projection_threads (
           thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
-          created_at, updated_at, archived_at
+          created_at, updated_at, archived_at, parent_thread_id
         ) VALUES
           ('archive-active', 'archive-project', 'Active chat',
             '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default',
-            '2026-09-14T00:00:00.000Z', '2026-09-14T00:01:00.000Z', NULL),
+            '2026-09-14T00:00:00.000Z', '2026-09-14T00:01:00.000Z', NULL, 'archive-hidden'),
           ('archive-hidden', 'archive-project', 'Archived chat',
             '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default',
             '2026-09-14T00:02:00.000Z', '2026-09-14T00:03:00.000Z',
-            '2026-09-14T00:04:00.000Z')
+            '2026-09-14T00:04:00.000Z', NULL)
       `;
       yield* sql`
         INSERT INTO projection_thread_messages (
@@ -175,7 +179,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         {
           thread: {
             id: asThreadId("archive-active"),
-            parentThreadId: null,
+            parentThreadId: asThreadId("archive-hidden"),
             title: "Active chat",
             modelSelection: {
               instanceId: asProviderInstanceId("codex"),
@@ -202,6 +206,43 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
         },
       ]);
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          created_at, updated_at, parent_thread_id
+        )
+        SELECT 'archive-child', project_id, 'Included descendant', model_selection_json,
+          runtime_mode, interaction_mode, created_at, updated_at, thread_id
+        FROM projection_threads WHERE thread_id = 'archive-active'
+      `;
+      const archiveEntries = yield* query.getActiveChatArchiveEntries();
+      yield* Effect.promise(async () => {
+        const root = await mkdtemp(join(tmpdir(), "t3-chat-archive-hierarchy-"));
+        try {
+          const path = await writeChatArchive(
+            root,
+            createChatArchiveManifest({
+              threads: archiveEntries,
+              exportedAt: new Date("2026-09-14T20:00:00.000Z"),
+            }),
+          );
+          const archive = await readChatArchive(path);
+          assert.deepStrictEqual(
+            archive.threads.map((thread) => [
+              thread.sourceThreadId,
+              thread.sourceParentThreadId,
+              thread.messages.map((message) => message.text),
+            ]),
+            [
+              ["archive-active", null, ["Export me"]],
+              ["archive-child", "archive-active", []],
+            ],
+          );
+        } finally {
+          await rm(root, { recursive: true, force: true });
+        }
+      });
 
       yield* sql`DELETE FROM projection_thread_messages WHERE thread_id LIKE 'archive-%'`;
       yield* sql`DELETE FROM projection_threads WHERE project_id = 'archive-project'`;

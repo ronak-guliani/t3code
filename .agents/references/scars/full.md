@@ -382,6 +382,7 @@
 
 ## Projection performance and service composition
 
+- Active-chat exports are a subset of the thread graph: archived/deleted parents can still have active descendants. Clear parent links outside the exported set when building the manifest, preserve included links, and keep import hierarchy validation strict.
 - Message sequences are event-global, but provider activity sequences can be session-local. Scope turn activity reads by turn ownership, cap each seek before payload/blob decoding, and page unscoped activity history independently from the newest global boundary.
 - Keep paged retention finite: explicit loads establish collection floors, not unlimited streaming budgets. Use one shared pager for fencing/watermarks/reload depth; classify excluded deltas by first-message provenance, preserve legacy NULL origins, and refresh removed anchors rather than retrying them. Empty Find must not fetch history.
 - Turn-history windows must select user anchors and associated rows in SQL before decoding checkpoint/activity JSON. Order legacy NULL sequences by rowid ahead of sequenced rows; timestamp ties cannot define a cursor.

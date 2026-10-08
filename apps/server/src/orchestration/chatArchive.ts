@@ -68,6 +68,7 @@ export function createChatArchiveManifest(input: {
   readonly threads: ReadonlyArray<ProjectionChatArchiveEntry>;
   readonly exportedAt: Date;
 }): ChatArchiveManifest {
+  const threadIds = new Set(input.threads.map(({ thread }) => thread.id));
   return {
     format: "t3-chat-archive",
     version: 1,
@@ -76,7 +77,10 @@ export function createChatArchiveManifest(input: {
     exportedAt: input.exportedAt.toISOString(),
     threads: input.threads.map(({ thread, project }) => ({
       sourceThreadId: thread.id,
-      sourceParentThreadId: thread.parentThreadId ?? null,
+      sourceParentThreadId:
+        thread.parentThreadId && threadIds.has(thread.parentThreadId)
+          ? thread.parentThreadId
+          : null,
       sourceProjectTitle: project.title,
       sourceWorkspaceRoot: project.workspaceRoot,
       title: thread.title,
