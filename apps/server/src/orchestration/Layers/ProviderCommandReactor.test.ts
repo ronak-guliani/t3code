@@ -1280,6 +1280,112 @@ describe("ProviderCommandReactor", () => {
     },
   );
 
+  it("binds a cold session with its active message in one session update", async () => {
+    const harness = await createHarness();
+    const dispatch = vi.spyOn(harness.engine, "dispatch");
+    const messageId = asMessageId("user-message-cold-binding");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-cold-session-binding"),
+        threadId: ThreadId.make("thread-1"),
+        message: { messageId, role: "user", text: "first prompt", attachments: [] },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    const sessionUpdates = dispatch.mock.calls
+      .map(([command]) => command)
+      .filter((command) => command.type === "thread.session.set");
+    expect(sessionUpdates).toHaveLength(1);
+    expect(sessionUpdates[0]).toMatchObject({
+      session: { activeMessageId: messageId, providerName: "codex" },
+    });
+  });
+
+  it("does not send when the required pre-turn checkpoint fails", async () => {
+    const harness = await createHarness({ checkpointIsGitRepository: true });
+    vi.mocked(harness.checkpointStore.captureCheckpoint).mockImplementation(
+      () => Effect.fail(new Error("checkpoint disk failure")) as never,
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-checkpoint-failure-before-send"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-checkpoint-failure"),
+          role: "user",
+          text: "do not send without a baseline",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: new Date().toISOString(),
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      return (
+        readModel.threads
+          .find((entry) => entry.id === ThreadId.make("thread-1"))
+          ?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ?? false
+      );
+    });
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("associates a warm session with the next user message without restarting it", async () => {
+    const harness = await createHarness();
+    const firstAt = new Date().toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-warm-session-first-turn"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-warm-first"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: firstAt,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await completeTurnForNextStart(harness, { commandId: "warm-session-complete" });
+    const dispatch = vi.spyOn(harness.engine, "dispatch");
+    const nextMessageId = asMessageId("user-message-warm-next");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-warm-session-next-turn"),
+        threadId: ThreadId.make("thread-1"),
+        message: { messageId: nextMessageId, role: "user", text: "next", attachments: [] },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: new Date(Date.parse(firstAt) + 2).toISOString(),
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+
+    const sessionUpdates = dispatch.mock.calls
+      .map(([command]) => command)
+      .filter((command) => command.type === "thread.session.set");
+    expect(sessionUpdates).toHaveLength(1);
+    expect(sessionUpdates[0]).toMatchObject({ session: { activeMessageId: nextMessageId } });
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
+  });
+
   it("captures a distinct pre-turn baseline when a completion ref already exists", async () => {
     const harness = await createHarness({
       checkpointIsGitRepository: true,
@@ -3308,14 +3414,16 @@ describe("ProviderCommandReactor", () => {
       const currentThread = currentReadModel.threads.find(
         (entry) => entry.id === ThreadId.make("thread-1"),
       );
-      return currentThread?.activities.some(
-        (activity) =>
-          activity.kind === "provider.user-input.respond.failed" &&
-          typeof activity.payload === "object" &&
-          activity.payload !== null &&
-          "originCommandId" in activity.payload &&
-          activity.payload.originCommandId === dismissCommandId,
-      ) ?? false;
+      return (
+        currentThread?.activities.some(
+          (activity) =>
+            activity.kind === "provider.user-input.respond.failed" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            "originCommandId" in activity.payload &&
+            activity.payload.originCommandId === dismissCommandId,
+        ) ?? false
+      );
     });
 
     const afterDismissReadModel = await Effect.runPromise(harness.engine.getReadModel());
