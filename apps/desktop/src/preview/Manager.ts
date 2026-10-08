@@ -3704,7 +3704,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const performAutomationPress = Effect.fn("PreviewManager.performAutomationPress")(function* (
     tabId: string,
-    wc: Electron.WebContents,
     input: PreviewAutomationPressInput,
     send: SendCommand,
     sendCleanup: SendCommand,
@@ -3713,10 +3712,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const keySequence = makePreviewAutomationKeySequence(input, {
       isMac: hostPlatform === "darwin",
     });
-    const previouslyFocused = yield* attempt(
-      { operation: "automationPress.getFocusedWebContents", tabId, webContentsId: wc.id },
-      () => webContents.getFocusedWebContents(),
-    );
     let keyDownAttempted = false;
     const releaseInput = Effect.gen(function* () {
       if (keyDownAttempted) {
@@ -3725,28 +3720,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       yield* sendCleanup("Emulation.setFocusEmulationEnabled", { enabled: false }).pipe(
         Effect.ignore,
       );
-      if (previouslyFocused && previouslyFocused.id !== wc.id && !previouslyFocused.isDestroyed()) {
-        yield* attempt(
-          {
-            operation: "automationPress.restoreFocusedWebContents",
-            tabId,
-            webContentsId: previouslyFocused.id,
-          },
-          () => previouslyFocused.focus(),
-        ).pipe(Effect.ignore);
-      }
     });
 
-    // Focus the guest WebContents itself, not its containing BrowserWindow. This
-    // activates native keyboard behavior for hidden/background previews without
-    // changing which thread is mounted in the UI. Restore the previous renderer
-    // after dispatch so automation never leaves the app's input focus behind.
+    // Emulated focus is all CDP key dispatch needs in a hidden guest, and it never
+    // takes native focus away from the T3 window. Activating the guest instead
+    // (wc.focus + Page.bringToFront) deactivated the app window on every press from
+    // a thread the user was not viewing, so their composer lost focus and their
+    // keystrokes were eaten. Playwright never activates the page either.
     yield* Effect.gen(function* () {
-      yield* attempt(
-        { operation: "automationPress.focusWebContents", tabId, webContentsId: wc.id },
-        () => wc.focus(),
-      );
-      yield* send("Page.bringToFront");
       yield* send("Emulation.setFocusEmulationEnabled", { enabled: true });
       yield* expectAgentInput(tabId, keySequence.signal);
       keyDownAttempted = true;
@@ -3760,7 +3741,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     const wc = yield* requireWebContents(tabId);
     yield* withControlSession(tabId, wc, "press", (send, sendCleanup) =>
-      performAutomationPress(tabId, wc, input, send, sendCleanup),
+      performAutomationPress(tabId, input, send, sendCleanup),
     );
   });
 

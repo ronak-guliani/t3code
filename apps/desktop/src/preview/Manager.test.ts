@@ -1790,9 +1790,11 @@ describe("PreviewManager", () => {
         expect(clearOnlyEvaluation).toBeDefined();
         expect(methods).not.toContain("Input.insertText");
         expect(enableIndex).toBeGreaterThanOrEqual(0);
-        expect(focus).toHaveBeenCalledOnce();
-        expect(restoreFocus).toHaveBeenCalledOnce();
-        expect(methods).toContain("Page.bringToFront");
+        // Automation must never take native focus from the T3 window: a press in a
+        // thread the user is not viewing deactivated the app and ate their typing.
+        expect(methods).not.toContain("Page.bringToFront");
+        expect(focus).not.toHaveBeenCalled();
+        expect(restoreFocus).not.toHaveBeenCalled();
         expect(enableIndex).toBeLessThan(focusOnIndex);
         expect(focusOnIndex).toBeLessThan(keyDownIndex);
         expect(keyDownIndex).toBeLessThan(keyUpIndex);
@@ -1822,7 +1824,7 @@ describe("PreviewManager", () => {
         expect(sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
           enabled: false,
         });
-        expect(restoreFocus).toHaveBeenCalledTimes(2);
+        expect(restoreFocus).not.toHaveBeenCalled();
         expect(
           sendCommand.mock.calls.filter(
             ([method, params]) =>
@@ -1844,7 +1846,7 @@ describe("PreviewManager", () => {
           text: "!",
           unmodifiedText: "!",
         });
-        expect(restoreFocus).toHaveBeenCalledTimes(3);
+        expect(restoreFocus).not.toHaveBeenCalled();
       }),
     ),
   );
