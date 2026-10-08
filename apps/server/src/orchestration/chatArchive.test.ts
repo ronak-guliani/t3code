@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -57,18 +57,27 @@ function manifest(): ChatArchiveManifest {
 }
 
 describe("chat archives", () => {
-  it("writes and reads a versioned archive folder", async () => {
-    const root = await mkdtemp(join(tmpdir(), "t3-chat-archive-"));
-    createdPaths.push(root);
+  it.each(["absolute", "home-relative"])(
+    "writes and reads a versioned archive folder with %s paths",
+    async (pathStyle) => {
+      const root = await mkdtemp(
+        join(pathStyle === "home-relative" ? homedir() : tmpdir(), "t3-chat-archive-"),
+      );
+      createdPaths.push(root);
 
-    const path = await writeChatArchive(root, manifest());
+      const exportDirectory =
+        pathStyle === "home-relative" ? join("~", relative(homedir(), root)) : root;
+      const path = await writeChatArchive(exportDirectory, manifest());
+      const importPath =
+        pathStyle === "home-relative" ? join("~", relative(homedir(), path)) : path;
 
-    await expect(readChatArchive(path)).resolves.toEqual(manifest());
-    expect(JSON.parse(await readFile(join(path, "manifest.json"), "utf8"))).toMatchObject({
-      format: "t3-chat-archive",
-      version: 1,
-    });
-  });
+      await expect(readChatArchive(importPath)).resolves.toEqual(manifest());
+      expect(JSON.parse(await readFile(join(path, "manifest.json"), "utf8"))).toMatchObject({
+        format: "t3-chat-archive",
+        version: 1,
+      });
+    },
+  );
 
   it("rejects archives with broken hierarchy", async () => {
     const root = await mkdtemp(join(tmpdir(), "t3-chat-archive-invalid-"));
