@@ -12,9 +12,7 @@ import {
 const CREATED_AT = "2026-09-15T12:00:00.000Z";
 const WORK_ENTRY_COUNT = 3_000;
 const STREAM_CHUNK_COUNT = 40;
-const ASSISTANT_CREATED_AT = new Date(
-  Date.parse(CREATED_AT) + WORK_ENTRY_COUNT + 2,
-).toISOString();
+const ASSISTANT_CREATED_AT = new Date(Date.parse(CREATED_AT) + WORK_ENTRY_COUNT + 2).toISOString();
 const USER_MESSAGE: ChatMessage = {
   id: MessageId.make("benchmark-user-message"),
   role: "user",
@@ -87,15 +85,8 @@ describe("timeline streaming benchmark", () => {
         p95Ms: Number(p95Ms.toFixed(3)),
       }),
     );
-    expect(state.result.map((row) => row.kind)).toEqual([
-      "message",
-      "work",
-      "message",
-      "working",
-    ]);
-    expect(state.result[0]?.kind === "message" && state.result[0].message.id).toBe(
-      USER_MESSAGE.id,
-    );
+    expect(state.result.map((row) => row.kind)).toEqual(["message", "work", "message", "working"]);
+    expect(state.result[0]?.kind === "message" && state.result[0].message.id).toBe(USER_MESSAGE.id);
     expect(state.result[1]?.kind === "work" && state.result[1].groupedEntries).toHaveLength(
       WORK_ENTRY_COUNT,
     );

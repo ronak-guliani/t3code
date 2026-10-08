@@ -7937,10 +7937,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const firstOption = await waitForButtonContainingText("Tight");
       firstOption.click();
 
-      await waitForButtonByText("Previous");
-      await waitForButtonByText("Submit answers");
+      const previousQuestion = page.getByRole("button", { name: /^Previous(?: question)?$/ });
+      await expect.element(previousQuestion).toBeVisible();
+      await waitForElement(findPendingFooterActionButton, "Unable to find pending submit action.");
+      await expectComposerActionsContained();
 
       await mounted.setContainerSize(COMPACT_FOOTER_VIEWPORT);
+      await expect.element(previousQuestion).toBeVisible();
+      expect(findPendingFooterActionButton()).not.toBeNull();
       await expectComposerActionsContained();
     } finally {
       await mounted.cleanup();

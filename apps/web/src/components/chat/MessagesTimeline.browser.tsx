@@ -1133,7 +1133,9 @@ describe("MessagesTimeline", () => {
         await waitForVisibleDetailCount(50);
         samples.push(performance.now() - startedAt);
         reactCommitSamples.push(
-          reactCommitDurations.slice(commitStartIndex).reduce((total, duration) => total + duration, 0),
+          reactCommitDurations
+            .slice(commitStartIndex)
+            .reduce((total, duration) => total + duration, 0),
         );
         if (index < expansionCount - 1) {
           await page.getByRole("button", { name: `Collapse Tool Calls (${toolCount})` }).click();
