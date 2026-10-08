@@ -3276,14 +3276,16 @@ describe("ProviderCommandReactor", () => {
       const currentThread = currentReadModel.threads.find(
         (entry) => entry.id === ThreadId.make("thread-1"),
       );
-      return currentThread?.activities.some(
-        (activity) =>
-          activity.kind === "provider.user-input.respond.failed" &&
-          typeof activity.payload === "object" &&
-          activity.payload !== null &&
-          "originCommandId" in activity.payload &&
-          activity.payload.originCommandId === dismissCommandId,
-      ) ?? false;
+      return (
+        currentThread?.activities.some(
+          (activity) =>
+            activity.kind === "provider.user-input.respond.failed" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            "originCommandId" in activity.payload &&
+            activity.payload.originCommandId === dismissCommandId,
+        ) ?? false
+      );
     });
 
     const afterDismissReadModel = await Effect.runPromise(harness.engine.getReadModel());

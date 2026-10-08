@@ -133,6 +133,11 @@ const rpcClientMock = {
   workflow: {
     run: vi.fn(),
   },
+  storage: {
+    getUsage: vi.fn(),
+    previewCleanup: vi.fn(),
+    executeCleanup: vi.fn(),
+  },
   server: {
     getConfig: vi.fn(),
     refreshProviders: vi.fn(),

@@ -732,12 +732,7 @@ describe("ChatMarkdown", () => {
         const nextText = `${text}${text.length > 0 ? "\n\n" : ""}${paragraph}`;
         const startedAt = performance.now();
         await screen.rerender(
-          <ChatMarkdown
-            text={nextText}
-            cwd="/repo/project"
-            isStreaming
-            threadRef={threadRef}
-          />,
+          <ChatMarkdown text={nextText} cwd="/repo/project" isStreaming threadRef={threadRef} />,
         );
         await new Promise<void>((resolve, reject) => {
           const timeout = window.setTimeout(

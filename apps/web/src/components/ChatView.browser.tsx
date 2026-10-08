@@ -7937,10 +7937,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const firstOption = await waitForButtonContainingText("Tight");
       firstOption.click();
 
-      await waitForButtonByText("Previous");
-      await waitForButtonByText("Submit answers");
+      const previousQuestion = page.getByRole("button", { name: /^Previous(?: question)?$/ });
+      await expect.element(previousQuestion).toBeVisible();
+      await waitForElement(findPendingFooterActionButton, "Unable to find pending submit action.");
+      await expectComposerActionsContained();
 
       await mounted.setContainerSize(COMPACT_FOOTER_VIEWPORT);
+      await expect.element(previousQuestion).toBeVisible();
+      expect(findPendingFooterActionButton()).not.toBeNull();
       await expectComposerActionsContained();
     } finally {
       await mounted.cleanup();
@@ -8312,12 +8316,12 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await vi.waitFor(() => expect(dismissRequests).toHaveLength(2));
       const retryCommandId = dismissRequests[1]?.commandId;
       expect(retryCommandId).not.toBe(firstCommandId);
-      await waitForDismissEnabled();
+      await vi.waitFor(() => expect(activeDismissButton()).toBeNull());
 
       emitActivity(3, "runtime.info", {});
       await waitForActivity("runtime.info");
-      await waitForDismissEnabled();
-      activeDismissButton()?.click();
+      expect(activeDismissButton()).toBeNull();
+      document.querySelector<HTMLFormElement>('[data-chat-composer-form="true"]')?.requestSubmit();
       await new Promise((resolve) => window.setTimeout(resolve, 0));
       expect(dismissRequests).toHaveLength(2);
 
@@ -8439,7 +8443,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("locks the pending user input options while a response is in flight", async () => {
+  it("clears the pending user input as soon as a response is submitted", async () => {
+    // The dispatch never resolves during the assertion, so the panel can only
+    // disappear if the client hides it optimistically rather than waiting for
+    // the websocket round trip.
     const releaseDispatches: Array<() => void> = [];
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
@@ -8469,7 +8476,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await vi.waitFor(
         () => {
-          expect(findButtonContainingText("Balanced")?.disabled).toBe(true);
+          expect(document.querySelector("[data-pending-user-input-toggle]")).toBeNull();
+          expect(findButtonContainingText("Balanced")).toBeNull();
         },
         { timeout: 4_000, interval: 16 },
       );

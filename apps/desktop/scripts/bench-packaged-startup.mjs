@@ -166,16 +166,16 @@ const runLaunch = async (label, port) => {
     ];
     const missing = required.filter((key) => timestamps[key] === undefined);
     if (missing.length > 0) {
-      const serverLog = await readFile(join(baseDir, "userdata", "logs", "server-child.log"), "utf8").catch(
-        () => "",
-      );
+      const serverLog = await readFile(
+        join(baseDir, "userdata", "logs", "server-child.log"),
+        "utf8",
+      ).catch(() => "");
       throw new Error(
         `${label} launch missed ${missing.join(", ")}. Child output:\n${output.slice(-4_000)}\nDesktop log:\n${appendedLog.slice(-8_000)}\nServer log:\n${serverLog.slice(-8_000)}`,
       );
     }
 
-    const processTreeSample =
-      typeof child.pid === "number" ? sampleProcessTree(child.pid) : null;
+    const processTreeSample = typeof child.pid === "number" ? sampleProcessTree(child.pid) : null;
     const wallTimeToNavigationObservedMs = Number(
       (performance.now() - startedAtMonotonicMs).toFixed(2),
     );
