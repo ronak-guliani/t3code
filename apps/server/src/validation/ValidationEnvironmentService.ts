@@ -7,6 +7,11 @@ import { Context, Effect, Layer } from "effect";
 import { ServerConfig } from "../config.ts";
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
 import {
+  processGroupExists,
+  processStartIdentity,
+  terminateOwnedProcessGroup,
+} from "../terminal/ownedProcessCleanup.ts";
+import {
   createValidationEnvironmentManager,
   ValidationEnvironmentError,
   type StoredValidationEnvironment,
@@ -34,6 +39,26 @@ const MAX_VALIDATION_RESPONSE_BYTES = 256 * 1024;
 // start identity as the launch record, otherwise every readiness revalidation
 // looks like PID reuse.
 const serverStartIdentity = `pid:${process.pid}:start:${process.uptime().toFixed(3)}`;
+
+export async function terminateValidationEnvironmentProcess(
+  identity: ValidationEnvironmentProcessIdentity,
+): Promise<void> {
+  if (identity.pid === process.pid) return;
+  const group = identity.processGroup;
+  if (!group || group.pid !== identity.pid || group.startIdentity !== identity.startIdentity) {
+    throw new ValidationEnvironmentError(
+      "cleanup-ambiguous",
+      "No verified process group identity is recorded.",
+    );
+  }
+  const result = await terminateOwnedProcessGroup(group, serverStartIdentity, true);
+  if (result !== "terminated" && result !== "missing") {
+    throw new ValidationEnvironmentError(
+      "cleanup-ambiguous",
+      `Process group cleanup refused: ${result}`,
+    );
+  }
+}
 
 function safeEnvId(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 64) || "default";
@@ -199,19 +224,17 @@ export const makeValidationEnvironmentService = Effect.gen(function* () {
     },
     process: {
       inspect: async (identity) => {
+        if (identity.pid !== process.pid && identity.processGroup) {
+          const start = await processStartIdentity(identity.pid);
+          if (start !== null) return { ...identity, startIdentity: start };
+          return processGroupExists(identity.pid) ? identity : null;
+        }
         if (identity.pid !== process.pid || identity.startIdentity !== serverStartIdentity) {
           return null;
         }
         return knownProcesses.get(`${identity.pid}:${identity.startIdentity}`) ?? null;
       },
-      terminate: async (identity) => {
-        if (identity.pid === process.pid) return;
-        try {
-          process.kill(identity.pid, "SIGTERM");
-        } catch {
-          return;
-        }
-      },
+      terminate: terminateValidationEnvironmentProcess,
     },
     listener: {
       inspect: async (endpoint) => {
@@ -276,6 +299,11 @@ export const makeValidationEnvironmentService = Effect.gen(function* () {
     requestTimeoutMs: 2_000,
     pollIntervalMs: 100,
   });
+  yield* Effect.addFinalizer(() =>
+    Effect.tryPromise(() => manager.shutdown()).pipe(
+      Effect.catch((cause) => Effect.logError("Validation environment shutdown failed", cause)),
+    ),
+  );
 
   const toTarget = (
     target: import("@t3tools/contracts").ValidationTarget,

@@ -4,6 +4,7 @@ import { ExecutionEnvironmentDescriptor, type ValidationTarget } from "@t3tools/
 import { Schema } from "effect";
 
 export type ValidationEnvironmentErrorCode =
+  | "manager-closed"
   | "state-directory-required"
   | "state-read-failed"
   | "launch-failed"
@@ -60,6 +61,7 @@ export interface ValidationEnvironmentProcessIdentity {
   readonly pid: number;
   readonly startIdentity: string;
   readonly ownershipIdentity: string;
+  readonly processGroup?: import("../terminal/ownedProcessCleanup.ts").OwnedProcessGroupIdentity;
 }
 
 export interface ValidationEnvironmentEndpoint {
@@ -334,7 +336,10 @@ export function createValidationEnvironmentManager(
   options: ValidationEnvironmentManagerOptions = {},
 ): {
   readonly acquire: (target: ValidationEnvironmentTarget) => Promise<ValidationEnvironmentLease>;
+  readonly shutdown: () => Promise<void>;
 } {
+  let closed = false;
+  let shutdownPromise: Promise<void> | undefined;
   const readinessTimeoutMs = options.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS;
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -641,7 +646,7 @@ export function createValidationEnvironmentManager(
       }
     }
 
-    if (options.removeState) {
+    if (options.removeState && failures.length === 0) {
       try {
         const removed = await adapters.state.removeIfOwned(
           record.target.stateDirectory,
@@ -785,6 +790,12 @@ export function createValidationEnvironmentManager(
   const acquire = async (
     target: ValidationEnvironmentTarget,
   ): Promise<ValidationEnvironmentLease> => {
+    if (closed) {
+      throw new ValidationEnvironmentError(
+        "manager-closed",
+        "Validation environment manager is closed.",
+      );
+    }
     if (
       !target ||
       typeof target.stateDirectory !== "string" ||
@@ -906,5 +917,28 @@ export function createValidationEnvironmentManager(
     });
   };
 
-  return { acquire };
+  const shutdown = (): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    closed = true;
+    shutdownPromise = (async () => {
+      await Promise.all([...locks.values()]);
+      const results = await Promise.allSettled(
+        [...active.values()].map((entry) =>
+          withTargetLock(entry.key, async () => {
+            if (active.get(entry.key) !== entry) return;
+            active.delete(entry.key);
+            await cleanupOwned(entry.record, { removeState: true });
+          }),
+        ),
+      );
+      const failures = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (failures.length)
+        throw new AggregateError(failures, "Validation environment shutdown failed.");
+    })();
+    return shutdownPromise;
+  };
+
+  return { acquire, shutdown };
 }
