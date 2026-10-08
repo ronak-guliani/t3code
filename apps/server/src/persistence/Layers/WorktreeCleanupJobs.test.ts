@@ -25,6 +25,7 @@ const intent = (input: {
   readonly source?: "archive" | "delete";
   readonly requestedAt?: string;
   readonly allowTerminalReset?: boolean;
+  readonly expectedBranch?: string | null;
 }) => ({
   threadId: ThreadId.make(input.id),
   cwd: "/tmp/project",
@@ -33,6 +34,7 @@ const intent = (input: {
   requestedAt: input.requestedAt ?? at(0),
   source: input.source ?? "archive",
   allowTerminalReset: input.allowTerminalReset ?? false,
+  expectedBranch: input.expectedBranch ?? null,
 });
 
 testLayer("WorktreeCleanupJobRepository", (it) => {

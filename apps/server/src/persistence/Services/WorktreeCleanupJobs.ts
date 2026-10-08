@@ -24,6 +24,7 @@ export const WorktreeCleanupJob = Schema.Struct({
   requestedAt: IsoDateTime,
   source: WorktreeCleanupSource,
   status: WorktreeCleanupStatus,
+  expectedBranch: Schema.NullOr(Schema.String),
   attemptCount: NonNegativeInt,
   nextAttemptAt: Schema.NullOr(IsoDateTime),
   lastReason: Schema.NullOr(Schema.String),
@@ -39,6 +40,7 @@ export const WorktreeCleanupIntent = Schema.Struct({
   requestedAt: IsoDateTime,
   source: Schema.Literals(["archive", "delete", "idle"]),
   allowTerminalReset: Schema.Boolean,
+  expectedBranch: Schema.NullOr(Schema.String),
 });
 export type WorktreeCleanupIntent = typeof WorktreeCleanupIntent.Type;
 

@@ -340,6 +340,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               requestedAt: event.payload.archivedAt,
               source: "archive",
               allowTerminalReset: true,
+              expectedBranch: event.payload.worktreeCleanup.expectedBranch,
             });
           }
           const existingRow = yield* projectionThreadRepository.getById({
@@ -769,18 +770,17 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.deleted": {
-          // Keep a child attempt's evidence with its source thread; deleting the source thread
-          // removes its audit history in the same projection transaction.
-          yield* sql`
-            DELETE FROM delegation_audit_events
-            WHERE source_thread_id = ${event.payload.threadId}
-          `;
-          yield* projectionThreadPullRequestRepository.deleteByThreadId({
-            threadId: event.payload.threadId,
-          });
+          // Hard delete: the conversation is gone, not tombstoned. Rows are purged
+          // children-first inside the projection transaction, so a crash mid-purge
+          // rolls back whole and a replay re-runs an idempotent DELETE.
+          // sidebar_pinned_threads is intentionally left alone: thread_key is a
+          // client-scoped pin key the server rewrites wholesale from the client
+          // snapshot, and it carries no conversation data.
+          const threadId = event.payload.threadId;
+          yield* projectionThreadPullRequestRepository.deleteByThreadId({ threadId });
           if (event.payload.worktreeCleanup !== undefined) {
             yield* worktreeCleanupJobRepository.enqueue({
-              threadId: event.payload.threadId,
+              threadId,
               cwd: event.payload.worktreeCleanup.cwd,
               worktreePath: event.payload.worktreeCleanup.path,
               canonicalWorktreePath: yield* Effect.promise(() =>
@@ -789,19 +789,75 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               requestedAt: event.payload.deletedAt,
               source: "delete",
               allowTerminalReset: true,
+              expectedBranch: event.payload.worktreeCleanup.expectedBranch,
             });
           }
-          const existingRow = yield* projectionThreadRepository.getById({
-            threadId: event.payload.threadId,
-          });
-          if (Option.isNone(existingRow)) {
-            return;
-          }
-          yield* projectionThreadRepository.upsert({
-            ...existingRow.value,
-            deletedAt: event.payload.deletedAt,
-            updatedAt: event.payload.deletedAt,
-          });
+
+          // Capture blob ids before the activities that own them are dropped.
+          yield* sql`
+            DELETE FROM activity_payload_blobs
+            WHERE activity_id IN (
+              SELECT activity_id FROM projection_thread_activities WHERE thread_id = ${threadId}
+            )
+          `;
+          yield* sql`
+            -- Keep a child attempt's evidence with its source thread: an operation's
+            -- audit record belongs to the source thread's history, so deleting one
+            -- child must not erase it. Deleting the source thread does.
+            DELETE FROM delegation_audit_events
+            WHERE source_thread_id = ${threadId}
+          `;
+          yield* sql`DELETE FROM collaborative_acceptance_cases WHERE parent_thread_id = ${threadId}`;
+          yield* sql`DELETE FROM git_activity_log WHERE thread_id = ${threadId}`;
+          yield* sql`
+            DELETE FROM pull_request_monitor_feedback_deliveries WHERE target_thread_id = ${threadId}
+          `;
+          yield* sql`
+            DELETE FROM pull_request_monitor_feedback_reports WHERE reporter_thread_id = ${threadId}
+          `;
+          yield* sql`
+            DELETE FROM pull_request_monitor_ownership_events
+            WHERE from_thread_id = ${threadId} OR to_thread_id = ${threadId}
+          `;
+          yield* sql`DELETE FROM pull_request_creation_intents WHERE thread_id = ${threadId}`;
+          yield* sql`
+            DELETE FROM pull_request_monitor_fallback_launches WHERE thread_id = ${threadId}
+          `;
+          // Cascades to monitor snapshots, feedback items/revisions/state, leases,
+          // host cooldowns and ownership rows.
+          yield* sql`DELETE FROM pull_request_monitors WHERE owner_thread_id = ${threadId}`;
+          yield* sql`
+            DELETE FROM projection_workflow_artifacts WHERE producer_thread_id = ${threadId}
+          `;
+          yield* sql`DELETE FROM projection_workflow_nodes WHERE worker_thread_id = ${threadId}`;
+          yield* sql`DELETE FROM projection_workflow_runs WHERE parent_thread_id = ${threadId}`;
+          yield* sql`DELETE FROM projection_queued_turns WHERE thread_id = ${threadId}`;
+          yield* sql`DELETE FROM projection_pending_approvals WHERE thread_id = ${threadId}`;
+          yield* sql`DELETE FROM projection_thread_proposed_plans WHERE thread_id = ${threadId}`;
+          yield* sql`DELETE FROM projection_turns WHERE thread_id = ${threadId}`;
+          yield* sql`DELETE FROM checkpoint_diff_blobs WHERE thread_id = ${threadId}`;
+          yield* sql`DELETE FROM projection_thread_sessions WHERE thread_id = ${threadId}`;
+          yield* sql`DELETE FROM provider_session_runtime WHERE thread_id = ${threadId}`;
+          // workspace_ownership and worktree_cleanup_reservations are deliberately
+          // left alone: releasing ownership also clears on-disk filesystem lock
+          // state, and dropping a reservation could break the mutual exclusion of
+          // an in-flight removal. Both are owned by ThreadDeletionReactor, which
+          // runs its teardown after the provider session and terminals settle.
+          // FTS rows go with the message rows via projection_thread_message_fts_delete.
+          yield* sql`DELETE FROM projection_thread_messages WHERE thread_id = ${threadId}`;
+          yield* sql`DELETE FROM projection_thread_activities WHERE thread_id = ${threadId}`;
+          yield* sql`DELETE FROM projection_threads WHERE thread_id = ${threadId}`;
+          // The event log is the replay source of truth, so the purge is only
+          // consistent because the whole stream goes with it. Projector cursors
+          // have already advanced past these sequences and never revisit them.
+          yield* sql`
+            DELETE FROM orchestration_events
+            WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
+          `;
+          yield* sql`
+            DELETE FROM orchestration_command_receipts
+            WHERE aggregate_kind = 'thread' AND aggregate_id = ${threadId}
+          `;
           return;
         }
 

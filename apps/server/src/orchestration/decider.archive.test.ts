@@ -394,3 +394,65 @@ describe("decider automatic archive admission", () => {
     expect(seen).toEqual(["parent"]);
   });
 });
+
+describe("decider delete cascade", () => {
+  const deleteParent = (readModel: OrchestrationReadModel) =>
+    Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.delete",
+          commandId: asCommandId("cmd-delete-parent"),
+          threadId: asThreadId("parent"),
+        } satisfies OrchestrationCommand,
+        readModel,
+      }),
+    );
+
+  it("deletes the target thread and every descendant, parents first", async () => {
+    const readModel = await seedReadModel();
+    const decided = await deleteParent(readModel);
+    const events = Array.isArray(decided) ? decided : [decided];
+
+    expect(events.map((event) => event.type)).toEqual([
+      "thread.deleted",
+      "thread.deleted",
+      "thread.deleted",
+    ]);
+    expect(events.map((event) => event.payload.threadId)).toEqual([
+      asThreadId("parent"),
+      asThreadId("child"),
+      asThreadId("grandchild"),
+    ]);
+  });
+
+  it("leaves threads outside the subtree untouched", async () => {
+    const readModel = await seedReadModel();
+    const decided = await deleteParent(readModel);
+    const events = Array.isArray(decided) ? decided : [decided];
+
+    expect(events.map((event) => event.payload.threadId)).not.toContain(asThreadId("unrelated"));
+  });
+
+  it("still reaches a descendant that was already archived", async () => {
+    const readModel = await seedReadModel();
+    const archived = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.archive",
+          commandId: asCommandId("cmd-archive-child"),
+          threadId: asThreadId("child"),
+        } satisfies OrchestrationCommand,
+        readModel,
+      }),
+    );
+    const archivedEvent = (Array.isArray(archived) ? archived[0] : archived)!;
+    const archivedReadModel = await Effect.runPromise(
+      projectEvent(readModel, { ...archivedEvent, sequence: 10 }),
+    );
+
+    const decided = await deleteParent(archivedReadModel);
+    const events = Array.isArray(decided) ? decided : [decided];
+
+    expect(events.map((event) => event.payload.threadId)).toContain(asThreadId("child"));
+  });
+});

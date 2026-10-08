@@ -2398,6 +2398,12 @@ export const ThreadCreatedPayload = Schema.Struct({
 export const ThreadWorktreeCleanup = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   path: TrimmedNonEmptyString,
+  /**
+   * Branch the checkout is expected to be registered under. Hard delete purges
+   * the thread's rows and events, so the durable cleanup job — not the thread —
+   * must carry the branch it verifies before removing the checkout.
+   */
+  expectedBranch: Schema.NullOr(TrimmedNonEmptyString),
 });
 export type ThreadWorktreeCleanup = typeof ThreadWorktreeCleanup.Type;
 

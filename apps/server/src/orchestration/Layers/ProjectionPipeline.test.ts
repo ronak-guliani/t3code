@@ -1422,6 +1422,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-worktree-cleanup-job-test-"
             worktreeCleanup: {
               cwd: "/tmp/project",
               path: "/tmp/project-worktree",
+              expectedBranch: "feature/cleanup-job",
             },
           },
         });
@@ -1430,21 +1431,224 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-worktree-cleanup-job-test-"
           readonly threadId: string;
           readonly cwd: string;
           readonly worktreePath: string;
+          readonly expectedBranch: string | null;
         }>`
           SELECT
             thread_id AS "threadId",
             cwd,
-            worktree_path AS "worktreePath"
+            worktree_path AS "worktreePath",
+            expected_branch AS "expectedBranch"
           FROM worktree_cleanup_jobs
         `;
 
+        // The job carries the branch it must verify: a hard delete purges the
+        // thread, so cleanup cannot read it back after a restart.
         assert.deepStrictEqual(rows, [
           {
             threadId: "thread-worktree-cleanup",
             cwd: "/tmp/project",
             worktreePath: "/tmp/project-worktree",
+            expectedBranch: "feature/cleanup-job",
           },
         ]);
+      }),
+    );
+  },
+);
+
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-hard-delete-purge-")))(
+  "hard thread delete",
+  (it) => {
+    it.effect("purges every thread-scoped row instead of leaving a tombstone", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-10-07T12:00:00.000Z";
+        const projectId = ProjectId.make("project-hard-delete");
+        const threadId = ThreadId.make("thread-hard-delete");
+        const otherThreadId = ThreadId.make("thread-hard-delete-other");
+        const activityId = EventId.make("activity-hard-delete");
+        let sequence = 0;
+        const project = (event: Parameters<typeof projectionPipeline.projectEvent>[0]) =>
+          projectionPipeline.projectEvent(event);
+        const nextSequence = () => (sequence += 1);
+
+        const created = (id: typeof threadId) =>
+          ({
+            sequence: nextSequence(),
+            type: "thread.created",
+            eventId: EventId.make(`evt-hard-delete-created-${id}`),
+            aggregateKind: "thread",
+            aggregateId: id,
+            occurredAt: now,
+            commandId: CommandId.make(`cmd-hard-delete-created-${id}`),
+            causationEventId: null,
+            correlationId: CommandId.make(`cmd-hard-delete-created-${id}`),
+            metadata: {},
+            payload: {
+              threadId: id,
+              projectId,
+              title: "Hard delete",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-5.3-codex",
+              },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          }) as const;
+
+        yield* project(created(threadId));
+        yield* project(created(otherThreadId));
+
+        for (const id of [threadId, otherThreadId]) {
+          yield* project({
+            sequence: nextSequence(),
+            type: "thread.message-sent",
+            eventId: EventId.make(`evt-hard-delete-message-${id}`),
+            aggregateKind: "thread",
+            aggregateId: id,
+            occurredAt: now,
+            commandId: CommandId.make(`cmd-hard-delete-message-${id}`),
+            causationEventId: null,
+            correlationId: CommandId.make(`cmd-hard-delete-message-${id}`),
+            metadata: {},
+            payload: {
+              threadId: id,
+              messageId: MessageId.make(`message-hard-delete-${id}`),
+              role: "user",
+              text: "searchable conversation text",
+              turnId: null,
+              streaming: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          });
+        }
+
+        yield* project({
+          sequence: nextSequence(),
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-hard-delete-activity"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: CommandId.make("cmd-hard-delete-activity"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-hard-delete-activity"),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: activityId,
+              tone: "info",
+              kind: "user-input.requested",
+              summary: "Input required",
+              payload: { requestId: "request-hard-delete", blob: "x".repeat(4096) },
+              turnId: null,
+              createdAt: now,
+            },
+          },
+        });
+
+        // Tables with no convenient projector producer are seeded directly so the
+        // purge is proven against them too.
+        yield* sql`
+          INSERT INTO provider_session_runtime
+            (thread_id, provider_name, adapter_key, runtime_mode, status, last_seen_at)
+          VALUES
+            (${threadId}, 'codex', 'codex', 'full-access', 'active', ${now}),
+            (${otherThreadId}, 'codex', 'codex', 'full-access', 'active', ${now})
+        `;
+        yield* sql`
+          INSERT INTO checkpoint_diff_blobs
+            (thread_id, from_turn_count, to_turn_count, diff, created_at)
+          VALUES (${threadId}, 0, 1, 'diff --git a b', ${now})
+        `;
+        for (const id of [threadId, otherThreadId]) {
+          yield* sql`
+            INSERT INTO orchestration_events
+              (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+               command_id, causation_event_id, correlation_id, actor_kind, payload_json,
+               metadata_json)
+            VALUES
+              (${`evt-stored-${id}`}, 'thread', ${id}, 0, 'thread.created', ${now},
+               ${`cmd-stored-${id}`}, NULL, NULL, 'client', '{}', '{}')
+          `;
+          yield* sql`
+            INSERT INTO orchestration_command_receipts
+              (command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status, error)
+            VALUES (${`cmd-stored-${id}`}, 'thread', ${id}, ${now}, 0, 'accepted', NULL)
+          `;
+        }
+
+        yield* project({
+          sequence: nextSequence(),
+          type: "thread.deleted",
+          eventId: EventId.make("evt-hard-delete"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: CommandId.make("cmd-hard-delete"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-hard-delete"),
+          metadata: {},
+          payload: { threadId, deletedAt: now },
+        });
+
+        const count = (table: string, column: string, id: string) =>
+          Effect.gen(function* () {
+            const rows = yield* sql<{ readonly total: number }>`
+              SELECT COUNT(*) AS total FROM ${sql(table)} WHERE ${sql(column)} = ${id}
+            `;
+            return rows[0]?.total ?? 0;
+          });
+
+        for (const [table, column] of [
+          ["projection_threads", "thread_id"],
+          ["projection_thread_messages", "thread_id"],
+          ["projection_thread_activities", "thread_id"],
+          ["projection_thread_sessions", "thread_id"],
+          ["projection_turns", "thread_id"],
+          ["provider_session_runtime", "thread_id"],
+          ["checkpoint_diff_blobs", "thread_id"],
+          ["activity_payload_blobs", "activity_id"],
+          ["orchestration_events", "stream_id"],
+          ["orchestration_command_receipts", "aggregate_id"],
+        ] as const) {
+          assert.strictEqual(
+            yield* count(table, column, threadId),
+            0,
+            `${table} must be empty for a hard-deleted thread`,
+          );
+        }
+
+        // The unrelated thread and the project's own events survive untouched.
+        assert.strictEqual(
+          yield* count("projection_thread_messages", "thread_id", otherThreadId),
+          1,
+        );
+        assert.strictEqual(yield* count("orchestration_events", "stream_id", otherThreadId), 1);
+        assert.strictEqual(
+          yield* count("orchestration_events", "stream_id", ProjectId.make("project-hard-delete")),
+          0,
+          "sanity: project stream shares no rows with the thread stream",
+        );
+
+        const fts = yield* sql<{ readonly total: number }>`
+          SELECT COUNT(*) AS total
+          FROM projection_thread_message_fts
+          WHERE projection_thread_message_fts MATCH 'searchable'
+        `;
+        assert.strictEqual(
+          fts[0]?.total ?? 0,
+          1,
+          "FTS index must retain only the surviving thread's message",
+        );
       }),
     );
   },

@@ -42,7 +42,7 @@ import {
   CHILD_DECISION_BLOCKED_DETAIL,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
-import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
+import { collectActiveThreadSubtree, collectThreadSubtree } from "./threadHierarchy.ts";
 import { assistantTurnCount } from "./Utils.ts";
 import { findCanonicalActiveWorktreeOwner } from "./worktreeOwnership.ts";
 import {
@@ -1741,39 +1741,53 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.delete": {
-      const thread = yield* requireThread({
+      const rootThread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = nowIso();
-      const project = readModel.projects.find((entry) => entry.id === thread.projectId);
-      const shouldCheckWorktreeOwnership =
-        command.cleanupWorktree === true && thread.worktreePath !== null && project !== undefined;
-      const hasActiveWorktreeOwner = shouldCheckWorktreeOwnership
-        ? yield* hasCanonicalActiveWorktreeOwner(readModel, thread.id, thread.worktreePath)
-        : false;
-      const worktreeCleanup =
-        shouldCheckWorktreeOwnership && !hasActiveWorktreeOwner
-          ? {
-              cwd: project.workspaceRoot,
-              path: thread.worktreePath,
-            }
-          : undefined;
-      return {
-        ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt,
-          commandId: command.commandId,
-        }),
-        type: "thread.deleted",
-        payload: {
-          threadId: command.threadId,
-          deletedAt: occurredAt,
-          ...(worktreeCleanup !== undefined ? { worktreeCleanup } : {}),
-        },
-      };
+      // A purge must not orphan descendants, so delete cascades the way archive
+      // does. Already-archived or tombstoned descendants are included: hard
+      // delete is terminal for the whole subtree.
+      const threadsToDelete = collectThreadSubtree(readModel, rootThread.id);
+      const projectsById = new Map(readModel.projects.map((entry) => [entry.id, entry]));
+      return yield* Effect.forEach(
+        threadsToDelete,
+        (thread): Effect.Effect<PlannedOrchestrationEvent> =>
+          Effect.gen(function* () {
+            const project = projectsById.get(thread.projectId);
+            const shouldCheckWorktreeOwnership =
+              command.cleanupWorktree === true &&
+              thread.worktreePath !== null &&
+              project !== undefined;
+            const hasActiveWorktreeOwner = shouldCheckWorktreeOwnership
+              ? yield* hasCanonicalActiveWorktreeOwner(readModel, thread.id, thread.worktreePath)
+              : false;
+            const worktreeCleanup =
+              shouldCheckWorktreeOwnership && !hasActiveWorktreeOwner
+                ? {
+                    cwd: project.workspaceRoot,
+                    path: thread.worktreePath,
+                    expectedBranch: thread.branch ?? null,
+                  }
+                : undefined;
+            return {
+              ...withEventBase({
+                aggregateKind: "thread",
+                aggregateId: thread.id,
+                occurredAt,
+                commandId: command.commandId,
+              }),
+              type: "thread.deleted",
+              payload: {
+                threadId: thread.id,
+                deletedAt: occurredAt,
+                ...(worktreeCleanup !== undefined ? { worktreeCleanup } : {}),
+              },
+            };
+          }),
+      );
     }
 
     case "thread.archive": {

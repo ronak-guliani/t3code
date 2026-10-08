@@ -173,6 +173,7 @@ describe("decider deletion flows", () => {
       expect(event.payload.worktreeCleanup).toEqual({
         cwd: "/tmp/project-delete",
         path: worktreePath,
+        expectedBranch: null,
       });
     }
   });
@@ -260,6 +261,7 @@ describe("decider deletion flows", () => {
       expect(secondEvent.payload.worktreeCleanup).toEqual({
         cwd: "/tmp/project-delete",
         path: aliasWorktreePath,
+        expectedBranch: null,
       });
     }
   });
