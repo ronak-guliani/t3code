@@ -1182,6 +1182,7 @@ describe("OrchestrationEngine", () => {
           requestedAt: createdAt,
           source: "archive",
           allowTerminalReset: false,
+          expectedBranch: null,
         }),
       );
       const reservation = await system.run(
@@ -1600,6 +1601,9 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
+  // Archiving, not deleting: a hard delete purges the thread's whole event stream
+  // (it carries the conversation payload), so it cannot be replayed afterwards.
+  // See "hard thread delete" in ProjectionPipeline.test.ts for that guarantee.
   it("replays append-only events from sequence", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;
@@ -1639,8 +1643,8 @@ describe("OrchestrationEngine", () => {
     );
     await system.run(
       engine.dispatch({
-        type: "thread.delete",
-        commandId: CommandId.make("cmd-thread-replay-delete"),
+        type: "thread.archive",
+        commandId: CommandId.make("cmd-thread-replay-archive"),
         threadId: ThreadId.make("thread-replay"),
       }),
     );
@@ -1653,7 +1657,7 @@ describe("OrchestrationEngine", () => {
     expect(events.map((event) => event.type)).toEqual([
       "project.created",
       "thread.created",
-      "thread.deleted",
+      "thread.archived",
     ]);
     await system.dispose();
   });

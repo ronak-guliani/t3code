@@ -192,6 +192,48 @@ export interface ProviderLogExecuteInput {
 }
 
 /**
+ * Removes every provider log file belonging to one chat, head and rotations
+ * alike. Hard delete calls this so "everything gone" holds at delete time rather
+ * than waiting for the next retention sweep to notice an unknown thread segment.
+ * Shared head logs carry a null segment and are never matched.
+ */
+export async function removeProviderLogsForThread(
+  providerLogsDir: string,
+  threadId: string,
+): Promise<{ files: number; bytes: number }> {
+  const segment = toSafeThreadAttachmentSegment(threadId);
+  if (segment === null) return { files: 0, bytes: 0 };
+
+  let entries;
+  try {
+    entries = await fs.readdir(providerLogsDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { files: 0, bytes: 0 };
+    throw error;
+  }
+
+  const targets = entries.flatMap((entry) => {
+    if (!entry.isFile()) return [];
+    const file = classifyLogFile(entry.name, providerLogsDir);
+    return file?.threadSegment === segment ? [file] : [];
+  });
+
+  let files = 0;
+  let bytes = 0;
+  await forEachConcurrent(targets, async (target) => {
+    try {
+      const stat = await fs.stat(target.filePath);
+      await fs.rm(target.filePath, { force: true });
+      files += 1;
+      bytes += stat.size;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  });
+  return { files, bytes };
+}
+
+/**
  * Decide which recognized provider log files the policy would remove. Reads
  * directory metadata only; the read model and session list are caller snapshots.
  */

@@ -1,6 +1,6 @@
 import type { OrchestrationReadModel, OrchestrationThread, ThreadId } from "@t3tools/contracts";
 
-export function collectActiveThreadSubtree(
+function walkThreadSubtree(
   readModel: OrchestrationReadModel,
   rootThreadId: ThreadId,
 ): OrchestrationThread[] {
@@ -28,7 +28,7 @@ export function collectActiveThreadSubtree(
     }
     visited.add(threadId);
     const thread = threadById.get(threadId);
-    if (thread?.deletedAt === null && thread.archivedAt === null) {
+    if (thread !== undefined) {
       ordered.push(thread);
     }
     const children = childrenByParent.get(threadId);
@@ -40,4 +40,25 @@ export function collectActiveThreadSubtree(
   }
 
   return ordered;
+}
+
+/**
+ * Every thread in the subtree regardless of lifecycle state, parents before
+ * children. Hard delete uses this so a purge also reaches descendants that were
+ * archived or already tombstoned.
+ */
+export function collectThreadSubtree(
+  readModel: OrchestrationReadModel,
+  rootThreadId: ThreadId,
+): OrchestrationThread[] {
+  return walkThreadSubtree(readModel, rootThreadId);
+}
+
+export function collectActiveThreadSubtree(
+  readModel: OrchestrationReadModel,
+  rootThreadId: ThreadId,
+): OrchestrationThread[] {
+  return walkThreadSubtree(readModel, rootThreadId).filter(
+    (thread) => thread.deletedAt === null && thread.archivedAt === null,
+  );
 }

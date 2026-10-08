@@ -408,9 +408,11 @@ export function projectEvent(
         };
       });
 
-    // Archived and deleted threads stay in the read model forever, so they keep only the
-    // projected activity payloads; the raw tool output remains in SQL. Retaining it for
-    // every dormant thread exhausted the backend heap.
+    // Dormant threads stay in the read model, so archived threads keep only the
+    // projected activity payloads; the raw tool output remains in SQL. Retaining
+    // it for every dormant thread exhausted the backend heap. Deleted threads
+    // keep their tombstone too — the client needs the event to drop local state —
+    // but SQL rows are purged, so this is the last trace of the thread.
     case "thread.deleted":
       return decodeForEvent(ThreadDeletedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => ({

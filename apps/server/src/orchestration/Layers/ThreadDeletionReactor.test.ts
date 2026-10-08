@@ -412,6 +412,7 @@ async function withCleanupFixture(
             requestedAt: new Date().toISOString(),
             source: "idle",
             allowTerminalReset: false,
+            expectedBranch: thread.branch ?? null,
           } as never),
         );
       },

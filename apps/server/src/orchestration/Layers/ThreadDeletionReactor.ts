@@ -29,6 +29,8 @@ import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/Checkout
 import { GitManager, type GitManagerShape } from "../../git/Services/GitManager.ts";
 import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
 import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
+import { ServerConfig } from "../../config.ts";
+import { removeProviderLogsForThread } from "../../provider/Layers/ProviderLogRetention.ts";
 import { WorktreeCleanupJobRepositoryLive } from "../../persistence/Layers/WorktreeCleanupJobs.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import {
@@ -232,6 +234,7 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const worktreeCleanupJobs = yield* WorktreeCleanupJobRepository;
   const workspaceOwnership = yield* WorkspaceOwnershipRepository;
+  const serverConfig = yield* ServerConfig;
   const initialIdleSweepDone = yield* Deferred.make<void>();
   let idleSweepOffset = 0;
 
@@ -268,6 +271,27 @@ const make = Effect.gen(function* () {
 
   const closeThreadTerminalsEffect = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
     terminalManager.close({ threadId, deleteHistory: true });
+
+  // Hard delete owns the chat's provider logs outright, so they go now instead of
+  // waiting for retention to notice an unknown thread segment on a later sweep.
+  const removeThreadProviderLogs = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
+    Effect.tryPromise(() =>
+      removeProviderLogsForThread(serverConfig.providerLogsDir, threadId),
+    ).pipe(
+      Effect.tap((removed) =>
+        Effect.logInfo("removed deleted chat provider logs", {
+          threadId,
+          files: removed.files,
+          bytes: removed.bytes,
+        }),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to remove deleted chat provider logs; retention will retry", {
+          threadId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
 
   // Runs outside every lock: the checkout is already detached from Git, so a
   // failure only leaves bytes for the startup trash sweep to reclaim.
@@ -653,11 +677,13 @@ const make = Effect.gen(function* () {
       });
       return false;
     }
-    if (
-      cleanupThread?.branch === null ||
-      cleanupThread?.branch === undefined ||
-      registration.branchName !== cleanupThread.branch
-    ) {
+    // A hard delete purges the thread's rows and event stream, so after a restart
+    // the read model no longer knows the thread. The delete job carries the branch
+    // it must verify, pinned when consent was given. Archive and idle keep their
+    // thread, so they read it live.
+    const expectedBranch =
+      cleanup.source === "delete" ? cleanup.expectedBranch : (cleanupThread?.branch ?? null);
+    if (expectedBranch === null || registration.branchName !== expectedBranch) {
       yield* worktreeCleanupJobs.markNeedsAttention({
         threadId,
         reason: "worktree-branch-mismatch",
@@ -801,7 +827,10 @@ const make = Effect.gen(function* () {
             canonicalPath,
           );
           const cleanupThread = readModel.threads.find((thread) => thread.id === cleanup.threadId);
-          if (cleanupThread === undefined) {
+          // A hard delete purges the thread's rows and event stream, so its thread
+          // is legitimately absent — and must stay removable. Archive and idle keep
+          // their thread and still need one.
+          if (cleanupThread === undefined && cleanup.source !== "delete") {
             yield* worktreeCleanupJobs.markNeedsAttention({
               threadId: cleanup.threadId,
               reason: "thread-not-found",
@@ -810,7 +839,7 @@ const make = Effect.gen(function* () {
           }
           if (
             Option.isSome(activeOwner) ||
-            (cleanup.source === "archive" && cleanupThread.archivedAt === null)
+            (cleanup.source === "archive" && cleanupThread?.archivedAt === null)
           ) {
             yield* worktreeCleanupJobs.markNeedsAttention({
               threadId: cleanup.threadId,
@@ -820,9 +849,17 @@ const make = Effect.gen(function* () {
           }
           let currentIdleDays: number | null = null;
           if (cleanup.source === "idle") {
-            const project = readModel.projects.find(
-              (entry) => entry.id === cleanupThread.projectId,
-            );
+            // Reachable only with a thread, per the guard above; re-narrowed
+            // because idle eligibility is defined in terms of the thread.
+            const idleThread = cleanupThread;
+            if (idleThread === undefined) {
+              yield* worktreeCleanupJobs.markNeedsAttention({
+                threadId: cleanup.threadId,
+                reason: "thread-not-found",
+              });
+              return null;
+            }
+            const project = readModel.projects.find((entry) => entry.id === idleThread.projectId);
             const [configuredDays, runtime] = yield* Effect.all([
               idleReclaimDaysFor(cleanup.threadId),
               runtimeSafetySnapshot,
@@ -830,7 +867,7 @@ const make = Effect.gen(function* () {
             if (
               project === undefined ||
               !(yield* isIdleWorktreeEligible({
-                thread: cleanupThread,
+                thread: idleThread,
                 project,
                 readModel,
                 idleDays: configuredDays,
@@ -850,7 +887,13 @@ const make = Effect.gen(function* () {
             }
             currentIdleDays = configuredDays;
           }
-          return { branch: cleanupThread.branch, idleDays: currentIdleDays };
+          return {
+            branch:
+              cleanup.source === "delete"
+                ? cleanup.expectedBranch
+                : (cleanupThread?.branch ?? null),
+            idleDays: currentIdleDays,
+          };
         }),
       );
       if (preflight === null) {
@@ -1000,7 +1043,17 @@ const make = Effect.gen(function* () {
           : runAfterThreadRuntimeTeardown(
               stopActiveProviderSession(threadId),
               closeThreadTerminalsEffect(threadId),
-              cleanupEffect,
+              Effect.all(
+                [
+                  // Archive and settle reclaim the checkout but keep the chat, so
+                  // its provider logs stay. Only a hard delete takes them.
+                  ...(reservation.cleanup.source === "delete"
+                    ? [removeThreadProviderLogs(threadId)]
+                    : []),
+                  cleanupEffect,
+                ],
+                { concurrency: "unbounded", discard: true },
+              ),
             );
       },
     );
@@ -1144,6 +1197,7 @@ const make = Effect.gen(function* () {
         requestedAt,
         source: "archive",
         allowTerminalReset,
+        expectedBranch: thread.branch ?? null,
       })
       .pipe(
         Effect.catch((error) =>
@@ -1174,6 +1228,8 @@ const make = Effect.gen(function* () {
     }
     if (!(yield* automaticCleanupEnabled)) {
       // The intent stays durable; the due sweep picks it up once re-enabled.
+      // Archiving never clears the chat itself, only its checkout, and this
+      // switch is the user's stated preference for reclaiming storage.
       yield* Effect.logDebug("archive worktree cleanup paused by automatic-cleanup switch", {
         threadId,
       });
@@ -1275,7 +1331,10 @@ const make = Effect.gen(function* () {
       yield* runAfterThreadRuntimeTeardown(
         stopActiveProviderSession(threadId),
         closeThreadTerminalsEffect(threadId),
-        releaseThreadOwnership(threadId),
+        Effect.all([removeThreadProviderLogs(threadId), releaseThreadOwnership(threadId)], {
+          concurrency: "unbounded",
+          discard: true,
+        }),
       );
     } else {
       yield* Effect.all([stopProviderSession(threadId), closeThreadTerminals(threadId)], {
@@ -1457,6 +1516,7 @@ const make = Effect.gen(function* () {
         requestedAt,
         source: "idle",
         allowTerminalReset: Option.isSome(previous),
+        expectedBranch: thread.branch ?? null,
       })
       .pipe(
         Effect.catch((error) =>

@@ -114,6 +114,7 @@ const make = Effect.gen(function* () {
           requested_at AS "requestedAt",
           source,
           status,
+          expected_branch AS "expectedBranch",
           attempt_count AS "attemptCount",
           next_attempt_at AS "nextAttemptAt",
           last_reason AS "lastReason",
@@ -150,6 +151,7 @@ const make = Effect.gen(function* () {
           requested_at,
           source,
           status,
+          expected_branch,
           attempt_count,
           next_attempt_at,
           last_reason,
@@ -163,6 +165,7 @@ const make = Effect.gen(function* () {
           ${intent.requestedAt},
           ${intent.source},
           'waiting',
+          ${intent.expectedBranch},
           0,
           ${intent.requestedAt},
           NULL,
@@ -200,6 +203,11 @@ const make = Effect.gen(function* () {
               AND worktree_cleanup_jobs.status IN ('cancelled', 'completed', 'needs-attention')
               THEN 'waiting'
             ELSE worktree_cleanup_jobs.status
+          END,
+          expected_branch = CASE
+            WHEN worktree_cleanup_jobs.status = 'removing'
+              THEN worktree_cleanup_jobs.expected_branch
+            ELSE excluded.expected_branch
           END,
           attempt_count = CASE
             WHEN ${allowTerminalReset}
@@ -244,6 +252,7 @@ const make = Effect.gen(function* () {
           requested_at AS "requestedAt",
           source,
           status,
+          expected_branch AS "expectedBranch",
           attempt_count AS "attemptCount",
           next_attempt_at AS "nextAttemptAt",
           last_reason AS "lastReason",
@@ -266,6 +275,7 @@ const make = Effect.gen(function* () {
           requested_at AS "requestedAt",
           source,
           status,
+          expected_branch AS "expectedBranch",
           attempt_count AS "attemptCount",
           next_attempt_at AS "nextAttemptAt",
           last_reason AS "lastReason",

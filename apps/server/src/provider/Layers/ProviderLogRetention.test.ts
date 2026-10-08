@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { sweepProviderLogs } from "./ProviderLogRetention.ts";
+import { removeProviderLogsForThread, sweepProviderLogs } from "./ProviderLogRetention.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -234,5 +234,41 @@ describe("sweepProviderLogs", () => {
     expect(await exists(removable)).toBe(false);
     expect(summary.failedFiles).toBe(1);
     expect(summary.removed.age.files).toBe(1);
+  });
+});
+
+describe("removeProviderLogsForThread", () => {
+  it("removes the chat's head and rotations while sparing other and shared logs", async () => {
+    const directory = await makeLogDirectory();
+    const own = await writeLog(directory, "thread-alpha.log", 12);
+    const ownRotation = await writeLog(directory, "thread-alpha.log.1", 8);
+    const other = await writeLog(directory, "thread-beta.log", 8);
+    const shared = await writeLog(directory, "events.log", 8);
+
+    const removed = await removeProviderLogsForThread(directory, "thread-alpha");
+
+    expect(removed).toEqual({ files: 2, bytes: 20 });
+    expect(await exists(own)).toBe(false);
+    expect(await exists(ownRotation)).toBe(false);
+    expect(await exists(other)).toBe(true);
+    expect(await exists(shared)).toBe(true);
+  });
+
+  it("does not match a chat id that merely shares a segment prefix", async () => {
+    const directory = await makeLogDirectory();
+    const other = await writeLog(directory, "thread-alpha-two.log", 8);
+
+    const removed = await removeProviderLogsForThread(directory, "thread-alpha");
+
+    expect(removed.files).toBe(0);
+    expect(await exists(other)).toBe(true);
+  });
+
+  it("treats a missing log directory as nothing to remove", async () => {
+    const removed = await removeProviderLogsForThread(
+      path.join(os.tmpdir(), "provider-log-absent-dir-xyz"),
+      "thread-alpha",
+    );
+    expect(removed).toEqual({ files: 0, bytes: 0 });
   });
 });
