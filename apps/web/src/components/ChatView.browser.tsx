@@ -8312,12 +8312,12 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await vi.waitFor(() => expect(dismissRequests).toHaveLength(2));
       const retryCommandId = dismissRequests[1]?.commandId;
       expect(retryCommandId).not.toBe(firstCommandId);
-      await waitForDismissEnabled();
+      await vi.waitFor(() => expect(activeDismissButton()).toBeNull());
 
       emitActivity(3, "runtime.info", {});
       await waitForActivity("runtime.info");
-      await waitForDismissEnabled();
-      activeDismissButton()?.click();
+      expect(activeDismissButton()).toBeNull();
+      document.querySelector<HTMLFormElement>('[data-chat-composer-form="true"]')?.requestSubmit();
       await new Promise((resolve) => window.setTimeout(resolve, 0));
       expect(dismissRequests).toHaveLength(2);
 
