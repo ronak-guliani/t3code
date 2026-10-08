@@ -1393,6 +1393,8 @@ export function GeneralSettingsPanel() {
   const [isPickingChatExportDirectory, setIsPickingChatExportDirectory] = useState(false);
   const [isExportingActiveChats, setIsExportingActiveChats] = useState(false);
   const [isImportingChatArchive, setIsImportingChatArchive] = useState(false);
+  const [chatArchivePath, setChatArchivePath] = useState("");
+  const canUseFolderPicker = typeof window !== "undefined" && window.desktopBridge !== undefined;
   const [newBrowserProfileName, setNewBrowserProfileName] = useState("");
   const [browserProfileNames, setBrowserProfileNames] = useState<Record<string, string>>({});
   const [browserImportSources, setBrowserImportSources] = useState<
@@ -1622,11 +1624,19 @@ export function GeneralSettingsPanel() {
     if (isImportingChatArchive) return;
     setIsImportingChatArchive(true);
     try {
-      const path = await ensureLocalApi().dialogs.pickFolder(
-        settings.chatExportDirectory ? { initialPath: settings.chatExportDirectory } : undefined,
-      );
-      if (!path) return;
+      const path = canUseFolderPicker
+        ? await ensureLocalApi().dialogs.pickFolder(
+            settings.chatExportDirectory
+              ? { initialPath: settings.chatExportDirectory }
+              : undefined,
+          )
+        : chatArchivePath.trim();
+      if (path === null) return;
+      if (path.length === 0) {
+        throw new Error("Enter the chat archive folder path to import it.");
+      }
       const result = await ensureLocalApi().server.importChatArchive({ path });
+      setChatArchivePath("");
       toastManager.add(
         stackedThreadToast({
           type: "success",
@@ -1646,7 +1656,7 @@ export function GeneralSettingsPanel() {
     } finally {
       setIsImportingChatArchive(false);
     }
-  }, [isImportingChatArchive, settings.chatExportDirectory]);
+  }, [canUseFolderPicker, chatArchivePath, isImportingChatArchive, settings.chatExportDirectory]);
 
   const updateChatExportDetail = useCallback(
     (patch: Partial<typeof settings.chatExportDetail>) => {
@@ -2384,29 +2394,37 @@ export function GeneralSettingsPanel() {
                 spellCheck={false}
                 aria-label="Chat export directory"
               />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void chooseChatExportDirectory()}
-                disabled={isPickingChatExportDirectory}
-              >
-                {isPickingChatExportDirectory ? (
-                  <LoaderIcon className="size-3.5 animate-spin" />
-                ) : (
-                  <FolderOpenIcon className="size-3.5" />
-                )}
-                Choose
-              </Button>
+              {canUseFolderPicker ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void chooseChatExportDirectory()}
+                  disabled={isPickingChatExportDirectory}
+                >
+                  {isPickingChatExportDirectory ? (
+                    <LoaderIcon className="size-3.5 animate-spin" />
+                  ) : (
+                    <FolderOpenIcon className="size-3.5" />
+                  )}
+                  Choose
+                </Button>
+              ) : null}
             </div>
           }
         />
 
         <SettingsRow
           title="Transfer active chats"
-          description="Export every non-archived chat, or import a T3 chat archive as a reference-only sidebar folder."
+          description="Export every non-archived chat, or import a T3 chat archive as a reference-only sidebar folder. In a browser, enter the archive folder path on this environment."
           control={
-            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+            <div
+              className={
+                canUseFolderPicker
+                  ? "flex w-full flex-col gap-2 sm:w-auto sm:flex-row"
+                  : "flex w-full flex-col gap-2 sm:w-72"
+              }
+            >
               <Button
                 type="button"
                 variant="outline"
@@ -2425,20 +2443,37 @@ export function GeneralSettingsPanel() {
                 )}
                 Export active chats
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void importChatArchive()}
-                disabled={isImportingChatArchive || isExportingActiveChats}
-              >
-                {isImportingChatArchive ? (
-                  <LoaderIcon className="size-3.5 animate-spin" />
-                ) : (
-                  <FolderOpenIcon className="size-3.5" />
-                )}
-                Import chat folder
-              </Button>
+              <div className="flex flex-col gap-2">
+                {!canUseFolderPicker ? (
+                  <Input
+                    className="w-full"
+                    value={chatArchivePath}
+                    onChange={(event) => setChatArchivePath(event.target.value)}
+                    placeholder="~/t3-chat-exports/t3-chats-..."
+                    aria-label="Chat archive folder"
+                    spellCheck={false}
+                    disabled={isImportingChatArchive}
+                  />
+                ) : null}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void importChatArchive()}
+                  disabled={
+                    isImportingChatArchive ||
+                    isExportingActiveChats ||
+                    (!canUseFolderPicker && chatArchivePath.trim().length === 0)
+                  }
+                >
+                  {isImportingChatArchive ? (
+                    <LoaderIcon className="size-3.5 animate-spin" />
+                  ) : (
+                    <FolderOpenIcon className="size-3.5" />
+                  )}
+                  Import chat folder
+                </Button>
+              </div>
             </div>
           }
         />

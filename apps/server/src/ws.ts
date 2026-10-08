@@ -1924,7 +1924,7 @@ const makeWsRpcLayer = (
                   commandId: CommandId.make(crypto.randomUUID()),
                   projectId,
                   title: manifest.title,
-                  workspaceRoot: NodePath.resolve(input.path),
+                  workspaceRoot: NodePath.resolve(expandHomePath(input.path)),
                   threads,
                   createdAt: new Date().toISOString(),
                 })

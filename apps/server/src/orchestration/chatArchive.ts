@@ -9,6 +9,7 @@ import {
   RuntimeMode,
 } from "@t3tools/contracts";
 import { Schema } from "effect";
+import { expandHomePath } from "../pathExpansion.ts";
 import type { ProjectionChatArchiveEntry } from "./Services/ProjectionSnapshotQuery.ts";
 
 const MAX_ARCHIVE_BYTES = 20 * 1024 * 1024;
@@ -106,7 +107,7 @@ export async function writeChatArchive(
 ): Promise<string> {
   const serialized = JSON.stringify(manifest);
   validateArchiveLimits(manifest, Buffer.byteLength(serialized));
-  const root = await realpath(exportDirectory);
+  const root = await realpath(expandHomePath(exportDirectory));
   const name = `t3-chats-${archiveTimestamp(new Date(manifest.exportedAt))}-${manifest.archiveId.slice(0, 8)}`;
   const target = join(root, name);
   const stage = `${target}.partial`;
@@ -126,7 +127,8 @@ export async function writeChatArchive(
 }
 
 export async function readChatArchive(path: string): Promise<ChatArchiveManifest> {
-  const root = resolve(await realpath(dirname(resolve(path))), basename(resolve(path)));
+  const requested = resolve(expandHomePath(path));
+  const root = resolve(await realpath(dirname(requested)), basename(requested));
   const rootInfo = await lstat(root);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
     throw new Error("Chat archive must be a real directory.");

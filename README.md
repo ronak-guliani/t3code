@@ -53,6 +53,11 @@ threads", or type `archived` and press Tab or Space, to add an Archived chip and
 only archived threads (including IDs and conversation content). Combine it with project
 or thread chips to narrow the archive; removing the Archived chip returns to active threads.
 
+Settings → General can export all active chats to a T3 archive folder and import that folder
+as reference-only chats. Paths are on the connected environment's filesystem, not necessarily
+the browser's machine, and support `~` for its home directory. In a browser, type the export
+directory and archive folder paths; desktop clients can also use the native folder picker.
+
 We are very very early in this project. Expect bugs.
 
 We are not accepting contributions yet.
