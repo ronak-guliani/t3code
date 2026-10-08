@@ -222,6 +222,28 @@ async function acquire(
 }
 
 describe("ValidationEnvironmentManager", () => {
+  it("preserves recovery state when shutdown cannot verify process ownership", async () => {
+    const harness = makeHarness();
+    const manager = createValidationEnvironmentManager(harness.adapters);
+    await manager.acquire(target);
+    harness.setProcessIdentityOverride((identity) => ({ ...identity, startIdentity: "reused" }));
+    await expect(manager.shutdown()).rejects.toThrow("shutdown failed");
+    expect(harness.getState()).toBeDefined();
+    expect(harness.terminateCount).toBe(0);
+  });
+  it("drains in-flight acquisition on shutdown and rejects subsequent acquisition", async () => {
+    const harness = makeHarness({ startDelayMs: 5 });
+    const manager = createValidationEnvironmentManager(harness.adapters);
+    const pending = manager.acquire(target);
+    const shutdown = manager.shutdown();
+    const lease = await pending;
+    await shutdown;
+    expect(harness.terminateCount).toBe(2);
+    await lease.release();
+    await manager.shutdown();
+    expect(harness.terminateCount).toBe(2);
+    await expect(manager.acquire(target)).rejects.toMatchObject({ code: "manager-closed" });
+  });
   it("returns validated identity, actual ports, origins, process identities, and state", async () => {
     const harness = makeHarness();
     const lease = await acquire(harness);

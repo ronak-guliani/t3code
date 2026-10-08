@@ -1,4 +1,6 @@
 import { mkdtemp } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +15,9 @@ import {
   ValidationEnvironmentService,
   ValidationEnvironmentServiceLive,
   validationEnvironmentStateDirectory,
+  terminateValidationEnvironmentProcess,
 } from "./ValidationEnvironmentService.ts";
+import { processGroupExists, processStartIdentity } from "../terminal/ownedProcessCleanup.ts";
 
 const environmentId = "environment-1";
 
@@ -48,6 +52,42 @@ async function startReadinessServer(): Promise<{ server: Server; port: number }>
 }
 
 describe("ValidationEnvironmentService", () => {
+  it("terminates an owned wrapper and its descendants as a process group", async () => {
+    if (process.platform === "win32") return;
+    const ownerToken = crypto.randomUUID();
+    const wrapper = spawn(
+      process.execPath,
+      [
+        "-e",
+        `const {spawn}=require('node:child_process');spawn(process.execPath,['-e','setInterval(()=>{},60000)'],{stdio:'ignore'});setInterval(()=>{},60000)`,
+      ],
+      {
+        detached: true,
+        stdio: "ignore",
+        env: { ...process.env, T3_TERMINAL_OWNER_TOKEN: ownerToken },
+      },
+    );
+    await once(wrapper, "spawn");
+    const pid = wrapper.pid!;
+    try {
+      const startIdentity = await processStartIdentity(pid);
+      if (!startIdentity) throw new Error("Could not inspect wrapper");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await terminateValidationEnvironmentProcess({
+        pid,
+        startIdentity,
+        ownershipIdentity: "test",
+        processGroup: { pid, startIdentity, ownerToken, serverInstanceId: "test" },
+      });
+      expect(processGroupExists(pid)).toBe(false);
+    } finally {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        /* Already terminated. */
+      }
+    }
+  });
   let server: Server | undefined;
 
   afterEach(async () => {
