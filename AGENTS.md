@@ -6,6 +6,7 @@
 2. Commit and open a pull request without confirming title or body; an explicit "leave uncommitted" overrides. This standing instruction is the publication authorization [skill-delivery.md](.agents/references/skill-delivery.md) otherwise requires.
 3. Choose correctness and robustness over convenience, and predictably under restarts and reconnects.
 4. Cite a pull request, issue, comment, commit, or run with a Markdown link to its real URL, permalink for comments, `owner/repo#123` across repositories.
+5. Before creating a pull request, run `/simplify` and `/code-review`.
 
 ## Load
 
