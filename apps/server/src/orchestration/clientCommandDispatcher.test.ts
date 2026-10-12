@@ -1,4 +1,11 @@
-import { CommandId, MessageId, ThreadId, type OrchestrationCommand } from "@t3tools/contracts";
+import {
+  CommandId,
+  MessageId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  type OrchestrationCommand,
+} from "@t3tools/contracts";
 import { Effect, Layer } from "effect";
 import { expect, it } from "vitest";
 
@@ -10,11 +17,17 @@ import { ServerRuntimeStartup } from "../serverRuntimeStartup.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { makeClientCommandDispatcher } from "./clientCommandDispatcher.ts";
 
-it("locks only worktree creation, not the command queue, dispatch, or setup", async () => {
+it("uses the admission binding for setup and dispatch without a second worktree stage", async () => {
   const source = "/project";
   const target = "/worktrees/new";
   const events: string[] = [];
   let locked = false;
+  let exposeBinding = true;
+  let currentBinding: {
+    readonly worktreePath: string;
+    readonly branch: string;
+    readonly sourceBranch?: string;
+  } = { worktreePath: target, branch: "feature", sourceBranch: "main" };
   const command: OrchestrationCommand = {
     type: "thread.turn.start",
     commandId: CommandId.make("bootstrap"),
@@ -28,6 +41,17 @@ it("locks only worktree creation, not the command queue, dispatch, or setup", as
     runtimeMode: "full-access",
     interactionMode: "default",
     bootstrap: {
+      createThread: {
+        projectId: ProjectId.make("project"),
+        parentThreadId: null,
+        title: "New thread",
+        modelSelection: { instanceId: ProviderInstanceId.make("pi"), model: "default" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-09-05T00:00:00.000Z",
+      },
       prepareWorktree: {
         projectCwd: source,
         baseBranch: "main",
@@ -85,9 +109,30 @@ it("locks only worktree creation, not the command queue, dispatch, or setup", as
         }),
     }),
     Layer.mock(OrchestrationEngineService, {
+      getReadModel: () =>
+        Effect.succeed({
+          threads: exposeBinding
+            ? [
+                {
+                  id: ThreadId.make("thread"),
+                  worktreePath: target,
+                  branch: "feature",
+                  workspaceBinding: currentBinding,
+                },
+              ]
+            : [],
+        } as never),
       dispatch: (dispatched) =>
         Effect.sync(() => {
           expect(locked).toBe(false);
+          if (dispatched.type === "thread.create") {
+            expect(dispatched.sourceBranch).toBe("main");
+            expect(dispatched.branch).toBeNull();
+            expect(dispatched.workspaceBranch).toBe("feature");
+          }
+          if (dispatched.type === "thread.turn.start") {
+            expect(dispatched.bootstrap?.prepareWorktree?.baseBranch).toBe("main");
+          }
           events.push(dispatched.type);
           return { sequence: 1 };
         }),
@@ -124,13 +169,60 @@ it("locks only worktree creation, not the command queue, dispatch, or setup", as
       yield* dispatch(command);
     }).pipe(Effect.provide(layer)),
   );
-  expect(events).toEqual([
-    "queue",
-    "lock",
-    "create",
-    "unlock",
-    "thread.meta.update",
-    "setup",
-    "thread.turn.start",
-  ]);
+  expect(events).toEqual(["queue", "thread.create", "setup", "thread.turn.start"]);
+
+  const setupCount = () => events.filter((event) => event === "setup").length;
+  const warmBootstrap = {
+    ...command,
+    bootstrap: {
+      prepareWorktree: { projectCwd: source, baseBranch: "main", branch: "feature" },
+      runSetupScript: true,
+    },
+  };
+  const beforeRejectedWarmSend = setupCount();
+  const turnStartsBeforeRejectedWarmSend = events.filter(
+    (event) => event === "thread.turn.start",
+  ).length;
+  for (const binding of [
+    { ...currentBinding, sourceBranch: "different-base" },
+    { worktreePath: target, branch: "feature" },
+  ]) {
+    currentBinding = binding;
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const dispatch = makeClientCommandDispatcher({
+            git: yield* GitCore,
+            gitStatusBroadcaster: yield* GitStatusBroadcaster,
+            orchestrationEngine: yield* OrchestrationEngineService,
+            projectSetupScriptRunner: yield* ProjectSetupScriptRunner,
+            startup: yield* ServerRuntimeStartup,
+          });
+          yield* dispatch(warmBootstrap);
+        }).pipe(Effect.provide(layer)),
+      ),
+    ).rejects.toThrow(/base branch|legacy workspace binding/i);
+    expect(setupCount()).toBe(beforeRejectedWarmSend);
+    expect(events.filter((event) => event === "thread.turn.start")).toHaveLength(
+      turnStartsBeforeRejectedWarmSend,
+    );
+    expect(currentBinding).toEqual(binding);
+  }
+
+  exposeBinding = false;
+  await expect(
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const dispatch = makeClientCommandDispatcher({
+          git: yield* GitCore,
+          gitStatusBroadcaster: yield* GitStatusBroadcaster,
+          orchestrationEngine: yield* OrchestrationEngineService,
+          projectSetupScriptRunner: yield* ProjectSetupScriptRunner,
+          startup: yield* ServerRuntimeStartup,
+        });
+        yield* dispatch(command);
+      }).pipe(Effect.provide(layer)),
+    ),
+  ).rejects.toThrow("authoritative binding");
+  expect(events.slice(-3)).toEqual(["queue", "thread.create", "thread.delete"]);
 });

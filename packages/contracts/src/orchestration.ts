@@ -266,6 +266,10 @@ export const WorkspaceBinding = Schema.Struct({
   worktreePath: TrimmedNonEmptyString,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   generation: NonNegativeInt,
+  // Optional provenance for new isolated bindings. Legacy bindings without
+  // these fields cannot safely accept a later bootstrap source override.
+  sourceBranch: Schema.optional(TrimmedNonEmptyString),
+  sourceWorktreePath: Schema.optional(TrimmedNonEmptyString),
   // Present only when the thread explicitly opted into the project checkout
   // ("Current checkout"). Absent for isolated workspaces and for legacy
   // bindings, which must keep isolating.
@@ -1186,6 +1190,9 @@ const ThreadCreateCommand = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
+  // Explicit destination for an allocated workspace. `branch` remains the
+  // legacy source branch when callers do not supply this field.
+  workspaceBranch: Schema.optional(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   sourceBranch: Schema.optional(TrimmedNonEmptyString),
   sourceWorktreePath: Schema.optional(TrimmedNonEmptyString),

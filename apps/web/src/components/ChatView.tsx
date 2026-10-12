@@ -3947,50 +3947,45 @@ function ChatViewBody(
       }
 
       const turnAttachments = await turnAttachmentsPromise;
-      const bootstrap =
-        isLocalDraftThread || baseBranchForWorktree
-          ? {
-              ...(isLocalDraftThread
-                ? {
-                    createThread: {
-                      projectId: activeProject.id,
-                      ...(draftThread?.parentThreadId
-                        ? { parentThreadId: draftThread.parentThreadId }
-                        : {}),
-                      title,
-                      modelSelection: threadCreateModelSelection,
-                      runtimeMode,
-                      interactionMode,
-                      branch: activeThreadBranch,
-                      // Explicit "Current checkout" choice binds the thread to the
-                      // project checkout so the server does not allocate an
-                      // isolated worktree. Worktree mode keeps worktreePath null
-                      // so a new worktree is created off the base branch.
-                      worktreePath:
-                        sendEnvMode === "local"
-                          ? (activeThread.worktreePath ?? activeProject.cwd)
-                          : activeThread.worktreePath,
-                      ...(draftThread?.pullRequest
-                        ? { pullRequest: draftThread.pullRequest }
-                        : activeThread && "pullRequest" in activeThread && activeThread.pullRequest
-                          ? { pullRequest: activeThread.pullRequest }
-                          : {}),
-                      createdAt: activeThread.createdAt,
-                    },
-                  }
+      const bootstrap = isLocalDraftThread
+        ? {
+            createThread: {
+              projectId: activeProject.id,
+              ...(draftThread?.parentThreadId
+                ? { parentThreadId: draftThread.parentThreadId }
                 : {}),
-              ...(baseBranchForWorktree
-                ? {
-                    prepareWorktree: {
-                      projectCwd: activeProject.cwd,
-                      baseBranch: baseBranchForWorktree,
-                      branch: buildTemporaryWorktreeBranchName(),
-                    },
-                    runSetupScript: true,
-                  }
-                : {}),
-            }
-          : undefined;
+              title,
+              modelSelection: threadCreateModelSelection,
+              runtimeMode,
+              interactionMode,
+              branch: activeThreadBranch,
+              // Explicit "Current checkout" choice binds the thread to the
+              // project checkout so the server does not allocate an
+              // isolated worktree. Worktree mode keeps worktreePath null
+              // so a new worktree is created off the base branch.
+              worktreePath:
+                sendEnvMode === "local"
+                  ? (activeThread.worktreePath ?? activeProject.cwd)
+                  : activeThread.worktreePath,
+              ...(draftThread?.pullRequest
+                ? { pullRequest: draftThread.pullRequest }
+                : activeThread && "pullRequest" in activeThread && activeThread.pullRequest
+                  ? { pullRequest: activeThread.pullRequest }
+                  : {}),
+              createdAt: activeThread.createdAt,
+            },
+            ...(isLocalDraftThread && baseBranchForWorktree
+              ? {
+                  prepareWorktree: {
+                    projectCwd: activeProject.cwd,
+                    baseBranch: baseBranchForWorktree,
+                    branch: buildTemporaryWorktreeBranchName(),
+                  },
+                  runSetupScript: true,
+                }
+              : {}),
+          }
+        : undefined;
       beginLocalDispatch({ preparingWorktree: false });
       await api.orchestration.dispatchCommand({
         type: "thread.turn.start",
