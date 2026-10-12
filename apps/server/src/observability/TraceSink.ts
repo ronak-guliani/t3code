@@ -1,7 +1,7 @@
 import { RotatingFileSink } from "@t3tools/shared/logging";
 import { Effect } from "effect";
 
-import type { TraceRecord } from "./TraceRecord.ts";
+import { traceRecordExitTag, type TraceRecord } from "./TraceRecord.ts";
 
 const FLUSH_BUFFER_THRESHOLD = 32;
 const SQL_TRACE_SAMPLE_RATE = 0.1;
@@ -11,11 +11,7 @@ function shouldPersistTraceRecord(record: TraceRecord): boolean {
     typeof record.attributes["db.system.name"] === "string" || /^sql\./i.test(record.name);
   if (!isSqlSpan) return true;
 
-  const isFailure =
-    record.type === "effect-span"
-      ? record.exit._tag !== "Success"
-      : record.status?.code === "2" || record.status?.message !== undefined;
-  if (isFailure) return true;
+  if (traceRecordExitTag(record) !== "Success") return true;
 
   // Trace/span ids are stable random identifiers, so deterministic head
   // sampling retains a consistent 10% of successful SQL spans without

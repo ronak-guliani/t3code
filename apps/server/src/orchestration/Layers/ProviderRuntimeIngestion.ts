@@ -338,8 +338,18 @@ function requestKindFromCanonicalRequestType(
   }
 }
 
+/**
+ * Delivery outcome for one terminal turn. `undefined` means the event could not
+ * be attributed to a turn, so the state is unknown rather than absent.
+ */
+interface TurnAssistantDeliveryState {
+  readonly assistantTextObserved: boolean;
+  readonly assistantMessagePersisted: boolean;
+}
+
 function runtimeEventToActivities(
   event: ProviderRuntimeEvent,
+  assistantDelivery?: TurnAssistantDeliveryState,
 ): ReadonlyArray<OrchestrationThreadActivity> {
   const maybeSequence = (() => {
     const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
@@ -378,6 +388,13 @@ function runtimeEventToActivities(
           payload: {
             provider: event.provider,
             state: event.payload.state,
+            ...(event.payload.stopReason ? { stopReason: event.payload.stopReason } : {}),
+            ...(assistantDelivery
+              ? {
+                  assistantTextObserved: assistantDelivery.assistantTextObserved,
+                  assistantMessagePersisted: assistantDelivery.assistantMessagePersisted,
+                }
+              : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
             ...(event.payload.modelUsage !== undefined
               ? { modelUsage: event.payload.modelUsage }
@@ -1233,6 +1250,28 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
   });
 
+  // Provider assistant text is recorded per turn so turn completion can report
+  // whether text was produced, independently of whether it reached the
+  // projection. A turn that only ran tools never sets this, which is what keeps
+  // a legitimately reply-less turn from being reported as a delivery failure.
+  const assistantTextTurns = yield* Cache.make<string, boolean>({
+    capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
+    timeToLive: TURN_MESSAGE_IDS_BY_TURN_TTL,
+    lookup: () => Effect.succeed(false),
+  });
+
+  const rememberAssistantTextForTurn = (threadId: ThreadId, turnId: TurnId) =>
+    Cache.set(assistantTextTurns, providerTurnKey(threadId, turnId), true);
+
+  const takeAssistantTextForTurn = (threadId: ThreadId, turnId: TurnId) =>
+    Cache.getOption(assistantTextTurns, providerTurnKey(threadId, turnId)).pipe(
+      Effect.flatMap((observed) =>
+        Cache.invalidate(assistantTextTurns, providerTurnKey(threadId, turnId)).pipe(
+          Effect.as(Option.getOrElse(observed, () => false)),
+        ),
+      ),
+    );
+
   const resolveGitRepositoryCwdForThread = Effect.fn("resolveGitRepositoryCwdForThread")(function* (
     threadId: ThreadId,
   ) {
@@ -1543,6 +1582,13 @@ const make = Effect.gen(function* () {
         });
       }
       yield* clearAssistantMessageState(input.messageId);
+      return {
+        hasRenderableText,
+        // Mirrors the dispatch guard above: neither branch runs when the turn
+        // ended without a projected message and without renderable text, which
+        // is the case turn completion now reports instead of dropping silently.
+        persisted: input.hasProjectedMessage === true || hasRenderableText,
+      };
     });
 
   const persistReviewResult = (input: {
@@ -2051,6 +2097,7 @@ const make = Effect.gen(function* () {
         });
 
       if (isThreadLifecycleEvent) {
+        let terminalTurnAssistantDelivery: TurnAssistantDeliveryState | undefined;
         if (shouldFinalizeTerminalTurn) {
           const terminalTurnId = lifecycleTurnId;
           if (terminalTurnId) {
@@ -2058,7 +2105,7 @@ const make = Effect.gen(function* () {
               thread.id,
               terminalTurnId,
             );
-            yield* Effect.forEach(
+            const finalizations = yield* Effect.forEach(
               // Late replays of older parts can drag a previous turn's
               // message id into this turn's remembered set; finalizing those
               // here would re-append their already-completed text. Only the
@@ -2090,7 +2137,16 @@ const make = Effect.gen(function* () {
                     ?.text,
                 }),
               { concurrency: 1 },
-            ).pipe(Effect.asVoid);
+            );
+            const assistantTextObserved = yield* takeAssistantTextForTurn(
+              thread.id,
+              terminalTurnId,
+            );
+            terminalTurnAssistantDelivery = {
+              assistantTextObserved:
+                assistantTextObserved || finalizations.some((entry) => entry.hasRenderableText),
+              assistantMessagePersisted: finalizations.some((entry) => entry.persisted),
+            };
             yield* clearAssistantMessageIdsForTurn(thread.id, terminalTurnId);
             yield* clearAssistantSegmentStateForTurn(thread.id, terminalTurnId);
 
@@ -2113,6 +2169,7 @@ const make = Effect.gen(function* () {
               event.turnId === undefined && lifecycleTurnId !== undefined
                 ? { ...event, turnId: lifecycleTurnId }
                 : event,
+              terminalTurnAssistantDelivery,
             ),
             (activity) =>
               orchestrationEngine.dispatch({
@@ -2201,6 +2258,13 @@ const make = Effect.gen(function* () {
         }
         if (turnId) {
           yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
+        }
+        // An untagged text delta still belongs to the running turn: without the
+        // active-turn fallback, text buffered before the turn id was known can be
+        // orphaned at completion and no evidence of it would survive.
+        const assistantTextTurnId = turnId ?? activeTurnId;
+        if (assistantTextTurnId !== null && assistantTextTurnId !== undefined) {
+          yield* rememberAssistantTextForTurn(thread.id, assistantTextTurnId);
         }
 
         const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(

@@ -1,5 +1,5 @@
 import * as NodeHttp from "node:http";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,7 @@ import {
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Clock from "effect/Clock";
+import * as Exit from "effect/Exit";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
@@ -661,6 +662,72 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
       }
     }),
   );
+
+  it.effect("prints real trace diagnostics from disk with no Effect internals on stdout", () => {
+    const baseDir = mkdtempSync(join(process.cwd(), ".trace-diagnostics-cli-"));
+    return Effect.gen(function* () {
+      const config = yield* makeCliTestServerConfig(baseDir);
+      const head = join(config.logsDir, "server.trace.ndjson");
+      const rotation = `${head}.1`;
+      const startNanos = 1_700_000_000_000_000_000n;
+      const record = (name: string, durationMs: number, exit: Record<string, string>) =>
+        JSON.stringify({
+          type: "effect-span",
+          name,
+          kind: "internal",
+          traceId: `trace-${name}`,
+          spanId: `span-${name}`,
+          sampled: true,
+          startTimeUnixNano: String(startNanos),
+          endTimeUnixNano: String(startNanos + BigInt(Math.round(durationMs * 1_000_000))),
+          durationMs,
+          attributes: {},
+          events: [],
+          links: [],
+          exit,
+        });
+      mkdirSync(config.logsDir, { recursive: true });
+      writeFileSync(head, `${record("cli.head.span", 12, { _tag: "Success" })}\n`);
+      writeFileSync(
+        rotation,
+        `${record("cli.rotated.span", 4_000, { _tag: "Failure", cause: "cli failure" })}\n`,
+      );
+      const { output } = yield* captureStdout(
+        runCli(["diagnostics", "trace", "--base-dir", baseDir]),
+      );
+      const parsed = JSON.parse(output) as Record<string, unknown>;
+      assert.equal(parsed.recordCount, 2);
+      assert.equal(parsed.failureCount, 1);
+      assert.equal(parsed.slowSpanCount, 1);
+      assert.deepInclude((parsed.slowestSpans as ReadonlyArray<Record<string, unknown>>)[0]!, {
+        name: "cli.rotated.span",
+        durationMs: 4_000,
+      });
+      assert.deepEqual(
+        (parsed.scannedFilePaths as ReadonlyArray<string>).toSorted(),
+        [head, rotation].toSorted(),
+      );
+      assert.include(output, "cli.rotated.span");
+      // Schema.Option / Schema.DateTimeUtc decode into Effect values whose JSON
+      // form is a `_tag` envelope; stdout must never contain one.
+      assert.notInclude(output, "_tag");
+    }).pipe(Effect.ensuring(Effect.sync(() => rmSync(baseDir, { recursive: true, force: true }))));
+  });
+
+  it.effect("refuses to invent a process diagnostics result on an unimplemented probe", () => {
+    const baseDir = mkdtempSync(join(process.cwd(), ".process-diagnostics-cli-"));
+    return captureExitAndStdout(
+      runCli(["diagnostics", "process", "--base-dir", baseDir, "--url", "http://127.0.0.1:1"]),
+    ).pipe(
+      Effect.tap(({ exit, output }) =>
+        Effect.sync(() => {
+          assert.isTrue(Exit.isFailure(exit));
+          assert.notInclude(output, '"processCount": 0');
+        }),
+      ),
+      Effect.ensuring(Effect.sync(() => rmSync(baseDir, { recursive: true, force: true }))),
+    );
+  });
 
   it.effect("runs Connect status without parsing an invalid server port", () => {
     const baseDir = mkdtempSync(join(process.cwd(), ".connect-cli-invalid-port-"));
