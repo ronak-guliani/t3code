@@ -21,6 +21,7 @@ import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/Checkout
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
 import { CheckpointRef, type WorkspaceBinding } from "@t3tools/contracts";
 import { normalizeChangedFilePath } from "@t3tools/shared/toolChangedFiles";
+import { recordStageTiming } from "../../observability/Metrics.ts";
 import {
   parseTurnDiffFilesFromNumstat,
   parseTurnDiffFileStatusesFromNameStatus,
@@ -175,6 +176,14 @@ const makeCheckpointStore = Effect.gen(function* () {
   const foreignNestedWorktreeExclusions = Effect.fn("foreignNestedWorktreeExclusions")(function* (
     cwd: string,
   ) {
+    return yield* foreignNestedWorktreeSnapshot(cwd).pipe(
+      Effect.map(({ exclusions }) => exclusions),
+    );
+  });
+
+  const foreignNestedWorktreeSnapshot = Effect.fn("foreignNestedWorktreeSnapshot")(function* (
+    cwd: string,
+  ) {
     const root = yield* resolveWorktreeRoot(cwd);
     const result = yield* git.execute({
       operation: "CheckpointStore.foreignNestedWorktreeExclusions",
@@ -196,7 +205,7 @@ const makeCheckpointStore = Effect.gen(function* () {
         exclusions.push(`:(exclude)${normalized}`, `:(exclude)${normalized}/**`);
       }
     }
-    return exclusions;
+    return { root, exclusions };
   });
 
   const foreignNestedWorktreePaths = Effect.fn("foreignNestedWorktreePaths")(function* (
@@ -251,10 +260,7 @@ const makeCheckpointStore = Effect.gen(function* () {
         args: ["rev-parse", "--is-inside-work-tree"],
         allowNonZeroExit: true,
       })
-      .pipe(
-        Effect.map((result) => result.code === 0 && result.stdout.trim() === "true"),
-        Effect.catch(() => Effect.succeed(false)),
-      );
+      .pipe(Effect.map((result) => result.code === 0 && result.stdout.trim() === "true"));
 
   /**
    * Seed a scratch index with a copy of the worktree's own index so `git add -A`
@@ -298,6 +304,7 @@ const makeCheckpointStore = Effect.gen(function* () {
     readonly cwd: string;
     readonly operation: string;
   }) {
+    const startedAt = performance.now();
     return yield* coordinator
       .withCheckout(
         input.cwd,
@@ -309,11 +316,11 @@ const makeCheckpointStore = Effect.gen(function* () {
               ...process.env,
               GIT_INDEX_FILE: tempIndexPath,
             };
-            const [headCommit, seededFromIndex, exclusions] = yield* Effect.all(
+            const [headCommit, seededFromIndex, nestedWorktreeSnapshot] = yield* Effect.all(
               [
                 resolveHeadCommit(input.cwd),
                 seedIndexFromWorktree(input.cwd, tempIndexPath),
-                foreignNestedWorktreeExclusions(input.cwd),
+                foreignNestedWorktreeSnapshot(input.cwd),
               ],
               { concurrency: "unbounded" },
             );
@@ -328,7 +335,7 @@ const makeCheckpointStore = Effect.gen(function* () {
             yield* git.execute({
               operation: input.operation,
               cwd: input.cwd,
-              args: ["add", "-A", "--", ".", ...exclusions],
+              args: ["add", "-A", "--", ".", ...nestedWorktreeSnapshot.exclusions],
               env,
             });
             const writeTreeResult = yield* git.execute({
@@ -360,12 +367,17 @@ const makeCheckpointStore = Effect.gen(function* () {
                 detail: "git write-tree returned an empty index tree oid.",
               });
             }
-            return { headCommit, treeOid, indexTreeOid };
+            return { headCommit, treeOid, indexTreeOid, worktreeRoot: nestedWorktreeSnapshot.root };
           }),
           (tempDir) => fs.remove(tempDir, { recursive: true }),
         ),
       )
       .pipe(
+        Effect.tap(() =>
+          recordStageTiming("checkpoint-scratch-snapshot", performance.now() - startedAt, {
+            operation: input.operation,
+          }),
+        ),
         Effect.catchTag("PlatformError", (error) =>
           Effect.fail(
             new CheckpointInvariantError({
@@ -382,11 +394,10 @@ const makeCheckpointStore = Effect.gen(function* () {
     "captureCheckpoint",
   )(function* (input) {
     const operation = "CheckpointStore.captureCheckpoint";
-    const { headCommit, treeOid, indexTreeOid } = yield* snapshotWorkspace({
+    const { headCommit, treeOid, indexTreeOid, worktreeRoot } = yield* snapshotWorkspace({
       cwd: input.cwd,
       operation,
     });
-    const worktreeRoot = yield* resolveWorktreeRoot(input.cwd);
     const message = [
       `t3 checkpoint ref=${input.checkpointRef}`,
       "",
@@ -427,11 +438,22 @@ const makeCheckpointStore = Effect.gen(function* () {
       });
     }
 
-    yield* git.execute({
-      operation,
-      cwd: input.cwd,
-      args: ["update-ref", input.checkpointRef, commitOid],
-    });
+    const refPublicationStartedAt = performance.now();
+    yield* git
+      .execute({
+        operation,
+        cwd: input.cwd,
+        args: ["update-ref", input.checkpointRef, commitOid],
+      })
+      .pipe(
+        Effect.tap(() =>
+          recordStageTiming(
+            "checkpoint-ref-publication",
+            performance.now() - refPublicationStartedAt,
+            { operation },
+          ),
+        ),
+      );
   });
 
   const createWorkspaceSnapshotCommit: CheckpointStoreShape["createWorkspaceSnapshotCommit"] =

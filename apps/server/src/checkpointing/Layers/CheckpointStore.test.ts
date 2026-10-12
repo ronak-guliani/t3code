@@ -18,6 +18,10 @@ import {
 import { CheckpointRef, GitCommandError, ThreadId } from "@t3tools/contracts";
 import { ServerConfig } from "../../config.ts";
 import { CheckoutCoordinator } from "../../git/CheckoutCoordinator.ts";
+import { ProjectionThreadPullRequestRepositoryLive } from "../../persistence/Layers/ProjectionThreadPullRequests.ts";
+import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { GitActivityLedgerLive } from "../../persistence/Layers/GitActivityLedger.ts";
+import { GitActivityLedger } from "../../persistence/Services/GitActivityLedger.ts";
 
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-checkpoint-store-test-",
@@ -31,7 +35,20 @@ const CheckpointStoreTestLayer = CheckpointStoreLive.pipe(
   Layer.provide(NodeServices.layer),
 );
 const TestLayer = Layer.mergeAll(NodeServices.layer, GitCoreTestLayer, CheckpointStoreTestLayer);
-
+const GitCoreProfileLayer = GitCoreLive.pipe(
+  Layer.provideMerge(
+    GitActivityLedgerLive.pipe(
+      Layer.provideMerge(ProjectionThreadPullRequestRepositoryLive),
+      Layer.provideMerge(SqlitePersistenceMemory),
+    ),
+  ),
+  Layer.provide(ServerConfigLayer),
+  Layer.provide(NodeServices.layer),
+);
+const ProfileCheckpointStoreLayer = CheckpointStoreLive.pipe(
+  Layer.provideMerge(GitCoreProfileLayer),
+  Layer.provide(NodeServices.layer),
+);
 function executeGitResult(code: number, stdout = ""): ExecuteGitResult {
   return {
     code,
@@ -118,6 +135,91 @@ function replaceLine(contents: string, lineIndex: number, replacement: string): 
 }
 
 describe("CheckpointStoreLive range resolution", () => {
+  it.effect(
+    "profiles a production scratch-index snapshot on a representative dirty repository",
+    () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const gitCore = yield* GitCore;
+        yield* gitCore.initRepo({ cwd });
+        yield* git(cwd, ["config", "user.email", "profile@test.invalid"]);
+        yield* git(cwd, ["config", "user.name", "Profile"]);
+        for (let index = 0; index < 300; index++) {
+          yield* writeTextFile(path.join(cwd, `tracked-${index}.txt`), `entry ${index}\n`);
+        }
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "prepare production checkpoint profile"]);
+        yield* writeTextFile(path.join(cwd, "tracked-299.txt"), "modified tracked file\n");
+        yield* (yield* FileSystem.FileSystem).remove(path.join(cwd, "tracked-0.txt"));
+        yield* writeTextFile(path.join(cwd, "untracked.txt"), "untracked file\n");
+        const ref = checkpointBaselineRefForThreadTurn(ThreadId.make("profile-capture"), 1);
+
+        yield* (yield* CheckpointStore).captureCheckpoint({ cwd, checkpointRef: ref });
+
+        expect(yield* git(cwd, ["show", `${ref}:tracked-299.txt`])).toBe("modified tracked file");
+        expect(yield* git(cwd, ["ls-tree", "--name-only", ref])).not.toContain("tracked-0.txt");
+        expect(yield* git(cwd, ["show", `${ref}:untracked.txt`])).toBe("untracked file");
+        const profileRef = checkpointBaselineRefForThreadTurn(
+          ThreadId.make("profile-persistent-audit"),
+          1,
+        );
+        yield* Effect.gen(function* () {
+          const profileStore = yield* CheckpointStore;
+          const activityLedger = yield* GitActivityLedger;
+          yield* profileStore.captureCheckpoint({ cwd, checkpointRef: profileRef });
+          expect(yield* git(cwd, ["show", `${profileRef}:tracked-299.txt`])).toBe(
+            "modified tracked file",
+          );
+          const entries = yield* activityLedger.list({ all: true, limit: 100 });
+          expect(
+            entries.some(
+              (entry) =>
+                entry.operation === "CheckpointStore.captureCheckpoint" &&
+                entry.args[0] === "update-ref",
+            ),
+          ).toBe(true);
+        }).pipe(Effect.provide(ProfileCheckpointStoreLayer));
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(NodeServices.layer, GitCoreTestLayer, CheckpointStoreTestLayer),
+        ),
+      ),
+  );
+
+  it.effect("resolves the worktree root once for snapshot and ref provenance", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      yield* initRepoWithCommit(cwd);
+      const real = yield* GitCore;
+      const rootReads: string[] = [];
+      const instrumentedGit = Layer.succeed(GitCore, {
+        ...real,
+        execute: (input) => {
+          if (input.operation === "CheckpointStore.resolveWorktreeRoot") {
+            rootReads.push(input.operation);
+          }
+          return real.execute(input);
+        },
+      });
+      yield* Effect.gen(function* () {
+        const store = yield* CheckpointStore;
+        yield* store.captureCheckpoint({
+          cwd,
+          checkpointRef: checkpointBaselineRefForThreadTurn(ThreadId.make("inventory"), 1),
+        });
+        expect(rootReads).toHaveLength(1);
+      }).pipe(
+        Effect.provide(
+          CheckpointStoreLive.pipe(
+            Layer.provide(instrumentedGit),
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, GitCoreTestLayer))),
+  );
+
   for (const phase of [
     "HEAD",
     "workspace tree",
@@ -754,6 +856,26 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
   });
 
   describe("captureCheckpoint", () => {
+    it.effect("excludes a registered nested worktree from the scratch snapshot", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const nestedPath = path.join(cwd, "nested-worktree");
+        yield* git(cwd, ["worktree", "add", "-b", "checkpoint-foreign", nestedPath]);
+        yield* writeTextFile(path.join(nestedPath, "foreign.txt"), "foreign data\n");
+        const checkpointRef = checkpointRefForThreadTurn(
+          ThreadId.make("thread-checkpoint-store-foreign-worktree"),
+          0,
+        );
+
+        yield* (yield* CheckpointStore).captureCheckpoint({ cwd, checkpointRef });
+
+        expect(yield* git(cwd, ["ls-tree", "-r", "--name-only", checkpointRef])).not.toContain(
+          "nested-worktree/foreign.txt",
+        );
+      }),
+    );
+
     it.effect("captures the exact worktree even when the index holds stale stat data", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();

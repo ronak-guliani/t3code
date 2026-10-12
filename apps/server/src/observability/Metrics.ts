@@ -81,6 +81,25 @@ export const metricAttributes = (
   attributes: Readonly<Record<string, unknown>>,
 ): ReadonlyArray<[string, string]> => Object.entries(compactMetricAttributes(attributes));
 
+/** Opt-in stage timing for focused startup profiles; disabled in normal runs. */
+export const recordStageTiming = (
+  stage: string,
+  durationMs: number,
+  attributes: Readonly<Record<string, unknown>> = {},
+): Effect.Effect<void> =>
+  process.env.T3CODE_PROFILE_GIT_TIMINGS === "1"
+    ? Effect.sync(() =>
+        console.log(
+          "[git-stage-timing]",
+          JSON.stringify({
+            stage,
+            durationMs: Math.round(Math.max(0, durationMs) * 10) / 10,
+            ...attributes,
+          }),
+        ),
+      )
+    : Effect.void;
+
 export const increment = (
   metric: Metric.Metric<number, unknown>,
   attributes: Readonly<Record<string, unknown>>,
