@@ -1,0 +1,14 @@
+[package]
+name = "t3-layout"
+description = "Analytic transcript layout: turns a thread feed into exact row heights and measured display lists"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+t3-text.workspace = true
+t3-markdown.workspace = true
+t3-syntax.workspace = true
+serde.workspace = true
+serde_json.workspace = true

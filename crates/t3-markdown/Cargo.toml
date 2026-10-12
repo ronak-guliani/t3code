@@ -1,0 +1,10 @@
+[package]
+name = "t3-markdown"
+description = "Block-level markdown model with append-incremental reparse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+pulldown-cmark = "0.12"
