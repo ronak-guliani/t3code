@@ -68,12 +68,14 @@ For publication requests, create a **ready-for-review, non-draft PR** by default
 
 5. Treat "create PR" as authorization to create a focused branch if needed, commit the task's changes, push, and create the PR. Do not ask for confirmation of the title, body, base, or these routine steps. Infer sensible defaults from repository context; ask only when a genuine blocker cannot be resolved safely.
 
-6. Check GitHub CLI authentication and the state of any existing PR for the branch:
+6. Check GitHub CLI authentication and the state of any existing PR for the branch before deciding whether to reuse it:
 
    ```sh
    gh auth status
    gh pr view --json url,state,headRefName --jq '{url, state, headRefName}'
    ```
+
+   Never use a URL-only existing-PR probe such as `gh pr view --json url` for publication decisions; it hides whether the PR is already merged or closed and can cause the workflow to report or associate a stale PR instead of creating the required follow-up PR.
 
    - If no PR exists for the branch, commit any task-scoped changes and push if the branch has no upstream or commits have not been pushed:
 
@@ -83,7 +85,7 @@ For publication requests, create a **ready-for-review, non-draft PR** by default
 
    Then proceed to step 7.
    - If a PR exists and `state` is `OPEN`, skip creation and proceed to step 8 with its URL. Associate it with the current thread, but update its GitHub metadata or branch only with explicit user approval.
-   - If a PR exists and `state` is `MERGED` or `CLOSED`, do not push to that branch and do not reuse its PR. Create a new focused branch from the base, cherry-pick or re-apply only the task-scoped changes onto it, push with `-u`, and proceed to step 7 to create a new PR. Before any push to an existing branch, re-check `state`; a branch whose PR merged while work was in progress must follow this new-branch path.
+   - If a PR exists and `state` is `MERGED` or `CLOSED`, do not push to that branch, do not associate that stale URL, and do not return it as the created PR. Create a new focused branch from the base, cherry-pick or re-apply only the task-scoped changes onto it, push with `-u`, and proceed to step 7 to create a new PR. Before any push to an existing branch, re-check `state`; a branch whose PR merged while work was in progress must follow this new-branch path.
 
 7. Create the PR without another confirmation:
 
