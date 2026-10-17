@@ -169,6 +169,10 @@ layer("025_CleanupInvalidProjectionPendingApprovals", (it) => {
           requestId: "approval-valid",
           status: "pending",
         },
+        {
+          requestId: "input-invalid-resolved",
+          status: "resolved",
+        },
       ]);
 
       const threadCounts = yield* sql<{
