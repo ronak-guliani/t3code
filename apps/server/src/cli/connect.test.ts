@@ -6,13 +6,19 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import { assert, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Console from "effect/Console";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
+import * as TestClock from "effect/testing/TestClock";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 
 import {
   acquireRelayClientForLink,
@@ -21,13 +27,14 @@ import {
   cloudConfigurationError,
   completeCloudDisconnect,
   executeCloudDisconnect,
-  formatHeadlessAuthorizationPrompt,
+  formatDeviceAuthorizationPrompt,
   isHeadlessConnectEnvironment,
   readPreferredCloudRuntimeStateWith,
   relayUnlinkResultFromStatus,
   reportCloudDisconnectResults,
 } from "./connect.ts";
 import { recoverServiceOnboardingOffer } from "./service.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BootService from "../cloud/bootService.ts";
 import * as CliTokenManager from "../cloud/CliTokenManager.ts";
 import { ServerConfig } from "../config.ts";
@@ -310,19 +317,35 @@ it.effect("fails unlink and logout after live teardown failure without skipping 
   }),
 );
 
-it("selects out-of-band authorization for SSH sessions and formats its prompt", () => {
+it("selects device authorization for SSH sessions and formats its prompt", () => {
   assert.isTrue(isHeadlessConnectEnvironment({ SSH_CONNECTION: "127.0.0.1 1 127.0.0.1 2" }));
   assert.isTrue(isHeadlessConnectEnvironment({ SSH_TTY: "/dev/pts/1" }));
   assert.isFalse(isHeadlessConnectEnvironment({}));
   assert.equal(
-    formatHeadlessAuthorizationPrompt("https://app.example.test/connect#state=abc"),
+    formatDeviceAuthorizationPrompt({
+      verificationUri: "https://accounts.example.test/device",
+      verificationUriComplete: "https://accounts.example.test/device?user_code=BCDF-GHJK",
+      userCode: "BCDF-GHJK",
+      expiresIn: Duration.minutes(10),
+    }),
     [
       "Headless authorization",
       "Open this URL on a device with a browser:",
-      "  https://app.example.test/connect#state=abc",
+      "  https://accounts.example.test/device?user_code=BCDF-GHJK",
       "",
-      "After signing in, return here and enter the code shown in your browser.",
+      "Confirm this code when asked: BCDF-GHJK",
+      "",
+      "Waiting for approval (expires in 10 min). Press Ctrl+C to cancel.",
     ].join("\n"),
+  );
+  assert.include(
+    formatDeviceAuthorizationPrompt({
+      verificationUri: "https://accounts.example.test/device",
+      verificationUriComplete: undefined,
+      userCode: "BCDF-GHJK",
+      expiresIn: Duration.minutes(10),
+    }),
+    "  https://accounts.example.test/device\n",
   );
 });
 
@@ -379,6 +402,116 @@ it.effect("falls back to headless authorization after refresh failure and stores
 
     assert.equal(identity, "replacement@example.test");
     assert.deepEqual(stored, [replacement]);
+  }),
+);
+
+it.effect("routes headless login through device authorization and stores the credential", () =>
+  Effect.gen(function* () {
+    const values = new Map<string, Uint8Array>();
+    const secretStore = ServerSecretStore.ServerSecretStore.of({
+      get: (name) =>
+        Effect.sync(() => {
+          const value = values.get(name);
+          return value === undefined ? Option.none() : Option.some(value);
+        }),
+      set: (name, value) =>
+        Effect.sync(() => {
+          values.set(name, value);
+        }),
+      create: () => Effect.die("unused"),
+      getOrCreateRandom: () => Effect.die("unused"),
+      remove: (name) =>
+        Effect.sync(() => {
+          values.delete(name);
+        }),
+      list: () => Effect.succeed([...values.keys()]),
+    });
+    const tokenLayer = CliTokenManager.layer.pipe(
+      Layer.provideMerge(Layer.succeed(ServerSecretStore.ServerSecretStore, secretStore)),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    const idToken = `header.${Buffer.from(
+      JSON.stringify({ email: "user@example.test", sub: "account-123" }),
+    ).toString("base64url")}.signature`;
+    const requests: Array<string> = [];
+    const tokenReplies: Array<{ readonly status: number; readonly body: string }> = [
+      { status: 400, body: JSON.stringify({ error: "authorization_pending" }) },
+      {
+        status: 200,
+        body: JSON.stringify({
+          access_token: "device-access-token",
+          refresh_token: "device-refresh-token",
+          id_token: idToken,
+          expires_in: 3600,
+          token_type: "Bearer",
+        }),
+      },
+    ];
+    const httpClient = HttpClient.make((request) =>
+      Effect.sync(() => {
+        requests.push(request.url);
+        if (request.url.endsWith("/oauth/device_authorization")) {
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({
+              device_code: "device-code-1",
+              user_code: "BCDF-GHJK",
+              verification_uri: "https://accounts.example.test/device",
+              verification_uri_complete: "https://accounts.example.test/device?user_code=BCDF-GHJK",
+              expires_in: 600,
+              interval: 5,
+            }),
+          );
+        }
+        const reply = tokenReplies.length > 1 ? tokenReplies.shift()! : tokenReplies[0]!;
+        return HttpClientResponse.fromWeb(
+          request,
+          new Response(reply.body, {
+            status: reply.status,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+      }),
+    );
+
+    const fiber = yield* Effect.gen(function* () {
+      const tokens = yield* CliTokenManager.CloudCliTokenManager;
+      const identity = yield* authorizeCliWith(
+        { headless: true, sshSession: true },
+        tokens,
+        CliTokenManager.deviceAuthorizationLogin(() => Effect.void),
+      );
+      const stored = yield* tokens.getExisting;
+      return { identity, stored };
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.succeed(HttpClient.HttpClient, httpClient),
+          tokenLayer,
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                T3CODE_CLERK_PUBLISHABLE_KEY: "pk_test_Y2xlcmsuZXhhbXBsZS50ZXN0JA==",
+                T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: "oauth-client",
+              },
+            }),
+          ),
+        ),
+      ),
+      Effect.forkChild,
+    );
+
+    yield* TestClock.adjust(Duration.seconds(10));
+    const { identity, stored } = yield* Fiber.join(fiber);
+
+    assert.equal(identity, "user@example.test");
+    assert.equal(Option.getOrThrow(stored).accessToken, "device-access-token");
+    assert.equal(Option.getOrThrow(stored).refreshToken, "device-refresh-token");
+    assert.deepEqual(requests, [
+      "https://clerk.example.test/oauth/device_authorization",
+      "https://clerk.example.test/oauth/token",
+      "https://clerk.example.test/oauth/token",
+    ]);
   }),
 );
 
